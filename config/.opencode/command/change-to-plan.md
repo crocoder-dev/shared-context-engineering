@@ -10,7 +10,8 @@ Input change request:
 
 Behavior:
 - If `context/` is missing, request bootstrap approval and use `sce-bootstrap-context`.
-- Ask targeted clarifying questions only when needed.
+- Enforce the skill's clarification gate: ask 1-3 targeted questions and pause if any critical detail is unclear.
+- Do not create a plan until dependency choices, domain ambiguities, and architecture concerns are explicitly resolved.
 - Write/update `context/plans/{plan_name}.md`.
 - Confirm plan creation with `{plan_name}` and exact path.
 - Return the full ordered task list.
