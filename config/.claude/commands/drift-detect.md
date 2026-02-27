@@ -1,11 +1,11 @@
 ---
-description: Analyze and report drift between context and code
-allowed-tools: Task, Read, Glob, Grep, Edit, Write, Bash
+description: "Analyze and report drift between context and code"
+allowed-tools: Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash
 ---
 
-Run the `drift-analyzer` skill.
+Use the `shared-context-drift` agent, then load and follow the `sce-drift-analyzer` skill.
 
-Required behavior:
+Behavior:
 - Collect structured signals from `context/` and code.
 - Analyze mismatches between documented and implemented state.
 - Save findings to `context/tmp/drift-analysis-YYYY-MM-DD.md`.
