@@ -63,8 +63,10 @@ Procedure
 - Load `sce-plan-authoring` and follow it exactly.
 - Ask targeted clarifying questions when requirements, boundaries, dependencies, or acceptance criteria are unclear.
 - Write or update `context/plans/{plan_name}.md`.
+- Confirm plan creation with `plan_name` and exact file path.
 - Present the full ordered task list in chat.
-- End with a handoff line: `Ready for Shared Context Code with Plan {plan_name} on Task T0X`.
+- Prompt the user to start a new session to implement `T01`.
+- Provide one canonical next command: `/next-task {plan_name} T01`.
 
 Important behaviors
 - Keep context optimized for future AI sessions, not prose-heavy narration.

@@ -12,4 +12,6 @@ Behavior:
 - If `context/` is missing, request bootstrap approval and use `sce-bootstrap-context`.
 - Ask targeted clarifying questions only when needed.
 - Write/update `context/plans/{plan_name}.md`.
-- Return the full ordered task list and handoff to Shared Context Code.
+- Confirm plan creation with `{plan_name}` and exact path.
+- Return the full ordered task list.
+- Prompt user to start a new session to implement `T01` and provide `/next-task {plan_name} T01`.

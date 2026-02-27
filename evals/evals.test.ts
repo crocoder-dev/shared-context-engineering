@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { createOpencodeClient } from "@opencode-ai/sdk/v2";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { createOpencodeClient, type AssistantMessage } from "@opencode-ai/sdk/v2";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import {
   buildTokenBreakdown,
   checkDirStructure,
@@ -20,14 +20,18 @@ const EVAL_TIMEOUT = 300_000;
 const JSON_INDENT_SPACES = 2;
 const MS_PER_SECOND = 1_000;
 const RUNTIME_SECONDS_DECIMAL_PLACES = 2;
+const DEFAULT_QUESTION_ANSWER = "yes";
+const FIRST_PROMPT_POLL_INTERVAL_MS = 250;
 
 type EvalStepName =
   | "health-check"
   | "session-create"
   | "first-prompt"
+  | "change-to-plan"
+  | "check-plan-file"
   | "check-dir-structure";
 
-type PromptName = "first";
+type PromptName = "first" | "change-to-plan";
 
 type PromptMetrics = {
   prompt: PromptName;
@@ -78,6 +82,36 @@ type ModelReportEntry = {
   totalTokensSpent: number;
 };
 
+type FirstPromptOutcome = {
+  messageID: string;
+  agent: string;
+  tokens: {
+    total?: number;
+    input: number;
+    output: number;
+    reasoning: number;
+    cache: {
+      read: number;
+      write: number;
+    };
+  };
+};
+
+type ChangeToPlanOutcome = {
+  messageID: string;
+  agent: string;
+  tokens: {
+    total?: number;
+    input: number;
+    output: number;
+    reasoning: number;
+    cache: {
+      read: number;
+      write: number;
+    };
+  };
+};
+
 const resultsDir = `${import.meta.dir}/.results`;
 const headCommitHash = getHeadCommitHash();
 const modelReportEntries: ModelReportEntry[] = [];
@@ -110,6 +144,353 @@ function writeModelReportFile(entries: ModelReportEntry[]): string {
   );
 
   return filePath;
+}
+
+function ensureBootstrappedContext(runDir: string): void {
+  const contextDir = `${runDir}/context`;
+  const plansDir = `${contextDir}/plans`;
+  const handoversDir = `${contextDir}/handovers`;
+  const decisionsDir = `${contextDir}/decisions`;
+  const tmpDir = `${contextDir}/tmp`;
+
+  mkdirSync(plansDir, { recursive: true });
+  mkdirSync(handoversDir, { recursive: true });
+  mkdirSync(decisionsDir, { recursive: true });
+  mkdirSync(tmpDir, { recursive: true });
+
+  const fileSeeds: Array<{ path: string; contents: string }> = [
+    { path: `${contextDir}/overview.md`, contents: "# Overview\n\n" },
+    { path: `${contextDir}/architecture.md`, contents: "# Architecture\n\n" },
+    { path: `${contextDir}/patterns.md`, contents: "# Patterns\n\n" },
+    { path: `${contextDir}/glossary.md`, contents: "# Glossary\n\n" },
+    {
+      path: `${contextDir}/context-map.md`,
+      contents:
+        "# Context Map\n\n- [Overview](./overview.md)\n- [Architecture](./architecture.md)\n- [Patterns](./patterns.md)\n- [Glossary](./glossary.md)\n- [Plans](./plans/)\n- [Handovers](./handovers/)\n- [Decisions](./decisions/)\n- [Tmp](./tmp/)\n",
+    },
+    { path: `${tmpDir}/.gitignore`, contents: "*\n!.gitignore\n" },
+  ];
+
+  for (const seed of fileSeeds) {
+    if (!existsSync(seed.path)) {
+      writeFileSync(seed.path, seed.contents, "utf8");
+    }
+  }
+}
+
+async function runFirstPromptWithQuestionHandling(params: {
+  client: ReturnType<typeof createOpencodeClient>;
+  sessionID: string;
+  runDir: string;
+  model: {
+    providerID: string;
+    modelID: string;
+  };
+  signal?: AbortSignal;
+}): Promise<FirstPromptOutcome> {
+  const { client, sessionID, runDir, model, signal } = params;
+  let promptMessageID: string | undefined;
+  let currentPromptText = "init context";
+  let currentPromptStartedAt = Date.now();
+
+  await client.session.promptAsync(
+    {
+      sessionID,
+      directory: runDir,
+      model,
+      agent: "Shared Context Plan",
+      parts: [
+        {
+          type: "text",
+          text: currentPromptText,
+        },
+      ],
+    },
+    {
+      signal,
+    },
+  );
+
+  let answeredQuestion = false;
+
+  const isApprovalQuestion = (text: string): boolean => {
+    const normalized = text.toLowerCase();
+
+    return (
+      normalized.includes("need your approval") ||
+      normalized.includes("if you approve") ||
+      normalized.includes("do you approve") ||
+      normalized.includes("recommended default") ||
+      normalized.includes("approve") ||
+      normalized.includes("?")
+    );
+  };
+
+  while (true) {
+    if (signal?.aborted) {
+      throw new Error("First prompt aborted while waiting for completion");
+    }
+
+    const questions = await client.question.list(
+      {
+        directory: runDir,
+      },
+      {
+        signal,
+      },
+    );
+
+    const pendingSessionQuestions =
+      questions.data?.filter((request) => request.sessionID === sessionID) ?? [];
+
+    if (pendingSessionQuestions.length > 1) {
+      throw new Error("Encountered multiple question requests during first prompt");
+    }
+
+    const pendingQuestion = pendingSessionQuestions[0];
+    if (pendingQuestion) {
+      if (answeredQuestion || pendingQuestion.questions.length !== 1) {
+        throw new Error("Encountered multiple question requests during first prompt");
+      }
+
+      await client.question.reply(
+        {
+          requestID: pendingQuestion.id,
+          directory: runDir,
+          answers: [[DEFAULT_QUESTION_ANSWER]],
+        },
+        {
+          signal,
+        },
+      );
+
+      answeredQuestion = true;
+    }
+
+    const messageHistory = await client.session.messages(
+      {
+        sessionID,
+        directory: runDir,
+      },
+      {
+        signal,
+      },
+    );
+
+    if (!promptMessageID) {
+      const latestPromptMessage = (messageHistory.data ?? [])
+        .filter((entry) => entry.info.role === "user" && entry.info.time.created >= currentPromptStartedAt)
+        .filter((entry) =>
+          entry.parts.some(
+            (part) => part.type === "text" && "text" in part && part.text.trim() === currentPromptText,
+          ),
+        )
+        .sort((left, right) => right.info.time.created - left.info.time.created)[0];
+
+      if (latestPromptMessage) {
+        promptMessageID = latestPromptMessage.info.id;
+      }
+    }
+
+    if (!promptMessageID) {
+      await new Promise((resolve) => setTimeout(resolve, FIRST_PROMPT_POLL_INTERVAL_MS));
+      continue;
+    }
+
+    const assistantForPrompt = (messageHistory.data ?? [])
+      .filter((entry) => entry.info.role === "assistant" && entry.info.parentID === promptMessageID)
+      .sort((left, right) => right.info.time.created - left.info.time.created)[0];
+
+    if (assistantForPrompt) {
+      const assistantInfo = assistantForPrompt.info as AssistantMessage;
+
+      if (assistantInfo.error) {
+        throw new Error(`First reply failed: ${JSON.stringify(assistantInfo.error)}`);
+      }
+
+      if (!assistantInfo.time.completed) {
+        await new Promise((resolve) => setTimeout(resolve, FIRST_PROMPT_POLL_INTERVAL_MS));
+        continue;
+      }
+
+      const assistantText = assistantForPrompt.parts
+        .filter((part) => part.type === "text" && "text" in part)
+        .map((part) => part.text)
+        .join("\n");
+
+      if (isApprovalQuestion(assistantText)) {
+        if (answeredQuestion) {
+          throw new Error("Encountered multiple question requests during first prompt");
+        }
+
+        answeredQuestion = true;
+        promptMessageID = undefined;
+        currentPromptText = DEFAULT_QUESTION_ANSWER;
+        currentPromptStartedAt = Date.now();
+
+        await client.session.promptAsync(
+          {
+            sessionID,
+            directory: runDir,
+            model,
+            agent: "Shared Context Plan",
+            parts: [
+              {
+                type: "text",
+                text: currentPromptText,
+              },
+            ],
+          },
+          {
+            signal,
+          },
+        );
+
+        continue;
+      }
+
+      return {
+        messageID: assistantInfo.id,
+        agent: assistantInfo.agent,
+        tokens: assistantInfo.tokens,
+      };
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, FIRST_PROMPT_POLL_INTERVAL_MS));
+  }
+}
+
+async function runChangeToPlanCommandWithQuestionHandling(params: {
+  client: ReturnType<typeof createOpencodeClient>;
+  sessionID: string;
+  runDir: string;
+  model: {
+    providerID: string;
+    modelID: string;
+  };
+  signal?: AbortSignal;
+}): Promise<ChangeToPlanOutcome> {
+  const { client, sessionID, runDir, model, signal } = params;
+  let promptMessageID: string | undefined;
+  const commandPrompt =
+    `/change-to-plan Create a backend TypeScript server with a single hello-world endpoint and add a flake.nix that bootstraps the dev environment using Bun.`;
+  const commandStartedAt = Date.now();
+
+  await client.session.promptAsync(
+    {
+      sessionID,
+      directory: runDir,
+      model,
+      parts: [
+        {
+          type: "text",
+          text: commandPrompt,
+        },
+      ],
+    },
+    {
+      signal,
+    },
+  );
+
+  let answeredQuestion = false;
+
+  while (true) {
+    if (signal?.aborted) {
+      throw new Error("change-to-plan prompt aborted while waiting for completion");
+    }
+
+    const questions = await client.question.list(
+      {
+        directory: runDir,
+      },
+      {
+        signal,
+      },
+    );
+
+    const pendingSessionQuestions =
+      questions.data?.filter((request) => request.sessionID === sessionID) ?? [];
+
+    if (pendingSessionQuestions.length > 1) {
+      throw new Error("Encountered multiple question requests during change-to-plan prompt");
+    }
+
+    const pendingQuestion = pendingSessionQuestions[0];
+    if (pendingQuestion) {
+      if (answeredQuestion || pendingQuestion.questions.length !== 1) {
+        throw new Error("Encountered multiple question requests during change-to-plan prompt");
+      }
+
+      await client.question.reply(
+        {
+          requestID: pendingQuestion.id,
+          directory: runDir,
+          answers: [[DEFAULT_QUESTION_ANSWER]],
+        },
+        {
+          signal,
+        },
+      );
+
+      answeredQuestion = true;
+    }
+
+    const messageHistory = await client.session.messages(
+      {
+        sessionID,
+        directory: runDir,
+      },
+      {
+        signal,
+      },
+    );
+
+    if (!promptMessageID) {
+      const latestPromptMessage = (messageHistory.data ?? [])
+        .filter((entry) => entry.info.role === "user" && entry.info.time.created >= commandStartedAt)
+        .filter((entry) =>
+          entry.parts.some(
+            (part) => part.type === "text" && "text" in part && part.text.trim() === commandPrompt,
+          ),
+        )
+        .sort((left, right) => right.info.time.created - left.info.time.created)[0];
+
+      if (latestPromptMessage) {
+        promptMessageID = latestPromptMessage.info.id;
+      }
+    }
+
+    if (!promptMessageID) {
+      await new Promise((resolve) => setTimeout(resolve, FIRST_PROMPT_POLL_INTERVAL_MS));
+      continue;
+    }
+
+    const assistantForPrompt = (messageHistory.data ?? [])
+      .filter((entry) => entry.info.role === "assistant" && entry.info.parentID === promptMessageID)
+      .sort((left, right) => right.info.time.created - left.info.time.created)[0];
+
+    if (assistantForPrompt) {
+      const assistantInfo = assistantForPrompt.info as AssistantMessage;
+
+      if (assistantInfo.error) {
+        throw new Error(`change-to-plan reply failed: ${JSON.stringify(assistantInfo.error)}`);
+      }
+
+      if (!assistantInfo.time.completed) {
+        await new Promise((resolve) => setTimeout(resolve, FIRST_PROMPT_POLL_INTERVAL_MS));
+        continue;
+      }
+
+      return {
+        messageID: assistantInfo.id,
+        agent: assistantInfo.agent,
+        tokens: assistantInfo.tokens,
+      };
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, FIRST_PROMPT_POLL_INTERVAL_MS));
+  }
 }
 
 const selectedModels = getSelectedModels();
@@ -178,9 +559,11 @@ describe("opencode sdk connectivity per model", () => {
         cleanupModelContext(ctx);
       });
 
-      test("runs init flow with Shared Context", async () => {
+      async function runModelEval(
+        mode: "init-context" | "change-to-plan",
+      ): Promise<void> {
         console.log(
-          `Testing model ${ctx.fullModel} with provider ${ctx.providerID}`,
+          `Testing model ${ctx.fullModel} (${mode}) with provider ${ctx.providerID}`,
         );
         const client = createOpencodeClient({
           baseUrl: ctx.baseUrl,
@@ -218,7 +601,7 @@ describe("opencode sdk connectivity per model", () => {
             const response = await client.session.create(
               {
                 directory: ctx.runDir,
-                title: `init flow ${ctx.fullModel}`,
+                title: `${mode} flow ${ctx.fullModel}`,
                 permission: [
                   { permission: "read", action: "allow", pattern: "*" },
                   { permission: "glob", action: "allow", pattern: "*" },
@@ -226,6 +609,7 @@ describe("opencode sdk connectivity per model", () => {
                   { permission: "list", action: "allow", pattern: "*" },
                   { permission: "edit", action: "allow", pattern: "*" },
                   { permission: "bash", action: "allow", pattern: "*" },
+                  { permission: "question", action: "allow", pattern: "*" },
                 ],
               },
               {
@@ -245,49 +629,94 @@ describe("opencode sdk connectivity per model", () => {
             modelID: ctx.modelID,
           };
 
-          const firstReply = await runStep(steps, "first-prompt", async () => {
-            const promptStartedAt = Date.now();
-            const response = await client.session.prompt(
-              {
+          if (mode === "init-context") {
+            const firstReply = await runStep(steps, "first-prompt", async () => {
+              const promptStartedAt = Date.now();
+              const outcome = await runFirstPromptWithQuestionHandling({
+                client,
                 sessionID: sessionID!,
+                runDir: ctx.runDir,
                 model,
-                agent: "Shared Context",
-                parts: [
-                  {
-                    type: "text",
-                    text: "Init context.",
-                  },
-                ],
-              },
-              {
                 signal: activeRequestAbortController?.signal,
-              },
-            );
-            const promptEndedAt = Date.now();
+              });
+              const promptEndedAt = Date.now();
 
-            const tokenBreakdown = buildTokenBreakdown(
-              response.data?.info?.tokens,
-            );
-            prompts.push({
-              prompt: "first",
-              runtimeMs: promptEndedAt - promptStartedAt,
-              messageID: response.data?.info?.id,
-              tokens: tokenBreakdown,
+              const tokenBreakdown = buildTokenBreakdown(outcome.tokens);
+              prompts.push({
+                prompt: "first",
+                runtimeMs: promptEndedAt - promptStartedAt,
+                messageID: outcome.messageID,
+                tokens: tokenBreakdown,
+              });
+
+              expect(["Shared Context Plan", "build"]).toContain(outcome.agent);
+              expect(typeof outcome.messageID).toBe("string");
+
+              return {
+                data: {
+                  info: {
+                    agent: outcome.agent,
+                  },
+                },
+              };
             });
 
-            if (response.data?.info?.error) {
-              throw new Error(
-                `First reply failed: ${JSON.stringify(response.data.info.error)}`,
-              );
-            }
+            expect(firstReply.data?.info?.agent).toBe("Shared Context Plan");
+          }
 
-            expect(response.data?.info?.agent).toBe("Shared Context");
-            expect(typeof response.data?.info?.id).toBe("string");
+          if (mode === "change-to-plan") {
+            ensureBootstrappedContext(ctx.runDir);
 
-            return response;
-          });
+            const changeToPlanReply = await runStep(steps, "change-to-plan", async () => {
+              const promptStartedAt = Date.now();
+              const outcome = await runChangeToPlanCommandWithQuestionHandling({
+                client,
+                sessionID: sessionID!,
+                runDir: ctx.runDir,
+                model,
+                signal: activeRequestAbortController?.signal,
+              });
+              const promptEndedAt = Date.now();
 
-          expect(firstReply.data?.info?.agent).toBe("Shared Context");
+              const tokenBreakdown = buildTokenBreakdown(outcome.tokens);
+              prompts.push({
+                prompt: "change-to-plan",
+                runtimeMs: promptEndedAt - promptStartedAt,
+                messageID: outcome.messageID,
+                tokens: tokenBreakdown,
+              });
+
+              expect(["Shared Context Plan", "build"]).toContain(outcome.agent);
+              expect(typeof outcome.messageID).toBe("string");
+
+              return {
+                data: {
+                  info: {
+                    agent: outcome.agent,
+                  },
+                },
+              };
+            });
+
+            expect(["Shared Context Plan", "build"]).toContain(
+              changeToPlanReply.data?.info?.agent,
+            );
+
+            await runStep(steps, "check-plan-file", async () => {
+              const plansDir = `${ctx.runDir}/context/plans`;
+              const planFiles = readdirSync(plansDir)
+                .filter((name) => name.endsWith(".md"))
+                .sort();
+
+              expect(planFiles.length).toBe(1);
+
+              const latestPlanFilePath = `${plansDir}/${planFiles[planFiles.length - 1]}`;
+              const planText = readFileSync(latestPlanFilePath, "utf8");
+
+              expect(planText.toLowerCase()).toContain("success criteria");
+              expect(planText).toContain("T01");
+            });
+          }
 
           await runStep(steps, "check-dir-structure", async () => {
             const dirStructure = checkDirStructure(
@@ -311,6 +740,9 @@ describe("opencode sdk connectivity per model", () => {
           const firstPrompt = prompts.find(
             (prompt) => prompt.prompt === "first",
           );
+          const changeToPlanPrompt = prompts.find(
+            (prompt) => prompt.prompt === "change-to-plan",
+          );
           const failedStep = [...steps]
             .reverse()
             .find((step) => step.status === "failed");
@@ -324,7 +756,7 @@ describe("opencode sdk connectivity per model", () => {
             model: {
               providerID: ctx.providerID,
               modelID: ctx.modelID,
-              fullModel: ctx.fullModel,
+              fullModel: `${ctx.fullModel}-${mode}`,
             },
             run: {
               headCommitHash,
@@ -344,10 +776,12 @@ describe("opencode sdk connectivity per model", () => {
               totalRuntimeMs,
               runtimePerReplyMs: {
                 first: firstPrompt?.runtimeMs ?? 0,
+                "change-to-plan": changeToPlanPrompt?.runtimeMs ?? 0,
               },
               totalTokensSpent,
               tokenSpentPerPrompt: {
                 first: firstPrompt?.tokens.total ?? 0,
+                "change-to-plan": changeToPlanPrompt?.tokens.total ?? 0,
               },
             },
             prompts,
@@ -359,7 +793,7 @@ describe("opencode sdk connectivity per model", () => {
           };
 
           modelReportEntries.push({
-            fullModel: ctx.fullModel,
+            fullModel: result.model.fullModel,
             passed: result.run.success,
             totalRuntimeMs: result.metrics.totalRuntimeMs,
             totalTokensSpent: result.metrics.totalTokensSpent,
@@ -372,6 +806,14 @@ describe("opencode sdk connectivity per model", () => {
         if (thrownError) {
           throw thrownError;
         }
+      }
+
+      test("runs context bootstrap flow with Shared Context", async () => {
+        await runModelEval("init-context");
+      }, EVAL_TIMEOUT);
+
+      test("runs change-to-plan flow with Shared Context", async () => {
+        await runModelEval("change-to-plan");
       }, EVAL_TIMEOUT);
     });
   }

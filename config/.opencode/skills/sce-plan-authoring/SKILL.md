@@ -42,5 +42,7 @@ Use checkbox lines for machine-friendly progress tracking:
 
 ## Output contract
 - Save plan under `context/plans/`.
+- Confirm plan creation with `plan_name` and exact file path.
 - Present the full ordered task list in chat.
-- End with: `Ready for Shared Context Code with Plan {plan_name} on Task T0X`.
+- Prompt the user to start a new session to implement `T01`.
+- Provide one canonical next command: `/next-task {plan_name} T01`.
