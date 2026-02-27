@@ -64,7 +64,7 @@ Procedure
 - Ask targeted clarifying questions when requirements, boundaries, dependencies, or acceptance criteria are unclear.
 - Write or update `context/plans/{plan_name}.md`.
 - Confirm plan creation with `plan_name` and exact file path.
-- Present the full ordered task list in chat.
+- Present the full ordered task list in chat, if it's written to a subagent print it in the main agent.
 - Prompt the user to start a new session to implement `T01`.
 - Provide one canonical next command: `/next-task {plan_name} T01`.
 

@@ -11,9 +11,21 @@ Turn a human change request into `context/plans/{plan_name}.md`.
 - If a request includes both a change description and success criteria, planning is mandatory before implementation.
 - Planning does not imply execution approval.
 
-## Clarification rule
-- Ask concise targeted questions when requirements, boundaries, dependencies, or acceptance criteria are unclear.
-- Incorporate answers into the plan before handoff.
+## Clarification gate (blocking)
+- Before writing or updating any plan, run an ambiguity check.
+- If any critical detail is unclear, ask 1-3 targeted questions and stop.
+- Do not write or update `context/plans/{plan_name}.md` until the user answers.
+- Critical details that must be resolved before planning include:
+  - scope boundaries and out-of-scope items
+  - success criteria and acceptance signals
+  - constraints and non-goals
+  - dependency choices (new libs/services, versions, and integration approach)
+  - domain ambiguity (unclear business rules, terminology, or ownership)
+  - architecture concerns (patterns, interfaces, data flow, migration strategy, and risk tradeoffs)
+  - task ordering assumptions and prerequisite sequencing
+- Do not silently invent missing requirements.
+- If the user explicitly allows assumptions, record them in an `Assumptions` section.
+- Incorporate user answers into the plan before handoff.
 
 ## Documentation source rule
 - Do not document behavior, structure, or examples sourced from directories whose names start with `.`.
