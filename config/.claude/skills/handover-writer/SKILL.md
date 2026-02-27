@@ -1,25 +1,9 @@
 ---
 name: handover-writer
-description: Use when user wants to create a structured SCE handover for the current task
+description: Use when user wants to Compatibility alias that maps to sce-handover-writer.
 compatibility: claude
-metadata:
-  owner: shared-context
 ---
 
-## What I do
-- Create a new handover file in `context/handovers/`.
-- Capture:
-  - current task state
-  - decisions made and rationale
-  - open questions or blockers
-  - next recommended step
+This skill is kept for backward compatibility.
 
-## How to run this
-- Use the `shared-context` agent to generate the handover.
-- Prefer task-aligned naming: `context/handovers/{plan_name}-{task_id}.md`.
-- If plan/task metadata is unavailable, use a timestamped filename: `context/handovers/{task-name}-{plan-name}-{current-date}-handover.md`.
-- If key details are missing, infer from repo state and clearly label assumptions.
-- Do not document behavior, structure, or examples sourced from directories whose names start with `.` (dot-directories).
-
-## Expected output
-- A complete handover document in `context/handovers/` using task-aligned naming when possible.
+Load and follow `sce-handover-writer`.

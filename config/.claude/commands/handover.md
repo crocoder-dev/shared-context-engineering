@@ -1,16 +1,19 @@
 ---
-description: Create a structured SCE handover of the current task
-allowed-tools: Task, Read, Glob, Grep, Edit, Write
+description: "Create a structured SCE handover of the current task"
+allowed-tools: Task, Read, Glob, Grep, Edit, Write, Question, Skill
 ---
 
-Run the `handover-writer` skill.
+Use the `shared-context-code` agent, then load and follow the `sce-handover-writer` skill.
 
-Use the `shared-context` agent to create a new handover file in `context/handovers/` that captures:
+Input:
+`$ARGUMENTS`
 
-- Current task state
-- Decisions made and rationale
-- Open questions or blockers
-- Next recommended step
+Create a new handover file in `context/handovers/` that captures:
 
-Use a timestamped filename (for example: `context/handovers/{task-name}-{plan-name}-{current-date}-handover.md`).
+- current task state
+- decisions made and rationale
+- open questions or blockers
+- next recommended step
+
+Default naming should align with task execution handovers: `context/handovers/{plan_name}-{task_id}-{timestamp}.md`.
 If key details are missing, infer what you can from the current repo state and clearly label assumptions.
