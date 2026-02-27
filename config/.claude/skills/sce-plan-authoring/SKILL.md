@@ -56,5 +56,5 @@ Use checkbox lines for machine-friendly progress tracking:
 - Save plan under `context/plans/`.
 - Confirm plan creation with `plan_name` and exact file path.
 - Present the full ordered task list in chat.
-- Prompt the user to start a new session to implement `T01`.
+- Prompt the user to start a new session with shared-context-code agent to implement `T01`.
 - Provide one canonical next command: `/next-task {plan_name} T01`.
