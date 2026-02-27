@@ -1,9 +1,9 @@
 ---
 description: "Resolve code-context drift using SCE rules"
-agent: "Shared Context"
+agent: "Shared Context Drift"
 ---
 
-Run the `drift-fixer` skill.
+Load and follow the `sce-drift-fixer` skill.
 
 Audit the `context/` and ensure it correctly describes the system as implemented
 

@@ -1,9 +1,9 @@
 ---
 description: "Analyze and report drift between context and code"
-agent: "Shared Context"
+agent: "Shared Context Drift"
 ---
 
-Run the `drift-analyzer` skill.
+Load and follow the `sce-drift-analyzer` skill.
 
 Behavior:
 - Collect structured signals from `context/` and code.

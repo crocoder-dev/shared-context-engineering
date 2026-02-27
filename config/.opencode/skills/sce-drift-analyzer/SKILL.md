@@ -1,9 +1,7 @@
 ---
-name: drift-analyzer
-description: Use when user wants to Analyze drift between context and code using structured collectors
+name: sce-drift-analyzer
+description: Use when user wants to analyze drift between context and code using structured collectors.
 compatibility: opencode
-metadata:
-  owner: Shared Context
 ---
 
 ## What I do
@@ -13,7 +11,6 @@ metadata:
 - Ask the user what to do next before making edits.
 
 ## How to run this
-- Ask for permission before running unless permission was already granted.
 - If `context/` is missing, ask once whether to bootstrap SCE baseline.
   - If yes, create baseline and continue.
   - If no, stop and explain drift analysis requires `context/`.
