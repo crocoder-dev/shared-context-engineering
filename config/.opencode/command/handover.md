@@ -1,9 +1,12 @@
 ---
 description: "Create a structured SCE handover of the current task"
-agent: "Shared Context"
+agent: "Shared Context Code"
 ---
 
-Run the `handover-writer` skill.
+Load and follow the `sce-handover-writer` skill.
+
+Input:
+`$ARGUMENTS`
 
 Create a new handover file in `context/handovers/` that captures:
 
@@ -12,5 +15,5 @@ Create a new handover file in `context/handovers/` that captures:
 - open questions or blockers
 - next recommended step
 
-Use a timestamped filename (for example: `context/handovers/{task-name}-{plan-name}-{current-date}-handover.md`).
+Default naming should align with task execution handovers: `context/handovers/{plan_name}-{task_id}-{timestamp}.md`.
 If key details are missing, infer what you can from the current repo state and clearly label assumptions.

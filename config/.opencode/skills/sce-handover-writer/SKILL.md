@@ -1,9 +1,7 @@
 ---
-name: handover-writer
-description: Use when user wants to create a structured SCE handover for the current task
-compatibility: claude
-metadata:
-  owner: shared-context
+name: sce-handover-writer
+description: Use when user wants to create a structured SCE handover for the current task.
+compatibility: opencode
 ---
 
 ## What I do
@@ -15,9 +13,7 @@ metadata:
   - next recommended step
 
 ## How to run this
-- Use the `shared-context` agent to generate the handover.
 - Prefer task-aligned naming: `context/handovers/{plan_name}-{task_id}.md`.
-- If plan/task metadata is unavailable, use a timestamped filename: `context/handovers/{task-name}-{plan-name}-{current-date}-handover.md`.
 - If key details are missing, infer from repo state and clearly label assumptions.
 - Do not document behavior, structure, or examples sourced from directories whose names start with `.` (dot-directories).
 

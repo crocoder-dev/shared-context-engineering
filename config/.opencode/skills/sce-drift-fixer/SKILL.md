@@ -1,9 +1,7 @@
 ---
-name: drift-fixer
-description: Use when user wants to Audit and repair code-context drift in context/ using Shared Context Engineering rules
+name: sce-drift-fixer
+description: Use when user wants to audit and repair code-context drift in context/ using SCE rules.
 compatibility: opencode
-metadata:
-  owner: Shared Context
 ---
 
 ## What I do
@@ -14,14 +12,12 @@ metadata:
 - Use existing drift analysis reports from `context/tmp/` as the primary input for fixes.
 
 ## How to run this
-- Ask for user permission before running this skill unless permission has already been granted.
-- Use the `Shared Context` agent to perform collection, analysis, and edits.
 - If `context/` is missing, ask once whether to bootstrap SCE baseline.
   - If yes, create baseline and continue.
   - If no, stop and explain SCE workflows require `context/`.
 - Search `context/tmp/` for `drift-analysis-*.md`.
 - If one or more reports exist, use the latest report as the fix input.
-- If no report exists, explicitly tell the user no drift analysis report was found, then run `drift-analyzer` to generate one before continuing.
+- If no report exists, explicitly tell the user no drift analysis report was found, then run `sce-drift-analyzer` to generate one before continuing.
 - Ask whether to apply all fixes or apply selectively.
 - If any finding is ambiguous or lacks enough evidence, prompt the user before editing.
 - Keep context files concise, current-state oriented, and linked from `context/context-map.md` when relevant.
