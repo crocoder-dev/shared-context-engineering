@@ -1,5 +1,5 @@
 {
-  description = "Development shell for Bun + TypeScript";
+  description = "Development shell for Bun + TypeScript + Pkl";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -25,6 +25,7 @@
           packages = with pkgs; [
             bun
             jq
+            pkl
             typescript
             nodePackages.typescript-language-server
           ];
@@ -35,6 +36,7 @@
             }
 
             echo "- bun: $(version_of bun)"
+            echo "- pkl: $(version_of pkl)"
             echo "- tsc: $(version_of tsc)"
             echo "- tsserver-lsp: $(version_of typescript-language-server)"
           '';

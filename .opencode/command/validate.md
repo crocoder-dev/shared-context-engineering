@@ -1,6 +1,6 @@
 ---
 description: "Run final validation and cleanup for an SCE plan"
-allowed-tools: Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash
+agent: "Shared Context Code"
 ---
 
 Load and follow the `sce-validation` skill.

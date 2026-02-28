@@ -1,0 +1,24 @@
+agentDescriptions = new Mapping {
+  ["shared-context-plan"] = "Use when the user needs to create or update an SCE plan before implementation."
+  ["shared-context-code"] = "Use when the user wants to execute one approved SCE task and sync context."
+  ["shared-context-drift"] = "Use when the user wants drift analysis or drift fixes for context and code."
+}
+
+agentColors = new Mapping {
+  ["shared-context-plan"] = "blue"
+  ["shared-context-code"] = "green"
+  ["shared-context-drift"] = "orange"
+}
+
+agentTools = "[\"Read\", \"Glob\", \"Grep\", \"Edit\", \"Write\", \"Skill\", \"AskUserQuestion\", \"Task\", \"Bash\"]"
+
+commandAllowedTools = new Mapping {
+  ["next-task"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
+  ["change-to-plan"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill"
+  ["drift-detect"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
+  ["fix-drift"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
+  ["handover"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill"
+  ["validate"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
+}
+
+skillCompatibility = "claude"

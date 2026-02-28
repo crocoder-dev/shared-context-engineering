@@ -10,11 +10,11 @@ permission:
   glob: allow
   grep: allow
   list: allow
-  bash: deny
-  task: deny
+  bash: allow
+  task: allow
   external_directory: ask
-  todowrite: deny
-  todoread: deny
+  todowrite: allow
+  todoread: allow
   question: allow
   webfetch: allow
   websearch: allow

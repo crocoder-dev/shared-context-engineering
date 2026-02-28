@@ -1,6 +1,6 @@
 ---
 description: "Analyze and report drift between context and code"
-allowed-tools: Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash
+agent: "Shared Context Drift"
 ---
 
 Load and follow the `sce-drift-analyzer` skill.

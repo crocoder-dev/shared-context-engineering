@@ -1,0 +1,48 @@
+import "renderers/opencode-content.pkl" as opencode
+import "renderers/claude-content.pkl" as claude
+
+local sharedLibrarySource = read("../.opencode/lib/drift-collectors.js").text
+
+output {
+  files {
+    for (slug, document in opencode.agents) {
+      ["config/.opencode/agent/\(document.title).md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in claude.agents) {
+      ["config/.claude/agents/\(slug).md"] {
+        text = document.rendered
+      }
+    }
+
+    for (slug, document in opencode.commands) {
+      ["config/.opencode/command/\(slug).md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in claude.commands) {
+      ["config/.claude/commands/\(slug).md"] {
+        text = document.rendered
+      }
+    }
+
+    for (slug, document in opencode.skills) {
+      ["config/.opencode/skills/\(slug)/SKILL.md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in claude.skills) {
+      ["config/.claude/skills/\(slug)/SKILL.md"] {
+        text = document.rendered
+      }
+    }
+
+    ["config/.opencode/lib/drift-collectors.js"] {
+      text = sharedLibrarySource
+    }
+    ["config/.claude/lib/drift-collectors.js"] {
+      text = sharedLibrarySource
+    }
+  }
+}

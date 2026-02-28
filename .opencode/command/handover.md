@@ -1,6 +1,6 @@
 ---
 description: "Create a structured SCE handover of the current task"
-allowed-tools: Task, Read, Glob, Grep, Edit, Write, Question, Skill
+agent: "Shared Context Code"
 ---
 
 Load and follow the `sce-handover-writer` skill.
