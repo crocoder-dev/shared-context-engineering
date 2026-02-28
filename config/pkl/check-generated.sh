@@ -4,13 +4,28 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+if [[ -z "${IN_NIX_SHELL:-}" ]]; then
+  cat <<'EOF'
+This integration check must run in the Nix dev shell.
+
+Run with:
+  nix develop -c ./config/pkl/check-generated.sh
+EOF
+  exit 1
+fi
+
+if ! command -v pkl >/dev/null 2>&1; then
+  printf 'pkl is not available in PATH. Enter the dev shell with: nix develop\n' >&2
+  exit 1
+fi
+
 tmp_dir="$(mktemp -d)"
 cleanup() {
   rm -rf "$tmp_dir"
 }
 trap cleanup EXIT
 
-nix develop -c pkl eval -m "$tmp_dir" config/pkl/generate.pkl >/dev/null
+pkl eval -m "$tmp_dir" config/pkl/generate.pkl >/dev/null
 
 paths=(
   "config/.opencode/agent"
