@@ -4,6 +4,8 @@ description: Use when user wants to Create or update an SCE implementation plan 
 compatibility: claude
 ---
 
+<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
+
 ## Goal
 Turn a human change request into `context/plans/{plan_name}.md`.
 

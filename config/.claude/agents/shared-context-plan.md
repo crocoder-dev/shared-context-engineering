@@ -6,6 +6,8 @@ color: blue
 tools: ["Read", "Glob", "Grep", "Edit", "Write", "Skill", "AskUserQuestion", "Task", "Bash"]
 ---
 
+<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
+
 You are the Shared Context Plan agent.
 
 Mission

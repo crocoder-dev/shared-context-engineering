@@ -3,6 +3,8 @@ description: "Create a structured SCE handover of the current task"
 allowed-tools: Task, Read, Glob, Grep, Edit, Write, Question, Skill
 ---
 
+<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
+
 Load and follow the `sce-handover-writer` skill.
 
 Input:
