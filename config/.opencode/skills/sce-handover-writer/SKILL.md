@@ -4,8 +4,6 @@ description: Use when user wants to create a structured SCE handover for the cur
 compatibility: opencode
 ---
 
-<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
-
 ## What I do
 - Create a new handover file in `context/handovers/`.
 - Capture:

@@ -4,8 +4,6 @@ description: Use when user wants to analyze drift between context and code using
 compatibility: claude
 ---
 
-<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
-
 ## What I do
 - Collect context and code signals with pure JavaScript collectors.
 - Analyze semantic drift between documented state and implemented state.

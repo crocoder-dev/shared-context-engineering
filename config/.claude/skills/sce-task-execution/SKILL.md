@@ -4,8 +4,6 @@ description: Use when user wants to Execute one approved task with explicit scop
 compatibility: claude
 ---
 
-<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
-
 ## Scope rule
 - Execute exactly one task per session by default.
 - If multi-task execution is requested, confirm explicit human approval.
