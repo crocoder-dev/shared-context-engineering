@@ -53,3 +53,12 @@ Explicitly excluded from generation ownership:
 - package/tool manifests not listed in generated authored scope
 
 See `context/decisions/2026-02-28-pkl-generation-architecture.md` for the full matrix and ownership table used by the plan task implementation.
+
+## Shared Context Drift parity mapping
+
+Shared Context Drift has an explicit target-parity mapping for internal/subagent usage across generated outputs.
+
+- Canonical agent source remains `shared.agents["shared-context-drift"]` in `config/pkl/base/shared-content.pkl`.
+- OpenCode subagent behavior is declared in `config/pkl/renderers/opencode-metadata.pkl` via `agentBehaviorBlocks["shared-context-drift"]`, which emits `mode: subagent` and `hidden: true` into `config/.opencode/agent/Shared Context Drift.md`.
+- Claude has no supported `hidden`/`mode` equivalent in this repo's generator contract, so parity is represented with supported fields only: delegated/internal guidance in `agentDescriptions["shared-context-drift"]` and `agentSystemPreambleBlocks["shared-context-drift"]` in `config/pkl/renderers/claude-metadata.pkl`, rendered to `config/.claude/agents/shared-context-drift.md`.
+- This is an intentional capability-gap mapping: OpenCode uses explicit frontmatter controls; Claude uses instruction-level delegation and command/task routing guidance.

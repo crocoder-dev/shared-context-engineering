@@ -1,12 +1,16 @@
 ---
 name: shared-context-drift
-description: Use when the user wants drift analysis or drift fixes for context and code.
+description: Internal drift subagent for delegated context-code drift analysis/fix flows; prefer command/task routing over direct primary use.
 model: inherit
 color: orange
 tools: ["Read", "Glob", "Grep", "Edit", "Write", "Skill", "AskUserQuestion", "Task", "Bash"]
 ---
 
 <!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
+
+Delegation mode
+- This agent is intended for internal/delegated subagent execution.
+- Prefer invoking via command or Task routing instead of presenting this as a primary/manual workflow.
 
 You are the Shared Context Drift agent.
 
