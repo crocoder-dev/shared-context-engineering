@@ -1,7 +1,7 @@
 ---
 name: sce-plan-authoring
 description: Use when user wants to Create or update an SCE implementation plan with scoped atomic tasks.
-compatibility: claude
+compatibility: opencode
 ---
 
 ## Goal

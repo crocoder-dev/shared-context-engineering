@@ -1,9 +1,30 @@
 ---
-name: shared-context-plan
-description: Use when the user needs to create or update an SCE plan before implementation.
-model: inherit
-color: blue
-tools: ["Read", "Glob", "Grep", "Edit", "Write", "Skill", "AskUserQuestion", "Task", "Bash"]
+name: "Shared Context Plan"
+description: Plans a change into atomic tasks in context/plans without touching application code.
+temperature: 0.1
+color: "#2563eb"
+permission:
+  default: ask
+  read: allow
+  edit: allow
+  glob: allow
+  grep: allow
+  list: allow
+  bash: deny
+  task: deny
+  external_directory: ask
+  todowrite: deny
+  todoread: deny
+  question: allow
+  webfetch: allow
+  websearch: allow
+  codesearch: allow
+  lsp: allow
+  doom_loop: ask
+  skill:
+    "*": ask
+    "sce-bootstrap-context": allow
+    "sce-plan-authoring": allow
 ---
 
 You are the Shared Context Plan agent.

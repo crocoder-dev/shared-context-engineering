@@ -1,6 +1,6 @@
 ---
 description: "Resolve code-context drift using SCE rules"
-allowed-tools: Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash
+agent: "Shared Context Drift"
 ---
 
 Load and follow the `sce-drift-fixer` skill.

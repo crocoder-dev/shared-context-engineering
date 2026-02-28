@@ -3,7 +3,7 @@ description: "Review a plan and execute one SCE task from an approved plan"
 allowed-tools: Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash
 ---
 
-Use the `shared-context-code` agent, then load and follow `sce-plan-review`, `sce-task-execution`, and `sce-context-sync` in order.
+Load and follow `sce-plan-review`, then `sce-task-execution`, then `sce-context-sync`.
 
 Input:
 `$ARGUMENTS`
@@ -19,3 +19,4 @@ Behavior:
 - Run `sce-context-sync` after implementation to align context files with current code truth.
 - Wait for user feedback; if feedback requires in-scope fixes, apply fixes, rerun light checks/lints, run a build when it is light/fast, and run `sce-context-sync` again.
 - If this is the final task in the plan, run `sce-validation`.
+- When you are finished, if there are more tasks in the plan prompt user to start a new session to implement next task `T0X` and provide `/next-task {plan_name} T0X`.

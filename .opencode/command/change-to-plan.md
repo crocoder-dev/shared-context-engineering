@@ -1,6 +1,6 @@
 ---
 description: "Create or update an SCE plan from a change request"
-allowed-tools: Task, Read, Glob, Grep, Edit, Write, Question, Skill
+agent: "Shared Context Plan"
 ---
 
 Load and follow the `sce-plan-authoring` skill.

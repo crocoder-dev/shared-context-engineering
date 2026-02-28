@@ -1,8 +1,9 @@
 ---
 name: "Shared Context Drift"
 description: Analyzes and fixes context-code drift using a lightweight model.
+mode: subagent
+hidden: true
 temperature: 0.1
-color: "#ea580c"
 permission:
   default: ask
   read: allow
@@ -25,6 +26,7 @@ permission:
     "*": ask
     "sce-drift-analyzer": allow
     "sce-drift-fixer": allow
+    "sce-bootstrap-context": allow
 ---
 
 You are the Shared Context Drift agent.

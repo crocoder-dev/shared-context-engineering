@@ -1,0 +1,105 @@
+agentDescriptions = new Mapping {
+  ["shared-context-plan"] = "Plans a change into atomic tasks in context/plans without touching application code."
+  ["shared-context-code"] = "Executes one approved SCE task, validates behavior, and syncs context."
+  ["shared-context-drift"] = "Analyzes and fixes context-code drift using a lightweight model."
+}
+
+agentDisplayNames = new Mapping {
+  ["shared-context-plan"] = "Shared Context Plan"
+  ["shared-context-code"] = "Shared Context Code"
+  ["shared-context-drift"] = "Shared Context Drift"
+}
+
+agentColors = new Mapping {
+  ["shared-context-plan"] = "#2563eb"
+  ["shared-context-code"] = "#059669"
+  ["shared-context-drift"] = "#ea580c"
+}
+
+agentPermissionBlocks = new Mapping {
+  ["shared-context-plan"] = """
+permission:
+  default: ask
+  read: allow
+  edit: allow
+  glob: allow
+  grep: allow
+  list: allow
+  bash: allow
+  task: allow
+  external_directory: ask
+  todowrite: allow
+  todoread: allow
+  question: allow
+  webfetch: allow
+  websearch: allow
+  codesearch: allow
+  lsp: allow
+  doom_loop: ask
+  skill:
+    "*": ask
+    "sce-bootstrap-context": allow
+    "sce-plan-authoring": allow
+"""
+  ["shared-context-code"] = """
+permission:
+  default: ask
+  read: allow
+  edit: allow
+  glob: allow
+  grep: allow
+  list: allow
+  bash: allow
+  task: allow
+  external_directory: ask
+  todowrite: allow
+  todoread: allow
+  question: allow
+  webfetch: allow
+  websearch: allow
+  codesearch: allow
+  lsp: allow
+  doom_loop: ask
+  skill:
+    "*": ask
+    "sce-plan-review": allow
+    "sce-task-execution": allow
+    "sce-context-sync": allow
+    "sce-validation": allow
+"""
+  ["shared-context-drift"] = """
+permission:
+  default: ask
+  read: allow
+  edit: allow
+  glob: allow
+  grep: allow
+  list: allow
+  bash: allow
+  task: allow
+  external_directory: ask
+  todowrite: allow
+  todoread: allow
+  question: allow
+  webfetch: allow
+  websearch: allow
+  codesearch: allow
+  lsp: allow
+  doom_loop: ask
+  skill:
+    "*": ask
+    "sce-drift-analyzer": allow
+    "sce-drift-fixer": allow
+"""
+}
+
+commandAgents = new Mapping {
+  ["next-task"] = "Shared Context Code"
+  ["change-to-plan"] = "Shared Context Plan"
+  ["drift-detect"] = "Shared Context Drift"
+  ["fix-drift"] = "Shared Context Drift"
+  ["handover"] = "Shared Context Code"
+  ["validate"] = "Shared Context Code"
+}
+
+skillCompatibility = "opencode"

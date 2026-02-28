@@ -1,0 +1,73 @@
+import "../base/shared-content.pkl" as shared
+import "common.pkl" as common
+import "claude-metadata.pkl" as metadata
+
+local agentFrontmatterBySlug = new Mapping {
+  for (unitSlug, _ in shared.agents) {
+    [unitSlug] = """
+---
+name: \(unitSlug)
+description: \(metadata.agentDescriptions[unitSlug])
+model: inherit
+color: \(metadata.agentColors[unitSlug])
+tools: \(metadata.agentTools)
+---
+"""
+  }
+}
+
+local commandFrontmatterBySlug = new Mapping {
+  for (unitSlug, _ in shared.commands) {
+    [unitSlug] = """
+---
+description: "\(common.commandDescriptions[unitSlug])"
+allowed-tools: \(metadata.commandAllowedTools[unitSlug])
+---
+"""
+  }
+}
+
+local skillFrontmatterBySlug = new Mapping {
+  for (unitSlug, _ in shared.skills) {
+    [unitSlug] = """
+---
+name: \(unitSlug)
+description: \(common.skillDescriptions[unitSlug])
+compatibility: \(metadata.skillCompatibility)
+---
+"""
+  }
+}
+
+agents {
+  for (unitSlug, unit in shared.agents) {
+    [unitSlug] = new common.RenderedTargetDocument {
+      slug = unitSlug
+      title = unit.title
+      frontmatter = agentFrontmatterBySlug[unitSlug]
+      body = unit.canonicalBody
+    }
+  }
+}
+
+commands {
+  for (unitSlug, unit in shared.commands) {
+    [unitSlug] = new common.RenderedTargetDocument {
+      slug = unitSlug
+      title = unit.title
+      frontmatter = commandFrontmatterBySlug[unitSlug]
+      body = unit.canonicalBody
+    }
+  }
+}
+
+skills {
+  for (unitSlug, unit in shared.skills) {
+    [unitSlug] = new common.RenderedTargetDocument {
+      slug = unitSlug
+      title = unit.title
+      frontmatter = skillFrontmatterBySlug[unitSlug]
+      body = unit.canonicalBody
+    }
+  }
+}

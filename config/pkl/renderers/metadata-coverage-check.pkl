@@ -1,0 +1,61 @@
+import "../base/shared-content.pkl" as shared
+import "common.pkl" as common
+import "opencode-metadata.pkl" as opencode
+import "claude-metadata.pkl" as claude
+
+opencodeAgentCoverage {
+  for (unitSlug, _ in shared.agents) {
+    [unitSlug] = new {
+      description = opencode.agentDescriptions[unitSlug]
+      displayName = opencode.agentDisplayNames[unitSlug]
+      color = opencode.agentColors[unitSlug]
+      permissionBlock = opencode.agentPermissionBlocks[unitSlug]
+    }
+  }
+}
+
+opencodeCommandCoverage {
+  for (unitSlug, _ in shared.commands) {
+    [unitSlug] = new {
+      description = common.commandDescriptions[unitSlug]
+      agent = opencode.commandAgents[unitSlug]
+    }
+  }
+}
+
+opencodeSkillCoverage {
+  for (unitSlug, _ in shared.skills) {
+    [unitSlug] = new {
+      description = common.skillDescriptions[unitSlug]
+      compatibility = opencode.skillCompatibility
+    }
+  }
+}
+
+claudeAgentCoverage {
+  for (unitSlug, _ in shared.agents) {
+    [unitSlug] = new {
+      description = claude.agentDescriptions[unitSlug]
+      color = claude.agentColors[unitSlug]
+      tools = claude.agentTools
+    }
+  }
+}
+
+claudeCommandCoverage {
+  for (unitSlug, _ in shared.commands) {
+    [unitSlug] = new {
+      description = common.commandDescriptions[unitSlug]
+      allowedTools = claude.commandAllowedTools[unitSlug]
+    }
+  }
+}
+
+claudeSkillCoverage {
+  for (unitSlug, _ in shared.skills) {
+    [unitSlug] = new {
+      description = common.skillDescriptions[unitSlug]
+      compatibility = claude.skillCompatibility
+    }
+  }
+}
