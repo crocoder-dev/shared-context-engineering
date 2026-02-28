@@ -132,7 +132,7 @@ Create a deterministic Pkl-based generation workflow that produces both configur
     - Regenerated all generated-owned outputs with `nix develop -c pkl eval -m . config/pkl/generate.pkl` and verified clean-state determinism via `nix develop -c ./config/pkl/check-generated.sh`.
     - Ran task-level checks and light build gate: `nix develop -c pkl eval config/pkl/renderers/metadata-coverage-check.pkl`, `nix develop -c pkl eval config/pkl/generate.pkl`, and `nix flake check --no-build`.
 
-- [ ] T08: Validation and cleanup (status:todo)
+- [x] T08: Validation and cleanup (status:done)
   - Task ID: T08
   - Goal: Run final end-to-end validation, ensure docs and generated outputs are aligned, and clean temporary artifacts.
   - Boundaries (in/out of scope):
@@ -144,6 +144,15 @@ Create a deterministic Pkl-based generation workflow that produces both configur
     - Temporary planning/execution artifacts are cleaned.
   - Verification notes (commands or checks):
     - Run full planned validation checks and capture evidence in the plan update.
+  - Evidence:
+    - Added Nix dev-shell integration parity behavior to `config/pkl/check-generated.sh`: the check now requires `IN_NIX_SHELL`, evaluates `config/pkl/generate.pkl` with `pkl` directly inside the shell, and diffs generated-owned paths against committed outputs.
+    - Updated `config/pkl/README.md` command guidance to describe `nix develop -c ./config/pkl/check-generated.sh` as the Nix dev-shell integration stale-output test and documented the outside-shell non-zero expectation.
+    - Captured clean-state parity evidence with `nix develop -c ./config/pkl/check-generated.sh` (pass: "Generated outputs are up to date.").
+    - Re-ran generator and metadata validations: `nix develop -c pkl eval config/pkl/generate.pkl` and `nix develop -c pkl eval config/pkl/renderers/metadata-coverage-check.pkl`.
+    - Validation report (commands, exit codes, key outputs): `nix develop -c ./config/pkl/check-generated.sh` (exit 0; output includes `Generated outputs are up to date.`), `nix develop -c pkl eval config/pkl/generate.pkl` (exit 0), `nix develop -c pkl eval config/pkl/renderers/metadata-coverage-check.pkl` (exit 0), `nix flake check --no-build` (exit 0), and `nix flake check` (exit 0).
+    - Lint/format validation note: this repository currently defines no separate global lint/format gate beyond the Nix-based checks above for this scope.
+    - Confirmed temporary artifact cleanliness for this task: `context/tmp/` contains only `.gitignore`.
+    - Residual risk: full multi-platform flake validation remains host-scoped; Nix reported incompatible systems omitted (`aarch64-darwin`, `aarch64-linux`, `x86_64-darwin`).
 
 ## 5) Open questions
 - None. Scope choice confirmed: shared canonical source with authored-file generation only.

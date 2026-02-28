@@ -22,7 +22,8 @@ Current target renderer helper modules:
 - `config/pkl/renderers/claude-metadata.pkl`
 - `config/pkl/renderers/metadata-coverage-check.pkl`
 - `config/pkl/generate.pkl` (single multi-file generation entrypoint)
-- `config/pkl/check-generated.sh` (stale-output detection against committed generated files)
+- `config/pkl/check-generated.sh` (dev-shell integration stale-output detection against committed generated files)
+- `.github/workflows/pkl-generated-parity.yml` (CI wrapper that runs the parity check on `push` and `pull_request`)
 
 The scaffold provides stable canonical content-unit identifiers and reusable target-agnostic text primitives for all planned authored generated classes (agents, commands, skills, shared library file).
 
@@ -36,6 +37,7 @@ Renderer modules apply target-specific metadata/frontmatter rules while reusing 
 - Both renderers expose per-class rendered document objects (`agents`, `commands`, `skills`) consumed by `config/pkl/generate.pkl`.
 - `config/pkl/generate.pkl` emits deterministic `output.files` mappings for all authored generated targets: OpenCode/Claude agents, commands, skills, and `lib/drift-collectors.js` in both trees.
 - Generated-file safety markers are part of emitted artifacts: Markdown outputs include an HTML warning comment after frontmatter, and the shared library output carries a leading JS generated warning header.
+- `config/pkl/check-generated.sh` is intentionally dev-shell scoped (`nix develop -c ...`): it requires `IN_NIX_SHELL`, runs `pkl eval -m <tmp> config/pkl/generate.pkl`, and fails when generated-owned paths drift.
 
 Generated authored classes:
 

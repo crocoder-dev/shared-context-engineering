@@ -61,11 +61,15 @@ git status --short config/.opencode config/.claude
 
 If regeneration is deterministic and current, there should be no diff after a clean re-run.
 
-5. Run stale-output detection (fails if generated files drift from committed outputs):
+5. Run Nix dev-shell integration stale-output test (fails if generated files drift from committed outputs):
 
 ```bash
 nix develop -c ./config/pkl/check-generated.sh
 ```
+
+This test intentionally exits non-zero when run outside `nix develop`.
+
+GitHub CI also runs this same command in `.github/workflows/pkl-generated-parity.yml` on `push` and `pull_request`.
 
 ## Troubleshooting
 
