@@ -9,7 +9,7 @@ local agentFrontmatterBySlug = new Mapping {
 name: "\(metadata.agentDisplayNames[unitSlug])"
 description: \(metadata.agentDescriptions[unitSlug])
 temperature: 0.1
-color: "\(metadata.agentColors[unitSlug])"
+color: "\(metadata.agentColors[unitSlug])"\(metadata.agentBehaviorBlocks[unitSlug])
 \(metadata.agentPermissionBlocks[unitSlug])
 ---
 """

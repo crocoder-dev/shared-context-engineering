@@ -16,6 +16,12 @@ agentColors = new Mapping {
   ["shared-context-drift"] = "#ea580c"
 }
 
+agentBehaviorBlocks = new Mapping {
+  ["shared-context-plan"] = ""
+  ["shared-context-code"] = ""
+  ["shared-context-drift"] = "\nmode: subagent\nhidden: true"
+}
+
 agentPermissionBlocks = new Mapping {
   ["shared-context-plan"] = """
 permission:

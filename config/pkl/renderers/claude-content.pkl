@@ -16,6 +16,16 @@ tools: \(metadata.agentTools)
   }
 }
 
+local agentBodyBySlug = new Mapping {
+  for (unitSlug, unit in shared.agents) {
+    [unitSlug] = if (metadata.agentSystemPreambleBlocks[unitSlug] == "") unit.canonicalBody else """
+\(metadata.agentSystemPreambleBlocks[unitSlug])
+
+\(unit.canonicalBody)
+"""
+  }
+}
+
 local commandFrontmatterBySlug = new Mapping {
   for (unitSlug, _ in shared.commands) {
     [unitSlug] = """
@@ -45,7 +55,7 @@ agents {
       slug = unitSlug
       title = unit.title
       frontmatter = agentFrontmatterBySlug[unitSlug]
-      body = unit.canonicalBody
+      body = agentBodyBySlug[unitSlug]
     }
   }
 }
