@@ -3,6 +3,8 @@ description: "Review a plan and execute one SCE task from an approved plan"
 agent: "Shared Context Code"
 ---
 
+<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
+
 Load and follow `sce-plan-review`, then `sce-task-execution`, then `sce-context-sync`.
 
 Input:

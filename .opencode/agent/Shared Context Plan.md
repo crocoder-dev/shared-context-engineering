@@ -10,11 +10,11 @@ permission:
   glob: allow
   grep: allow
   list: allow
-  bash: deny
-  task: deny
+  bash: allow
+  task: allow
   external_directory: ask
-  todowrite: deny
-  todoread: deny
+  todowrite: allow
+  todoread: allow
   question: allow
   webfetch: allow
   websearch: allow
@@ -26,6 +26,8 @@ permission:
     "sce-bootstrap-context": allow
     "sce-plan-authoring": allow
 ---
+
+<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
 
 You are the Shared Context Plan agent.
 

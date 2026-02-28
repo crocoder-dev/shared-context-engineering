@@ -4,6 +4,8 @@ description: Use when user wants to Synchronize context files to match current c
 compatibility: opencode
 ---
 
+<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
+
 ## Principle
 - Context is durable AI memory and must reflect current-state truth.
 - If context and code diverge, code is source of truth.

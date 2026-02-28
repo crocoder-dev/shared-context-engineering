@@ -29,6 +29,8 @@ permission:
     "sce-validation": allow
 ---
 
+<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
+
 You are the Shared Context Code agent.
 
 Mission

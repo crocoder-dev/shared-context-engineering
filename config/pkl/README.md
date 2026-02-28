@@ -69,7 +69,7 @@ nix develop -c ./config/pkl/check-generated.sh
 
 This test intentionally exits non-zero when run outside `nix develop`.
 
-GitHub CI also runs this same command in `.github/workflows/pkl-generated-parity.yml` on `push` and `pull_request`.
+GitHub CI also runs this same command in `.github/workflows/pkl-generated-parity.yml` for pushes to `main` and pull requests targeting `main`.
 
 ## Troubleshooting
 

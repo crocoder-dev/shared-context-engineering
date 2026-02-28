@@ -2,7 +2,11 @@ name: Pkl generated parity
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
