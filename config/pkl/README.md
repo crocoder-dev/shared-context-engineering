@@ -71,6 +71,55 @@ This test intentionally exits non-zero when run outside `nix develop`.
 
 GitHub CI also runs this same command in `.github/workflows/pkl-generated-parity.yml` for pushes to `main` and pull requests targeting `main`.
 
+## Destructive sync command (`sync-opencode-config`)
+
+Use this flake app when you need to regenerate `config/` and then replace repository-root `.opencode/` from regenerated output:
+
+```bash
+nix run .#sync-opencode-config
+```
+
+Quick usage help:
+
+```bash
+nix run .#sync-opencode-config -- --help
+```
+
+### Exact side effects and safeguards
+
+- This command is intentionally destructive for exactly two targets: repository `config/` and repository-root `.opencode/`.
+- Replacement order is fixed: stage a `config/` copy, regenerate generated-owned outputs in staging, validate expected directories, replace live `config/`, then replace root `.opencode/` from staged `config/.opencode/`.
+- Live `config/` is never deleted before staged regeneration succeeds.
+- Root `.opencode/` replacement uses backup-and-restore safety plus post-copy parity verification.
+- Runtime artifacts are excluded during root sync (`node_modules/` today).
+- Manual edits under `config/` or root `.opencode/` are not preserved.
+
+### Operator workflow
+
+1. Confirm you are at repository root and that any local edits under `config/` or `.opencode/` are committed or intentionally disposable.
+2. Run `nix run .#sync-opencode-config -- --help` to confirm command availability.
+3. Run `nix run .#sync-opencode-config`.
+4. Verify result:
+
+```bash
+git status --short config .opencode
+```
+
+5. Optional deterministic rerun check:
+
+```bash
+nix run .#sync-opencode-config
+git status --short config .opencode
+```
+
+An unchanged second run should not introduce unexpected new drift.
+
+### Recovery guidance
+
+- If the command fails before swap completion, it restores from backup automatically.
+- If verification fails during root `.opencode/` replacement, the command exits non-zero and cleanup restores the pre-run root state.
+- If you need to discard post-run changes and return to committed state, use Git restore commands for `config/` and `.opencode/` only when you intentionally want to drop local edits.
+
 ## Troubleshooting
 
 - `pkl: command not found`: run commands via `nix develop -c ...` exactly as shown.

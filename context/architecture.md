@@ -23,6 +23,7 @@ Current target renderer helper modules:
 - `config/pkl/renderers/metadata-coverage-check.pkl`
 - `config/pkl/generate.pkl` (single multi-file generation entrypoint)
 - `config/pkl/check-generated.sh` (dev-shell integration stale-output detection against committed generated files)
+- `nix run .#sync-opencode-config` (flake app entrypoint for config regeneration and sync workflow)
 - `.github/workflows/pkl-generated-parity.yml` (CI wrapper that runs the parity check for pushes to `main` and pull requests targeting `main`)
 
 The scaffold provides stable canonical content-unit identifiers and reusable target-agnostic text primitives for all planned authored generated classes (agents, commands, skills, shared library file).
@@ -38,6 +39,13 @@ Renderer modules apply target-specific metadata/frontmatter rules while reusing 
 - `config/pkl/generate.pkl` emits deterministic `output.files` mappings for all authored generated targets: OpenCode/Claude agents, commands, skills, and `lib/drift-collectors.js` in both trees.
 - Generated-file safety markers are part of emitted artifacts: Markdown outputs include an HTML warning comment after frontmatter, and the shared library output carries a leading JS generated warning header.
 - `config/pkl/check-generated.sh` is intentionally dev-shell scoped (`nix develop -c ...`): it requires `IN_NIX_SHELL`, runs `pkl eval -m <tmp> config/pkl/generate.pkl`, and fails when generated-owned paths drift.
+
+Current sync-command state:
+
+- `sync-opencode-config` is exported as a flake app from `flake.nix` and is runnable through `nix run .#sync-opencode-config`.
+- The app regenerates generated-owned `config/` outputs in a staging workspace, validates expected generated directories, and only then replaces live `config/`.
+- After `config/` replacement, the app replaces repository-root `.opencode/` from staged `config/.opencode/` using explicit runtime exclusions.
+- Root replacement uses backup-and-restore safety semantics plus post-copy parity verification (`diff -rq` with exclusion filters) before finalizing.
 
 Generated authored classes:
 

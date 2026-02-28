@@ -5,6 +5,14 @@
 - Use the Nix dev shell as the canonical toolchain entrypoint for generation work.
 - `flake.nix` includes `pkl` so contributors can run validation commands with `nix develop -c ...` without host-level installs.
 
+## Flake app entrypoints
+
+- Expose operational workflows as flake apps so commands are stable and system-mapped across supported `flake-utils` default systems.
+- Current repo command contract: `nix run .#sync-opencode-config` is the canonical entrypoint for staged regeneration/replacement of `config/` and replacement of repository-root `.opencode/` from regenerated `config/.opencode/`.
+- For destructive config replacement flows, regenerate into a temporary staged `config/` first, validate required generated directories exist, and only then swap live `config/`.
+- For destructive root `.opencode/` replacement flows, keep exclusions explicit (for example `node_modules`), use backup-and-restore around swap, and run a source/target tree parity check with the same exclusions.
+- Keep command help available via `nix run .#sync-opencode-config -- --help` to provide deterministic usage checks during incremental implementation.
+
 ## Dev-shell fallback shims for unavailable nixpkgs tools
 
 - When required CLI tools are not available as direct nixpkgs attrs, use the least-friction dev-shell fallback that keeps commands usable in `nix develop`.

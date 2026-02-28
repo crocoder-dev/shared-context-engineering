@@ -3,6 +3,8 @@ name: "Shared Context Drift"
 description: Analyzes and fixes context-code drift using a lightweight model.
 temperature: 0.1
 color: "#ea580c"
+mode: subagent
+hidden: true
 permission:
   default: ask
   read: allow
