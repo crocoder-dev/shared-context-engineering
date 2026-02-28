@@ -1,7 +1,7 @@
 import "renderers/opencode-content.pkl" as opencode
 import "renderers/claude-content.pkl" as claude
 
-local sharedLibrarySource = read("../.opencode/lib/drift-collectors.js").text
+local sharedLibrarySource = read("./lib/drift-collectors.js").text
 
 output {
   files {
