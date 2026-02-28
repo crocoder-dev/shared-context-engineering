@@ -12,3 +12,45 @@ This repository contains system prompts, agent configuration patterns, and evals
 
 Built by [CroCoder](https://www.crocoder.dev/)
 
+## Dev shell agnix tooling
+
+This repository exposes `agnix` and `agnix-lsp` through `nix develop` using a Nix-first shell with Rust toolchain support.
+
+### Quick start
+
+```bash
+nix develop
+agnix --help
+agnix-lsp --help
+```
+
+### Shell behavior
+
+- On shell entry, `shellHook` adds `~/.cargo/bin` to `PATH`.
+- If `agnix` is missing, `shellHook` automatically runs `cargo install --locked agnix-cli`.
+- `agnix-lsp` is provided by a shim that resolves in this order:
+  1. `AGNIX_LSP_BIN` (when set to an executable path)
+  2. `~/.cargo/bin/agnix-lsp`
+  3. A manual-install guidance message (non-zero exit)
+
+### Manual fallback for agnix-lsp
+
+```bash
+cargo install --locked agnix-lsp
+```
+
+Optional explicit override:
+
+```bash
+export AGNIX_LSP_BIN="$HOME/.cargo/bin/agnix-lsp"
+```
+
+### Verification
+
+```bash
+nix flake check
+nix develop -c which agnix
+nix develop -c which agnix-lsp
+nix develop -c agnix --help
+nix develop -c agnix-lsp --help
+```
