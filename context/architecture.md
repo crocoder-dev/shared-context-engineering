@@ -35,6 +35,7 @@ Renderer modules apply target-specific metadata/frontmatter rules while reusing 
 - Metadata key coverage is enforced by `config/pkl/renderers/metadata-coverage-check.pkl`, which resolves all required lookup keys for both targets and fails evaluation on missing entries.
 - Both renderers expose per-class rendered document objects (`agents`, `commands`, `skills`) consumed by `config/pkl/generate.pkl`.
 - `config/pkl/generate.pkl` emits deterministic `output.files` mappings for all authored generated targets: OpenCode/Claude agents, commands, skills, and `lib/drift-collectors.js` in both trees.
+- Generated-file safety markers are part of emitted artifacts: Markdown outputs include an HTML warning comment after frontmatter, and the shared library output carries a leading JS generated warning header.
 
 Generated authored classes:
 

@@ -3,7 +3,8 @@ class RenderedTargetDocument {
   title: String
   frontmatter: String
   body: String
-  rendered: String = "\(frontmatter)\n\n\(body)\n"
+  generatedMarker: String = "<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->"
+  rendered: String = "\(frontmatter)\n\n\(generatedMarker)\n\n\(body)\n"
 }
 
 commandDescriptions = new Mapping {

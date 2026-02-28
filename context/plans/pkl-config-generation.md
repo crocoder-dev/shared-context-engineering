@@ -115,7 +115,7 @@ Create a deterministic Pkl-based generation workflow that produces both configur
     - Captured stale-state fail evidence by intentionally modifying the generated Claude `next-task` command file, running `nix develop -c ./config/pkl/check-generated.sh` (expected non-zero), then restoring with `nix develop -c pkl eval -m . config/pkl/generate.pkl`.
     - Ran task-level guard checks: `nix develop -c pkl eval config/pkl/renderers/metadata-coverage-check.pkl` and lightweight build gate `nix flake check --no-build`.
 
-- [ ] T07: Optional generated-file safety marker (status:todo)
+- [x] T07: Optional generated-file safety marker (status:done)
   - Task ID: T07
   - Goal: Add a lightweight header/marker strategy to discourage manual edits to generated files.
   - Boundaries (in/out of scope):
@@ -125,6 +125,12 @@ Create a deterministic Pkl-based generation workflow that produces both configur
     - Marker convention is applied consistently (or explicitly declined with rationale).
   - Verification notes (commands or checks):
     - Inspect sample generated files to verify marker presence/consistency.
+  - Evidence:
+    - Added a shared generated-file marker convention to rendered Markdown outputs in `config/pkl/renderers/common.pkl`, inserting an HTML `GENERATED FILE` comment directly after frontmatter for generated agents/commands/skills.
+    - Added a generated warning header to canonical library source `config/.opencode/lib/drift-collectors.js`, which propagates to both generated library targets via `config/pkl/generate.pkl`.
+    - Documented marker behavior in `config/pkl/README.md` under ownership guidance.
+    - Regenerated all generated-owned outputs with `nix develop -c pkl eval -m . config/pkl/generate.pkl` and verified clean-state determinism via `nix develop -c ./config/pkl/check-generated.sh`.
+    - Ran task-level checks and light build gate: `nix develop -c pkl eval config/pkl/renderers/metadata-coverage-check.pkl`, `nix develop -c pkl eval config/pkl/generate.pkl`, and `nix flake check --no-build`.
 
 - [ ] T08: Validation and cleanup (status:todo)
   - Task ID: T08

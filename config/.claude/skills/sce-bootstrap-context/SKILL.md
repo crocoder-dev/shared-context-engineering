@@ -4,6 +4,8 @@ description: Use when user wants to Bootstrap SCE baseline context directory whe
 compatibility: claude
 ---
 
+<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
+
 ## When to use
 - Use only when `context/` is missing.
 - Ask for human approval before creating files.
