@@ -5,6 +5,13 @@
 - Use the Nix dev shell as the canonical toolchain entrypoint for generation work.
 - `flake.nix` includes `pkl` so contributors can run validation commands with `nix develop -c ...` without host-level installs.
 
+## Dev-shell fallback shims for unavailable nixpkgs tools
+
+- When required CLI tools are not available as direct nixpkgs attrs, use the least-friction dev-shell fallback that keeps commands usable in `nix develop`.
+- Current repo behavior: include `cargo` and `rustc` in `devShells.default`, export `~/.cargo/bin` on `PATH`, and auto-run `cargo install --locked agnix-cli` in `shellHook` when `agnix` is missing.
+- `agnix-lsp` currently remains shim-based: use `AGNIX_LSP_BIN` when set and executable, otherwise use `~/.cargo/bin/agnix-lsp` when present, otherwise print manual install guidance and exit non-zero.
+- `shellHook` prints a version banner for `bun`, `pkl`, `tsc`, `typescript-language-server`, `rustc`, and `agnix` so shell state is visible on entry.
+
 ## Pkl renderer layering
 
 - Keep target-agnostic canonical content in `config/pkl/base/shared-content.pkl`.
