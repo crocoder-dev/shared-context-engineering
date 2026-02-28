@@ -2,3 +2,5 @@
 
 - `sync-opencode-config`: Flake app command exposed as `nix run .#sync-opencode-config`; canonical operator entrypoint for staged regeneration/replacement of `config/` and replacement of repository-root `.opencode/` from regenerated `config/.opencode/`.
 - generated-owned outputs: Files materialized by `config/pkl/generate.pkl` under `config/.opencode/**` and `config/.claude/**`.
+- `agnix-config-validate-report`: GitHub Actions workflow at `.github/workflows/agnix-config-validate-report.yml` that runs `nix develop -c agnix validate .` from `config/` on push/PR to `main`.
+- `agnix validation report artifact`: Failure-investigation artifact named `agnix-validate-report`, uploaded from deterministic path `context/tmp/ci-reports/agnix-validate-report.txt` when non-info (`warning:`/`error:`/`fatal:`) findings are detected.
