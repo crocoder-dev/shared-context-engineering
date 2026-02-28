@@ -1,6 +1,3 @@
-// GENERATED FILE: DO NOT EDIT DIRECTLY.
-// Update canonical sources under config/pkl/ and regenerate.
-
 const fs = require("node:fs/promises");
 const path = require("node:path");
 

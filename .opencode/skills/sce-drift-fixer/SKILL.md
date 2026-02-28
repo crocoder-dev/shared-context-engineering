@@ -4,8 +4,6 @@ description: Use when user wants to audit and repair code-context drift in conte
 compatibility: opencode
 ---
 
-<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
-
 ## What I do
 - Audit `context/` and verify it matches the implemented system.
 - Treat code as the source of truth when context and code disagree.

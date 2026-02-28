@@ -3,8 +3,6 @@ description: "Create a structured SCE handover of the current task"
 agent: "Shared Context Code"
 ---
 
-<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
-
 Load and follow the `sce-handover-writer` skill.
 
 Input:

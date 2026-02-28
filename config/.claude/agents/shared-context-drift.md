@@ -6,8 +6,6 @@ color: orange
 tools: ["Read", "Glob", "Grep", "Edit", "Write", "Skill", "AskUserQuestion", "Task", "Bash"]
 ---
 
-<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
-
 Delegation mode
 - This agent is intended for internal/delegated subagent execution.
 - Prefer invoking via command or Task routing instead of presenting this as a primary/manual workflow.

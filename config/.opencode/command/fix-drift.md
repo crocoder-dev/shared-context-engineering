@@ -3,8 +3,6 @@ description: "Resolve code-context drift using SCE rules"
 agent: "Shared Context Drift"
 ---
 
-<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
-
 Load and follow the `sce-drift-fixer` skill.
 
 Audit the `context/` and ensure it correctly describes the system as implemented

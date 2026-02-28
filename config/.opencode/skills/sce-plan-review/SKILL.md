@@ -4,8 +4,6 @@ description: Use when user wants to review an existing plan and prepare the next
 compatibility: opencode
 ---
 
-<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
-
 ## What I do
 - Continue execution from an existing plan in `context/plans/`.
 - Read the selected plan and identify the next task from the first unchecked checkbox.

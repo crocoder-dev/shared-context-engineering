@@ -4,8 +4,6 @@ description: Use when user wants to Run final plan validation and cleanup with e
 compatibility: claude
 ---
 
-<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
-
 ## When to use
 - Use for the plan's final validation task.
 

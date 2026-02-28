@@ -3,8 +3,6 @@ description: "Analyze and report drift between context and code"
 agent: "Shared Context Drift"
 ---
 
-<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
-
 Load and follow the `sce-drift-analyzer` skill.
 
 Behavior:

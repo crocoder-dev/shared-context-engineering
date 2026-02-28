@@ -29,7 +29,7 @@
 - Keep per-target metadata tables in dedicated modules (`opencode-metadata.pkl`, `claude-metadata.pkl`) and import them into target renderer modules.
 - Add and run `config/pkl/renderers/metadata-coverage-check.pkl` as a fail-fast metadata completeness guard whenever shared slugs or metadata tables change.
 - In renderer modules, produce per-item document objects with explicit `frontmatter`, `body`, and combined `rendered` fields to keep formatting deterministic and easy to map in a later output stage.
-- Keep generated-file safety markers in the renderer contract (`config/pkl/renderers/common.pkl`) so every generated Markdown artifact receives the same warning text.
+- Keep the Markdown renderer contract in `config/pkl/renderers/common.pkl` limited to deterministic `frontmatter + body` assembly without injected generated-file marker text.
 - Validate each renderer module directly with `nix develop -c pkl eval <module-path>` before wiring output emission.
 
 ## Multi-file generation entrypoint
@@ -39,9 +39,10 @@
 - Run multi-file generation with `nix develop -c pkl eval -m . config/pkl/generate.pkl` to emit to repository-root mapped paths.
 - Run stale-output detection with `nix develop -c ./config/pkl/check-generated.sh`; the script is a dev-shell integration test, exits non-zero outside `nix develop`, regenerates into a temporary directory, and fails if generated-owned paths differ from committed outputs.
 - Keep CI parity enforcement aligned with local workflow by running the same command in `.github/workflows/pkl-generated-parity.yml` for pushes to `main` and pull requests targeting `main`.
+- Do not run `evals/` test suites autonomously during plan-task execution; run them only when the user explicitly requests eval coverage.
 - For non-destructive verification during development, run `nix develop -c pkl eval -m context/tmp/t04-generated config/pkl/generate.pkl` and inspect emitted paths under `context/tmp/`.
 - Keep `output.files` limited to generated-owned paths only (`config/{opencode_root}/{agent,command,skills,lib}` and `config/{claude_root}/{agents,commands,skills,lib}` where roots map to `.opencode` and `.claude`).
-- Keep the shared drift library generated warning marker in `config/.opencode/lib/drift-collectors.js` (the canonical copied source) so both target library outputs inherit a stable, non-duplicating safety header.
+- Keep the shared drift library source marker-free in `config/.opencode/lib/drift-collectors.js` so generated `lib/drift-collectors.js` outputs stay behavior-only and deterministic across both targets.
 
 ## Internal subagent parity mapping
 
