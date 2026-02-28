@@ -30,7 +30,7 @@
 - Use `config/pkl/README.md` as the contributor-facing runbook for prerequisites, ownership boundaries, regeneration steps, and troubleshooting.
 - Run multi-file generation with `nix develop -c pkl eval -m . config/pkl/generate.pkl` to emit to repository-root mapped paths.
 - Run stale-output detection with `nix develop -c ./config/pkl/check-generated.sh`; the script is a dev-shell integration test, exits non-zero outside `nix develop`, regenerates into a temporary directory, and fails if generated-owned paths differ from committed outputs.
-- Keep CI parity enforcement aligned with local workflow by running the same command in `.github/workflows/pkl-generated-parity.yml` on both `push` and `pull_request`.
+- Keep CI parity enforcement aligned with local workflow by running the same command in `.github/workflows/pkl-generated-parity.yml` for pushes to `main` and pull requests targeting `main`.
 - For non-destructive verification during development, run `nix develop -c pkl eval -m context/tmp/t04-generated config/pkl/generate.pkl` and inspect emitted paths under `context/tmp/`.
 - Keep `output.files` limited to generated-owned paths only (`config/{opencode_root}/{agent,command,skills,lib}` and `config/{claude_root}/{agents,commands,skills,lib}` where roots map to `.opencode` and `.claude`).
 - Keep the shared drift library generated warning marker in `config/.opencode/lib/drift-collectors.js` (the canonical copied source) so both target library outputs inherit a stable, non-duplicating safety header.

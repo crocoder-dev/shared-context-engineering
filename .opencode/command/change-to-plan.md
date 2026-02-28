@@ -3,6 +3,8 @@ description: "Create or update an SCE plan from a change request"
 agent: "Shared Context Plan"
 ---
 
+<!-- GENERATED FILE: DO NOT EDIT DIRECTLY. Update canonical sources under config/pkl/ and regenerate. -->
+
 Load and follow the `sce-plan-authoring` skill.
 
 Input change request:
