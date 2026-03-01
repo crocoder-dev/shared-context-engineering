@@ -5,7 +5,8 @@ This repository maintains shared assistant configuration for OpenCode and Claude
 It also includes an early placeholder Rust CLI foundation at `cli/` for future Shared Context Engineering workflows.
 
 The CLI crate currently enforces a minimal dependency contract: `anyhow`, `lexopt`, `tokio`, and `turso`.
-Its command loop is implemented with `lexopt` argument parsing and `anyhow` error handling, with deterministic placeholder dispatch for `setup`, `mcp`, `hooks`, and `sync`.
+Its command loop is implemented with `lexopt` argument parsing and `anyhow` error handling, with deterministic placeholder dispatch for `setup`, `mcp`, and `hooks`.
+The `sync` placeholder now performs a local Turso smoke check through a tokio-backed adapter before returning placeholder cloud-sync messaging.
 
 ## Repository model
 
@@ -42,4 +43,4 @@ Its command loop is implemented with `lexopt` argument parsing and `anyhow` erro
 - Use `context/patterns.md` for implementation and operational conventions.
 - Use `context/decisions/` for explicit architecture decisions.
 - Use `context/plans/` for task history and verification evidence.
-- Use `context/cli/placeholder-foundation.md` for current command-surface and module-boundary details of the `sce` placeholder crate.
+- Use `context/cli/placeholder-foundation.md` for current command-surface, local Turso adapter behavior, and module-boundary details of the `sce` placeholder crate.

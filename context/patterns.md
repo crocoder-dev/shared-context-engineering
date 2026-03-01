@@ -60,3 +60,5 @@
 - Parse CLI args with `lexopt` and normalize user-facing failures through `anyhow` so invalid invocation paths stay deterministic and actionable.
 - Keep module seams for future domains present and compile-safe even when behavior is deferred.
 - Keep dependency additions explicit and minimal in `cli/Cargo.toml`, and anchor dependency intent in lightweight compile-time code references (`cli/src/dependency_contract.rs`).
+- Route local Turso access through a dedicated adapter module (`cli/src/services/local_db.rs`) so command handlers do not expose low-level `turso` API details.
+- For placeholder commands that need real infrastructure checks, use a small tokio current-thread runtime wrapper in the service layer (`cli/src/services/sync.rs`) and keep user-facing output explicit about remaining placeholder scope.

@@ -63,7 +63,7 @@ Create a new Rust CLI named `sce` under `cli/` as a placeholder foundation with 
     - Run help and representative placeholder invocations.
     - Add parser-focused unit tests for key command routes.
 
-- [ ] T04: Add local Turso integration adapter with tokio runtime (status:todo)
+- [x] T04: Add local Turso integration adapter with tokio runtime (status:done)
   - Task ID: T04
   - Goal: Introduce a small data-layer module that initializes a local Turso database using `Builder::new_local(...)` and validates connectivity with a smoke operation.
   - Boundaries (in/out of scope):

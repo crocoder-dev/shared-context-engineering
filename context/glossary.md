@@ -8,3 +8,5 @@
 - `command surface contract`: The static command catalog in `cli/src/command_surface.rs` that marks each top-level command as `implemented` or `placeholder`.
 - `placeholder command loop`: The `lexopt` parser + dispatcher in `cli/src/app.rs` that routes `help`, `setup`, `mcp`, `hooks`, and `sync`, emitting TODO placeholders for non-implemented commands and deterministic actionable errors for invalid invocation.
 - `sce dependency contract`: Minimal crate dependency baseline declared in `cli/Cargo.toml` and referenced via `cli/src/dependency_contract.rs` (`anyhow`, `lexopt`, `tokio`, `turso`).
+- `local Turso adapter`: Async data-layer module in `cli/src/services/local_db.rs` that initializes local DB targets with `turso::Builder::new_local(...)` and runs execute/query smoke checks.
+- `sync Turso smoke gate`: Behavior in `cli/src/services/sync.rs` where the `sync` placeholder command runs an in-memory local Turso smoke check under a tokio current-thread runtime before returning placeholder cloud-sync messaging.

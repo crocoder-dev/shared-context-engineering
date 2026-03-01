@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use anyhow::{bail, Result};
 use lexopt::{Arg, ValueExt};
 
-use crate::{command_surface, dependency_contract};
+use crate::{command_surface, dependency_contract, services};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Command {
@@ -113,7 +113,7 @@ fn dispatch(command: Command) -> Result<()> {
         Command::Setup => println!("TODO: 'setup' is planned and not implemented yet."),
         Command::Mcp => println!("TODO: 'mcp' is planned and not implemented yet."),
         Command::Hooks => println!("TODO: 'hooks' is planned and not implemented yet."),
-        Command::Sync => println!("TODO: 'sync' is planned and not implemented yet."),
+        Command::Sync => println!("{}", services::sync::run_placeholder_sync()?),
     }
 
     Ok(())
@@ -134,6 +134,12 @@ mod tests {
     #[test]
     fn placeholder_command_exits_success() {
         let code = run(vec!["sce".to_string(), "setup".to_string()]);
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn sync_command_exits_success() {
+        let code = run(vec!["sce".to_string(), "sync".to_string()]);
         assert_eq!(code, ExitCode::SUCCESS);
     }
 
