@@ -64,3 +64,4 @@
 - For placeholder commands that need real infrastructure checks, use a small tokio current-thread runtime wrapper in the service layer (`cli/src/services/sync.rs`) and keep user-facing output explicit about remaining placeholder scope.
 - For future CLI domains, define trait-first service contracts with request/plan models in `cli/src/services/*` and keep placeholder implementations explicitly non-runnable until production behavior is approved.
 - Model deferred integration boundaries with concrete event/capability data structures (for example MCP file-cache snapshots/policies, git-hook/generated-region events, cloud-sync checkpoints) so later tasks can implement behavior without reshaping public seams.
+- Keep crate-local onboarding docs in `cli/README.md` and sanity-check command examples against actual `sce` output whenever command messaging changes.

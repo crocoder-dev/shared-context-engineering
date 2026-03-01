@@ -90,7 +90,7 @@ Create a new Rust CLI named `sce` under `cli/` as a placeholder foundation with 
     - Basic tests for placeholder service wiring where applicable.
     - `cargo fmt && cargo check && cargo test && cargo build` (from `cli/`) passes with placeholder contract tests.
 
-- [ ] T06: Add documentation and onboarding notes for placeholder CLI (status:todo)
+- [x] T06: Add documentation and onboarding notes for placeholder CLI (status:done)
   - Task ID: T06
   - Goal: Document current command behavior, near-term roadmap, and safe usage limitations.
   - Boundaries (in/out of scope):

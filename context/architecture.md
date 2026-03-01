@@ -76,6 +76,7 @@ The repository includes a new placeholder Rust binary crate at `cli/`.
 - `cli/src/services/hooks.rs` defines hook-event and generated-region tracking contracts (`HookService`, `HookEventModel`) with placeholder-safe no-op recording.
 - `cli/src/services/sync.rs` runs the local adapter through a tokio current-thread runtime and composes a placeholder cloud-sync abstraction (`CloudSyncGateway`) so local Turso validation and deferred cloud planning remain separated.
 - `cli/src/services/` contains module boundaries for setup, MCP, hooks, sync, and local DB adapters with explicit trait seams for future implementations.
+- `cli/README.md` is the crate-local onboarding and usage source of truth for placeholder behavior, safety limitations, and roadmap mapping back to service contracts.
 
 This phase establishes compile-safe extension seams with a minimal dependency baseline (`anyhow`, `lexopt`, `tokio`, `turso`); local Turso connectivity smoke checks now exist, while broader runtime integrations remain deferred.
 

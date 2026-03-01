@@ -14,3 +14,4 @@
 - `MCP capability snapshot`: Placeholder capability model in `cli/src/services/mcp.rs` that captures planned file-cache transport/tool contracts (`cache-put`, `cache-get`) and cache policy defaults without enabling runtime MCP execution.
 - `hook event model placeholder`: Contract set in `cli/src/services/hooks.rs` defining git-hook event envelopes and generated-region lifecycle placeholders for future listener integration.
 - `cloud sync gateway placeholder`: Abstraction in `cli/src/services/sync.rs` (`CloudSyncGateway`) that returns deferred cloud-sync checkpoints while `sync` remains non-production.
+- `sce CLI onboarding guide`: Crate-local documentation at `cli/README.md` that defines runnable placeholder commands, non-goals/safety limits, and roadmap mapping to service modules.

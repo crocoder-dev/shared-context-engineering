@@ -6,6 +6,12 @@ Instead of relying on one-off prompts, SCE treats shared project context as a fi
 
 This repository contains system prompts, agent configuration patterns, and evals you can use across tools.
 
+## Placeholder CLI
+
+The repository includes an early Rust placeholder CLI at `cli/`. Use
+`cli/README.md` for current command behavior, usage, and implementation
+boundaries.
+
 - [Docs](https://sce.crocoder.dev/docs)
 - [Getting Started](https://sce.crocoder.dev/docs/getting-started)
 - [Motivation](https://sce.crocoder.dev/docs/motivation)

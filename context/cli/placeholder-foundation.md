@@ -2,6 +2,8 @@
 
 The repository now includes a placeholder Rust CLI crate at `cli/` for future SCE automation work.
 
+`cli/README.md` is the operator onboarding source for running the placeholder commands and understanding current safety limitations.
+
 ## Current implemented slice
 
 - Binary entrypoint: `cli/src/main.rs`
@@ -10,6 +12,12 @@ The repository now includes a placeholder Rust CLI crate at `cli/` for future SC
 - Dependency contract snapshot: `cli/src/dependency_contract.rs`
 - Local Turso adapter: `cli/src/services/local_db.rs`
 - Service domains: `cli/src/services/{setup,mcp,hooks,sync}.rs`
+
+## Onboarding documentation
+
+- `cli/README.md` includes quick-start commands for `help`, `setup`, `mcp`, `hooks`, and `sync`.
+- The README explicitly distinguishes implemented behavior from placeholders and maps future work to module contracts.
+- Verification guidance in the README uses crate-local `cargo check`, `cargo test`, and `cargo build` commands.
 
 ## Command surface contract
 
