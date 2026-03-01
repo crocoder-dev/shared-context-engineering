@@ -6,6 +6,9 @@ Primary context files:
 - `context/patterns.md`
 - `context/glossary.md`
 
+Feature/domain context:
+- `context/cli/placeholder-foundation.md`
+
 Working areas:
 - `context/plans/`
 - `context/handovers/`

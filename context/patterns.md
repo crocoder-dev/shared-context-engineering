@@ -52,3 +52,9 @@
 - For OpenCode agents that must be internal, set behavior flags in `config/pkl/renderers/opencode-metadata.pkl` (`agentBehaviorBlocks`) and render those directly into frontmatter.
 - For Claude agents, represent equivalent intent using supported metadata and body guidance in `config/pkl/renderers/claude-metadata.pkl` (for example description + preamble blocks for delegated command/task routing).
 - Keep parity decisions reproducible by validating generated outputs directly (for Shared Context Drift: `config/.opencode/agent/Shared Context Drift.md` and `config/.claude/agents/shared-context-drift.md`).
+
+## Placeholder CLI scaffolding
+
+- For early CLI foundation tasks, keep implemented behavior and planned behavior explicitly separated in a single command contract table.
+- Mark placeholder commands in help output and runtime responses so scaffolding cannot be confused with production capability.
+- Keep module seams for future domains present and compile-safe even when behavior is deferred.

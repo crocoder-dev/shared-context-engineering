@@ -2,6 +2,8 @@
 
 This repository maintains shared assistant configuration for OpenCode and Claude from a single canonical authoring source, then validates that generated outputs stay deterministic and in sync.
 
+It also includes an early placeholder Rust CLI foundation at `cli/` for future Shared Context Engineering workflows.
+
 ## Repository model
 
 - Author once in canonical Pkl content (`config/pkl/base/shared-content.pkl`).
@@ -37,3 +39,4 @@ This repository maintains shared assistant configuration for OpenCode and Claude
 - Use `context/patterns.md` for implementation and operational conventions.
 - Use `context/decisions/` for explicit architecture decisions.
 - Use `context/plans/` for task history and verification evidence.
+- Use `context/cli/placeholder-foundation.md` for current command-surface and module-boundary details of the `sce` placeholder crate.

@@ -63,6 +63,17 @@ Explicitly excluded from generation ownership:
 
 See `context/decisions/2026-02-28-pkl-generation-architecture.md` for the full matrix and ownership table used by the plan task implementation.
 
+## Placeholder SCE CLI boundary
+
+The repository includes a new placeholder Rust binary crate at `cli/`.
+
+- `cli/src/main.rs` is the executable entrypoint (`sce`) and delegates to `app::run`.
+- `cli/src/app.rs` provides a minimal argument-routing shell with deterministic help and placeholder responses.
+- `cli/src/command_surface.rs` is the source of truth for top-level command contract metadata (`help`, `setup`, `mcp`, `hooks`, `sync`) and explicit implemented-vs-placeholder status.
+- `cli/src/services/` contains module boundaries for upcoming domains (`setup`, `mcp`, `hooks`, `sync`) without production behavior in this slice.
+
+This phase establishes compile-safe extension seams only; dependency and runtime integrations are deferred to later plan tasks.
+
 ## Shared Context Drift parity mapping
 
 Shared Context Drift has an explicit target-parity mapping for internal/subagent usage across generated outputs.

@@ -1,0 +1,8 @@
+[package]
+name = "sce"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Dependency contract is intentionally deferred to plan task T02.
+[dependencies]
