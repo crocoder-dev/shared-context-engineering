@@ -17,7 +17,11 @@ Behavior:
 - If both plan and task ID are provided and `sce-plan-review` reports no blockers, ambiguity, or missing acceptance criteria, treat plan-review confirmation as satisfied and continue to `sce-task-execution`.
 - If blockers, ambiguity, or missing acceptance criteria are present, resolve open points and ask the user to confirm the task is ready before `sce-task-execution`.
 - If either plan or task ID is missing, ask the user to confirm the task is ready before `sce-task-execution`.
-- After the confirmation gate passes (auto-pass or explicit user confirmation), run `sce-task-execution` for approval, scoped implementation, light task-level checks/lints, a build when it is light/fast, and plan status updates.
+- After the confirmation gate passes (auto-pass or explicit user confirmation), start `sce-task-execution` with a mandatory implementation stop before any code edits:
+  - explain task goal, boundaries (in/out of scope), done checks, expected files/components, and key approach/trade-offs/risks
+  - ask explicitly: "Continue with implementation now?" (yes/no)
+  - do not edit files, generate code, or apply patches until user confirms
+- After this implementation-stop confirmation passes, continue `sce-task-execution` for scoped implementation, light task-level checks/lints, a build when it is light/fast, and plan status updates.
 - Run `sce-context-sync` after implementation as a required done gate to align context files with current code truth.
 - Treat context sync as mandatory, not optional: explicitly verify `context/overview.md`, `context/architecture.md`, and `context/glossary.md`, and update them when relevant.
 - Ensure new feature existence is documented in durable context (domain file or `context/overview.md`) and linked from `context/context-map.md`.

@@ -8,6 +8,7 @@ Primary context files:
 
 Feature/domain context:
 - `context/cli/placeholder-foundation.md`
+- `context/sce/shared-context-code-workflow.md`
 
 Working areas:
 - `context/plans/`
