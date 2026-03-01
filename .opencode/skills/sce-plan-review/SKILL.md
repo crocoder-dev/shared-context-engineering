@@ -33,5 +33,7 @@ compatibility: opencode
 
 ## Expected output
 - Confirmed next task with clarified acceptance criteria.
+- Explicit readiness verdict: `ready_for_implementation: yes|no`.
+- If not ready, explicit issue categories: blockers, ambiguity, missing acceptance criteria.
 - Explicit user-aligned decisions needed to proceed to implementation.
-- Explicit user confirmation request that the task is ready for implementation.
+- Explicit user confirmation request that the task is ready for implementation when unresolved issues remain.

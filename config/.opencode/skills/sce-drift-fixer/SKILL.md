@@ -21,7 +21,6 @@ compatibility: opencode
 - Ask whether to apply all fixes or apply selectively.
 - If any finding is ambiguous or lacks enough evidence, prompt the user before editing.
 - Keep context files concise, current-state oriented, and linked from `context/context-map.md` when relevant.
-- Do not document behavior, structure, or examples sourced from directories whose names start with `.` (dot-directories).
 
 ## Expected output
 - A clear list of drift findings sourced from `context/tmp/drift-analysis-*.md`.

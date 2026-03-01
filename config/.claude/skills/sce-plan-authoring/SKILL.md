@@ -28,7 +28,6 @@ Turn a human change request into `context/plans/{plan_name}.md`.
 - Incorporate user answers into the plan before handoff.
 
 ## Documentation source rule
-- Do not document behavior, structure, or examples sourced from directories whose names start with `.`.
 
 ## Plan format
 1) Change summary
