@@ -1,11 +1,13 @@
 use std::process::ExitCode;
 
-use crate::command_surface;
+use crate::{command_surface, dependency_contract};
 
 pub fn run<I>(args: I) -> ExitCode
 where
     I: IntoIterator<Item = String>,
 {
+    let _ = dependency_contract::dependency_contract_snapshot();
+
     let mut args = args.into_iter();
     let _program = args.next();
 

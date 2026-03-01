@@ -72,7 +72,7 @@ The repository includes a new placeholder Rust binary crate at `cli/`.
 - `cli/src/command_surface.rs` is the source of truth for top-level command contract metadata (`help`, `setup`, `mcp`, `hooks`, `sync`) and explicit implemented-vs-placeholder status.
 - `cli/src/services/` contains module boundaries for upcoming domains (`setup`, `mcp`, `hooks`, `sync`) without production behavior in this slice.
 
-This phase establishes compile-safe extension seams only; dependency and runtime integrations are deferred to later plan tasks.
+This phase establishes compile-safe extension seams with a minimal dependency baseline (`anyhow`, `lexopt`, `tokio`, `turso`); runtime integration behavior is still deferred to later plan tasks.
 
 ## Shared Context Drift parity mapping
 

@@ -38,7 +38,7 @@ Create a new Rust CLI named `sce` under `cli/` as a placeholder foundation with 
   - Verification notes (commands or checks):
     - Confirm file/module structure and compile-time entrypoint wiring.
 
-- [ ] T02: Bootstrap Rust crate with minimal dependency contract (status:todo)
+- [x] T02: Bootstrap Rust crate with minimal dependency contract (status:done)
   - Task ID: T02
   - Goal: Create crate metadata and dependency configuration with only required early-phase crates.
   - Boundaries (in/out of scope):

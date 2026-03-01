@@ -58,3 +58,4 @@
 - For early CLI foundation tasks, keep implemented behavior and planned behavior explicitly separated in a single command contract table.
 - Mark placeholder commands in help output and runtime responses so scaffolding cannot be confused with production capability.
 - Keep module seams for future domains present and compile-safe even when behavior is deferred.
+- Keep dependency additions explicit and minimal in `cli/Cargo.toml`, and anchor dependency intent in lightweight compile-time code references (`cli/src/dependency_contract.rs`).

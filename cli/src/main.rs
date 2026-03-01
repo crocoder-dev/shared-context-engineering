@@ -1,5 +1,6 @@
 mod app;
 mod command_surface;
+mod dependency_contract;
 mod services;
 
 use std::process::ExitCode;
