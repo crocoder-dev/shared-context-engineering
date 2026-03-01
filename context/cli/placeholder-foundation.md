@@ -22,6 +22,21 @@ The repository now includes a placeholder Rust CLI crate at `cli/` for future SC
 
 Placeholder commands currently acknowledge planned behavior and do not claim production implementation.
 
+## Command loop and error model
+
+- Argument parsing is handled by `lexopt` in `cli/src/app.rs`.
+- Runtime errors are normalized through `anyhow` and rendered as `Error: ...` with exit code `2`.
+- Unknown commands/options and extra positional arguments return deterministic, actionable guidance to run `sce --help`.
+- Placeholder command handlers return explicit TODO messaging:
+  - `TODO: 'setup' is planned and not implemented yet.`
+  - `TODO: 'mcp' is planned and not implemented yet.`
+  - `TODO: 'hooks' is planned and not implemented yet.`
+  - `TODO: 'sync' is planned and not implemented yet.`
+
+## Parser-focused tests
+
+- `cli/src/app.rs` unit tests cover default-help behavior, known command routing, and failure paths for unknown commands/options and extra arguments.
+
 ## Dependency baseline
 
 - `cli/Cargo.toml` declares only: `anyhow`, `lexopt`, `tokio`, and `turso`.

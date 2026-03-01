@@ -6,4 +6,5 @@
 - `agnix validation report artifact`: Failure-investigation artifact named `agnix-validate-report`, uploaded from deterministic path `context/tmp/ci-reports/agnix-validate-report.txt` when non-info (`warning:`/`error:`/`fatal:`) findings are detected.
 - `sce` (placeholder CLI): Rust binary crate at `cli/` that currently provides only command-surface scaffolding and deterministic placeholder messaging.
 - `command surface contract`: The static command catalog in `cli/src/command_surface.rs` that marks each top-level command as `implemented` or `placeholder`.
+- `placeholder command loop`: The `lexopt` parser + dispatcher in `cli/src/app.rs` that routes `help`, `setup`, `mcp`, `hooks`, and `sync`, emitting TODO placeholders for non-implemented commands and deterministic actionable errors for invalid invocation.
 - `sce dependency contract`: Minimal crate dependency baseline declared in `cli/Cargo.toml` and referenced via `cli/src/dependency_contract.rs` (`anyhow`, `lexopt`, `tokio`, `turso`).

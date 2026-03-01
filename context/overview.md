@@ -5,6 +5,7 @@ This repository maintains shared assistant configuration for OpenCode and Claude
 It also includes an early placeholder Rust CLI foundation at `cli/` for future Shared Context Engineering workflows.
 
 The CLI crate currently enforces a minimal dependency contract: `anyhow`, `lexopt`, `tokio`, and `turso`.
+Its command loop is implemented with `lexopt` argument parsing and `anyhow` error handling, with deterministic placeholder dispatch for `setup`, `mcp`, `hooks`, and `sync`.
 
 ## Repository model
 

@@ -50,7 +50,7 @@ Create a new Rust CLI named `sce` under `cli/` as a placeholder foundation with 
   - Verification notes (commands or checks):
     - `cargo check -p sce` (or crate-local `cargo check`) passes.
 
-- [ ] T03: Implement placeholder command loop and error model (status:todo)
+- [x] T03: Implement placeholder command loop and error model (status:done)
   - Task ID: T03
   - Goal: Add minimal CLI parsing and dispatch scaffolding using `lexopt` with consistent `anyhow`-based error handling.
   - Boundaries (in/out of scope):

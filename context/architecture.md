@@ -68,11 +68,11 @@ See `context/decisions/2026-02-28-pkl-generation-architecture.md` for the full m
 The repository includes a new placeholder Rust binary crate at `cli/`.
 
 - `cli/src/main.rs` is the executable entrypoint (`sce`) and delegates to `app::run`.
-- `cli/src/app.rs` provides a minimal argument-routing shell with deterministic help and placeholder responses.
+- `cli/src/app.rs` provides a `lexopt`-based argument parser and dispatch loop with deterministic help, placeholder responses, and consistent `anyhow`-driven error exits.
 - `cli/src/command_surface.rs` is the source of truth for top-level command contract metadata (`help`, `setup`, `mcp`, `hooks`, `sync`) and explicit implemented-vs-placeholder status.
 - `cli/src/services/` contains module boundaries for upcoming domains (`setup`, `mcp`, `hooks`, `sync`) without production behavior in this slice.
 
-This phase establishes compile-safe extension seams with a minimal dependency baseline (`anyhow`, `lexopt`, `tokio`, `turso`); runtime integration behavior is still deferred to later plan tasks.
+This phase establishes compile-safe extension seams with a minimal dependency baseline (`anyhow`, `lexopt`, `tokio`, `turso`); runtime integration behavior (including Turso connectivity) is still deferred to later plan tasks.
 
 ## Shared Context Drift parity mapping
 
