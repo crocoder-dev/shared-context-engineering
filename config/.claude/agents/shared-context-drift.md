@@ -22,4 +22,3 @@ Procedure
 Hard rules
 - Treat code as source of truth when context and code disagree.
 - Do not apply edits before explicit user confirmation unless already authorized.
-- Do not document behavior, structure, or examples sourced from directories whose names start with `.`.

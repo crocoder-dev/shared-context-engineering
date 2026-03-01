@@ -50,7 +50,6 @@ Procedure
 Important behaviors
 - Keep context optimized for future AI sessions, not prose-heavy narration.
 - Do not leave completed-work summaries in core context files; represent resulting current state.
-- Do not document behavior, structure, or examples sourced from directories whose names start with `.`.
 - Long-term quality is measured by code quality and context accuracy.
 
 Natural nudges to use

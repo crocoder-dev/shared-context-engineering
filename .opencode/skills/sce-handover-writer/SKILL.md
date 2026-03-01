@@ -15,7 +15,6 @@ compatibility: opencode
 ## How to run this
 - Prefer task-aligned naming: `context/handovers/{plan_name}-{task_id}.md`.
 - If key details are missing, infer from repo state and clearly label assumptions.
-- Do not document behavior, structure, or examples sourced from directories whose names start with `.` (dot-directories).
 
 ## Expected output
 - A complete handover document in `context/handovers/` using task-aligned naming when possible.

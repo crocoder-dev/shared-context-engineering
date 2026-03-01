@@ -39,7 +39,6 @@ const data = await collectors.collectAll(process.cwd(), {
 - Keep findings concrete with file-level evidence.
 - Keep recommendations scoped and directly actionable.
 - Do not apply edits until user confirms.
-- Do not document behavior, structure, or examples sourced from directories whose names start with `.` (dot-directories).
 
 ## Expected output
 - Drift report in `context/tmp/`.

@@ -59,7 +59,6 @@ Procedure
 Important behaviors
 - Keep context optimized for future AI sessions, not prose-heavy narration.
 - Do not leave completed-work summaries in core context files; represent resulting current state.
-- Do not document behavior, structure, or examples sourced from directories whose names start with `.`.
 - Long-term quality is measured by code quality and context accuracy.
 
 Natural nudges to use
@@ -152,7 +151,6 @@ Procedure
 Hard rules
 - Treat code as source of truth when context and code disagree.
 - Do not apply edits before explicit user confirmation unless already authorized.
-- Do not document behavior, structure, or examples sourced from directories whose names start with `.`.
 """
   }
 }
@@ -179,7 +177,9 @@ Behavior:
 - If blockers, ambiguity, or missing acceptance criteria are present, resolve open points and ask the user to confirm the task is ready before `sce-task-execution`.
 - If either plan or task ID is missing, ask the user to confirm the task is ready before `sce-task-execution`.
 - After the confirmation gate passes (auto-pass or explicit user confirmation), run `sce-task-execution` for approval, scoped implementation, light task-level checks/lints, a build when it is light/fast, and plan status updates.
-- Run `sce-context-sync` after implementation to align context files with current code truth.
+- Run `sce-context-sync` after implementation as a required done gate to align context files with current code truth.
+- Treat context sync as mandatory, not optional: explicitly verify `context/overview.md`, `context/architecture.md`, and `context/glossary.md`, and update them when relevant.
+- Ensure new feature existence is documented in durable context (domain file or `context/overview.md`) and linked from `context/context-map.md`.
 - Wait for user feedback; if feedback requires in-scope fixes, apply fixes, rerun light checks/lints, run a build when it is light/fast, and run `sce-context-sync` again.
 - If this is the final task in the plan, run `sce-validation`.
 - When you are finished, if there are more tasks in the plan prompt user to start a new session to implement next task `T0X` and provide `/next-task {plan_name} T0X`.
@@ -329,21 +329,41 @@ Create these paths:
 - Context is durable AI memory and must reflect current-state truth.
 - If context and code diverge, code is source of truth.
 
-## What to update when relevant
-- `context/overview.md` for system-level behavior changes
-- `context/architecture.md` for boundary or flow changes
-- Domain files under `context/{domain}/` for detailed behavior changes
-- `context/patterns.md` for newly established implementation patterns
-- `context/glossary.md` for new domain terms
-- `context/context-map.md` for new or moved context files
+## Mandatory sync pass (always check all)
+For every completed implementation task, explicitly review and update these files when relevant:
+- `context/overview.md`
+- `context/architecture.md`
+- `context/glossary.md`
+- `context/patterns.md`
+- `context/context-map.md`
+
+Do not skip `overview`, `architecture`, or `glossary` by default. If no edit is needed, verify they still match current code behavior.
+
+## Domain file creation policy
+- Use domain files under `context/{domain}/` for detailed feature behavior.
+- If a feature does not cleanly fit an existing domain file, create a new domain file instead of deferring documentation.
+- If the feature appears to be part of a larger future domain, still document the implemented slice now in a focused file and link it to related context.
+- Prefer creating a small, precise domain file over overloading `overview.md` with detail.
+
+## Feature existence rule (required)
+- Every newly implemented feature must be discoverable from context.
+- Ensure at least one durable canonical description exists in either:
+  - a domain file under `context/{domain}/`, or
+  - `context/overview.md` (for cross-cutting/system features).
+- Ensure discoverability links are present from `context/context-map.md`.
+- Add glossary entries for any new domain language.
+
+## Final-task requirement
+- In the final plan task (validation/cleanup), confirm feature existence documentation is present and linked.
+- If a feature was implemented but not represented in context, add the missing context entry before declaring the task done.
 
 ## Quality constraints
 - Keep one topic per file.
 - Prefer concise current-state documentation over narrative changelogs.
 - Link related context files with relative paths.
 - Include concrete code examples when needed to clarify non-trivial behavior.
-- Use Mermaid when a diagram is needed.
-- Keep files under 250 lines; split and link when needed.
+- Every context file you create or update must stay at or below 250 lines; if it would exceed 250, split into focused files and link them.
+- Add a Mermaid diagram when structure, boundaries, or flows are complex.
 - Ensure major code areas have matching context coverage.
 """
   }
@@ -388,7 +408,6 @@ const data = await collectors.collectAll(process.cwd(), {
 - Keep findings concrete with file-level evidence.
 - Keep recommendations scoped and directly actionable.
 - Do not apply edits until user confirms.
-- Do not document behavior, structure, or examples sourced from directories whose names start with `.` (dot-directories).
 
 ## Expected output
 - Drift report in `context/tmp/`.
@@ -418,7 +437,6 @@ const data = await collectors.collectAll(process.cwd(), {
 - Ask whether to apply all fixes or apply selectively.
 - If any finding is ambiguous or lacks enough evidence, prompt the user before editing.
 - Keep context files concise, current-state oriented, and linked from `context/context-map.md` when relevant.
-- Do not document behavior, structure, or examples sourced from directories whose names start with `.` (dot-directories).
 
 ## Expected output
 - A clear list of drift findings sourced from `context/tmp/drift-analysis-*.md`.
@@ -446,7 +464,6 @@ const data = await collectors.collectAll(process.cwd(), {
 ## How to run this
 - Prefer task-aligned naming: `context/handovers/{plan_name}-{task_id}.md`.
 - If key details are missing, infer from repo state and clearly label assumptions.
-- Do not document behavior, structure, or examples sourced from directories whose names start with `.` (dot-directories).
 
 ## Expected output
 - A complete handover document in `context/handovers/` using task-aligned naming when possible.
@@ -482,7 +499,6 @@ Turn a human change request into `context/plans/{plan_name}.md`.
 - Incorporate user answers into the plan before handoff.
 
 ## Documentation source rule
-- Do not document behavior, structure, or examples sourced from directories whose names start with `.`.
 
 ## Plan format
 1) Change summary

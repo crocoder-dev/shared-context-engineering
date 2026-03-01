@@ -14,9 +14,13 @@ Expected arguments:
 
 Behavior:
 - Run `sce-plan-review` first to resolve plan target, task selection, bootstrap gating, and clarification questions.
-- Ask the user to confirm the task is ready for implementation.
-- After user confirmation, run `sce-task-execution` for approval, scoped implementation, light task-level checks/lints, a build when it is light/fast, and plan status updates.
-- Run `sce-context-sync` after implementation to align context files with current code truth.
+- If both plan and task ID are provided and `sce-plan-review` reports no blockers, ambiguity, or missing acceptance criteria, treat plan-review confirmation as satisfied and continue to `sce-task-execution`.
+- If blockers, ambiguity, or missing acceptance criteria are present, resolve open points and ask the user to confirm the task is ready before `sce-task-execution`.
+- If either plan or task ID is missing, ask the user to confirm the task is ready before `sce-task-execution`.
+- After the confirmation gate passes (auto-pass or explicit user confirmation), run `sce-task-execution` for approval, scoped implementation, light task-level checks/lints, a build when it is light/fast, and plan status updates.
+- Run `sce-context-sync` after implementation as a required done gate to align context files with current code truth.
+- Treat context sync as mandatory, not optional: explicitly verify `context/overview.md`, `context/architecture.md`, and `context/glossary.md`, and update them when relevant.
+- Ensure new feature existence is documented in durable context (domain file or `context/overview.md`) and linked from `context/context-map.md`.
 - Wait for user feedback; if feedback requires in-scope fixes, apply fixes, rerun light checks/lints, run a build when it is light/fast, and run `sce-context-sync` again.
 - If this is the final task in the plan, run `sce-validation`.
 - When you are finished, if there are more tasks in the plan prompt user to start a new session to implement next task `T0X` and provide `/next-task {plan_name} T0X`.
