@@ -76,7 +76,7 @@ Create a new Rust CLI named `sce` under `cli/` as a placeholder foundation with 
     - Add async tests around local DB init and simple round-trip query.
     - Confirm behavior against Turso crate API from `/tursodatabase/turso` docs.
 
-- [ ] T05: Scaffold future feature contracts for setup, MCP, hooks, and cloud sync (status:todo)
+- [x] T05: Scaffold future feature contracts for setup, MCP, hooks, and cloud sync (status:done)
   - Task ID: T05
   - Goal: Define stable interfaces and internal module seams for future capabilities without implementing full behavior.
   - Boundaries (in/out of scope):
@@ -88,6 +88,7 @@ Create a new Rust CLI named `sce` under `cli/` as a placeholder foundation with 
   - Verification notes (commands or checks):
     - Compile-time interface checks.
     - Basic tests for placeholder service wiring where applicable.
+    - `cargo fmt && cargo check && cargo test && cargo build` (from `cli/`) passes with placeholder contract tests.
 
 - [ ] T06: Add documentation and onboarding notes for placeholder CLI (status:todo)
   - Task ID: T06

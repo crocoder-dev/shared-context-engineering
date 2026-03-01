@@ -71,8 +71,11 @@ The repository includes a new placeholder Rust binary crate at `cli/`.
 - `cli/src/app.rs` provides a `lexopt`-based argument parser and dispatch loop with deterministic help, placeholder responses, and consistent `anyhow`-driven error exits.
 - `cli/src/command_surface.rs` is the source of truth for top-level command contract metadata (`help`, `setup`, `mcp`, `hooks`, `sync`) and explicit implemented-vs-placeholder status.
 - `cli/src/services/local_db.rs` provides the local Turso data adapter, including `Builder::new_local(...)` initialization and async execute/query smoke checks for in-memory and file-backed targets.
-- `cli/src/services/sync.rs` runs the local adapter through a tokio current-thread runtime so `sync` validates local Turso connectivity while keeping cloud-sync behavior explicitly placeholder.
-- `cli/src/services/` contains module boundaries for upcoming domains (`setup`, `mcp`, `hooks`, `sync`) plus the local DB adapter boundary used by the `sync` placeholder.
+- `cli/src/services/setup.rs` defines a setup planning contract (`SetupService`) and placeholder implementation that returns deferred setup steps without performing setup mutations.
+- `cli/src/services/mcp.rs` defines MCP file-cache capability contracts (`McpService`, transport/capability snapshots, cache policy) with non-runnable placeholder tool declarations.
+- `cli/src/services/hooks.rs` defines hook-event and generated-region tracking contracts (`HookService`, `HookEventModel`) with placeholder-safe no-op recording.
+- `cli/src/services/sync.rs` runs the local adapter through a tokio current-thread runtime and composes a placeholder cloud-sync abstraction (`CloudSyncGateway`) so local Turso validation and deferred cloud planning remain separated.
+- `cli/src/services/` contains module boundaries for setup, MCP, hooks, sync, and local DB adapters with explicit trait seams for future implementations.
 
 This phase establishes compile-safe extension seams with a minimal dependency baseline (`anyhow`, `lexopt`, `tokio`, `turso`); local Turso connectivity smoke checks now exist, while broader runtime integrations remain deferred.
 

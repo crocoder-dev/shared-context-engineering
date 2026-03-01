@@ -22,7 +22,8 @@ The repository now includes a placeholder Rust CLI crate at `cli/` for future SC
 - `sync`: placeholder
 
 Placeholder commands currently acknowledge planned behavior and do not claim production implementation.
-`sync` includes a local Turso smoke gate but remains placeholder for cloud workflows.
+`setup`, `mcp`, and `hooks` now route through explicit service-contract placeholders.
+`sync` includes a local Turso smoke gate and a placeholder cloud-sync gateway plan.
 
 ## Command loop and error model
 
@@ -30,10 +31,18 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - Runtime errors are normalized through `anyhow` and rendered as `Error: ...` with exit code `2`.
 - Unknown commands/options and extra positional arguments return deterministic, actionable guidance to run `sce --help`.
 - Placeholder command handlers return explicit TODO messaging:
-  - `TODO: 'setup' is planned and not implemented yet.`
-  - `TODO: 'mcp' is planned and not implemented yet.`
-  - `TODO: 'hooks' is planned and not implemented yet.`
-  - `TODO: 'sync' cloud workflows are planned and not implemented yet. Local Turso smoke check succeeded (1) row inserted.`
+  - `TODO: 'setup' is planned and not implemented yet. Setup plan scaffolded with 3 deferred step(s).`
+  - `TODO: 'mcp' is planned and not implemented yet. MCP file-cache surface defines 2 placeholder tool contract(s) with max 1024 entries.`
+  - `TODO: 'hooks' is planned and not implemented yet. Hook event model reserves 2 git hook(s) with generated-region tracking placeholders.`
+  - `TODO: 'sync' cloud workflows are planned and not implemented yet. Local Turso smoke check succeeded (1) row inserted; cloud sync plan holds 3 checkpoint(s).`
+
+## Future feature contracts (T05)
+
+- `cli/src/services/setup.rs` defines `SetupService`, `SetupRequest`, and `SetupPlan` as setup-planning seams with a non-executing placeholder implementation.
+- `cli/src/services/mcp.rs` defines `McpService`, a `McpCapabilitySnapshot` model, and `CachePolicy` defaults for future file-cache workflows (`cache-put`/`cache-get`) with `runnable: false` placeholders.
+- `cli/src/services/hooks.rs` defines `HookService` plus hook-event/generated-region event placeholders (`HookEventModel`, `HookEvent`, `GeneratedRegionEvent`).
+- `cli/src/services/sync.rs` defines cloud-sync abstraction points (`CloudSyncGateway`, `CloudSyncRequest`, `CloudSyncPlan`) layered after the local Turso smoke gate.
+- `cli/src/app.rs` dispatches `setup`, `mcp`, and `hooks` through service-level placeholder functions so runtime messages are sourced from domain modules instead of inline strings.
 
 ## Local Turso adapter behavior
 
@@ -42,12 +51,14 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
   - file-backed path (`Builder::new_local(<path>)`)
 - The smoke path creates `sce_smoke`, inserts one row, and runs a query round-trip to confirm readable results.
 - `cli/src/services/sync.rs` wraps this in a tokio current-thread runtime and returns placeholder-safe messaging when local checks pass.
+- The same sync path now derives deferred cloud checkpoint messaging from `PlaceholderCloudSyncGateway`.
 
 ## Parser-focused tests
 
 - `cli/src/app.rs` unit tests cover default-help behavior, known command routing, and failure paths for unknown commands/options and extra arguments.
 - `cli/src/services/local_db.rs` tests cover in-memory and file-backed local Turso initialization plus execute/query smoke checks.
 - `cli/src/services/sync.rs` test confirms `sync` runs the local smoke gate and returns deterministic placeholder messaging.
+- `cli/src/services/{setup,mcp,hooks,sync}.rs` include contract-focused tests for placeholder wiring and non-runnable capability/event plans.
 
 ## Dependency baseline
 

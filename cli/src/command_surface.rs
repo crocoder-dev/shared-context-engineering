@@ -27,7 +27,7 @@ pub const COMMANDS: &[CommandContract] = &[
     CommandContract {
         name: services::mcp::NAME,
         status: ImplementationStatus::Placeholder,
-        purpose: "Host MCP-oriented tooling commands",
+        purpose: "Host MCP file-cache tooling commands",
     },
     CommandContract {
         name: services::hooks::NAME,

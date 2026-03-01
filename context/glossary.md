@@ -10,3 +10,7 @@
 - `sce dependency contract`: Minimal crate dependency baseline declared in `cli/Cargo.toml` and referenced via `cli/src/dependency_contract.rs` (`anyhow`, `lexopt`, `tokio`, `turso`).
 - `local Turso adapter`: Async data-layer module in `cli/src/services/local_db.rs` that initializes local DB targets with `turso::Builder::new_local(...)` and runs execute/query smoke checks.
 - `sync Turso smoke gate`: Behavior in `cli/src/services/sync.rs` where the `sync` placeholder command runs an in-memory local Turso smoke check under a tokio current-thread runtime before returning placeholder cloud-sync messaging.
+- `setup service contract`: Trait and request/plan model in `cli/src/services/setup.rs` that reserves setup planning seams while explicitly deferring execution.
+- `MCP capability snapshot`: Placeholder capability model in `cli/src/services/mcp.rs` that captures planned file-cache transport/tool contracts (`cache-put`, `cache-get`) and cache policy defaults without enabling runtime MCP execution.
+- `hook event model placeholder`: Contract set in `cli/src/services/hooks.rs` defining git-hook event envelopes and generated-region lifecycle placeholders for future listener integration.
+- `cloud sync gateway placeholder`: Abstraction in `cli/src/services/sync.rs` (`CloudSyncGateway`) that returns deferred cloud-sync checkpoints while `sync` remains non-production.

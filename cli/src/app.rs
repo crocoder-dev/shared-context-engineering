@@ -110,9 +110,9 @@ fn parse_subcommand(value: &str) -> Result<Command> {
 fn dispatch(command: Command) -> Result<()> {
     match command {
         Command::Help => println!("{}", command_surface::help_text()),
-        Command::Setup => println!("TODO: 'setup' is planned and not implemented yet."),
-        Command::Mcp => println!("TODO: 'mcp' is planned and not implemented yet."),
-        Command::Hooks => println!("TODO: 'hooks' is planned and not implemented yet."),
+        Command::Setup => println!("{}", services::setup::run_placeholder_setup()?),
+        Command::Mcp => println!("{}", services::mcp::run_placeholder_mcp()?),
+        Command::Hooks => println!("{}", services::hooks::run_placeholder_hooks()?),
         Command::Sync => println!("{}", services::sync::run_placeholder_sync()?),
     }
 
