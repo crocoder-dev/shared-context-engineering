@@ -31,7 +31,7 @@ The repository now includes a placeholder Rust CLI crate at `cli/` for future SC
 
 Placeholder commands currently acknowledge planned behavior and do not claim production implementation.
 `setup`, `mcp`, and `hooks` now route through explicit service-contract placeholders.
-`setup` defaults to interactive target selection and accepts mutually-exclusive non-interactive target flags (`--opencode`, `--claude`, `--both`).
+`setup` defaults to an `inquire` interactive target selection (OpenCode, Claude, Both) and accepts mutually-exclusive non-interactive target flags (`--opencode`, `--claude`, `--both`).
 `sync` includes a local Turso smoke gate and a placeholder cloud-sync gateway plan.
 
 ## Command loop and error model
@@ -40,6 +40,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - Runtime errors are normalized through `anyhow` and rendered as `Error: ...` with exit code `2`.
 - Unknown commands/options and extra positional arguments return deterministic, actionable guidance to run `sce --help`.
 - `sce setup --help` returns setup-specific usage output with target-flag contract details.
+- Interactive `sce setup` prompt cancellation/interrupt exits cleanly with: `Setup cancelled. No files were changed.`
 - Placeholder command handlers return explicit TODO messaging:
   - `TODO: 'setup' is planned and not implemented yet. Setup mode '<interactive or --flag>' accepted; setup plan scaffolded with 3 deferred step(s).`
   - `TODO: 'mcp' is planned and not implemented yet. MCP file-cache surface defines 2 placeholder tool contract(s) with max 1024 entries.`
@@ -69,11 +70,11 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - `cli/src/app.rs` additionally validates setup contract routing for interactive default, explicit target flags, and mutually-exclusive setup flag failures.
 - `cli/src/services/local_db.rs` tests cover in-memory and file-backed local Turso initialization plus execute/query smoke checks.
 - `cli/src/services/sync.rs` test confirms `sync` runs the local smoke gate and returns deterministic placeholder messaging.
-- `cli/src/services/{setup,mcp,hooks,sync}.rs` include contract-focused tests for setup flag parsing/validation, placeholder wiring, and non-runnable capability/event plans.
+- `cli/src/services/{setup,mcp,hooks,sync}.rs` include contract-focused tests for setup flag parsing/validation, interactive selection/cancellation dispatch, placeholder wiring, and non-runnable capability/event plans.
 
 ## Dependency baseline
 
-- `cli/Cargo.toml` declares only: `anyhow`, `lexopt`, `tokio`, and `turso`.
+- `cli/Cargo.toml` declares only: `anyhow`, `inquire`, `lexopt`, `tokio`, and `turso`.
 - `cli/src/dependency_contract.rs` keeps compile-time crate references centralized for this placeholder slice.
 
 ## Scope boundary for this phase

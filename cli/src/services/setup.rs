@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use inquire::{InquireError, Select};
 use lexopt::{Arg, ValueExt};
 
 pub const NAME: &str = "setup";
@@ -14,6 +15,12 @@ pub enum SetupTarget {
 pub enum SetupMode {
     Interactive,
     NonInteractive(SetupTarget),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SetupDispatch {
+    Proceed(SetupMode),
+    Cancelled,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -75,6 +82,79 @@ pub fn run_placeholder_setup_for_mode(mode: SetupMode) -> Result<String> {
         "TODO: '{NAME}' is planned and not implemented yet. Setup mode '{mode_label}' accepted; setup plan scaffolded with {} deferred step(s).",
         plan.tasks.len(),
     ))
+}
+
+pub trait SetupTargetPrompter {
+    fn prompt_target(&self) -> Result<SetupDispatch>;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InquireSetupTargetPrompter;
+
+impl SetupTargetPrompter for InquireSetupTargetPrompter {
+    fn prompt_target(&self) -> Result<SetupDispatch> {
+        let options = vec![
+            SetupPromptTarget::OpenCode,
+            SetupPromptTarget::Claude,
+            SetupPromptTarget::Both,
+        ];
+
+        let selection = Select::new("Select setup target", options).prompt();
+
+        match selection {
+            Ok(SetupPromptTarget::OpenCode) => Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(
+                SetupTarget::OpenCode,
+            ))),
+            Ok(SetupPromptTarget::Claude) => Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(
+                SetupTarget::Claude,
+            ))),
+            Ok(SetupPromptTarget::Both) => {
+                Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(SetupTarget::Both)))
+            }
+            Err(InquireError::OperationCanceled) | Err(InquireError::OperationInterrupted) => {
+                Ok(SetupDispatch::Cancelled)
+            }
+            Err(InquireError::NotTTY) => bail!(
+                "Interactive setup requires a TTY. Re-run with '--opencode', '--claude', or '--both' for non-interactive automation."
+            ),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SetupPromptTarget {
+    OpenCode,
+    Claude,
+    Both,
+}
+
+impl std::fmt::Display for SetupPromptTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::OpenCode => "OpenCode",
+            Self::Claude => "Claude",
+            Self::Both => "Both",
+        };
+
+        write!(f, "{label}")
+    }
+}
+
+pub fn resolve_setup_dispatch<P>(mode: SetupMode, prompter: &P) -> Result<SetupDispatch>
+where
+    P: SetupTargetPrompter,
+{
+    match mode {
+        SetupMode::Interactive => prompter.prompt_target(),
+        SetupMode::NonInteractive(target) => {
+            Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(target)))
+        }
+    }
+}
+
+pub fn setup_cancelled_text() -> &'static str {
+    "Setup cancelled. No files were changed."
 }
 
 pub fn setup_usage_text() -> &'static str {
@@ -146,10 +226,21 @@ mod tests {
     use anyhow::Result;
 
     use super::{
-        parse_setup_cli_options, resolve_setup_mode, run_placeholder_setup_for_mode,
-        setup_usage_text, PlaceholderSetupService, SetupCliOptions, SetupMode, SetupRequest,
-        SetupService, SetupTarget,
+        parse_setup_cli_options, resolve_setup_dispatch, resolve_setup_mode,
+        run_placeholder_setup_for_mode, setup_usage_text, PlaceholderSetupService, SetupCliOptions,
+        SetupDispatch, SetupMode, SetupRequest, SetupService, SetupTarget,
     };
+
+    #[derive(Clone, Copy, Debug)]
+    struct MockPrompter {
+        response: SetupDispatch,
+    }
+
+    impl super::SetupTargetPrompter for MockPrompter {
+        fn prompt_target(&self) -> Result<SetupDispatch> {
+            Ok(self.response)
+        }
+    }
 
     #[test]
     fn setup_placeholder_service_exposes_deferred_plan() {
@@ -219,6 +310,35 @@ mod tests {
     fn setup_placeholder_message_mentions_flag_mode() -> Result<()> {
         let message = run_placeholder_setup_for_mode(SetupMode::NonInteractive(SetupTarget::Both))?;
         assert!(message.contains("Setup mode '--both' accepted"));
+        Ok(())
+    }
+
+    #[test]
+    fn interactive_dispatch_maps_selected_target() -> Result<()> {
+        let dispatch = resolve_setup_dispatch(
+            SetupMode::Interactive,
+            &MockPrompter {
+                response: SetupDispatch::Proceed(SetupMode::NonInteractive(SetupTarget::Claude)),
+            },
+        )?;
+
+        assert_eq!(
+            dispatch,
+            SetupDispatch::Proceed(SetupMode::NonInteractive(SetupTarget::Claude))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn interactive_dispatch_returns_cancelled_without_side_effects() -> Result<()> {
+        let dispatch = resolve_setup_dispatch(
+            SetupMode::Interactive,
+            &MockPrompter {
+                response: SetupDispatch::Cancelled,
+            },
+        )?;
+
+        assert_eq!(dispatch, SetupDispatch::Cancelled);
         Ok(())
     }
 }

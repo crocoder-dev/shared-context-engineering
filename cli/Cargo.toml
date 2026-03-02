@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 anyhow = "1"
+inquire = "0.7"
 lexopt = "0.3"
 tokio = { version = "1", features = ["rt"] }
 turso = "0"

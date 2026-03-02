@@ -33,7 +33,7 @@ Implement `sce setup` so it can install repository config for OpenCode, Claude, 
   - Verification notes (commands or checks):
     - Unit tests for parsing/validation and command-surface help output expectations.
 
-- [ ] T02: Add `inquire`-based interactive selection flow (status:todo)
+- [x] T02: Add `inquire`-based interactive selection flow (status:done)
   - Task ID: T02
   - Goal: Implement prompt-driven target selection for setup default path.
   - Boundaries (in/out of scope):

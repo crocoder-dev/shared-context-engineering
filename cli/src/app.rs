@@ -123,7 +123,19 @@ fn dispatch(command: Command) -> Result<()> {
     match command {
         Command::Help => println!("{}", command_surface::help_text()),
         Command::Setup(mode) => {
-            println!("{}", services::setup::run_placeholder_setup_for_mode(mode)?);
+            let dispatch = services::setup::resolve_setup_dispatch(
+                mode,
+                &services::setup::InquireSetupTargetPrompter,
+            )?;
+
+            match dispatch {
+                services::setup::SetupDispatch::Proceed(mode) => {
+                    println!("{}", services::setup::run_placeholder_setup_for_mode(mode)?);
+                }
+                services::setup::SetupDispatch::Cancelled => {
+                    println!("{}", services::setup::setup_cancelled_text());
+                }
+            }
         }
         Command::SetupHelp => println!("{}", services::setup::setup_usage_text()),
         Command::Mcp => println!("{}", services::mcp::run_placeholder_mcp()?),
@@ -150,7 +162,11 @@ mod tests {
 
     #[test]
     fn placeholder_command_exits_success() {
-        let code = run(vec!["sce".to_string(), "setup".to_string()]);
+        let code = run(vec![
+            "sce".to_string(),
+            "setup".to_string(),
+            "--opencode".to_string(),
+        ]);
         assert_eq!(code, ExitCode::SUCCESS);
     }
 
