@@ -45,7 +45,7 @@ Implement `sce setup` so it can install repository config for OpenCode, Claude, 
   - Verification notes (commands or checks):
     - Service tests for selection mapping and cancellation behavior.
 
-- [ ] T03: Implement compile-time embedded asset manifest for config trees (status:todo)
+- [x] T03: Implement compile-time embedded asset manifest for config trees (status:done)
   - Task ID: T03
   - Goal: Bundle `config/.opencode/**` and `config/.claude/**` into the CLI binary and expose a deterministic asset access API.
   - Boundaries (in/out of scope):

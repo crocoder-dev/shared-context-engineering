@@ -12,6 +12,47 @@ pub enum SetupTarget {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EmbeddedAsset {
+    pub relative_path: &'static str,
+    pub bytes: &'static [u8],
+}
+
+include!(concat!(env!("OUT_DIR"), "/setup_embedded_assets.rs"));
+
+pub enum EmbeddedAssetSelectionIter {
+    One(std::slice::Iter<'static, EmbeddedAsset>),
+    Both(
+        std::iter::Chain<
+            std::slice::Iter<'static, EmbeddedAsset>,
+            std::slice::Iter<'static, EmbeddedAsset>,
+        >,
+    ),
+}
+
+impl Iterator for EmbeddedAssetSelectionIter {
+    type Item = &'static EmbeddedAsset;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::One(iter) => iter.next(),
+            Self::Both(iter) => iter.next(),
+        }
+    }
+}
+
+pub fn iter_embedded_assets_for_setup_target(target: SetupTarget) -> EmbeddedAssetSelectionIter {
+    match target {
+        SetupTarget::OpenCode => EmbeddedAssetSelectionIter::One(OPENCODE_EMBEDDED_ASSETS.iter()),
+        SetupTarget::Claude => EmbeddedAssetSelectionIter::One(CLAUDE_EMBEDDED_ASSETS.iter()),
+        SetupTarget::Both => EmbeddedAssetSelectionIter::Both(
+            OPENCODE_EMBEDDED_ASSETS
+                .iter()
+                .chain(CLAUDE_EMBEDDED_ASSETS.iter()),
+        ),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SetupMode {
     Interactive,
     NonInteractive(SetupTarget),
@@ -78,9 +119,15 @@ pub fn run_placeholder_setup_for_mode(mode: SetupMode) -> Result<String> {
         SetupMode::NonInteractive(SetupTarget::Both) => "--both",
     };
 
+    let selected_target = match mode {
+        SetupMode::Interactive => SetupTarget::Both,
+        SetupMode::NonInteractive(target) => target,
+    };
+    let embedded_asset_count = iter_embedded_assets_for_setup_target(selected_target).count();
+
     Ok(format!(
-        "TODO: '{NAME}' is planned and not implemented yet. Setup mode '{mode_label}' accepted; setup plan scaffolded with {} deferred step(s).",
-        plan.tasks.len(),
+        "TODO: '{NAME}' is planned and not implemented yet. Setup mode '{mode_label}' accepted; setup plan scaffolded with {} deferred step(s). Embedded asset manifest is ready with {embedded_asset_count} file(s).",
+        plan.tasks.len()
     ))
 }
 
@@ -223,12 +270,18 @@ pub fn resolve_setup_mode(options: SetupCliOptions) -> Result<SetupMode> {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
+
     use anyhow::Result;
 
     use super::{
-        parse_setup_cli_options, resolve_setup_dispatch, resolve_setup_mode,
-        run_placeholder_setup_for_mode, setup_usage_text, PlaceholderSetupService, SetupCliOptions,
-        SetupDispatch, SetupMode, SetupRequest, SetupService, SetupTarget,
+        iter_embedded_assets_for_setup_target, parse_setup_cli_options, resolve_setup_dispatch,
+        resolve_setup_mode, run_placeholder_setup_for_mode, setup_usage_text,
+        PlaceholderSetupService, SetupCliOptions, SetupDispatch, SetupMode, SetupRequest,
+        SetupService, SetupTarget,
     };
 
     #[derive(Clone, Copy, Debug)]
@@ -339,6 +392,135 @@ mod tests {
         )?;
 
         assert_eq!(dispatch, SetupDispatch::Cancelled);
+        Ok(())
+    }
+
+    #[test]
+    fn embedded_manifest_paths_are_sorted_and_normalized() {
+        for target in [SetupTarget::OpenCode, SetupTarget::Claude] {
+            let assets = assets_for_target(target);
+
+            assert!(!assets.is_empty(), "embedded asset set should not be empty");
+
+            let paths: Vec<&str> = assets.iter().map(|asset| asset.relative_path).collect();
+            assert_eq!(paths.len(), assets.len());
+
+            for asset in assets {
+                assert!(!asset.relative_path.is_empty());
+                assert!(!asset.relative_path.starts_with('/'));
+                assert!(!asset.relative_path.contains('\\'));
+                assert!(!asset.relative_path.starts_with("config/"));
+                assert!(
+                    !asset.bytes.is_empty(),
+                    "embedded files should have content bytes"
+                );
+            }
+
+            let mut sorted = paths.clone();
+            sorted.sort_unstable();
+            assert_eq!(
+                paths, sorted,
+                "embedded paths should be deterministic and sorted"
+            );
+        }
+    }
+
+    #[test]
+    fn embedded_manifest_matches_runtime_config_tree() -> Result<()> {
+        let opencode_expected =
+            collect_runtime_relative_paths(runtime_target_root(SetupTarget::OpenCode))?;
+        let claude_expected =
+            collect_runtime_relative_paths(runtime_target_root(SetupTarget::Claude))?;
+
+        let opencode_actual: Vec<String> = assets_for_target(SetupTarget::OpenCode)
+            .iter()
+            .map(|asset| asset.relative_path.to_string())
+            .collect();
+        let claude_actual: Vec<String> = assets_for_target(SetupTarget::Claude)
+            .iter()
+            .map(|asset| asset.relative_path.to_string())
+            .collect();
+
+        assert_eq!(opencode_actual, opencode_expected);
+        assert_eq!(claude_actual, claude_expected);
+        Ok(())
+    }
+
+    #[test]
+    fn embedded_setup_target_iterator_scopes_assets_per_target() {
+        let opencode_count = assets_for_target(SetupTarget::OpenCode).len();
+        let claude_count = assets_for_target(SetupTarget::Claude).len();
+
+        let iter_opencode_count =
+            iter_embedded_assets_for_setup_target(SetupTarget::OpenCode).count();
+        let iter_claude_count = iter_embedded_assets_for_setup_target(SetupTarget::Claude).count();
+        let iter_both_count = iter_embedded_assets_for_setup_target(SetupTarget::Both).count();
+
+        assert_eq!(iter_opencode_count, opencode_count);
+        assert_eq!(iter_claude_count, claude_count);
+        assert_eq!(iter_both_count, opencode_count + claude_count);
+    }
+
+    fn runtime_target_root(target: SetupTarget) -> PathBuf {
+        let target_relative = match target {
+            SetupTarget::OpenCode => "config/.opencode",
+            SetupTarget::Claude => "config/.claude",
+            SetupTarget::Both => unreachable!("both is not a concrete filesystem root"),
+        };
+
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("cli crate should be nested under repository root")
+            .join(target_relative)
+    }
+
+    fn assets_for_target(target: SetupTarget) -> &'static [super::EmbeddedAsset] {
+        match target {
+            SetupTarget::OpenCode => super::OPENCODE_EMBEDDED_ASSETS,
+            SetupTarget::Claude => super::CLAUDE_EMBEDDED_ASSETS,
+            SetupTarget::Both => unreachable!("both is not a single embedded target"),
+        }
+    }
+
+    fn collect_runtime_relative_paths(root: PathBuf) -> Result<Vec<String>> {
+        let mut files = Vec::new();
+        collect_runtime_files(&root, &root, &mut files)?;
+
+        files.sort_unstable();
+
+        let stable_paths = files
+            .into_iter()
+            .map(|path| {
+                path.to_str()
+                    .expect("runtime config path should be UTF-8")
+                    .replace('\\', "/")
+            })
+            .collect();
+
+        Ok(stable_paths)
+    }
+
+    fn collect_runtime_files(
+        base_root: &Path,
+        current_dir: &Path,
+        output: &mut Vec<PathBuf>,
+    ) -> Result<()> {
+        for entry in fs::read_dir(current_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if entry.file_type()?.is_dir() {
+                collect_runtime_files(base_root, &path, output)?;
+                continue;
+            }
+
+            let relative = path
+                .strip_prefix(base_root)
+                .expect("relative path should be under root")
+                .to_path_buf();
+            output.push(relative);
+        }
+
         Ok(())
     }
 }

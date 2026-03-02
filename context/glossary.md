@@ -15,6 +15,7 @@
 - `setup mode contract`: `cli/src/services/setup.rs` model where `SetupMode::Interactive` is the default and `SetupMode::NonInteractive(SetupTarget)` is selected only when exactly one target flag is provided.
 - `setup interactive target prompt`: `inquire::Select` flow in `cli/src/services/setup.rs` (`InquireSetupTargetPrompter`) that presents OpenCode, Claude, and Both when `sce setup` runs without target flags.
 - `setup dispatch outcome`: Execution model in `cli/src/services/setup.rs` (`SetupDispatch`) where setup either proceeds with a selected/non-interactive target or exits as cancelled without file changes.
+- `setup embedded asset manifest`: Compile-time generated file index emitted by `cli/build.rs` into `OUT_DIR/setup_embedded_assets.rs`, embedding bytes from `config/.opencode/**` and `config/.claude/**` as deterministic normalized relative-path entries consumed by `cli/src/services/setup.rs`.
 - `MCP capability snapshot`: Placeholder capability model in `cli/src/services/mcp.rs` that captures planned file-cache transport/tool contracts (`cache-put`, `cache-get`) and cache policy defaults without enabling runtime MCP execution.
 - `hook event model placeholder`: Contract set in `cli/src/services/hooks.rs` defining git-hook event envelopes and generated-region lifecycle placeholders for future listener integration.
 - `cloud sync gateway placeholder`: Abstraction in `cli/src/services/sync.rs` (`CloudSyncGateway`) that returns deferred cloud-sync checkpoints while `sync` remains non-production.

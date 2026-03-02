@@ -61,6 +61,7 @@
 - For setup-style command contracts, keep interactive mode as the zero-flag default and enforce mutually-exclusive explicit target flags for non-interactive automation.
 - For interactive setup flows, isolate prompt handling behind a service-layer prompter seam so selection mapping and cancellation behavior can be tested without a live TTY.
 - Treat setup prompt cancellation/interrupt as a non-destructive exit path with explicit user messaging (no file mutations and no partial side effects).
+- For setup install prep, generate compile-time embedded asset manifests from `config/.opencode/**` and `config/.claude/**` in `cli/build.rs`, keep relative paths normalized to forward-slash form, and expose target-scoped iterators from the setup service layer for installer wiring.
 - Keep module seams for future domains present and compile-safe even when behavior is deferred.
 - Keep dependency additions explicit and minimal in `cli/Cargo.toml`, and anchor dependency intent in lightweight compile-time code references (`cli/src/dependency_contract.rs`).
 - Route local Turso access through a dedicated adapter module (`cli/src/services/local_db.rs`) so command handlers do not expose low-level `turso` API details.

@@ -32,6 +32,7 @@ The repository now includes a placeholder Rust CLI crate at `cli/` for future SC
 Placeholder commands currently acknowledge planned behavior and do not claim production implementation.
 `setup`, `mcp`, and `hooks` now route through explicit service-contract placeholders.
 `setup` defaults to an `inquire` interactive target selection (OpenCode, Claude, Both) and accepts mutually-exclusive non-interactive target flags (`--opencode`, `--claude`, `--both`).
+`setup` now also exposes compile-time embedded config assets for OpenCode/Claude targets, sourced from `config/.opencode/**` and `config/.claude/**` via `cli/build.rs` with normalized forward-slash relative paths and target-scoped iteration APIs.
 `sync` includes a local Turso smoke gate and a placeholder cloud-sync gateway plan.
 
 ## Command loop and error model
@@ -42,7 +43,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - `sce setup --help` returns setup-specific usage output with target-flag contract details.
 - Interactive `sce setup` prompt cancellation/interrupt exits cleanly with: `Setup cancelled. No files were changed.`
 - Placeholder command handlers return explicit TODO messaging:
-  - `TODO: 'setup' is planned and not implemented yet. Setup mode '<interactive or --flag>' accepted; setup plan scaffolded with 3 deferred step(s).`
+  - `TODO: 'setup' is planned and not implemented yet. Setup mode '<interactive or --flag>' accepted; setup plan scaffolded with 3 deferred step(s). Embedded asset manifest is ready with <N> file(s).`
   - `TODO: 'mcp' is planned and not implemented yet. MCP file-cache surface defines 2 placeholder tool contract(s) with max 1024 entries.`
   - `TODO: 'hooks' is planned and not implemented yet. Hook event model reserves 2 git hook(s) with generated-region tracking placeholders.`
   - `TODO: 'sync' cloud workflows are planned and not implemented yet. Local Turso smoke check succeeded (1) row inserted; cloud sync plan holds 3 checkpoint(s).`
@@ -71,6 +72,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - `cli/src/services/local_db.rs` tests cover in-memory and file-backed local Turso initialization plus execute/query smoke checks.
 - `cli/src/services/sync.rs` test confirms `sync` runs the local smoke gate and returns deterministic placeholder messaging.
 - `cli/src/services/{setup,mcp,hooks,sync}.rs` include contract-focused tests for setup flag parsing/validation, interactive selection/cancellation dispatch, placeholder wiring, and non-runnable capability/event plans.
+- `cli/src/services/setup.rs` tests also verify embedded-manifest completeness against runtime `config/` trees, deterministic sorted path normalization, and target-scoped iterator behavior (`OpenCode`, `Claude`, `Both`).
 
 ## Dependency baseline
 
