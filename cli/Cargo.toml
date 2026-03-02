@@ -3,6 +3,14 @@ name = "sce"
 version = "0.1.0"
 edition = "2021"
 publish = false
+description = "Shared Context Engineering CLI scaffold"
+license = "Apache-2.0"
+repository = "https://github.com/crocoder-dev/shared-context-engineering"
+homepage = "https://sce.crocoder.dev"
+documentation = "https://sce.crocoder.dev/docs"
+readme = "README.md"
+keywords = ["cli", "automation", "developer-tools"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 anyhow = "1"

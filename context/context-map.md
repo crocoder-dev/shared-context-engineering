@@ -7,7 +7,7 @@ Primary context files:
 - `context/glossary.md`
 
 Feature/domain context:
-- `context/cli/placeholder-foundation.md` (CLI command surface, setup install flow, and nested flake release package/app installability)
+- `context/cli/placeholder-foundation.md` (CLI command surface, setup install flow, nested flake release package/app installability, and Cargo local install + crates.io readiness policy)
 - `context/sce/shared-context-code-workflow.md`
 
 Working areas:

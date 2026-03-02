@@ -8,6 +8,8 @@
 - `cli rust overlay toolchain`: Toolchain contract in `cli/flake.nix` that applies `rust-overlay.overlays.default`, selects `rust-bin.stable.latest.default` with `rustfmt`, and builds the CLI Rust platform via `makeRustPlatform`.
 - `cli flake release package`: Nested flake package output in `cli/flake.nix` exposed as `packages.sce` with `packages.default = packages.sce`, producing the release-build `sce` binary via `nix build ./cli#default`.
 - `cli flake runnable app`: Nested flake app output in `cli/flake.nix` exposed as `apps.sce`, executing `${packages.sce}/bin/sce` with passthrough args via `nix run ./cli#sce -- ...`.
+- `cli cargo local install contract`: Supported local CLI install command `cargo install --path cli --locked`, aligned with deterministic lockfile use for reproducible installs.
+- `cli crates.io readiness policy`: Current Cargo package posture in `cli/Cargo.toml` where crates.io-facing metadata is maintained but `publish = false` remains set until first-publish prerequisites are explicitly approved.
 - `sce` (CLI foundation): Rust binary crate at `cli/` with implemented setup installation flow and placeholder behavior for other command domains.
 - `command surface contract`: The static command catalog in `cli/src/command_surface.rs` that marks each top-level command as `implemented` or `placeholder`.
 - `command loop`: The `lexopt` parser + dispatcher in `cli/src/app.rs` that routes `help`, `setup`, `mcp`, `hooks`, and `sync`, executes setup installation, emits TODO placeholders for non-implemented commands, and returns deterministic actionable errors for invalid invocation.

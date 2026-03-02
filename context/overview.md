@@ -14,6 +14,7 @@ The `mcp` placeholder contract is now scoped to future file-cache workflows (`ca
 The `sync` placeholder performs a local Turso smoke check through a tokio-backed adapter and then reports a deferred cloud-sync plan from a placeholder gateway contract.
 The nested CLI flake (`cli/flake.nix`) now applies a Rust overlay-backed stable toolchain (with `rustfmt`) and uses that toolchain contract for CLI check/build derivations.
 The nested CLI flake now also exposes release install/run outputs: `packages.sce` (with `packages.default = packages.sce`) and `apps.sce`, so `nix build ./cli#default` and `nix run ./cli#sce -- --help` execute against the packaged `sce` binary.
+The CLI Cargo package metadata now includes crates.io-facing fields while keeping `publish = false`; local install/release flows are documented as `cargo install --path cli --locked` and `cargo build --manifest-path cli/Cargo.toml --release`.
 
 ## Repository model
 

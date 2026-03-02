@@ -85,7 +85,7 @@ Add a Rust toolchain overlay in `cli/` and wire deterministic Nix packaging so t
     - `nix run ./cli#sce -- --help` passed and printed CLI help from the packaged binary.
     - `nix flake check ./cli` passed after wiring new `packages`/`apps` outputs (with a non-blocking app `meta` warning).
 
-- [ ] T04: Prepare Cargo release/install path for local and future crates.io (status:todo)
+- [x] T04: Prepare Cargo release/install path for local and future crates.io (status:done)
   - Task ID: T04
   - Goal: Ensure crate metadata and release-build guidance support immediate local install and future crates.io publishing.
   - Boundaries (in/out of scope):
@@ -97,6 +97,14 @@ Add a Rust toolchain overlay in `cli/` and wire deterministic Nix packaging so t
   - Verification notes (commands or checks):
     - `cargo build --manifest-path cli/Cargo.toml --release`
     - `cargo install --path cli --locked`
+  - Implementation notes (2026-03-02):
+    - Added crates.io-facing package metadata to `cli/Cargo.toml` (`description`, `license`, `repository`, `homepage`, `documentation`, `readme`, `keywords`, `categories`) while keeping `publish = false` per readiness policy.
+    - Updated `cli/README.md` with explicit install/release guidance for Cargo (`cargo install --path cli --locked`, `cargo build --release`) and nested flake release surfaces (`nix build ./cli#default`, `nix run ./cli#sce -- --help`).
+    - Documented the future crates.io path as readiness-only: keep publish disabled now; before first publish, flip publish posture, verify metadata accuracy, and run `cargo publish --dry-run`.
+  - Evidence (2026-03-02):
+    - `cargo check --manifest-path cli/Cargo.toml` passed (non-blocking pre-existing dead-code warnings in `cli/src/services/setup.rs`).
+    - `cargo build --manifest-path cli/Cargo.toml --release` passed.
+    - `cargo install --path cli --locked` passed and installed `sce` to cargo bin.
 
 - [ ] T05: Sync context to current install/build contracts (status:todo)
   - Task ID: T05

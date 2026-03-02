@@ -17,7 +17,7 @@ The repository now includes a Rust CLI crate at `cli/` for SCE automation work.
 
 - `cli/README.md` includes quick-start commands for `help`, `setup`, `mcp`, `hooks`, and `sync`.
 - The README explicitly distinguishes implemented behavior from placeholders and maps future work to module contracts.
-- Verification guidance in the README uses crate-local `cargo check`, `cargo test`, and `cargo build` commands.
+- Verification guidance in the README uses crate-local `cargo check`, `cargo test`, and `cargo build` commands, plus release/install commands for current installability (`cargo build --manifest-path cli/Cargo.toml --release`, `cargo install --path cli --locked`).
 
 ## Nix release installability surface
 
@@ -26,6 +26,13 @@ The repository now includes a Rust CLI crate at `cli/` for SCE automation work.
 - Current verification commands for this surface are:
   - `nix build ./cli#default`
   - `nix run ./cli#sce -- --help`
+
+## Cargo release and future crates.io posture
+
+- `cli/Cargo.toml` includes crates.io-facing package metadata (`description`, `license`, `repository`, `homepage`, `documentation`, `readme`, `keywords`, `categories`) while keeping `publish = false`.
+- Current local install contract is `cargo install --path cli --locked`.
+- Current release build verification command is `cargo build --manifest-path cli/Cargo.toml --release`.
+- Future crates.io publication is readiness-only in this phase: before first publish, flip publish posture intentionally and run `cargo publish --manifest-path cli/Cargo.toml --dry-run` as a gate.
 
 ## Command surface contract
 
