@@ -1,14 +1,13 @@
 use std::process::ExitCode;
 
-use anyhow::{bail, Result};
-use lexopt::{Arg, ValueExt};
-
 use crate::{command_surface, dependency_contract, services};
+use anyhow::{bail, Result};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Command {
     Help,
-    Setup,
+    Setup(services::setup::SetupMode),
+    SetupHelp,
     Mcp,
     Hooks,
     Sync,
@@ -40,77 +39,93 @@ fn parse_command<I>(args: I) -> Result<Command>
 where
     I: IntoIterator<Item = String>,
 {
-    let mut args = args.into_iter();
-    let _program = args.next();
+    let mut argv: Vec<String> = args.into_iter().collect();
 
-    let mut parser = lexopt::Parser::from_args(args);
-    let mut command = None;
-
-    while let Some(arg) = parser.next()? {
-        match arg {
-            Arg::Long("help") | Arg::Short('h') => {
-                if command.is_some() {
-                    bail!("'--help' must be used by itself. Run 'sce --help'.");
-                }
-                command = Some(Command::Help);
-            }
-            Arg::Value(value) => {
-                let value = value.string()?;
-
-                if command.is_some() {
-                    bail!(
-                        "Unexpected extra argument '{}'. Run 'sce --help' to see valid usage.",
-                        value
-                    );
-                }
-
-                command = Some(parse_subcommand(&value)?);
-            }
-            Arg::Long(option) => {
-                bail!(
-                    "Unknown option '--{}'. Run 'sce --help' to see valid usage.",
-                    option
-                );
-            }
-            Arg::Short(option) => {
-                bail!(
-                    "Unknown option '-{}'. Run 'sce --help' to see valid usage.",
-                    option
-                );
-            }
-        }
+    if argv.is_empty() {
+        return Ok(Command::Help);
     }
 
-    Ok(command.unwrap_or(Command::Help))
+    let _program = argv.remove(0);
+
+    if argv.is_empty() {
+        return Ok(Command::Help);
+    }
+
+    if argv.len() == 1 && (argv[0] == "--help" || argv[0] == "-h") {
+        return Ok(Command::Help);
+    }
+
+    if argv[0].starts_with('-') {
+        let option = argv.remove(0);
+        if option.starts_with("--") {
+            bail!(
+                "Unknown option '{}'. Run 'sce --help' to see valid usage.",
+                option
+            );
+        }
+
+        bail!(
+            "Unknown option '{}'. Run 'sce --help' to see valid usage.",
+            option
+        );
+    }
+
+    let subcommand = argv.remove(0);
+    parse_subcommand(subcommand, argv)
 }
 
-fn parse_subcommand(value: &str) -> Result<Command> {
-    match value {
+fn parse_subcommand(value: String, tail_args: Vec<String>) -> Result<Command> {
+    match value.as_str() {
         "help" => Ok(Command::Help),
-        "setup" => Ok(Command::Setup),
-        "mcp" => Ok(Command::Mcp),
-        "hooks" => Ok(Command::Hooks),
-        "sync" => Ok(Command::Sync),
+        "setup" => parse_setup_subcommand(tail_args),
+        "mcp" => parse_non_setup_subcommand(Command::Mcp, tail_args),
+        "hooks" => parse_non_setup_subcommand(Command::Hooks, tail_args),
+        "sync" => parse_non_setup_subcommand(Command::Sync, tail_args),
         _ => {
-            if command_surface::is_known_command(value) {
+            if command_surface::is_known_command(&value) {
                 bail!(
                     "Command '{}' is currently unavailable in this build.",
-                    value
+                    value,
                 );
             }
 
             bail!(
                 "Unknown command '{}'. Run 'sce --help' to see the current command surface.",
-                value
+                value,
             );
         }
     }
 }
 
+fn parse_setup_subcommand(args: Vec<String>) -> Result<Command> {
+    let options = services::setup::parse_setup_cli_options(args)?;
+
+    if options.help {
+        return Ok(Command::SetupHelp);
+    }
+
+    let mode = services::setup::resolve_setup_mode(options)?;
+    Ok(Command::Setup(mode))
+}
+
+fn parse_non_setup_subcommand(command: Command, tail_args: Vec<String>) -> Result<Command> {
+    if tail_args.is_empty() {
+        return Ok(command);
+    }
+
+    bail!(
+        "Unexpected extra argument '{}'. Run 'sce --help' to see valid usage.",
+        tail_args[0]
+    );
+}
+
 fn dispatch(command: Command) -> Result<()> {
     match command {
         Command::Help => println!("{}", command_surface::help_text()),
-        Command::Setup => println!("{}", services::setup::run_placeholder_setup()?),
+        Command::Setup(mode) => {
+            println!("{}", services::setup::run_placeholder_setup_for_mode(mode)?);
+        }
+        Command::SetupHelp => println!("{}", services::setup::setup_usage_text()),
         Command::Mcp => println!("{}", services::mcp::run_placeholder_mcp()?),
         Command::Hooks => println!("{}", services::hooks::run_placeholder_hooks()?),
         Command::Sync => println!("{}", services::sync::run_placeholder_sync()?),
@@ -123,6 +138,8 @@ fn dispatch(command: Command) -> Result<()> {
 mod tests {
     use std::process::ExitCode;
 
+    use crate::services::setup::{SetupMode, SetupTarget};
+
     use super::{parse_command, run, Command};
 
     #[test]
@@ -134,6 +151,16 @@ mod tests {
     #[test]
     fn placeholder_command_exits_success() {
         let code = run(vec!["sce".to_string(), "setup".to_string()]);
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn setup_help_exits_success() {
+        let code = run(vec![
+            "sce".to_string(),
+            "setup".to_string(),
+            "--help".to_string(),
+        ]);
         assert_eq!(code, ExitCode::SUCCESS);
     }
 
@@ -160,6 +187,42 @@ mod tests {
         let command = parse_command(vec!["sce".to_string(), "hooks".to_string()])
             .expect("command should parse");
         assert_eq!(command, Command::Hooks);
+    }
+
+    #[test]
+    fn parser_routes_setup_opencode_flag_to_non_interactive_mode() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "setup".to_string(),
+            "--opencode".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(
+            command,
+            Command::Setup(SetupMode::NonInteractive(SetupTarget::OpenCode,))
+        );
+    }
+
+    #[test]
+    fn parser_routes_setup_without_flags_to_interactive_mode() {
+        let command = parse_command(vec!["sce".to_string(), "setup".to_string()])
+            .expect("command should parse");
+        assert_eq!(command, Command::Setup(SetupMode::Interactive));
+    }
+
+    #[test]
+    fn parser_rejects_setup_mutually_exclusive_flags() {
+        let error = parse_command(vec![
+            "sce".to_string(),
+            "setup".to_string(),
+            "--opencode".to_string(),
+            "--claude".to_string(),
+        ])
+        .expect_err("mutually exclusive flags should fail");
+        assert_eq!(
+            error.to_string(),
+            "Options '--opencode', '--claude', and '--both' are mutually exclusive. Choose exactly one target flag or none for interactive mode."
+        );
     }
 
     #[test]
@@ -192,7 +255,7 @@ mod tests {
         .expect_err("extra argument should fail");
         assert_eq!(
             error.to_string(),
-            "Unexpected extra argument 'extra'. Run 'sce --help' to see valid usage."
+            "Unexpected setup argument 'extra'. Run 'sce setup --help' to see valid usage."
         );
     }
 }

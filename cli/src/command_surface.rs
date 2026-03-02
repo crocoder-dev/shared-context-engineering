@@ -49,6 +49,7 @@ pub fn help_text() -> String {
     let mut out = String::new();
     out.push_str("sce - Shared Context Engineering CLI (placeholder foundation)\n\n");
     out.push_str("Usage:\n  sce [command]\n\n");
+    out.push_str("Setup usage:\n  sce setup [--opencode|--claude|--both]\n\n");
     out.push_str("Commands:\n");
 
     for command in COMMANDS {
@@ -63,13 +64,17 @@ pub fn help_text() -> String {
         ));
     }
 
-    out.push_str("\nOnly command-surface scaffolding is implemented in this task slice.\n");
+    out.push_str(
+        "\nSetup defaults to interactive target selection when no setup target flag is passed.\n",
+    );
+    out.push_str("Only command-surface scaffolding is implemented in this task slice.\n");
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::{ImplementationStatus, COMMANDS};
+    use crate::command_surface::help_text;
 
     #[test]
     fn command_surface_marks_placeholder_boundaries() {
@@ -79,5 +84,11 @@ mod tests {
         assert!(COMMANDS
             .iter()
             .any(|command| command.status == ImplementationStatus::Placeholder));
+    }
+
+    #[test]
+    fn help_text_mentions_setup_target_flags() {
+        let help = help_text();
+        assert!(help.contains("sce setup [--opencode|--claude|--both]"));
     }
 }
