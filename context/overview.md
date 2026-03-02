@@ -9,6 +9,7 @@ The CLI crate currently enforces a minimal dependency contract: `anyhow`, `inqui
 Its command loop is implemented with `lexopt` argument parsing and `anyhow` error handling, with deterministic placeholder dispatch for `setup`, `mcp`, and `hooks` through explicit service contracts.
 The `setup` placeholder now includes an `inquire`-backed target-selection flow: default interactive selection for OpenCode/Claude/both, explicit non-interactive target flags (`--opencode`, `--claude`, `--both`), deterministic mutually-exclusive validation, and non-destructive cancellation exits.
 The CLI now compiles an embedded setup asset manifest from `config/.opencode/**` and `config/.claude/**` via `cli/build.rs`; `cli/src/services/setup.rs` exposes deterministic normalized relative paths plus file bytes and target-scoped iteration without runtime reads from `config/`.
+The setup service now also provides a repository-root install engine that stages embedded assets and performs backup-and-replace for `.opencode/` and `.claude/` with rollback restoration on swap failure; CLI end-to-end orchestration and messaging remain deferred to follow-on setup wiring.
 The `mcp` placeholder contract is now scoped to future file-cache workflows (`cache-put`/`cache-get`) and remains intentionally non-runnable.
 The `sync` placeholder performs a local Turso smoke check through a tokio-backed adapter and then reports a deferred cloud-sync plan from a placeholder gateway contract.
 

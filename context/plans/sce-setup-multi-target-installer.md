@@ -57,7 +57,7 @@ Implement `sce setup` so it can install repository config for OpenCode, Claude, 
   - Verification notes (commands or checks):
     - Unit tests for embedded manifest completeness and path normalization.
 
-- [ ] T04: Build repository-root install engine with backup-and-replace safety (status:todo)
+- [x] T04: Build repository-root install engine with backup-and-replace safety (status:done)
   - Task ID: T04
   - Goal: Install selected embedded assets into `.opencode/` and/or `.claude/` using safe replacement semantics.
   - Boundaries (in/out of scope):

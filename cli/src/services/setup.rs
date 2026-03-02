@@ -1,6 +1,11 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use inquire::{InquireError, Select};
 use lexopt::{Arg, ValueExt};
+use std::{
+    fs, io,
+    path::{Component, Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 pub const NAME: &str = "setup";
 
@@ -129,6 +134,251 @@ pub fn run_placeholder_setup_for_mode(mode: SetupMode) -> Result<String> {
         "TODO: '{NAME}' is planned and not implemented yet. Setup mode '{mode_label}' accepted; setup plan scaffolded with {} deferred step(s). Embedded asset manifest is ready with {embedded_asset_count} file(s).",
         plan.tasks.len()
     ))
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SetupInstallTargetResult {
+    pub target: SetupTarget,
+    pub destination_root: PathBuf,
+    pub backup_root: Option<PathBuf>,
+    pub installed_file_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SetupInstallOutcome {
+    pub target_results: Vec<SetupInstallTargetResult>,
+}
+
+pub fn install_embedded_setup_assets(
+    repository_root: &Path,
+    target: SetupTarget,
+) -> Result<SetupInstallOutcome> {
+    install_embedded_setup_assets_with_rename(repository_root, target, |from, to| {
+        fs::rename(from, to)
+    })
+}
+
+fn install_embedded_setup_assets_with_rename<F>(
+    repository_root: &Path,
+    target: SetupTarget,
+    mut rename_fn: F,
+) -> Result<SetupInstallOutcome>
+where
+    F: FnMut(&Path, &Path) -> io::Result<()>,
+{
+    let mut target_results = Vec::new();
+
+    for concrete_target in concrete_targets_for(target) {
+        let concrete_target = *concrete_target;
+        let assets = assets_for_target(concrete_target);
+        let result = install_assets_for_concrete_target_with_rename(
+            repository_root,
+            concrete_target,
+            assets,
+            &mut rename_fn,
+        )?;
+        target_results.push(result);
+    }
+
+    Ok(SetupInstallOutcome { target_results })
+}
+
+fn install_assets_for_concrete_target_with_rename<F>(
+    repository_root: &Path,
+    target: SetupTarget,
+    assets: &'static [EmbeddedAsset],
+    rename_fn: &mut F,
+) -> Result<SetupInstallTargetResult>
+where
+    F: FnMut(&Path, &Path) -> io::Result<()>,
+{
+    let destination_root = repository_root.join(target_install_directory_name(target));
+    let staging_root = create_staging_root(repository_root, target)?;
+
+    if let Err(error) = write_assets_to_staging(&staging_root, assets) {
+        cleanup_path_if_exists(&staging_root);
+        return Err(error);
+    }
+
+    let mut backup_root = None;
+
+    if destination_root.exists() {
+        let backup_path = next_backup_path(&destination_root)?;
+        rename_fn(&destination_root, &backup_path).with_context(|| {
+            format!(
+                "Failed to move existing target '{}' to backup '{}'",
+                destination_root.display(),
+                backup_path.display()
+            )
+        })?;
+        backup_root = Some(backup_path);
+    }
+
+    if let Err(error) = rename_fn(&staging_root, &destination_root).with_context(|| {
+        format!(
+            "Failed to swap staged install '{}' into destination '{}'",
+            staging_root.display(),
+            destination_root.display()
+        )
+    }) {
+        cleanup_path_if_exists(&staging_root);
+
+        if let Some(backup_path) = backup_root.as_ref() {
+            if !destination_root.exists() {
+                if let Err(restore_error) = rename_fn(backup_path, &destination_root) {
+                    return Err(error.context(format!(
+                        "Rollback failed while restoring '{}' from backup '{}': {}",
+                        destination_root.display(),
+                        backup_path.display(),
+                        restore_error
+                    )));
+                }
+            }
+        }
+
+        return Err(error);
+    }
+
+    Ok(SetupInstallTargetResult {
+        target,
+        destination_root,
+        backup_root,
+        installed_file_count: assets.len(),
+    })
+}
+
+fn write_assets_to_staging(staging_root: &Path, assets: &'static [EmbeddedAsset]) -> Result<()> {
+    for asset in assets {
+        validate_embedded_relative_path(asset.relative_path)?;
+        let destination = staging_root.join(asset.relative_path);
+        let parent = destination
+            .parent()
+            .context("Embedded asset destination should have a parent directory")?;
+
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "Failed to create staged parent directory '{}'",
+                parent.display()
+            )
+        })?;
+
+        fs::write(&destination, asset.bytes).with_context(|| {
+            format!(
+                "Failed to write staged embedded asset '{}'",
+                destination.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn validate_embedded_relative_path(relative_path: &str) -> Result<()> {
+    let path = Path::new(relative_path);
+
+    if path.is_absolute() {
+        bail!(
+            "Embedded asset path '{}' must be relative, not absolute",
+            relative_path
+        );
+    }
+
+    for component in path.components() {
+        match component {
+            Component::Normal(_) => {}
+            _ => {
+                bail!(
+                    "Embedded asset path '{}' contains disallowed component",
+                    relative_path
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn create_staging_root(repository_root: &Path, target: SetupTarget) -> Result<PathBuf> {
+    let target_label = target_install_directory_name(target).trim_start_matches('.');
+    let epoch_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("System clock is before UNIX_EPOCH")?
+        .as_nanos();
+
+    for attempt in 0..1000_u16 {
+        let candidate = repository_root.join(format!(
+            ".sce-setup-staging-{target_label}-{epoch_nanos}-{}-{attempt}",
+            std::process::id()
+        ));
+
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Failed to create staging directory '{}'",
+                        candidate.display()
+                    )
+                });
+            }
+        }
+    }
+
+    bail!(
+        "Could not allocate a unique staging directory under '{}'",
+        repository_root.display()
+    )
+}
+
+fn next_backup_path(destination_root: &Path) -> Result<PathBuf> {
+    let base_name = destination_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("Target destination root should have a valid UTF-8 file name")?;
+
+    for suffix in std::iter::once(String::new()).chain((1_u16..).map(|i| format!(".{i}"))) {
+        let candidate = destination_root.with_file_name(format!("{base_name}.backup{suffix}"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    unreachable!("backup suffix iterator is unbounded")
+}
+
+fn target_install_directory_name(target: SetupTarget) -> &'static str {
+    match target {
+        SetupTarget::OpenCode => ".opencode",
+        SetupTarget::Claude => ".claude",
+        SetupTarget::Both => unreachable!("both is expanded into concrete targets"),
+    }
+}
+
+fn concrete_targets_for(target: SetupTarget) -> &'static [SetupTarget] {
+    match target {
+        SetupTarget::OpenCode => &[SetupTarget::OpenCode],
+        SetupTarget::Claude => &[SetupTarget::Claude],
+        SetupTarget::Both => &[SetupTarget::OpenCode, SetupTarget::Claude],
+    }
+}
+
+fn assets_for_target(target: SetupTarget) -> &'static [EmbeddedAsset] {
+    match target {
+        SetupTarget::OpenCode => OPENCODE_EMBEDDED_ASSETS,
+        SetupTarget::Claude => CLAUDE_EMBEDDED_ASSETS,
+        SetupTarget::Both => unreachable!("both is not a concrete embedded target"),
+    }
+}
+
+fn cleanup_path_if_exists(path: &Path) {
+    let cleanup_result = if path.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    };
+
+    let _ = cleanup_result;
 }
 
 pub trait SetupTargetPrompter {
@@ -271,13 +521,16 @@ pub fn resolve_setup_mode(options: SetupCliOptions) -> Result<SetupMode> {
 #[cfg(test)]
 mod tests {
     use std::{
-        fs,
+        cell::Cell,
+        fs, io,
         path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
     };
 
     use anyhow::Result;
 
     use super::{
+        install_embedded_setup_assets, install_embedded_setup_assets_with_rename,
         iter_embedded_assets_for_setup_target, parse_setup_cli_options, resolve_setup_dispatch,
         resolve_setup_mode, run_placeholder_setup_for_mode, setup_usage_text,
         PlaceholderSetupService, SetupCliOptions, SetupDispatch, SetupMode, SetupRequest,
@@ -461,6 +714,109 @@ mod tests {
         assert_eq!(iter_both_count, opencode_count + claude_count);
     }
 
+    #[test]
+    fn install_engine_replaces_existing_target_with_backup() -> Result<()> {
+        let temp = TestTempDir::new()?;
+        let existing_target = temp.path().join(".opencode");
+        fs::create_dir_all(existing_target.join("legacy"))?;
+        fs::write(existing_target.join("legacy/config.txt"), b"legacy")?;
+
+        let outcome = install_embedded_setup_assets(temp.path(), SetupTarget::OpenCode)?;
+        assert_eq!(outcome.target_results.len(), 1);
+
+        let result = &outcome.target_results[0];
+        assert_eq!(result.target, SetupTarget::OpenCode);
+        assert_eq!(result.destination_root, temp.path().join(".opencode"));
+        assert_eq!(
+            result.installed_file_count,
+            assets_for_target(SetupTarget::OpenCode).len()
+        );
+
+        let backup_root = result
+            .backup_root
+            .as_ref()
+            .expect("existing target should have backup path");
+        assert!(backup_root.exists());
+        assert!(backup_root.join("legacy/config.txt").exists());
+
+        let installed_paths = collect_runtime_relative_paths(result.destination_root.clone())?;
+        let expected_paths: Vec<String> = assets_for_target(SetupTarget::OpenCode)
+            .iter()
+            .map(|asset| asset.relative_path.to_string())
+            .collect();
+        assert_eq!(installed_paths, expected_paths);
+        Ok(())
+    }
+
+    #[test]
+    fn install_engine_installs_both_targets() -> Result<()> {
+        let temp = TestTempDir::new()?;
+
+        let outcome = install_embedded_setup_assets(temp.path(), SetupTarget::Both)?;
+        assert_eq!(outcome.target_results.len(), 2);
+
+        let opencode_paths = collect_runtime_relative_paths(temp.path().join(".opencode"))?;
+        let claude_paths = collect_runtime_relative_paths(temp.path().join(".claude"))?;
+
+        let expected_opencode: Vec<String> = assets_for_target(SetupTarget::OpenCode)
+            .iter()
+            .map(|asset| asset.relative_path.to_string())
+            .collect();
+        let expected_claude: Vec<String> = assets_for_target(SetupTarget::Claude)
+            .iter()
+            .map(|asset| asset.relative_path.to_string())
+            .collect();
+
+        assert_eq!(opencode_paths, expected_opencode);
+        assert_eq!(claude_paths, expected_claude);
+        Ok(())
+    }
+
+    #[test]
+    fn install_engine_rolls_back_when_swap_fails() -> Result<()> {
+        let temp = TestTempDir::new()?;
+        let destination = temp.path().join(".opencode");
+        fs::create_dir_all(&destination)?;
+        fs::write(destination.join("legacy.txt"), b"legacy")?;
+
+        let rename_calls = Cell::new(0_u8);
+        let error = install_embedded_setup_assets_with_rename(
+            temp.path(),
+            SetupTarget::OpenCode,
+            |from, to| {
+                rename_calls.set(rename_calls.get() + 1);
+                if rename_calls.get() == 2 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        "injected swap failure",
+                    ));
+                }
+
+                fs::rename(from, to)
+            },
+        )
+        .expect_err("swap failure should bubble up as an error");
+
+        assert!(error.to_string().contains("Failed to swap staged install"));
+        assert!(destination.exists());
+        assert!(destination.join("legacy.txt").exists());
+
+        let backup = temp.path().join(".opencode.backup");
+        assert!(!backup.exists(), "rollback should restore original path");
+
+        for entry in fs::read_dir(temp.path())? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            assert!(
+                !name.starts_with(".sce-setup-staging-opencode-"),
+                "staging directory should be cleaned up after failure"
+            );
+        }
+
+        Ok(())
+    }
+
     fn runtime_target_root(target: SetupTarget) -> PathBuf {
         let target_relative = match target {
             SetupTarget::OpenCode => "config/.opencode",
@@ -479,6 +835,37 @@ mod tests {
             SetupTarget::OpenCode => super::OPENCODE_EMBEDDED_ASSETS,
             SetupTarget::Claude => super::CLAUDE_EMBEDDED_ASSETS,
             SetupTarget::Both => unreachable!("both is not a single embedded target"),
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestTempDir {
+        path: PathBuf,
+    }
+
+    impl TestTempDir {
+        fn new() -> Result<Self> {
+            let epoch_nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "sce-setup-install-tests-{}-{}",
+                std::process::id(),
+                epoch_nanos
+            ));
+            fs::create_dir_all(&path)?;
+            Ok(Self { path })
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestTempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
         }
     }
 
