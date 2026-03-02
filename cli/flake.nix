@@ -60,6 +60,9 @@
         apps.sce = {
           type = "app";
           program = "${scePackage}/bin/sce";
+          meta = {
+            description = "Run the packaged sce CLI";
+          };
         };
 
         checks.cli-setup-command-surface = rustPlatform.buildRustPackage {

@@ -4,9 +4,11 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    rust-overlay.url = "github:oxalica/rust-overlay";
     cli.url = "path:./cli";
     cli.inputs.nixpkgs.follows = "nixpkgs";
     cli.inputs.flake-utils.follows = "flake-utils";
+    cli.inputs.rust-overlay.follows = "rust-overlay";
   };
 
   outputs =
@@ -14,6 +16,7 @@
       self,
       nixpkgs,
       flake-utils,
+      rust-overlay,
       cli,
     }:
     flake-utils.lib.eachDefaultSystem (
@@ -214,6 +217,9 @@
         apps.sync-opencode-config = {
           type = "app";
           program = "${syncOpencodeConfigApp}/bin/sync-opencode-config";
+          meta = {
+            description = "Regenerate and sync config/.opencode outputs";
+          };
         };
 
         devShells.default = pkgs.mkShell {

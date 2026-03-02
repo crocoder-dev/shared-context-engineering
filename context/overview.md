@@ -15,6 +15,7 @@ The `sync` placeholder performs a local Turso smoke check through a tokio-backed
 The nested CLI flake (`cli/flake.nix`) now applies a Rust overlay-backed stable toolchain (with `rustfmt`) and uses that toolchain contract for CLI check/build derivations.
 The nested CLI flake now also exposes release install/run outputs: `packages.sce` (with `packages.default = packages.sce`) and `apps.sce`, so `nix build ./cli#default` and `nix run ./cli#sce -- --help` execute against the packaged `sce` binary.
 The CLI Cargo package metadata now includes crates.io-facing fields while keeping `publish = false`; local install/release flows are documented as `cargo install --path cli --locked` and `cargo build --manifest-path cli/Cargo.toml --release`.
+The repository-root flake now keeps nested CLI flake input wiring coherent by passing through `nixpkgs`, `flake-utils`, and `rust-overlay`, so root-level `nix flake check` can evaluate CLI checks without missing-input failures.
 
 ## Repository model
 

@@ -10,6 +10,7 @@
 - `cli flake runnable app`: Nested flake app output in `cli/flake.nix` exposed as `apps.sce`, executing `${packages.sce}/bin/sce` with passthrough args via `nix run ./cli#sce -- ...`.
 - `cli cargo local install contract`: Supported local CLI install command `cargo install --path cli --locked`, aligned with deterministic lockfile use for reproducible installs.
 - `cli crates.io readiness policy`: Current Cargo package posture in `cli/Cargo.toml` where crates.io-facing metadata is maintained but `publish = false` remains set until first-publish prerequisites are explicitly approved.
+- `root-to-cli flake input coherence`: Root `flake.nix` contract that forwards `nixpkgs`, `flake-utils`, and `rust-overlay` to the nested `cli` path input (`cli.inputs.<name>.follows`) so `nix flake check` can evaluate nested CLI outputs without missing-input failures.
 - `sce` (CLI foundation): Rust binary crate at `cli/` with implemented setup installation flow and placeholder behavior for other command domains.
 - `command surface contract`: The static command catalog in `cli/src/command_surface.rs` that marks each top-level command as `implemented` or `placeholder`.
 - `command loop`: The `lexopt` parser + dispatcher in `cli/src/app.rs` that routes `help`, `setup`, `mcp`, `hooks`, and `sync`, executes setup installation, emits TODO placeholders for non-implemented commands, and returns deterministic actionable errors for invalid invocation.

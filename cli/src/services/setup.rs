@@ -170,11 +170,12 @@ where
 
     for concrete_target in concrete_targets_for(target) {
         let concrete_target = *concrete_target;
-        let assets = assets_for_target(concrete_target);
+        let assets: Vec<&'static EmbeddedAsset> =
+            iter_embedded_assets_for_setup_target(concrete_target).collect();
         let result = install_assets_for_concrete_target_with_rename(
             repository_root,
             concrete_target,
-            assets,
+            &assets,
             &mut rename_fn,
         )?;
         target_results.push(result);
@@ -186,7 +187,7 @@ where
 fn install_assets_for_concrete_target_with_rename<F>(
     repository_root: &Path,
     target: SetupTarget,
-    assets: &'static [EmbeddedAsset],
+    assets: &[&'static EmbeddedAsset],
     rename_fn: &mut F,
 ) -> Result<SetupInstallTargetResult>
 where
@@ -247,7 +248,7 @@ where
     })
 }
 
-fn write_assets_to_staging(staging_root: &Path, assets: &'static [EmbeddedAsset]) -> Result<()> {
+fn write_assets_to_staging(staging_root: &Path, assets: &[&'static EmbeddedAsset]) -> Result<()> {
     for asset in assets {
         validate_embedded_relative_path(asset.relative_path)?;
         let destination = staging_root.join(asset.relative_path);
@@ -360,14 +361,6 @@ fn concrete_targets_for(target: SetupTarget) -> &'static [SetupTarget] {
         SetupTarget::OpenCode => &[SetupTarget::OpenCode],
         SetupTarget::Claude => &[SetupTarget::Claude],
         SetupTarget::Both => &[SetupTarget::OpenCode, SetupTarget::Claude],
-    }
-}
-
-fn assets_for_target(target: SetupTarget) -> &'static [EmbeddedAsset] {
-    match target {
-        SetupTarget::OpenCode => OPENCODE_EMBEDDED_ASSETS,
-        SetupTarget::Claude => CLAUDE_EMBEDDED_ASSETS,
-        SetupTarget::Both => unreachable!("both is not a concrete embedded target"),
     }
 }
 

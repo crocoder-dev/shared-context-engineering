@@ -80,6 +80,7 @@ The repository includes a new placeholder Rust binary crate at `cli/`.
 - `cli/README.md` is the crate-local onboarding and usage source of truth for placeholder behavior, safety limitations, and roadmap mapping back to service contracts.
 - `cli/flake.nix` applies `rust-overlay` (`oxalica/rust-overlay`) to nixpkgs, selects `rust-bin.stable.latest.default` with `rustfmt`, and routes CLI check/build derivations through `makeRustPlatform` so toolchain selection is explicit and deterministic.
 - `cli/flake.nix` exposes release install/run surfaces as `packages.sce` (`packages.default = packages.sce`) and `apps.sce` targeting `${packages.sce}/bin/sce`, enabling packaged CLI build/run via `nix build ./cli#default` and `nix run ./cli#sce -- ...`.
+- `flake.nix` (root) keeps nested CLI input wiring aligned by forwarding `nixpkgs`, `flake-utils`, and `rust-overlay` into the `cli` path input so repository-level `nix flake check` can evaluate nested CLI checks deterministically.
 - `cli/Cargo.toml` keeps crates.io-ready package metadata populated while `publish = false` remains the current policy; local Cargo release/install verification targets `cargo build --manifest-path cli/Cargo.toml --release` and `cargo install --path cli --locked`.
 
 This phase establishes compile-safe extension seams with a minimal dependency baseline (`anyhow`, `inquire`, `lexopt`, `tokio`, `turso`); local Turso connectivity smoke checks now exist, while broader runtime integrations remain deferred.

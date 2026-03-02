@@ -23,6 +23,7 @@ The repository now includes a Rust CLI crate at `cli/` for SCE automation work.
 
 - `cli/flake.nix` exposes `packages.sce` and `packages.default = packages.sce` for packaged release builds.
 - `cli/flake.nix` exposes `apps.sce` pointing to `${packages.sce}/bin/sce` for runnable packaged CLI execution.
+- Root `flake.nix` forwards nested CLI flake inputs (`nixpkgs`, `flake-utils`, `rust-overlay`) so repository-level `nix flake check` can evaluate CLI checks without nested-input resolution failures.
 - Current verification commands for this surface are:
   - `nix build ./cli#default`
   - `nix run ./cli#sce -- --help`

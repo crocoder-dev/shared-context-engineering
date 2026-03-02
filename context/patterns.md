@@ -9,6 +9,7 @@
 
 - Expose operational workflows as flake apps so commands are stable and system-mapped across supported `flake-utils` default systems.
 - Current repo command contract: `nix run .#sync-opencode-config` is the canonical entrypoint for staged regeneration/replacement of `config/` and replacement of repository-root `.opencode/` from regenerated `config/.opencode/`.
+- For flake app outputs, include `meta.description` so `nix flake check` app validation stays warning-free.
 - For destructive config replacement flows, regenerate into a temporary staged `config/` first, validate required generated directories exist, and only then swap live `config/`.
 - For destructive root `.opencode/` replacement flows, keep exclusions explicit (for example `node_modules`), use backup-and-restore around swap, and run a source/target tree parity check with the same exclusions.
 - Keep command help available via `nix run .#sync-opencode-config -- --help` to provide deterministic usage checks during incremental implementation.
@@ -73,5 +74,6 @@
 - Keep crate-local onboarding docs in `cli/README.md` and sanity-check command examples against actual `sce` output whenever command messaging changes.
 - Keep targeted CLI command-surface verification in flake checks: `checks.<system>.cli-setup-command-surface` runs from `cli/` and executes `cargo fmt --check` plus focused setup-related tests (`help_text_mentions_setup_target_flags`, `parser_routes_setup`, `run_setup_reports`).
 - In `cli/flake.nix`, select the Rust toolchain via an explicit Rust overlay (`rust-overlay`) and thread that toolchain through `makeRustPlatform` so CLI check/build derivations do not rely on implicit nixpkgs Rust defaults.
+- When the root flake imports a nested path flake that requires additional inputs (for example `rust-overlay` in `cli/flake.nix`), mirror those inputs in the root `inputs` block and wire `cli.inputs.<name>.follows` so root-level checks do not fail from missing nested flake arguments.
 - For installable CLI release surfaces in nested flakes, expose an explicit named package plus default alias (`packages.sce` and `packages.default = packages.sce`) and pair it with a runnable app output (`apps.sce`) that points to the packaged binary path.
 - For Cargo-based local CLI installation, document and verify `cargo install --path cli --locked` alongside a release build check (`cargo build --manifest-path cli/Cargo.toml --release`), and keep `publish = false` until explicit first-publish approval.

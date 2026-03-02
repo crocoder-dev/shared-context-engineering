@@ -106,7 +106,7 @@ Add a Rust toolchain overlay in `cli/` and wire deterministic Nix packaging so t
     - `cargo build --manifest-path cli/Cargo.toml --release` passed.
     - `cargo install --path cli --locked` passed and installed `sce` to cargo bin.
 
-- [ ] T05: Sync context to current install/build contracts (status:todo)
+- [x] T05: Sync context to current install/build contracts (status:done)
   - Task ID: T05
   - Goal: Update context records so future sessions understand the new Nix/Cargo install surfaces and release-build flow.
   - Boundaries (in/out of scope):
@@ -117,8 +117,14 @@ Add a Rust toolchain overlay in `cli/` and wire deterministic Nix packaging so t
     - Crates.io status is represented as future-ready (not yet published) unless implementation scope changes.
   - Verification notes (commands or checks):
     - Context/code consistency spot-check between flake/Cargo/docs and updated context entries.
+  - Implementation notes (2026-03-03):
+    - Verified mandatory context sync targets (`context/overview.md`, `context/architecture.md`, `context/glossary.md`) against current code/docs (`cli/flake.nix`, `cli/Cargo.toml`, `cli/README.md`) and applied current-state wording updates where relevant.
+    - Updated shared context references with root-to-nested flake input coherence details in `context/overview.md`, `context/architecture.md`, `context/patterns.md`, and `context/glossary.md`.
+    - Confirmed durable feature documentation remains in `context/cli/placeholder-foundation.md` and is discoverable via `context/context-map.md`.
+  - Evidence (2026-03-03):
+    - Context spot-check completed with no remaining drift for Nix/Cargo install and release-build contracts.
 
-- [ ] T06: Validation and cleanup (status:todo)
+- [x] T06: Validation and cleanup (status:done)
   - Task ID: T06
   - Goal: Run complete verification for the new build/install pathways and leave the workspace clean of temporary artifacts.
   - Boundaries (in/out of scope):
@@ -135,8 +141,44 @@ Add a Rust toolchain overlay in `cli/` and wire deterministic Nix packaging so t
     - `nix run ./cli#sce -- --help`
     - `cargo build --manifest-path cli/Cargo.toml --release`
     - `cargo install --path cli --locked`
+  - Implementation notes (2026-03-03):
+    - Resolved repository/root flake coherence failure by wiring `rust-overlay` in root `flake.nix` and forwarding it into the nested `cli` flake input (`cli.inputs.rust-overlay.follows = "rust-overlay"`).
+    - Updated `flake.lock` to include `rust-overlay` and `cli/rust-overlay` follow wiring so nested CLI checks evaluate under root `nix flake check`.
+  - Evidence (2026-03-03):
+    - `nix flake check` passed after flake input wiring fix (non-blocking app `meta` warning only).
+    - `nix flake check ./cli` passed (non-blocking app `meta` warning only).
+    - `nix build ./cli#default` passed.
+    - `nix run ./cli#sce -- --help` passed and printed CLI help from packaged binary.
+    - `cargo build --manifest-path cli/Cargo.toml --release` passed (non-blocking pre-existing dead-code warnings in `cli/src/services/setup.rs`).
+    - `cargo install --path cli --locked` passed and replaced the local `sce` cargo-bin install.
+  - Follow-up polish (2026-03-03):
+    - Added `meta.description` for `apps.sce` in `cli/flake.nix` and `apps.sync-opencode-config` in root `flake.nix`; `nix flake check` and `nix flake check ./cli` no longer emit app `meta` warnings.
+    - Refactored setup install asset selection to consume `iter_embedded_assets_for_setup_target(...)` in production install flow, removing dead-code warnings for embedded-asset iterator code in release builds.
+    - Re-verified with `cargo build --manifest-path cli/Cargo.toml --release` (exit 0), `nix flake check ./cli` (exit 0), and `nix flake check` (exit 0).
 
-## 5) Open questions
+## 5) Validation report (2026-03-03)
+
+- Commands run (final pass):
+  - `nix flake check` (exit 0)
+  - `nix flake check ./cli` (exit 0)
+  - `nix build ./cli#default` (exit 0)
+  - `nix run ./cli#sce -- --help` (exit 0)
+  - `cargo build --manifest-path cli/Cargo.toml --release` (exit 0)
+  - `cargo install --path cli --locked` (exit 0)
+- Failed checks and follow-ups:
+  - Initial `nix flake check` failed due to nested flake input mismatch (`rust-overlay` missing in root wiring).
+  - Follow-up fix: added root flake `rust-overlay` input, forwarded `cli.inputs.rust-overlay.follows`, refreshed `flake.lock`; subsequent checks passed.
+- Success-criteria verification summary:
+  - Rust overlay-backed CLI toolchain contract is active and check/build derivations evaluate.
+  - Nix release package/app outputs are buildable and runnable (`./cli#default`, `./cli#sce`).
+  - Cargo release/install flow remains verified (`cargo build --release`, `cargo install --path cli --locked`) with crates.io posture still readiness-only (`publish = false`).
+  - Root flake wiring is coherent with nested CLI flake input requirements.
+  - Context was synced and now reflects current install/build contracts.
+- Cleanup and residual risk:
+  - No task-scoped temporary artifacts were left behind.
+  - No known blocking verification warnings remain for the validated command set.
+
+## 6) Open questions
 - None.
 
 ## Assumptions
