@@ -19,6 +19,14 @@ The repository now includes a Rust CLI crate at `cli/` for SCE automation work.
 - The README explicitly distinguishes implemented behavior from placeholders and maps future work to module contracts.
 - Verification guidance in the README uses crate-local `cargo check`, `cargo test`, and `cargo build` commands.
 
+## Nix release installability surface
+
+- `cli/flake.nix` exposes `packages.sce` and `packages.default = packages.sce` for packaged release builds.
+- `cli/flake.nix` exposes `apps.sce` pointing to `${packages.sce}/bin/sce` for runnable packaged CLI execution.
+- Current verification commands for this surface are:
+  - `nix build ./cli#default`
+  - `nix run ./cli#sce -- --help`
+
 ## Command surface contract
 
 `sce --help` lists command names with explicit implementation status:

@@ -73,3 +73,4 @@
 - Keep crate-local onboarding docs in `cli/README.md` and sanity-check command examples against actual `sce` output whenever command messaging changes.
 - Keep targeted CLI command-surface verification in flake checks: `checks.<system>.cli-setup-command-surface` runs from `cli/` and executes `cargo fmt --check` plus focused setup-related tests (`help_text_mentions_setup_target_flags`, `parser_routes_setup`, `run_setup_reports`).
 - In `cli/flake.nix`, select the Rust toolchain via an explicit Rust overlay (`rust-overlay`) and thread that toolchain through `makeRustPlatform` so CLI check/build derivations do not rely on implicit nixpkgs Rust defaults.
+- For installable CLI release surfaces in nested flakes, expose an explicit named package plus default alias (`packages.sce` and `packages.default = packages.sce`) and pair it with a runnable app output (`apps.sce`) that points to the packaged binary path.

@@ -23,6 +23,11 @@
           overlays = [ rust-overlay.overlays.default ];
         };
 
+        src = builtins.path {
+          path = ../.;
+          name = "source";
+        };
+
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = [ "rustfmt" ];
         };
@@ -31,15 +36,36 @@
           cargo = rustToolchain;
           rustc = rustToolchain;
         };
+
+        scePackage = rustPlatform.buildRustPackage {
+          pname = "sce";
+          version = "0.1.0";
+          inherit src;
+          sourceRoot = "source/cli";
+
+          cargoLock = {
+            lockFile = ../cli/Cargo.lock;
+          };
+
+          nativeBuildInputs = [ rustToolchain ];
+          doCheck = false;
+        };
       in
       {
+        packages = {
+          sce = scePackage;
+          default = scePackage;
+        };
+
+        apps.sce = {
+          type = "app";
+          program = "${scePackage}/bin/sce";
+        };
+
         checks.cli-setup-command-surface = rustPlatform.buildRustPackage {
           pname = "sce-cli-setup-command-surface-check";
           version = "0.1.0";
-          src = builtins.path {
-            path = ../.;
-            name = "source";
-          };
+          inherit src;
           sourceRoot = "source/cli";
 
           cargoLock = {

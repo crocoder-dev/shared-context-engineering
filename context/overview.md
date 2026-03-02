@@ -13,6 +13,7 @@ The setup service also provides repository-root install orchestration: it resolv
 The `mcp` placeholder contract is now scoped to future file-cache workflows (`cache-put`/`cache-get`) and remains intentionally non-runnable.
 The `sync` placeholder performs a local Turso smoke check through a tokio-backed adapter and then reports a deferred cloud-sync plan from a placeholder gateway contract.
 The nested CLI flake (`cli/flake.nix`) now applies a Rust overlay-backed stable toolchain (with `rustfmt`) and uses that toolchain contract for CLI check/build derivations.
+The nested CLI flake now also exposes release install/run outputs: `packages.sce` (with `packages.default = packages.sce`) and `apps.sce`, so `nix build ./cli#default` and `nix run ./cli#sce -- --help` execute against the packaged `sce` binary.
 
 ## Repository model
 

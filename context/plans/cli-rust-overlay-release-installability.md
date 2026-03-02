@@ -62,7 +62,7 @@ Add a Rust toolchain overlay in `cli/` and wire deterministic Nix packaging so t
     - `nix flake check ./cli` passed.
     - `nix eval ./cli#checks.x86_64-linux.cli-setup-command-surface.name` returned `"sce-cli-setup-command-surface-check-0.1.0"`.
 
-- [ ] T03: Expose Nix release package and runnable app for `sce` (status:todo)
+- [x] T03: Expose Nix release package and runnable app for `sce` (status:done)
   - Task ID: T03
   - Goal: Add package/app outputs that produce and run a release build of the CLI via Nix.
   - Boundaries (in/out of scope):
@@ -75,6 +75,15 @@ Add a Rust toolchain overlay in `cli/` and wire deterministic Nix packaging so t
     - `nix build ./cli#default`
     - `nix run ./cli#sce -- --help`
     - If root aliasing is added: `nix build .#sce` and `nix run .#sce -- --help`
+  - Implementation notes (2026-03-02):
+    - Added a release package derivation in `cli/flake.nix` as `scePackage` via `rustPlatform.buildRustPackage` with `sourceRoot = "source/cli"` and the existing `cli/Cargo.lock`.
+    - Exposed package outputs as `packages.sce` and `packages.default = packages.sce` in the nested CLI flake.
+    - Exposed runnable app output as `apps.sce` targeting `${scePackage}/bin/sce`.
+    - Kept root flake aliasing unchanged (optional per contract) because nested flake outputs satisfy this task's install/run contract.
+  - Evidence (2026-03-02):
+    - `nix build ./cli#default` passed and produced the `sce` package derivation.
+    - `nix run ./cli#sce -- --help` passed and printed CLI help from the packaged binary.
+    - `nix flake check ./cli` passed after wiring new `packages`/`apps` outputs (with a non-blocking app `meta` warning).
 
 - [ ] T04: Prepare Cargo release/install path for local and future crates.io (status:todo)
   - Task ID: T04
