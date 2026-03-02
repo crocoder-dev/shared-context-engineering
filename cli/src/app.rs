@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 
 use crate::{command_surface, dependency_contract, services};
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Command {
@@ -130,7 +130,12 @@ fn dispatch(command: Command) -> Result<()> {
 
             match dispatch {
                 services::setup::SetupDispatch::Proceed(mode) => {
-                    println!("{}", services::setup::run_placeholder_setup_for_mode(mode)?);
+                    let repository_root =
+                        std::env::current_dir().context("Failed to determine current directory")?;
+                    println!(
+                        "{}",
+                        services::setup::run_setup_for_mode(&repository_root, mode)?
+                    );
                 }
                 services::setup::SetupDispatch::Cancelled => {
                     println!("{}", services::setup::setup_cancelled_text());
@@ -161,12 +166,8 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_command_exits_success() {
-        let code = run(vec![
-            "sce".to_string(),
-            "setup".to_string(),
-            "--opencode".to_string(),
-        ]);
+    fn hooks_command_exits_success() {
+        let code = run(vec!["sce".to_string(), "hooks".to_string()]);
         assert_eq!(code, ExitCode::SUCCESS);
     }
 
@@ -216,6 +217,34 @@ mod tests {
         assert_eq!(
             command,
             Command::Setup(SetupMode::NonInteractive(SetupTarget::OpenCode,))
+        );
+    }
+
+    #[test]
+    fn parser_routes_setup_claude_flag_to_non_interactive_mode() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "setup".to_string(),
+            "--claude".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(
+            command,
+            Command::Setup(SetupMode::NonInteractive(SetupTarget::Claude,))
+        );
+    }
+
+    #[test]
+    fn parser_routes_setup_both_flag_to_non_interactive_mode() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "setup".to_string(),
+            "--both".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(
+            command,
+            Command::Setup(SetupMode::NonInteractive(SetupTarget::Both,))
         );
     }
 

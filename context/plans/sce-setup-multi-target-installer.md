@@ -69,7 +69,7 @@ Implement `sce setup` so it can install repository config for OpenCode, Claude, 
   - Verification notes (commands or checks):
     - Integration-style tests in temp directories validating backup creation, replacement, and rollback behavior.
 
-- [ ] T05: Wire setup orchestration and user-facing messaging (status:todo)
+- [x] T05: Wire setup orchestration and user-facing messaging (status:done)
   - Task ID: T05
   - Goal: Connect parser, selection mode, asset manifest, and install engine through `setup` service contract.
   - Boundaries (in/out of scope):
@@ -81,7 +81,7 @@ Implement `sce setup` so it can install repository config for OpenCode, Claude, 
   - Verification notes (commands or checks):
     - Command-level tests/smoke runs for `setup`, `setup --opencode`, `setup --claude`, and `setup --both`.
 
-- [ ] T06: Update CLI docs and context for current-state behavior (status:todo)
+- [x] T06: Update CLI docs and context for current-state behavior (status:done)
   - Task ID: T06
   - Goal: Reflect implemented setup behavior in crate docs and SCE context files.
   - Boundaries (in/out of scope):
@@ -93,7 +93,7 @@ Implement `sce setup` so it can install repository config for OpenCode, Claude, 
   - Verification notes (commands or checks):
     - Manual docs-to-behavior parity check and context consistency pass.
 
-- [ ] T07: Validation and cleanup (status:todo)
+- [x] T07: Validation and cleanup (status:done)
   - Task ID: T07
   - Goal: Run final checks, verify install safety behavior, and close out with clean context alignment.
   - Boundaries (in/out of scope):
@@ -110,3 +110,29 @@ Implement `sce setup` so it can install repository config for OpenCode, Claude, 
 
 ## 5) Open questions
 - None.
+
+## 6) Execution evidence (T06)
+
+- Updated `cli/README.md` to reflect current `setup` behavior as implemented today:
+  - interactive default target selection (`OpenCode`, `Claude`, `Both`)
+  - mutually-exclusive non-interactive target flags (`--opencode`, `--claude`, `--both`)
+  - compile-time embedded assets from `config/.opencode/**` and `config/.claude/**`
+  - repository-root install destinations (`.opencode/`, `.claude/`) with backup-and-replace and rollback safety
+- Added repository-level verification guidance to `cli/README.md` documenting that `nix flake check` runs targeted setup command-surface checks.
+- Context sync updates were applied to keep behavior discoverable and current-state aligned: `context/overview.md`, `context/architecture.md`, `context/patterns.md`, and `context/glossary.md` now document the new flake check contract for targeted CLI setup command-surface verification.
+
+## 7) Validation report (T07)
+
+- Commands and evidence:
+  - `nix flake check` (from repository root)
+  - check `checks.x86_64-linux.cli-setup-command-surface` now runs from `cli/` with:
+    - `cargo fmt --check`
+    - `cargo test command_surface::tests::help_text_mentions_setup_target_flags`
+    - `cargo test parser_routes_setup`
+    - `cargo test run_setup_reports`
+- Result:
+  - Exit code `0`
+  - Flake check completed with expected non-blocking warning about omitted incompatible systems unless `--all-systems` is used.
+- Cleanup/status:
+  - No new temporary artifacts required retention.
+  - Code and context are aligned for T06/T07 scope.

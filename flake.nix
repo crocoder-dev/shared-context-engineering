@@ -4,6 +4,9 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    cli.url = "path:./cli";
+    cli.inputs.nixpkgs.follows = "nixpkgs";
+    cli.inputs.flake-utils.follows = "flake-utils";
   };
 
   outputs =
@@ -11,6 +14,7 @@
       self,
       nixpkgs,
       flake-utils,
+      cli,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -205,6 +209,8 @@
 
       in
       {
+        checks.cli-setup-command-surface = cli.checks.${system}.cli-setup-command-surface;
+
         apps.sync-opencode-config = {
           type = "app";
           program = "${syncOpencodeConfigApp}/bin/sync-opencode-config";

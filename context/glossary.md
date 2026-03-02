@@ -4,13 +4,14 @@
 - generated-owned outputs: Files materialized by `config/pkl/generate.pkl` under `config/.opencode/**` and `config/.claude/**`.
 - `agnix-config-validate-report`: GitHub Actions workflow at `.github/workflows/agnix-config-validate-report.yml` that runs `nix develop -c agnix validate .` from `config/` on push/PR to `main`.
 - `agnix validation report artifact`: Failure-investigation artifact named `agnix-validate-report`, uploaded from deterministic path `context/tmp/ci-reports/agnix-validate-report.txt` when non-info (`warning:`/`error:`/`fatal:`) findings are detected.
-- `sce` (placeholder CLI): Rust binary crate at `cli/` that currently provides only command-surface scaffolding and deterministic placeholder messaging.
+- `cli-setup-command-surface` flake check: `checks.<system>.cli-setup-command-surface` in `flake.nix`; runs `cargo fmt --check` and focused setup command-surface tests from `cli/` during `nix flake check`.
+- `sce` (CLI foundation): Rust binary crate at `cli/` with implemented setup installation flow and placeholder behavior for other command domains.
 - `command surface contract`: The static command catalog in `cli/src/command_surface.rs` that marks each top-level command as `implemented` or `placeholder`.
-- `placeholder command loop`: The `lexopt` parser + dispatcher in `cli/src/app.rs` that routes `help`, `setup`, `mcp`, `hooks`, and `sync`, emitting TODO placeholders for non-implemented commands and deterministic actionable errors for invalid invocation.
+- `command loop`: The `lexopt` parser + dispatcher in `cli/src/app.rs` that routes `help`, `setup`, `mcp`, `hooks`, and `sync`, executes setup installation, emits TODO placeholders for non-implemented commands, and returns deterministic actionable errors for invalid invocation.
 - `sce dependency contract`: Minimal crate dependency baseline declared in `cli/Cargo.toml` and referenced via `cli/src/dependency_contract.rs` (`anyhow`, `inquire`, `lexopt`, `tokio`, `turso`).
 - `local Turso adapter`: Async data-layer module in `cli/src/services/local_db.rs` that initializes local DB targets with `turso::Builder::new_local(...)` and runs execute/query smoke checks.
 - `sync Turso smoke gate`: Behavior in `cli/src/services/sync.rs` where the `sync` placeholder command runs an in-memory local Turso smoke check under a tokio current-thread runtime before returning placeholder cloud-sync messaging.
-- `setup service contract`: Trait and request/plan model in `cli/src/services/setup.rs` that reserves setup planning seams while explicitly deferring execution.
+- `setup service orchestration`: Setup execution logic in `cli/src/services/setup.rs` that resolves target selection, installs embedded assets, and emits deterministic success messaging per target.
 - `setup target flags`: Mutually-exclusive `sce setup` target selectors (`--opencode`, `--claude`, `--both`) that force non-interactive mode for automation.
 - `setup mode contract`: `cli/src/services/setup.rs` model where `SetupMode::Interactive` is the default and `SetupMode::NonInteractive(SetupTarget)` is selected only when exactly one target flag is provided.
 - `setup interactive target prompt`: `inquire::Select` flow in `cli/src/services/setup.rs` (`InquireSetupTargetPrompter`) that presents OpenCode, Claude, and Both when `sce setup` runs without target flags.

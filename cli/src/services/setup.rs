@@ -77,63 +77,63 @@ pub struct SetupCliOptions {
     pub both: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SetupRequest {
-    pub repository_root: String,
-    pub mode: SetupMode,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SetupPlan {
-    pub tasks: Vec<&'static str>,
-    pub ready_for_execution: bool,
-}
-
-pub trait SetupService {
-    fn plan(&self, request: &SetupRequest) -> SetupPlan;
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct PlaceholderSetupService;
-
-impl SetupService for PlaceholderSetupService {
-    fn plan(&self, _request: &SetupRequest) -> SetupPlan {
-        SetupPlan {
-            tasks: vec![
-                "Validate repository shape",
-                "Initialize local development prerequisites",
-                "Persist setup state for future runs",
-            ],
-            ready_for_execution: false,
+pub fn run_setup_for_mode(repository_root: &Path, mode: SetupMode) -> Result<String> {
+    let target = match mode {
+        SetupMode::Interactive => {
+            bail!("Interactive setup mode must be resolved before installation")
         }
-    }
-}
-
-pub fn run_placeholder_setup_for_mode(mode: SetupMode) -> Result<String> {
-    let service = PlaceholderSetupService;
-    let request = SetupRequest {
-        repository_root: ".".to_string(),
-        mode,
-    };
-    let plan = service.plan(&request);
-
-    let mode_label = match mode {
-        SetupMode::Interactive => "interactive selection",
-        SetupMode::NonInteractive(SetupTarget::OpenCode) => "--opencode",
-        SetupMode::NonInteractive(SetupTarget::Claude) => "--claude",
-        SetupMode::NonInteractive(SetupTarget::Both) => "--both",
-    };
-
-    let selected_target = match mode {
-        SetupMode::Interactive => SetupTarget::Both,
         SetupMode::NonInteractive(target) => target,
     };
-    let embedded_asset_count = iter_embedded_assets_for_setup_target(selected_target).count();
 
-    Ok(format!(
-        "TODO: '{NAME}' is planned and not implemented yet. Setup mode '{mode_label}' accepted; setup plan scaffolded with {} deferred step(s). Embedded asset manifest is ready with {embedded_asset_count} file(s).",
-        plan.tasks.len()
-    ))
+    let outcome = install_embedded_setup_assets(repository_root, target).with_context(|| {
+        format!(
+            "Setup installation failed for {}",
+            setup_target_label(target)
+        )
+    })?;
+
+    Ok(format_setup_install_success_message(&outcome))
+}
+
+fn format_setup_install_success_message(outcome: &SetupInstallOutcome) -> String {
+    let selected_targets = outcome
+        .target_results
+        .iter()
+        .map(|result| setup_target_label(result.target))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let mut lines = vec![
+        "Setup completed successfully.".to_string(),
+        format!("Selected target(s): {selected_targets}"),
+    ];
+
+    for result in &outcome.target_results {
+        lines.push(format!(
+            "- {}: installed {} file(s) to '{}'",
+            setup_target_label(result.target),
+            result.installed_file_count,
+            result.destination_root.display()
+        ));
+
+        match result.backup_root.as_ref() {
+            Some(backup_root) => lines.push(format!(
+                "  backup: existing target moved to '{}'",
+                backup_root.display()
+            )),
+            None => lines.push("  backup: not needed (no existing target)".to_string()),
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn setup_target_label(target: SetupTarget) -> &'static str {
+    match target {
+        SetupTarget::OpenCode => "OpenCode",
+        SetupTarget::Claude => "Claude",
+        SetupTarget::Both => "Both",
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -532,9 +532,8 @@ mod tests {
     use super::{
         install_embedded_setup_assets, install_embedded_setup_assets_with_rename,
         iter_embedded_assets_for_setup_target, parse_setup_cli_options, resolve_setup_dispatch,
-        resolve_setup_mode, run_placeholder_setup_for_mode, setup_usage_text,
-        PlaceholderSetupService, SetupCliOptions, SetupDispatch, SetupMode, SetupRequest,
-        SetupService, SetupTarget,
+        resolve_setup_mode, run_setup_for_mode, setup_usage_text, SetupCliOptions, SetupDispatch,
+        SetupMode, SetupTarget,
     };
 
     #[derive(Clone, Copy, Debug)]
@@ -549,22 +548,14 @@ mod tests {
     }
 
     #[test]
-    fn setup_placeholder_service_exposes_deferred_plan() {
-        let service = PlaceholderSetupService;
-        let plan = service.plan(&SetupRequest {
-            repository_root: ".".to_string(),
-            mode: SetupMode::Interactive,
-        });
-
-        assert_eq!(plan.tasks.len(), 3);
-        assert!(!plan.ready_for_execution);
-    }
-
-    #[test]
-    fn setup_placeholder_message_mentions_scaffolded_plan() -> Result<()> {
-        let message = run_placeholder_setup_for_mode(SetupMode::Interactive)?;
-        assert!(message.contains("setup plan scaffolded"));
-        Ok(())
+    fn run_setup_rejects_unresolved_interactive_mode() {
+        let temp = TestTempDir::new().expect("temp dir should be created");
+        let error = run_setup_for_mode(temp.path(), SetupMode::Interactive)
+            .expect_err("interactive mode should be resolved before install");
+        assert_eq!(
+            error.to_string(),
+            "Interactive setup mode must be resolved before installation"
+        );
     }
 
     #[test]
@@ -613,9 +604,33 @@ mod tests {
     }
 
     #[test]
-    fn setup_placeholder_message_mentions_flag_mode() -> Result<()> {
-        let message = run_placeholder_setup_for_mode(SetupMode::NonInteractive(SetupTarget::Both))?;
-        assert!(message.contains("Setup mode '--both' accepted"));
+    fn run_setup_reports_selected_target_and_backup_status() -> Result<()> {
+        let temp = TestTempDir::new()?;
+        fs::create_dir_all(temp.path().join(".opencode/legacy"))?;
+        fs::write(temp.path().join(".opencode/legacy/config.txt"), b"legacy")?;
+
+        let message = run_setup_for_mode(
+            temp.path(),
+            SetupMode::NonInteractive(SetupTarget::OpenCode),
+        )?;
+        assert!(message.contains("Setup completed successfully."));
+        assert!(message.contains("Selected target(s): OpenCode"));
+        assert!(message.contains("OpenCode: installed"));
+        assert!(message.contains("backup: existing target moved to"));
+        assert!(message.contains(".opencode.backup"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn run_setup_reports_both_targets() -> Result<()> {
+        let temp = TestTempDir::new()?;
+        let message =
+            run_setup_for_mode(temp.path(), SetupMode::NonInteractive(SetupTarget::Both))?;
+        assert!(message.contains("Selected target(s): OpenCode, Claude"));
+        assert!(message.contains("OpenCode: installed"));
+        assert!(message.contains("Claude: installed"));
+        assert!(message.contains("backup: not needed (no existing target)"));
         Ok(())
     }
 

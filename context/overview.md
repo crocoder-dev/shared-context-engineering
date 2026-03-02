@@ -2,14 +2,14 @@
 
 This repository maintains shared assistant configuration for OpenCode and Claude from a single canonical authoring source, then validates that generated outputs stay deterministic and in sync.
 
-It also includes an early placeholder Rust CLI foundation at `cli/` for future Shared Context Engineering workflows.
+It also includes an early Rust CLI foundation at `cli/` for Shared Context Engineering workflows.
 The crate ships onboarding and usage documentation at `cli/README.md` that reflects current implemented vs placeholder behavior.
 
 The CLI crate currently enforces a minimal dependency contract: `anyhow`, `inquire`, `lexopt`, `tokio`, and `turso`.
-Its command loop is implemented with `lexopt` argument parsing and `anyhow` error handling, with deterministic placeholder dispatch for `setup`, `mcp`, and `hooks` through explicit service contracts.
-The `setup` placeholder now includes an `inquire`-backed target-selection flow: default interactive selection for OpenCode/Claude/both, explicit non-interactive target flags (`--opencode`, `--claude`, `--both`), deterministic mutually-exclusive validation, and non-destructive cancellation exits.
+Its command loop is implemented with `lexopt` argument parsing and `anyhow` error handling, with real setup orchestration plus placeholder dispatch for non-setup commands through explicit service contracts.
+The `setup` command includes an `inquire`-backed target-selection flow: default interactive selection for OpenCode/Claude/both, explicit non-interactive target flags (`--opencode`, `--claude`, `--both`), deterministic mutually-exclusive validation, and non-destructive cancellation exits.
 The CLI now compiles an embedded setup asset manifest from `config/.opencode/**` and `config/.claude/**` via `cli/build.rs`; `cli/src/services/setup.rs` exposes deterministic normalized relative paths plus file bytes and target-scoped iteration without runtime reads from `config/`.
-The setup service now also provides a repository-root install engine that stages embedded assets and performs backup-and-replace for `.opencode/` and `.claude/` with rollback restoration on swap failure; CLI end-to-end orchestration and messaging remain deferred to follow-on setup wiring.
+The setup service also provides repository-root install orchestration: it resolves interactive or flag-based target selection, installs embedded assets, and reports deterministic completion details (selected target(s), installed file counts, and backup actions).
 The `mcp` placeholder contract is now scoped to future file-cache workflows (`cache-put`/`cache-get`) and remains intentionally non-runnable.
 The `sync` placeholder performs a local Turso smoke check through a tokio-backed adapter and then reports a deferred cloud-sync plan from a placeholder gateway contract.
 
@@ -31,6 +31,7 @@ The `sync` placeholder performs a local Turso smoke check through a tokio-backed
 - Regenerate outputs in place: `nix develop -c pkl eval -m . config/pkl/generate.pkl`
 - Verify generated outputs are current: `nix develop -c ./config/pkl/check-generated.sh`
 - Run staged destructive sync for `config/` and root `.opencode/`: `nix run .#sync-opencode-config`
+- Run repository flake checks (includes CLI setup command-surface checks): `nix flake check`
 
 ## CI contracts
 

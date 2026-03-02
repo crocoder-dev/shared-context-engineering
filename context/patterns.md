@@ -63,6 +63,7 @@
 - Treat setup prompt cancellation/interrupt as a non-destructive exit path with explicit user messaging (no file mutations and no partial side effects).
 - For setup install prep, generate compile-time embedded asset manifests from `config/.opencode/**` and `config/.claude/**` in `cli/build.rs`, keep relative paths normalized to forward-slash form, and expose target-scoped iterators from the setup service layer for installer wiring.
 - For setup install execution, write selected embedded assets into a per-target staging directory first, then swap into repository-root `.opencode/`/`.claude/` with backup-and-replace semantics; when swap fails after backup creation, restore the original target path from backup and clean staging directories.
+- For setup command messaging, emit deterministic completion output that includes selected target(s), per-target install counts, and whether backup was created.
 - Keep module seams for future domains present and compile-safe even when behavior is deferred.
 - Keep dependency additions explicit and minimal in `cli/Cargo.toml`, and anchor dependency intent in lightweight compile-time code references (`cli/src/dependency_contract.rs`).
 - Route local Turso access through a dedicated adapter module (`cli/src/services/local_db.rs`) so command handlers do not expose low-level `turso` API details.
@@ -70,3 +71,4 @@
 - For future CLI domains, define trait-first service contracts with request/plan models in `cli/src/services/*` and keep placeholder implementations explicitly non-runnable until production behavior is approved.
 - Model deferred integration boundaries with concrete event/capability data structures (for example MCP file-cache snapshots/policies, git-hook/generated-region events, cloud-sync checkpoints) so later tasks can implement behavior without reshaping public seams.
 - Keep crate-local onboarding docs in `cli/README.md` and sanity-check command examples against actual `sce` output whenever command messaging changes.
+- Keep targeted CLI command-surface verification in flake checks: `checks.<system>.cli-setup-command-surface` runs from `cli/` and executes `cargo fmt --check` plus focused setup-related tests (`help_text_mentions_setup_target_flags`, `parser_routes_setup`, `run_setup_reports`).

@@ -21,7 +21,7 @@ pub const COMMANDS: &[CommandContract] = &[
     },
     CommandContract {
         name: services::setup::NAME,
-        status: ImplementationStatus::Placeholder,
+        status: ImplementationStatus::Implemented,
         purpose: "Prepare local repository/workspace prerequisites",
     },
     CommandContract {
@@ -67,7 +67,9 @@ pub fn help_text() -> String {
     out.push_str(
         "\nSetup defaults to interactive target selection when no setup target flag is passed.\n",
     );
-    out.push_str("Only command-surface scaffolding is implemented in this task slice.\n");
+    out.push_str(
+        "`setup` is implemented; `mcp`, `hooks`, and `sync` remain placeholder-oriented.\n",
+    );
     out
 }
 

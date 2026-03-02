@@ -1,24 +1,5 @@
 {
   "nodes": {
-    "cli": {
-      "inputs": {
-        "flake-utils": [
-          "flake-utils"
-        ],
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "path": "./cli",
-        "type": "path"
-      },
-      "original": {
-        "path": "./cli",
-        "type": "path"
-      },
-      "parent": []
-    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -55,7 +36,6 @@
     },
     "root": {
       "inputs": {
-        "cli": "cli",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs"
       }
