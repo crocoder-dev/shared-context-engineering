@@ -12,6 +12,7 @@ The CLI now compiles an embedded setup asset manifest from `config/.opencode/**`
 The setup service also provides repository-root install orchestration: it resolves interactive or flag-based target selection, installs embedded assets, and reports deterministic completion details (selected target(s), installed file counts, and backup actions).
 The `mcp` placeholder contract is now scoped to future file-cache workflows (`cache-put`/`cache-get`) and remains intentionally non-runnable.
 The `sync` placeholder performs a local Turso smoke check through a tokio-backed adapter and then reports a deferred cloud-sync plan from a placeholder gateway contract.
+The nested CLI flake (`cli/flake.nix`) now applies a Rust overlay-backed stable toolchain (with `rustfmt`) and uses that toolchain contract for CLI check/build derivations.
 
 ## Repository model
 

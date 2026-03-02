@@ -4,6 +4,8 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    rust-overlay.url = "github:oxalica/rust-overlay";
+    rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
@@ -11,16 +13,27 @@
       self,
       nixpkgs,
       flake-utils,
+      rust-overlay,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = import nixpkgs {
           inherit system;
+          overlays = [ rust-overlay.overlays.default ];
+        };
+
+        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+          extensions = [ "rustfmt" ];
+        };
+
+        rustPlatform = pkgs.makeRustPlatform {
+          cargo = rustToolchain;
+          rustc = rustToolchain;
         };
       in
       {
-        checks.cli-setup-command-surface = pkgs.rustPlatform.buildRustPackage {
+        checks.cli-setup-command-surface = rustPlatform.buildRustPackage {
           pname = "sce-cli-setup-command-surface-check";
           version = "0.1.0";
           src = builtins.path {
@@ -33,7 +46,7 @@
             lockFile = ../cli/Cargo.lock;
           };
 
-          nativeBuildInputs = [ pkgs.rustfmt ];
+          nativeBuildInputs = [ rustToolchain ];
 
           buildPhase = ''
             runHook preBuild

@@ -78,6 +78,7 @@ The repository includes a new placeholder Rust binary crate at `cli/`.
 - `cli/src/services/sync.rs` runs the local adapter through a tokio current-thread runtime and composes a placeholder cloud-sync abstraction (`CloudSyncGateway`) so local Turso validation and deferred cloud planning remain separated.
 - `cli/src/services/` contains module boundaries for setup, MCP, hooks, sync, and local DB adapters with explicit trait seams for future implementations.
 - `cli/README.md` is the crate-local onboarding and usage source of truth for placeholder behavior, safety limitations, and roadmap mapping back to service contracts.
+- `cli/flake.nix` applies `rust-overlay` (`oxalica/rust-overlay`) to nixpkgs, selects `rust-bin.stable.latest.default` with `rustfmt`, and routes CLI check/build derivations through `makeRustPlatform` so toolchain selection is explicit and deterministic.
 
 This phase establishes compile-safe extension seams with a minimal dependency baseline (`anyhow`, `inquire`, `lexopt`, `tokio`, `turso`); local Turso connectivity smoke checks now exist, while broader runtime integrations remain deferred.
 

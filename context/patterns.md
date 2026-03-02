@@ -72,3 +72,4 @@
 - Model deferred integration boundaries with concrete event/capability data structures (for example MCP file-cache snapshots/policies, git-hook/generated-region events, cloud-sync checkpoints) so later tasks can implement behavior without reshaping public seams.
 - Keep crate-local onboarding docs in `cli/README.md` and sanity-check command examples against actual `sce` output whenever command messaging changes.
 - Keep targeted CLI command-surface verification in flake checks: `checks.<system>.cli-setup-command-surface` runs from `cli/` and executes `cargo fmt --check` plus focused setup-related tests (`help_text_mentions_setup_target_flags`, `parser_routes_setup`, `run_setup_reports`).
+- In `cli/flake.nix`, select the Rust toolchain via an explicit Rust overlay (`rust-overlay`) and thread that toolchain through `makeRustPlatform` so CLI check/build derivations do not rely on implicit nixpkgs Rust defaults.
