@@ -23,6 +23,8 @@ Do not skip `overview`, `architecture`, or `glossary` by default. If no edit is 
 - If a feature does not cleanly fit an existing domain file, create a new domain file instead of deferring documentation.
 - If the feature appears to be part of a larger future domain, still document the implemented slice now in a focused file and link it to related context.
 - Prefer creating a small, precise domain file over overloading `overview.md` with detail.
+- If updates for the current feature/domain become too detailed or large for shared files, migrate that detail into `context/{domain}/` files and keep only concise pointers in shared files.
+- Whenever detail is migrated, add discoverability links in `context/context-map.md` and cross-link relevant context files (`overview.md`, `architecture.md`, `glossary.md`, `patterns.md`) as needed.
 
 ## Feature existence rule (required)
 - Every newly implemented feature must be discoverable from context.
