@@ -1,11 +1,18 @@
 use anyhow::{Context, Result};
+use std::sync::OnceLock;
 
 use crate::services::local_db::{run_smoke_check, LocalDatabaseTarget};
 
 pub const NAME: &str = "sync";
+const SUPPORTED_PHASES: [CloudSyncPhase; 3] = [
+    CloudSyncPhase::PlanOnly,
+    CloudSyncPhase::DryRun,
+    CloudSyncPhase::Apply,
+];
+
+static SYNC_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub enum CloudSyncPhase {
     PlanOnly,
     DryRun,
@@ -43,6 +50,11 @@ impl CloudSyncGateway for PlaceholderCloudSyncGateway {
             checkpoints.push("Phase-specific execution remains intentionally disabled");
         }
 
+        if request.phase == CloudSyncPhase::Apply {
+            checkpoints
+                .push("Apply execution is intentionally blocked by placeholder safety checks");
+        }
+
         CloudSyncPlan {
             checkpoints,
             can_execute: false,
@@ -67,9 +79,7 @@ where
     }
 
     pub fn run(&self, request: &CloudSyncRequest) -> Result<String> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .context("failed to create tokio runtime for sync placeholder")?;
+        let runtime = shared_runtime()?;
 
         let outcome = runtime
             .block_on(run_smoke_check(LocalDatabaseTarget::InMemory))
@@ -78,11 +88,28 @@ where
         let plan = self.gateway.plan(request);
 
         Ok(format!(
-            "TODO: '{NAME}' cloud workflows are planned and not implemented yet. Local Turso smoke check succeeded ({}) row inserted; cloud sync plan holds {} checkpoint(s).",
+            "TODO: '{NAME}' cloud workflows are planned and not implemented yet. Local Turso smoke check succeeded ({}) row inserted; cloud sync placeholder enumerates {} phase(s) and plan holds {} checkpoint(s).",
             outcome.inserted_rows,
+            SUPPORTED_PHASES.len(),
             plan.checkpoints.len()
         ))
     }
+}
+
+fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
+    if let Some(runtime) = SYNC_RUNTIME.get() {
+        return Ok(runtime);
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .context("failed to create shared tokio runtime for sync placeholder")?;
+
+    let _ = SYNC_RUNTIME.set(runtime);
+
+    SYNC_RUNTIME
+        .get()
+        .context("shared tokio runtime for sync placeholder is unavailable")
 }
 
 pub fn run_placeholder_sync() -> Result<String> {
@@ -103,11 +130,13 @@ mod tests {
         PlaceholderCloudSyncGateway,
     };
 
+    use super::shared_runtime;
+
     #[test]
     fn sync_placeholder_runs_local_smoke_check() -> Result<()> {
         let message = run_placeholder_sync()?;
         assert!(message.contains("Local Turso smoke check succeeded"));
-        assert!(message.contains("cloud sync plan holds"));
+        assert!(message.contains("cloud sync placeholder enumerates"));
         Ok(())
     }
 
@@ -121,5 +150,13 @@ mod tests {
         let plan = gateway.plan(&request);
         assert!(!plan.can_execute);
         assert!(plan.checkpoints.len() >= 3);
+    }
+
+    #[test]
+    fn sync_runtime_is_reused_across_calls() -> Result<()> {
+        let first = shared_runtime()?;
+        let second = shared_runtime()?;
+        assert!(std::ptr::eq(first, second));
+        Ok(())
     }
 }

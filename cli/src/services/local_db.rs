@@ -53,13 +53,7 @@ pub async fn run_smoke_check(target: LocalDatabaseTarget<'_>) -> Result<SmokeChe
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        path::PathBuf,
-        process,
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
+    use crate::test_support::TestTempDir;
     use anyhow::Result;
 
     use super::{run_smoke_check, LocalDatabaseTarget};
@@ -74,21 +68,12 @@ mod tests {
 
     #[test]
     fn file_backed_smoke_check_succeeds() -> Result<()> {
-        let path = temporary_db_path();
+        let temp = TestTempDir::new("sce-smoke-tests")?;
+        let path = temp.path().join("local.db");
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
         let outcome = runtime.block_on(run_smoke_check(LocalDatabaseTarget::Path(&path)))?;
         assert_eq!(outcome.inserted_rows, 1);
         assert!(path.exists());
-        let _ = fs::remove_file(path);
         Ok(())
-    }
-
-    fn temporary_db_path() -> PathBuf {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time should be after epoch")
-            .as_nanos();
-
-        std::env::temp_dir().join(format!("sce-smoke-{}-{timestamp}.db", process::id()))
     }
 }

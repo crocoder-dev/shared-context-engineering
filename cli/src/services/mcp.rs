@@ -3,7 +3,6 @@ use anyhow::Result;
 pub const NAME: &str = "mcp";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub enum McpTransport {
     Stdio,
     LocalSocket,
@@ -18,6 +17,7 @@ pub struct McpToolContract {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct McpCapabilitySnapshot {
     pub transport: McpTransport,
+    pub supported_transports: Vec<McpTransport>,
     pub contracts: Vec<McpToolContract>,
     pub runnable: bool,
 }
@@ -40,6 +40,7 @@ impl McpService for PlaceholderMcpService {
     fn capability_snapshot(&self) -> McpCapabilitySnapshot {
         McpCapabilitySnapshot {
             transport: McpTransport::Stdio,
+            supported_transports: vec![McpTransport::Stdio, McpTransport::LocalSocket],
             contracts: vec![
                 McpToolContract {
                     tool_name: "cache-put",
@@ -86,6 +87,7 @@ mod tests {
         let snapshot = service.capability_snapshot();
         assert!(!snapshot.runnable);
         assert!(!snapshot.contracts.is_empty());
+        assert_eq!(snapshot.supported_transports.len(), 2);
         assert_eq!(snapshot.contracts[0].tool_name, "cache-put");
         let policy = service.cache_policy();
         assert_eq!(policy.max_entries, 1024);

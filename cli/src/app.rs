@@ -2,6 +2,7 @@ use std::process::ExitCode;
 
 use crate::{command_surface, dependency_contract, services};
 use anyhow::{bail, Context, Result};
+use lexopt::ValueExt;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Command {
@@ -39,39 +40,51 @@ fn parse_command<I>(args: I) -> Result<Command>
 where
     I: IntoIterator<Item = String>,
 {
-    let mut argv: Vec<String> = args.into_iter().collect();
+    let mut argv = args.into_iter();
+    let Some(_program) = argv.next() else {
+        return Ok(Command::Help);
+    };
 
-    if argv.is_empty() {
+    let tail_args: Vec<String> = argv.collect();
+    if tail_args.is_empty() {
         return Ok(Command::Help);
     }
 
-    let _program = argv.remove(0);
-
-    if argv.is_empty() {
-        return Ok(Command::Help);
-    }
-
-    if argv.len() == 1 && (argv[0] == "--help" || argv[0] == "-h") {
-        return Ok(Command::Help);
-    }
-
-    if argv[0].starts_with('-') {
-        let option = argv.remove(0);
-        if option.starts_with("--") {
-            bail!(
-                "Unknown option '{}'. Run 'sce --help' to see valid usage.",
-                option
-            );
+    let mut parser = lexopt::Parser::from_args(tail_args.clone());
+    match parser.next()? {
+        Some(lexopt::Arg::Long("help")) => {
+            if tail_args.len() == 1 {
+                Ok(Command::Help)
+            } else {
+                bail!("{}", unknown_option_message("--help"))
+            }
         }
-
-        bail!(
-            "Unknown option '{}'. Run 'sce --help' to see valid usage.",
-            option
-        );
+        Some(lexopt::Arg::Short('h')) => {
+            if tail_args.len() == 1 {
+                Ok(Command::Help)
+            } else {
+                bail!("{}", unknown_option_message("-h"))
+            }
+        }
+        Some(lexopt::Arg::Long(option)) => {
+            bail!("{}", unknown_option_message(&format!("--{option}")))
+        }
+        Some(lexopt::Arg::Short(option)) => {
+            bail!("{}", unknown_option_message(&format!("-{option}")))
+        }
+        Some(lexopt::Arg::Value(value)) => {
+            let subcommand = value.string()?;
+            parse_subcommand(subcommand, tail_args.into_iter().skip(1).collect())
+        }
+        None => Ok(Command::Help),
     }
+}
 
-    let subcommand = argv.remove(0);
-    parse_subcommand(subcommand, argv)
+fn unknown_option_message(option: &str) -> String {
+    format!(
+        "Unknown option '{}'. Run 'sce --help' to see valid usage.",
+        option
+    )
 }
 
 fn parse_subcommand(value: String, tail_args: Vec<String>) -> Result<Command> {

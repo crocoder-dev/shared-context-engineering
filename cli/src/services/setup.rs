@@ -517,9 +517,9 @@ mod tests {
         cell::Cell,
         fs, io,
         path::{Path, PathBuf},
-        time::{SystemTime, UNIX_EPOCH},
     };
 
+    use crate::test_support::TestTempDir;
     use anyhow::Result;
 
     use super::{
@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn run_setup_rejects_unresolved_interactive_mode() {
-        let temp = TestTempDir::new().expect("temp dir should be created");
+        let temp = TestTempDir::new("sce-setup-install-tests").expect("temp dir should be created");
         let error = run_setup_for_mode(temp.path(), SetupMode::Interactive)
             .expect_err("interactive mode should be resolved before install");
         assert_eq!(
@@ -598,7 +598,7 @@ mod tests {
 
     #[test]
     fn run_setup_reports_selected_target_and_backup_status() -> Result<()> {
-        let temp = TestTempDir::new()?;
+        let temp = TestTempDir::new("sce-setup-install-tests")?;
         fs::create_dir_all(temp.path().join(".opencode/legacy"))?;
         fs::write(temp.path().join(".opencode/legacy/config.txt"), b"legacy")?;
 
@@ -617,7 +617,7 @@ mod tests {
 
     #[test]
     fn run_setup_reports_both_targets() -> Result<()> {
-        let temp = TestTempDir::new()?;
+        let temp = TestTempDir::new("sce-setup-install-tests")?;
         let message =
             run_setup_for_mode(temp.path(), SetupMode::NonInteractive(SetupTarget::Both))?;
         assert!(message.contains("Selected target(s): OpenCode, Claude"));
@@ -724,7 +724,7 @@ mod tests {
 
     #[test]
     fn install_engine_replaces_existing_target_with_backup() -> Result<()> {
-        let temp = TestTempDir::new()?;
+        let temp = TestTempDir::new("sce-setup-install-tests")?;
         let existing_target = temp.path().join(".opencode");
         fs::create_dir_all(existing_target.join("legacy"))?;
         fs::write(existing_target.join("legacy/config.txt"), b"legacy")?;
@@ -758,7 +758,7 @@ mod tests {
 
     #[test]
     fn install_engine_installs_both_targets() -> Result<()> {
-        let temp = TestTempDir::new()?;
+        let temp = TestTempDir::new("sce-setup-install-tests")?;
 
         let outcome = install_embedded_setup_assets(temp.path(), SetupTarget::Both)?;
         assert_eq!(outcome.target_results.len(), 2);
@@ -782,7 +782,7 @@ mod tests {
 
     #[test]
     fn install_engine_rolls_back_when_swap_fails() -> Result<()> {
-        let temp = TestTempDir::new()?;
+        let temp = TestTempDir::new("sce-setup-install-tests")?;
         let destination = temp.path().join(".opencode");
         fs::create_dir_all(&destination)?;
         fs::write(destination.join("legacy.txt"), b"legacy")?;
@@ -843,37 +843,6 @@ mod tests {
             SetupTarget::OpenCode => super::OPENCODE_EMBEDDED_ASSETS,
             SetupTarget::Claude => super::CLAUDE_EMBEDDED_ASSETS,
             SetupTarget::Both => unreachable!("both is not a single embedded target"),
-        }
-    }
-
-    #[derive(Debug)]
-    struct TestTempDir {
-        path: PathBuf,
-    }
-
-    impl TestTempDir {
-        fn new() -> Result<Self> {
-            let epoch_nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system time should be after unix epoch")
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "sce-setup-install-tests-{}-{}",
-                std::process::id(),
-                epoch_nanos
-            ));
-            fs::create_dir_all(&path)?;
-            Ok(Self { path })
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    impl Drop for TestTempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
         }
     }
 

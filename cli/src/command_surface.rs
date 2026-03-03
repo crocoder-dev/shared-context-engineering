@@ -46,31 +46,28 @@ pub fn is_known_command(name: &str) -> bool {
 }
 
 pub fn help_text() -> String {
-    let mut out = String::new();
-    out.push_str("sce - Shared Context Engineering CLI (placeholder foundation)\n\n");
-    out.push_str("Usage:\n  sce [command]\n\n");
-    out.push_str("Setup usage:\n  sce setup [--opencode|--claude|--both]\n\n");
-    out.push_str("Commands:\n");
+    let command_rows = COMMANDS
+        .iter()
+        .map(|command| {
+            let status = match command.status {
+                ImplementationStatus::Implemented => "implemented",
+                ImplementationStatus::Placeholder => "placeholder",
+            };
 
-    for command in COMMANDS {
-        let status = match command.status {
-            ImplementationStatus::Implemented => "implemented",
-            ImplementationStatus::Placeholder => "placeholder",
-        };
+            format!("  {:<8} {:<12} {}", command.name, status, command.purpose)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
 
-        out.push_str(&format!(
-            "  {:<8} {:<12} {}\n",
-            command.name, status, command.purpose
-        ));
-    }
-
-    out.push_str(
-        "\nSetup defaults to interactive target selection when no setup target flag is passed.\n",
-    );
-    out.push_str(
-        "`setup` is implemented; `mcp`, `hooks`, and `sync` remain placeholder-oriented.\n",
-    );
-    out
+    format!(
+        "sce - Shared Context Engineering CLI (placeholder foundation)\n\n\
+Usage:\n  sce [command]\n\n\
+Setup usage:\n  sce setup [--opencode|--claude|--both]\n\n\
+Commands:\n{}\n\n\
+Setup defaults to interactive target selection when no setup target flag is passed.\n\
+`setup` is implemented; `mcp`, `hooks`, and `sync` remain placeholder-oriented.\n",
+        command_rows
+    )
 }
 
 #[cfg(test)]
