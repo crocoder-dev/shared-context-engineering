@@ -12,6 +12,7 @@ commandDescriptions = new Mapping {
   ["drift-detect"] = "Analyze and report drift between context and code"
   ["fix-drift"] = "Resolve code-context drift using SCE rules"
   ["handover"] = "Create a structured SCE handover of the current task"
+  ["commit"] = "Propose atomic commit message(s) from staged changes"
   ["validate"] = "Run final validation and cleanup for an SCE plan"
 }
 
@@ -24,5 +25,6 @@ skillDescriptions = new Mapping {
   ["sce-plan-authoring"] = "Use when user wants to Create or update an SCE implementation plan with scoped atomic tasks."
   ["sce-plan-review"] = "Use when user wants to review an existing plan and prepare the next task safely."
   ["sce-task-execution"] = "Use when user wants to Execute one approved task with explicit scope, evidence, and status updates."
+  ["sce-atomic-commit"] = "Write atomic, repo-style git commits from a change summary or diff. Use when preparing commit messages, splitting work into coherent commits, or reviewing whether a commit is too broad."
   ["sce-validation"] = "Use when user wants to Run final plan validation and cleanup with evidence capture."
 }

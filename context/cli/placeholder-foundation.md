@@ -12,6 +12,7 @@ The repository now includes a Rust CLI crate at `cli/` for SCE automation work.
 - Dependency contract snapshot: `cli/src/dependency_contract.rs`
 - Local Turso adapter: `cli/src/services/local_db.rs`
 - Service domains: `cli/src/services/{setup,mcp,hooks,sync}.rs`
+- Shared test temp-path helper: `cli/src/test_support.rs` (`TestTempDir`, test-only module)
 
 ## Onboarding documentation
 
@@ -51,7 +52,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 `setup` now also exposes compile-time embedded config assets for OpenCode/Claude targets, sourced from `config/.opencode/**` and `config/.claude/**` via `cli/build.rs` with normalized forward-slash relative paths and target-scoped iteration APIs.
 `setup` additionally includes a repository-root install engine (`install_embedded_setup_assets`) that stages embedded files and applies backup-and-replace safety for `.opencode/`/`.claude/` with rollback restoration if staged swap fails.
 `setup` now executes end-to-end and prints deterministic completion details including selected target(s), per-target install count, and backup actions.
-`sync` includes a local Turso smoke gate and a placeholder cloud-sync gateway plan.
+`sync` includes a local Turso smoke gate backed by a lazily initialized shared tokio current-thread runtime and a placeholder cloud-sync gateway plan.
 
 ## Command loop and error model
 
@@ -64,13 +65,13 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
   - `setup`: `Setup completed successfully.` plus selected targets, per-target install destinations/counts, and backup status lines.
   - `TODO: 'mcp' is planned and not implemented yet. MCP file-cache surface defines 2 placeholder tool contract(s) with max 1024 entries.`
   - `TODO: 'hooks' is planned and not implemented yet. Hook event model reserves 2 git hook(s) with generated-region tracking placeholders.`
-  - `TODO: 'sync' cloud workflows are planned and not implemented yet. Local Turso smoke check succeeded (1) row inserted; cloud sync plan holds 3 checkpoint(s).`
+  - `TODO: 'sync' cloud workflows are planned and not implemented yet. Local Turso smoke check succeeded (1) row inserted; cloud sync placeholder enumerates 3 phase(s) and plan holds 3 checkpoint(s).`
 
 ## Service contracts
 
 - `cli/src/services/setup.rs` defines setup parsing/selection contracts plus runtime install orchestration (`run_setup_for_mode`) over the embedded asset install engine.
-- `cli/src/services/mcp.rs` defines `McpService`, a `McpCapabilitySnapshot` model, and `CachePolicy` defaults for future file-cache workflows (`cache-put`/`cache-get`) with `runnable: false` placeholders.
-- `cli/src/services/hooks.rs` defines `HookService` plus hook-event/generated-region event placeholders (`HookEventModel`, `HookEvent`, `GeneratedRegionEvent`).
+- `cli/src/services/mcp.rs` defines `McpService`, a `McpCapabilitySnapshot` model (primary + supported transports), and `CachePolicy` defaults for future file-cache workflows (`cache-put`/`cache-get`) with `runnable: false` placeholders.
+- `cli/src/services/hooks.rs` defines `HookService` plus hook-event/generated-region event placeholders (`HookEventModel`, `HookEvent`, `GeneratedRegionEvent`) and keeps placeholder recording path compile-safe by consuming hook/lifecycle variants without enabling production hook actions.
 - `cli/src/services/sync.rs` defines cloud-sync abstraction points (`CloudSyncGateway`, `CloudSyncRequest`, `CloudSyncPlan`) layered after the local Turso smoke gate.
 - `cli/src/app.rs` dispatches `setup`, `mcp`, and `hooks` through service-level modules so runtime messages are sourced from domain modules instead of inline strings.
 
@@ -80,7 +81,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
   - in-memory (`:memory:`)
   - file-backed path (`Builder::new_local(<path>)`)
 - The smoke path creates `sce_smoke`, inserts one row, and runs a query round-trip to confirm readable results.
-- `cli/src/services/sync.rs` wraps this in a tokio current-thread runtime and returns placeholder-safe messaging when local checks pass.
+- `cli/src/services/sync.rs` wraps this in a lazily initialized shared tokio current-thread runtime and returns placeholder-safe messaging when local checks pass.
 - The same sync path now derives deferred cloud checkpoint messaging from `PlaceholderCloudSyncGateway`.
 
 ## Parser-focused tests
@@ -91,10 +92,12 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - `cli/src/services/sync.rs` test confirms `sync` runs the local smoke gate and returns deterministic placeholder messaging.
 - `cli/src/services/{setup,mcp,hooks,sync}.rs` include contract-focused tests for setup flag parsing/validation, interactive selection/cancellation dispatch, setup run messaging, and non-runnable capability/event plans.
 - `cli/src/services/setup.rs` tests also verify embedded-manifest completeness against runtime `config/` trees, deterministic sorted path normalization, target-scoped iterator behavior (`OpenCode`, `Claude`, `Both`), install backup creation/replacement, and rollback restoration after injected swap failures.
+- `cli/src/services/setup.rs` and `cli/src/services/local_db.rs` now share temporary path setup through `crate::test_support::TestTempDir` to keep filesystem test fixtures consistent and cleanup deterministic.
 
 ## Dependency baseline
 
 - `cli/Cargo.toml` declares only: `anyhow`, `inquire`, `lexopt`, `tokio`, and `turso`.
+- `tokio` is pinned with `default-features = false` and `features = ["rt"]` to match current runtime usage (current-thread runtime builder and `Runtime::block_on` without broader async feature surface).
 - `cli/src/dependency_contract.rs` keeps compile-time crate references centralized for this placeholder slice.
 
 ## Scope boundary for this phase

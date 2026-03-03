@@ -11,11 +11,16 @@ The `setup` command includes an `inquire`-backed target-selection flow: default 
 The CLI now compiles an embedded setup asset manifest from `config/.opencode/**` and `config/.claude/**` via `cli/build.rs`; `cli/src/services/setup.rs` exposes deterministic normalized relative paths plus file bytes and target-scoped iteration without runtime reads from `config/`.
 The setup service also provides repository-root install orchestration: it resolves interactive or flag-based target selection, installs embedded assets, and reports deterministic completion details (selected target(s), installed file counts, and backup actions).
 The `mcp` placeholder contract is now scoped to future file-cache workflows (`cache-put`/`cache-get`) and remains intentionally non-runnable.
-The `sync` placeholder performs a local Turso smoke check through a tokio-backed adapter and then reports a deferred cloud-sync plan from a placeholder gateway contract.
+The `sync` placeholder performs a local Turso smoke check through a lazily initialized shared tokio current-thread runtime and then reports a deferred cloud-sync plan from a placeholder gateway contract.
 The nested CLI flake (`cli/flake.nix`) now applies a Rust overlay-backed stable toolchain (with `rustfmt`) and uses that toolchain contract for CLI check/build derivations.
 The nested CLI flake now also exposes release install/run outputs: `packages.sce` (with `packages.default = packages.sce`) and `apps.sce`, so `nix build ./cli#default` and `nix run ./cli#sce -- --help` execute against the packaged `sce` binary.
 The CLI Cargo package metadata now includes crates.io-facing fields while keeping `publish = false`; local install/release flows are documented as `cargo install --path cli --locked` and `cargo build --manifest-path cli/Cargo.toml --release`.
 The repository-root flake now keeps nested CLI flake input wiring coherent by passing through `nixpkgs`, `flake-utils`, and `rust-overlay`, so root-level `nix flake check` can evaluate CLI checks without missing-input failures.
+Shared Context Plan and Shared Context Code remain separate agent roles by design; planning (`/change-to-plan`) and implementation (`/next-task`) stay split while shared baseline guidance is deduplicated via canonical skill-owned contracts.
+Their shared baseline doctrine (core principles, `context/` authority, and quality posture) is defined once as canonical snippets in `config/pkl/base/shared-content.pkl` and composed into both agent bodies during generation.
+The `/next-task` command body is intentionally thin orchestration: readiness gating + phase sequencing are command-owned, while detailed implementation/context-sync contracts are skill-owned (`sce-plan-review`, `sce-task-execution`, `sce-context-sync`).
+The `/change-to-plan` command body is also intentionally thin orchestration: it delegates clarification and plan-shape contracts to `sce-plan-authoring` while keeping wrapper-level plan output and handoff obligations explicit.
+The `/commit` command body is intentionally thin orchestration: it retains staged-confirmation and proposal-only constraints while delegating commit grammar and atomic split guidance to `sce-atomic-commit`.
 
 ## Repository model
 
@@ -37,7 +42,7 @@ The repository-root flake now keeps nested CLI flake input wiring coherent by pa
 - Run staged destructive sync for `config/` and root `.opencode/`: `nix run .#sync-opencode-config`
 - Run repository flake checks (includes CLI setup command-surface checks): `nix flake check`
 
-Lightweight post-task verification baseline: run `nix run .#pkl-check-generated` and `nix flake check` after each completed task.
+Lightweight post-task verification baseline (required after each completed task): run `nix run .#pkl-check-generated` and `nix flake check`.
 
 ## CI contracts
 
@@ -56,3 +61,7 @@ Lightweight post-task verification baseline: run `nix run .#pkl-check-generated`
 - Use `context/decisions/` for explicit architecture decisions.
 - Use `context/plans/` for task history and verification evidence.
 - Use `context/cli/placeholder-foundation.md` for current command-surface, local Turso adapter behavior, and module-boundary details of the `sce` placeholder crate.
+- Use `context/sce/shared-context-plan-workflow.md` for the canonical planning-session workflow (`/change-to-plan`) including clarification gating and `/next-task` handoff contract.
+- Use `context/sce/plan-code-overlap-map.md` for the current overlap/dedup inventory across Shared Context Plan/Code agents, related commands, and core skills.
+- Use `context/sce/dedup-ownership-table.md` for canonical owner-vs-consumer boundaries and keep-vs-dedup labels used by the dedup implementation plan.
+- Use `context/sce/atomic-commit-workflow.md` for canonical `/commit` behavior, `sce-atomic-commit` naming, and proposal-only commit planning constraints.

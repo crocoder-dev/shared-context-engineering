@@ -18,6 +18,12 @@ For every completed implementation task, explicitly review and update these file
 
 Do not skip `overview`, `architecture`, or `glossary` by default. If no edit is needed, verify they still match current code behavior.
 
+## Root context significance gating
+- Treat root context edits as required when a task introduces or changes cross-cutting behavior, repository-wide policy/contracts, architecture boundaries, or canonical terminology.
+- Treat root context edits as verify-only when a task is localized to a single feature/domain and no root-level behavior, architecture, or terminology changed.
+- When verify-only applies, keep root files unchanged and capture details in focused domain/workflow files instead.
+- When root updates are not needed, still verify `context/overview.md`, `context/architecture.md`, and `context/glossary.md` against code truth before declaring done.
+
 ## Domain file creation policy
 - Use domain files under `context/{domain}/` for detailed feature behavior.
 - If a feature does not cleanly fit an existing domain file, create a new domain file instead of deferring documentation.

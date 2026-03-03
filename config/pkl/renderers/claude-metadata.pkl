@@ -28,6 +28,7 @@ commandAllowedTools = new Mapping {
   ["drift-detect"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
   ["fix-drift"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
   ["handover"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill"
+  ["commit"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
   ["validate"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
 }
 

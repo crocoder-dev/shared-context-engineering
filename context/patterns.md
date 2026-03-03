@@ -25,6 +25,7 @@
 
 - Keep target-agnostic canonical content in `config/pkl/base/shared-content.pkl`.
 - Keep `config/pkl/base/shared-content.pkl` synchronized with the canonical authored instruction bodies (currently mirrored from the OpenCode source tree under `config/{opencode_root}` for `agent`, `command`, and `skills`, with frontmatter removed) before regenerating targets.
+- When two or more generated agent bodies share baseline doctrine, extract that doctrine into reusable canonical constants in `config/pkl/base/shared-content.pkl` and compose via interpolation instead of duplicating prose per agent.
 - Implement target-specific formatting in dedicated renderer modules under `config/pkl/renderers/`.
 - Keep shared renderer contracts and shared description maps in `config/pkl/renderers/common.pkl`.
 - Keep per-target metadata tables in dedicated modules (`opencode-metadata.pkl`, `claude-metadata.pkl`) and import them into target renderer modules.
@@ -32,6 +33,14 @@
 - In renderer modules, produce per-item document objects with explicit `frontmatter`, `body`, and combined `rendered` fields to keep formatting deterministic and easy to map in a later output stage.
 - Keep the Markdown renderer contract in `config/pkl/renderers/common.pkl` limited to deterministic `frontmatter + body` assembly without injected generated-file marker text.
 - Validate each renderer module directly with `nix develop -c pkl eval <module-path>` before wiring output emission.
+
+## Thin command orchestration
+
+- Keep SCE command bodies thin when phase skills already define detailed contracts.
+- For `/next-task`, retain only sequencing and confirmation gates in the command body and delegate phase details to `sce-plan-review`, `sce-task-execution`, and `sce-context-sync`.
+- For `/change-to-plan`, retain wrapper-level plan output/handoff obligations in the command body and delegate clarification and plan-shape contracts to `sce-plan-authoring`.
+- For `/commit`, retain staging-confirmation and proposal-only gates in the command body and delegate commit grammar plus atomic split guidance to `sce-atomic-commit`.
+- Preserve mandatory gates (readiness confirmation, implementation stop, final-task validation trigger) while removing duplicated procedural prose from command text.
 
 ## Multi-file generation entrypoint
 
@@ -69,7 +78,7 @@
 - Keep module seams for future domains present and compile-safe even when behavior is deferred.
 - Keep dependency additions explicit and minimal in `cli/Cargo.toml`, and anchor dependency intent in lightweight compile-time code references (`cli/src/dependency_contract.rs`).
 - Route local Turso access through a dedicated adapter module (`cli/src/services/local_db.rs`) so command handlers do not expose low-level `turso` API details.
-- For placeholder commands that need real infrastructure checks, use a small tokio current-thread runtime wrapper in the service layer (`cli/src/services/sync.rs`) and keep user-facing output explicit about remaining placeholder scope.
+- For placeholder commands that need real infrastructure checks, use a lazily initialized shared tokio current-thread runtime wrapper in the service layer (`cli/src/services/sync.rs`) and keep user-facing output explicit about remaining placeholder scope.
 - For future CLI domains, define trait-first service contracts with request/plan models in `cli/src/services/*` and keep placeholder implementations explicitly non-runnable until production behavior is approved.
 - Model deferred integration boundaries with concrete event/capability data structures (for example MCP file-cache snapshots/policies, git-hook/generated-region events, cloud-sync checkpoints) so later tasks can implement behavior without reshaping public seams.
 - Keep crate-local onboarding docs in `cli/README.md` and sanity-check command examples against actual `sce` output whenever command messaging changes.

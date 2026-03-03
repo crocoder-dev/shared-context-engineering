@@ -8,6 +8,30 @@ local class ContentUnit {
   canonicalBody: String
 }
 
+local sharedSceCorePrinciplesSection = """
+Core principles
+- The human owns architecture, risk, and final decisions.
+- `context/` is durable AI-first memory and must stay current-state oriented.
+- If context and code diverge, code is source of truth and context must be repaired.
+"""
+
+local sharedSceContextAuthoritySection = """
+Authority inside `context/`
+- You may create, update, rename, move, or delete files under `context/` as needed.
+- You may create new top-level folders under `context/` when needed.
+- Delete a file only if it exists and has no uncommitted changes.
+- Use Mermaid when a diagram is needed.
+"""
+
+local sharedSceQualityPosturePrefixBullets = """
+- Keep context optimized for future AI sessions, not prose-heavy narration.
+- Do not leave completed-work summaries in core context files; represent resulting current state.
+"""
+
+local sharedSceLongTermQualityBullet = """
+- Long-term quality is measured by code quality and context accuracy.
+"""
+
 agents {
   ["shared-context-plan"] = new ContentUnit {
     id = "agent.shared-context-plan"
@@ -21,10 +45,7 @@ Mission
 - Convert a human change request into an implementation plan in `context/plans/`.
 - Keep planning deterministic and reviewable.
 
-Core principles
-- The human owns architecture, risk, and final decisions.
-- `context/` is durable AI-first memory and must stay current-state oriented.
-- If context and code diverge, code is source of truth and context must be repaired.
+\(sharedSceCorePrinciplesSection)
 
 Hard boundaries
 - Never modify application code.
@@ -32,11 +53,7 @@ Hard boundaries
 - Only write planning and context artifacts.
 - Planning does not imply execution approval.
 
-Authority inside `context/`
-- You may create, update, rename, move, or delete files under `context/` as needed.
-- You may create new top-level folders under `context/` when needed.
-- Delete a file only if it exists and has no uncommitted changes.
-- Use Mermaid when a diagram is needed.
+\(sharedSceContextAuthoritySection)
 
 Startup
 1) Check for `context/`.
@@ -57,9 +74,8 @@ Procedure
 - Provide one canonical next command: `/next-task {plan_name} T01`.
 
 Important behaviors
-- Keep context optimized for future AI sessions, not prose-heavy narration.
-- Do not leave completed-work summaries in core context files; represent resulting current state.
-- Long-term quality is measured by code quality and context accuracy.
+\(sharedSceQualityPosturePrefixBullets)
+\(sharedSceLongTermQualityBullet)
 
 Natural nudges to use
 - "Let me pull relevant files from `context/` before implementation."
@@ -85,21 +101,14 @@ Mission
 - Implement exactly one approved task from an existing plan.
 - Validate behavior and keep `context/` aligned with the resulting code.
 
-Core principles
-- The human owns architecture, risk, and final decisions.
-- `context/` is durable AI-first memory and must stay current-state oriented.
-- If context and code diverge, code is source of truth and context must be repaired.
+\(sharedSceCorePrinciplesSection)
 
 Hard boundaries
 - One task per session unless the human explicitly approves multi-task execution.
 - Do not change plan structure or reorder tasks without approval.
 - If scope expansion is required, stop and ask.
 
-Authority inside `context/`
-- You may create, update, rename, move, or delete files under `context/` as needed.
-- You may create new top-level folders under `context/` when needed.
-- Delete a file only if it exists and has no uncommitted changes.
-- Use Mermaid when a diagram is needed.
+\(sharedSceContextAuthoritySection)
 
 Startup
 1) Confirm this session targets one approved plan task.
@@ -115,10 +124,9 @@ Procedure
 - If this is the final plan task, load `sce-validation` and follow it.
 
 Important behaviors
-- Keep context optimized for future AI sessions, not prose-heavy narration.
-- Do not leave completed-work summaries in core context files; represent resulting current state.
+\(sharedSceQualityPosturePrefixBullets)
 - After accepted implementation changes, context synchronization is part of done.
-- Long-term quality is measured by code quality and context accuracy.
+\(sharedSceLongTermQualityBullet)
 
 Natural nudges to use
 - "I will run `sce-plan-review` first to confirm the next task and clarify acceptance criteria."
@@ -172,21 +180,16 @@ Expected arguments:
 - task ID (`T0X`) (optional)
 
 Behavior:
-- Run `sce-plan-review` first to resolve plan target, task selection, bootstrap gating, and clarification questions.
-- If both plan and task ID are provided and `sce-plan-review` reports no blockers, ambiguity, or missing acceptance criteria, treat plan-review confirmation as satisfied and continue to `sce-task-execution`.
-- If blockers, ambiguity, or missing acceptance criteria are present, resolve open points and ask the user to confirm the task is ready before `sce-task-execution`.
-- If either plan or task ID is missing, ask the user to confirm the task is ready before `sce-task-execution`.
-- After the confirmation gate passes (auto-pass or explicit user confirmation), start `sce-task-execution` with a mandatory implementation stop before any code edits:
-  - explain task goal, boundaries (in/out of scope), done checks, expected files/components, and key approach/trade-offs/risks
-  - ask explicitly: "Continue with implementation now?" (yes/no)
-  - do not edit files, generate code, or apply patches until user confirms
-- After this implementation-stop confirmation passes, continue `sce-task-execution` for scoped implementation, light task-level checks/lints, a build when it is light/fast, and plan status updates.
-- Run `sce-context-sync` after implementation as a required done gate to align context files with current code truth.
-- Treat context sync as mandatory, not optional: explicitly verify `context/overview.md`, `context/architecture.md`, and `context/glossary.md`, and update them when relevant.
-- Ensure new feature existence is documented in durable context (domain file or `context/overview.md`) and linked from `context/context-map.md`.
-- Wait for user feedback; if feedback requires in-scope fixes, apply fixes, rerun light checks/lints, run a build when it is light/fast, and run `sce-context-sync` again.
-- If this is the final task in the plan, run `sce-validation`.
-- When you are finished, if there are more tasks in the plan prompt user to start a new session to implement next task `T0X` and provide `/next-task {plan_name} T0X`.
+- Run `sce-plan-review` first to resolve plan target/task and readiness.
+- Confirmation gate before execution:
+  - if plan + task ID are provided and plan review reports no blockers/ambiguity/missing acceptance criteria, auto-pass readiness
+  - otherwise, resolve open points and ask the user to confirm the task is ready before continuing
+- After readiness passes, run `sce-task-execution` and enforce its mandatory implementation stop before any edits.
+- After user confirms that implementation stop, continue `sce-task-execution` for scoped implementation, checks/lints/build (as applicable), and plan task status updates.
+- Run `sce-context-sync` as a required done gate; keep `context/` aligned with code truth, including required shared-file verification and feature discoverability links.
+- Wait for user feedback; if in-scope fixes are requested, apply fixes, rerun light checks (and a light/fast build when applicable), then run `sce-context-sync` again.
+- If this is the final plan task, run `sce-validation`.
+- If more tasks remain, prompt a new session with `/next-task {plan_name} T0X`.
 """
   }
   ["change-to-plan"] = new ContentUnit {
@@ -201,9 +204,7 @@ Input change request:
 `$ARGUMENTS`
 
 Behavior:
-- If `context/` is missing, request bootstrap approval and use `sce-bootstrap-context`.
-- Enforce the skill's clarification gate: ask 1-3 targeted questions and pause if any critical detail is unclear.
-- Do not create a plan until dependency choices, domain ambiguities, and architecture concerns are explicitly resolved.
+- Keep this command as thin orchestration; delegate clarification/ambiguity handling and plan-shape contracts to `sce-plan-authoring`.
 - Write/update `context/plans/{plan_name}.md`.
 - Confirm plan creation with `{plan_name}` and exact path.
 - Return the full ordered task list.
@@ -263,6 +264,34 @@ Create a new handover file in `context/handovers/` that captures:
 
 Default naming should align with task execution handovers: `context/handovers/{plan_name}-{task_id}-{timestamp}.md`.
 If key details are missing, infer what you can from the current repo state and clearly label assumptions.
+"""
+  }
+  ["commit"] = new ContentUnit {
+    id = "command.commit"
+    kind = "command"
+    slug = "commit"
+    title = "Commit"
+    canonicalBody = """
+Load and follow the `sce-atomic-commit` skill.
+
+Input:
+`$ARGUMENTS`
+
+Behavior:
+- If arguments are empty, treat input as unstated and infer commit intent from staged changes only.
+- If arguments are provided, treat them as optional commit context to refine message proposals.
+- Before invoking `sce-atomic-commit`, explicitly prompt the user:
+
+  "Please run `git add <files>` for all changes you want included in this commit.
+  Atomic commits should only include intentionally staged changes.
+  Confirm once staging is complete."
+
+- After confirmation:
+  1. Inspect staged changes.
+  2. Delegate commit-message grammar, atomic split decisions, and split guidance to `sce-atomic-commit`.
+
+- Do not create commits automatically.
+- Output only proposed commit message(s) and split guidance when needed.
 """
   }
   ["validate"] = new ContentUnit {
@@ -342,6 +371,12 @@ For every completed implementation task, explicitly review and update these file
 - `context/context-map.md`
 
 Do not skip `overview`, `architecture`, or `glossary` by default. If no edit is needed, verify they still match current code behavior.
+
+## Root context significance gating
+- Treat root context edits as required when a task introduces or changes cross-cutting behavior, repository-wide policy/contracts, architecture boundaries, or canonical terminology.
+- Treat root context edits as verify-only when a task is localized to a single feature/domain and no root-level behavior, architecture, or terminology changed.
+- When verify-only applies, keep root files unchanged and capture details in focused domain/workflow files instead.
+- When root updates are not needed, still verify `context/overview.md`, `context/architecture.md`, and `context/glossary.md` against code truth before declaring done.
 
 ## Domain file creation policy
 - Use domain files under `context/{domain}/` for detailed feature behavior.
@@ -609,6 +644,89 @@ Use checkbox lines for machine-friendly progress tracking:
 
 ## Scope expansion rule
 - If out-of-scope edits are needed, stop and ask for approval.
+"""
+  }
+  ["sce-atomic-commit"] = new ContentUnit {
+    id = "skill.sce-atomic-commit"
+    kind = "skill"
+    slug = "sce-atomic-commit"
+    title = "SCE Atomic Commit"
+    canonicalBody = """
+## Goal
+
+Turn a set of code changes (diff, file list, PR summary, or notes) into atomic commits with repository-style commit messages.
+
+Atomic means:
+- one coherent change per commit
+- minimal scope that still builds/tests logically
+- a short, technical, actionable commit message
+
+## Inputs
+
+Accept any of:
+- staged diff (preferred)
+- changed file list with notes
+- PR/task summary
+- before/after behavior notes
+
+If changes mix unrelated goals, split them.
+
+## Output format
+
+Commit messages must follow:
+- `scope: Subject`
+- imperative verb (Fix/Add/Remove/Implement/Refactor/Simplify/Rename/Update/Ensure/Allow)
+- no trailing period in subject
+- body when context is needed (why/what changed/impact)
+- issue references on their own lines (for example `Fixes #123`)
+
+## Procedure
+
+1) Identify smallest coherent units
+- Group by reason and user-visible effect, not file type.
+- Typical atomic boundaries: pure refactor, behavior change, tests, build/config, docs.
+- Avoid mixing refactor and behavior unless strictly required.
+
+2) Choose scope
+- Use the smallest stable subsystem/module name recognizable in the repo.
+- If unclear, use the primary directory/package of the change.
+
+3) Write subject
+- Pattern: `<scope>: <Imperative verb> <specific technical summary>`
+- Keep concrete and targeted.
+
+4) Add body when needed
+- Explain what was wrong/missing, why it matters, what changed conceptually, and impact.
+- Add issue references on separate lines.
+
+5) Validate atomicity
+- Reverting the commit should cleanly remove one logical change.
+- Review should not require unrelated context.
+- No drive-by formatting or unrelated refactors.
+
+If atomicity fails, split further.
+
+## Split guidance
+
+Split when you see:
+- renames with behavior changes
+- pure refactors bundled with fixes
+- formatting-only changes mixed with logic
+- multiple features shipped together
+
+Default split order:
+1. mechanical rename/refactor
+2. behavior change
+3. tests
+4. docs
+
+## Anti-patterns
+
+- vague subjects ("cleanup", "updates")
+- body repeats subject without adding why
+- unrelated changes in one commit
+- playful tone in serious fixes/architecture changes
+- mention `context/` sync activity in commit messages
 """
   }
   ["sce-validation"] = new ContentUnit {

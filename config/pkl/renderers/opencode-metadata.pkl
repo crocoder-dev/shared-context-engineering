@@ -105,6 +105,7 @@ commandAgents = new Mapping {
   ["drift-detect"] = "Shared Context Drift"
   ["fix-drift"] = "Shared Context Drift"
   ["handover"] = "Shared Context Code"
+  ["commit"] = "Shared Context Code"
   ["validate"] = "Shared Context Code"
 }
 

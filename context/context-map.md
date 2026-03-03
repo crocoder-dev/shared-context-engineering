@@ -7,8 +7,12 @@ Primary context files:
 - `context/glossary.md`
 
 Feature/domain context:
-- `context/cli/placeholder-foundation.md` (CLI command surface, setup install flow, nested flake release package/app installability, and Cargo local install + crates.io readiness policy)
+- `context/cli/placeholder-foundation.md` (CLI command surface, setup install flow, shared-runtime sync smoke gate, nested flake release package/app installability, and Cargo local install + crates.io readiness policy)
 - `context/sce/shared-context-code-workflow.md`
+- `context/sce/shared-context-plan-workflow.md` (canonical `/change-to-plan` workflow and clarification/readiness gate contract)
+- `context/sce/plan-code-overlap-map.md` (T01 overlap matrix for Shared Context Plan/Code, related commands, and core skill ownership/dedup targets)
+- `context/sce/dedup-ownership-table.md` (current-state canonical owner-vs-consumer matrix for shared SCE behavior domains and thin-command ownership boundaries)
+- `context/sce/atomic-commit-workflow.md` (canonical `/commit` command + `sce-atomic-commit` skill contract and naming decision)
 
 Working areas:
 - `context/plans/`
@@ -18,3 +22,4 @@ Working areas:
 
 Recent decision records:
 - `context/decisions/2026-02-28-pkl-generation-architecture.md`
+- `context/decisions/2026-03-03-plan-code-agent-separation.md`

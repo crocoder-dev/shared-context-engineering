@@ -23,6 +23,8 @@ Examples:
 
 ## Workflow behavior
 
+`/next-task` keeps orchestration/gating responsibilities, while detailed per-phase contracts are owned by the three phase skills.
+
 1. Run `sce-plan-review` to resolve plan target, task selection, and readiness.
 2. Apply the plan-review confirmation gate.
    - Auto-pass only when both plan and task ID are provided and review reports no blockers, ambiguity, or missing acceptance criteria.
