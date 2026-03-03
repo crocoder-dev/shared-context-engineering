@@ -33,9 +33,11 @@ The repository-root flake now keeps nested CLI flake input wiring coherent by pa
 ## Core commands
 
 - Regenerate outputs in place: `nix develop -c pkl eval -m . config/pkl/generate.pkl`
-- Verify generated outputs are current: `nix develop -c ./config/pkl/check-generated.sh`
+- Verify generated outputs are current: `nix run .#pkl-check-generated`
 - Run staged destructive sync for `config/` and root `.opencode/`: `nix run .#sync-opencode-config`
 - Run repository flake checks (includes CLI setup command-surface checks): `nix flake check`
+
+Lightweight post-task verification baseline: run `nix run .#pkl-check-generated` and `nix flake check` after each completed task.
 
 ## CI contracts
 

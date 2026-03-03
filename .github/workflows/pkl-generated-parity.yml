@@ -23,5 +23,5 @@ jobs:
       - name: Install Nix
         uses: cachix/install-nix-action@v31
 
-      - name: Run dev-shell generated parity check
-        run: nix develop -c ./config/pkl/check-generated.sh
+      - name: Run flake generated parity check
+        run: nix run .#pkl-check-generated

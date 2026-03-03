@@ -186,6 +186,24 @@
           '';
         };
 
+        pklCheckGeneratedApp = pkgs.writeShellApplication {
+          name = "pkl-check-generated";
+          runtimeInputs = [
+            pkgs.git
+            pkgs.nix
+          ];
+          text = ''
+            set -euo pipefail
+
+            repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+            if [ -z "''${repo_root}" ]; then
+              repo_root="$(pwd)"
+            fi
+
+            exec nix develop "''${repo_root}" -c "''${repo_root}/config/pkl/check-generated.sh"
+          '';
+        };
+
         agnixLspShim = pkgs.writeShellScriptBin "agnix-lsp" ''
                     set -euo pipefail
 
@@ -222,6 +240,14 @@
           };
         };
 
+        apps.pkl-check-generated = {
+          type = "app";
+          program = "${pklCheckGeneratedApp}/bin/pkl-check-generated";
+          meta = {
+            description = "Run generated-output drift check in dev shell";
+          };
+        };
+
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             bun
@@ -254,6 +280,7 @@
             echo "- agnix: $(version_of agnix)"
             echo "- sync-opencode-config: nix run .#sync-opencode-config"
             echo "- sync-opencode-config help: nix run .#sync-opencode-config -- --help"
+            echo "- pkl-check-generated: nix run .#pkl-check-generated"
           '';
         };
       }

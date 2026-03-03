@@ -38,8 +38,9 @@
 - Use `config/pkl/generate.pkl` as the single generation module for authored config outputs.
 - Use `config/pkl/README.md` as the contributor-facing runbook for prerequisites, ownership boundaries, regeneration steps, and troubleshooting.
 - Run multi-file generation with `nix develop -c pkl eval -m . config/pkl/generate.pkl` to emit to repository-root mapped paths.
-- Run stale-output detection with `nix develop -c ./config/pkl/check-generated.sh`; the script is a dev-shell integration test, exits non-zero outside `nix develop`, regenerates into a temporary directory, and fails if generated-owned paths differ from committed outputs.
+- Run stale-output detection through the flake app entrypoint `nix run .#pkl-check-generated`; it wraps `nix develop -c ./config/pkl/check-generated.sh`, regenerates into a temporary directory, and fails if generated-owned paths differ from committed outputs.
 - Keep CI parity enforcement aligned with local workflow by running the same command in `.github/workflows/pkl-generated-parity.yml` for pushes to `main` and pull requests targeting `main`.
+- Treat `nix run .#pkl-check-generated` and `nix flake check` as the lightweight post-task verification baseline and run both after each completed task.
 - Keep agnix config validation on the same trigger contract (`push`/`pull_request` to `main`) in `.github/workflows/agnix-config-validate-report.yml` with job defaults pinned to `working-directory: config`.
 - In the agnix CI workflow, capture command output to `context/tmp/ci-reports/agnix-validate-report.txt`, treat `warning:`/`error:`/`fatal:` findings as non-info gate failures, and upload the captured report as a GitHub artifact (`agnix-validate-report`) only when non-info findings are present.
 - Do not run `evals/` test suites autonomously during plan-task execution; run them only when the user explicitly requests eval coverage.
