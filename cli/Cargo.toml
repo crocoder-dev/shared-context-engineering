@@ -14,8 +14,10 @@ categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 anyhow = "1"
+hmac = "0.12"
 inquire = "0.7"
 lexopt = "0.3"
+sha2 = "0.10"
 tokio = { version = "1", default-features = false, features = ["rt"] }
 turso = "0"
 

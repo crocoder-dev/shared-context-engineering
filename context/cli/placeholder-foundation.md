@@ -102,7 +102,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 
 ## Dependency baseline
 
-- `cli/Cargo.toml` declares only: `anyhow`, `inquire`, `lexopt`, `tokio`, and `turso`.
+- `cli/Cargo.toml` declares only: `anyhow`, `hmac`, `inquire`, `lexopt`, `sha2`, `tokio`, and `turso`.
 - `tokio` is pinned with `default-features = false` and `features = ["rt"]` to match current runtime usage (current-thread runtime builder and `Runtime::block_on` without broader async feature surface).
 - `cli/src/dependency_contract.rs` keeps compile-time crate references centralized for this placeholder slice.
 
