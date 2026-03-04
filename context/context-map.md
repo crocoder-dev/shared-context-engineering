@@ -18,6 +18,7 @@ Feature/domain context:
 - `context/sce/atomic-commit-workflow.md` (canonical `/commit` command + `sce-atomic-commit` skill contract and naming decision)
 - `context/sce/agent-trace-implementation-contract.md` (normative T01 implementation contract for no-git-wrapper Agent Trace attribution invariants, compliance matrix, and internal-to-Agent-Trace mapping)
 - `context/sce/agent-trace-schema-adapter.md` (T02 schema adapter contract and code-level mapping surface in `cli/src/services/agent_trace.rs`)
+- `context/sce/agent-trace-payload-builder-validation.md` (T03 deterministic payload-builder path, model-id normalization behavior, and Agent Trace schema validation suite)
 
 Working areas:
 - `context/plans/` (active plan execution artifacts, not durable history)
