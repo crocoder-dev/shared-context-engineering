@@ -34,7 +34,7 @@ Add a first-class Nix app entrypoint for the workflow token-count script and add
     - Ran `nix flake check --no-build` (exit 0) to confirm app output evaluation; `apps.x86_64-linux.token-count-workflows` validated successfully with only expected incompatible-system warnings.
     - Synced context discoverability for the new root app contract: updated `context/overview.md`, `context/architecture.md`, `context/patterns.md`, `context/glossary.md`, and `context/context-map.md`, and added focused domain documentation at `context/sce/workflow-token-count-workflow.md`.
 
-- [ ] T02: Add CI workflow and artifact upload for token-count outputs (status:todo)
+- [x] T02: Add CI workflow and artifact upload for token-count outputs (status:done)
   - Task ID: T02
   - Goal: add a GitHub Actions workflow that runs the token-count Nix app and uploads generated artifacts.
   - Boundaries (in/out of scope):
@@ -46,6 +46,11 @@ Add a first-class Nix app entrypoint for the workflow token-count script and add
   - Verification notes (commands or checks):
     - Local syntax/contract review of workflow YAML.
     - Optional dry-run command parity check via local `nix run .#token-count-workflows`.
+  - Evidence:
+    - Added `.github/workflows/workflow-token-count.yml` with trigger policy aligned to repo CI conventions (`push`/`pull_request` on `main`), Nix install via `cachix/install-nix-action@v31`, execution command `nix run .#token-count-workflows`, and artifact upload via `actions/upload-artifact@v4`.
+    - Artifact upload contract is explicit and deterministic: artifact name `workflow-token-footprint`, required paths include `context/tmp/token-footprint/workflow-token-count-latest.json` and `context/tmp/token-footprint/workflow-token-count-latest.md` (plus wildcard run-id outputs when present), with `if-no-files-found: error`.
+    - Ran `nix run .#token-count-workflows` locally from repository root (exit 0); run wrote `context/tmp/token-footprint/workflow-token-count-latest.json` and `context/tmp/token-footprint/workflow-token-count-latest.md`.
+    - Synced context discoverability for the CI contract in `context/overview.md`, `context/architecture.md`, `context/patterns.md`, `context/glossary.md`, and `context/sce/workflow-token-count-workflow.md`.
 
 - [ ] T03: Validation and cleanup (status:todo)
   - Task ID: T03

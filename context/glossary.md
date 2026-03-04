@@ -8,6 +8,7 @@
 - generated-owned outputs: Files materialized by `config/pkl/generate.pkl` under `config/.opencode/**` and `config/.claude/**`.
 - `agnix-config-validate-report`: GitHub Actions workflow at `.github/workflows/agnix-config-validate-report.yml` that runs `nix develop -c agnix validate .` from `config/` on push/PR to `main`.
 - `agnix validation report artifact`: Failure-investigation artifact named `agnix-validate-report`, uploaded from deterministic path `context/tmp/ci-reports/agnix-validate-report.txt` when non-info (`warning:`/`error:`/`fatal:`) findings are detected.
+- `workflow-token-count` CI workflow: GitHub Actions workflow at `.github/workflows/workflow-token-count.yml` that runs `nix run .#token-count-workflows` on push/PR to `main` and uploads token-count outputs from `context/tmp/token-footprint/` as the `workflow-token-footprint` artifact.
 - `cli-setup-command-surface` flake check: `checks.<system>.cli-setup-command-surface` in `flake.nix`; runs `cargo fmt --check` and focused setup command-surface tests from `cli/` during `nix flake check`.
 - `cli rust overlay toolchain`: Toolchain contract in `cli/flake.nix` that applies `rust-overlay.overlays.default`, selects `rust-bin.stable.latest.default` with `rustfmt`, and builds the CLI Rust platform via `makeRustPlatform`.
 - `cli flake release package`: Nested flake package output in `cli/flake.nix` exposed as `packages.sce` with `packages.default = packages.sce`, producing the release-build `sce` binary via `nix build ./cli#default`.
