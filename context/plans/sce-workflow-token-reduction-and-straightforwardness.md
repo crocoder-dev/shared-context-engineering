@@ -52,7 +52,7 @@ Reduce unnecessary workflow prompt/context tokens and make SCE planning/executio
   - Verification notes (commands or checks):
     - Manual contract review of canonical skill bodies and generated skill outputs for conditional sync wording.
 
-- [ ] T03: Constrain `/commit` context-file guidance to context-only staged diffs (status:todo)
+- [x] T03: Constrain `/commit` context-file guidance to context-only staged diffs (status:done)
   - Task ID: T03
   - Goal: Remove noisy context-commit reminders from mixed-change commit proposals while preserving context-only commit support.
   - Boundaries (in/out of scope):

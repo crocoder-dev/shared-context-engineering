@@ -18,8 +18,12 @@ Behavior:
   Confirm once staging is complete."
 
 - After confirmation:
-  1. Inspect staged changes.
-  2. Delegate commit-message grammar, atomic split decisions, and split guidance to `sce-atomic-commit`.
+  1. Inspect staged changes and classify staged diff scope:
+     - context-only: all staged paths are under `context/`
+     - mixed: staged paths include both `context/` and non-`context/` files
+  2. For context-only staged diffs, allow context-file-focused commit guidance.
+  3. For mixed staged diffs, do not include default context-file commit reminders.
+  4. Delegate commit-message grammar, atomic split decisions, and split guidance to `sce-atomic-commit`.
 
 - Do not create commits automatically.
 - Output only proposed commit message(s) and split guidance when needed.
