@@ -18,8 +18,8 @@ Behavior:
   Confirm once staging is complete."
 
 - After confirmation:
-  1. Inspect staged changes.
-  2. Delegate commit-message grammar, atomic split decisions, and split guidance to `sce-atomic-commit`.
+  - Classify staged diff scope (`context/`-only vs mixed `context/` + non-`context/`) and apply the context-guidance gate from `sce-atomic-commit`.
+  - Delegate commit-message grammar, atomic split decisions, and split guidance to `sce-atomic-commit`.
 
 - Do not create commits automatically.
 - Output only proposed commit message(s) and split guidance when needed.

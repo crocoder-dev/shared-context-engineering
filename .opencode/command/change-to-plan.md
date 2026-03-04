@@ -10,6 +10,7 @@ Input change request:
 
 Behavior:
 - Keep this command as thin orchestration; delegate clarification/ambiguity handling and plan-shape contracts to `sce-plan-authoring`.
+- Ensure plan output follows one-task/one-atomic-commit slicing through `sce-plan-authoring` task-shape rules.
 - Write/update `context/plans/{plan_name}.md`.
 - Confirm plan creation with `{plan_name}` and exact path.
 - Return the full ordered task list.
