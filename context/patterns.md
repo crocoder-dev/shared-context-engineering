@@ -8,7 +8,9 @@
 ## Flake app entrypoints
 
 - Expose operational workflows as flake apps so commands are stable and system-mapped across supported `flake-utils` default systems.
-- Current repo command contract: `nix run .#sync-opencode-config` is the canonical entrypoint for staged regeneration/replacement of `config/` and replacement of repository-root `.opencode/` from regenerated `config/.opencode/`.
+- Current repo command contracts:
+  - `nix run .#sync-opencode-config` is the canonical entrypoint for staged regeneration/replacement of `config/` and replacement of repository-root `.opencode/` from regenerated `config/.opencode/`.
+  - `nix run .#token-count-workflows` is the canonical root entrypoint for static workflow token counting (wrapping `bun run token-count-workflows` from `evals/` through `nix develop`).
 - For flake app outputs, include `meta.description` so `nix flake check` app validation stays warning-free.
 - For destructive config replacement flows, regenerate into a temporary staged `config/` first, validate required generated directories exist, and only then swap live `config/`.
 - For destructive root `.opencode/` replacement flows, keep exclusions explicit (for example `node_modules`), use backup-and-restore around swap, and run a source/target tree parity check with the same exclusions.

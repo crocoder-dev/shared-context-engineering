@@ -204,6 +204,50 @@
           '';
         };
 
+        tokenCountWorkflowsApp = pkgs.writeShellApplication {
+          name = "token-count-workflows";
+          runtimeInputs = [
+            pkgs.git
+            pkgs.nix
+          ];
+          text = ''
+            set -euo pipefail
+
+            usage() {
+              cat <<'EOF'
+            Usage: nix run .#token-count-workflows [-- --help]
+
+            Deterministic flake entrypoint for workflow token counting.
+            Runs evals/token-count-workflows.ts through the existing evals Bun runtime.
+            EOF
+            }
+
+            case "''${1:-}" in
+              -h|--help)
+                usage
+                exit 0
+                ;;
+            esac
+
+            repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+            if [ -z "''${repo_root}" ]; then
+              repo_root="$(pwd)"
+            fi
+
+            evals_dir="''${repo_root}/evals"
+            if [ ! -d "''${evals_dir}" ]; then
+              cat >&2 <<EOF
+            Could not locate evals directory at:
+              ''${evals_dir}
+            Run this command from the repository (or inside a git worktree rooted there).
+            EOF
+              exit 1
+            fi
+
+            exec nix develop "''${repo_root}" -c sh -c "cd \"''${evals_dir}\" && exec bun run token-count-workflows"
+          '';
+        };
+
         agnixLspShim = pkgs.writeShellScriptBin "agnix-lsp" ''
                     set -euo pipefail
 
@@ -245,6 +289,14 @@
           program = "${pklCheckGeneratedApp}/bin/pkl-check-generated";
           meta = {
             description = "Run generated-output drift check in dev shell";
+          };
+        };
+
+        apps.token-count-workflows = {
+          type = "app";
+          program = "${tokenCountWorkflowsApp}/bin/token-count-workflows";
+          meta = {
+            description = "Run static workflow token counting via evals Bun runtime";
           };
         };
 

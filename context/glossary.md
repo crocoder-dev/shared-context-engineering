@@ -1,6 +1,7 @@
 # Glossary
 
 - `sync-opencode-config`: Flake app command exposed as `nix run .#sync-opencode-config`; canonical operator entrypoint for staged regeneration/replacement of `config/` and replacement of repository-root `.opencode/` from regenerated `config/.opencode/`.
+- `token-count-workflows`: Flake app command exposed as `nix run .#token-count-workflows`; canonical repository-root entrypoint that runs `evals/token-count-workflows.ts` through `nix develop` and writes token-count artifacts to `context/tmp/token-footprint/`.
 - `pkl-check-generated`: Flake app command exposed as `nix run .#pkl-check-generated`; canonical lightweight parity test entrypoint that runs the generated-output drift check inside the Nix dev shell.
 - lightweight post-task verification baseline: Required quick checks after each completed task in this repo: `nix run .#pkl-check-generated` and `nix flake check`.
 - important change (context sync): A completed task change that affects cross-cutting behavior, repository-wide policy/contracts, architecture boundaries, or canonical terminology; these changes require root context edits in `context/overview.md`, `context/architecture.md`, and/or `context/glossary.md` rather than verify-only.

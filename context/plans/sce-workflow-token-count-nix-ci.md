@@ -16,7 +16,7 @@ Add a first-class Nix app entrypoint for the workflow token-count script and add
 - Out of scope: runtime token telemetry or external dashboard/reporting.
 
 ## 4) Task stack (T01..T03)
-- [ ] T01: Add root flake app for workflow token counting (status:todo)
+- [x] T01: Add root flake app for workflow token counting (status:done)
   - Task ID: T01
   - Goal: expose a root flake app (for example `token-count-workflows`) that runs the token-count script through the existing evals runtime.
   - Boundaries (in/out of scope):
@@ -27,6 +27,12 @@ Add a first-class Nix app entrypoint for the workflow token-count script and add
     - App has deterministic command invocation and metadata description.
   - Verification notes (commands or checks):
     - `nix run .#token-count-workflows`
+  - Evidence:
+    - Added `apps.token-count-workflows` in `flake.nix` with deterministic wrapper program `token-count-workflows` and metadata description, wired to execute `bun run token-count-workflows` from `evals/` via `nix develop`.
+    - Ran `nix run .#token-count-workflows -- --help` (exit 0) to verify deterministic usage output.
+    - Ran `nix run .#token-count-workflows` from repository root (exit 0); run completed and wrote artifacts to `context/tmp/token-footprint/workflow-token-count-latest.json` and `context/tmp/token-footprint/workflow-token-count-latest.md`.
+    - Ran `nix flake check --no-build` (exit 0) to confirm app output evaluation; `apps.x86_64-linux.token-count-workflows` validated successfully with only expected incompatible-system warnings.
+    - Synced context discoverability for the new root app contract: updated `context/overview.md`, `context/architecture.md`, `context/patterns.md`, `context/glossary.md`, and `context/context-map.md`, and added focused domain documentation at `context/sce/workflow-token-count-workflow.md`.
 
 - [ ] T02: Add CI workflow and artifact upload for token-count outputs (status:todo)
   - Task ID: T02
