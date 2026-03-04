@@ -107,5 +107,5 @@ Shared Context Plan and Shared Context Code remain separate architectural roles.
 - Reuse is handled through shared canonical guidance blocks and skill-owned phase contracts, not by collapsing both roles into one agent.
 - Shared baseline doctrine for both agents is centralized in reusable constants in `config/pkl/base/shared-content.pkl` and interpolated into each role body at generation time.
 - `/next-task` is a thin orchestration wrapper: it owns gate sequencing, while phase-detail contracts stay canonical in `sce-plan-review`, `sce-task-execution`, and `sce-context-sync`.
-- `/change-to-plan` is a thin orchestration wrapper: it delegates clarification and plan-shape ownership to `sce-plan-authoring` while retaining wrapper-level plan creation confirmation and `/next-task` handoff obligations.
+- `/change-to-plan` is a thin orchestration wrapper: it delegates clarification and plan-shape ownership to `sce-plan-authoring` (including one-task/one-atomic-commit task slicing) while retaining wrapper-level plan creation confirmation and `/next-task` handoff obligations.
 - `/commit` is a thin orchestration wrapper: it retains staged-changes confirmation and no-auto-commit constraints, while commit grammar and atomic split logic stay canonical in `sce-atomic-commit`.

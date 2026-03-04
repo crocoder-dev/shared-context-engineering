@@ -40,7 +40,7 @@
 
 - Keep SCE command bodies thin when phase skills already define detailed contracts.
 - For `/next-task`, retain only sequencing and confirmation gates in the command body and delegate phase details to `sce-plan-review`, `sce-task-execution`, and `sce-context-sync`.
-- For `/change-to-plan`, retain wrapper-level plan output/handoff obligations in the command body and delegate clarification and plan-shape contracts to `sce-plan-authoring`.
+- For `/change-to-plan`, retain wrapper-level plan output/handoff obligations in the command body and delegate clarification and plan-shape contracts (including one-task/one-atomic-commit task slicing) to `sce-plan-authoring`.
 - For `/commit`, retain staging-confirmation and proposal-only gates in the command body and delegate commit grammar plus atomic split guidance to `sce-atomic-commit`.
 - Preserve mandatory gates (readiness confirmation, implementation stop, final-task validation trigger) while removing duplicated procedural prose from command text.
 
