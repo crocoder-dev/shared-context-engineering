@@ -75,7 +75,7 @@
 - For setup-style command contracts, keep interactive mode as the zero-flag default and enforce mutually-exclusive explicit target flags for non-interactive automation.
 - For interactive setup flows, isolate prompt handling behind a service-layer prompter seam so selection mapping and cancellation behavior can be tested without a live TTY.
 - Treat setup prompt cancellation/interrupt as a non-destructive exit path with explicit user messaging (no file mutations and no partial side effects).
-- For setup install prep, generate compile-time embedded asset manifests from `config/.opencode/**` and `config/.claude/**` in `cli/build.rs`, keep relative paths normalized to forward-slash form, and expose target-scoped iterators from the setup service layer for installer wiring.
+- For setup install prep, generate compile-time embedded asset manifests from `config/.opencode/**`, `config/.claude/**`, and `cli/assets/hooks/**` in `cli/build.rs`, keep relative paths normalized to forward-slash form, and expose target-scoped iterators/lookups from the setup service layer for installer wiring.
 - For setup install execution, write selected embedded assets into a per-target staging directory first, then swap into repository-root `.opencode/`/`.claude/` with backup-and-replace semantics; when swap fails after backup creation, restore the original target path from backup and clean staging directories.
 - For setup command messaging, emit deterministic completion output that includes selected target(s), per-target install counts, and whether backup was created.
 - Keep module seams for future domains present and compile-safe even when behavior is deferred.

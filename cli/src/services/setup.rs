@@ -22,7 +22,30 @@ pub struct EmbeddedAsset {
     pub bytes: &'static [u8],
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequiredHookAsset {
+    PreCommit,
+    CommitMsg,
+    PostCommit,
+}
+
 include!(concat!(env!("OUT_DIR"), "/setup_embedded_assets.rs"));
+
+pub fn iter_required_hook_assets() -> std::slice::Iter<'static, EmbeddedAsset> {
+    HOOK_EMBEDDED_ASSETS.iter()
+}
+
+pub fn get_required_hook_asset(hook: RequiredHookAsset) -> Option<&'static EmbeddedAsset> {
+    let hook_name = match hook {
+        RequiredHookAsset::PreCommit => "pre-commit",
+        RequiredHookAsset::CommitMsg => "commit-msg",
+        RequiredHookAsset::PostCommit => "post-commit",
+    };
+
+    HOOK_EMBEDDED_ASSETS
+        .iter()
+        .find(|asset| asset.relative_path == hook_name)
+}
 
 pub enum EmbeddedAssetSelectionIter {
     One(std::slice::Iter<'static, EmbeddedAsset>),
@@ -523,10 +546,11 @@ mod tests {
     use anyhow::Result;
 
     use super::{
-        install_embedded_setup_assets, install_embedded_setup_assets_with_rename,
-        iter_embedded_assets_for_setup_target, parse_setup_cli_options, resolve_setup_dispatch,
-        resolve_setup_mode, run_setup_for_mode, setup_usage_text, SetupCliOptions, SetupDispatch,
-        SetupMode, SetupTarget,
+        get_required_hook_asset, install_embedded_setup_assets,
+        install_embedded_setup_assets_with_rename, iter_embedded_assets_for_setup_target,
+        iter_required_hook_assets, parse_setup_cli_options, resolve_setup_dispatch,
+        resolve_setup_mode, run_setup_for_mode, setup_usage_text, RequiredHookAsset,
+        SetupCliOptions, SetupDispatch, SetupMode, SetupTarget,
     };
 
     #[derive(Clone, Copy, Debug)]
@@ -723,6 +747,38 @@ mod tests {
     }
 
     #[test]
+    fn embedded_hook_manifest_is_complete_sorted_and_normalized() {
+        let hooks: Vec<&super::EmbeddedAsset> = iter_required_hook_assets().collect();
+        let paths: Vec<&str> = hooks.iter().map(|asset| asset.relative_path).collect();
+
+        assert_eq!(paths, vec!["commit-msg", "post-commit", "pre-commit"]);
+
+        for hook in hooks {
+            assert!(!hook.relative_path.is_empty());
+            assert!(!hook.relative_path.contains('/'));
+            assert!(!hook.relative_path.contains('\\'));
+            assert!(!hook.bytes.is_empty());
+            assert!(
+                hook.bytes.starts_with(b"#!/bin/sh\n"),
+                "embedded hook should start with shell shebang"
+            );
+        }
+    }
+
+    #[test]
+    fn required_hook_lookup_resolves_each_canonical_hook() {
+        for hook in [
+            RequiredHookAsset::PreCommit,
+            RequiredHookAsset::CommitMsg,
+            RequiredHookAsset::PostCommit,
+        ] {
+            let asset = get_required_hook_asset(hook).expect("required hook asset should exist");
+            assert_eq!(asset.relative_path, hook_filename(hook));
+            assert!(!asset.bytes.is_empty());
+        }
+    }
+
+    #[test]
     fn install_engine_replaces_existing_target_with_backup() -> Result<()> {
         let temp = TestTempDir::new("sce-setup-install-tests")?;
         let existing_target = temp.path().join(".opencode");
@@ -886,5 +942,13 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    fn hook_filename(hook: RequiredHookAsset) -> &'static str {
+        match hook {
+            RequiredHookAsset::PreCommit => "pre-commit",
+            RequiredHookAsset::CommitMsg => "commit-msg",
+            RequiredHookAsset::PostCommit => "post-commit",
+        }
     }
 }
