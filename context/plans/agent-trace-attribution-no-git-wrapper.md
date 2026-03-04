@@ -140,7 +140,7 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - `cargo fmt --manifest-path cli/Cargo.toml -- --check`
     - `cargo build --manifest-path cli/Cargo.toml`
 
-- [ ] T09: Implement rewrite trace transformation semantics (status:todo)
+- [x] T09: Implement rewrite trace transformation semantics (status:done)
   - Task ID: T09
   - Goal: Materialize new trace records for rewritten SHAs with explicit rewrite metadata.
   - Boundaries (in/out of scope):
@@ -150,6 +150,9 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - Rewritten traces preserve attribution continuity and auditability.
   - Verification notes (commands or checks):
     - Integration tests asserting metadata integrity and notes/DB parity.
+    - `cargo fmt --manifest-path cli/Cargo.toml -- --check`
+    - `cargo test --manifest-path cli/Cargo.toml rewrite_trace_finalization`
+    - `cargo build --manifest-path cli/Cargo.toml`
 
 - [ ] T10: Ship core schema migrations (`repositories`, `commits`, `trace_records`, `trace_ranges`) (status:todo)
   - Task ID: T10

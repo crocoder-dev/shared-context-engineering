@@ -1,8 +1,8 @@
 use anyhow::Result;
 
 use crate::services::agent_trace::{
-    build_trace_payload, AgentTraceRecord, FileAttributionInput, QualityStatus, TraceAdapterInput,
-    TRACE_CONTENT_TYPE,
+    build_trace_payload, AgentTraceRecord, FileAttributionInput, QualityStatus, RewriteInfo,
+    TraceAdapterInput, TRACE_CONTENT_TYPE,
 };
 
 pub const NAME: &str = "hooks";
@@ -194,6 +194,50 @@ pub struct PostRewriteRuntimeState {
     pub is_bare_repo: bool,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct RewriteTraceInput {
+    pub record_id: String,
+    pub timestamp_rfc3339: String,
+    pub rewritten_commit_sha: String,
+    pub rewrite_from_sha: String,
+    pub rewrite_method: RewriteMethod,
+    pub rewrite_confidence: f32,
+    pub idempotency_key: String,
+    pub files: Vec<FileAttributionInput>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RewriteTraceNoOpReason {
+    Disabled,
+    CliUnavailable,
+    BareRepository,
+    AlreadyFinalized,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RewriteTracePersisted {
+    pub commit_sha: String,
+    pub trace_id: String,
+    pub quality_status: QualityStatus,
+    pub notes: PersistenceWriteResult,
+    pub database: PersistenceWriteResult,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RewriteTraceQueuedFallback {
+    pub commit_sha: String,
+    pub trace_id: String,
+    pub quality_status: QualityStatus,
+    pub failed_targets: Vec<PersistenceTarget>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RewriteTraceFinalization {
+    NoOp(RewriteTraceNoOpReason),
+    Persisted(RewriteTracePersisted),
+    QueuedFallback(RewriteTraceQueuedFallback),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PostRewriteNoOpReason {
     Disabled,
@@ -303,6 +347,125 @@ pub fn finalize_post_rewrite_remap(
         ingested_pairs,
         skipped_pairs: total_pairs.saturating_sub(ingested_pairs),
     }))
+}
+
+pub fn finalize_rewrite_trace(
+    runtime: &PostRewriteRuntimeState,
+    input: RewriteTraceInput,
+    notes_writer: &mut impl TraceNotesWriter,
+    record_store: &mut impl TraceRecordStore,
+    retry_queue: &mut impl TraceRetryQueue,
+    emission_ledger: &mut impl TraceEmissionLedger,
+) -> Result<RewriteTraceFinalization> {
+    if runtime.sce_disabled {
+        return Ok(RewriteTraceFinalization::NoOp(
+            RewriteTraceNoOpReason::Disabled,
+        ));
+    }
+
+    if !runtime.cli_available {
+        return Ok(RewriteTraceFinalization::NoOp(
+            RewriteTraceNoOpReason::CliUnavailable,
+        ));
+    }
+
+    if runtime.is_bare_repo {
+        return Ok(RewriteTraceFinalization::NoOp(
+            RewriteTraceNoOpReason::BareRepository,
+        ));
+    }
+
+    if emission_ledger.has_emitted(&input.rewritten_commit_sha) {
+        return Ok(RewriteTraceFinalization::NoOp(
+            RewriteTraceNoOpReason::AlreadyFinalized,
+        ));
+    }
+
+    let confidence = normalize_rewrite_confidence(input.rewrite_confidence)?;
+    let quality_status = quality_status_for_confidence(input.rewrite_confidence);
+    let record = build_trace_payload(TraceAdapterInput {
+        record_id: input.record_id,
+        timestamp_rfc3339: input.timestamp_rfc3339,
+        commit_sha: input.rewritten_commit_sha.clone(),
+        files: input.files,
+        quality_status,
+        rewrite: Some(RewriteInfo {
+            from_sha: input.rewrite_from_sha,
+            method: input.rewrite_method.canonical_label().to_string(),
+            confidence,
+        }),
+        idempotency_key: Some(input.idempotency_key.clone()),
+    });
+
+    let note = TraceNote {
+        notes_ref: crate::services::agent_trace::NOTES_REF.to_string(),
+        commit_sha: input.rewritten_commit_sha.clone(),
+        content_type: TRACE_CONTENT_TYPE.to_string(),
+        record: record.clone(),
+    };
+    let persisted = PersistedTraceRecord {
+        commit_sha: input.rewritten_commit_sha.clone(),
+        idempotency_key: input.idempotency_key,
+        content_type: TRACE_CONTENT_TYPE.to_string(),
+        notes_ref: crate::services::agent_trace::NOTES_REF.to_string(),
+        record: record.clone(),
+    };
+
+    let notes_result = notes_writer.write_note(note);
+    let database_result = record_store.write_trace_record(persisted);
+
+    let failed_targets = collect_failed_targets(&notes_result, &database_result);
+    if failed_targets.is_empty() {
+        emission_ledger.mark_emitted(&input.rewritten_commit_sha);
+        return Ok(RewriteTraceFinalization::Persisted(RewriteTracePersisted {
+            commit_sha: input.rewritten_commit_sha,
+            trace_id: record.id,
+            quality_status,
+            notes: notes_result,
+            database: database_result,
+        }));
+    }
+
+    retry_queue.enqueue(TraceRetryQueueEntry {
+        commit_sha: input.rewritten_commit_sha.clone(),
+        failed_targets: failed_targets.clone(),
+        content_type: TRACE_CONTENT_TYPE.to_string(),
+        notes_ref: crate::services::agent_trace::NOTES_REF.to_string(),
+        record: record.clone(),
+    })?;
+
+    Ok(RewriteTraceFinalization::QueuedFallback(
+        RewriteTraceQueuedFallback {
+            commit_sha: input.rewritten_commit_sha,
+            trace_id: record.id,
+            quality_status,
+            failed_targets,
+        },
+    ))
+}
+
+fn normalize_rewrite_confidence(confidence: f32) -> Result<String> {
+    if !confidence.is_finite() {
+        anyhow::bail!("rewrite confidence must be finite")
+    }
+
+    if !(0.0..=1.0).contains(&confidence) {
+        anyhow::bail!("rewrite confidence must be within [0.0, 1.0]")
+    }
+
+    Ok(format!("{confidence:.2}"))
+}
+
+fn quality_status_for_confidence(confidence: f32) -> QualityStatus {
+    if confidence >= 0.90 {
+        return QualityStatus::Final;
+    }
+
+    if confidence >= 0.60 {
+        return QualityStatus::Partial;
+    }
+
+    QualityStatus::NeedsReview
 }
 
 fn parse_post_rewrite_pairs(contents: &str) -> Result<Vec<RewritePair>> {
@@ -663,19 +826,22 @@ mod tests {
 
     use crate::services::agent_trace::{
         ContributorInput, ContributorType, ConversationInput, FileAttributionInput, RangeInput,
+        METADATA_QUALITY_STATUS, METADATA_REWRITE_CONFIDENCE, METADATA_REWRITE_FROM,
+        METADATA_REWRITE_METHOD,
     };
 
     use super::{
         apply_commit_msg_coauthor_policy, finalize_post_commit_trace, finalize_post_rewrite_remap,
-        finalize_pre_commit_checkpoint, run_placeholder_hooks, CommitMsgRuntimeState,
-        GeneratedRegionEvent, GeneratedRegionLifecycle, GitHookKind, HookEvent, HookService,
-        PendingCheckpoint, PendingFileCheckpoint, PendingLineRange, PersistenceErrorClass,
-        PersistenceFailure, PersistenceTarget, PersistenceWriteResult, PlaceholderHookService,
-        PostCommitFinalization, PostCommitInput, PostCommitNoOpReason, PostCommitRuntimeState,
-        PostRewriteFinalization, PostRewriteNoOpReason, PostRewriteRuntimeState,
-        PreCommitFinalization, PreCommitNoOpReason, PreCommitRuntimeState, PreCommitTreeAnchors,
-        RewriteMethod, RewriteRemapIngestion, RewriteRemapRequest, TraceEmissionLedger, TraceNote,
-        TraceNotesWriter, TraceRecordStore, TraceRetryQueue, TraceRetryQueueEntry,
+        finalize_pre_commit_checkpoint, finalize_rewrite_trace, run_placeholder_hooks,
+        CommitMsgRuntimeState, GeneratedRegionEvent, GeneratedRegionLifecycle, GitHookKind,
+        HookEvent, HookService, PendingCheckpoint, PendingFileCheckpoint, PendingLineRange,
+        PersistenceErrorClass, PersistenceFailure, PersistenceTarget, PersistenceWriteResult,
+        PlaceholderHookService, PostCommitFinalization, PostCommitInput, PostCommitNoOpReason,
+        PostCommitRuntimeState, PostRewriteFinalization, PostRewriteNoOpReason,
+        PostRewriteRuntimeState, PreCommitFinalization, PreCommitNoOpReason, PreCommitRuntimeState,
+        PreCommitTreeAnchors, RewriteMethod, RewriteRemapIngestion, RewriteRemapRequest,
+        RewriteTraceFinalization, RewriteTraceInput, RewriteTraceNoOpReason, TraceEmissionLedger,
+        TraceNote, TraceNotesWriter, TraceRecordStore, TraceRetryQueue, TraceRetryQueueEntry,
         CANONICAL_SCE_COAUTHOR_TRAILER, POST_COMMIT_PARENT_SHA_METADATA_KEY,
     };
 
@@ -808,6 +974,33 @@ mod tests {
             sce_disabled: false,
             cli_available: true,
             is_bare_repo: false,
+        }
+    }
+
+    fn sample_rewrite_trace_input() -> RewriteTraceInput {
+        RewriteTraceInput {
+            record_id: "660e8400-e29b-41d4-a716-446655440000".to_string(),
+            timestamp_rfc3339: "2026-03-04T11:12:13Z".to_string(),
+            rewritten_commit_sha: "newsha123".to_string(),
+            rewrite_from_sha: "oldsha456".to_string(),
+            rewrite_method: RewriteMethod::Rebase,
+            rewrite_confidence: 0.91,
+            idempotency_key: "post-rewrite:rebase:oldsha456:newsha123".to_string(),
+            files: vec![FileAttributionInput {
+                path: "src/lib.rs".to_string(),
+                conversations: vec![ConversationInput {
+                    url: "https://example.test/conversation/rewritten".to_string(),
+                    related: vec![],
+                    ranges: vec![RangeInput {
+                        start_line: 3,
+                        end_line: 7,
+                        contributor: ContributorInput {
+                            kind: ContributorType::Ai,
+                            model_id: Some("openai/gpt-5.3-codex".to_string()),
+                        },
+                    }],
+                }],
+            }],
         }
     }
 
@@ -1036,6 +1229,166 @@ mod tests {
 
         assert!(error.to_string().contains("expected '<old_sha> <new_sha>'"));
         assert!(ingestion.seen_requests.is_empty());
+    }
+
+    #[test]
+    fn rewrite_trace_finalization_persists_metadata_and_notes_db_parity() -> Result<()> {
+        let runtime = sample_post_rewrite_runtime();
+        let input = sample_rewrite_trace_input();
+        let mut notes = FakeNotesWriter::new(PersistenceWriteResult::Written);
+        let mut store = FakeRecordStore::new(PersistenceWriteResult::Written);
+        let mut queue = FakeRetryQueue::default();
+        let mut ledger = FakeEmissionLedger::default();
+
+        let outcome = finalize_rewrite_trace(
+            &runtime,
+            input,
+            &mut notes,
+            &mut store,
+            &mut queue,
+            &mut ledger,
+        )?;
+
+        let persisted = match outcome {
+            RewriteTraceFinalization::Persisted(persisted) => persisted,
+            _ => panic!("expected persisted rewrite trace outcome"),
+        };
+
+        assert_eq!(persisted.commit_sha, "newsha123");
+        assert_eq!(persisted.trace_id, "660e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(persisted.quality_status, super::QualityStatus::Final);
+        assert_eq!(notes.writes.len(), 1);
+        assert_eq!(notes.writes[0].record.vcs.revision, "newsha123");
+        assert_eq!(
+            notes.writes[0].record.metadata.get(METADATA_REWRITE_FROM),
+            Some(&"oldsha456".to_string())
+        );
+        assert_eq!(
+            notes.writes[0].record.metadata.get(METADATA_REWRITE_METHOD),
+            Some(&"rebase".to_string())
+        );
+        assert_eq!(
+            notes.writes[0]
+                .record
+                .metadata
+                .get(METADATA_REWRITE_CONFIDENCE),
+            Some(&"0.91".to_string())
+        );
+        assert_eq!(
+            notes.writes[0].record.metadata.get(METADATA_QUALITY_STATUS),
+            Some(&"final".to_string())
+        );
+        assert!(queue.entries.is_empty());
+        assert!(ledger.has_emitted("newsha123"));
+        Ok(())
+    }
+
+    #[test]
+    fn rewrite_trace_finalization_applies_quality_thresholds() -> Result<()> {
+        let runtime = sample_post_rewrite_runtime();
+        let mut notes = FakeNotesWriter::new(PersistenceWriteResult::Written);
+        let mut store = FakeRecordStore::new(PersistenceWriteResult::Written);
+        let mut queue = FakeRetryQueue::default();
+        let mut ledger = FakeEmissionLedger::default();
+
+        let mut medium = sample_rewrite_trace_input();
+        medium.record_id = "760e8400-e29b-41d4-a716-446655440000".to_string();
+        medium.rewritten_commit_sha = "newsha-medium".to_string();
+        medium.rewrite_confidence = 0.75;
+        let medium_outcome = finalize_rewrite_trace(
+            &runtime,
+            medium,
+            &mut notes,
+            &mut store,
+            &mut queue,
+            &mut ledger,
+        )?;
+        assert!(matches!(
+            medium_outcome,
+            RewriteTraceFinalization::Persisted(super::RewriteTracePersisted {
+                quality_status: super::QualityStatus::Partial,
+                ..
+            })
+        ));
+
+        let mut low = sample_rewrite_trace_input();
+        low.record_id = "860e8400-e29b-41d4-a716-446655440000".to_string();
+        low.rewritten_commit_sha = "newsha-low".to_string();
+        low.rewrite_confidence = 0.40;
+        let low_outcome = finalize_rewrite_trace(
+            &runtime,
+            low,
+            &mut notes,
+            &mut store,
+            &mut queue,
+            &mut ledger,
+        )?;
+        assert!(matches!(
+            low_outcome,
+            RewriteTraceFinalization::Persisted(super::RewriteTracePersisted {
+                quality_status: super::QualityStatus::NeedsReview,
+                ..
+            })
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn rewrite_trace_finalization_rejects_confidence_outside_zero_to_one() {
+        let runtime = sample_post_rewrite_runtime();
+        let mut input = sample_rewrite_trace_input();
+        input.rewrite_confidence = 1.2;
+
+        let mut notes = FakeNotesWriter::new(PersistenceWriteResult::Written);
+        let mut store = FakeRecordStore::new(PersistenceWriteResult::Written);
+        let mut queue = FakeRetryQueue::default();
+        let mut ledger = FakeEmissionLedger::default();
+
+        let error = finalize_rewrite_trace(
+            &runtime,
+            input,
+            &mut notes,
+            &mut store,
+            &mut queue,
+            &mut ledger,
+        )
+        .expect_err("out-of-range confidence must fail");
+
+        assert!(error
+            .to_string()
+            .contains("rewrite confidence must be within [0.0, 1.0]"));
+        assert!(notes.writes.is_empty());
+        assert!(queue.entries.is_empty());
+    }
+
+    #[test]
+    fn rewrite_trace_finalization_noops_when_commit_already_finalized() -> Result<()> {
+        let runtime = sample_post_rewrite_runtime();
+        let input = sample_rewrite_trace_input();
+        let mut notes = FakeNotesWriter::new(PersistenceWriteResult::Written);
+        let mut store = FakeRecordStore::new(PersistenceWriteResult::Written);
+        let mut queue = FakeRetryQueue::default();
+        let mut ledger = FakeEmissionLedger {
+            emitted: vec!["newsha123".to_string()],
+        };
+
+        let outcome = finalize_rewrite_trace(
+            &runtime,
+            input,
+            &mut notes,
+            &mut store,
+            &mut queue,
+            &mut ledger,
+        )?;
+
+        assert_eq!(
+            outcome,
+            RewriteTraceFinalization::NoOp(RewriteTraceNoOpReason::AlreadyFinalized)
+        );
+        assert!(notes.writes.is_empty());
+        assert!(queue.entries.is_empty());
+        Ok(())
     }
 
     #[test]
