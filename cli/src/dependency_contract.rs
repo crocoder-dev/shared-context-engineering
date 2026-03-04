@@ -6,12 +6,14 @@ pub fn dependency_contract_snapshot() -> (
     &'static str,
     &'static str,
     &'static str,
+    &'static str,
 ) {
     (
         Ok(()),
         std::any::type_name::<hmac::Hmac<sha2::Sha256>>(),
         std::any::type_name::<inquire::ui::RenderConfig>(),
         std::any::type_name::<lexopt::Parser>(),
+        std::any::type_name::<serde_json::Value>(),
         std::any::type_name::<sha2::Sha256>(),
         std::any::type_name::<tokio::runtime::Runtime>(),
         std::any::type_name::<turso::Builder>(),
@@ -24,12 +26,13 @@ mod tests {
 
     #[test]
     fn dependency_contract_snapshot_references_agreed_crates() {
-        let (result, hmac_ty, inquire_ty, lexopt_ty, sha2_ty, tokio_ty, turso_ty) =
+        let (result, hmac_ty, inquire_ty, lexopt_ty, serde_json_ty, sha2_ty, tokio_ty, turso_ty) =
             dependency_contract_snapshot();
         assert!(result.is_ok());
         assert!(hmac_ty.contains("hmac::"));
         assert!(inquire_ty.contains("inquire::"));
         assert!(lexopt_ty.contains("lexopt::"));
+        assert!(serde_json_ty.contains("serde_json::"));
         assert!(sha2_ty.contains("sha2::"));
         assert!(tokio_ty.contains("tokio::"));
         assert!(turso_ty.contains("turso::"));

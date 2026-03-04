@@ -42,7 +42,7 @@ Non-goals (deferred):
   - Done when: handcrafted crypto helpers are removed/replaced; dependency contract compiles and tests validate equivalent signature/hash behavior.
   - Verification notes: run `cargo test --manifest-path cli/Cargo.toml services::hosted_reconciliation::tests` and `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T02: Replace fragile hosted JSON string scanning with structured parsing (status:todo)
+- [x] T02: Replace fragile hosted JSON string scanning with structured parsing (status:done)
   - Goal: Replace `find_required_json_string` usage with `serde_json` parsing (typed/value extraction) for `before`, `after`, and provider-specific repository fields.
   - Boundaries (in): Hosted payload parse path and parse-focused tests in `cli/src/services/hosted_reconciliation.rs`; dependency additions in `cli/Cargo.toml` as needed.
   - Boundaries (out): New provider support or webhook schema expansion beyond existing GitHub/GitLab fields.

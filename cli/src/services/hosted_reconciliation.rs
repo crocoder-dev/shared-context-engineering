@@ -1,5 +1,6 @@
 use anyhow::{bail, ensure, Result};
 use hmac::{Hmac, Mac};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -399,8 +400,10 @@ pub fn ingest_hosted_rewrite_event(
 }
 
 fn parse_run_request(request: &HostedWebhookRequest) -> Result<HostedReconciliationRunRequest> {
-    let old_head = find_required_json_string(&request.payload_json, "before")?;
-    let new_head = find_required_json_string(&request.payload_json, "after")?;
+    let payload = parse_payload_json(&request.payload_json)?;
+
+    let old_head = find_required_field_string(&payload, "before")?;
+    let new_head = find_required_field_string(&payload, "after")?;
 
     ensure!(
         is_sha_like(&old_head),
@@ -412,9 +415,11 @@ fn parse_run_request(request: &HostedWebhookRequest) -> Result<HostedReconciliat
     );
 
     let repository = match request.provider {
-        HostedProvider::GitHub => find_required_json_string(&request.payload_json, "full_name")?,
+        HostedProvider::GitHub => {
+            find_required_nested_field_string(&payload, "repository", "full_name")?
+        }
         HostedProvider::GitLab => {
-            find_required_json_string(&request.payload_json, "path_with_namespace")?
+            find_required_nested_field_string(&payload, "project", "path_with_namespace")?
         }
     };
 
@@ -487,62 +492,56 @@ fn derive_idempotency_key(
     format!("hosted:{}:{}", provider.as_str(), digest)
 }
 
-fn find_required_json_string(payload: &str, key: &str) -> Result<String> {
-    let key_pattern = format!("\"{}\"", key);
-    let Some(key_start) = payload.find(&key_pattern) else {
-        bail!("invalid hosted event payload: missing '{}' field", key);
+fn parse_payload_json(payload_json: &str) -> Result<Value> {
+    serde_json::from_str(payload_json)
+        .map_err(|_| anyhow::anyhow!("invalid hosted event payload: malformed JSON"))
+}
+
+fn find_required_field<'a>(payload: &'a Value, field: &str) -> Result<&'a Value> {
+    payload
+        .get(field)
+        .ok_or_else(|| anyhow::anyhow!("invalid hosted event payload: missing '{}' field", field))
+}
+
+fn find_required_field_string(payload: &Value, field: &str) -> Result<String> {
+    let value = find_required_field(payload, field)?;
+    let Some(as_str) = value.as_str() else {
+        bail!(
+            "invalid hosted event payload: '{}' field must be a string",
+            field
+        );
     };
 
-    let mut idx = key_start + key_pattern.len();
-    while idx < payload.len() && payload.as_bytes()[idx].is_ascii_whitespace() {
-        idx += 1;
-    }
+    Ok(as_str.to_string())
+}
 
-    ensure!(
-        idx < payload.len() && payload.as_bytes()[idx] == b':',
-        "invalid hosted event payload: malformed '{}' field",
-        key
-    );
-    idx += 1;
+fn find_required_nested_field_string(
+    payload: &Value,
+    parent_field: &str,
+    nested_field: &str,
+) -> Result<String> {
+    let parent = find_required_field(payload, parent_field)?;
+    let Some(parent_object) = parent.as_object() else {
+        bail!(
+            "invalid hosted event payload: '{}' field must be an object",
+            parent_field
+        );
+    };
 
-    while idx < payload.len() && payload.as_bytes()[idx].is_ascii_whitespace() {
-        idx += 1;
-    }
+    let value = parent_object.get(nested_field).ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid hosted event payload: missing '{}' field",
+            nested_field
+        )
+    })?;
+    let Some(as_str) = value.as_str() else {
+        bail!(
+            "invalid hosted event payload: '{}' field must be a string",
+            nested_field
+        );
+    };
 
-    ensure!(
-        idx < payload.len() && payload.as_bytes()[idx] == b'"',
-        "invalid hosted event payload: '{}' field must be a string",
-        key
-    );
-    idx += 1;
-
-    let mut value = String::new();
-    let mut escaped = false;
-    while idx < payload.len() {
-        let byte = payload.as_bytes()[idx];
-        idx += 1;
-        if escaped {
-            value.push(byte as char);
-            escaped = false;
-            continue;
-        }
-
-        if byte == b'\\' {
-            escaped = true;
-            continue;
-        }
-
-        if byte == b'"' {
-            return Ok(value);
-        }
-
-        value.push(byte as char);
-    }
-
-    bail!(
-        "invalid hosted event payload: unterminated '{}' string",
-        key
-    )
+    Ok(as_str.to_string())
 }
 
 fn is_sha_like(value: &str) -> bool {
@@ -748,6 +747,46 @@ mod tests {
         assert!(error
             .to_string()
             .contains("invalid hosted event payload: missing 'before' field"));
+    }
+
+    #[test]
+    fn intake_requires_before_and_after_to_be_strings() {
+        let payload =
+            "{\"before\":123,\"after\":\"2222222222222222222222222222222222222222\",\"repository\":{\"full_name\":\"acme/sce\"}}"
+                .to_string();
+        let mut store = FakeReconciliationRunStore::default();
+        let request = HostedWebhookRequest {
+            provider: HostedProvider::GitHub,
+            event: "push".to_string(),
+            signature: github_signature("super-secret", &payload),
+            delivery_id: Some("delivery-1".to_string()),
+            shared_secret: "super-secret".to_string(),
+            payload_json: payload,
+        };
+
+        let error = ingest_hosted_rewrite_event(request, &mut store).expect_err("must fail");
+        assert!(error
+            .to_string()
+            .contains("invalid hosted event payload: 'before' field must be a string"));
+    }
+
+    #[test]
+    fn intake_requires_provider_repository_object_shape() {
+        let payload = "{\"before\":\"1111111111111111111111111111111111111111\",\"after\":\"2222222222222222222222222222222222222222\",\"repository\":\"acme/sce\"}".to_string();
+        let mut store = FakeReconciliationRunStore::default();
+        let request = HostedWebhookRequest {
+            provider: HostedProvider::GitHub,
+            event: "push".to_string(),
+            signature: github_signature("super-secret", &payload),
+            delivery_id: Some("delivery-1".to_string()),
+            shared_secret: "super-secret".to_string(),
+            payload_json: payload,
+        };
+
+        let error = ingest_hosted_rewrite_event(request, &mut store).expect_err("must fail");
+        assert!(error
+            .to_string()
+            .contains("invalid hosted event payload: 'repository' field must be an object"));
     }
 
     #[test]

@@ -21,7 +21,7 @@
 - `sce` (CLI foundation): Rust binary crate at `cli/` with implemented setup installation flow and placeholder behavior for other command domains.
 - `command surface contract`: The static command catalog in `cli/src/command_surface.rs` that marks each top-level command as `implemented` or `placeholder`.
 - `command loop`: The `lexopt` parser + dispatcher in `cli/src/app.rs` that routes `help`, `setup`, `mcp`, `hooks`, and `sync`, executes setup installation, emits TODO placeholders for non-implemented commands, and returns deterministic actionable errors for invalid invocation.
-- `sce dependency contract`: Minimal crate dependency baseline declared in `cli/Cargo.toml` and referenced via `cli/src/dependency_contract.rs` (`anyhow`, `hmac`, `inquire`, `lexopt`, `sha2`, `tokio`, `turso`).
+- `sce dependency contract`: Minimal crate dependency baseline declared in `cli/Cargo.toml` and referenced via `cli/src/dependency_contract.rs` (`anyhow`, `hmac`, `inquire`, `lexopt`, `serde_json`, `sha2`, `tokio`, `turso`).
 - `local Turso adapter`: Async data-layer module in `cli/src/services/local_db.rs` that initializes local DB targets with `turso::Builder::new_local(...)` and runs execute/query smoke checks.
 - `sync Turso smoke gate`: Behavior in `cli/src/services/sync.rs` where the `sync` placeholder command runs an in-memory local Turso smoke check under a lazily initialized shared tokio current-thread runtime before returning placeholder cloud-sync messaging.
 - `setup service orchestration`: Setup execution logic in `cli/src/services/setup.rs` that resolves target selection, installs embedded assets, and emits deterministic success messaging per target.
