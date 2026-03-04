@@ -67,9 +67,10 @@ pub fn help_text() -> String {
     format!(
         "sce - Shared Context Engineering CLI (placeholder foundation)\n\n\
 Usage:\n  sce [command]\n\n\
-Setup usage:\n  sce setup [--opencode|--claude|--both]\n\n\
+Setup usage:\n  sce setup [--opencode|--claude|--both]\n  sce setup --hooks [--repo <path>]\n\n\
 Commands:\n{}\n\n\
 Setup defaults to interactive target selection when no setup target flag is passed.\n\
+Use '--hooks' to install required git hooks for the current repository or '--repo <path>' for a specific repository.\n\
 `setup` and `doctor` are implemented; `mcp`, `hooks`, and `sync` remain placeholder-oriented.\n",
         command_rows
     )
@@ -94,5 +95,6 @@ mod tests {
     fn help_text_mentions_setup_target_flags() {
         let help = help_text();
         assert!(help.contains("sce setup [--opencode|--claude|--both]"));
+        assert!(help.contains("sce setup --hooks [--repo <path>]"));
     }
 }

@@ -59,7 +59,7 @@ Enable `sce setup` to install and manage required Git hooks (`pre-commit`, `comm
     - Added required-hook install orchestration in `cli/src/services/setup.rs` via `install_required_git_hooks`, including git-truth path resolution (`rev-parse --show-toplevel` and `rev-parse --git-path hooks`), per-hook deterministic outcomes (`installed`/`updated`/`skipped`), executable-bit enforcement, and backup-and-restore rollback on swap failures.
     - Added focused setup-service coverage for default hook-path fresh install, rerun idempotency (`skipped` outcomes), custom `core.hooksPath` upgrades with backup retention, and injected swap-failure rollback cleanup in `services::setup::tests`.
     - Verification run: `cargo test services::setup::tests`; light checks/build run: `cargo fmt --check` and `cargo build` (from `cli/`).
-- [ ] T04: Add CLI flags and UX for hook setup (status:todo)
+- [x] T04: Add CLI flags and UX for hook setup (status:done)
   - Task ID: T04
   - Goal: Add `sce setup --hooks` (and optional `--repo <path>`) with deterministic output and compatible option validation.
   - Boundaries (in/out of scope):
@@ -70,6 +70,11 @@ Enable `sce setup` to install and manage required Git hooks (`pre-commit`, `comm
     - Successful runs emit clear per-hook outcomes suitable for humans and automation logs.
   - Verification notes (commands or checks):
     - Command-surface tests for parsing, invalid combinations, and stable message snapshots.
+  - Verification evidence:
+    - Extended setup CLI parsing in `cli/src/services/setup.rs` with `--hooks` and optional `--repo <path>`, including deterministic compatibility validation (`--repo` requires `--hooks`; `--hooks` is incompatible with `--opencode|--claude|--both`).
+    - Wired hook setup dispatch in `cli/src/app.rs` via `Command::SetupHooks`, preserving existing target-asset setup behavior while routing hook installs through `run_setup_hooks(...)`.
+    - Added deterministic hook setup success output (repository root, hooks directory, per-hook `installed|updated|skipped` lines, backup status) and updated command/help usage text in `cli/src/services/setup.rs` and `cli/src/command_surface.rs`.
+    - Verification run: `cargo test app::tests && cargo test command_surface::tests && cargo test services::setup::tests && cargo fmt --check && cargo build` (from `cli/`).
 - [ ] T05: Integrate with doctor and add verification tests (status:todo)
   - Task ID: T05
   - Goal: Ensure `sce doctor` reports ready after successful hook setup and add targeted test coverage for missing/misconfigured/existing hooks plus idempotent re-run behavior.

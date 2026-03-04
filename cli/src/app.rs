@@ -4,10 +4,11 @@ use crate::{command_surface, dependency_contract, services};
 use anyhow::{bail, Context, Result};
 use lexopt::ValueExt;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum Command {
     Help,
     Setup(services::setup::SetupMode),
+    SetupHooks(Option<std::path::PathBuf>),
     SetupHelp,
     Doctor,
     Mcp,
@@ -119,6 +120,13 @@ fn parse_setup_subcommand(args: Vec<String>) -> Result<Command> {
         return Ok(Command::SetupHelp);
     }
 
+    if options.hooks {
+        let repo_path = services::setup::resolve_setup_hooks_repository(&options)?;
+        return Ok(Command::SetupHooks(repo_path));
+    }
+
+    services::setup::resolve_setup_hooks_repository(&options)?;
+
     let mode = services::setup::resolve_setup_mode(options)?;
     Ok(Command::Setup(mode))
 }
@@ -156,6 +164,12 @@ fn dispatch(command: Command) -> Result<()> {
                     println!("{}", services::setup::setup_cancelled_text());
                 }
             }
+        }
+        Command::SetupHooks(repo_path) => {
+            let current_dir =
+                std::env::current_dir().context("Failed to determine current directory")?;
+            let repository_root = repo_path.as_deref().unwrap_or(current_dir.as_path());
+            println!("{}", services::setup::run_setup_hooks(repository_root)?);
         }
         Command::SetupHelp => println!("{}", services::setup::setup_usage_text()),
         Command::Doctor => println!("{}", services::doctor::run_doctor()?),
@@ -278,6 +292,33 @@ mod tests {
     }
 
     #[test]
+    fn parser_routes_setup_hooks_without_repo() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "setup".to_string(),
+            "--hooks".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(command, Command::SetupHooks(None));
+    }
+
+    #[test]
+    fn parser_routes_setup_hooks_with_repo() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "setup".to_string(),
+            "--hooks".to_string(),
+            "--repo".to_string(),
+            "../demo-repo".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(
+            command,
+            Command::SetupHooks(Some(std::path::PathBuf::from("../demo-repo")))
+        );
+    }
+
+    #[test]
     fn parser_rejects_setup_mutually_exclusive_flags() {
         let error = parse_command(vec![
             "sce".to_string(),
@@ -289,6 +330,36 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "Options '--opencode', '--claude', and '--both' are mutually exclusive. Choose exactly one target flag or none for interactive mode."
+        );
+    }
+
+    #[test]
+    fn parser_rejects_setup_repo_without_hooks() {
+        let error = parse_command(vec![
+            "sce".to_string(),
+            "setup".to_string(),
+            "--repo".to_string(),
+            "../demo-repo".to_string(),
+        ])
+        .expect_err("--repo without --hooks should fail");
+        assert_eq!(
+            error.to_string(),
+            "Option '--repo' requires '--hooks'. Run 'sce setup --help' to see valid usage."
+        );
+    }
+
+    #[test]
+    fn parser_rejects_hooks_with_target_flag() {
+        let error = parse_command(vec![
+            "sce".to_string(),
+            "setup".to_string(),
+            "--hooks".to_string(),
+            "--opencode".to_string(),
+        ])
+        .expect_err("--hooks with target flag should fail");
+        assert_eq!(
+            error.to_string(),
+            "Option '--hooks' cannot be combined with '--opencode', '--claude', or '--both'. Run 'sce setup --help' to see valid usage."
         );
     }
 
