@@ -29,18 +29,14 @@ Examples:
 2. Apply the plan-review confirmation gate.
    - Auto-pass only when both plan and task ID are provided and review reports no blockers, ambiguity, or missing acceptance criteria.
    - Otherwise, resolve open points and require explicit user confirmation.
-3. Enforce the mandatory implementation stop before any code edits.
-   - Explain: task goal, in/out-of-scope boundaries, done checks, expected files/components, and approach/trade-offs/risks.
-   - Ask: `Continue with implementation now? (yes/no)`.
-   - Do not edit files, generate code, or apply patches until the user confirms.
-4. Run `sce-task-execution` for minimal in-scope implementation.
-5. Run light task-level checks/lints and a build when light/fast; capture evidence.
-6. Update task status in the plan file.
-7. Run `sce-context-sync` as a mandatory done gate.
-   - Classify context impact first: important change => root shared-file edits required; localized change => root shared files are verify-only.
-8. Wait for feedback; if in-scope fixes are needed, apply fixes, rerun light checks/build-if-fast, and sync context again.
-9. If this is the final plan task, run `sce-validation`.
-10. If more tasks remain, prompt the next-session command for the next task.
+3. Run `sce-task-execution`.
+   - Mandatory implementation stop is enforced by the skill before edits.
+   - Scoped implementation, light checks/build-if-fast, and plan status updates are skill-owned.
+4. Run `sce-context-sync` as a mandatory done gate.
+   - Context significance classification and root verify-vs-edit behavior are skill-owned.
+5. Wait for feedback; if in-scope fixes are needed, apply fixes, rerun light checks/build-if-fast, and sync context again.
+6. If this is the final plan task, run `sce-validation`.
+7. If more tasks remain, prompt the next-session command for the next task.
 
 ## Mermaid diagram
 

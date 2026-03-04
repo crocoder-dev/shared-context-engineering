@@ -56,12 +56,12 @@ Use this quick atomicity check before accepting each task:
 - `single_verification`: done checks validate one coherent change set
 
 Example compliant skeleton:
-- [ ] T0X: <single intent title> (status:todo)
+- [ ] T0X: `[single intent title]` (status:todo)
   - Task ID: T0X
-  - Goal: <one outcome>
-  - Boundaries (in/out of scope): <tight scope>
-  - Done when: <clear acceptance for one coherent change>
-  - Verification notes (commands or checks): <targeted checks for this change>
+  - Goal: `[one outcome]`
+  - Boundaries (in/out of scope): `[tight scope]`
+  - Done when: `[clear acceptance for one coherent change]`
+  - Verification notes (commands or checks): `[targeted checks for this change]`
 
 Use checkbox lines for machine-friendly progress tracking:
 - `- [ ] T01: ... (status:todo)`
