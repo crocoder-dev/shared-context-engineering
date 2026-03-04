@@ -16,6 +16,7 @@ Feature/domain context:
 - `context/sce/workflow-token-footprint-manifest.json` (T05 canonical machine-readable surface manifest for workflow token counting, including scope extraction rules and conditional flags)
 - `context/sce/workflow-token-count-workflow.md` (root flake app contract for workflow token counting and its runtime wiring to evals script execution)
 - `context/sce/atomic-commit-workflow.md` (canonical `/commit` command + `sce-atomic-commit` skill contract and naming decision)
+- `context/sce/agent-trace-implementation-contract.md` (normative T01 implementation contract for no-git-wrapper Agent Trace attribution invariants, compliance matrix, and internal-to-Agent-Trace mapping)
 
 Working areas:
 - `context/plans/` (active plan execution artifacts, not durable history)

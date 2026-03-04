@@ -26,7 +26,7 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
 - Out of scope: replacing native git invocation, overriding human author/committer identity, or introducing multiple agent co-author identities.
 
 ## 4) Task stack (T01..T15)
-- [ ] T01: Finalize implementation contract baseline (status:todo)
+- [x] T01: Finalize implementation contract baseline (status:done)
   - Task ID: T01
   - Goal: Translate architecture/hooks/identity/reconciler/schema into one implementation contract with strict invariants.
   - Boundaries (in/out of scope):
@@ -37,6 +37,7 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - Contract includes a normative mapping table from internal attribution structures to Agent Trace schema objects/fields.
   - Verification notes (commands or checks):
     - Structured contract checklist covering all source sections plus Agent Trace RFC required/optional field mapping.
+    - Contract artifact: `context/sce/agent-trace-implementation-contract.md`.
 
 - [ ] T02: Define trace payload schema adapter and canonical metadata mapping (status:todo)
   - Task ID: T02
