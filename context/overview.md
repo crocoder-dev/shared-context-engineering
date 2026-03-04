@@ -32,6 +32,7 @@ The hooks service now also includes a post-commit trace finalization seam (`fina
 The CLI now also includes a hook rollout doctor contract documented in `context/sce/agent-trace-hook-doctor.md`.
 The hooks service now also includes a post-rewrite local remap ingestion seam (`finalize_post_rewrite_remap`) that parses `post-rewrite` old->new SHA pairs, normalizes rewrite method capture, and derives deterministic per-pair idempotency keys before remap dispatch; this behavior is documented in `context/sce/agent-trace-post-rewrite-local-remap-ingestion.md`.
 The hooks service now also includes rewrite trace transformation finalization (`finalize_rewrite_trace`) that materializes rewritten-SHA Agent Trace records with `rewrite_from`/`rewrite_method`/`rewrite_confidence` metadata, confidence-threshold quality mapping (`final`/`partial`/`needs_review`), and notes+DB persistence parity with retry fallback; this behavior is documented in `context/sce/agent-trace-rewrite-trace-transformation.md`.
+The local DB service now includes core Agent Trace persistence schema migrations (`apply_core_schema_migrations`) that install idempotent foundational tables and indexes for `repositories`, `commits`, `trace_records`, and `trace_ranges`; this behavior is documented in `context/sce/agent-trace-core-schema-migrations.md`.
 
 ## Repository model
 
@@ -91,3 +92,4 @@ Lightweight post-task verification baseline (required after each completed task)
 - Use `context/sce/agent-trace-hook-doctor.md` for the implemented T07 hook install and health validation behavior (`sce doctor`) across default/per-repo/global hook-path installs.
 - Use `context/sce/agent-trace-post-rewrite-local-remap-ingestion.md` for the implemented T08 post-rewrite local remap ingestion pipeline (`post-rewrite` pair parsing, rewrite-method normalization, and deterministic idempotency-key derivation).
 - Use `context/sce/agent-trace-rewrite-trace-transformation.md` for the implemented T09 rewritten-SHA trace transformation path (`finalize_rewrite_trace`), confidence-based quality status mapping, and rewrite metadata persistence semantics.
+- Use `context/sce/agent-trace-core-schema-migrations.md` for the implemented T10 core local schema migration contract (`apply_core_schema_migrations`) and table/index ownership across foundational Agent Trace persistence entities.
