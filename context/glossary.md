@@ -4,6 +4,7 @@
 - `token-count-workflows`: Flake app command exposed as `nix run .#token-count-workflows`; canonical repository-root entrypoint that runs `evals/token-count-workflows.ts` through `nix develop` and writes token-count artifacts to `context/tmp/token-footprint/`.
 - `pkl-check-generated`: Flake app command exposed as `nix run .#pkl-check-generated`; canonical lightweight parity test entrypoint that runs the generated-output drift check inside the Nix dev shell.
 - lightweight post-task verification baseline: Required quick checks after each completed task in this repo: `nix run .#pkl-check-generated` and `nix flake check`.
+- disposable plan lifecycle: Policy where `context/plans/` holds active execution artifacts only; completed plans are disposable and durable outcomes must be reflected in current-state context files and/or `context/decisions/`.
 - important change (context sync): A completed task change that affects cross-cutting behavior, repository-wide policy/contracts, architecture boundaries, or canonical terminology; these changes require root context edits in `context/overview.md`, `context/architecture.md`, and/or `context/glossary.md` rather than verify-only.
 - generated-owned outputs: Files materialized by `config/pkl/generate.pkl` under `config/.opencode/**` and `config/.claude/**`.
 - `agnix-config-validate-report`: GitHub Actions workflow at `.github/workflows/agnix-config-validate-report.yml` that runs `nix develop -c agnix validate .` from `config/` on push/PR to `main`.

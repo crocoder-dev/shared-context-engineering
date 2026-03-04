@@ -38,6 +38,13 @@ Examples:
    - Store continuation state in the plan markdown checkboxes/status only.
    - Do not mutate code/runtime files during plan-authoring work.
 
+## Plan lifecycle policy
+
+- Plans in `context/plans/` are execution artifacts for active implementation work.
+- Completed plans are disposable and are not a durable context source.
+- Do not use completed plan files as long-term history references from core context navigation.
+- Promote durable outcomes into current-state context files (`context/overview.md`, `context/architecture.md`, `context/glossary.md`, and focused workflow docs) or decision records under `context/decisions/`.
+
 ## Output contract
 
 - Plan target resolved (`plan_name` and path).

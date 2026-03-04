@@ -28,6 +28,8 @@ compatibility: claude
 ## Rules
 - Do not auto-mark tasks complete during review.
 - Keep continuation state in the plan markdown itself.
+- Treat `context/plans/` as active execution artifacts; completed plans are disposable and not a durable context source.
+- If durable history is needed, record it in current-state context files and/or `context/decisions/` instead of completed plan files.
 - Keep implementation blocked until decision alignment on unclear points.
 - If plan context is stale or partial, continue with code truth and flag context updates.
 

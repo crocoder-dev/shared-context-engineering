@@ -61,7 +61,7 @@ Lightweight post-task verification baseline (required after each completed task)
 - Use `context/architecture.md` for component boundaries and current-state contracts.
 - Use `context/patterns.md` for implementation and operational conventions.
 - Use `context/decisions/` for explicit architecture decisions.
-- Use `context/plans/` for task history and verification evidence.
+- Use `context/plans/` for active plan execution state and task handoff continuity.
 - Use `context/cli/placeholder-foundation.md` for current command-surface, local Turso adapter behavior, and module-boundary details of the `sce` placeholder crate.
 - Use `context/sce/shared-context-plan-workflow.md` for the canonical planning-session workflow (`/change-to-plan`) including clarification gating and `/next-task` handoff contract.
 - Use `context/sce/plan-code-overlap-map.md` for the current overlap/dedup inventory across Shared Context Plan/Code agents, related commands, and core skills.

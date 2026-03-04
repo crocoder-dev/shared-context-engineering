@@ -18,7 +18,7 @@ Feature/domain context:
 - `context/sce/atomic-commit-workflow.md` (canonical `/commit` command + `sce-atomic-commit` skill contract and naming decision)
 
 Working areas:
-- `context/plans/`
+- `context/plans/` (active plan execution artifacts, not durable history)
 - `context/handovers/`
 - `context/decisions/`
 - `context/tmp/`
