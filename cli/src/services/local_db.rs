@@ -54,9 +54,48 @@ const CORE_SCHEMA_STATEMENTS: &[&str] = &[
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\
         FOREIGN KEY(trace_record_id) REFERENCES trace_records(id) ON DELETE CASCADE\
     )",
+    "CREATE TABLE IF NOT EXISTS reconciliation_runs (\
+        id INTEGER PRIMARY KEY,\
+        repository_id INTEGER NOT NULL,\
+        provider TEXT NOT NULL,\
+        idempotency_key TEXT NOT NULL,\
+        status TEXT NOT NULL,\
+        initiated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\
+        completed_at TEXT,\
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\
+        FOREIGN KEY(repository_id) REFERENCES repositories(id) ON DELETE CASCADE,\
+        UNIQUE(repository_id, idempotency_key)\
+    )",
+    "CREATE TABLE IF NOT EXISTS rewrite_mappings (\
+        id INTEGER PRIMARY KEY,\
+        reconciliation_run_id INTEGER NOT NULL,\
+        repository_id INTEGER NOT NULL,\
+        old_commit_sha TEXT NOT NULL,\
+        new_commit_sha TEXT,\
+        mapping_status TEXT NOT NULL,\
+        confidence REAL,\
+        idempotency_key TEXT NOT NULL,\
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\
+        FOREIGN KEY(reconciliation_run_id) REFERENCES reconciliation_runs(id) ON DELETE CASCADE,\
+        FOREIGN KEY(repository_id) REFERENCES repositories(id) ON DELETE CASCADE,\
+        UNIQUE(repository_id, idempotency_key)\
+    )",
+    "CREATE TABLE IF NOT EXISTS conversations (\
+        id INTEGER PRIMARY KEY,\
+        repository_id INTEGER NOT NULL,\
+        url TEXT NOT NULL,\
+        source TEXT NOT NULL,\
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\
+        FOREIGN KEY(repository_id) REFERENCES repositories(id) ON DELETE CASCADE,\
+        UNIQUE(repository_id, url)\
+    )",
     "CREATE INDEX IF NOT EXISTS idx_commits_repository_commit_sha ON commits(repository_id, commit_sha)",
     "CREATE INDEX IF NOT EXISTS idx_trace_records_repository_commit ON trace_records(repository_id, commit_id)",
     "CREATE INDEX IF NOT EXISTS idx_trace_ranges_record_file ON trace_ranges(trace_record_id, file_path)",
+    "CREATE INDEX IF NOT EXISTS idx_reconciliation_runs_repository_status ON reconciliation_runs(repository_id, status)",
+    "CREATE INDEX IF NOT EXISTS idx_rewrite_mappings_run_old_sha ON rewrite_mappings(reconciliation_run_id, old_commit_sha)",
+    "CREATE INDEX IF NOT EXISTS idx_rewrite_mappings_repository_old_sha ON rewrite_mappings(repository_id, old_commit_sha)",
+    "CREATE INDEX IF NOT EXISTS idx_conversations_repository_source ON conversations(repository_id, source)",
 ];
 
 #[derive(Clone, Copy, Debug)]
@@ -84,6 +123,7 @@ async fn connect_local(target: LocalDatabaseTarget<'_>) -> Result<turso::Connect
 
     let db = Builder::new_local(&location).build().await?;
     let conn = db.connect()?;
+    conn.execute("PRAGMA foreign_keys = ON", ()).await?;
     Ok(conn)
 }
 
@@ -175,6 +215,25 @@ mod tests {
         Ok(count as u64)
     }
 
+    async fn fetch_single_integer(target: LocalDatabaseTarget<'_>, query: &str) -> Result<i64> {
+        let location = match target {
+            LocalDatabaseTarget::InMemory => ":memory:".to_string(),
+            LocalDatabaseTarget::Path(path) => path.to_string_lossy().into_owned(),
+        };
+        let db = turso::Builder::new_local(&location).build().await?;
+        let conn = db.connect()?;
+        let mut rows = conn.query(query, ()).await?;
+        let row = rows
+            .next()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("integer query returned no rows"))?;
+        let value = row.get_value(0)?;
+        let value = *value
+            .as_integer()
+            .ok_or_else(|| anyhow::anyhow!("integer query returned non-integer"))?;
+        Ok(value)
+    }
+
     #[test]
     fn in_memory_smoke_check_succeeds() -> Result<()> {
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
@@ -204,11 +263,20 @@ mod tests {
             &path,
         )))?;
         assert_eq!(
-            outcome.executed_statements, 7,
+            outcome.executed_statements,
+            super::CORE_SCHEMA_STATEMENTS.len(),
             "expected all core migration statements to execute"
         );
 
-        for table in ["repositories", "commits", "trace_records", "trace_ranges"] {
+        for table in [
+            "repositories",
+            "commits",
+            "trace_records",
+            "trace_ranges",
+            "reconciliation_runs",
+            "rewrite_mappings",
+            "conversations",
+        ] {
             assert!(runtime.block_on(sqlite_object_exists(
                 LocalDatabaseTarget::Path(&path),
                 "table",
@@ -220,6 +288,10 @@ mod tests {
             "idx_commits_repository_commit_sha",
             "idx_trace_records_repository_commit",
             "idx_trace_ranges_record_file",
+            "idx_reconciliation_runs_repository_status",
+            "idx_rewrite_mappings_run_old_sha",
+            "idx_rewrite_mappings_repository_old_sha",
+            "idx_conversations_repository_source",
         ] {
             assert!(runtime.block_on(sqlite_object_exists(
                 LocalDatabaseTarget::Path(&path),
@@ -238,10 +310,7 @@ mod tests {
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
 
         runtime.block_on(async {
-            let db = turso::Builder::new_local(path.to_string_lossy().as_ref())
-                .build()
-                .await?;
-            let conn = db.connect()?;
+            let conn = super::connect_local(LocalDatabaseTarget::Path(&path)).await?;
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS repositories (\
                     id INTEGER PRIMARY KEY,\
@@ -273,6 +342,119 @@ mod tests {
             repository_rows, 1,
             "preexisting repository rows should remain"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn reconciliation_schema_supports_replay_safe_runs_and_mapping_queries() -> Result<()> {
+        let temp = TestTempDir::new("sce-reconciliation-schema-tests")?;
+        let path = temp.path().join("reconciliation.db");
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+
+        runtime.block_on(apply_core_schema_migrations(LocalDatabaseTarget::Path(
+            &path,
+        )))?;
+
+        runtime.block_on(async {
+            let db = turso::Builder::new_local(path.to_string_lossy().as_ref())
+                .build()
+                .await?;
+            let conn = db.connect()?;
+
+            conn.execute(
+                "INSERT INTO repositories (canonical_root) VALUES (?1)",
+                ["/tmp/reconciliation-repo"],
+            )
+            .await?;
+
+            conn.execute(
+                "INSERT INTO reconciliation_runs (repository_id, provider, idempotency_key, status) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                (1_i64, "github", "run:key:1", "completed"),
+            )
+            .await?;
+
+            conn.execute(
+                "INSERT INTO conversations (repository_id, url, source) VALUES (?1, ?2, ?3)",
+                (1_i64, "https://example.dev/conversations/abc", "github"),
+            )
+            .await?;
+
+            conn.execute(
+                "INSERT INTO rewrite_mappings (\
+                    reconciliation_run_id, repository_id, old_commit_sha, new_commit_sha,\
+                    mapping_status, confidence, idempotency_key\
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                (
+                    1_i64,
+                    1_i64,
+                    "1111111111111111111111111111111111111111",
+                    "2222222222222222222222222222222222222222",
+                    "mapped",
+                    0.98_f64,
+                    "map:key:1",
+                ),
+            )
+            .await?;
+
+            let duplicate_run = conn
+                .execute(
+                    "INSERT INTO reconciliation_runs (repository_id, provider, idempotency_key, status) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                    (1_i64, "github", "run:key:1", "completed"),
+                )
+                .await;
+            assert!(duplicate_run.is_err(), "run idempotency key should be unique");
+
+            let duplicate_mapping = conn
+                .execute(
+                    "INSERT INTO rewrite_mappings (\
+                        reconciliation_run_id, repository_id, old_commit_sha, new_commit_sha,\
+                        mapping_status, confidence, idempotency_key\
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    (
+                        1_i64,
+                        1_i64,
+                        "1111111111111111111111111111111111111111",
+                        "3333333333333333333333333333333333333333",
+                        "mapped",
+                        0.70_f64,
+                        "map:key:1",
+                    ),
+                )
+                .await;
+            assert!(
+                duplicate_mapping.is_err(),
+                "mapping idempotency key should be unique"
+            );
+
+            Ok::<(), anyhow::Error>(())
+        })?;
+
+        let run_count = runtime.block_on(fetch_single_integer(
+            LocalDatabaseTarget::Path(&path),
+            "SELECT COUNT(*) FROM reconciliation_runs WHERE repository_id = 1 AND status = 'completed'",
+        ))?;
+        assert_eq!(run_count, 1);
+
+        let mapped_count = runtime.block_on(fetch_single_integer(
+            LocalDatabaseTarget::Path(&path),
+            "SELECT COUNT(*) FROM rewrite_mappings WHERE repository_id = 1 AND old_commit_sha = '1111111111111111111111111111111111111111'",
+        ))?;
+        assert_eq!(mapped_count, 1);
+
+        let joined_mapping_count = runtime.block_on(fetch_single_integer(
+            LocalDatabaseTarget::Path(&path),
+            "SELECT COUNT(*) FROM rewrite_mappings m JOIN reconciliation_runs r ON r.id = m.reconciliation_run_id JOIN repositories repo ON repo.id = m.repository_id WHERE r.repository_id = repo.id AND m.old_commit_sha = '1111111111111111111111111111111111111111'",
+        ))?;
+        assert_eq!(joined_mapping_count, 1);
+
+        let conversation_count = runtime.block_on(fetch_single_integer(
+            LocalDatabaseTarget::Path(&path),
+            "SELECT COUNT(*) FROM conversations WHERE repository_id = 1 AND source = 'github'",
+        ))?;
+        assert_eq!(conversation_count, 1);
+
         Ok(())
     }
 }

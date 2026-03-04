@@ -167,7 +167,7 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - `cargo test --manifest-path cli/Cargo.toml core_schema_migrations`
     - `cargo build --manifest-path cli/Cargo.toml`
 
-- [ ] T11: Ship reconciliation schema and ingestion (`reconciliation_runs`, `rewrite_mappings`, `conversations`) (status:todo)
+- [x] T11: Ship reconciliation schema and ingestion (`reconciliation_runs`, `rewrite_mappings`, `conversations`) (status:done)
   - Task ID: T11
   - Goal: Add hosted rewrite persistence and idempotency-backed run bookkeeping.
   - Boundaries (in/out of scope):
@@ -177,6 +177,10 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - Reconciliation runs and mappings can be stored and queried reproducibly.
   - Verification notes (commands or checks):
     - Referential-integrity tests and representative mapping/replay query checks.
+    - `cargo fmt --manifest-path cli/Cargo.toml -- --check`
+    - `cargo test --manifest-path cli/Cargo.toml core_schema_migrations`
+    - `cargo test --manifest-path cli/Cargo.toml reconciliation_schema_supports_replay_safe_runs_and_mapping_queries`
+    - `cargo build --manifest-path cli/Cargo.toml`
 
 - [ ] T12: Implement hosted event intake and run orchestration (status:todo)
   - Task ID: T12
