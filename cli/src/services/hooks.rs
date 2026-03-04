@@ -1,8 +1,10 @@
 use anyhow::Result;
+use std::collections::HashSet;
+use std::time::Instant;
 
 use crate::services::agent_trace::{
     build_trace_payload, AgentTraceRecord, FileAttributionInput, QualityStatus, RewriteInfo,
-    TraceAdapterInput, TRACE_CONTENT_TYPE,
+    TraceAdapterInput, METADATA_IDEMPOTENCY_KEY, TRACE_CONTENT_TYPE,
 };
 
 pub const NAME: &str = "hooks";
@@ -150,6 +152,27 @@ pub trait TraceRecordStore {
 
 pub trait TraceRetryQueue {
     fn enqueue(&mut self, entry: TraceRetryQueueEntry) -> Result<()>;
+    fn dequeue_next(&mut self) -> Result<Option<TraceRetryQueueEntry>>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RetryProcessingMetric {
+    pub commit_sha: String,
+    pub trace_id: String,
+    pub runtime_ms: u128,
+    pub error_class: Option<PersistenceErrorClass>,
+    pub failed_targets: Vec<PersistenceTarget>,
+}
+
+pub trait RetryMetricsSink {
+    fn record_retry_metric(&mut self, metric: RetryProcessingMetric);
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetryQueueProcessSummary {
+    pub attempted: usize,
+    pub recovered: usize,
+    pub requeued: usize,
 }
 
 pub trait TraceEmissionLedger {
@@ -621,6 +644,106 @@ fn collect_failed_targets(
     failed_targets
 }
 
+pub fn process_trace_retry_queue(
+    retry_queue: &mut impl TraceRetryQueue,
+    notes_writer: &mut impl TraceNotesWriter,
+    record_store: &mut impl TraceRecordStore,
+    metrics_sink: &mut impl RetryMetricsSink,
+    max_items: usize,
+) -> Result<RetryQueueProcessSummary> {
+    let mut processed_trace_ids = HashSet::new();
+    let mut summary = RetryQueueProcessSummary {
+        attempted: 0,
+        recovered: 0,
+        requeued: 0,
+    };
+
+    for _ in 0..max_items {
+        let Some(entry) = retry_queue.dequeue_next()? else {
+            break;
+        };
+
+        if !processed_trace_ids.insert(entry.record.id.clone()) {
+            retry_queue.enqueue(entry)?;
+            break;
+        }
+
+        summary.attempted += 1;
+        let started = Instant::now();
+
+        let notes_result = if entry.failed_targets.contains(&PersistenceTarget::Notes) {
+            notes_writer.write_note(TraceNote {
+                notes_ref: entry.notes_ref.clone(),
+                commit_sha: entry.commit_sha.clone(),
+                content_type: entry.content_type.clone(),
+                record: entry.record.clone(),
+            })
+        } else {
+            PersistenceWriteResult::AlreadyExists
+        };
+
+        let database_result = if entry.failed_targets.contains(&PersistenceTarget::Database) {
+            let idempotency_key = entry
+                .record
+                .metadata
+                .get(METADATA_IDEMPOTENCY_KEY)
+                .cloned()
+                .unwrap_or_else(|| format!("retry:{}:{}", entry.commit_sha, entry.record.id));
+            record_store.write_trace_record(PersistedTraceRecord {
+                commit_sha: entry.commit_sha.clone(),
+                idempotency_key,
+                content_type: entry.content_type.clone(),
+                notes_ref: entry.notes_ref.clone(),
+                record: entry.record.clone(),
+            })
+        } else {
+            PersistenceWriteResult::AlreadyExists
+        };
+
+        let failed_targets = collect_failed_targets(&notes_result, &database_result);
+        let error_class = first_failure_class(&notes_result, &database_result);
+
+        metrics_sink.record_retry_metric(RetryProcessingMetric {
+            commit_sha: entry.commit_sha.clone(),
+            trace_id: entry.record.id.clone(),
+            runtime_ms: started.elapsed().as_millis(),
+            error_class,
+            failed_targets: failed_targets.clone(),
+        });
+
+        if failed_targets.is_empty() {
+            summary.recovered += 1;
+            continue;
+        }
+
+        summary.requeued += 1;
+        retry_queue.enqueue(TraceRetryQueueEntry {
+            commit_sha: entry.commit_sha,
+            failed_targets,
+            content_type: entry.content_type,
+            notes_ref: entry.notes_ref,
+            record: entry.record,
+        })?;
+    }
+
+    Ok(summary)
+}
+
+fn first_failure_class(
+    notes_result: &PersistenceWriteResult,
+    database_result: &PersistenceWriteResult,
+) -> Option<PersistenceErrorClass> {
+    match notes_result {
+        PersistenceWriteResult::Failed(failure) => return Some(failure.class.clone()),
+        PersistenceWriteResult::Written | PersistenceWriteResult::AlreadyExists => {}
+    }
+
+    match database_result {
+        PersistenceWriteResult::Failed(failure) => Some(failure.class.clone()),
+        PersistenceWriteResult::Written | PersistenceWriteResult::AlreadyExists => None,
+    }
+}
+
 pub fn apply_commit_msg_coauthor_policy(
     runtime: &CommitMsgRuntimeState,
     commit_message: &str,
@@ -825,23 +948,25 @@ mod tests {
     use anyhow::Result;
 
     use crate::services::agent_trace::{
-        ContributorInput, ContributorType, ConversationInput, FileAttributionInput, RangeInput,
+        build_trace_payload, ContributorInput, ContributorType, ConversationInput,
+        FileAttributionInput, QualityStatus, RangeInput, TraceAdapterInput,
         METADATA_QUALITY_STATUS, METADATA_REWRITE_CONFIDENCE, METADATA_REWRITE_FROM,
         METADATA_REWRITE_METHOD,
     };
 
     use super::{
         apply_commit_msg_coauthor_policy, finalize_post_commit_trace, finalize_post_rewrite_remap,
-        finalize_pre_commit_checkpoint, finalize_rewrite_trace, run_placeholder_hooks,
-        CommitMsgRuntimeState, GeneratedRegionEvent, GeneratedRegionLifecycle, GitHookKind,
-        HookEvent, HookService, PendingCheckpoint, PendingFileCheckpoint, PendingLineRange,
-        PersistenceErrorClass, PersistenceFailure, PersistenceTarget, PersistenceWriteResult,
-        PlaceholderHookService, PostCommitFinalization, PostCommitInput, PostCommitNoOpReason,
-        PostCommitRuntimeState, PostRewriteFinalization, PostRewriteNoOpReason,
-        PostRewriteRuntimeState, PreCommitFinalization, PreCommitNoOpReason, PreCommitRuntimeState,
-        PreCommitTreeAnchors, RewriteMethod, RewriteRemapIngestion, RewriteRemapRequest,
-        RewriteTraceFinalization, RewriteTraceInput, RewriteTraceNoOpReason, TraceEmissionLedger,
-        TraceNote, TraceNotesWriter, TraceRecordStore, TraceRetryQueue, TraceRetryQueueEntry,
+        finalize_pre_commit_checkpoint, finalize_rewrite_trace, process_trace_retry_queue,
+        run_placeholder_hooks, CommitMsgRuntimeState, GeneratedRegionEvent,
+        GeneratedRegionLifecycle, GitHookKind, HookEvent, HookService, PendingCheckpoint,
+        PendingFileCheckpoint, PendingLineRange, PersistenceErrorClass, PersistenceFailure,
+        PersistenceTarget, PersistenceWriteResult, PlaceholderHookService, PostCommitFinalization,
+        PostCommitInput, PostCommitNoOpReason, PostCommitRuntimeState, PostRewriteFinalization,
+        PostRewriteNoOpReason, PostRewriteRuntimeState, PreCommitFinalization, PreCommitNoOpReason,
+        PreCommitRuntimeState, PreCommitTreeAnchors, RetryMetricsSink, RetryProcessingMetric,
+        RewriteMethod, RewriteRemapIngestion, RewriteRemapRequest, RewriteTraceFinalization,
+        RewriteTraceInput, RewriteTraceNoOpReason, TraceEmissionLedger, TraceNote,
+        TraceNotesWriter, TraceRecordStore, TraceRetryQueue, TraceRetryQueueEntry,
         CANONICAL_SCE_COAUTHOR_TRAILER, POST_COMMIT_PARENT_SHA_METADATA_KEY,
     };
 
@@ -937,6 +1062,11 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct FakeRetryMetricsSink {
+        events: Vec<RetryProcessingMetric>,
+    }
+
+    #[derive(Default)]
     struct FakeRewriteRemapIngestion {
         seen_requests: Vec<RewriteRemapRequest>,
         duplicate_keys: Vec<String>,
@@ -958,6 +1088,54 @@ mod tests {
         fn enqueue(&mut self, entry: TraceRetryQueueEntry) -> Result<()> {
             self.entries.push(entry);
             Ok(())
+        }
+
+        fn dequeue_next(&mut self) -> Result<Option<TraceRetryQueueEntry>> {
+            if self.entries.is_empty() {
+                return Ok(None);
+            }
+
+            Ok(Some(self.entries.remove(0)))
+        }
+    }
+
+    impl RetryMetricsSink for FakeRetryMetricsSink {
+        fn record_retry_metric(&mut self, metric: RetryProcessingMetric) {
+            self.events.push(metric);
+        }
+    }
+
+    fn sample_retry_entry_with_target(target: PersistenceTarget) -> TraceRetryQueueEntry {
+        let record = build_trace_payload(TraceAdapterInput {
+            record_id: "990e8400-e29b-41d4-a716-446655440000".to_string(),
+            timestamp_rfc3339: "2026-03-04T12:13:14Z".to_string(),
+            commit_sha: "retrysha123".to_string(),
+            files: vec![FileAttributionInput {
+                path: "src/retry.rs".to_string(),
+                conversations: vec![ConversationInput {
+                    url: "https://example.test/conversation/retry".to_string(),
+                    related: vec![],
+                    ranges: vec![RangeInput {
+                        start_line: 4,
+                        end_line: 6,
+                        contributor: ContributorInput {
+                            kind: ContributorType::Ai,
+                            model_id: Some("openai/gpt-5.3-codex".to_string()),
+                        },
+                    }],
+                }],
+            }],
+            quality_status: QualityStatus::Final,
+            rewrite: None,
+            idempotency_key: Some("retry:key:retrysha123".to_string()),
+        });
+
+        TraceRetryQueueEntry {
+            commit_sha: "retrysha123".to_string(),
+            failed_targets: vec![target],
+            content_type: "application/vnd.agent-trace.record+json".to_string(),
+            notes_ref: "refs/notes/agent-trace".to_string(),
+            record,
         }
     }
 
@@ -1135,6 +1313,59 @@ mod tests {
             vec![PersistenceTarget::Database]
         );
         assert!(!ledger.has_emitted("abc123def456"));
+        Ok(())
+    }
+
+    #[test]
+    fn retry_processor_recovers_failed_notes_write_and_emits_success_metric() -> Result<()> {
+        let mut queue = FakeRetryQueue {
+            entries: vec![sample_retry_entry_with_target(PersistenceTarget::Notes)],
+        };
+        let mut notes = FakeNotesWriter::new(PersistenceWriteResult::Written);
+        let mut store = FakeRecordStore::new(PersistenceWriteResult::Written);
+        let mut metrics = FakeRetryMetricsSink::default();
+
+        let summary =
+            process_trace_retry_queue(&mut queue, &mut notes, &mut store, &mut metrics, 4)?;
+
+        assert_eq!(summary.attempted, 1);
+        assert_eq!(summary.recovered, 1);
+        assert_eq!(summary.requeued, 0);
+        assert!(queue.entries.is_empty());
+        assert_eq!(metrics.events.len(), 1);
+        assert_eq!(metrics.events[0].error_class, None);
+        assert!(metrics.events[0].failed_targets.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn retry_processor_requeues_when_db_write_still_fails() -> Result<()> {
+        let mut queue = FakeRetryQueue {
+            entries: vec![sample_retry_entry_with_target(PersistenceTarget::Database)],
+        };
+        let mut notes = FakeNotesWriter::new(PersistenceWriteResult::Written);
+        let mut store = FakeRecordStore::new(PersistenceWriteResult::Failed(PersistenceFailure {
+            class: PersistenceErrorClass::Permanent,
+            message: "database still unavailable".to_string(),
+        }));
+        let mut metrics = FakeRetryMetricsSink::default();
+
+        let summary =
+            process_trace_retry_queue(&mut queue, &mut notes, &mut store, &mut metrics, 4)?;
+
+        assert_eq!(summary.attempted, 1);
+        assert_eq!(summary.recovered, 0);
+        assert_eq!(summary.requeued, 1);
+        assert_eq!(queue.entries.len(), 1);
+        assert_eq!(
+            queue.entries[0].failed_targets,
+            vec![PersistenceTarget::Database]
+        );
+        assert_eq!(metrics.events.len(), 1);
+        assert_eq!(
+            metrics.events[0].error_class,
+            Some(PersistenceErrorClass::Permanent)
+        );
         Ok(())
     }
 

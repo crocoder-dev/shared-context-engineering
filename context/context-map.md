@@ -29,6 +29,7 @@ Feature/domain context:
 - `context/sce/agent-trace-reconciliation-schema-ingestion.md` (T11 reconciliation persistence schema for `reconciliation_runs`, `rewrite_mappings`, and `conversations` with replay-safe idempotency and query indexes)
 - `context/sce/agent-trace-hosted-event-intake-orchestration.md` (T12 hosted GitHub/GitLab event intake contract with signature verification, old/new head resolution, and deterministic reconciliation-run idempotency keys)
 - `context/sce/agent-trace-rewrite-mapping-engine.md` (T13 hosted rewrite mapping engine contract with patch-id exact precedence, range-diff/fuzzy scoring, and deterministic unresolved outcomes)
+- `context/sce/agent-trace-retry-queue-observability.md` (T14 retry queue recovery contract plus reconciliation/runtime observability metrics and DB-first queue schema additions)
 
 Working areas:
 - `context/plans/` (active plan execution artifacts, not durable history)

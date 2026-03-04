@@ -135,6 +135,83 @@ pub enum RewriteMappingOutcome {
     Unresolved(UnresolvedRewriteMapping),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReconciliationErrorClass {
+    Signature,
+    Payload,
+    Store,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ConfidenceHistogram {
+    pub high: u64,
+    pub medium: u64,
+    pub low: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReconciliationMetricsSnapshot {
+    pub mapped: u64,
+    pub unmapped: u64,
+    pub confidence_histogram: ConfidenceHistogram,
+    pub runtime_ms: u128,
+    pub error_class: Option<ReconciliationErrorClass>,
+}
+
+pub fn summarize_reconciliation_metrics(
+    outcomes: &[RewriteMappingOutcome],
+    runtime_ms: u128,
+    error_class: Option<ReconciliationErrorClass>,
+) -> ReconciliationMetricsSnapshot {
+    let mut mapped = 0_u64;
+    let mut unmapped = 0_u64;
+    let mut confidence_histogram = ConfidenceHistogram::default();
+
+    for outcome in outcomes {
+        match outcome {
+            RewriteMappingOutcome::Mapped(mapping) => {
+                mapped += 1;
+                classify_histogram_bucket(mapping.confidence, &mut confidence_histogram);
+            }
+            RewriteMappingOutcome::Unresolved(unresolved) => {
+                unmapped += 1;
+                if let Some(score) = unresolved.best_confidence {
+                    classify_histogram_bucket(score, &mut confidence_histogram);
+                }
+            }
+        }
+    }
+
+    ReconciliationMetricsSnapshot {
+        mapped,
+        unmapped,
+        confidence_histogram,
+        runtime_ms,
+        error_class,
+    }
+}
+
+pub fn classify_reconciliation_error(error: &anyhow::Error) -> ReconciliationErrorClass {
+    let message = error.to_string().to_ascii_lowercase();
+    if message.contains("signature") {
+        return ReconciliationErrorClass::Signature;
+    }
+    if message.contains("payload") || message.contains("before") || message.contains("after") {
+        return ReconciliationErrorClass::Payload;
+    }
+    ReconciliationErrorClass::Store
+}
+
+fn classify_histogram_bucket(score: Score, histogram: &mut ConfidenceHistogram) {
+    if score.value() >= 0.90 {
+        histogram.high += 1;
+    } else if score.value() >= FUZZY_MAPPING_THRESHOLD {
+        histogram.medium += 1;
+    } else {
+        histogram.low += 1;
+    }
+}
+
 pub fn map_rewritten_commit(
     source: &RewriteSourceCommit,
     candidates: &[RewriteCandidateCommit],
@@ -629,11 +706,12 @@ mod tests {
     use anyhow::Result;
 
     use super::{
-        derive_idempotency_key, github_signature, ingest_hosted_rewrite_event,
-        map_rewritten_commit, HostedIntakeOutcome, HostedProvider, HostedReconciliationRunRequest,
-        HostedWebhookRequest, MappingMethod, MappingQuality, ReconciliationRunInsertOutcome,
-        ReconciliationRunStore, RewriteCandidateCommit, RewriteMappingOutcome, RewriteSourceCommit,
-        Score, UnresolvedMappingKind,
+        classify_reconciliation_error, derive_idempotency_key, github_signature,
+        ingest_hosted_rewrite_event, map_rewritten_commit, summarize_reconciliation_metrics,
+        ConfidenceHistogram, HostedIntakeOutcome, HostedProvider, HostedReconciliationRunRequest,
+        HostedWebhookRequest, MappingMethod, MappingQuality, ReconciliationErrorClass,
+        ReconciliationRunInsertOutcome, ReconciliationRunStore, RewriteCandidateCommit,
+        RewriteMappingOutcome, RewriteSourceCommit, Score, UnresolvedMappingKind,
     };
 
     #[derive(Default)]
@@ -943,5 +1021,75 @@ mod tests {
             }
             other => panic!("expected low-confidence unresolved outcome, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn reconciliation_metrics_capture_mapped_unmapped_histogram_runtime_and_error_class() {
+        let outcomes = vec![
+            RewriteMappingOutcome::Mapped(super::RewrittenCommitMapping {
+                old_commit_sha: "old-high".to_string(),
+                new_commit_sha: "new-high".to_string(),
+                method: MappingMethod::PatchIdExact,
+                confidence: score(1.0),
+                quality: MappingQuality::Final,
+            }),
+            RewriteMappingOutcome::Mapped(super::RewrittenCommitMapping {
+                old_commit_sha: "old-medium".to_string(),
+                new_commit_sha: "new-medium".to_string(),
+                method: MappingMethod::FuzzyFallback,
+                confidence: score(0.65),
+                quality: MappingQuality::Partial,
+            }),
+            RewriteMappingOutcome::Unresolved(super::UnresolvedRewriteMapping {
+                old_commit_sha: "old-low".to_string(),
+                kind: UnresolvedMappingKind::LowConfidence,
+                reason: "below threshold".to_string(),
+                candidate_new_shas: vec!["new-low".to_string()],
+                best_confidence: Some(score(0.40)),
+            }),
+            RewriteMappingOutcome::Unresolved(super::UnresolvedRewriteMapping {
+                old_commit_sha: "old-unmatched".to_string(),
+                kind: UnresolvedMappingKind::Unmatched,
+                reason: "none".to_string(),
+                candidate_new_shas: vec![],
+                best_confidence: None,
+            }),
+        ];
+
+        let snapshot =
+            summarize_reconciliation_metrics(&outcomes, 123, Some(ReconciliationErrorClass::Store));
+
+        assert_eq!(snapshot.mapped, 2);
+        assert_eq!(snapshot.unmapped, 2);
+        assert_eq!(
+            snapshot.confidence_histogram,
+            ConfidenceHistogram {
+                high: 1,
+                medium: 1,
+                low: 1,
+            }
+        );
+        assert_eq!(snapshot.runtime_ms, 123);
+        assert_eq!(snapshot.error_class, Some(ReconciliationErrorClass::Store));
+    }
+
+    #[test]
+    fn reconciliation_error_classification_labels_signature_and_payload_failures() {
+        let signature_error = anyhow::anyhow!("hosted event signature verification failed");
+        let payload_error = anyhow::anyhow!("invalid hosted event payload: missing 'before' field");
+        let store_error = anyhow::anyhow!("run store insert failed");
+
+        assert_eq!(
+            classify_reconciliation_error(&signature_error),
+            ReconciliationErrorClass::Signature
+        );
+        assert_eq!(
+            classify_reconciliation_error(&payload_error),
+            ReconciliationErrorClass::Payload
+        );
+        assert_eq!(
+            classify_reconciliation_error(&store_error),
+            ReconciliationErrorClass::Store
+        );
     }
 }
