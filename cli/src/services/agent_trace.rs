@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 
 pub const TRACE_VERSION: &str = "0.1.0";

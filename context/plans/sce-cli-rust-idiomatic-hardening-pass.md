@@ -63,7 +63,7 @@ Non-goals (deferred):
   - Done when: targeted lossy conversions at current call sites are removed/replaced with explicit safe handling and tests still pass.
   - Verification notes: run `cargo test --manifest-path cli/Cargo.toml services::local_db::tests` and `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T05: Remove broad dead-code suppression from agent trace module (status:todo)
+- [x] T05: Remove broad dead-code suppression from agent trace module (status:done)
   - Goal: Remove `#![allow(dead_code)]` from `cli/src/services/agent_trace.rs` and apply narrow item-level handling only where required.
   - Boundaries (in): `cli/src/services/agent_trace.rs` and directly affected tests/usages.
   - Boundaries (out): Large-scale pruning of placeholder Agent Trace contracts not required to satisfy compiler hygiene.
