@@ -44,7 +44,7 @@ Enable `sce setup` to install and manage required Git hooks (`pre-commit`, `comm
     - Added canonical hook templates at `cli/assets/hooks/pre-commit`, `cli/assets/hooks/commit-msg`, and `cli/assets/hooks/post-commit` with deterministic `sce hooks <hook>` entrypoints for setup packaging.
     - Extended compile-time embedded manifest generation in `cli/build.rs` with `HOOK_EMBEDDED_ASSETS`, keeping deterministic sorted path normalization for hook assets without runtime config reads.
     - Added setup service hook-asset accessors in `cli/src/services/setup.rs` (`iter_required_hook_assets`, `get_required_hook_asset`) plus coverage for manifest completeness, normalization, ordering, and canonical hook lookup semantics.
-- [ ] T03: Implement `sce setup` hook installation flow (status:todo)
+- [x] T03: Implement `sce setup` hook installation flow (status:done)
   - Task ID: T03
   - Goal: Add idempotent hook install/update orchestration that writes required hooks, preserves executable bits, and performs safe backup-and-replace with rollback on failure.
   - Boundaries (in/out of scope):
@@ -55,6 +55,10 @@ Enable `sce setup` to install and manage required Git hooks (`pre-commit`, `comm
     - Failure paths restore prior hook state non-destructively when replacement cannot complete.
   - Verification notes (commands or checks):
     - Service/integration tests for install, re-run idempotency, upgrade, and rollback scenarios.
+  - Verification evidence:
+    - Added required-hook install orchestration in `cli/src/services/setup.rs` via `install_required_git_hooks`, including git-truth path resolution (`rev-parse --show-toplevel` and `rev-parse --git-path hooks`), per-hook deterministic outcomes (`installed`/`updated`/`skipped`), executable-bit enforcement, and backup-and-restore rollback on swap failures.
+    - Added focused setup-service coverage for default hook-path fresh install, rerun idempotency (`skipped` outcomes), custom `core.hooksPath` upgrades with backup retention, and injected swap-failure rollback cleanup in `services::setup::tests`.
+    - Verification run: `cargo test services::setup::tests`; light checks/build run: `cargo fmt --check` and `cargo build` (from `cli/`).
 - [ ] T04: Add CLI flags and UX for hook setup (status:todo)
   - Task ID: T04
   - Goal: Add `sce setup --hooks` (and optional `--repo <path>`) with deterministic output and compatible option validation.
