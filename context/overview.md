@@ -26,6 +26,7 @@ The no-git-wrapper Agent Trace initiative baseline contract is defined in `conte
 The CLI now includes a task-scoped Agent Trace schema adapter contract in `cli/src/services/agent_trace.rs`, with deterministic mapping of internal attribution input to Agent Trace-shaped record structures documented in `context/sce/agent-trace-schema-adapter.md`.
 The Agent Trace service now also provides a deterministic payload-builder path (`build_trace_payload`) with AI `model_id` normalization and schema-compliance validation coverage documented in `context/sce/agent-trace-payload-builder-validation.md`.
 The hooks service now includes a pre-commit staged checkpoint finalization contract (`finalize_pre_commit_checkpoint`) that enforces staged-only attribution, captures index/tree anchors, and no-ops for disabled/unavailable/bare-repo runtime states; this behavior is documented in `context/sce/agent-trace-pre-commit-staged-checkpoint.md`.
+The hooks service now also exposes a `commit-msg` co-author trailer policy (`apply_commit_msg_coauthor_policy`) that conditionally injects exactly one canonical SCE trailer based on `SCE_DISABLED`, `SCE_COAUTHOR_ENABLED`, and staged-attribution presence, with idempotent deduplication behavior documented in `context/sce/agent-trace-commit-msg-coauthor-policy.md`.
 
 ## Repository model
 
@@ -80,3 +81,4 @@ Lightweight post-task verification baseline (required after each completed task)
 - Use `context/sce/agent-trace-schema-adapter.md` for the implemented T02 adapter contract and canonical mapping surface in `cli/src/services/agent_trace.rs`.
 - Use `context/sce/agent-trace-payload-builder-validation.md` for the implemented T03 builder path, normalization policy, and schema-validation behavior.
 - Use `context/sce/agent-trace-pre-commit-staged-checkpoint.md` for the implemented T04 pre-commit staged-only finalization contract and runtime no-op guards.
+- Use `context/sce/agent-trace-commit-msg-coauthor-policy.md` for the implemented T05 commit-msg canonical co-author trailer policy and idempotent dedupe behavior.

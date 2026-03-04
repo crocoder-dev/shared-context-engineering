@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 pub const NAME: &str = "hooks";
+pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreCommitRuntimeState {
@@ -56,6 +57,38 @@ pub enum PreCommitNoOpReason {
 pub enum PreCommitFinalization {
     NoOp(PreCommitNoOpReason),
     Finalized(FinalizedCheckpoint),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommitMsgRuntimeState {
+    pub sce_disabled: bool,
+    pub sce_coauthor_enabled: bool,
+    pub has_staged_sce_attribution: bool,
+}
+
+pub fn apply_commit_msg_coauthor_policy(
+    runtime: &CommitMsgRuntimeState,
+    commit_message: &str,
+) -> String {
+    if runtime.sce_disabled || !runtime.sce_coauthor_enabled || !runtime.has_staged_sce_attribution
+    {
+        return commit_message.to_string();
+    }
+
+    let mut lines: Vec<&str> = commit_message.lines().collect();
+    lines.retain(|line| *line != CANONICAL_SCE_COAUTHOR_TRAILER);
+
+    if !lines.is_empty() && !lines.last().is_some_and(|line| line.is_empty()) {
+        lines.push("");
+    }
+    lines.push(CANONICAL_SCE_COAUTHOR_TRAILER);
+
+    let mut normalized = lines.join("\n");
+    if commit_message.ends_with('\n') {
+        normalized.push('\n');
+    }
+
+    normalized
 }
 
 pub fn finalize_pre_commit_checkpoint(
@@ -194,6 +227,16 @@ pub fn run_placeholder_hooks() -> Result<String> {
         PreCommitFinalization::NoOp(_) => 0,
     };
 
+    let commit_message_preview = apply_commit_msg_coauthor_policy(
+        &CommitMsgRuntimeState {
+            sce_disabled: false,
+            sce_coauthor_enabled: true,
+            has_staged_sce_attribution: true,
+        },
+        "chore: hooks placeholder preview",
+    );
+    let trailer_applied = commit_message_preview.contains(CANONICAL_SCE_COAUTHOR_TRAILER);
+
     for lifecycle in [
         GeneratedRegionLifecycle::Discovered,
         GeneratedRegionLifecycle::Updated,
@@ -210,9 +253,10 @@ pub fn run_placeholder_hooks() -> Result<String> {
     }
 
     Ok(format!(
-        "TODO: '{NAME}' is planned and not implemented yet. Hook event model reserves {} git hook(s) with generated-region tracking placeholders and staged-only pre-commit checkpoint preview over {} file(s).",
+        "TODO: '{NAME}' is planned and not implemented yet. Hook event model reserves {} git hook(s) with generated-region tracking placeholders, staged-only pre-commit checkpoint preview over {} file(s), and commit-msg canonical trailer preview applied={}.",
         model.supported_hooks.len(),
-        staged_file_count
+        staged_file_count,
+        trailer_applied
     ))
 }
 
@@ -221,10 +265,11 @@ mod tests {
     use anyhow::Result;
 
     use super::{
-        finalize_pre_commit_checkpoint, run_placeholder_hooks, GeneratedRegionEvent,
-        GeneratedRegionLifecycle, GitHookKind, HookEvent, HookService, PendingCheckpoint,
-        PendingFileCheckpoint, PendingLineRange, PlaceholderHookService, PreCommitFinalization,
-        PreCommitNoOpReason, PreCommitRuntimeState, PreCommitTreeAnchors,
+        apply_commit_msg_coauthor_policy, finalize_pre_commit_checkpoint, run_placeholder_hooks,
+        CommitMsgRuntimeState, GeneratedRegionEvent, GeneratedRegionLifecycle, GitHookKind,
+        HookEvent, HookService, PendingCheckpoint, PendingFileCheckpoint, PendingLineRange,
+        PlaceholderHookService, PreCommitFinalization, PreCommitNoOpReason, PreCommitRuntimeState,
+        PreCommitTreeAnchors, CANONICAL_SCE_COAUTHOR_TRAILER,
     };
 
     fn sample_pending_checkpoint() -> PendingCheckpoint {
@@ -342,6 +387,85 @@ mod tests {
                 end_line: 20
             }
         );
+    }
+
+    fn sample_commit_msg_runtime() -> CommitMsgRuntimeState {
+        CommitMsgRuntimeState {
+            sce_disabled: false,
+            sce_coauthor_enabled: true,
+            has_staged_sce_attribution: true,
+        }
+    }
+
+    #[test]
+    fn commit_msg_policy_noops_when_sce_disabled() {
+        let mut runtime = sample_commit_msg_runtime();
+        runtime.sce_disabled = true;
+
+        let message = "feat: add attribution";
+        let output = apply_commit_msg_coauthor_policy(&runtime, message);
+        assert_eq!(output, message);
+    }
+
+    #[test]
+    fn commit_msg_policy_noops_when_coauthor_disabled() {
+        let mut runtime = sample_commit_msg_runtime();
+        runtime.sce_coauthor_enabled = false;
+
+        let message = "feat: add attribution";
+        let output = apply_commit_msg_coauthor_policy(&runtime, message);
+        assert_eq!(output, message);
+    }
+
+    #[test]
+    fn commit_msg_policy_noops_without_staged_sce_attribution() {
+        let mut runtime = sample_commit_msg_runtime();
+        runtime.has_staged_sce_attribution = false;
+
+        let message = "feat: add attribution";
+        let output = apply_commit_msg_coauthor_policy(&runtime, message);
+        assert_eq!(output, message);
+    }
+
+    #[test]
+    fn commit_msg_policy_appends_canonical_trailer_once_when_allowed() {
+        let message = "feat: add attribution";
+        let output = apply_commit_msg_coauthor_policy(&sample_commit_msg_runtime(), message);
+
+        assert_eq!(
+            output,
+            format!(
+                "feat: add attribution\n\n{}",
+                CANONICAL_SCE_COAUTHOR_TRAILER
+            )
+        );
+    }
+
+    #[test]
+    fn commit_msg_policy_dedupes_existing_canonical_trailers() {
+        let message = format!(
+            "feat: add attribution\n\n{}\n{}\n",
+            CANONICAL_SCE_COAUTHOR_TRAILER, CANONICAL_SCE_COAUTHOR_TRAILER
+        );
+
+        let output = apply_commit_msg_coauthor_policy(&sample_commit_msg_runtime(), &message);
+
+        assert_eq!(
+            output,
+            format!(
+                "feat: add attribution\n\n{}\n",
+                CANONICAL_SCE_COAUTHOR_TRAILER
+            )
+        );
+    }
+
+    #[test]
+    fn commit_msg_policy_is_idempotent() {
+        let first =
+            apply_commit_msg_coauthor_policy(&sample_commit_msg_runtime(), "feat: add attribution");
+        let second = apply_commit_msg_coauthor_policy(&sample_commit_msg_runtime(), &first);
+
+        assert_eq!(first, second);
     }
 
     #[test]
