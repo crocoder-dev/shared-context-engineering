@@ -25,6 +25,7 @@ The `/commit` command body is intentionally thin orchestration: it retains stage
 The no-git-wrapper Agent Trace initiative baseline contract is defined in `context/sce/agent-trace-implementation-contract.md`, including normative invariants, compliance matrix, and canonical internal-to-Agent-Trace mapping for downstream implementation tasks.
 The CLI now includes a task-scoped Agent Trace schema adapter contract in `cli/src/services/agent_trace.rs`, with deterministic mapping of internal attribution input to Agent Trace-shaped record structures documented in `context/sce/agent-trace-schema-adapter.md`.
 The Agent Trace service now also provides a deterministic payload-builder path (`build_trace_payload`) with AI `model_id` normalization and schema-compliance validation coverage documented in `context/sce/agent-trace-payload-builder-validation.md`.
+The hooks service now includes a pre-commit staged checkpoint finalization contract (`finalize_pre_commit_checkpoint`) that enforces staged-only attribution, captures index/tree anchors, and no-ops for disabled/unavailable/bare-repo runtime states; this behavior is documented in `context/sce/agent-trace-pre-commit-staged-checkpoint.md`.
 
 ## Repository model
 
@@ -78,3 +79,4 @@ Lightweight post-task verification baseline (required after each completed task)
 - Use `context/sce/agent-trace-implementation-contract.md` for canonical Agent Trace implementation invariants and field-level mapping guidance (`agent-trace-attribution-no-git-wrapper` T01 baseline).
 - Use `context/sce/agent-trace-schema-adapter.md` for the implemented T02 adapter contract and canonical mapping surface in `cli/src/services/agent_trace.rs`.
 - Use `context/sce/agent-trace-payload-builder-validation.md` for the implemented T03 builder path, normalization policy, and schema-validation behavior.
+- Use `context/sce/agent-trace-pre-commit-staged-checkpoint.md` for the implemented T04 pre-commit staged-only finalization contract and runtime no-op guards.
