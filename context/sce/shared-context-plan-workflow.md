@@ -29,6 +29,8 @@ Examples:
    - Capture goal, constraints, non-goals, and success criteria in current-state language.
 3. Break work into atomic tasks.
    - Define each task with goal, boundaries, done checks, and verification notes.
+   - Enforce one-task/one-atomic-commit slicing: each executable task should land as one coherent commit.
+   - If a task would require multiple independent commits, split it into sequential tasks before approval.
 4. Run clarification gate before plan approval.
    - If blockers, ambiguity, or missing acceptance criteria exist, stop and ask focused questions.
    - Do not mark a task ready for implementation until unresolved points are closed.

@@ -64,7 +64,7 @@ Reduce unnecessary workflow prompt/context tokens and make SCE planning/executio
   - Verification notes (commands or checks):
     - Scenario-based contract walkthrough for (a) context-only staged diff and (b) mixed code+context staged diff.
 
-- [ ] T04: Enforce one-task/one-atomic-commit planning contract (status:todo)
+- [x] T04: Enforce one-task/one-atomic-commit planning contract (status:done)
   - Task ID: T04
   - Goal: Make plan-authoring contracts require atomic executable task slicing and reject broad multi-commit tasks.
   - Boundaries (in/out of scope):
