@@ -9,6 +9,7 @@ enum Command {
     Help,
     Setup(services::setup::SetupMode),
     SetupHelp,
+    Doctor,
     Mcp,
     Hooks,
     Sync,
@@ -91,6 +92,7 @@ fn parse_subcommand(value: String, tail_args: Vec<String>) -> Result<Command> {
     match value.as_str() {
         "help" => Ok(Command::Help),
         "setup" => parse_setup_subcommand(tail_args),
+        "doctor" => parse_non_setup_subcommand(Command::Doctor, tail_args),
         "mcp" => parse_non_setup_subcommand(Command::Mcp, tail_args),
         "hooks" => parse_non_setup_subcommand(Command::Hooks, tail_args),
         "sync" => parse_non_setup_subcommand(Command::Sync, tail_args),
@@ -156,6 +158,7 @@ fn dispatch(command: Command) -> Result<()> {
             }
         }
         Command::SetupHelp => println!("{}", services::setup::setup_usage_text()),
+        Command::Doctor => println!("{}", services::doctor::run_doctor()?),
         Command::Mcp => println!("{}", services::mcp::run_placeholder_mcp()?),
         Command::Hooks => println!("{}", services::hooks::run_placeholder_hooks()?),
         Command::Sync => println!("{}", services::sync::run_placeholder_sync()?),
@@ -181,6 +184,12 @@ mod tests {
     #[test]
     fn hooks_command_exits_success() {
         let code = run(vec!["sce".to_string(), "hooks".to_string()]);
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn doctor_command_exits_success() {
+        let code = run(vec!["sce".to_string(), "doctor".to_string()]);
         assert_eq!(code, ExitCode::SUCCESS);
     }
 

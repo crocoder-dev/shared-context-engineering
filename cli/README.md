@@ -1,17 +1,18 @@
-# sce CLI (placeholder foundation)
+# sce CLI (foundation)
 
 This crate provides the early command-surface scaffold for the Shared Context
 Engineering CLI (`sce`).
 
 Current scope is intentionally narrow: deterministic command dispatch, an
-implemented repository `setup` flow, and explicit placeholders for commands
-that are still deferred.
+implemented repository `setup` flow, implemented local rollout health checks
+via `doctor`, and explicit placeholders for commands that are still deferred.
 
 ## Quick start
 
 ```bash
 cargo run --manifest-path cli/Cargo.toml -- --help
 cargo run --manifest-path cli/Cargo.toml -- setup
+cargo run --manifest-path cli/Cargo.toml -- doctor
 cargo run --manifest-path cli/Cargo.toml -- mcp
 cargo run --manifest-path cli/Cargo.toml -- hooks
 cargo run --manifest-path cli/Cargo.toml -- sync
@@ -56,6 +57,12 @@ Crates.io is prepared but intentionally disabled in this phase.
     `config/.claude/**`
   - installation writes to repository-root `.opencode/` and/or `.claude/`
     using backup-and-replace safety with rollback on swap failures
+- `doctor` is implemented and validates hook rollout readiness:
+  - detects effective hooks directory for default, per-repo `core.hooksPath`,
+    and global `core.hooksPath` installs
+  - validates required hooks (`pre-commit`, `commit-msg`, `post-commit`) for
+    presence and executable permissions
+  - reports actionable diagnostics for missing or misconfigured hooks
 - `mcp` is a placeholder for future file-cache tooling contracts
   (`cache-put`/`cache-get`).
 - `hooks` is a placeholder for future git hook event and generated-region
@@ -66,7 +73,7 @@ Crates.io is prepared but intentionally disabled in this phase.
 ## Safety and limitations
 
 - `mcp`, `hooks`, and `sync` remain placeholders and do not perform MCP
-  transport, hook installation, or cloud sync.
+  transport or cloud sync.
 - `sync` only validates local adapter wiring and does not require remote auth.
 - This crate is scaffolding for incremental delivery and should not be treated
   as production-ready workflow automation.
@@ -74,6 +81,7 @@ Crates.io is prepared but intentionally disabled in this phase.
 ## Near-term roadmap mapping
 
 - Repository setup automation seam: `cli/src/services/setup.rs`
+- Hook install health validation seam: `cli/src/services/doctor.rs`
 - MCP file-cache seam: `cli/src/services/mcp.rs`
 - Hook event and generated-region seam: `cli/src/services/hooks.rs`
 - Cloud sync seam + local Turso gate: `cli/src/services/sync.rs`

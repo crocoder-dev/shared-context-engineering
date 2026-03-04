@@ -111,7 +111,7 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - `cargo test --manifest-path cli/Cargo.toml post_commit_finalization`
     - `cargo build --manifest-path cli/Cargo.toml`
 
-- [ ] T07: Add hook install and health validation (`sce doctor`) for local rollout (status:todo)
+- [x] T07: Add hook install and health validation (`sce doctor`) for local rollout (status:done)
   - Task ID: T07
   - Goal: Provide deterministic setup validation for per-repo and global hook-path installs.
   - Boundaries (in/out of scope):
@@ -121,6 +121,10 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - Operators can verify hook readiness before enabling attribution enforcement.
   - Verification notes (commands or checks):
     - Doctor output tests for healthy, missing, and misconfigured hook states.
+    - `cargo fmt --manifest-path cli/Cargo.toml -- --check`
+    - `cargo test --manifest-path cli/Cargo.toml doctor_output_reports`
+    - `cargo test --manifest-path cli/Cargo.toml doctor_command_exits_success`
+    - `cargo build --manifest-path cli/Cargo.toml`
 
 - [ ] T08: Implement `post-rewrite` local remap ingestion pipeline (status:todo)
   - Task ID: T08
