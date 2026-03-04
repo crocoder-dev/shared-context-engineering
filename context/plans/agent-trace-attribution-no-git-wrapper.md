@@ -70,7 +70,7 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - `cargo test --manifest-path cli/Cargo.toml`
     - `cargo build --manifest-path cli/Cargo.toml`
 
-- [ ] T04: Implement `pre-commit` staged checkpoint finalization contract (status:todo)
+- [x] T04: Implement `pre-commit` staged checkpoint finalization contract (status:done)
   - Task ID: T04
   - Goal: Bind pending checkpoints to staged content only and capture index/tree anchors.
   - Boundaries (in/out of scope):
@@ -80,6 +80,9 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - Unstaged edits cannot be attributed during commit finalization.
   - Verification notes (commands or checks):
     - Hook fixture tests with mixed staged/unstaged edits.
+    - `cargo test --manifest-path cli/Cargo.toml pre_commit_finalization_uses_only_staged_ranges_and_captures_anchors`
+    - `cargo test --manifest-path cli/Cargo.toml pre_commit_finalization_noops_when_sce_disabled`
+    - `cargo build --manifest-path cli/Cargo.toml`
 
 - [ ] T05: Implement `commit-msg` canonical co-author trailer policy (status:todo)
   - Task ID: T05
