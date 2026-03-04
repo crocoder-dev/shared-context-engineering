@@ -228,7 +228,7 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - `cargo test --manifest-path cli/Cargo.toml local_db::tests::core_schema_migrations_create_required_tables_and_indexes`
     - `cargo build --manifest-path cli/Cargo.toml`
 
-- [ ] T15: Validation and cleanup (status:todo)
+- [x] T15: Validation and cleanup (status:done)
   - Task ID: T15
   - Goal: Run full-system validation, sync context/docs, and leave implementation evidence for handoff.
   - Boundaries (in/out of scope):
@@ -241,6 +241,24 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - End-to-end scenario runbook with idempotent replay and confidence policy validation.
     - Agent Trace compliance test report covering required fields, formats, nesting, enum constraints, and MIME expectations.
     - Context sync review across architecture/overview/glossary/patterns to match resulting code truth.
+  - Execution evidence (2026-03-04):
+    - `cargo fmt --manifest-path cli/Cargo.toml -- --check` (exit 0)
+    - `cargo test --manifest-path cli/Cargo.toml` (exit 0; 93 passed, 0 failed)
+    - `cargo build --manifest-path cli/Cargo.toml` (exit 0; existing non-fatal dead-code warnings in placeholder seams)
+    - `nix run .#pkl-check-generated` (exit 0; generated outputs up to date)
+    - `nix flake check` (exit 0; `cli-setup-command-surface` evaluated/built successfully)
+    - Context sync verification completed for `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/patterns.md`, and `context/context-map.md`; no drift found, so no content edits required.
+  - Failed checks and follow-ups:
+    - None. Validation commands exited successfully.
+  - Success-criteria verification summary:
+    - Agent Trace schema/required-field/format compliance is covered by passing `services::agent_trace` tests including `builder_output_passes_agent_trace_schema_validation` and `builder_output_rejects_invalid_uri_and_timestamp_formats`.
+    - Commit finalization, notes+DB persistence, MIME expectations, and idempotency are covered by passing `services::hooks::tests::post_commit_finalization_*` tests.
+    - Local rewrite remap ingestion and rewrite metadata/quality mapping are covered by passing `services::hooks::tests::post_rewrite_finalization_*` and `rewrite_trace_finalization_*` tests.
+    - Hosted intake idempotency/signature verification and deterministic rewrite mapping outcomes are covered by passing `services::hosted_reconciliation::tests::*` intake/mapping/metrics tests.
+    - Canonical co-author policy behavior is covered by passing `services::hooks::tests::commit_msg_policy_*` tests.
+    - Persistence schema coverage for trace storage, ranges, reconciliation runs/mappings, and retry/metrics tables is covered by passing `services::local_db::tests::core_schema_migrations_*` and reconciliation schema tests.
+  - Residual risks:
+    - Existing documented RFC version-pattern ambiguity remains tracked in Open Questions and is unchanged by this task.
 
 ## 5) Open questions
 - Agent Trace RFC page shows a potential version-format mismatch (`version` schema pattern appears two-segment while examples and document header use `0.1.0`); implementation currently plans to emit `0.1.0` and keep parser tolerant.
