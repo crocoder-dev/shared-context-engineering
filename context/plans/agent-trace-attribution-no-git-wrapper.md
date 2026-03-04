@@ -98,7 +98,7 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - `cargo test --manifest-path cli/Cargo.toml commit_msg_policy`
     - `cargo build --manifest-path cli/Cargo.toml`
 
-- [ ] T06: Implement `post-commit` trace finalize and dual-write path (status:todo)
+- [x] T06: Implement `post-commit` trace finalize and dual-write path (status:done)
   - Task ID: T06
   - Goal: Emit commit trace after commit creation and write to notes + DB (or queue fallback).
   - Boundaries (in/out of scope):
@@ -108,6 +108,8 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - New HEAD always produces a trace record with durable persistence semantics.
   - Verification notes (commands or checks):
     - End-to-end local commit tests including transient DB or notes outage.
+    - `cargo test --manifest-path cli/Cargo.toml post_commit_finalization`
+    - `cargo build --manifest-path cli/Cargo.toml`
 
 - [ ] T07: Add hook install and health validation (`sce doctor`) for local rollout (status:todo)
   - Task ID: T07
