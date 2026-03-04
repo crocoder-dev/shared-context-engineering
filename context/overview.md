@@ -64,5 +64,5 @@ Lightweight post-task verification baseline (required after each completed task)
 - Use `context/sce/shared-context-plan-workflow.md` for the canonical planning-session workflow (`/change-to-plan`) including clarification gating and `/next-task` handoff contract.
 - Use `context/sce/plan-code-overlap-map.md` for the current overlap/dedup inventory across Shared Context Plan/Code agents, related commands, and core skills.
 - Use `context/sce/dedup-ownership-table.md` for canonical owner-vs-consumer boundaries and keep-vs-dedup labels used by the dedup implementation plan.
-- Use `context/sce/workflow-token-footprint-inventory.md` for the canonical participant inventory of `/change-to-plan` and `/next-task` workflows used by token-footprint analysis tasks.
+- Use `context/sce/workflow-token-footprint-inventory.md` for the canonical participant inventory of `/change-to-plan` and `/next-task` workflows plus T02 ranked token-hotspot classification used by token-footprint analysis tasks.
 - Use `context/sce/atomic-commit-workflow.md` for canonical `/commit` behavior, `sce-atomic-commit` naming, and proposal-only commit planning constraints.

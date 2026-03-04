@@ -31,7 +31,7 @@ Analyze the SCE Plan (`/change-to-plan`) and Execute (`/next-task`) workflows en
   - Implementation evidence:
     - Canonical inventory artifact created at `context/sce/workflow-token-footprint-inventory.md` with workflow-scoped participant matrix, ownership boundaries, and shared-vs-role-specific labels.
 
-- [ ] T02: Map token-heavy prompt surfaces and duplication hotspots (status:todo)
+- [x] T02: Map token-heavy prompt surfaces and duplication hotspots (status:done)
   - Task ID: T02
   - Goal: Identify where token overhead accumulates across agents/commands/skills and classify each hotspot as intentional guardrail text vs reducible duplication.
   - Boundaries (in/out of scope):
@@ -42,6 +42,8 @@ Analyze the SCE Plan (`/change-to-plan`) and Execute (`/next-task`) workflows en
     - Safety-critical text that must remain verbose is explicitly marked.
   - Verification notes (commands or checks):
     - Manual consistency review against `context/sce/plan-code-overlap-map.md` and `context/sce/dedup-ownership-table.md`.
+  - Implementation evidence:
+    - Added ranked hotspot table and keep-vs-reduce classification (including explicit safety-critical markings) in `context/sce/workflow-token-footprint-inventory.md` under section `T02: Token-heavy prompt surfaces and duplication hotspots`.
 
 - [ ] T03: Define static token accounting method and evidence template (status:todo)
   - Task ID: T03

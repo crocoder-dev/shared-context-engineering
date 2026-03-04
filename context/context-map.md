@@ -12,7 +12,7 @@ Feature/domain context:
 - `context/sce/shared-context-plan-workflow.md` (canonical `/change-to-plan` workflow and clarification/readiness gate contract)
 - `context/sce/plan-code-overlap-map.md` (T01 overlap matrix for Shared Context Plan/Code, related commands, and core skill ownership/dedup targets)
 - `context/sce/dedup-ownership-table.md` (current-state canonical owner-vs-consumer matrix for shared SCE behavior domains and thin-command ownership boundaries)
-- `context/sce/workflow-token-footprint-inventory.md` (canonical Plan/Execute workflow participant inventory for token-footprint analysis, including ownership and invocation boundaries)
+- `context/sce/workflow-token-footprint-inventory.md` (canonical Plan/Execute workflow participant inventory plus T02 ranked token-hotspot table with keep-vs-reduce and safety-critical classifications)
 - `context/sce/atomic-commit-workflow.md` (canonical `/commit` command + `sce-atomic-commit` skill contract and naming decision)
 
 Working areas:
