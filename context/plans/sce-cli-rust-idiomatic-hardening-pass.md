@@ -49,7 +49,7 @@ Non-goals (deferred):
   - Done when: no manual substring search parser remains on hosted intake path; missing/invalid-field failures are deterministic and covered by tests.
   - Verification notes: run `cargo test --manifest-path cli/Cargo.toml services::hosted_reconciliation::tests` and `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T03: Introduce epsilon-based tie handling for rewrite score comparison (status:todo)
+- [x] T03: Introduce epsilon-based tie handling for rewrite score comparison (status:done)
   - Goal: Remove direct float equality check in candidate tie detection and apply explicit epsilon tie-window semantics.
   - Boundaries (in): Tie detection and mapping-outcome tests in `cli/src/services/hosted_reconciliation.rs`.
   - Boundaries (out): Replacing score model or threshold policy (`FUZZY_MAPPING_THRESHOLD`) beyond tie logic.
