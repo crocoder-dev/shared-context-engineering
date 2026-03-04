@@ -126,7 +126,7 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - `cargo test --manifest-path cli/Cargo.toml doctor_command_exits_success`
     - `cargo build --manifest-path cli/Cargo.toml`
 
-- [ ] T08: Implement `post-rewrite` local remap ingestion pipeline (status:todo)
+- [x] T08: Implement `post-rewrite` local remap ingestion pipeline (status:done)
   - Task ID: T08
   - Goal: Ingest old->new SHA pairs from rewrite events and trigger remap pipeline.
   - Boundaries (in/out of scope):
@@ -136,6 +136,9 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - Rebase/amend rewrites trigger deterministic remap processing without duplicate artifacts.
   - Verification notes (commands or checks):
     - Local rewrite fixture tests across amend and interactive/non-interactive rebase outcomes.
+    - `cargo test --manifest-path cli/Cargo.toml post_rewrite_finalization`
+    - `cargo fmt --manifest-path cli/Cargo.toml -- --check`
+    - `cargo build --manifest-path cli/Cargo.toml`
 
 - [ ] T09: Implement rewrite trace transformation semantics (status:todo)
   - Task ID: T09
