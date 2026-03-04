@@ -44,3 +44,7 @@
 
 - JSON schema compliance/runtime format validation and deterministic serialization checks (`T03`).
 - Hook orchestration, notes/DB writes, and rewrite execution flows (`T04+`).
+
+## Follow-on coverage
+
+- `T03` is now implemented in `context/sce/agent-trace-payload-builder-validation.md` with builder-path and schema-validation details layered on this adapter contract.

@@ -24,6 +24,7 @@ The `/change-to-plan` command body is also intentionally thin orchestration: it 
 The `/commit` command body is intentionally thin orchestration: it retains staged-confirmation and proposal-only constraints while delegating commit grammar and atomic split guidance to `sce-atomic-commit`.
 The no-git-wrapper Agent Trace initiative baseline contract is defined in `context/sce/agent-trace-implementation-contract.md`, including normative invariants, compliance matrix, and canonical internal-to-Agent-Trace mapping for downstream implementation tasks.
 The CLI now includes a task-scoped Agent Trace schema adapter contract in `cli/src/services/agent_trace.rs`, with deterministic mapping of internal attribution input to Agent Trace-shaped record structures documented in `context/sce/agent-trace-schema-adapter.md`.
+The Agent Trace service now also provides a deterministic payload-builder path (`build_trace_payload`) with AI `model_id` normalization and schema-compliance validation coverage documented in `context/sce/agent-trace-payload-builder-validation.md`.
 
 ## Repository model
 
@@ -76,3 +77,4 @@ Lightweight post-task verification baseline (required after each completed task)
 - Use `context/sce/atomic-commit-workflow.md` for canonical `/commit` behavior, `sce-atomic-commit` naming, and proposal-only commit planning constraints.
 - Use `context/sce/agent-trace-implementation-contract.md` for canonical Agent Trace implementation invariants and field-level mapping guidance (`agent-trace-attribution-no-git-wrapper` T01 baseline).
 - Use `context/sce/agent-trace-schema-adapter.md` for the implemented T02 adapter contract and canonical mapping surface in `cli/src/services/agent_trace.rs`.
+- Use `context/sce/agent-trace-payload-builder-validation.md` for the implemented T03 builder path, normalization policy, and schema-validation behavior.

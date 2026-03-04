@@ -54,7 +54,7 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - `cargo fmt --manifest-path cli/Cargo.toml -- --check`
     - `cargo build --manifest-path cli/Cargo.toml`
 
-- [ ] T03: Implement trace payload builder and compliance validation suite (status:todo)
+- [x] T03: Implement trace payload builder and compliance validation suite (status:done)
   - Task ID: T03
   - Goal: Implement payload construction and schema-validation tests on top of the adapter.
   - Boundaries (in/out of scope):
@@ -66,6 +66,9 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
   - Verification notes (commands or checks):
     - Unit tests for serialization determinism and metadata correctness.
     - Schema-compliance tests for required fields, enum validation, URI/date-time format, and `files[].conversations[].ranges[]` nesting.
+    - `cargo fmt --manifest-path cli/Cargo.toml -- --check`
+    - `cargo test --manifest-path cli/Cargo.toml`
+    - `cargo build --manifest-path cli/Cargo.toml`
 
 - [ ] T04: Implement `pre-commit` staged checkpoint finalization contract (status:todo)
   - Task ID: T04
