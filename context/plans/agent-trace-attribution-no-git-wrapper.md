@@ -84,7 +84,7 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - `cargo test --manifest-path cli/Cargo.toml pre_commit_finalization_noops_when_sce_disabled`
     - `cargo build --manifest-path cli/Cargo.toml`
 
-- [ ] T05: Implement `commit-msg` canonical co-author trailer policy (status:todo)
+- [x] T05: Implement `commit-msg` canonical co-author trailer policy (status:done)
   - Task ID: T05
   - Goal: Add idempotent canonical SCE trailer injection when SCE-attributed staged changes exist.
   - Boundaries (in/out of scope):
@@ -94,6 +94,9 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - Exactly one canonical trailer appears in all allowed SCE cases.
   - Verification notes (commands or checks):
     - Identity acceptance checklist scenarios 1-5, 8, and 10.
+    - `cargo fmt --manifest-path cli/Cargo.toml -- --check`
+    - `cargo test --manifest-path cli/Cargo.toml commit_msg_policy`
+    - `cargo build --manifest-path cli/Cargo.toml`
 
 - [ ] T06: Implement `post-commit` trace finalize and dual-write path (status:todo)
   - Task ID: T06
