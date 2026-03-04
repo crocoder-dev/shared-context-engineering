@@ -40,7 +40,7 @@ Reduce unnecessary workflow prompt/context tokens and make SCE planning/executio
     - `nix run .#pkl-check-generated`
     - `nix flake check`
 
-- [ ] T02: Enforce "important change only" context-sync updates (status:todo)
+- [x] T02: Enforce "important change only" context-sync updates (status:done)
   - Task ID: T02
   - Goal: Update plan/execution skill contracts so root context files are edited only when task impact is cross-cutting and important.
   - Boundaries (in/out of scope):

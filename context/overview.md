@@ -19,6 +19,7 @@ The repository-root flake now keeps nested CLI flake input wiring coherent by pa
 Shared Context Plan and Shared Context Code remain separate agent roles by design; planning (`/change-to-plan`) and implementation (`/next-task`) stay split while shared baseline guidance is deduplicated via canonical skill-owned contracts.
 Their shared baseline doctrine (core principles, `context/` authority, and quality posture) is defined once as canonical snippets in `config/pkl/base/shared-content.pkl` and composed into both agent bodies during generation.
 The `/next-task` command body is intentionally thin orchestration: readiness gating + phase sequencing are command-owned, while detailed implementation/context-sync contracts are skill-owned (`sce-plan-review`, `sce-task-execution`, `sce-context-sync`).
+Context sync now uses an important-change gate: cross-cutting/policy/architecture/terminology changes require root shared-file edits, while localized tasks run verify-only root checks without default churn.
 The `/change-to-plan` command body is also intentionally thin orchestration: it delegates clarification and plan-shape contracts to `sce-plan-authoring` while keeping wrapper-level plan output and handoff obligations explicit.
 The `/commit` command body is intentionally thin orchestration: it retains staged-confirmation and proposal-only constraints while delegating commit grammar and atomic split guidance to `sce-atomic-commit`.
 

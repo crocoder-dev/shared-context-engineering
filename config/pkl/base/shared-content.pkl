@@ -368,15 +368,15 @@ Create these paths:
 - Context is durable AI memory and must reflect current-state truth.
 - If context and code diverge, code is source of truth.
 
-## Mandatory sync pass (always check all)
-For every completed implementation task, explicitly review and update these files when relevant:
+## Mandatory sync pass (important-change gated)
+For every completed implementation task, run a sync pass over these shared files:
 - `context/overview.md`
 - `context/architecture.md`
 - `context/glossary.md`
 - `context/patterns.md`
 - `context/context-map.md`
 
-Do not skip `overview`, `architecture`, or `glossary` by default. If no edit is needed, verify they still match current code behavior.
+Do not default to editing root context files on every task. First classify whether the task is an important change; then edit or verify accordingly.
 
 ## Root context significance gating
 - Treat root context edits as required when a task introduces or changes cross-cutting behavior, repository-wide policy/contracts, architecture boundaries, or canonical terminology.
@@ -647,8 +647,9 @@ Use checkbox lines for machine-friendly progress tracking:
 3) Stop and ask: "Continue with implementation now?" (yes/no).
 4) Implement minimal in-scope changes.
 5) Run light task-level tests/checks and lints first, and run a build when the build is light/fast (targeted over full-suite unless requested), then capture evidence.
-6) Keep session-only scraps in `context/tmp/`.
-7) Update task status in `context/plans/{plan_id}.md`.
+6) Record whether the implementation is an important change for context sync (root-edit required) or verify-only (no root edits expected).
+7) Keep session-only scraps in `context/tmp/`.
+8) Update task status in `context/plans/{plan_id}.md`.
 
 ## Scope expansion rule
 - If out-of-scope edits are needed, stop and ask for approval.
