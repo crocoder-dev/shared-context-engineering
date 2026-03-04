@@ -30,6 +30,7 @@ The hooks service now includes a pre-commit staged checkpoint finalization contr
 The hooks service now also exposes a `commit-msg` co-author trailer policy (`apply_commit_msg_coauthor_policy`) that conditionally injects exactly one canonical SCE trailer based on `SCE_DISABLED`, `SCE_COAUTHOR_ENABLED`, and staged-attribution presence, with idempotent deduplication behavior documented in `context/sce/agent-trace-commit-msg-coauthor-policy.md`.
 The hooks service now also includes a post-commit trace finalization seam (`finalize_post_commit_trace`) that builds canonical Agent Trace payloads, enforces commit-level idempotency guards, performs notes + DB dual writes, and enqueues retry fallback metadata when persistence targets fail; this behavior is documented in `context/sce/agent-trace-post-commit-dual-write.md`.
 The CLI now also includes a hook rollout doctor contract documented in `context/sce/agent-trace-hook-doctor.md`.
+The hooks service now also includes a post-rewrite local remap ingestion seam (`finalize_post_rewrite_remap`) that parses `post-rewrite` old->new SHA pairs, normalizes rewrite method capture, and derives deterministic per-pair idempotency keys before remap dispatch; this behavior is documented in `context/sce/agent-trace-post-rewrite-local-remap-ingestion.md`.
 
 ## Repository model
 
@@ -87,3 +88,4 @@ Lightweight post-task verification baseline (required after each completed task)
 - Use `context/sce/agent-trace-commit-msg-coauthor-policy.md` for the implemented T05 commit-msg canonical co-author trailer policy and idempotent dedupe behavior.
 - Use `context/sce/agent-trace-post-commit-dual-write.md` for the implemented T06 post-commit trace finalization and dual-write + queue-fallback behavior.
 - Use `context/sce/agent-trace-hook-doctor.md` for the implemented T07 hook install and health validation behavior (`sce doctor`) across default/per-repo/global hook-path installs.
+- Use `context/sce/agent-trace-post-rewrite-local-remap-ingestion.md` for the implemented T08 post-rewrite local remap ingestion pipeline (`post-rewrite` pair parsing, rewrite-method normalization, and deterministic idempotency-key derivation).

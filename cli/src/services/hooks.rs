@@ -187,6 +187,172 @@ pub enum PostCommitFinalization {
     QueuedFallback(PostCommitQueuedFallback),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PostRewriteRuntimeState {
+    pub sce_disabled: bool,
+    pub cli_available: bool,
+    pub is_bare_repo: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PostRewriteNoOpReason {
+    Disabled,
+    CliUnavailable,
+    BareRepository,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RewriteMethod {
+    Amend,
+    Rebase,
+    Other(String),
+}
+
+impl RewriteMethod {
+    fn canonical_label(&self) -> &str {
+        match self {
+            RewriteMethod::Amend => "amend",
+            RewriteMethod::Rebase => "rebase",
+            RewriteMethod::Other(method) => method.as_str(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RewritePair {
+    pub old_sha: String,
+    pub new_sha: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RewriteRemapRequest {
+    pub rewrite_method: RewriteMethod,
+    pub old_sha: String,
+    pub new_sha: String,
+    pub idempotency_key: String,
+}
+
+pub trait RewriteRemapIngestion {
+    fn ingest(&mut self, request: RewriteRemapRequest) -> Result<bool>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PostRewriteIngested {
+    pub rewrite_method: RewriteMethod,
+    pub total_pairs: usize,
+    pub ingested_pairs: usize,
+    pub skipped_pairs: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PostRewriteFinalization {
+    NoOp(PostRewriteNoOpReason),
+    Ingested(PostRewriteIngested),
+}
+
+pub fn finalize_post_rewrite_remap(
+    runtime: &PostRewriteRuntimeState,
+    rewrite_method: &str,
+    pairs_file_contents: &str,
+    remap_ingestion: &mut impl RewriteRemapIngestion,
+) -> Result<PostRewriteFinalization> {
+    if runtime.sce_disabled {
+        return Ok(PostRewriteFinalization::NoOp(
+            PostRewriteNoOpReason::Disabled,
+        ));
+    }
+
+    if !runtime.cli_available {
+        return Ok(PostRewriteFinalization::NoOp(
+            PostRewriteNoOpReason::CliUnavailable,
+        ));
+    }
+
+    if runtime.is_bare_repo {
+        return Ok(PostRewriteFinalization::NoOp(
+            PostRewriteNoOpReason::BareRepository,
+        ));
+    }
+
+    let method = normalize_rewrite_method(rewrite_method);
+    let pairs = parse_post_rewrite_pairs(pairs_file_contents)?;
+
+    let mut ingested_pairs = 0_usize;
+    for pair in &pairs {
+        let idempotency_key = format!(
+            "post-rewrite:{}:{}:{}",
+            method.canonical_label(),
+            pair.old_sha,
+            pair.new_sha
+        );
+        let accepted = remap_ingestion.ingest(RewriteRemapRequest {
+            rewrite_method: method.clone(),
+            old_sha: pair.old_sha.clone(),
+            new_sha: pair.new_sha.clone(),
+            idempotency_key,
+        })?;
+        if accepted {
+            ingested_pairs += 1;
+        }
+    }
+
+    let total_pairs = pairs.len();
+    Ok(PostRewriteFinalization::Ingested(PostRewriteIngested {
+        rewrite_method: method,
+        total_pairs,
+        ingested_pairs,
+        skipped_pairs: total_pairs.saturating_sub(ingested_pairs),
+    }))
+}
+
+fn parse_post_rewrite_pairs(contents: &str) -> Result<Vec<RewritePair>> {
+    let mut pairs = Vec::new();
+
+    for (line_index, line) in contents.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let mut fields = trimmed.split_whitespace();
+        let Some(old_sha) = fields.next() else {
+            continue;
+        };
+        let Some(new_sha) = fields.next() else {
+            anyhow::bail!(
+                "Invalid post-rewrite pair format on line {}: expected '<old_sha> <new_sha>'",
+                line_index + 1
+            );
+        };
+
+        if fields.next().is_some() {
+            anyhow::bail!(
+                "Invalid post-rewrite pair format on line {}: expected exactly two fields",
+                line_index + 1
+            );
+        }
+
+        if old_sha == new_sha {
+            continue;
+        }
+
+        pairs.push(RewritePair {
+            old_sha: old_sha.to_string(),
+            new_sha: new_sha.to_string(),
+        });
+    }
+
+    Ok(pairs)
+}
+
+fn normalize_rewrite_method(method: &str) -> RewriteMethod {
+    match method.trim().to_ascii_lowercase().as_str() {
+        "amend" => RewriteMethod::Amend,
+        "rebase" => RewriteMethod::Rebase,
+        other => RewriteMethod::Other(other.to_string()),
+    }
+}
+
 pub fn finalize_post_commit_trace(
     runtime: &PostCommitRuntimeState,
     input: PostCommitInput,
@@ -500,15 +666,17 @@ mod tests {
     };
 
     use super::{
-        apply_commit_msg_coauthor_policy, finalize_post_commit_trace,
+        apply_commit_msg_coauthor_policy, finalize_post_commit_trace, finalize_post_rewrite_remap,
         finalize_pre_commit_checkpoint, run_placeholder_hooks, CommitMsgRuntimeState,
         GeneratedRegionEvent, GeneratedRegionLifecycle, GitHookKind, HookEvent, HookService,
         PendingCheckpoint, PendingFileCheckpoint, PendingLineRange, PersistenceErrorClass,
         PersistenceFailure, PersistenceTarget, PersistenceWriteResult, PlaceholderHookService,
         PostCommitFinalization, PostCommitInput, PostCommitNoOpReason, PostCommitRuntimeState,
+        PostRewriteFinalization, PostRewriteNoOpReason, PostRewriteRuntimeState,
         PreCommitFinalization, PreCommitNoOpReason, PreCommitRuntimeState, PreCommitTreeAnchors,
-        TraceEmissionLedger, TraceNote, TraceNotesWriter, TraceRecordStore, TraceRetryQueue,
-        TraceRetryQueueEntry, CANONICAL_SCE_COAUTHOR_TRAILER, POST_COMMIT_PARENT_SHA_METADATA_KEY,
+        RewriteMethod, RewriteRemapIngestion, RewriteRemapRequest, TraceEmissionLedger, TraceNote,
+        TraceNotesWriter, TraceRecordStore, TraceRetryQueue, TraceRetryQueueEntry,
+        CANONICAL_SCE_COAUTHOR_TRAILER, POST_COMMIT_PARENT_SHA_METADATA_KEY,
     };
 
     fn sample_pending_checkpoint() -> PendingCheckpoint {
@@ -602,6 +770,24 @@ mod tests {
         entries: Vec<TraceRetryQueueEntry>,
     }
 
+    #[derive(Default)]
+    struct FakeRewriteRemapIngestion {
+        seen_requests: Vec<RewriteRemapRequest>,
+        duplicate_keys: Vec<String>,
+        seen_keys: std::collections::BTreeSet<String>,
+    }
+
+    impl RewriteRemapIngestion for FakeRewriteRemapIngestion {
+        fn ingest(&mut self, request: RewriteRemapRequest) -> Result<bool> {
+            let accepted = self.seen_keys.insert(request.idempotency_key.clone());
+            if !accepted {
+                self.duplicate_keys.push(request.idempotency_key.clone());
+            }
+            self.seen_requests.push(request);
+            Ok(accepted)
+        }
+    }
+
     impl TraceRetryQueue for FakeRetryQueue {
         fn enqueue(&mut self, entry: TraceRetryQueueEntry) -> Result<()> {
             self.entries.push(entry);
@@ -611,6 +797,14 @@ mod tests {
 
     fn sample_post_commit_runtime() -> PostCommitRuntimeState {
         PostCommitRuntimeState {
+            sce_disabled: false,
+            cli_available: true,
+            is_bare_repo: false,
+        }
+    }
+
+    fn sample_post_rewrite_runtime() -> PostRewriteRuntimeState {
+        PostRewriteRuntimeState {
             sce_disabled: false,
             cli_available: true,
             is_bare_repo: false,
@@ -749,6 +943,99 @@ mod tests {
         );
         assert!(!ledger.has_emitted("abc123def456"));
         Ok(())
+    }
+
+    #[test]
+    fn post_rewrite_finalization_noops_when_sce_disabled() -> Result<()> {
+        let mut runtime = sample_post_rewrite_runtime();
+        runtime.sce_disabled = true;
+        let mut ingestion = FakeRewriteRemapIngestion::default();
+
+        let outcome =
+            finalize_post_rewrite_remap(&runtime, "amend", "old1 new1\n", &mut ingestion)?;
+
+        assert_eq!(
+            outcome,
+            PostRewriteFinalization::NoOp(PostRewriteNoOpReason::Disabled)
+        );
+        assert!(ingestion.seen_requests.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn post_rewrite_finalization_parses_amend_pairs_and_derives_idempotency() -> Result<()> {
+        let runtime = sample_post_rewrite_runtime();
+        let mut ingestion = FakeRewriteRemapIngestion::default();
+
+        let outcome = finalize_post_rewrite_remap(
+            &runtime,
+            "amend",
+            "oldsha1 newsha1\noldsha2 newsha2\n",
+            &mut ingestion,
+        )?;
+
+        assert_eq!(
+            outcome,
+            PostRewriteFinalization::Ingested(super::PostRewriteIngested {
+                rewrite_method: RewriteMethod::Amend,
+                total_pairs: 2,
+                ingested_pairs: 2,
+                skipped_pairs: 0,
+            })
+        );
+        assert_eq!(ingestion.seen_requests.len(), 2);
+        assert_eq!(
+            ingestion.seen_requests[0].idempotency_key,
+            "post-rewrite:amend:oldsha1:newsha1"
+        );
+        assert_eq!(
+            ingestion.seen_requests[1].idempotency_key,
+            "post-rewrite:amend:oldsha2:newsha2"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn post_rewrite_finalization_skips_duplicate_pairs_with_rebase_method() -> Result<()> {
+        let runtime = sample_post_rewrite_runtime();
+        let mut ingestion = FakeRewriteRemapIngestion::default();
+
+        let outcome = finalize_post_rewrite_remap(
+            &runtime,
+            "rebase",
+            "oldsha1 newsha1\noldsha1 newsha1\n",
+            &mut ingestion,
+        )?;
+
+        assert_eq!(
+            outcome,
+            PostRewriteFinalization::Ingested(super::PostRewriteIngested {
+                rewrite_method: RewriteMethod::Rebase,
+                total_pairs: 2,
+                ingested_pairs: 1,
+                skipped_pairs: 1,
+            })
+        );
+        assert_eq!(ingestion.seen_requests.len(), 2);
+        assert_eq!(ingestion.duplicate_keys.len(), 1);
+        assert_eq!(
+            ingestion.duplicate_keys[0],
+            "post-rewrite:rebase:oldsha1:newsha1"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn post_rewrite_finalization_rejects_invalid_pair_line_format() {
+        let runtime = sample_post_rewrite_runtime();
+        let mut ingestion = FakeRewriteRemapIngestion::default();
+
+        let error =
+            finalize_post_rewrite_remap(&runtime, "amend", "missing_new_sha\n", &mut ingestion)
+                .expect_err("invalid pair format should return error");
+
+        assert!(error.to_string().contains("expected '<old_sha> <new_sha>'"));
+        assert!(ingestion.seen_requests.is_empty());
     }
 
     #[test]
