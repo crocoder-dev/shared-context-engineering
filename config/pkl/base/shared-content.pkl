@@ -32,6 +32,11 @@ local sharedSceLongTermQualityBullet = """
 - Long-term quality is measured by code quality and context accuracy.
 """
 
+local sharedSceDisposablePlanLifecycleBullet = """
+- Treat `context/plans/` as active execution artifacts; completed plans are disposable and not durable history.
+- Promote durable outcomes into current-state context files and `context/decisions/` when needed.
+"""
+
 agents {
   ["shared-context-plan"] = new ContentUnit {
     id = "agent.shared-context-plan"
@@ -75,6 +80,7 @@ Procedure
 
 Important behaviors
 \(sharedSceQualityPosturePrefixBullets)
+\(sharedSceDisposablePlanLifecycleBullet)
 \(sharedSceLongTermQualityBullet)
 
 Natural nudges to use
@@ -601,6 +607,8 @@ Use checkbox lines for machine-friendly progress tracking:
 ## Rules
 - Do not auto-mark tasks complete during review.
 - Keep continuation state in the plan markdown itself.
+- Treat `context/plans/` as active execution artifacts; completed plans are disposable and not a durable context source.
+- If durable history is needed, record it in current-state context files and/or `context/decisions/` instead of completed plan files.
 - Keep implementation blocked until decision alignment on unclear points.
 - If plan context is stale or partial, continue with code truth and flag context updates.
 

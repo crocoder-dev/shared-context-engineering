@@ -50,6 +50,8 @@ Procedure
 Important behaviors
 - Keep context optimized for future AI sessions, not prose-heavy narration.
 - Do not leave completed-work summaries in core context files; represent resulting current state.
+- Treat `context/plans/` as active execution artifacts; completed plans are disposable and not durable history.
+- Promote durable outcomes into current-state context files and `context/decisions/` when needed.
 - Long-term quality is measured by code quality and context accuracy.
 
 Natural nudges to use
