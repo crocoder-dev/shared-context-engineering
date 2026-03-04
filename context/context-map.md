@@ -21,6 +21,7 @@ Feature/domain context:
 - `context/sce/agent-trace-payload-builder-validation.md` (T03 deterministic payload-builder path, model-id normalization behavior, and Agent Trace schema validation suite)
 - `context/sce/agent-trace-pre-commit-staged-checkpoint.md` (T04 pre-commit staged-only finalization contract with no-op guards and index/tree anchor capture)
 - `context/sce/agent-trace-commit-msg-coauthor-policy.md` (T05 commit-msg canonical co-author trailer policy with env-gated injection and idempotent dedupe)
+- `context/sce/agent-trace-post-commit-dual-write.md` (T06 post-commit trace finalization contract, notes+DB dual-write behavior, idempotency ledger guard, and retry-queue fallback semantics)
 
 Working areas:
 - `context/plans/` (active plan execution artifacts, not durable history)

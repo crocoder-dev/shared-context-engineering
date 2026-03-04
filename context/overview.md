@@ -27,6 +27,7 @@ The CLI now includes a task-scoped Agent Trace schema adapter contract in `cli/s
 The Agent Trace service now also provides a deterministic payload-builder path (`build_trace_payload`) with AI `model_id` normalization and schema-compliance validation coverage documented in `context/sce/agent-trace-payload-builder-validation.md`.
 The hooks service now includes a pre-commit staged checkpoint finalization contract (`finalize_pre_commit_checkpoint`) that enforces staged-only attribution, captures index/tree anchors, and no-ops for disabled/unavailable/bare-repo runtime states; this behavior is documented in `context/sce/agent-trace-pre-commit-staged-checkpoint.md`.
 The hooks service now also exposes a `commit-msg` co-author trailer policy (`apply_commit_msg_coauthor_policy`) that conditionally injects exactly one canonical SCE trailer based on `SCE_DISABLED`, `SCE_COAUTHOR_ENABLED`, and staged-attribution presence, with idempotent deduplication behavior documented in `context/sce/agent-trace-commit-msg-coauthor-policy.md`.
+The hooks service now also includes a post-commit trace finalization seam (`finalize_post_commit_trace`) that builds canonical Agent Trace payloads, enforces commit-level idempotency guards, performs notes + DB dual writes, and enqueues retry fallback metadata when persistence targets fail; this behavior is documented in `context/sce/agent-trace-post-commit-dual-write.md`.
 
 ## Repository model
 
@@ -82,3 +83,4 @@ Lightweight post-task verification baseline (required after each completed task)
 - Use `context/sce/agent-trace-payload-builder-validation.md` for the implemented T03 builder path, normalization policy, and schema-validation behavior.
 - Use `context/sce/agent-trace-pre-commit-staged-checkpoint.md` for the implemented T04 pre-commit staged-only finalization contract and runtime no-op guards.
 - Use `context/sce/agent-trace-commit-msg-coauthor-policy.md` for the implemented T05 commit-msg canonical co-author trailer policy and idempotent dedupe behavior.
+- Use `context/sce/agent-trace-post-commit-dual-write.md` for the implemented T06 post-commit trace finalization and dual-write + queue-fallback behavior.
