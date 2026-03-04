@@ -76,7 +76,7 @@ Reduce unnecessary workflow prompt/context tokens and make SCE planning/executio
   - Verification notes (commands or checks):
     - Manual review of updated planning instructions and one sample plan skeleton for atomicity compliance.
 
-- [ ] T05: Regenerate outputs and align context map/glossary discoverability (status:todo)
+- [x] T05: Regenerate outputs and align context map/glossary discoverability (status:done)
   - Task ID: T05
   - Goal: Regenerate generated command/skill artifacts and ensure discoverability docs reflect the new low-noise workflow contracts.
   - Boundaries (in/out of scope):
