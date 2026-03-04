@@ -54,6 +54,255 @@ pub enum HostedIntakeOutcome {
     Duplicate(HostedReconciliationRunRequest),
 }
 
+pub const FUZZY_MAPPING_THRESHOLD: f32 = 0.60;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MappingMethod {
+    PatchIdExact,
+    RangeDiffHint,
+    FuzzyFallback,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MappingQuality {
+    Final,
+    Partial,
+    NeedsReview,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RewriteSourceCommit {
+    pub old_commit_sha: String,
+    pub patch_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RewriteCandidateCommit {
+    pub new_commit_sha: String,
+    pub patch_id: Option<String>,
+    pub range_diff_score: Option<Score>,
+    pub fuzzy_score: Option<Score>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Score(f32);
+
+impl Eq for Score {}
+
+impl Score {
+    pub fn new(value: f32) -> Result<Self> {
+        ensure!(value.is_finite(), "mapping score must be finite");
+        ensure!(
+            (0.0..=1.0).contains(&value),
+            "mapping score must be within [0.0, 1.0]"
+        );
+        Ok(Self(value))
+    }
+
+    fn value(self) -> f32 {
+        self.0
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RewrittenCommitMapping {
+    pub old_commit_sha: String,
+    pub new_commit_sha: String,
+    pub method: MappingMethod,
+    pub confidence: Score,
+    pub quality: MappingQuality,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UnresolvedMappingKind {
+    Ambiguous,
+    Unmatched,
+    LowConfidence,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnresolvedRewriteMapping {
+    pub old_commit_sha: String,
+    pub kind: UnresolvedMappingKind,
+    pub reason: String,
+    pub candidate_new_shas: Vec<String>,
+    pub best_confidence: Option<Score>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RewriteMappingOutcome {
+    Mapped(RewrittenCommitMapping),
+    Unresolved(UnresolvedRewriteMapping),
+}
+
+pub fn map_rewritten_commit(
+    source: &RewriteSourceCommit,
+    candidates: &[RewriteCandidateCommit],
+) -> RewriteMappingOutcome {
+    if candidates.is_empty() {
+        return RewriteMappingOutcome::Unresolved(UnresolvedRewriteMapping {
+            old_commit_sha: source.old_commit_sha.clone(),
+            kind: UnresolvedMappingKind::Unmatched,
+            reason: "no candidate rewritten commits were provided".to_string(),
+            candidate_new_shas: Vec::new(),
+            best_confidence: None,
+        });
+    }
+
+    let mut sorted = candidates.to_vec();
+    sorted.sort_by(|left, right| left.new_commit_sha.cmp(&right.new_commit_sha));
+
+    if let Some(source_patch_id) = source.patch_id.as_deref() {
+        let patch_matches: Vec<&RewriteCandidateCommit> = sorted
+            .iter()
+            .filter(|candidate| candidate.patch_id.as_deref() == Some(source_patch_id))
+            .collect();
+
+        if patch_matches.len() == 1 {
+            return RewriteMappingOutcome::Mapped(RewrittenCommitMapping {
+                old_commit_sha: source.old_commit_sha.clone(),
+                new_commit_sha: patch_matches[0].new_commit_sha.clone(),
+                method: MappingMethod::PatchIdExact,
+                confidence: Score(1.0),
+                quality: MappingQuality::Final,
+            });
+        }
+
+        if patch_matches.len() > 1 {
+            return RewriteMappingOutcome::Unresolved(UnresolvedRewriteMapping {
+                old_commit_sha: source.old_commit_sha.clone(),
+                kind: UnresolvedMappingKind::Ambiguous,
+                reason: "multiple rewritten commits matched exact patch-id".to_string(),
+                candidate_new_shas: patch_matches
+                    .iter()
+                    .map(|candidate| candidate.new_commit_sha.clone())
+                    .collect(),
+                best_confidence: Some(Score(1.0)),
+            });
+        }
+    }
+
+    if let Some(range_decision) =
+        select_scored_candidate(&sorted, |candidate| candidate.range_diff_score)
+    {
+        return outcome_from_score_decision(source, range_decision, MappingMethod::RangeDiffHint);
+    }
+
+    if let Some(fuzzy_decision) =
+        select_scored_candidate(&sorted, |candidate| candidate.fuzzy_score)
+    {
+        return outcome_from_score_decision(source, fuzzy_decision, MappingMethod::FuzzyFallback);
+    }
+
+    RewriteMappingOutcome::Unresolved(UnresolvedRewriteMapping {
+        old_commit_sha: source.old_commit_sha.clone(),
+        kind: UnresolvedMappingKind::Unmatched,
+        reason: "no range-diff or fuzzy mapping signals were available".to_string(),
+        candidate_new_shas: sorted
+            .iter()
+            .map(|candidate| candidate.new_commit_sha.clone())
+            .collect(),
+        best_confidence: None,
+    })
+}
+
+#[derive(Clone, Debug)]
+struct ScoreDecision {
+    top_new_sha: String,
+    top_score: Score,
+    tied_new_shas: Vec<String>,
+}
+
+fn select_scored_candidate(
+    candidates: &[RewriteCandidateCommit],
+    score_of: impl Fn(&RewriteCandidateCommit) -> Option<Score>,
+) -> Option<ScoreDecision> {
+    let mut top_new_sha: Option<String> = None;
+    let mut top_score: Option<Score> = None;
+    let mut tied_new_shas: Vec<String> = Vec::new();
+
+    for candidate in candidates {
+        let Some(score) = score_of(candidate) else {
+            continue;
+        };
+
+        match top_score {
+            None => {
+                top_score = Some(score);
+                top_new_sha = Some(candidate.new_commit_sha.clone());
+                tied_new_shas.push(candidate.new_commit_sha.clone());
+            }
+            Some(current) if score.value() > current.value() => {
+                top_score = Some(score);
+                top_new_sha = Some(candidate.new_commit_sha.clone());
+                tied_new_shas.clear();
+                tied_new_shas.push(candidate.new_commit_sha.clone());
+            }
+            Some(current) if score.value() == current.value() => {
+                tied_new_shas.push(candidate.new_commit_sha.clone());
+            }
+            Some(_) => {}
+        }
+    }
+
+    match (top_new_sha, top_score) {
+        (Some(top_new_sha), Some(top_score)) => Some(ScoreDecision {
+            top_new_sha,
+            top_score,
+            tied_new_shas,
+        }),
+        _ => None,
+    }
+}
+
+fn outcome_from_score_decision(
+    source: &RewriteSourceCommit,
+    decision: ScoreDecision,
+    method: MappingMethod,
+) -> RewriteMappingOutcome {
+    if decision.tied_new_shas.len() > 1 {
+        return RewriteMappingOutcome::Unresolved(UnresolvedRewriteMapping {
+            old_commit_sha: source.old_commit_sha.clone(),
+            kind: UnresolvedMappingKind::Ambiguous,
+            reason: "multiple rewritten commits tied for best score".to_string(),
+            candidate_new_shas: decision.tied_new_shas,
+            best_confidence: Some(decision.top_score),
+        });
+    }
+
+    if decision.top_score.value() < FUZZY_MAPPING_THRESHOLD {
+        return RewriteMappingOutcome::Unresolved(UnresolvedRewriteMapping {
+            old_commit_sha: source.old_commit_sha.clone(),
+            kind: UnresolvedMappingKind::LowConfidence,
+            reason: format!(
+                "best mapping score {:.2} is below threshold {:.2}",
+                decision.top_score.value(),
+                FUZZY_MAPPING_THRESHOLD
+            ),
+            candidate_new_shas: vec![decision.top_new_sha],
+            best_confidence: Some(decision.top_score),
+        });
+    }
+
+    RewriteMappingOutcome::Mapped(RewrittenCommitMapping {
+        old_commit_sha: source.old_commit_sha.clone(),
+        new_commit_sha: decision.top_new_sha,
+        method,
+        confidence: decision.top_score,
+        quality: quality_for_confidence(decision.top_score),
+    })
+}
+
+fn quality_for_confidence(confidence: Score) -> MappingQuality {
+    if confidence.value() >= 0.90 {
+        MappingQuality::Final
+    } else if confidence.value() >= FUZZY_MAPPING_THRESHOLD {
+        MappingQuality::Partial
+    } else {
+        MappingQuality::NeedsReview
+    }
+}
+
 pub fn ingest_hosted_rewrite_event(
     request: HostedWebhookRequest,
     run_store: &mut impl ReconciliationRunStore,
@@ -380,9 +629,11 @@ mod tests {
     use anyhow::Result;
 
     use super::{
-        derive_idempotency_key, github_signature, ingest_hosted_rewrite_event, HostedIntakeOutcome,
-        HostedProvider, HostedReconciliationRunRequest, HostedWebhookRequest,
-        ReconciliationRunInsertOutcome, ReconciliationRunStore,
+        derive_idempotency_key, github_signature, ingest_hosted_rewrite_event,
+        map_rewritten_commit, HostedIntakeOutcome, HostedProvider, HostedReconciliationRunRequest,
+        HostedWebhookRequest, MappingMethod, MappingQuality, ReconciliationRunInsertOutcome,
+        ReconciliationRunStore, RewriteCandidateCommit, RewriteMappingOutcome, RewriteSourceCommit,
+        Score, UnresolvedMappingKind,
     };
 
     #[derive(Default)]
@@ -569,5 +820,128 @@ mod tests {
 
         assert_eq!(key_a, key_b);
         assert_ne!(key_a, key_c);
+    }
+
+    fn score(value: f32) -> Score {
+        Score::new(value).expect("score fixture must be valid")
+    }
+
+    #[test]
+    fn mapping_engine_prefers_exact_patch_id_match() {
+        let source = RewriteSourceCommit {
+            old_commit_sha: "old-1".to_string(),
+            patch_id: Some("patch-abc".to_string()),
+        };
+        let candidates = vec![
+            RewriteCandidateCommit {
+                new_commit_sha: "new-b".to_string(),
+                patch_id: Some("patch-other".to_string()),
+                range_diff_score: Some(score(0.98)),
+                fuzzy_score: Some(score(0.98)),
+            },
+            RewriteCandidateCommit {
+                new_commit_sha: "new-a".to_string(),
+                patch_id: Some("patch-abc".to_string()),
+                range_diff_score: Some(score(0.65)),
+                fuzzy_score: Some(score(0.64)),
+            },
+        ];
+
+        let outcome = map_rewritten_commit(&source, &candidates);
+        match outcome {
+            RewriteMappingOutcome::Mapped(mapped) => {
+                assert_eq!(mapped.new_commit_sha, "new-a");
+                assert_eq!(mapped.method, MappingMethod::PatchIdExact);
+                assert_eq!(mapped.confidence, score(1.0));
+                assert_eq!(mapped.quality, MappingQuality::Final);
+            }
+            other => panic!("expected mapped outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mapping_engine_reports_ambiguous_on_tied_best_scores() {
+        let source = RewriteSourceCommit {
+            old_commit_sha: "old-2".to_string(),
+            patch_id: None,
+        };
+        let candidates = vec![
+            RewriteCandidateCommit {
+                new_commit_sha: "new-z".to_string(),
+                patch_id: None,
+                range_diff_score: Some(score(0.82)),
+                fuzzy_score: Some(score(0.40)),
+            },
+            RewriteCandidateCommit {
+                new_commit_sha: "new-a".to_string(),
+                patch_id: None,
+                range_diff_score: Some(score(0.82)),
+                fuzzy_score: Some(score(0.79)),
+            },
+        ];
+
+        let outcome = map_rewritten_commit(&source, &candidates);
+        match outcome {
+            RewriteMappingOutcome::Unresolved(unresolved) => {
+                assert_eq!(unresolved.kind, UnresolvedMappingKind::Ambiguous);
+                assert_eq!(
+                    unresolved.candidate_new_shas,
+                    vec!["new-a".to_string(), "new-z".to_string()]
+                );
+                assert_eq!(unresolved.best_confidence, Some(score(0.82)));
+            }
+            other => panic!("expected ambiguous unresolved outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mapping_engine_reports_unmatched_when_no_signals_exist() {
+        let source = RewriteSourceCommit {
+            old_commit_sha: "old-3".to_string(),
+            patch_id: None,
+        };
+        let candidates = vec![RewriteCandidateCommit {
+            new_commit_sha: "new-a".to_string(),
+            patch_id: None,
+            range_diff_score: None,
+            fuzzy_score: None,
+        }];
+
+        let outcome = map_rewritten_commit(&source, &candidates);
+        match outcome {
+            RewriteMappingOutcome::Unresolved(unresolved) => {
+                assert_eq!(unresolved.kind, UnresolvedMappingKind::Unmatched);
+                assert_eq!(
+                    unresolved.reason,
+                    "no range-diff or fuzzy mapping signals were available"
+                );
+                assert_eq!(unresolved.best_confidence, None);
+            }
+            other => panic!("expected unmatched unresolved outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mapping_engine_reports_low_confidence_below_threshold() {
+        let source = RewriteSourceCommit {
+            old_commit_sha: "old-4".to_string(),
+            patch_id: None,
+        };
+        let candidates = vec![RewriteCandidateCommit {
+            new_commit_sha: "new-a".to_string(),
+            patch_id: None,
+            range_diff_score: None,
+            fuzzy_score: Some(score(0.59)),
+        }];
+
+        let outcome = map_rewritten_commit(&source, &candidates);
+        match outcome {
+            RewriteMappingOutcome::Unresolved(unresolved) => {
+                assert_eq!(unresolved.kind, UnresolvedMappingKind::LowConfidence);
+                assert_eq!(unresolved.candidate_new_shas, vec!["new-a".to_string()]);
+                assert_eq!(unresolved.best_confidence, Some(score(0.59)));
+            }
+            other => panic!("expected low-confidence unresolved outcome, got {other:?}"),
+        }
     }
 }
