@@ -40,6 +40,7 @@ The `/commit` command body is intentionally thin orchestration: it retains stage
 - Regenerate outputs in place: `nix develop -c pkl eval -m . config/pkl/generate.pkl`
 - Verify generated outputs are current: `nix run .#pkl-check-generated`
 - Run staged destructive sync for `config/` and root `.opencode/`: `nix run .#sync-opencode-config`
+- Run workflow token counting from repo root: `nix run .#token-count-workflows`
 - Run repository flake checks (includes CLI setup command-surface checks): `nix flake check`
 
 Lightweight post-task verification baseline (required after each completed task): run `nix run .#pkl-check-generated` and `nix flake check`.
@@ -66,5 +67,6 @@ Lightweight post-task verification baseline (required after each completed task)
 - Use `context/sce/dedup-ownership-table.md` for canonical owner-vs-consumer boundaries and keep-vs-dedup labels used by the dedup implementation plan.
 - Use `context/sce/workflow-token-footprint-inventory.md` for the canonical participant inventory of `/change-to-plan` and `/next-task` workflows, T02 ranked token-hotspot classification, and the T03 static token-accounting method/report template used by token-footprint analysis tasks.
 - Use `context/sce/workflow-token-footprint-manifest.json` for the canonical machine-readable T05 manifest consumed by workflow token-count tooling (`surface_id`, workflow class, extraction scope rules, and conditional flags).
-- Use `evals/token-count-workflows.ts` (run via `bun run token-count-workflows` from `evals/`) for T06 static workflow token counting that emits deterministic reports to `context/tmp/token-footprint/`.
+- Use `context/sce/workflow-token-count-workflow.md` for the root flake app contract (`nix run .#token-count-workflows`) and runtime wiring to the evals token-count script.
+- Use `evals/token-count-workflows.ts` (run via `nix run .#token-count-workflows` from repo root, or `bun run token-count-workflows` from `evals/`) for T06 static workflow token counting that emits deterministic reports to `context/tmp/token-footprint/`.
 - Use `context/sce/atomic-commit-workflow.md` for canonical `/commit` behavior, `sce-atomic-commit` naming, and proposal-only commit planning constraints.
