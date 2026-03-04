@@ -52,7 +52,7 @@ Add a first-class Nix app entrypoint for the workflow token-count script and add
     - Ran `nix run .#token-count-workflows` locally from repository root (exit 0); run wrote `context/tmp/token-footprint/workflow-token-count-latest.json` and `context/tmp/token-footprint/workflow-token-count-latest.md`.
     - Synced context discoverability for the CI contract in `context/overview.md`, `context/architecture.md`, `context/patterns.md`, `context/glossary.md`, and `context/sce/workflow-token-count-workflow.md`.
 
-- [ ] T03: Validation and cleanup (status:todo)
+- [x] T03: Validation and cleanup (status:done)
   - Task ID: T03
   - Goal: validate end-to-end wiring and sync context discoverability.
   - Boundaries (in/out of scope):
@@ -62,8 +62,33 @@ Add a first-class Nix app entrypoint for the workflow token-count script and add
     - Verification evidence includes exact command outputs and artifact paths.
     - Context reflects the new Nix/CI contract and links are discoverable.
   - Verification notes (commands or checks):
-    - `nix run .#pkl-check-generated`
-    - `nix flake check`
+   - `nix run .#pkl-check-generated`
+   - `nix flake check`
+  - Evidence:
+    - Ran `nix run .#token-count-workflows` from repository root (exit 0); run executed `bun ./token-count-workflows.ts` and wrote artifacts to `context/tmp/token-footprint/workflow-token-count-latest.json` and `context/tmp/token-footprint/workflow-token-count-latest.md`.
+    - Ran `nix run .#pkl-check-generated` from repository root (exit 0); output reported `Generated outputs are up to date.`
+    - Ran `nix flake check` from repository root (exit 0); validated `apps.x86_64-linux.token-count-workflows` and completed with only expected incompatible-system warnings for non-local systems.
+    - Completed required context sync verification pass for shared files (`context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/patterns.md`, `context/context-map.md`) and confirmed existing token-count workflow discoverability links remain accurate with no drift edits required.
 
 ## 5) Open questions
 - None.
+
+## 6) Final validation report
+- Commands run:
+  - `nix run .#token-count-workflows` (exit 0)
+  - `nix run .#pkl-check-generated` (exit 0)
+  - `nix flake check` (exit 0)
+- Key outputs:
+  - Token-count app run wrote `context/tmp/token-footprint/workflow-token-count-latest.json` and `context/tmp/token-footprint/workflow-token-count-latest.md`.
+  - Generated output parity check reported `Generated outputs are up to date.`
+  - Flake checks validated `apps.x86_64-linux.token-count-workflows`; only expected incompatible-system warnings were emitted for non-local systems.
+- Failed checks and follow-ups:
+  - None.
+- Success-criteria verification summary:
+  - Root flake app entrypoint exists and runs from repo root (`nix run .#token-count-workflows`).
+  - App executes the T06 script and writes required artifacts under `context/tmp/token-footprint/`.
+  - CI workflow `.github/workflows/workflow-token-count.yml` runs the app on push/PR to `main` and uploads token-footprint artifacts.
+  - CI artifact contract includes required latest outputs (`workflow-token-count-latest.json`, `workflow-token-count-latest.md`) with wildcard run-id support.
+  - Context discoverability remains aligned and linked (`context/overview.md`, `context/architecture.md`, `context/patterns.md`, `context/glossary.md`, `context/context-map.md`, `context/sce/workflow-token-count-workflow.md`).
+- Residual risks:
+  - `nix flake check` reports expected incompatible-system omissions unless run with `--all-systems`; current local validation covers the active system contract.
