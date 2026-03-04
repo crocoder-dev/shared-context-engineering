@@ -1,0 +1,90 @@
+# Plan: sce-setup-githooks-any-repo
+## 1) Change summary
+Enable `sce setup` to install and manage required Git hooks (`pre-commit`, `commit-msg`, `post-commit`) for any target repository with deterministic, idempotent behavior and safe failure handling.
+## 2) Success criteria
+- One command installs required hooks for arbitrary repositories without manual chmod or git config steps.
+- Re-running setup is idempotent and reports deterministic installed/skipped/updated outcomes.
+- Existing hooks are backed up or safely merged according to the defined install contract.
+- `sce doctor` reports `ready` immediately after successful setup for supported hook-path configurations.
+## 3) Constraints and non-goals
+- In scope: setup contract definition, embedded hook asset packaging, setup install orchestration, CLI flags/UX, doctor integration, and verification coverage.
+- In scope: repo-local default hooks path and configured custom `core.hooksPath` handling.
+- In scope: backup-and-replace semantics with non-destructive rollback on install failure.
+- Out of scope: introducing new hook types beyond `pre-commit`, `commit-msg`, and `post-commit`.
+- Out of scope: changing Agent Trace payload semantics unrelated to hook installation lifecycle.
+- Non-goal: requiring manual operator intervention for normal setup/upgrade paths.
+## 4) Task stack (T01..T06)
+- [x] T01: Define setup hook-install contract (status:done)
+  - Task ID: T01
+  - Goal: Establish canonical `sce setup` hook-install contract covering target path resolution, idempotency rules, backup/rollback behavior, and failure diagnostics.
+  - Boundaries (in/out of scope):
+    - In: repo-local vs custom `core.hooksPath` resolution policy, hook ownership/update policy, CLI UX contract, failure policy, and diagnostic vocabulary.
+    - Out: implementation of file writes or CLI parser wiring.
+  - Done when:
+    - Contract document defines expected behavior for fresh install, upgrade, existing hook preservation/merge or backup strategy, and rollback guarantees.
+    - Contract includes deterministic user-facing outcomes and actionable failure diagnostics.
+  - Verification notes (commands or checks):
+    - Documentation parity review against existing `setup` + `doctor` behavior and planned acceptance tests.
+  - Verification evidence:
+    - Added canonical contract document at `context/sce/setup-githooks-install-contract.md` covering target-path resolution, deterministic per-hook outcomes (`installed`/`updated`/`skipped`), backup-and-replace semantics, rollback guarantees, and actionable failure diagnostics.
+    - Linked the new contract in `context/context-map.md` so setup-hook behavior remains discoverable for follow-on implementation tasks.
+    - Performed parity review against current setup/doctor boundaries (`cli/src/services/setup.rs` and `cli/src/services/doctor.rs`) to keep T01 contract language aligned with existing command semantics and T02-T05 verification targets.
+- [ ] T02: Implement hook asset packaging for setup (status:todo)
+  - Task ID: T02
+  - Goal: Embed canonical hook templates with deterministic paths/content so setup can install hooks without runtime config reads.
+  - Boundaries (in/out of scope):
+    - In: compile-time asset inclusion, path normalization, deterministic content accessors, and target-hook mapping.
+    - Out: runtime hook install orchestration and CLI output formatting.
+  - Done when:
+    - Setup service can enumerate required hook assets and bytes from embedded sources only.
+    - Asset manifest behavior is deterministic across builds for unchanged inputs.
+  - Verification notes (commands or checks):
+    - Unit tests for manifest completeness, normalized paths, and stable lookup semantics.
+- [ ] T03: Implement `sce setup` hook installation flow (status:todo)
+  - Task ID: T03
+  - Goal: Add idempotent hook install/update orchestration that writes required hooks, preserves executable bits, and performs safe backup-and-replace with rollback on failure.
+  - Boundaries (in/out of scope):
+    - In: hook target path resolution, write/update decisions, permission preservation, backup creation, failure rollback, and upgrade-path behavior.
+    - Out: doctor readiness reporting and CLI flag contract expansion.
+  - Done when:
+    - Fresh install and upgrade paths work for arbitrary repositories under repo-local and custom hook-path configurations.
+    - Failure paths restore prior hook state non-destructively when replacement cannot complete.
+  - Verification notes (commands or checks):
+    - Service/integration tests for install, re-run idempotency, upgrade, and rollback scenarios.
+- [ ] T04: Add CLI flags and UX for hook setup (status:todo)
+  - Task ID: T04
+  - Goal: Add `sce setup --hooks` (and optional `--repo <path>`) with deterministic output and compatible option validation.
+  - Boundaries (in/out of scope):
+    - In: parser/validation updates, command dispatch wiring, deterministic installed/skipped/updated messaging, and option compatibility rules.
+    - Out: expanding setup to unrelated install domains or interactive redesign outside hook scope.
+  - Done when:
+    - Flag combinations validate deterministically with actionable errors for invalid mixes.
+    - Successful runs emit clear per-hook outcomes suitable for humans and automation logs.
+  - Verification notes (commands or checks):
+    - Command-surface tests for parsing, invalid combinations, and stable message snapshots.
+- [ ] T05: Integrate with doctor and add verification tests (status:todo)
+  - Task ID: T05
+  - Goal: Ensure `sce doctor` reports ready after successful hook setup and add targeted test coverage for missing/misconfigured/existing hooks plus idempotent re-run behavior.
+  - Boundaries (in/out of scope):
+    - In: doctor readiness checks alignment with setup contract, focused tests for hook states, and verification harness updates.
+    - Out: unrelated doctor domains or non-hook readiness policies.
+  - Done when:
+    - Post-setup doctor output reports ready across supported hook-path modes.
+    - Targeted test suite covers missing/misconfigured/existing hooks and idempotent reruns.
+  - Verification notes (commands or checks):
+    - `cargo test` (targeted hook/setup/doctor slices), `cargo fmt --check`, and `cargo build` from `cli/`.
+- [ ] T06: Validation and cleanup (status:todo)
+  - Task ID: T06
+  - Goal: Run end-to-end validation, ensure cleanup of temporary artifacts, and confirm code/context alignment for this plan scope.
+  - Boundaries (in/out of scope):
+    - In: final verification pass, deterministic result capture, and context sync confirmation for any behavior changes.
+    - Out: net-new feature work outside the approved task stack.
+  - Done when:
+    - All success criteria are satisfied with verification evidence.
+    - Temporary artifacts are removed or documented with retention rationale.
+    - No known context drift remains for changed setup/doctor hook behavior.
+  - Verification notes (commands or checks):
+    - `cargo fmt --check && cargo build && cargo test` (from `cli/`).
+    - Focused `sce setup --hooks` fresh + rerun checks and post-setup `sce doctor` readiness checks.
+## 5) Open questions
+- None.
