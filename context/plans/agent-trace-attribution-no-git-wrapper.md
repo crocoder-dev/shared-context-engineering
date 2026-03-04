@@ -154,7 +154,7 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - `cargo test --manifest-path cli/Cargo.toml rewrite_trace_finalization`
     - `cargo build --manifest-path cli/Cargo.toml`
 
-- [ ] T10: Ship core schema migrations (`repositories`, `commits`, `trace_records`, `trace_ranges`) (status:todo)
+- [x] T10: Ship core schema migrations (`repositories`, `commits`, `trace_records`, `trace_ranges`) (status:done)
   - Task ID: T10
   - Goal: Establish foundational persistence tables, constraints, and indexes.
   - Boundaries (in/out of scope):
@@ -164,6 +164,8 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - Core schema applies cleanly and supports local commit ingestion.
   - Verification notes (commands or checks):
     - Migration tests with empty and preexisting DB states.
+    - `cargo test --manifest-path cli/Cargo.toml core_schema_migrations`
+    - `cargo build --manifest-path cli/Cargo.toml`
 
 - [ ] T11: Ship reconciliation schema and ingestion (`reconciliation_runs`, `rewrite_mappings`, `conversations`) (status:todo)
   - Task ID: T11
