@@ -59,7 +59,7 @@ Analyze the SCE Plan (`/change-to-plan`) and Execute (`/next-task`) workflows en
   - Implementation evidence:
     - Added `T03: Static token accounting method and evidence template` to `context/sce/workflow-token-footprint-inventory.md`, including exact counted surface manifest, tokenizer assumptions, deterministic procedure, required report schema fields, evidence template, and known limitations.
 
-- [ ] T04: Propose reduction strategies with trade-offs and rollout order (status:todo)
+- [x] T04: Propose reduction strategies with trade-offs and rollout order (status:done)
   - Task ID: T04
   - Goal: Produce a prioritized set of token-reduction strategies that preserve SCE safety and role separation while reducing unnecessary prompt footprint.
   - Boundaries (in/out of scope):
@@ -70,6 +70,8 @@ Analyze the SCE Plan (`/change-to-plan`) and Execute (`/next-task`) workflows en
     - Each proposal includes affected artifacts, rationale, and regression risk notes.
   - Verification notes (commands or checks):
     - Manual review confirms proposals preserve mandatory gates (clarification, readiness, implementation stop, context sync).
+  - Implementation evidence:
+    - Added `T04: Token-reduction strategy set, trade-offs, and rollout order` to `context/sce/workflow-token-footprint-inventory.md` with a prioritized proposal matrix (impact/risk/affected artifacts), explicit rollout sequencing, and preserve-as-is guardrail constraints.
 
 - [ ] T05: Validation and cleanup (status:todo)
   - Task ID: T05

@@ -170,3 +170,31 @@ Run-level summary fields:
 - Subsection extraction for canonical Pkl agent bodies depends on stable key names; renamed keys require manifest update.
 - Derived parity copies can make footprint appear inflated; keep canonical-owner totals and derived-overhead totals separate.
 - Token totals are tokenizer-dependent estimates, not billing-accurate usage measurements.
+
+## T04: Token-reduction strategy set, trade-offs, and rollout order
+
+The strategy set below is ordered to reduce prompt footprint without weakening mandatory gates (`clarification`, `readiness`, `implementation stop`, `context sync`) or collapsing Plan/Code role boundaries.
+
+| Priority | Strategy | Expected impact | Implementation risk | Affected artifacts | Rationale | Guardrail risk + mitigation |
+| --- | --- | --- | --- | --- | --- | --- |
+| P1 | Tighten thin-wrapper command prose to gate-only contracts | high | low | `config/pkl/base/shared-content.pkl` (`commands["change-to-plan"].canonicalBody`, `commands["next-task"].canonicalBody`, `commands["commit"].canonicalBody`); generated command outputs under `config/.opencode/**` and `config/.claude/**` | Wrapper text currently repeats detailed phase logic that is already skill-owned. Retaining only sequencing + mandatory confirmations removes repeat tokens at every invocation surface. | Risk: wrappers become too terse and hide requirements. Mitigation: keep explicit gate bullets and direct references to canonical skill owners in each wrapper. |
+| P2 | Enforce single-owner detailed behavior (skill owns, command references) | high | medium | Skill bodies in `config/pkl/base/shared-content.pkl` for `sce-plan-authoring`, `sce-plan-review`, `sce-task-execution`, `sce-context-sync`, `sce-validation`; corresponding generated skills | Removes duplicated procedural detail split across command, agent, and skill by making skill text the only detailed contract source. | Risk: accidental behavior drift if wrappers and skills diverge semantically. Mitigation: add a parity checklist in plan tasks requiring gate-name exact-match verification after edits. |
+| P3 | Convert repeated long workflow prose into canonical snippet constants | medium-high | medium | `config/pkl/base/shared-content.pkl` shared constants and interpolation sites in agent/command/skill canonical bodies | Centralized snippets cut repeated baseline doctrine and standard gate phrasing while preserving wording consistency across targets. | Risk: over-shared snippets can force awkward context-specific text. Mitigation: keep snippets scoped to stable doctrine/gates only; leave role-specific intent local. |
+| P4 | Narrow root-context navigation repetition to one canonical index + short pointers | medium | low | `context/context-map.md` (canonical list), plus concise pointer edits in `context/overview.md`, `context/glossary.md`, and workflow docs under `context/sce/*.md` | Repeated "where to look" blocks inflate persistent context payload with low safety value; one canonical map plus short pointers keeps discoverability with fewer tokens. | Risk: reduced discoverability if pointers are too sparse. Mitigation: require every workflow doc to keep one explicit pointer to `context/context-map.md` and its nearest domain file. |
+| P5 | Distinguish canonical-owner totals from generated parity copies in reporting defaults | medium | low | `context/sce/workflow-token-footprint-inventory.md` method/reporting sections; future token-report artifacts in `context/tmp/` | Prevents optimization work from targeting unavoidable cross-target duplication by default and keeps reduction efforts focused on editable canonical text. | Risk: teams ignore derived overhead entirely. Mitigation: keep optional derived-overhead pass mandatory for visibility, but separate from canonical reduction KPI. |
+| P6 | Add guardrail-preservation acceptance checks to every reduction task | medium | low-medium | Future plan tasks in `context/plans/*.md`; relevant workflow context docs in `context/sce/*.md` | Makes "safe reduction" operational by requiring explicit checks that mandatory gates still exist and role boundaries remain unchanged after edits. | Risk: checklist quality varies by operator. Mitigation: standardize a minimal acceptance template (gate-presence + ownership-boundary verification) reused across tasks. |
+
+### Rollout order
+
+1. Apply P1 first to remove highest-volume wrapper duplication with minimal behavior risk.
+2. Apply P2 next so detailed contracts are clearly skill-owned before broader refactors.
+3. Apply P3 after ownership boundaries are stable to safely deduplicate shared wording.
+4. Apply P4 to reduce background context-load overhead while preserving discoverability.
+5. Apply P5 and P6 in parallel as measurement/governance controls for all reduction phases.
+
+### Preserve-as-is constraints during rollout
+
+- Keep explicit confirmation gates in workflow entrypoints (`readiness`, `implementation stop`) even when surrounding prose is reduced.
+- Keep `sce-context-sync` as a required done gate and keep final-task `sce-validation` trigger conditions explicit.
+- Keep Plan vs Code role separation and command split (`/change-to-plan`, `/next-task`) unchanged.
+- Keep human decision authority and code-truth precedence language explicit where currently required.
