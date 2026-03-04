@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 pub const NAME: &str = "doctor";
 
@@ -40,16 +40,34 @@ struct HookDoctorReport {
 }
 
 pub fn run_doctor() -> Result<String> {
-    let report = build_report();
+    let repository_root =
+        std::env::current_dir().context("Failed to determine current directory")?;
+    let report = build_report(&repository_root);
     Ok(format_report(&report))
 }
 
-fn build_report() -> HookDoctorReport {
-    let repository_root = run_git_command(&["rev-parse", "--show-toplevel"]).map(PathBuf::from);
-    let hooks_directory = run_git_command(&["rev-parse", "--git-path", "hooks"]).map(PathBuf::from);
+fn build_report(repository_root: &Path) -> HookDoctorReport {
+    let detected_repository_root =
+        run_git_command(repository_root, &["rev-parse", "--show-toplevel"]).map(PathBuf::from);
+    let hooks_directory = detected_repository_root.as_ref().and_then(|resolved_root| {
+        run_git_command(resolved_root, &["rev-parse", "--git-path", "hooks"]).map(|value| {
+            let path = PathBuf::from(value);
+            if path.is_absolute() {
+                path
+            } else {
+                resolved_root.join(path)
+            }
+        })
+    });
 
-    let local_hooks_path = run_git_command(&["config", "--local", "--get", "core.hooksPath"]);
-    let global_hooks_path = run_git_command(&["config", "--global", "--get", "core.hooksPath"]);
+    let local_hooks_path = run_git_command(
+        repository_root,
+        &["config", "--local", "--get", "core.hooksPath"],
+    );
+    let global_hooks_path = run_git_command(
+        repository_root,
+        &["config", "--global", "--get", "core.hooksPath"],
+    );
 
     let hook_path_source = if local_hooks_path.is_some() {
         HookPathSource::LocalConfig
@@ -79,7 +97,7 @@ fn build_report() -> HookDoctorReport {
 
     HookDoctorReport {
         readiness,
-        repository_root,
+        repository_root: detected_repository_root,
         hook_path_source,
         hooks_directory,
         hooks,
@@ -141,8 +159,12 @@ fn is_executable(metadata: &fs::Metadata) -> bool {
     metadata.is_file()
 }
 
-fn run_git_command(args: &[&str]) -> Option<String> {
-    let output = Command::new("git").args(args).output().ok()?;
+fn run_git_command(repository_root: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repository_root)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -226,12 +248,18 @@ fn format_report(report: &HookDoctorReport) -> String {
 mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use std::process::Command;
 
     use anyhow::Result;
 
+    use crate::services::setup::install_required_git_hooks;
     use crate::test_support::TestTempDir;
 
-    use super::{collect_hook_health, format_report, HookDoctorReport, HookPathSource, Readiness};
+    use super::{
+        build_report, collect_hook_health, format_report, HookDoctorReport, HookPathSource,
+        Readiness,
+    };
 
     #[test]
     fn doctor_output_reports_healthy_state_when_all_required_hooks_exist() -> Result<()> {
@@ -335,6 +363,52 @@ mod tests {
         assert!(output.contains("SCE doctor: not ready"));
         assert!(output.contains("post-commit: misconfigured"));
         assert!(output.contains("Hook 'post-commit' exists but is not executable"));
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_reports_ready_after_setup_hook_install() -> Result<()> {
+        let temp_dir = TestTempDir::new("doctor-ready-after-setup")?;
+        init_git_repo(temp_dir.path())?;
+
+        install_required_git_hooks(temp_dir.path())?;
+
+        let output = format_report(&build_report(temp_dir.path()));
+        assert!(output.contains("SCE doctor: ready"));
+        assert!(output.contains("pre-commit: ok"));
+        assert!(output.contains("commit-msg: ok"));
+        assert!(output.contains("post-commit: ok"));
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_reports_ready_for_custom_repo_hooks_path_after_setup() -> Result<()> {
+        let temp_dir = TestTempDir::new("doctor-ready-custom-hooks-path")?;
+        init_git_repo(temp_dir.path())?;
+        run_git_in_repo(temp_dir.path(), &["config", "core.hooksPath", ".githooks"])?;
+
+        install_required_git_hooks(temp_dir.path())?;
+
+        let output = format_report(&build_report(temp_dir.path()));
+        assert!(output.contains("SCE doctor: ready"));
+        assert!(output.contains("Hooks path source: per-repo core.hooksPath"));
+        assert!(output.contains(".githooks"));
+        Ok(())
+    }
+
+    fn init_git_repo(repository_root: &Path) -> Result<()> {
+        run_git_in_repo(repository_root, &["init", "-q"])
+    }
+
+    fn run_git_in_repo(repository_root: &Path, args: &[&str]) -> Result<()> {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(repository_root)
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("git command failed for test repository");
+        }
+
         Ok(())
     }
 }

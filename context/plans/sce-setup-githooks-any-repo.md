@@ -75,7 +75,7 @@ Enable `sce setup` to install and manage required Git hooks (`pre-commit`, `comm
     - Wired hook setup dispatch in `cli/src/app.rs` via `Command::SetupHooks`, preserving existing target-asset setup behavior while routing hook installs through `run_setup_hooks(...)`.
     - Added deterministic hook setup success output (repository root, hooks directory, per-hook `installed|updated|skipped` lines, backup status) and updated command/help usage text in `cli/src/services/setup.rs` and `cli/src/command_surface.rs`.
     - Verification run: `cargo test app::tests && cargo test command_surface::tests && cargo test services::setup::tests && cargo fmt --check && cargo build` (from `cli/`).
-- [ ] T05: Integrate with doctor and add verification tests (status:todo)
+- [x] T05: Integrate with doctor and add verification tests (status:done)
   - Task ID: T05
   - Goal: Ensure `sce doctor` reports ready after successful hook setup and add targeted test coverage for missing/misconfigured/existing hooks plus idempotent re-run behavior.
   - Boundaries (in/out of scope):
@@ -86,7 +86,11 @@ Enable `sce setup` to install and manage required Git hooks (`pre-commit`, `comm
     - Targeted test suite covers missing/misconfigured/existing hooks and idempotent reruns.
   - Verification notes (commands or checks):
     - `cargo test` (targeted hook/setup/doctor slices), `cargo fmt --check`, and `cargo build` from `cli/`.
-- [ ] T06: Validation and cleanup (status:todo)
+  - Verification evidence:
+    - Updated `cli/src/services/doctor.rs` to resolve git commands relative to the inspected repository root and normalize effective hook-directory paths against that root, aligning doctor readiness checks with setup hook install behavior.
+    - Added doctor coverage for post-setup readiness in supported hook-path modes: default hooks install readiness and per-repo `core.hooksPath` readiness after `install_required_git_hooks`.
+    - Verified targeted behavior with `cargo test services::doctor::tests` and `cargo test services::setup::tests`, then ran light checks/build with `cargo fmt --check` and `cargo build` (from `cli/`).
+- [x] T06: Validation and cleanup (status:done)
   - Task ID: T06
   - Goal: Run end-to-end validation, ensure cleanup of temporary artifacts, and confirm code/context alignment for this plan scope.
   - Boundaries (in/out of scope):
@@ -99,5 +103,15 @@ Enable `sce setup` to install and manage required Git hooks (`pre-commit`, `comm
   - Verification notes (commands or checks):
     - `cargo fmt --check && cargo build && cargo test` (from `cli/`).
     - Focused `sce setup --hooks` fresh + rerun checks and post-setup `sce doctor` readiness checks.
+  - Verification evidence:
+    - Command report (exit code 0): `cargo fmt --check && cargo build && cargo test` (from `cli/`); key output: build succeeded and test result `ok` with `110 passed; 0 failed`.
+    - Command report (exit code 0): `nix run .#pkl-check-generated && nix flake check` (from repo root); key output: generated outputs up to date and flake checks evaluated/built successfully.
+    - Executed focused end-to-end hook setup validation using temporary repositories under `context/tmp/`: fresh `sce setup --hooks`, rerun idempotency checks (`skipped` outcomes), and `sce doctor` readiness checks for both default `.git/hooks` and per-repo `core.hooksPath` (`.githooks`) modes.
+    - Command report (exit code 0): local binary checks in temp repos confirmed deterministic setup outcomes (`installed` on first run, `skipped` on rerun) and `SCE doctor: ready` in both default and per-repo hooks-path modes.
+    - Confirmed cleanup by removing temporary validation repositories from `context/tmp/` after verification; no retained task artifacts required.
+    - Completed context sync verification for this task scope with no additional behavior drift requiring root shared-file edits.
+    - Failed checks and follow-ups: none.
+    - Success-criteria verification summary: one-command hook install works for arbitrary repos, reruns are idempotent with deterministic outcomes, backup semantics remain in contract, and post-setup doctor reports ready in supported hook-path modes.
+    - Residual risks: repository emits existing compile-time dead-code warnings in unrelated modules; no task-scoped functional regressions observed.
 ## 5) Open questions
 - None.
