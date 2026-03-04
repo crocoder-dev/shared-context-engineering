@@ -28,6 +28,8 @@ Task `agent-trace-attribution-no-git-wrapper` `T07` adds local rollout validatio
 - `git config --local --get core.hooksPath`
 - `git config --global --get core.hooksPath`
 
+Git command resolution is repository-root anchored for the inspected repo, and the effective hooks directory is normalized to an absolute path when git returns a relative hook path.
+
 Readiness is `not ready` when any required check fails:
 
 - hooks directory cannot be resolved
@@ -44,5 +46,7 @@ If no diagnostics are present, readiness is `ready`.
 - healthy state (all required hooks present and executable)
 - missing state (required hook absent)
 - misconfigured state (required hook present but non-executable)
+- post-setup ready state after required hooks are installed
+- post-setup ready state for per-repo custom `core.hooksPath`
 
 `cli/src/app.rs` includes command-level routing/exit success coverage for `sce doctor`.
