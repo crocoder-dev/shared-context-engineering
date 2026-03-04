@@ -2,6 +2,7 @@ use anyhow::{bail, ensure, Result};
 use hmac::{Hmac, Mac};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::cmp::Ordering;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HostedProvider {
@@ -58,6 +59,7 @@ pub enum HostedIntakeOutcome {
 }
 
 pub const FUZZY_MAPPING_THRESHOLD: f32 = 0.60;
+const SCORE_TIE_EPSILON: f32 = 0.000_01;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MappingMethod {
@@ -104,6 +106,14 @@ impl Score {
 
     fn value(self) -> f32 {
         self.0
+    }
+
+    fn max(self, other: Self) -> Self {
+        if self.value() >= other.value() {
+            self
+        } else {
+            other
+        }
     }
 }
 
@@ -312,16 +322,19 @@ fn select_scored_candidate(
                 top_new_sha = Some(candidate.new_commit_sha.clone());
                 tied_new_shas.push(candidate.new_commit_sha.clone());
             }
-            Some(current) if score.value() > current.value() => {
-                top_score = Some(score);
-                top_new_sha = Some(candidate.new_commit_sha.clone());
-                tied_new_shas.clear();
-                tied_new_shas.push(candidate.new_commit_sha.clone());
-            }
-            Some(current) if score.value() == current.value() => {
-                tied_new_shas.push(candidate.new_commit_sha.clone());
-            }
-            Some(_) => {}
+            Some(current) => match compare_scores_with_tie_window(score, current) {
+                Ordering::Greater => {
+                    top_score = Some(score);
+                    top_new_sha = Some(candidate.new_commit_sha.clone());
+                    tied_new_shas.clear();
+                    tied_new_shas.push(candidate.new_commit_sha.clone());
+                }
+                Ordering::Equal => {
+                    top_score = Some(score.max(current));
+                    tied_new_shas.push(candidate.new_commit_sha.clone());
+                }
+                Ordering::Less => {}
+            },
         }
     }
 
@@ -332,6 +345,17 @@ fn select_scored_candidate(
             tied_new_shas,
         }),
         _ => None,
+    }
+}
+
+fn compare_scores_with_tie_window(left: Score, right: Score) -> Ordering {
+    let delta = left.value() - right.value();
+    if delta.abs() <= SCORE_TIE_EPSILON {
+        Ordering::Equal
+    } else if delta > 0.0 {
+        Ordering::Greater
+    } else {
+        Ordering::Less
     }
 }
 
@@ -889,6 +913,73 @@ mod tests {
                 assert_eq!(unresolved.best_confidence, Some(score(0.82)));
             }
             other => panic!("expected ambiguous unresolved outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mapping_engine_uses_epsilon_window_for_near_equal_ties() {
+        let source = RewriteSourceCommit {
+            old_commit_sha: "old-2b".to_string(),
+            patch_id: None,
+        };
+        let candidates = vec![
+            RewriteCandidateCommit {
+                new_commit_sha: "new-a".to_string(),
+                patch_id: None,
+                range_diff_score: Some(score(0.82000)),
+                fuzzy_score: None,
+            },
+            RewriteCandidateCommit {
+                new_commit_sha: "new-z".to_string(),
+                patch_id: None,
+                range_diff_score: Some(score(0.820009)),
+                fuzzy_score: None,
+            },
+        ];
+
+        let outcome = map_rewritten_commit(&source, &candidates);
+        match outcome {
+            RewriteMappingOutcome::Unresolved(unresolved) => {
+                assert_eq!(unresolved.kind, UnresolvedMappingKind::Ambiguous);
+                assert_eq!(
+                    unresolved.candidate_new_shas,
+                    vec!["new-a".to_string(), "new-z".to_string()]
+                );
+                assert_eq!(unresolved.best_confidence, Some(score(0.820009)));
+            }
+            other => panic!("expected ambiguous unresolved outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mapping_engine_distinguishes_scores_outside_epsilon_window() {
+        let source = RewriteSourceCommit {
+            old_commit_sha: "old-2c".to_string(),
+            patch_id: None,
+        };
+        let candidates = vec![
+            RewriteCandidateCommit {
+                new_commit_sha: "new-a".to_string(),
+                patch_id: None,
+                range_diff_score: Some(score(0.82000)),
+                fuzzy_score: None,
+            },
+            RewriteCandidateCommit {
+                new_commit_sha: "new-z".to_string(),
+                patch_id: None,
+                range_diff_score: Some(score(0.82002)),
+                fuzzy_score: None,
+            },
+        ];
+
+        let outcome = map_rewritten_commit(&source, &candidates);
+        match outcome {
+            RewriteMappingOutcome::Mapped(mapped) => {
+                assert_eq!(mapped.new_commit_sha, "new-z");
+                assert_eq!(mapped.method, MappingMethod::RangeDiffHint);
+                assert_eq!(mapped.confidence, score(0.82002));
+            }
+            other => panic!("expected mapped outcome, got {other:?}"),
         }
     }
 

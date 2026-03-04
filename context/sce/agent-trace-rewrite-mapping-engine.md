@@ -16,6 +16,7 @@ Resolve hosted/local rewrite old->new commit identity with deterministic, explai
 - Score contract:
   - `Score` is constrained to finite `[0.0, 1.0]`.
   - Mapping threshold: `FUZZY_MAPPING_THRESHOLD = 0.60`.
+  - Tie window: score comparisons use `SCORE_TIE_EPSILON = 0.00001`; score deltas within epsilon are treated as ties.
 - Determinism:
   - Candidates are sorted by `new_commit_sha` before decisioning.
   - Tied top-score outcomes are returned in stable SHA order.
@@ -29,11 +30,11 @@ Resolve hosted/local rewrite old->new commit identity with deterministic, explai
    - If multiple exact patch-id matches exist, return unresolved `ambiguous`.
 2. Range-diff scoring
    - Select highest `range_diff_score` when no patch-id mapping exists.
-   - Tie for highest score returns unresolved `ambiguous`.
+   - Near-equal top scores (within epsilon tie window) return unresolved `ambiguous`.
    - Highest score `< 0.60` returns unresolved `low_confidence`.
 3. Fuzzy fallback scoring
    - Applied only when no patch-id or range-diff resolution exists.
-   - Uses same tie and threshold behavior as range-diff.
+   - Uses the same epsilon tie-window and threshold behavior as range-diff.
 4. Unmatched
    - If no usable range-diff or fuzzy signals exist, return unresolved `unmatched`.
 
@@ -50,6 +51,8 @@ Resolve hosted/local rewrite old->new commit identity with deterministic, explai
 ## Verification coverage
 - Exact match fixture: patch-id match wins over stronger non-exact scores.
 - Ambiguous fixture: tied best range-diff scores return deterministic unresolved candidates.
+- Epsilon fixture: near-equal range-diff scores within epsilon return unresolved `ambiguous` with deterministic candidate ordering.
+- Distinct fixture: range-diff scores outside epsilon resolve to a single mapped winner.
 - Unmatched fixture: no score signals produces `unmatched`.
 - Low-confidence fixture: fuzzy best score `< 0.60` returns `low_confidence`.
 
