@@ -93,12 +93,32 @@ pub enum SetupDispatch {
     Cancelled,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SetupCliOptions {
     pub help: bool,
     pub opencode: bool,
     pub claude: bool,
     pub both: bool,
+    pub hooks: bool,
+    pub repo_path: Option<PathBuf>,
+}
+
+pub fn resolve_setup_hooks_repository(options: &SetupCliOptions) -> Result<Option<PathBuf>> {
+    if options.hooks {
+        if options.opencode || options.claude || options.both {
+            bail!(
+                "Option '--hooks' cannot be combined with '--opencode', '--claude', or '--both'. Run 'sce setup --help' to see valid usage."
+            );
+        }
+
+        return Ok(options.repo_path.clone());
+    }
+
+    if options.repo_path.is_some() {
+        bail!("Option '--repo' requires '--hooks'. Run 'sce setup --help' to see valid usage.");
+    }
+
+    Ok(None)
 }
 
 pub fn run_setup_for_mode(repository_root: &Path, mode: SetupMode) -> Result<String> {
@@ -117,6 +137,12 @@ pub fn run_setup_for_mode(repository_root: &Path, mode: SetupMode) -> Result<Str
     })?;
 
     Ok(format_setup_install_success_message(&outcome))
+}
+
+pub fn run_setup_hooks(repository_root: &Path) -> Result<String> {
+    let outcome = install_required_git_hooks(repository_root)
+        .context("Hook setup failed while installing required git hooks")?;
+    Ok(format_required_hook_install_success_message(&outcome))
 }
 
 fn format_setup_install_success_message(outcome: &SetupInstallOutcome) -> String {
@@ -150,6 +176,38 @@ fn format_setup_install_success_message(outcome: &SetupInstallOutcome) -> String
     }
 
     lines.join("\n")
+}
+
+fn format_required_hook_install_success_message(outcome: &RequiredHooksInstallOutcome) -> String {
+    let mut lines = vec![
+        "Hook setup completed successfully.".to_string(),
+        format!("Repository root: '{}'", outcome.repository_root.display()),
+        format!("Hooks directory: '{}'", outcome.hooks_directory.display()),
+    ];
+
+    for result in &outcome.hook_results {
+        lines.push(format!(
+            "- {}: {} at '{}'",
+            result.hook_name,
+            required_hook_status_label(result.status),
+            result.hook_path.display()
+        ));
+
+        match result.backup_path.as_ref() {
+            Some(backup_path) => lines.push(format!("  backup: '{}'", backup_path.display())),
+            None => lines.push("  backup: not needed".to_string()),
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn required_hook_status_label(status: RequiredHookInstallStatus) -> &'static str {
+    match status {
+        RequiredHookInstallStatus::Installed => "installed",
+        RequiredHookInstallStatus::Updated => "updated",
+        RequiredHookInstallStatus::Skipped => "skipped",
+    }
 }
 
 fn setup_target_label(target: SetupTarget) -> &'static str {
@@ -778,7 +836,7 @@ pub fn setup_cancelled_text() -> &'static str {
 }
 
 pub fn setup_usage_text() -> &'static str {
-    "Usage: sce setup [--opencode|--claude|--both]\n\nWithout a target flag, setup defaults to interactive target selection.\nTarget flags are mutually exclusive and intended for non-interactive automation."
+    "Usage:\n  sce setup [--opencode|--claude|--both]\n  sce setup --hooks [--repo <path>]\n\nWithout a target flag, setup defaults to interactive target selection.\nTarget flags are mutually exclusive and intended for non-interactive automation.\n'--hooks' installs required git hooks for the current repository by default, or for '--repo <path>' when provided."
 }
 
 pub fn parse_setup_cli_options<I>(args: I) -> Result<SetupCliOptions>
@@ -793,6 +851,18 @@ where
             Arg::Long("opencode") => options.opencode = true,
             Arg::Long("claude") => options.claude = true,
             Arg::Long("both") => options.both = true,
+            Arg::Long("hooks") => options.hooks = true,
+            Arg::Long("repo") => {
+                let value = parser
+                    .value()
+                    .context("Option '--repo' requires a path value")?;
+                if options.repo_path.is_some() {
+                    bail!(
+                        "Option '--repo' may only be provided once. Run 'sce setup --help' to see valid usage."
+                    );
+                }
+                options.repo_path = Some(PathBuf::from(value.string()?));
+            }
             Arg::Long("help") | Arg::Short('h') => options.help = true,
             Arg::Long(option) => {
                 bail!(
@@ -858,8 +928,9 @@ mod tests {
         install_embedded_setup_assets_with_rename, install_required_git_hooks,
         install_required_git_hooks_with_rename, iter_embedded_assets_for_setup_target,
         iter_required_hook_assets, parse_setup_cli_options, resolve_setup_dispatch,
-        resolve_setup_mode, run_setup_for_mode, setup_usage_text, RequiredHookAsset,
-        RequiredHookInstallStatus, SetupCliOptions, SetupDispatch, SetupMode, SetupTarget,
+        resolve_setup_hooks_repository, resolve_setup_mode, run_setup_for_mode, run_setup_hooks,
+        setup_usage_text, RequiredHookAsset, RequiredHookInstallStatus, SetupCliOptions,
+        SetupDispatch, SetupMode, SetupTarget,
     };
 
     #[derive(Clone, Copy, Debug)]
@@ -907,6 +978,8 @@ mod tests {
             opencode: true,
             claude: true,
             both: false,
+            hooks: false,
+            repo_path: None,
         })
         .expect_err("multiple target flags should fail");
 
@@ -920,6 +993,69 @@ mod tests {
     fn setup_usage_contract_mentions_target_flags() {
         let usage = setup_usage_text();
         assert!(usage.contains("--opencode|--claude|--both"));
+        assert!(usage.contains("sce setup --hooks [--repo <path>]"));
+    }
+
+    #[test]
+    fn setup_options_parse_hooks_without_repo() -> Result<()> {
+        let options = parse_setup_cli_options(vec!["--hooks".to_string()])?;
+        let repo = resolve_setup_hooks_repository(&options)?;
+        assert_eq!(repo, None);
+        Ok(())
+    }
+
+    #[test]
+    fn setup_options_parse_hooks_with_repo() -> Result<()> {
+        let options = parse_setup_cli_options(vec![
+            "--hooks".to_string(),
+            "--repo".to_string(),
+            "tmp/repo".to_string(),
+        ])?;
+        let repo = resolve_setup_hooks_repository(&options)?;
+        assert_eq!(repo, Some(PathBuf::from("tmp/repo")));
+        Ok(())
+    }
+
+    #[test]
+    fn setup_options_reject_repo_without_hooks() {
+        let options = parse_setup_cli_options(vec!["--repo".to_string(), "tmp/repo".to_string()])
+            .expect("parsing --repo should succeed before validation");
+        let error = resolve_setup_hooks_repository(&options)
+            .expect_err("--repo without --hooks should fail");
+        assert_eq!(
+            error.to_string(),
+            "Option '--repo' requires '--hooks'. Run 'sce setup --help' to see valid usage."
+        );
+    }
+
+    #[test]
+    fn setup_options_reject_hooks_with_target_flags() {
+        let options =
+            parse_setup_cli_options(vec!["--hooks".to_string(), "--opencode".to_string()])
+                .expect("parsing should succeed before validation");
+        let error = resolve_setup_hooks_repository(&options)
+            .expect_err("--hooks with target flags should fail");
+        assert_eq!(
+            error.to_string(),
+            "Option '--hooks' cannot be combined with '--opencode', '--claude', or '--both'. Run 'sce setup --help' to see valid usage."
+        );
+    }
+
+    #[test]
+    fn run_setup_hooks_reports_per_hook_statuses() -> Result<()> {
+        let temp = TestTempDir::new("sce-setup-hook-install-tests")?;
+        init_git_repo(temp.path())?;
+
+        let message = run_setup_hooks(temp.path())?;
+        assert!(message.contains("Hook setup completed successfully."));
+        assert!(message.contains("Repository root:"));
+        assert!(message.contains("Hooks directory:"));
+        assert!(message.contains("commit-msg: installed"));
+        assert!(message.contains("post-commit: installed"));
+        assert!(message.contains("pre-commit: installed"));
+        assert!(message.contains("backup: not needed"));
+
+        Ok(())
     }
 
     #[test]
