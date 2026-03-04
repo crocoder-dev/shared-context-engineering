@@ -56,7 +56,7 @@ Non-goals (deferred):
   - Done when: tie behavior is epsilon-based, deterministic, and tested for near-equal/clearly-different scores.
   - Verification notes: run `cargo test --manifest-path cli/Cargo.toml services::hosted_reconciliation::tests` and `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T04: Eliminate lossy DB path string conversion in local DB service/tests (status:todo)
+- [x] T04: Eliminate lossy DB path string conversion in local DB service/tests (status:done)
   - Goal: Refactor local DB target path handling to avoid `to_string_lossy()` for DB location construction, using `Path`-native or explicit fallible conversion with context.
   - Boundaries (in): `cli/src/services/local_db.rs` runtime and test helpers.
   - Boundaries (out): Turso API redesign assumptions or broader filesystem abstraction rewrite.

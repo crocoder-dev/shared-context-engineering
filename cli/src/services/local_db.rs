@@ -144,15 +144,20 @@ pub struct CoreSchemaMigrationOutcome {
 }
 
 async fn connect_local(target: LocalDatabaseTarget<'_>) -> Result<turso::Connection> {
-    let location = match target {
-        LocalDatabaseTarget::InMemory => ":memory:".to_string(),
-        LocalDatabaseTarget::Path(path) => path.to_string_lossy().into_owned(),
-    };
-
-    let db = Builder::new_local(&location).build().await?;
+    let location = target_location(target)?;
+    let db = Builder::new_local(location).build().await?;
     let conn = db.connect()?;
     conn.execute("PRAGMA foreign_keys = ON", ()).await?;
     Ok(conn)
+}
+
+fn target_location(target: LocalDatabaseTarget<'_>) -> Result<&str> {
+    match target {
+        LocalDatabaseTarget::InMemory => Ok(":memory:"),
+        LocalDatabaseTarget::Path(path) => path
+            .to_str()
+            .ok_or_else(|| anyhow!("Local DB path must be valid UTF-8: {}", path.display())),
+    }
 }
 
 pub async fn apply_core_schema_migrations(
@@ -214,23 +219,13 @@ mod tests {
         kind: &str,
         name: &str,
     ) -> Result<bool> {
-        let location = match target {
-            LocalDatabaseTarget::InMemory => ":memory:".to_string(),
-            LocalDatabaseTarget::Path(path) => path.to_string_lossy().into_owned(),
-        };
-        let db = turso::Builder::new_local(&location).build().await?;
-        let conn = db.connect()?;
+        let conn = super::connect_local(target).await?;
         let mut rows = conn.query(&row_exists_query(kind, name), ()).await?;
         Ok(rows.next().await?.is_some())
     }
 
     async fn repository_count(target: LocalDatabaseTarget<'_>) -> Result<u64> {
-        let location = match target {
-            LocalDatabaseTarget::InMemory => ":memory:".to_string(),
-            LocalDatabaseTarget::Path(path) => path.to_string_lossy().into_owned(),
-        };
-        let db = turso::Builder::new_local(&location).build().await?;
-        let conn = db.connect()?;
+        let conn = super::connect_local(target).await?;
         let mut rows = conn.query("SELECT COUNT(*) FROM repositories", ()).await?;
         let row = rows
             .next()
@@ -244,12 +239,7 @@ mod tests {
     }
 
     async fn fetch_single_integer(target: LocalDatabaseTarget<'_>, query: &str) -> Result<i64> {
-        let location = match target {
-            LocalDatabaseTarget::InMemory => ":memory:".to_string(),
-            LocalDatabaseTarget::Path(path) => path.to_string_lossy().into_owned(),
-        };
-        let db = turso::Builder::new_local(&location).build().await?;
-        let conn = db.connect()?;
+        let conn = super::connect_local(target).await?;
         let mut rows = conn.query(query, ()).await?;
         let row = rows
             .next()
@@ -388,9 +378,8 @@ mod tests {
         )))?;
 
         runtime.block_on(async {
-            let db = turso::Builder::new_local(path.to_string_lossy().as_ref())
-                .build()
-                .await?;
+            let location = super::target_location(LocalDatabaseTarget::Path(&path))?;
+            let db = turso::Builder::new_local(location).build().await?;
             let conn = db.connect()?;
 
             conn.execute(
