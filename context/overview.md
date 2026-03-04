@@ -22,6 +22,7 @@ The `/next-task` command body is intentionally thin orchestration: readiness gat
 Context sync now uses an important-change gate: cross-cutting/policy/architecture/terminology changes require root shared-file edits, while localized tasks run verify-only root checks without default churn.
 The `/change-to-plan` command body is also intentionally thin orchestration: it delegates clarification and plan-shape contracts to `sce-plan-authoring` (including one-task/one-atomic-commit task slicing) while keeping wrapper-level plan output and handoff obligations explicit.
 The `/commit` command body is intentionally thin orchestration: it retains staged-confirmation and proposal-only constraints while delegating commit grammar and atomic split guidance to `sce-atomic-commit`.
+The no-git-wrapper Agent Trace initiative baseline contract is defined in `context/sce/agent-trace-implementation-contract.md`, including normative invariants, compliance matrix, and canonical internal-to-Agent-Trace mapping for downstream implementation tasks.
 
 ## Repository model
 
@@ -72,3 +73,4 @@ Lightweight post-task verification baseline (required after each completed task)
 - Use `context/sce/workflow-token-count-workflow.md` for the root flake app contract (`nix run .#token-count-workflows`) and runtime wiring to the evals token-count script.
 - Use `evals/token-count-workflows.ts` (run via `nix run .#token-count-workflows` from repo root, or `bun run token-count-workflows` from `evals/`) for T06 static workflow token counting that emits deterministic reports to `context/tmp/token-footprint/`.
 - Use `context/sce/atomic-commit-workflow.md` for canonical `/commit` behavior, `sce-atomic-commit` naming, and proposal-only commit planning constraints.
+- Use `context/sce/agent-trace-implementation-contract.md` for canonical Agent Trace implementation invariants and field-level mapping guidance (`agent-trace-attribution-no-git-wrapper` T01 baseline).
