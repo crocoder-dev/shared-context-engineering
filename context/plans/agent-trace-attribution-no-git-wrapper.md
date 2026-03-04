@@ -182,7 +182,7 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - `cargo test --manifest-path cli/Cargo.toml reconciliation_schema_supports_replay_safe_runs_and_mapping_queries`
     - `cargo build --manifest-path cli/Cargo.toml`
 
-- [ ] T12: Implement hosted event intake and run orchestration (status:todo)
+- [x] T12: Implement hosted event intake and run orchestration (status:done)
   - Task ID: T12
   - Goal: Accept GitHub/GitLab webhook events, verify signatures, and create replay-safe runs.
   - Boundaries (in/out of scope):
@@ -192,6 +192,9 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - Duplicate events do not create duplicate side effects.
   - Verification notes (commands or checks):
     - Webhook signature and replay tests per provider.
+    - `cargo test --manifest-path cli/Cargo.toml hosted_reconciliation`
+    - `cargo fmt --manifest-path cli/Cargo.toml -- --check`
+    - `cargo build --manifest-path cli/Cargo.toml`
 
 - [ ] T13: Implement mapping engine (patch-id, range-diff, fuzzy fallback) (status:todo)
   - Task ID: T13
