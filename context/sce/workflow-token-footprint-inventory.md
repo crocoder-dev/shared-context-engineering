@@ -71,3 +71,102 @@ Provide a canonical inventory of participants in the SCE Plan (`/change-to-plan`
 - Intentional guardrail hotspots (keep verbose): readiness/clarification gates, implementation-stop contract, context-sync required done gate, and authority/safety doctrine.
 - Reducible duplication hotspots: wrapper-level explanatory prose beyond gating contract, repeated long discoverability lists, and command-level detail that should remain skill-owned.
 - Parity-only duplication should be treated as expected derived overhead, not primary authoring duplication, when prioritizing reduction work.
+
+## T03: Static token accounting method and evidence template
+
+### Counting scope (exact inputs)
+
+Use these workflow prompt surfaces as the canonical static-count manifest for this plan:
+
+| Surface ID | Workflow | Artifact class | File path | Count scope |
+| --- | --- | --- | --- | --- |
+| `plan-agent-canonical` | Plan | Agent (canonical owner) | `config/pkl/base/shared-content.pkl` | Count only the rendered source block for `agents["shared-context-plan"].canonicalBody`. |
+| `code-agent-canonical` | Execute | Agent (canonical owner) | `config/pkl/base/shared-content.pkl` | Count only the rendered source block for `agents["shared-context-code"].canonicalBody`. |
+| `change-to-plan-command` | Plan | Command wrapper | `.opencode/command/change-to-plan.md` | Count entire file. |
+| `next-task-command` | Execute | Command wrapper | `.opencode/command/next-task.md` | Count entire file. |
+| `plan-authoring-skill` | Plan | Skill contract | `.opencode/skills/sce-plan-authoring/SKILL.md` | Count entire file. |
+| `plan-review-skill` | Execute | Skill contract | `.opencode/skills/sce-plan-review/SKILL.md` | Count entire file. |
+| `task-execution-skill` | Execute | Skill contract | `.opencode/skills/sce-task-execution/SKILL.md` | Count entire file. |
+| `context-sync-skill` | Execute | Skill contract | `.opencode/skills/sce-context-sync/SKILL.md` | Count entire file. |
+| `validation-skill` | Execute | Skill contract (conditional) | `.opencode/skills/sce-validation/SKILL.md` | Count entire file; include but tag as conditional. |
+| `shared-plan-workflow-doc` | Plan | Context artifact | `context/sce/shared-context-plan-workflow.md` | Count entire file. |
+| `shared-code-workflow-doc` | Execute | Context artifact | `context/sce/shared-context-code-workflow.md` | Count entire file. |
+
+Optional derived-overhead pass (reported separately, not merged into canonical authoring total):
+- matching generated Claude surfaces under `config/.claude/**` for the same command/agent/skill slugs;
+- matching generated OpenCode surfaces under `config/.opencode/**` when they are not already the counted canonical execution surfaces.
+
+### Tokenizer assumptions
+
+- Primary tokenizer assumption: `o200k_base` (closest available static approximation for current OpenAI-family models).
+- Fallback tokenizer assumption when `o200k_base` is unavailable: `cl100k_base`.
+- Every report must include the tokenizer name used; cross-tokenizer totals are not directly comparable.
+
+### Deterministic counting procedure
+
+1. Capture run metadata: date/time (UTC), current git commit SHA, plan name, task ID, operator.
+2. Materialize the exact surface manifest from the table above (same surface IDs and file paths).
+3. Read files as UTF-8 text and normalize newlines to `\n` before counting.
+4. For each surface, apply scope rule (`entire file` or `canonicalBody subsection`) and produce the exact counted text payload.
+5. Count tokens for each payload with one tokenizer for the whole run; do not mix tokenizers within a run.
+6. Record per-surface token counts, then compute workflow subtotals (`Plan`, `Execute`) and combined total.
+7. If a previous baseline exists, compute deltas per surface and for each subtotal/total.
+8. Store evidence in a dated artifact under `context/tmp/` and summarize key totals in the active plan task evidence notes.
+
+### Report schema (required fields)
+
+Per-surface row fields:
+- `surface_id`
+- `workflow` (`plan` or `execute`)
+- `artifact_class` (`agent`, `command`, `skill`, `context_artifact`)
+- `path`
+- `scope_rule`
+- `tokenizer`
+- `tokens`
+- `baseline_tokens` (nullable)
+- `delta_tokens` (nullable)
+- `conditional` (`true` for validation-skill, else `false`)
+
+Run-level summary fields:
+- `run_id`
+- `timestamp_utc`
+- `git_sha`
+- `plan_name`
+- `task_id`
+- `tokenizer`
+- `plan_total_tokens`
+- `execute_total_tokens`
+- `combined_total_tokens`
+- `combined_delta_tokens` (nullable)
+- `notes`
+
+### Evidence template (copy/paste)
+
+```markdown
+# Static token accounting run: <run_id>
+
+- timestamp_utc: <YYYY-MM-DDTHH:MM:SSZ>
+- git_sha: <short_sha>
+- plan_name: sce-workflow-token-footprint-analysis
+- task_id: T03
+- tokenizer: <o200k_base|cl100k_base>
+
+| surface_id | workflow | artifact_class | path | scope_rule | tokens | baseline_tokens | delta_tokens | conditional |
+| --- | --- | --- | --- | --- | ---: | ---: | ---: | --- |
+| ... | ... | ... | ... | ... | ... | ... | ... | ... |
+
+## Totals
+
+- plan_total_tokens: <n>
+- execute_total_tokens: <n>
+- combined_total_tokens: <n>
+- combined_delta_tokens: <n or null>
+- notes: <assumptions, anomalies, exclusions>
+```
+
+### Known limitations
+
+- Static counts do not include runtime/system-level hidden prompt frames, tool IO payload sizes, or conversation-history growth.
+- Subsection extraction for canonical Pkl agent bodies depends on stable key names; renamed keys require manifest update.
+- Derived parity copies can make footprint appear inflated; keep canonical-owner totals and derived-overhead totals separate.
+- Token totals are tokenizer-dependent estimates, not billing-accurate usage measurements.
