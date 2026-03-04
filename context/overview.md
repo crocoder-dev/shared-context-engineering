@@ -5,7 +5,7 @@ This repository maintains shared assistant configuration for OpenCode and Claude
 It also includes an early Rust CLI foundation at `cli/` for Shared Context Engineering workflows.
 The crate ships onboarding and usage documentation at `cli/README.md` that reflects current implemented vs placeholder behavior.
 
-The CLI crate currently enforces a minimal dependency contract: `anyhow`, `inquire`, `lexopt`, `tokio`, and `turso`.
+The CLI crate currently enforces a minimal dependency contract: `anyhow`, `hmac`, `inquire`, `lexopt`, `sha2`, `tokio`, and `turso`.
 Its command loop is implemented with `lexopt` argument parsing and `anyhow` error handling, with real setup orchestration, implemented `doctor` rollout validation, and placeholder dispatch for deferred commands through explicit service contracts.
 The `setup` command includes an `inquire`-backed target-selection flow: default interactive selection for OpenCode/Claude/both, explicit non-interactive target flags (`--opencode`, `--claude`, `--both`), deterministic mutually-exclusive validation, and non-destructive cancellation exits.
 The CLI now compiles an embedded setup asset manifest from `config/.opencode/**`, `config/.claude/**`, and `cli/assets/hooks/**` via `cli/build.rs`; `cli/src/services/setup.rs` exposes deterministic normalized relative paths plus file bytes and target-scoped iteration without runtime reads from `config/`.

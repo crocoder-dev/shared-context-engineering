@@ -15,7 +15,7 @@
 ## Intake contract
 
 - Provider coverage is explicit for GitHub and GitLab (`HostedProvider`).
-- GitHub webhook signatures use HMAC-SHA256 and require `sha256=<hex>` match against payload body.
+- GitHub webhook signatures use crate-backed HMAC-SHA256 (`hmac` + `sha2`) and require `sha256=<hex>` match against payload body.
 - GitLab webhook signatures use token equality against the configured shared secret.
 - Intake requires resolvable rewrite heads (`before`, `after`) and provider-specific repository identity (`full_name` for GitHub, `path_with_namespace` for GitLab).
 - `before` and `after` values must be SHA-like 40-char hex commit IDs.
@@ -23,7 +23,7 @@
 ## Reconciliation run orchestration contract
 
 - Provider events are normalized into `HostedReconciliationRunRequest` with provider, repo, event, old/new heads, and deterministic idempotency key.
-- Deterministic replay key derivation uses provider + event + repo + old/new heads + delivery ID material and SHA256 digesting.
+- Deterministic replay key derivation uses provider + event + repo + old/new heads + delivery ID material and crate-backed SHA256 digesting (`sha2`).
 - Run storage is abstracted behind `ReconciliationRunStore`; ingestion returns created vs duplicate outcome (`ReconciliationRunInsertOutcome`) for replay-safe semantics.
 
 ## Validation coverage
