@@ -89,6 +89,32 @@ const CORE_SCHEMA_STATEMENTS: &[&str] = &[
         FOREIGN KEY(repository_id) REFERENCES repositories(id) ON DELETE CASCADE,\
         UNIQUE(repository_id, url)\
     )",
+    "CREATE TABLE IF NOT EXISTS trace_retry_queue (\
+        id INTEGER PRIMARY KEY,\
+        trace_id TEXT NOT NULL UNIQUE,\
+        commit_sha TEXT NOT NULL,\
+        failed_targets TEXT NOT NULL,\
+        content_type TEXT NOT NULL,\
+        notes_ref TEXT NOT NULL,\
+        payload_json TEXT NOT NULL,\
+        attempts INTEGER NOT NULL DEFAULT 0,\
+        last_error_class TEXT,\
+        last_error_message TEXT,\
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))\
+    )",
+    "CREATE TABLE IF NOT EXISTS reconciliation_metrics (\
+        id INTEGER PRIMARY KEY,\
+        run_id INTEGER,\
+        mapped_count INTEGER NOT NULL,\
+        unmapped_count INTEGER NOT NULL,\
+        histogram_high INTEGER NOT NULL,\
+        histogram_medium INTEGER NOT NULL,\
+        histogram_low INTEGER NOT NULL,\
+        runtime_ms INTEGER NOT NULL,\
+        error_class TEXT,\
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))\
+    )",
     "CREATE INDEX IF NOT EXISTS idx_commits_repository_commit_sha ON commits(repository_id, commit_sha)",
     "CREATE INDEX IF NOT EXISTS idx_trace_records_repository_commit ON trace_records(repository_id, commit_id)",
     "CREATE INDEX IF NOT EXISTS idx_trace_ranges_record_file ON trace_ranges(trace_record_id, file_path)",
@@ -96,6 +122,8 @@ const CORE_SCHEMA_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_rewrite_mappings_run_old_sha ON rewrite_mappings(reconciliation_run_id, old_commit_sha)",
     "CREATE INDEX IF NOT EXISTS idx_rewrite_mappings_repository_old_sha ON rewrite_mappings(repository_id, old_commit_sha)",
     "CREATE INDEX IF NOT EXISTS idx_conversations_repository_source ON conversations(repository_id, source)",
+    "CREATE INDEX IF NOT EXISTS idx_trace_retry_queue_created_at ON trace_retry_queue(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_reconciliation_metrics_created_at ON reconciliation_metrics(created_at)",
 ];
 
 #[derive(Clone, Copy, Debug)]
@@ -276,6 +304,8 @@ mod tests {
             "reconciliation_runs",
             "rewrite_mappings",
             "conversations",
+            "trace_retry_queue",
+            "reconciliation_metrics",
         ] {
             assert!(runtime.block_on(sqlite_object_exists(
                 LocalDatabaseTarget::Path(&path),
@@ -292,6 +322,8 @@ mod tests {
             "idx_rewrite_mappings_run_old_sha",
             "idx_rewrite_mappings_repository_old_sha",
             "idx_conversations_repository_source",
+            "idx_trace_retry_queue_created_at",
+            "idx_reconciliation_metrics_created_at",
         ] {
             assert!(runtime.block_on(sqlite_object_exists(
                 LocalDatabaseTarget::Path(&path),
