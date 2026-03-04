@@ -120,7 +120,7 @@ Analyze the SCE Plan (`/change-to-plan`) and Execute (`/next-task`) workflows en
       - `nix run .#pkl-check-generated`
       - `nix flake check`
 
-- [ ] T07: Validation and cleanup (status:todo)
+- [x] T07: Validation and cleanup (status:done)
   - Task ID: T07
   - Goal: Validate that analysis artifacts plus script implementation outputs are coherent, complete, and ready for downstream reduction work.
   - Boundaries (in/out of scope):
@@ -133,6 +133,36 @@ Analyze the SCE Plan (`/change-to-plan`) and Execute (`/next-task`) workflows en
   - Verification notes (commands or checks):
     - Manual traceability check from success criteria to T01-T06 outputs.
     - Execution-phase validation baseline: `nix run .#pkl-check-generated` and `nix flake check` plus required `sce-context-sync` completion.
+  - Implementation evidence:
+    - Completed manual traceability mapping from section `## 2) Success criteria` to task artifacts recorded under T01-T06 implementation-evidence blocks in this plan, including T06 script outputs and command evidence.
+    - Confirmed required token-footprint artifacts exist at `context/tmp/token-footprint/workflow-token-count-latest.json`, `context/tmp/token-footprint/workflow-token-count-latest.md`, `context/tmp/token-footprint/workflow-token-count-t06-initial.json`, `context/tmp/token-footprint/workflow-token-count-t06-baseline-check.json`, and `context/tmp/token-footprint/workflow-token-count-t06-final.json`.
+    - Completed required shared-file context verification for `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/patterns.md`, and `context/context-map.md`; no root-context edits were needed because T07 introduced no new behavior, architecture boundary, or terminology.
+    - Verified feature discoverability links are already present and current for token-footprint artifacts (`context/sce/workflow-token-footprint-inventory.md` and `context/sce/workflow-token-footprint-manifest.json`) via `context/context-map.md`, with matching usage references in `context/overview.md` and terms in `context/glossary.md`.
+    - Re-ran execution-phase validation baseline and captured passing evidence:
+      - `nix run .#pkl-check-generated`
+      - `nix flake check`
+    - Residual limitations/assumptions remain unchanged from T03/T05/T06 contracts: estimates are static (not runtime telemetry), `o200k_base` tokenizer fallback behavior remains in effect, and no hard reduction threshold is imposed by this plan.
 
 ## 5) Open questions
 - None. Scope is confirmed to SCE workflow artifacts, static estimation only, and no hard reduction target at this stage.
+
+## 6) Final validation report (T07)
+
+- Commands run:
+  - `nix run .#pkl-check-generated` (exit: 0; key output: `Generated outputs are up to date.`)
+  - `nix flake check` (exit: 0; key output: check derivation evaluated and ran successfully; system-compatibility warning only)
+- Failed checks and follow-ups:
+  - None.
+- Temporary scaffolding cleanup:
+  - No temporary implementation scaffolding was introduced in T07; no cleanup action required.
+- Context final-state verification:
+  - Verified `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/patterns.md`, and `context/context-map.md` remain aligned to current repository behavior.
+  - Verified feature discoverability coverage for token-footprint artifacts remains present in shared context references.
+- Success-criteria verification summary:
+  - Inventory and hotspot/method/strategy artifacts are present via T01-T05 evidence in this plan and `context/sce/workflow-token-footprint-inventory.md`.
+  - Static token-count implementation and usage evidence are present via T06 entries (`evals/token-count-workflows.ts`, script command evidence, and token-footprint artifacts under `context/tmp/token-footprint/`).
+  - Validation-and-cleanup evidence (traceability mapping, baseline checks, context-sync verification, residual assumptions) is recorded under T07 implementation evidence.
+- Residual risks:
+  - Static token estimates are not runtime telemetry.
+  - Tokenizer fallback behavior (`o200k_base` fallback to `cl100k_base`) remains an implementation assumption.
+  - No mandatory numeric reduction threshold is enforced by this plan.
