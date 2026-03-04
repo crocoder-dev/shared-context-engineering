@@ -25,8 +25,9 @@ compatibility: claude
 3) Stop and ask: "Continue with implementation now?" (yes/no).
 4) Implement minimal in-scope changes.
 5) Run light task-level tests/checks and lints first, and run a build when the build is light/fast (targeted over full-suite unless requested), then capture evidence.
-6) Keep session-only scraps in `context/tmp/`.
-7) Update task status in `context/plans/{plan_id}.md`.
+6) Record whether the implementation is an important change for context sync (root-edit required) or verify-only (no root edits expected).
+7) Keep session-only scraps in `context/tmp/`.
+8) Update task status in `context/plans/{plan_id}.md`.
 
 ## Scope expansion rule
 - If out-of-scope edits are needed, stop and ask for approval.

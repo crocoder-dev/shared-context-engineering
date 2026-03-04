@@ -37,6 +37,7 @@ Examples:
 5. Run light task-level checks/lints and a build when light/fast; capture evidence.
 6. Update task status in the plan file.
 7. Run `sce-context-sync` as a mandatory done gate.
+   - Classify context impact first: important change => root shared-file edits required; localized change => root shared files are verify-only.
 8. Wait for feedback; if in-scope fixes are needed, apply fixes, rerun light checks/build-if-fast, and sync context again.
 9. If this is the final plan task, run `sce-validation`.
 10. If more tasks remain, prompt the next-session command for the next task.
