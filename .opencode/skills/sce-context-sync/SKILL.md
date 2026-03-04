@@ -8,15 +8,15 @@ compatibility: opencode
 - Context is durable AI memory and must reflect current-state truth.
 - If context and code diverge, code is source of truth.
 
-## Mandatory sync pass (always check all)
-For every completed implementation task, explicitly review and update these files when relevant:
+## Mandatory sync pass (important-change gated)
+For every completed implementation task, run a sync pass over these shared files:
 - `context/overview.md`
 - `context/architecture.md`
 - `context/glossary.md`
 - `context/patterns.md`
 - `context/context-map.md`
 
-Do not skip `overview`, `architecture`, or `glossary` by default. If no edit is needed, verify they still match current code behavior.
+Do not default to editing root context files on every task. First classify whether the task is an important change; then edit or verify accordingly.
 
 ## Root context significance gating
 - Treat root context edits as required when a task introduces or changes cross-cutting behavior, repository-wide policy/contracts, architecture boundaries, or canonical terminology.

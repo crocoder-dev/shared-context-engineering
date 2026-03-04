@@ -44,6 +44,25 @@ For each task include:
 - Done when
 - Verification notes (commands or checks)
 
+## Atomic task slicing contract (required)
+- Author each executable task as one atomic commit unit by default.
+- Every task must be scoped so one contributor can complete it and land it as one coherent commit without bundling unrelated changes.
+- If a candidate task would require multiple independent commits (for example: refactor + behavior change + docs), split it into separate sequential tasks before finalizing the plan.
+- Keep broad wrappers (`polish`, `finalize`, `misc updates`) out of executable tasks; convert them into specific outcomes with concrete acceptance checks.
+
+Use this quick atomicity check before accepting each task:
+- `single_intent`: task delivers one primary outcome
+- `single_area`: task touch scope is narrow and related
+- `single_verification`: done checks validate one coherent change set
+
+Example compliant skeleton:
+- [ ] T0X: `[single intent title]` (status:todo)
+  - Task ID: T0X
+  - Goal: `[one outcome]`
+  - Boundaries (in/out of scope): `[tight scope]`
+  - Done when: `[clear acceptance for one coherent change]`
+  - Verification notes (commands or checks): `[targeted checks for this change]`
+
 Use checkbox lines for machine-friendly progress tracking:
 - `- [ ] T01: ... (status:todo)`
 
