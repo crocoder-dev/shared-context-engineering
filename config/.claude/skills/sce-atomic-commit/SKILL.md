@@ -72,6 +72,12 @@ Default split order:
 3. tests
 4. docs
 
+## Context-file guidance gating
+
+- Check staged diff scope before proposing commit messaging guidance.
+- If staged changes are context-only (`context/**`), context-file-focused guidance is allowed.
+- If staged changes are mixed (`context/**` + non-`context/**`), avoid default context-file commit reminders and prioritize guidance that reflects the full staged scope.
+
 ## Anti-patterns
 
 - vague subjects ("cleanup", "updates")

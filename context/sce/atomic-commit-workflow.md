@@ -19,6 +19,8 @@ Naming decision:
 
 - Empty command arguments are supported; the command infers intent from staged changes.
 - Before any proposal, the command must prompt for explicit staging confirmation (`git add <files>` guidance).
+- After staging confirmation, commit guidance must classify staged diff scope (`context/`-only vs mixed `context/` + non-`context/`).
+- Context-file-focused commit reminders are allowed only for `context/`-only staged diffs; mixed staged diffs must not receive default context-file reminders.
 - Command text stays thin and gate-focused; commit grammar and atomic split logic are skill-owned in `sce-atomic-commit`.
 - Output is proposal-only: commit message(s) and split guidance.
 - The workflow never creates commits automatically.
