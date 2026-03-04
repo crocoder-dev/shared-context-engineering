@@ -11,12 +11,12 @@ The repository now includes a Rust CLI crate at `cli/` for SCE automation work.
 - Command contract catalog: `cli/src/command_surface.rs`
 - Dependency contract snapshot: `cli/src/dependency_contract.rs`
 - Local Turso adapter: `cli/src/services/local_db.rs`
-- Service domains: `cli/src/services/{agent_trace,setup,mcp,hooks,sync}.rs`
+- Service domains: `cli/src/services/{agent_trace,setup,doctor,mcp,hooks,sync}.rs`
 - Shared test temp-path helper: `cli/src/test_support.rs` (`TestTempDir`, test-only module)
 
 ## Onboarding documentation
 
-- `cli/README.md` includes quick-start commands for `help`, `setup`, `mcp`, `hooks`, and `sync`.
+- `cli/README.md` includes quick-start commands for `help`, `setup`, `doctor`, `mcp`, `hooks`, and `sync`.
 - The README explicitly distinguishes implemented behavior from placeholders and maps future work to module contracts.
 - Verification guidance in the README uses crate-local `cargo check`, `cargo test`, and `cargo build` commands, plus release/install commands for current installability (`cargo build --manifest-path cli/Cargo.toml --release`, `cargo install --path cli --locked`).
 
@@ -42,6 +42,7 @@ The repository now includes a Rust CLI crate at `cli/` for SCE automation work.
 
 - `help`: implemented
 - `setup`: implemented
+- `doctor`: implemented
 - `mcp`: placeholder
 - `hooks`: placeholder
 - `sync`: placeholder
@@ -52,6 +53,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 `setup` now also exposes compile-time embedded config assets for OpenCode/Claude targets, sourced from `config/.opencode/**` and `config/.claude/**` via `cli/build.rs` with normalized forward-slash relative paths and target-scoped iteration APIs.
 `setup` additionally includes a repository-root install engine (`install_embedded_setup_assets`) that stages embedded files and applies backup-and-replace safety for `.opencode/`/`.claude/` with rollback restoration if staged swap fails.
 `setup` now executes end-to-end and prints deterministic completion details including selected target(s), per-target install count, and backup actions.
+`doctor` now executes end-to-end and reports hook rollout readiness by validating effective hook-path source plus required hook presence/executable permissions.
 `sync` includes a local Turso smoke gate backed by a lazily initialized shared tokio current-thread runtime and a placeholder cloud-sync gateway plan.
 
 ## Command loop and error model
@@ -63,18 +65,20 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - Interactive `sce setup` prompt cancellation/interrupt exits cleanly with: `Setup cancelled. No files were changed.`
 - Command handlers return deterministic status messaging:
   - `setup`: `Setup completed successfully.` plus selected targets, per-target install destinations/counts, and backup status lines.
+  - `doctor`: `SCE doctor: ready|not ready` plus hook-path source, required hook checks, and actionable diagnostics.
   - `TODO: 'mcp' is planned and not implemented yet. MCP file-cache surface defines 2 placeholder tool contract(s) with max 1024 entries.`
-  - `TODO: 'hooks' is planned and not implemented yet. Hook event model reserves 2 git hook(s) with generated-region tracking placeholders.`
+  - `TODO: 'hooks' is planned and not implemented yet. Hook event model reserves 3 git hook(s) with generated-region tracking placeholders, staged-only pre-commit checkpoint preview over 1 file(s), and commit-msg canonical trailer preview applied=true.`
   - `TODO: 'sync' cloud workflows are planned and not implemented yet. Local Turso smoke check succeeded (1) row inserted; cloud sync placeholder enumerates 3 phase(s) and plan holds 3 checkpoint(s).`
 
 ## Service contracts
 
 - `cli/src/services/setup.rs` defines setup parsing/selection contracts plus runtime install orchestration (`run_setup_for_mode`) over the embedded asset install engine.
+- `cli/src/services/doctor.rs` defines hook rollout health validation (`run_doctor`) with path-source detection (default/local/global) and required-hook presence/executable checks.
 - `cli/src/services/agent_trace.rs` defines the task-scoped schema adapter contract (`adapt_trace_payload`) from internal attribution input structs to Agent Trace-shaped record structs, including fixed git `vcs` mapping, contributor type mapping, and reserved `dev.crocoder.sce.*` metadata placement.
 - `cli/src/services/mcp.rs` defines `McpService`, a `McpCapabilitySnapshot` model (primary + supported transports), and `CachePolicy` defaults for future file-cache workflows (`cache-put`/`cache-get`) with `runnable: false` placeholders.
 - `cli/src/services/hooks.rs` defines `HookService` plus hook-event/generated-region event placeholders (`HookEventModel`, `HookEvent`, `GeneratedRegionEvent`) and keeps placeholder recording path compile-safe by consuming hook/lifecycle variants without enabling production hook actions.
 - `cli/src/services/sync.rs` defines cloud-sync abstraction points (`CloudSyncGateway`, `CloudSyncRequest`, `CloudSyncPlan`) layered after the local Turso smoke gate.
-- `cli/src/app.rs` dispatches `setup`, `mcp`, and `hooks` through service-level modules so runtime messages are sourced from domain modules instead of inline strings.
+- `cli/src/app.rs` dispatches `setup`, `doctor`, `mcp`, and `hooks` through service-level modules so runtime messages are sourced from domain modules instead of inline strings.
 
 ## Local Turso adapter behavior
 

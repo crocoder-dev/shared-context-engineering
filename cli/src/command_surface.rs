@@ -25,6 +25,11 @@ pub const COMMANDS: &[CommandContract] = &[
         purpose: "Prepare local repository/workspace prerequisites",
     },
     CommandContract {
+        name: services::doctor::NAME,
+        status: ImplementationStatus::Implemented,
+        purpose: "Validate local git-hook installation readiness",
+    },
+    CommandContract {
         name: services::mcp::NAME,
         status: ImplementationStatus::Placeholder,
         purpose: "Host MCP file-cache tooling commands",
@@ -65,7 +70,7 @@ Usage:\n  sce [command]\n\n\
 Setup usage:\n  sce setup [--opencode|--claude|--both]\n\n\
 Commands:\n{}\n\n\
 Setup defaults to interactive target selection when no setup target flag is passed.\n\
-`setup` is implemented; `mcp`, `hooks`, and `sync` remain placeholder-oriented.\n",
+`setup` and `doctor` are implemented; `mcp`, `hooks`, and `sync` remain placeholder-oriented.\n",
         command_rows
     )
 }

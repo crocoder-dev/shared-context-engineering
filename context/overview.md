@@ -6,10 +6,11 @@ It also includes an early Rust CLI foundation at `cli/` for Shared Context Engin
 The crate ships onboarding and usage documentation at `cli/README.md` that reflects current implemented vs placeholder behavior.
 
 The CLI crate currently enforces a minimal dependency contract: `anyhow`, `inquire`, `lexopt`, `tokio`, and `turso`.
-Its command loop is implemented with `lexopt` argument parsing and `anyhow` error handling, with real setup orchestration plus placeholder dispatch for non-setup commands through explicit service contracts.
+Its command loop is implemented with `lexopt` argument parsing and `anyhow` error handling, with real setup orchestration, implemented `doctor` rollout validation, and placeholder dispatch for deferred commands through explicit service contracts.
 The `setup` command includes an `inquire`-backed target-selection flow: default interactive selection for OpenCode/Claude/both, explicit non-interactive target flags (`--opencode`, `--claude`, `--both`), deterministic mutually-exclusive validation, and non-destructive cancellation exits.
 The CLI now compiles an embedded setup asset manifest from `config/.opencode/**` and `config/.claude/**` via `cli/build.rs`; `cli/src/services/setup.rs` exposes deterministic normalized relative paths plus file bytes and target-scoped iteration without runtime reads from `config/`.
 The setup service also provides repository-root install orchestration: it resolves interactive or flag-based target selection, installs embedded assets, and reports deterministic completion details (selected target(s), installed file counts, and backup actions).
+The `doctor` command now validates Agent Trace local rollout readiness by resolving effective git hook-path source (default, per-repo `core.hooksPath`, or global `core.hooksPath`) and checking required hook presence/executable permissions with actionable diagnostics.
 The `mcp` placeholder contract is now scoped to future file-cache workflows (`cache-put`/`cache-get`) and remains intentionally non-runnable.
 The `sync` placeholder performs a local Turso smoke check through a lazily initialized shared tokio current-thread runtime and then reports a deferred cloud-sync plan from a placeholder gateway contract.
 The nested CLI flake (`cli/flake.nix`) now applies a Rust overlay-backed stable toolchain (with `rustfmt`) and uses that toolchain contract for CLI check/build derivations.
@@ -28,6 +29,7 @@ The Agent Trace service now also provides a deterministic payload-builder path (
 The hooks service now includes a pre-commit staged checkpoint finalization contract (`finalize_pre_commit_checkpoint`) that enforces staged-only attribution, captures index/tree anchors, and no-ops for disabled/unavailable/bare-repo runtime states; this behavior is documented in `context/sce/agent-trace-pre-commit-staged-checkpoint.md`.
 The hooks service now also exposes a `commit-msg` co-author trailer policy (`apply_commit_msg_coauthor_policy`) that conditionally injects exactly one canonical SCE trailer based on `SCE_DISABLED`, `SCE_COAUTHOR_ENABLED`, and staged-attribution presence, with idempotent deduplication behavior documented in `context/sce/agent-trace-commit-msg-coauthor-policy.md`.
 The hooks service now also includes a post-commit trace finalization seam (`finalize_post_commit_trace`) that builds canonical Agent Trace payloads, enforces commit-level idempotency guards, performs notes + DB dual writes, and enqueues retry fallback metadata when persistence targets fail; this behavior is documented in `context/sce/agent-trace-post-commit-dual-write.md`.
+The CLI now also includes a hook rollout doctor contract documented in `context/sce/agent-trace-hook-doctor.md`.
 
 ## Repository model
 
@@ -84,3 +86,4 @@ Lightweight post-task verification baseline (required after each completed task)
 - Use `context/sce/agent-trace-pre-commit-staged-checkpoint.md` for the implemented T04 pre-commit staged-only finalization contract and runtime no-op guards.
 - Use `context/sce/agent-trace-commit-msg-coauthor-policy.md` for the implemented T05 commit-msg canonical co-author trailer policy and idempotent dedupe behavior.
 - Use `context/sce/agent-trace-post-commit-dual-write.md` for the implemented T06 post-commit trace finalization and dual-write + queue-fallback behavior.
+- Use `context/sce/agent-trace-hook-doctor.md` for the implemented T07 hook install and health validation behavior (`sce doctor`) across default/per-repo/global hook-path installs.
