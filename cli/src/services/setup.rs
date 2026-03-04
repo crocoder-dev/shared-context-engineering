@@ -4,6 +4,7 @@ use lexopt::{Arg, ValueExt};
 use std::{
     fs, io,
     path::{Component, Path, PathBuf},
+    process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -170,6 +171,312 @@ pub struct SetupInstallTargetResult {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SetupInstallOutcome {
     pub target_results: Vec<SetupInstallTargetResult>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequiredHookInstallStatus {
+    Installed,
+    Updated,
+    Skipped,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequiredHookInstallResult {
+    pub hook_name: String,
+    pub hook_path: PathBuf,
+    pub status: RequiredHookInstallStatus,
+    pub backup_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequiredHooksInstallOutcome {
+    pub repository_root: PathBuf,
+    pub hooks_directory: PathBuf,
+    pub hook_results: Vec<RequiredHookInstallResult>,
+}
+
+pub fn install_required_git_hooks(repository_root: &Path) -> Result<RequiredHooksInstallOutcome> {
+    install_required_git_hooks_with_rename(repository_root, |from, to| fs::rename(from, to))
+}
+
+fn install_required_git_hooks_with_rename<F>(
+    repository_root: &Path,
+    mut rename_fn: F,
+) -> Result<RequiredHooksInstallOutcome>
+where
+    F: FnMut(&Path, &Path) -> io::Result<()>,
+{
+    let resolved_repository_root = resolve_git_repository_root(repository_root)?;
+    let hooks_directory = resolve_git_hooks_directory(&resolved_repository_root)?;
+    fs::create_dir_all(&hooks_directory).with_context(|| {
+        format!(
+            "Failed to create git hooks directory '{}'",
+            hooks_directory.display()
+        )
+    })?;
+
+    let mut hook_results = Vec::new();
+    for hook_asset in iter_required_hook_assets() {
+        let hook_result =
+            install_single_required_hook_with_rename(&hooks_directory, hook_asset, &mut rename_fn)?;
+        hook_results.push(hook_result);
+    }
+
+    Ok(RequiredHooksInstallOutcome {
+        repository_root: resolved_repository_root,
+        hooks_directory,
+        hook_results,
+    })
+}
+
+fn install_single_required_hook_with_rename<F>(
+    hooks_directory: &Path,
+    hook_asset: &EmbeddedAsset,
+    rename_fn: &mut F,
+) -> Result<RequiredHookInstallResult>
+where
+    F: FnMut(&Path, &Path) -> io::Result<()>,
+{
+    validate_embedded_relative_path(hook_asset.relative_path)?;
+
+    let hook_path = hooks_directory.join(hook_asset.relative_path);
+    let existing_metadata = fs::metadata(&hook_path).ok();
+
+    if existing_metadata
+        .as_ref()
+        .is_some_and(|metadata| metadata.is_file())
+    {
+        let existing_bytes = fs::read(&hook_path)
+            .with_context(|| format!("Failed to read existing hook '{}'", hook_path.display()))?;
+        let executable = is_executable_file(&hook_path)?;
+
+        if existing_bytes == hook_asset.bytes && executable {
+            return Ok(RequiredHookInstallResult {
+                hook_name: hook_asset.relative_path.to_string(),
+                hook_path,
+                status: RequiredHookInstallStatus::Skipped,
+                backup_path: None,
+            });
+        }
+    } else if existing_metadata.is_some() {
+        bail!(
+            "Existing hook target '{}' is not a file",
+            hook_path.display()
+        );
+    }
+
+    let hook_staging_path = create_hook_staging_path(hooks_directory, hook_asset.relative_path)?;
+    if let Err(error) = write_hook_payload_to_staging(&hook_staging_path, hook_asset.bytes) {
+        cleanup_path_if_exists(&hook_staging_path);
+        return Err(error);
+    }
+
+    if existing_metadata.is_none() {
+        if let Err(error) = rename_fn(&hook_staging_path, &hook_path).with_context(|| {
+            format!(
+                "Failed to install required hook '{}' at '{}'",
+                hook_asset.relative_path,
+                hook_path.display()
+            )
+        }) {
+            cleanup_path_if_exists(&hook_staging_path);
+            return Err(error);
+        }
+
+        return Ok(RequiredHookInstallResult {
+            hook_name: hook_asset.relative_path.to_string(),
+            hook_path,
+            status: RequiredHookInstallStatus::Installed,
+            backup_path: None,
+        });
+    }
+
+    let backup_path = next_backup_path(&hook_path)?;
+    rename_fn(&hook_path, &backup_path).with_context(|| {
+        format!(
+            "Failed to back up existing hook '{}' to '{}'",
+            hook_path.display(),
+            backup_path.display()
+        )
+    })?;
+
+    if let Err(error) = rename_fn(&hook_staging_path, &hook_path).with_context(|| {
+        format!(
+            "Failed to update required hook '{}' at '{}'",
+            hook_asset.relative_path,
+            hook_path.display()
+        )
+    }) {
+        cleanup_path_if_exists(&hook_staging_path);
+
+        if !hook_path.exists() {
+            if let Err(restore_error) = rename_fn(&backup_path, &hook_path) {
+                return Err(error.context(format!(
+                    "Rollback failed while restoring hook '{}' from backup '{}': {}",
+                    hook_path.display(),
+                    backup_path.display(),
+                    restore_error
+                )));
+            }
+        }
+
+        return Err(error);
+    }
+
+    Ok(RequiredHookInstallResult {
+        hook_name: hook_asset.relative_path.to_string(),
+        hook_path,
+        status: RequiredHookInstallStatus::Updated,
+        backup_path: Some(backup_path),
+    })
+}
+
+fn write_hook_payload_to_staging(staging_path: &Path, bytes: &[u8]) -> Result<()> {
+    fs::write(staging_path, bytes).with_context(|| {
+        format!(
+            "Failed to write staged hook payload '{}'",
+            staging_path.display()
+        )
+    })?;
+    ensure_executable_permissions(staging_path)?;
+    Ok(())
+}
+
+fn create_hook_staging_path(hooks_directory: &Path, hook_name: &str) -> Result<PathBuf> {
+    let epoch_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("System clock is before UNIX_EPOCH")?
+        .as_nanos();
+    let sanitized_hook_name = hook_name.replace('/', "-");
+
+    for attempt in 0..1000_u16 {
+        let candidate = hooks_directory.join(format!(
+            ".sce-hook-staging-{sanitized_hook_name}-{epoch_nanos}-{}-{attempt}",
+            std::process::id()
+        ));
+
+        match fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&candidate)
+        {
+            Ok(_) => return Ok(candidate),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Failed to allocate hook staging file '{}'",
+                        candidate.display()
+                    )
+                });
+            }
+        }
+    }
+
+    bail!(
+        "Could not allocate a unique hook staging file under '{}'",
+        hooks_directory.display()
+    )
+}
+
+fn resolve_git_repository_root(repository_root: &Path) -> Result<PathBuf> {
+    let repository_root_output = run_git_command_in_directory(
+        repository_root,
+        &["rev-parse", "--show-toplevel"],
+        "Failed to resolve repository root. Ensure '--repo' points to an accessible git repository.",
+    )?;
+    Ok(PathBuf::from(repository_root_output))
+}
+
+fn resolve_git_hooks_directory(repository_root: &Path) -> Result<PathBuf> {
+    let hooks_directory_output = run_git_command_in_directory(
+        repository_root,
+        &["rev-parse", "--git-path", "hooks"],
+        "Failed to resolve effective git hooks path.",
+    )?;
+
+    let hooks_directory = PathBuf::from(&hooks_directory_output);
+    if hooks_directory.is_absolute() {
+        return Ok(hooks_directory);
+    }
+
+    Ok(repository_root.join(hooks_directory))
+}
+
+fn run_git_command_in_directory(
+    repository_root: &Path,
+    args: &[&str],
+    context_message: &str,
+) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repository_root)
+        .output()
+        .with_context(|| {
+            format!(
+                "{} (directory: '{}')",
+                context_message,
+                repository_root.display()
+            )
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let diagnostic = if stderr.is_empty() {
+            "git command exited with a non-zero status".to_string()
+        } else {
+            stderr
+        };
+        bail!("{} {}", context_message, diagnostic);
+    }
+
+    let stdout = String::from_utf8(output.stdout)
+        .context("git command output contained invalid UTF-8")?
+        .trim()
+        .to_string();
+    if stdout.is_empty() {
+        bail!("{} git command returned empty output", context_message);
+    }
+
+    Ok(stdout)
+}
+
+#[cfg(unix)]
+fn ensure_executable_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("Failed to read metadata for '{}'", path.display()))?;
+    let mut permissions = metadata.permissions();
+    permissions.set_mode(permissions.mode() | 0o111);
+    fs::set_permissions(path, permissions).with_context(|| {
+        format!(
+            "Failed to set executable permissions for '{}'",
+            path.display()
+        )
+    })?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_executable_permissions(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> Result<bool> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("Failed to read metadata for '{}'", path.display()))?;
+    Ok(metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> Result<bool> {
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("Failed to read metadata for '{}'", path.display()))?;
+    Ok(metadata.is_file())
 }
 
 pub fn install_embedded_setup_assets(
@@ -540,6 +847,7 @@ mod tests {
         cell::Cell,
         fs, io,
         path::{Path, PathBuf},
+        process::Command,
     };
 
     use crate::test_support::TestTempDir;
@@ -547,10 +855,11 @@ mod tests {
 
     use super::{
         get_required_hook_asset, install_embedded_setup_assets,
-        install_embedded_setup_assets_with_rename, iter_embedded_assets_for_setup_target,
+        install_embedded_setup_assets_with_rename, install_required_git_hooks,
+        install_required_git_hooks_with_rename, iter_embedded_assets_for_setup_target,
         iter_required_hook_assets, parse_setup_cli_options, resolve_setup_dispatch,
         resolve_setup_mode, run_setup_for_mode, setup_usage_text, RequiredHookAsset,
-        SetupCliOptions, SetupDispatch, SetupMode, SetupTarget,
+        RequiredHookInstallStatus, SetupCliOptions, SetupDispatch, SetupMode, SetupTarget,
     };
 
     #[derive(Clone, Copy, Debug)]
@@ -878,6 +1187,166 @@ mod tests {
             );
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn required_hook_install_installs_missing_hooks_in_default_directory() -> Result<()> {
+        let temp = TestTempDir::new("sce-setup-hook-install-tests")?;
+        init_git_repo(temp.path())?;
+
+        let outcome = install_required_git_hooks(temp.path())?;
+        assert_eq!(outcome.repository_root, temp.path().to_path_buf());
+        assert_eq!(outcome.hook_results.len(), 3);
+        for hook in outcome.hook_results {
+            assert_eq!(hook.status, RequiredHookInstallStatus::Installed);
+            assert!(hook.hook_path.exists());
+            assert!(hook.backup_path.is_none());
+            assert_hook_is_executable(&hook.hook_path)?;
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn required_hook_install_rerun_reports_skipped_for_unchanged_hooks() -> Result<()> {
+        let temp = TestTempDir::new("sce-setup-hook-install-tests")?;
+        init_git_repo(temp.path())?;
+
+        let first = install_required_git_hooks(temp.path())?;
+        assert!(first
+            .hook_results
+            .iter()
+            .all(|hook| hook.status == RequiredHookInstallStatus::Installed));
+
+        let second = install_required_git_hooks(temp.path())?;
+        assert!(second
+            .hook_results
+            .iter()
+            .all(|hook| hook.status == RequiredHookInstallStatus::Skipped));
+        assert!(second
+            .hook_results
+            .iter()
+            .all(|hook| hook.backup_path.is_none()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn required_hook_install_updates_noncanonical_hook_in_custom_hooks_path() -> Result<()> {
+        let temp = TestTempDir::new("sce-setup-hook-install-tests")?;
+        init_git_repo(temp.path())?;
+
+        run_git_in_repo(temp.path(), &["config", "core.hooksPath", ".githooks"])?;
+
+        let custom_hooks_directory = temp.path().join(".githooks");
+        fs::create_dir_all(&custom_hooks_directory)?;
+        let commit_msg_path = custom_hooks_directory.join("commit-msg");
+        fs::write(&commit_msg_path, b"#!/bin/sh\necho legacy\n")?;
+        set_test_file_mode(&commit_msg_path, 0o644)?;
+
+        let outcome = install_required_git_hooks(temp.path())?;
+        assert_eq!(outcome.hooks_directory, custom_hooks_directory);
+
+        let updated = outcome
+            .hook_results
+            .iter()
+            .find(|hook| hook.hook_name == "commit-msg")
+            .expect("commit-msg result should exist");
+        assert_eq!(updated.status, RequiredHookInstallStatus::Updated);
+        let backup_path = updated
+            .backup_path
+            .as_ref()
+            .expect("updated hook should retain backup path");
+        assert!(backup_path.exists());
+        assert_eq!(fs::read(backup_path)?, b"#!/bin/sh\necho legacy\n");
+        assert_hook_is_executable(&updated.hook_path)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn required_hook_install_rolls_back_when_hook_swap_fails() -> Result<()> {
+        let temp = TestTempDir::new("sce-setup-hook-install-tests")?;
+        init_git_repo(temp.path())?;
+
+        let hooks_directory = temp.path().join(".git/hooks");
+        fs::create_dir_all(&hooks_directory)?;
+        let commit_msg_path = hooks_directory.join("commit-msg");
+        fs::write(&commit_msg_path, b"#!/bin/sh\necho legacy\n")?;
+
+        let rename_calls = Cell::new(0_u8);
+        let error = install_required_git_hooks_with_rename(temp.path(), |from, to| {
+            rename_calls.set(rename_calls.get() + 1);
+            if rename_calls.get() == 2 {
+                return Err(io::Error::other("injected hook swap failure"));
+            }
+
+            fs::rename(from, to)
+        })
+        .expect_err("hook swap failure should bubble up");
+
+        assert!(error
+            .to_string()
+            .contains("Failed to update required hook 'commit-msg'"));
+        assert!(commit_msg_path.exists());
+        assert_eq!(fs::read(&commit_msg_path)?, b"#!/bin/sh\necho legacy\n");
+        assert!(!hooks_directory.join("commit-msg.backup").exists());
+
+        for entry in fs::read_dir(&hooks_directory)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            assert!(
+                !name.starts_with(".sce-hook-staging-"),
+                "hook staging file should be cleaned up after failure"
+            );
+        }
+
+        Ok(())
+    }
+
+    fn init_git_repo(repository_root: &Path) -> Result<()> {
+        run_git_in_repo(repository_root, &["init", "-q"])?;
+        Ok(())
+    }
+
+    fn run_git_in_repo(repository_root: &Path, args: &[&str]) -> Result<()> {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(repository_root)
+            .status()?;
+        if !status.success() {
+            anyhow::bail!("git command failed for test repository")
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn set_test_file_mode(path: &Path, mode: u32) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn set_test_file_mode(_path: &Path, _mode: u32) -> Result<()> {
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn assert_hook_is_executable(path: &Path) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let metadata = fs::metadata(path)?;
+        assert!(metadata.permissions().mode() & 0o111 != 0);
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn assert_hook_is_executable(path: &Path) -> Result<()> {
+        assert!(path.exists());
         Ok(())
     }
 

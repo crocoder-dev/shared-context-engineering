@@ -77,6 +77,7 @@
 - Treat setup prompt cancellation/interrupt as a non-destructive exit path with explicit user messaging (no file mutations and no partial side effects).
 - For setup install prep, generate compile-time embedded asset manifests from `config/.opencode/**`, `config/.claude/**`, and `cli/assets/hooks/**` in `cli/build.rs`, keep relative paths normalized to forward-slash form, and expose target-scoped iterators/lookups from the setup service layer for installer wiring.
 - For setup install execution, write selected embedded assets into a per-target staging directory first, then swap into repository-root `.opencode/`/`.claude/` with backup-and-replace semantics; when swap fails after backup creation, restore the original target path from backup and clean staging directories.
+- For required-hook setup execution, resolve repository root and effective hooks directory from git (`rev-parse --show-toplevel`, `rev-parse --git-path hooks`), then apply deterministic per-hook outcomes (`Installed`, `Updated`, `Skipped`) with staged writes, executable-bit enforcement, and backup-and-restore rollback on swap failures.
 - For setup command messaging, emit deterministic completion output that includes selected target(s), per-target install counts, and whether backup was created.
 - Keep module seams for future domains present and compile-safe even when behavior is deferred.
 - Keep dependency additions explicit and minimal in `cli/Cargo.toml`, and anchor dependency intent in lightweight compile-time code references (`cli/src/dependency_contract.rs`).
