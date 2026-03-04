@@ -23,6 +23,7 @@ Feature/domain context:
 - `context/sce/agent-trace-commit-msg-coauthor-policy.md` (T05 commit-msg canonical co-author trailer policy with env-gated injection and idempotent dedupe)
 - `context/sce/agent-trace-post-commit-dual-write.md` (T06 post-commit trace finalization contract, notes+DB dual-write behavior, idempotency ledger guard, and retry-queue fallback semantics)
 - `context/sce/agent-trace-hook-doctor.md` (T07 `sce doctor` hook install/health validation contract for default, per-repo, and global hook-path rollout)
+- `context/sce/setup-githooks-install-contract.md` (T01 canonical `sce setup --hooks` install contract for target-path resolution, idempotent outcomes, backup/rollback, and doctor-readiness alignment)
 - `context/sce/agent-trace-post-rewrite-local-remap-ingestion.md` (T08 `post-rewrite` local remap ingestion contract with strict pair parsing, rewrite-method normalization, and deterministic replay-key derivation)
 - `context/sce/agent-trace-rewrite-trace-transformation.md` (T09 rewritten-SHA trace transformation contract with rewrite metadata, confidence-to-quality mapping, and notes+DB persistence parity)
 - `context/sce/agent-trace-core-schema-migrations.md` (T10 core local schema migration contract for `repositories`, `commits`, `trace_records`, and `trace_ranges` with upgrade-safe idempotent create semantics)
