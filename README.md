@@ -18,6 +18,29 @@ boundaries.
 
 Built by [CroCoder](https://www.crocoder.dev/)
 
+## Workflow token counting
+
+Static workflow token-footprint reports are produced by the T06 script at
+`evals/token-count-workflows.ts` using the canonical manifest
+`context/sce/workflow-token-footprint-manifest.json`.
+
+```bash
+cd evals
+bun run token-count-workflows
+```
+
+Optional inputs:
+
+```bash
+bun run token-count-workflows --run-id local-test
+bun run token-count-workflows --baseline ../context/tmp/token-footprint/workflow-token-count-latest.json
+```
+
+Outputs are written to `context/tmp/token-footprint/` as:
+- `workflow-token-count-latest.json`
+- `workflow-token-count-latest.md`
+- `workflow-token-count-<run_id>.json` (when `--run-id` is provided)
+
 ## Dev shell agnix tooling
 
 This repository exposes `agnix` and `agnix-lsp` through `nix develop` using a Nix-first shell with Rust toolchain support.

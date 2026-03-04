@@ -94,7 +94,7 @@ Analyze the SCE Plan (`/change-to-plan`) and Execute (`/next-task`) workflows en
     - Added canonical machine-readable manifest `context/sce/workflow-token-footprint-manifest.json` covering all T03 surfaces with explicit `scope_rule` and `conditional` fields.
     - Synced discoverability references in `context/context-map.md`, `context/overview.md`, and `context/glossary.md`.
 
-- [ ] T06: Implement TypeScript static token-count workflow script (status:todo)
+- [x] T06: Implement TypeScript static token-count workflow script (status:done)
   - Task ID: T06
   - Goal: Build and wire a deterministic TypeScript script that computes per-surface and aggregate token counts for every workflow surface in the T03 manifest.
   - Boundaries (in/out of scope):
@@ -108,6 +108,17 @@ Analyze the SCE Plan (`/change-to-plan`) and Execute (`/next-task`) workflows en
   - Verification notes (commands or checks):
     - Execute the script through the documented command (`npm`/`bun` script or direct TS runtime invocation) and confirm report schema completeness.
     - Validate deterministic output contract by re-running without source changes and confirming stable structure/field set.
+  - Implementation evidence:
+    - Added TypeScript implementation at `evals/token-count-workflows.ts` with manifest-driven extraction (`entire-file`, `canonical-body-subsection`), tokenizer resolution (`o200k_base` fallback `cl100k_base`), optional baseline delta handling, and deterministic report emission.
+    - Added Bun script entry `token-count-workflows` in `evals/package.json` and installed `js-tiktoken` dependency (`evals/bun.lock`).
+    - Generated required artifacts at `context/tmp/token-footprint/workflow-token-count-latest.json`, `context/tmp/token-footprint/workflow-token-count-latest.md`, and archival JSON `context/tmp/token-footprint/workflow-token-count-t06-initial.json`.
+    - Verification commands run:
+      - `bun run token-count-workflows --run-id t06-initial` (from `evals/`)
+      - `bun run token-count-workflows` (from `evals/`)
+      - `bunx tsc --noEmit` (from `evals/`)
+      - `bun run token-count-workflows --baseline context/tmp/token-footprint/workflow-token-count-t06-initial.json --run-id t06-baseline-check` (from `evals/`)
+      - `nix run .#pkl-check-generated`
+      - `nix flake check`
 
 - [ ] T07: Validation and cleanup (status:todo)
   - Task ID: T07

@@ -306,3 +306,13 @@ Additional required run-level fields for deterministic diagnostics:
 - Canonical workflow context: `context/sce/shared-context-plan-workflow.md`, `context/sce/shared-context-code-workflow.md`.
 - Plan execution state: `context/plans/sce-workflow-token-footprint-analysis.md`.
 - Temporary artifacts location contract: `context/tmp/token-footprint/`.
+
+## T06: Implemented static token-count script (current state)
+
+- Implementation path: `evals/token-count-workflows.ts`.
+- Canonical input source: `context/sce/workflow-token-footprint-manifest.json`.
+- Supported scope rules: `entire-file` and `canonical-body-subsection` (`agents["..."].canonicalBody` owner path contract in `config/pkl/base/shared-content.pkl`).
+- Tokenizer behavior: requests `o200k_base`, falls back to `cl100k_base` only when required, and records both requested/resolved tokenizer fields plus fallback notes.
+- Baseline behavior: optional `--baseline <report.json>`; tokenizer mismatch fails deterministically; missing baseline surface rows remain nullable (`baseline_tokens`, `delta_tokens`).
+- Runtime command: from `evals/`, run `bun run token-count-workflows` (optional `--run-id`, `--baseline`, `--manifest`, `--tokenizer`).
+- Output contract: always writes `workflow-token-count-latest.json` and `workflow-token-count-latest.md` to `context/tmp/token-footprint/`; writes `workflow-token-count-<run_id>.json` when `--run-id` is provided.
