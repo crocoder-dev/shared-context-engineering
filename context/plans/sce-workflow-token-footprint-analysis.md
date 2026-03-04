@@ -45,7 +45,7 @@ Analyze the SCE Plan (`/change-to-plan`) and Execute (`/next-task`) workflows en
   - Implementation evidence:
     - Added ranked hotspot table and keep-vs-reduce classification (including explicit safety-critical markings) in `context/sce/workflow-token-footprint-inventory.md` under section `T02: Token-heavy prompt surfaces and duplication hotspots`.
 
-- [ ] T03: Define static token accounting method and evidence template (status:todo)
+- [x] T03: Define static token accounting method and evidence template (status:done)
   - Task ID: T03
   - Goal: Specify a deterministic static-token estimation workflow for SCE prompt artifacts, including counting scope, tokenizer choice assumptions, and report schema.
   - Boundaries (in/out of scope):
@@ -56,6 +56,8 @@ Analyze the SCE Plan (`/change-to-plan`) and Execute (`/next-task`) workflows en
     - Assumptions and known limitations of static estimates are documented.
   - Verification notes (commands or checks):
     - Manual dry-run review confirms the method can be repeated by a future session without ambiguity.
+  - Implementation evidence:
+    - Added `T03: Static token accounting method and evidence template` to `context/sce/workflow-token-footprint-inventory.md`, including exact counted surface manifest, tokenizer assumptions, deterministic procedure, required report schema fields, evidence template, and known limitations.
 
 - [ ] T04: Propose reduction strategies with trade-offs and rollout order (status:todo)
   - Task ID: T04
