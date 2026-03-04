@@ -29,7 +29,7 @@ Enable `sce setup` to install and manage required Git hooks (`pre-commit`, `comm
     - Added canonical contract document at `context/sce/setup-githooks-install-contract.md` covering target-path resolution, deterministic per-hook outcomes (`installed`/`updated`/`skipped`), backup-and-replace semantics, rollback guarantees, and actionable failure diagnostics.
     - Linked the new contract in `context/context-map.md` so setup-hook behavior remains discoverable for follow-on implementation tasks.
     - Performed parity review against current setup/doctor boundaries (`cli/src/services/setup.rs` and `cli/src/services/doctor.rs`) to keep T01 contract language aligned with existing command semantics and T02-T05 verification targets.
-- [ ] T02: Implement hook asset packaging for setup (status:todo)
+- [x] T02: Implement hook asset packaging for setup (status:done)
   - Task ID: T02
   - Goal: Embed canonical hook templates with deterministic paths/content so setup can install hooks without runtime config reads.
   - Boundaries (in/out of scope):
@@ -40,6 +40,10 @@ Enable `sce setup` to install and manage required Git hooks (`pre-commit`, `comm
     - Asset manifest behavior is deterministic across builds for unchanged inputs.
   - Verification notes (commands or checks):
     - Unit tests for manifest completeness, normalized paths, and stable lookup semantics.
+  - Verification evidence:
+    - Added canonical hook templates at `cli/assets/hooks/pre-commit`, `cli/assets/hooks/commit-msg`, and `cli/assets/hooks/post-commit` with deterministic `sce hooks <hook>` entrypoints for setup packaging.
+    - Extended compile-time embedded manifest generation in `cli/build.rs` with `HOOK_EMBEDDED_ASSETS`, keeping deterministic sorted path normalization for hook assets without runtime config reads.
+    - Added setup service hook-asset accessors in `cli/src/services/setup.rs` (`iter_required_hook_assets`, `get_required_hook_asset`) plus coverage for manifest completeness, normalization, ordering, and canonical hook lookup semantics.
 - [ ] T03: Implement `sce setup` hook installation flow (status:todo)
   - Task ID: T03
   - Goal: Add idempotent hook install/update orchestration that writes required hooks, preserves executable bits, and performs safe backup-and-replace with rollback on failure.

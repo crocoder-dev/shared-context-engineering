@@ -15,6 +15,11 @@ const TARGETS: &[TargetSpec] = &[
         relative_root: "config/.claude",
         include_prefix: "/../config/.claude/",
     },
+    TargetSpec {
+        const_name: "HOOK_EMBEDDED_ASSETS",
+        relative_root: "cli/assets/hooks",
+        include_prefix: "/assets/hooks/",
+    },
 ];
 
 struct TargetSpec {
