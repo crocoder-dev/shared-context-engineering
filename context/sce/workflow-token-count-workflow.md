@@ -28,9 +28,22 @@ Define the repository-root execution contract for static workflow token counting
   - `workflow-token-count-latest.md`
 - Optional archival JSON output when `--run-id` is supplied to the script.
 
+## CI contract
+
+- Workflow: `.github/workflows/workflow-token-count.yml`
+- Trigger policy: `push` and `pull_request` events targeting `main`
+- CI execution command: `nix run .#token-count-workflows`
+- Uploaded artifact name: `workflow-token-footprint`
+- Uploaded paths:
+  - `context/tmp/token-footprint/workflow-token-count-latest.json`
+  - `context/tmp/token-footprint/workflow-token-count-latest.md`
+  - `context/tmp/token-footprint/workflow-token-count-*.json`
+  - `context/tmp/token-footprint/workflow-token-count-*.md`
+
 ## Related context
 
 - `context/sce/workflow-token-footprint-inventory.md`
 - `context/sce/workflow-token-footprint-manifest.json`
 - `context/overview.md`
 - `context/patterns.md`
+- `.github/workflows/workflow-token-count.yml`
