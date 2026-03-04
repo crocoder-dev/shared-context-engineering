@@ -1,0 +1,119 @@
+{
+  "manifest_version": "1",
+  "plan_name": "sce-workflow-token-footprint-analysis",
+  "task_id": "T05",
+  "surfaces": [
+    {
+      "surface_id": "plan-agent-canonical",
+      "workflow": "plan",
+      "artifact_class": "agent",
+      "path": "config/pkl/base/shared-content.pkl",
+      "scope_rule": {
+        "type": "canonical-body-subsection",
+        "owner_path": "agents[\"shared-context-plan\"].canonicalBody"
+      },
+      "conditional": false
+    },
+    {
+      "surface_id": "code-agent-canonical",
+      "workflow": "execute",
+      "artifact_class": "agent",
+      "path": "config/pkl/base/shared-content.pkl",
+      "scope_rule": {
+        "type": "canonical-body-subsection",
+        "owner_path": "agents[\"shared-context-code\"].canonicalBody"
+      },
+      "conditional": false
+    },
+    {
+      "surface_id": "change-to-plan-command",
+      "workflow": "plan",
+      "artifact_class": "command",
+      "path": ".opencode/command/change-to-plan.md",
+      "scope_rule": {
+        "type": "entire-file"
+      },
+      "conditional": false
+    },
+    {
+      "surface_id": "next-task-command",
+      "workflow": "execute",
+      "artifact_class": "command",
+      "path": ".opencode/command/next-task.md",
+      "scope_rule": {
+        "type": "entire-file"
+      },
+      "conditional": false
+    },
+    {
+      "surface_id": "plan-authoring-skill",
+      "workflow": "plan",
+      "artifact_class": "skill",
+      "path": ".opencode/skills/sce-plan-authoring/SKILL.md",
+      "scope_rule": {
+        "type": "entire-file"
+      },
+      "conditional": false
+    },
+    {
+      "surface_id": "plan-review-skill",
+      "workflow": "execute",
+      "artifact_class": "skill",
+      "path": ".opencode/skills/sce-plan-review/SKILL.md",
+      "scope_rule": {
+        "type": "entire-file"
+      },
+      "conditional": false
+    },
+    {
+      "surface_id": "task-execution-skill",
+      "workflow": "execute",
+      "artifact_class": "skill",
+      "path": ".opencode/skills/sce-task-execution/SKILL.md",
+      "scope_rule": {
+        "type": "entire-file"
+      },
+      "conditional": false
+    },
+    {
+      "surface_id": "context-sync-skill",
+      "workflow": "execute",
+      "artifact_class": "skill",
+      "path": ".opencode/skills/sce-context-sync/SKILL.md",
+      "scope_rule": {
+        "type": "entire-file"
+      },
+      "conditional": false
+    },
+    {
+      "surface_id": "validation-skill",
+      "workflow": "execute",
+      "artifact_class": "skill",
+      "path": ".opencode/skills/sce-validation/SKILL.md",
+      "scope_rule": {
+        "type": "entire-file"
+      },
+      "conditional": true
+    },
+    {
+      "surface_id": "shared-plan-workflow-doc",
+      "workflow": "plan",
+      "artifact_class": "context_artifact",
+      "path": "context/sce/shared-context-plan-workflow.md",
+      "scope_rule": {
+        "type": "entire-file"
+      },
+      "conditional": false
+    },
+    {
+      "surface_id": "shared-code-workflow-doc",
+      "workflow": "execute",
+      "artifact_class": "context_artifact",
+      "path": "context/sce/shared-context-code-workflow.md",
+      "scope_rule": {
+        "type": "entire-file"
+      },
+      "conditional": false
+    }
+  ]
+}

@@ -198,3 +198,111 @@ The strategy set below is ordered to reduce prompt footprint without weakening m
 - Keep `sce-context-sync` as a required done gate and keep final-task `sce-validation` trigger conditions explicit.
 - Keep Plan vs Code role separation and command split (`/change-to-plan`, `/next-task`) unchanged.
 - Keep human decision authority and code-truth precedence language explicit where currently required.
+
+## T05: Script input/output and manifest extraction contract
+
+This section locks the deterministic contract for the T06 TypeScript implementation.
+
+### Canonical manifest source (selected strategy)
+
+- Canonical machine-readable source: `context/sce/workflow-token-footprint-manifest.json`.
+- Human-readable mirror: the T03 counting-scope table in this document.
+- Contract precedence: if markdown and JSON differ, the JSON manifest is implementation truth and this document must be synced.
+- Rationale: checked-in JSON avoids brittle markdown parsing and keeps extraction rules explicit and testable.
+
+### Manifest schema (required fields)
+
+Top-level object fields:
+- `manifest_version`: string, currently `"1"`.
+- `plan_name`: string, currently `"sce-workflow-token-footprint-analysis"`.
+- `task_id`: string, currently `"T05"` for this contract definition.
+- `surfaces`: array of surface entries (non-empty).
+
+Per-surface entry fields:
+- `surface_id`: stable slug (matches T03 report rows).
+- `workflow`: `"plan"` or `"execute"`.
+- `artifact_class`: `"agent" | "command" | "skill" | "context_artifact"`.
+- `path`: repo-relative path.
+- `scope_rule`: object with `type` and rule-specific fields:
+  - `{"type":"entire-file"}`
+  - `{"type":"canonical-body-subsection","owner_path":"agents[\"shared-context-plan\"].canonicalBody"}` (example)
+- `conditional`: boolean (`true` only for conditional surfaces such as `validation-skill`).
+
+### Extraction rules
+
+General extraction rules:
+1. Read target file as UTF-8.
+2. Normalize line endings to `\n`.
+3. Apply `scope_rule` exactly.
+
+`entire-file` extraction:
+- Count normalized full file text with no additional trimming.
+
+`canonical-body-subsection` extraction (for `config/pkl/base/shared-content.pkl`):
+- Locate the exact owner path key declared in `scope_rule.owner_path`.
+- Extract only the assigned `canonicalBody` string payload.
+- Preserve interior text exactly after newline normalization.
+- If key lookup is ambiguous or missing, fail the run with a deterministic error that includes `surface_id` and `owner_path`.
+
+### Tokenizer contract
+
+- Preferred tokenizer: `o200k_base`.
+- Fallback tokenizer: `cl100k_base`.
+- Single-tokenizer-per-run rule: all surfaces in one run must use the same tokenizer.
+- Report both `requested_tokenizer` and `resolved_tokenizer`; when fallback occurs, set a run note explaining why.
+
+### Baseline/delta input contract
+
+- Optional input: `--baseline <path-to-prior-report.json>`.
+- If omitted: `baseline_tokens` and `delta_tokens` are `null` for all surfaces; summary delta fields are `null`.
+- If provided:
+  - baseline report must include per-surface rows keyed by `surface_id`.
+  - tokenizer must match `resolved_tokenizer`, else fail with deterministic mismatch error.
+  - surfaces absent in baseline produce `baseline_tokens = null` and `delta_tokens = null`.
+
+### Report output contract
+
+Output directory and deterministic naming:
+- Directory: `context/tmp/token-footprint/` (create if missing).
+- Deterministic latest artifacts (always overwritten):
+  - `context/tmp/token-footprint/workflow-token-count-latest.json`
+  - `context/tmp/token-footprint/workflow-token-count-latest.md`
+- Optional archival artifact (when `--run-id` provided):
+  - `context/tmp/token-footprint/workflow-token-count-<run_id>.json`
+
+Required per-surface row fields:
+- `surface_id`, `workflow`, `artifact_class`, `path`, `scope_rule`, `tokenizer`, `tokens`, `baseline_tokens`, `delta_tokens`, `conditional`.
+
+Required run-level fields:
+- `run_id`, `timestamp_utc`, `git_sha`, `plan_name`, `task_id`, `tokenizer`, `plan_total_tokens`, `execute_total_tokens`, `combined_total_tokens`, `combined_delta_tokens`, `notes`.
+
+Additional required run-level fields for deterministic diagnostics:
+- `requested_tokenizer`
+- `resolved_tokenizer`
+- `manifest_path`
+- `baseline_path` (nullable)
+
+### Field mapping to T03 schema
+
+| T03 field | Manifest source | Report source |
+| --- | --- | --- |
+| `surface_id` | `surfaces[].surface_id` | per-surface row |
+| `workflow` | `surfaces[].workflow` | per-surface row |
+| `artifact_class` | `surfaces[].artifact_class` | per-surface row |
+| `path` | `surfaces[].path` | per-surface row |
+| `scope_rule` | `surfaces[].scope_rule` | per-surface row |
+| `conditional` | `surfaces[].conditional` | per-surface row |
+| `tokenizer` | run tokenizer contract | per-surface row + run summary |
+| `tokens` | computed | per-surface row |
+| `baseline_tokens` | baseline lookup by `surface_id` | per-surface row |
+| `delta_tokens` | `tokens - baseline_tokens` when baseline exists | per-surface row |
+| `plan_total_tokens` | computed where `workflow=plan` | run summary |
+| `execute_total_tokens` | computed where `workflow=execute` | run summary |
+| `combined_total_tokens` | computed | run summary |
+| `combined_delta_tokens` | computed when baseline totals exist | run summary |
+
+### Discoverability links
+
+- Canonical workflow context: `context/sce/shared-context-plan-workflow.md`, `context/sce/shared-context-code-workflow.md`.
+- Plan execution state: `context/plans/sce-workflow-token-footprint-analysis.md`.
+- Temporary artifacts location contract: `context/tmp/token-footprint/`.
