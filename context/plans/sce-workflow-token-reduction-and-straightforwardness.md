@@ -89,7 +89,7 @@ Reduce unnecessary workflow prompt/context tokens and make SCE planning/executio
     - `nix develop -c pkl eval -m . config/pkl/generate.pkl`
     - Manual read-through of affected generated command/skill files and context docs.
 
-- [ ] T06: Validation and cleanup (status:todo)
+- [x] T06: Validation and cleanup (status:done)
   - Task ID: T06
   - Goal: Run final quality gates, confirm success criteria evidence, and leave plan state implementation-ready/traceable.
   - Boundaries (in/out of scope):
@@ -106,3 +106,37 @@ Reduce unnecessary workflow prompt/context tokens and make SCE planning/executio
 
 ## 5) Open questions
 - None.
+
+## 6) Final validation report (T06)
+
+### Commands run
+- `nix run .#pkl-check-generated`
+  - Exit code: 0
+  - Key output: `Generated outputs are up to date.`
+- `nix flake check`
+  - Exit code: 0
+  - Key output: evaluated checks/apps/devShells; built `checks.x86_64-linux.cli-setup-command-surface`; no failures.
+  - Note: warning reports omitted incompatible systems (`aarch64-darwin`, `aarch64-linux`, `x86_64-darwin`) unless `--all-systems` is used.
+
+### Context-sync verification
+- Classified as verify-only root context pass for this final validation task (no new cross-cutting behavior introduced).
+- Verified current-state alignment without root edits for:
+  - `context/overview.md`
+  - `context/architecture.md`
+  - `context/glossary.md`
+  - `context/patterns.md`
+  - `context/context-map.md`
+- Feature discoverability links remain present in `context/context-map.md` and canonical terms remain covered in `context/glossary.md`.
+
+### Success-criteria evidence summary
+- Disposable plan lifecycle is documented as active-artifact-only (not durable history) in root context navigation and glossary.
+- `/commit` guidance is scoped by staged diff type (`context-only` vs mixed) in canonical source and generated command/skill outputs.
+- Context sync default behavior is important-change-gated with verify-only path for localized tasks in canonical and generated skill contracts.
+- One-task/one-atomic-commit planning requirement is present in planning contracts (`/change-to-plan` + `sce-plan-authoring`).
+- Thin command orchestration boundaries for `/next-task`, `/change-to-plan`, and `/commit` remain documented in root shared context files.
+
+### Failed checks and follow-ups
+- None.
+
+### Residual risks
+- `nix flake check` currently validates the host-mapped check set; cross-system parity still depends on running with `--all-systems` in an environment that supports those targets.
