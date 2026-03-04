@@ -196,7 +196,7 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - `cargo fmt --manifest-path cli/Cargo.toml -- --check`
     - `cargo build --manifest-path cli/Cargo.toml`
 
-- [ ] T13: Implement mapping engine (patch-id, range-diff, fuzzy fallback) (status:todo)
+- [x] T13: Implement mapping engine (patch-id, range-diff, fuzzy fallback) (status:done)
   - Task ID: T13
   - Goal: Map old commits to new commits using strict staged matching with confidence scoring.
   - Boundaries (in/out of scope):
@@ -206,6 +206,9 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - Mapping outcomes are explainable, reproducible, and confidence-classified.
   - Verification notes (commands or checks):
     - Deterministic fixture tests for exact, ambiguous, unmatched, and low-confidence cases.
+    - `cargo fmt --manifest-path cli/Cargo.toml -- --check`
+    - `cargo test --manifest-path cli/Cargo.toml hosted_reconciliation`
+    - `cargo build --manifest-path cli/Cargo.toml`
 
 - [ ] T14: Implement notes write-back fallback, retry queue, and observability metrics (status:todo)
   - Task ID: T14
