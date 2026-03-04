@@ -39,7 +39,7 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - Structured contract checklist covering all source sections plus Agent Trace RFC required/optional field mapping.
     - Contract artifact: `context/sce/agent-trace-implementation-contract.md`.
 
-- [ ] T02: Define trace payload schema adapter and canonical metadata mapping (status:todo)
+- [x] T02: Define trace payload schema adapter and canonical metadata mapping (status:done)
   - Task ID: T02
   - Goal: Create a schema adapter that maps internal attribution structures to Agent Trace-compliant record shape.
   - Boundaries (in/out of scope):
@@ -50,6 +50,9 @@ Implement a no-git-wrapper attribution platform that preserves normal developer 
     - Adapter output contract is deterministic and reusable by local finalize and rewrite flows.
   - Verification notes (commands or checks):
     - Mapping tests for required fields and extension metadata placement.
+    - `cargo test --manifest-path cli/Cargo.toml`
+    - `cargo fmt --manifest-path cli/Cargo.toml -- --check`
+    - `cargo build --manifest-path cli/Cargo.toml`
 
 - [ ] T03: Implement trace payload builder and compliance validation suite (status:todo)
   - Task ID: T03
