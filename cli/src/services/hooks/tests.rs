@@ -1260,7 +1260,7 @@ fn parse_hooks_subcommand_rejects_missing_hook_name() {
         .expect_err("missing hook subcommand should return usage error");
     assert_eq!(
         error.to_string(),
-        "Missing hook subcommand. Run 'sce hooks --help' to see valid usage."
+        "Missing hook subcommand. Try: run 'sce hooks --help' and use one of 'pre-commit', 'commit-msg', 'post-commit', or 'post-rewrite'."
     );
 }
 
@@ -1270,7 +1270,7 @@ fn parse_hooks_subcommand_requires_commit_msg_path() {
         .expect_err("commit-msg requires <message-file>");
     assert_eq!(
         error.to_string(),
-        "Missing required argument '<message-file>' for 'commit-msg'. Run 'sce hooks --help' to see valid usage."
+        "Missing required argument '<message-file>' for 'commit-msg'. Try: run 'sce hooks commit-msg .git/COMMIT_EDITMSG'."
     );
 }
 

@@ -36,7 +36,9 @@ pub fn hooks_usage_text() -> &'static str {
 
 pub fn parse_hooks_subcommand(args: Vec<String>) -> Result<HookSubcommand> {
     if args.is_empty() {
-        bail!("Missing hook subcommand. Run 'sce hooks --help' to see valid usage.");
+        bail!(
+            "Missing hook subcommand. Try: run 'sce hooks --help' and use one of 'pre-commit', 'commit-msg', 'post-commit', or 'post-rewrite'."
+        );
     }
 
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
@@ -51,13 +53,13 @@ pub fn parse_hooks_subcommand(args: Vec<String>) -> Result<HookSubcommand> {
         "commit-msg" => {
             if args.len() < 2 {
                 bail!(
-                    "Missing required argument '<message-file>' for 'commit-msg'. Run 'sce hooks --help' to see valid usage."
+                    "Missing required argument '<message-file>' for 'commit-msg'. Try: run 'sce hooks commit-msg .git/COMMIT_EDITMSG'."
                 );
             }
 
             if args.len() > 2 {
                 bail!(
-                    "Unexpected extra argument '{}' for 'commit-msg'. Run 'sce hooks --help' to see valid usage.",
+                    "Unexpected extra argument '{}' for 'commit-msg'. Try: pass exactly one path, for example 'sce hooks commit-msg .git/COMMIT_EDITMSG'.",
                     args[2]
                 );
             }
@@ -73,13 +75,13 @@ pub fn parse_hooks_subcommand(args: Vec<String>) -> Result<HookSubcommand> {
         "post-rewrite" => {
             if args.len() < 2 {
                 bail!(
-                    "Missing required argument '<amend|rebase|other>' for 'post-rewrite'. Run 'sce hooks --help' to see valid usage."
+                    "Missing required argument '<amend|rebase|other>' for 'post-rewrite'. Try: run 'printf \"oldsha newsha\\n\" | sce hooks post-rewrite amend'."
                 );
             }
 
             if args.len() > 2 {
                 bail!(
-                    "Unexpected extra argument '{}' for 'post-rewrite'. Run 'sce hooks --help' to see valid usage.",
+                    "Unexpected extra argument '{}' for 'post-rewrite'. Try: pass exactly one rewrite method (for example 'amend').",
                     args[2]
                 );
             }
@@ -89,7 +91,7 @@ pub fn parse_hooks_subcommand(args: Vec<String>) -> Result<HookSubcommand> {
             })
         }
         unknown => bail!(
-            "Unknown hook subcommand '{}'. Run 'sce hooks --help' to see valid usage.",
+            "Unknown hook subcommand '{}'. Try: run 'sce hooks --help' and use one of 'pre-commit', 'commit-msg', 'post-commit', or 'post-rewrite'.",
             unknown
         ),
     }
@@ -101,7 +103,7 @@ fn ensure_no_extra_hook_args(hook: &str, args: &[String]) -> Result<()> {
     }
 
     bail!(
-        "Unexpected extra argument '{}' for '{}'. Run 'sce hooks --help' to see valid usage.",
+        "Unexpected extra argument '{}' for '{}'. Try: remove extra arguments and run 'sce hooks --help' for exact syntax.",
         args[0],
         hook
     )
