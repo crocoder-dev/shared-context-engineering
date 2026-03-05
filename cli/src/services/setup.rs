@@ -108,22 +108,56 @@ pub struct SetupCliOptions {
     pub repo_path: Option<PathBuf>,
 }
 
-pub fn resolve_setup_hooks_repository(options: &SetupCliOptions) -> Result<Option<PathBuf>> {
-    if options.hooks {
-        if options.opencode || options.claude || options.both {
-            bail!(
-                "Option '--hooks' cannot be combined with '--opencode', '--claude', or '--both'. Run 'sce setup --help' to see valid usage."
-            );
-        }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SetupRequest {
+    pub config_mode: Option<SetupMode>,
+    pub install_hooks: bool,
+    pub hooks_repo_path: Option<PathBuf>,
+}
 
-        return Ok(options.repo_path.clone());
-    }
-
-    if options.repo_path.is_some() {
+pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
+    if options.repo_path.is_some() && !options.hooks {
         bail!("Option '--repo' requires '--hooks'. Run 'sce setup --help' to see valid usage.");
     }
 
-    Ok(None)
+    let mut selected_targets = Vec::new();
+
+    if options.opencode {
+        selected_targets.push(SetupTarget::OpenCode);
+    }
+    if options.claude {
+        selected_targets.push(SetupTarget::Claude);
+    }
+    if options.both {
+        selected_targets.push(SetupTarget::Both);
+    }
+
+    if selected_targets.len() > 1 {
+        bail!(
+            "Options '--opencode', '--claude', and '--both' are mutually exclusive. Choose exactly one target flag or none for interactive mode."
+        );
+    }
+
+    if options.non_interactive && selected_targets.is_empty() && !options.hooks {
+        bail!(
+            "Option '--non-interactive' requires a target flag. Try: 'sce setup --opencode --non-interactive', 'sce setup --claude --non-interactive', or 'sce setup --both --non-interactive'."
+        );
+    }
+
+    let config_mode = match selected_targets.as_slice() {
+        [target] => Some(SetupMode::NonInteractive(*target)),
+        [] if options.hooks => None,
+        [] => Some(SetupMode::Interactive),
+        _ => unreachable!("target count already validated"),
+    };
+
+    let install_hooks = options.hooks || (config_mode == Some(SetupMode::Interactive));
+
+    Ok(SetupRequest {
+        config_mode,
+        install_hooks,
+        hooks_repo_path: options.repo_path,
+    })
 }
 
 pub fn run_setup_for_mode(repository_root: &Path, mode: SetupMode) -> Result<String> {
@@ -875,7 +909,7 @@ pub fn setup_cancelled_text() -> &'static str {
 }
 
 pub fn setup_usage_text() -> &'static str {
-    "Usage:\n  sce setup [--opencode|--claude|--both] [--non-interactive]\n  sce setup --hooks [--repo <path>]\n\nExamples:\n  sce setup\n  sce setup --opencode --non-interactive\n  sce setup --hooks\n  sce setup --hooks --repo ../demo-repo\n\nWithout a target flag, setup defaults to interactive target selection.\nUse '--non-interactive' to fail fast instead of prompting; it requires '--opencode', '--claude', or '--both'.\nTarget flags are mutually exclusive and intended for non-interactive automation.\n'--hooks' installs required git hooks for the current repository by default, or for '--repo <path>' when provided."
+    "Usage:\n  sce setup [--opencode|--claude|--both] [--non-interactive] [--hooks] [--repo <path>]\n\nExamples:\n  sce setup\n  sce setup --opencode --hooks\n  sce setup --opencode --non-interactive\n  sce setup --hooks\n  sce setup --hooks --repo ../demo-repo\n\nWithout a target flag, setup defaults to interactive target selection.\nDefault interactive setup installs selected config assets and required hooks in one run.\nUse '--non-interactive' to fail fast instead of prompting; it requires '--opencode', '--claude', or '--both' when running config setup.\nTarget flags are mutually exclusive and intended for non-interactive automation.\n'--hooks' installs required git hooks for the current repository by default, or for '--repo <path>' when provided.\nLegacy one-purpose invocations remain supported: target-only runs install config assets, and '--hooks' without a target installs hooks only."
 }
 
 pub fn parse_setup_cli_options<I>(args: I) -> Result<SetupCliOptions>
@@ -927,36 +961,6 @@ where
     }
 
     Ok(options)
-}
-
-pub fn resolve_setup_mode(options: SetupCliOptions) -> Result<SetupMode> {
-    let mut selected_targets = Vec::new();
-
-    if options.opencode {
-        selected_targets.push(SetupTarget::OpenCode);
-    }
-    if options.claude {
-        selected_targets.push(SetupTarget::Claude);
-    }
-    if options.both {
-        selected_targets.push(SetupTarget::Both);
-    }
-
-    match selected_targets.as_slice() {
-        [] => {
-            if options.non_interactive {
-                bail!(
-                    "Option '--non-interactive' requires a target flag. Try: 'sce setup --opencode --non-interactive', 'sce setup --claude --non-interactive', or 'sce setup --both --non-interactive'."
-                );
-            }
-
-            Ok(SetupMode::Interactive)
-        }
-        [target] => Ok(SetupMode::NonInteractive(*target)),
-        _ => bail!(
-            "Options '--opencode', '--claude', and '--both' are mutually exclusive. Choose exactly one target flag or none for interactive mode."
-        ),
-    }
 }
 
 #[cfg(test)]

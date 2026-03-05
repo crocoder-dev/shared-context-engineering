@@ -13,9 +13,9 @@ use super::{
     install_embedded_setup_assets_with_rename, install_required_git_hooks,
     install_required_git_hooks_with_rename, iter_embedded_assets_for_setup_target,
     iter_required_hook_assets, parse_setup_cli_options, resolve_setup_dispatch,
-    resolve_setup_hooks_repository, resolve_setup_mode, run_setup_for_mode, run_setup_hooks,
-    setup_usage_text, RequiredHookAsset, RequiredHookInstallStatus, SetupCliOptions, SetupDispatch,
-    SetupMode, SetupTarget,
+    resolve_setup_request, run_setup_for_mode, run_setup_hooks, setup_usage_text,
+    RequiredHookAsset, RequiredHookInstallStatus, SetupCliOptions, SetupDispatch, SetupMode,
+    SetupRequest, SetupTarget,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -43,22 +43,36 @@ fn run_setup_rejects_unresolved_interactive_mode() {
 #[test]
 fn setup_options_default_to_interactive_mode() -> Result<()> {
     let options = parse_setup_cli_options(Vec::<String>::new())?;
-    let mode = resolve_setup_mode(options)?;
-    assert_eq!(mode, SetupMode::Interactive);
+    let request = resolve_setup_request(options)?;
+    assert_eq!(
+        request,
+        SetupRequest {
+            config_mode: Some(SetupMode::Interactive),
+            install_hooks: true,
+            hooks_repo_path: None,
+        }
+    );
     Ok(())
 }
 
 #[test]
 fn setup_options_parse_opencode_flag() -> Result<()> {
     let options = parse_setup_cli_options(vec!["--opencode".to_string()])?;
-    let mode = resolve_setup_mode(options)?;
-    assert_eq!(mode, SetupMode::NonInteractive(SetupTarget::OpenCode));
+    let request = resolve_setup_request(options)?;
+    assert_eq!(
+        request,
+        SetupRequest {
+            config_mode: Some(SetupMode::NonInteractive(SetupTarget::OpenCode)),
+            install_hooks: false,
+            hooks_repo_path: None,
+        }
+    );
     Ok(())
 }
 
 #[test]
 fn setup_options_reject_mutually_exclusive_flags() {
-    let error = resolve_setup_mode(SetupCliOptions {
+    let error = resolve_setup_request(SetupCliOptions {
         help: false,
         non_interactive: false,
         opencode: true,
@@ -80,7 +94,8 @@ fn setup_usage_contract_mentions_target_flags() {
     let usage = setup_usage_text();
     assert!(usage.contains("--opencode|--claude|--both"));
     assert!(usage.contains("--non-interactive"));
-    assert!(usage.contains("sce setup --hooks [--repo <path>]"));
+    assert!(usage.contains("[--hooks] [--repo <path>]"));
+    assert!(usage.contains("sce setup --opencode --hooks"));
 }
 
 #[test]
@@ -94,7 +109,7 @@ fn setup_options_parse_non_interactive_flag() -> Result<()> {
 fn setup_options_reject_non_interactive_without_target() {
     let options = parse_setup_cli_options(vec!["--non-interactive".to_string()])
         .expect("parsing should succeed before validation");
-    let error = resolve_setup_mode(options)
+    let error = resolve_setup_request(options)
         .expect_err("--non-interactive without a target should fail validation");
     assert_eq!(
         error.to_string(),
@@ -105,8 +120,15 @@ fn setup_options_reject_non_interactive_without_target() {
 #[test]
 fn setup_options_parse_hooks_without_repo() -> Result<()> {
     let options = parse_setup_cli_options(vec!["--hooks".to_string()])?;
-    let repo = resolve_setup_hooks_repository(&options)?;
-    assert_eq!(repo, None);
+    let request = resolve_setup_request(options)?;
+    assert_eq!(
+        request,
+        SetupRequest {
+            config_mode: None,
+            install_hooks: true,
+            hooks_repo_path: None,
+        }
+    );
     Ok(())
 }
 
@@ -117,8 +139,15 @@ fn setup_options_parse_hooks_with_repo() -> Result<()> {
         "--repo".to_string(),
         "tmp/repo".to_string(),
     ])?;
-    let repo = resolve_setup_hooks_repository(&options)?;
-    assert_eq!(repo, Some(PathBuf::from("tmp/repo")));
+    let request = resolve_setup_request(options)?;
+    assert_eq!(
+        request,
+        SetupRequest {
+            config_mode: None,
+            install_hooks: true,
+            hooks_repo_path: Some(PathBuf::from("tmp/repo")),
+        }
+    );
     Ok(())
 }
 
@@ -126,8 +155,7 @@ fn setup_options_parse_hooks_with_repo() -> Result<()> {
 fn setup_options_reject_repo_without_hooks() {
     let options = parse_setup_cli_options(vec!["--repo".to_string(), "tmp/repo".to_string()])
         .expect("parsing --repo should succeed before validation");
-    let error =
-        resolve_setup_hooks_repository(&options).expect_err("--repo without --hooks should fail");
+    let error = resolve_setup_request(options).expect_err("--repo without --hooks should fail");
     assert_eq!(
         error.to_string(),
         "Option '--repo' requires '--hooks'. Run 'sce setup --help' to see valid usage."
@@ -135,15 +163,19 @@ fn setup_options_reject_repo_without_hooks() {
 }
 
 #[test]
-fn setup_options_reject_hooks_with_target_flags() {
+fn setup_options_allow_hooks_with_target_flags() -> Result<()> {
     let options = parse_setup_cli_options(vec!["--hooks".to_string(), "--opencode".to_string()])
         .expect("parsing should succeed before validation");
-    let error = resolve_setup_hooks_repository(&options)
-        .expect_err("--hooks with target flags should fail");
+    let request = resolve_setup_request(options)?;
     assert_eq!(
-        error.to_string(),
-        "Option '--hooks' cannot be combined with '--opencode', '--claude', or '--both'. Run 'sce setup --help' to see valid usage."
+        request,
+        SetupRequest {
+            config_mode: Some(SetupMode::NonInteractive(SetupTarget::OpenCode)),
+            install_hooks: true,
+            hooks_repo_path: None,
+        }
     );
+    Ok(())
 }
 
 #[test]

@@ -158,7 +158,7 @@ Non-goals:
   - Done when: supported commands accept `--format <text|json>` deterministically, invalid format values fail with actionable guidance, and default format remains stable.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml app::tests`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T14: Enable single-run `setup` flow for config targets plus hooks (status:todo)
+- [x] T14: Enable single-run `setup` flow for config targets plus hooks (status:done)
   - Task ID: T14
   - Goal: Refactor setup option parsing/dispatch so operators can install target config assets and required hooks in one invocation, including interactive default path and non-interactive target flags.
   - Boundaries (in/out of scope): In: setup option model and dispatch in `cli/src/app.rs` and `cli/src/services/setup.rs`, setup usage text, and setup tests; Out: replacing `inquire` prompt technology or changing hook install semantics.
