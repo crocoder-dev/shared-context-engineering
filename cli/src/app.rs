@@ -105,6 +105,8 @@ impl std::error::Error for ClassifiedError {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Command {
     Help,
+    Completion(services::completion::CompletionRequest),
+    CompletionHelp,
     Config(services::config::ConfigSubcommand),
     Setup(services::setup::SetupMode),
     SetupHooks(Option<std::path::PathBuf>),
@@ -125,6 +127,7 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Self::Help => "help",
+            Self::Completion(_) | Self::CompletionHelp => services::completion::NAME,
             Self::Config(_) => services::config::NAME,
             Self::Setup(_) | Self::SetupHooks(_) | Self::SetupHelp => services::setup::NAME,
             Self::Doctor | Self::DoctorHelp => services::doctor::NAME,
@@ -344,6 +347,7 @@ fn unknown_option_message(option: &str) -> String {
 fn parse_subcommand(value: String, tail_args: Vec<String>) -> Result<Command, ClassifiedError> {
     match value.as_str() {
         "help" => Ok(Command::Help),
+        "completion" => parse_completion_subcommand(tail_args),
         "config" => parse_config_subcommand(tail_args),
         "setup" => parse_setup_subcommand(tail_args),
         "doctor" => parse_non_setup_subcommand(Command::Doctor, Command::DoctorHelp, tail_args),
@@ -371,6 +375,16 @@ fn parse_config_subcommand(args: Vec<String>) -> Result<Command, ClassifiedError
     let subcommand = services::config::parse_config_subcommand(args)
         .map_err(|error| ClassifiedError::validation(error.to_string()))?;
     Ok(Command::Config(subcommand))
+}
+
+fn parse_completion_subcommand(args: Vec<String>) -> Result<Command, ClassifiedError> {
+    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
+        return Ok(Command::CompletionHelp);
+    }
+
+    let request = services::completion::parse_completion_request(args)
+        .map_err(|error| ClassifiedError::validation(error.to_string()))?;
+    Ok(Command::Completion(request))
 }
 
 fn parse_setup_subcommand(args: Vec<String>) -> Result<Command, ClassifiedError> {
@@ -437,6 +451,8 @@ fn parse_version_subcommand(args: Vec<String>) -> Result<Command, ClassifiedErro
 fn dispatch(command: &Command) -> Result<String, ClassifiedError> {
     match command {
         Command::Help => Ok(command_surface::help_text()),
+        Command::CompletionHelp => Ok(services::completion::completion_usage_text().to_string()),
+        Command::Completion(request) => Ok(services::completion::render_completion(*request)),
         Command::Config(subcommand) => services::config::run_config_subcommand(subcommand.clone())
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::Setup(mode) => {
@@ -583,6 +599,27 @@ mod tests {
         let code = run(vec![
             "sce".to_string(),
             "setup".to_string(),
+            "--help".to_string(),
+        ]);
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn completion_command_exits_success() {
+        let code = run(vec![
+            "sce".to_string(),
+            "completion".to_string(),
+            "--shell".to_string(),
+            "bash".to_string(),
+        ]);
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn completion_help_exits_success() {
+        let code = run(vec![
+            "sce".to_string(),
+            "completion".to_string(),
             "--help".to_string(),
         ]);
         assert_eq!(code, ExitCode::SUCCESS);
@@ -1024,5 +1061,33 @@ mod tests {
                 }
             ))
         );
+    }
+
+    #[test]
+    fn parser_routes_completion_bash_shell() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "completion".to_string(),
+            "--shell".to_string(),
+            "bash".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(
+            command,
+            Command::Completion(crate::services::completion::CompletionRequest {
+                shell: crate::services::completion::CompletionShell::Bash,
+            })
+        );
+    }
+
+    #[test]
+    fn parser_routes_completion_help() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "completion".to_string(),
+            "--help".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(command, Command::CompletionHelp);
     }
 }

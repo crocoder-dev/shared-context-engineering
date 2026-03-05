@@ -144,7 +144,7 @@ Non-goals:
   - Done when: core user-facing errors include stable codes plus `Try:` guidance and tests lock representative code/message pairs.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml app::tests services::setup::tests services::hooks::tests`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T12: Add shell completion generation and docs alignment (status:todo)
+- [x] T12: Add shell completion generation and docs alignment (status:done)
   - Task ID: T12
   - Goal: Provide shell completion artifacts (Bash/Zsh/Fish) and align command docs/help so completion, usage, and README examples match current flags/subcommands.
   - Boundaries (in/out of scope): In: CLI completion command/surface and documentation alignment in `cli/README.md`; Out: external package-manager integration.

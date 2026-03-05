@@ -19,6 +19,7 @@ cargo run --manifest-path cli/Cargo.toml -- mcp
 cargo run --manifest-path cli/Cargo.toml -- hooks pre-commit
 cargo run --manifest-path cli/Cargo.toml -- hooks commit-msg .git/COMMIT_EDITMSG
 cargo run --manifest-path cli/Cargo.toml -- sync
+cargo run --manifest-path cli/Cargo.toml -- completion --shell bash
 ```
 
 ## Install and release paths
@@ -71,6 +72,11 @@ Crates.io is prepared but intentionally disabled in this phase.
   - reports actionable diagnostics for missing or misconfigured hooks
 - `mcp` is a placeholder for future file-cache tooling contracts
   (`cache-put`/`cache-get`).
+- `completion` is implemented and generates deterministic shell completion
+  scripts:
+  - `sce completion --shell bash`
+  - `sce completion --shell zsh`
+  - `sce completion --shell fish`
 - `hooks` is implemented for local Git hook execution:
   - `sce hooks pre-commit` captures staged-only checkpoint attribution
   - `sce hooks commit-msg <message-file>` enforces canonical co-author trailer
@@ -82,6 +88,19 @@ Crates.io is prepared but intentionally disabled in this phase.
     bounded retry replay
 - `sync` is a placeholder that runs a local Turso smoke check, then reports a
   deferred cloud-sync plan.
+
+### Shell completion install examples
+
+```bash
+# Bash (current shell)
+eval "$(sce completion --shell bash)"
+
+# Zsh (persist for future shells)
+sce completion --shell zsh > ~/.zsh/completions/_sce
+
+# Fish (persist for future shells)
+sce completion --shell fish > ~/.config/fish/completions/sce.fish
+```
 
 ### Observability baseline
 
