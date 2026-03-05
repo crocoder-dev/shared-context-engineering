@@ -8,12 +8,13 @@ use crate::services::agent_trace::{
 
 use super::{
     apply_commit_msg_coauthor_policy, finalize_post_commit_trace, finalize_post_rewrite_remap,
-    finalize_pre_commit_checkpoint, finalize_rewrite_trace, process_trace_retry_queue,
-    run_placeholder_hooks, CommitMsgRuntimeState, GeneratedRegionEvent, GeneratedRegionLifecycle,
-    GitHookKind, HookEvent, HookService, PendingCheckpoint, PendingFileCheckpoint,
-    PendingLineRange, PersistenceErrorClass, PersistenceFailure, PersistenceTarget,
-    PersistenceWriteResult, PlaceholderHookService, PostCommitFinalization, PostCommitInput,
-    PostCommitNoOpReason, PostCommitRuntimeState, PostRewriteFinalization, PostRewriteNoOpReason,
+    finalize_pre_commit_checkpoint, finalize_rewrite_trace, parse_hooks_subcommand,
+    process_trace_retry_queue, run_hooks_subcommand, run_placeholder_hooks, CommitMsgRuntimeState,
+    GeneratedRegionEvent, GeneratedRegionLifecycle, GitHookKind, HookEvent, HookService,
+    HookSubcommand, PendingCheckpoint, PendingFileCheckpoint, PendingLineRange,
+    PersistenceErrorClass, PersistenceFailure, PersistenceTarget, PersistenceWriteResult,
+    PlaceholderHookService, PostCommitFinalization, PostCommitInput, PostCommitNoOpReason,
+    PostCommitRuntimeState, PostRewriteFinalization, PostRewriteNoOpReason,
     PostRewriteRuntimeState, PreCommitFinalization, PreCommitNoOpReason, PreCommitRuntimeState,
     PreCommitTreeAnchors, RetryMetricsSink, RetryProcessingMetric, RewriteMethod,
     RewriteRemapIngestion, RewriteRemapRequest, RewriteTraceFinalization, RewriteTraceInput,
@@ -863,4 +864,52 @@ fn hooks_placeholder_accepts_generated_region_events() -> Result<()> {
     };
 
     service.record(event)
+}
+
+#[test]
+fn parse_hooks_subcommand_routes_pre_commit() -> Result<()> {
+    let parsed = parse_hooks_subcommand(vec!["pre-commit".to_string()])?;
+    assert_eq!(parsed, HookSubcommand::PreCommit);
+    Ok(())
+}
+
+#[test]
+fn parse_hooks_subcommand_rejects_missing_hook_name() {
+    let error = parse_hooks_subcommand(Vec::new())
+        .expect_err("missing hook subcommand should return usage error");
+    assert_eq!(
+        error.to_string(),
+        "Missing hook subcommand. Run 'sce hooks --help' to see valid usage."
+    );
+}
+
+#[test]
+fn parse_hooks_subcommand_requires_commit_msg_path() {
+    let error = parse_hooks_subcommand(vec!["commit-msg".to_string()])
+        .expect_err("commit-msg requires <message-file>");
+    assert_eq!(
+        error.to_string(),
+        "Missing required argument '<message-file>' for 'commit-msg'. Run 'sce hooks --help' to see valid usage."
+    );
+}
+
+#[test]
+fn run_hooks_subcommand_commit_msg_rejects_missing_file() {
+    let missing = std::env::temp_dir().join(format!(
+        "sce-hooks-missing-{}-{}.msg",
+        std::process::id(),
+        "nope"
+    ));
+    let error = run_hooks_subcommand(HookSubcommand::CommitMsg {
+        message_file: missing.clone(),
+    })
+    .expect_err("missing commit message file should fail deterministically");
+
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "Invalid commit message file '{}': file does not exist or is not readable.",
+            missing.display()
+        )
+    );
 }

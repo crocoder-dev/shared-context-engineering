@@ -12,7 +12,7 @@ enum Command {
     SetupHelp,
     Doctor,
     Mcp,
-    Hooks,
+    Hooks(services::hooks::HookSubcommand),
     Sync,
 }
 
@@ -95,7 +95,7 @@ fn parse_subcommand(value: String, tail_args: Vec<String>) -> Result<Command> {
         "setup" => parse_setup_subcommand(tail_args),
         "doctor" => parse_non_setup_subcommand(Command::Doctor, tail_args),
         "mcp" => parse_non_setup_subcommand(Command::Mcp, tail_args),
-        "hooks" => parse_non_setup_subcommand(Command::Hooks, tail_args),
+        "hooks" => parse_hooks_subcommand(tail_args),
         "sync" => parse_non_setup_subcommand(Command::Sync, tail_args),
         _ => {
             if command_surface::is_known_command(&value) {
@@ -142,6 +142,11 @@ fn parse_non_setup_subcommand(command: Command, tail_args: Vec<String>) -> Resul
     );
 }
 
+fn parse_hooks_subcommand(args: Vec<String>) -> Result<Command> {
+    let subcommand = services::hooks::parse_hooks_subcommand(args)?;
+    Ok(Command::Hooks(subcommand))
+}
+
 fn dispatch(command: Command) -> Result<()> {
     match command {
         Command::Help => println!("{}", command_surface::help_text()),
@@ -174,7 +179,9 @@ fn dispatch(command: Command) -> Result<()> {
         Command::SetupHelp => println!("{}", services::setup::setup_usage_text()),
         Command::Doctor => println!("{}", services::doctor::run_doctor()?),
         Command::Mcp => println!("{}", services::mcp::run_placeholder_mcp()?),
-        Command::Hooks => println!("{}", services::hooks::run_placeholder_hooks()?),
+        Command::Hooks(subcommand) => {
+            println!("{}", services::hooks::run_hooks_subcommand(subcommand)?)
+        }
         Command::Sync => println!("{}", services::sync::run_placeholder_sync()?),
     }
 
@@ -196,9 +203,9 @@ mod tests {
     }
 
     #[test]
-    fn hooks_command_exits_success() {
+    fn hooks_command_without_subcommand_exits_non_zero() {
         let code = run(vec!["sce".to_string(), "hooks".to_string()]);
-        assert_eq!(code, ExitCode::SUCCESS);
+        assert_eq!(code, ExitCode::from(2));
     }
 
     #[test]
@@ -236,10 +243,48 @@ mod tests {
     }
 
     #[test]
-    fn parser_routes_placeholder_command() {
-        let command = parse_command(vec!["sce".to_string(), "hooks".to_string()])
-            .expect("command should parse");
-        assert_eq!(command, Command::Hooks);
+    fn parser_routes_hooks_pre_commit_subcommand() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "hooks".to_string(),
+            "pre-commit".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(
+            command,
+            Command::Hooks(crate::services::hooks::HookSubcommand::PreCommit)
+        );
+    }
+
+    #[test]
+    fn parser_routes_hooks_commit_msg_subcommand_with_path() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "hooks".to_string(),
+            "commit-msg".to_string(),
+            ".git/COMMIT_EDITMSG".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(
+            command,
+            Command::Hooks(crate::services::hooks::HookSubcommand::CommitMsg {
+                message_file: std::path::PathBuf::from(".git/COMMIT_EDITMSG"),
+            })
+        );
+    }
+
+    #[test]
+    fn parser_rejects_hooks_unknown_subcommand() {
+        let error = parse_command(vec![
+            "sce".to_string(),
+            "hooks".to_string(),
+            "unknown".to_string(),
+        ])
+        .expect_err("unknown hook subcommand should fail");
+        assert_eq!(
+            error.to_string(),
+            "Unknown hook subcommand 'unknown'. Run 'sce hooks --help' to see valid usage."
+        );
     }
 
     #[test]

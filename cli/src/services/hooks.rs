@@ -1,5 +1,8 @@
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use std::collections::HashSet;
+use std::fs;
+use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::Instant;
 
 use crate::services::agent_trace::{
@@ -10,6 +13,190 @@ use crate::services::agent_trace::{
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
 pub const POST_COMMIT_PARENT_SHA_METADATA_KEY: &str = "dev.crocoder.sce.parent_revision";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HookSubcommand {
+    PreCommit,
+    CommitMsg { message_file: PathBuf },
+    PostCommit,
+    PostRewrite { rewrite_method: String },
+}
+
+pub fn hooks_usage_text() -> &'static str {
+    "Usage:\n  sce hooks pre-commit\n  sce hooks commit-msg <message-file>\n  sce hooks post-commit\n  sce hooks post-rewrite <amend|rebase|other>\n\nGit executes hook scripts with these subcommands. `post-rewrite` reads rewrite pairs from STDIN."
+}
+
+pub fn parse_hooks_subcommand(args: Vec<String>) -> Result<HookSubcommand> {
+    if args.is_empty() {
+        bail!("Missing hook subcommand. Run 'sce hooks --help' to see valid usage.");
+    }
+
+    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
+        bail!("{}", hooks_usage_text());
+    }
+
+    match args[0].as_str() {
+        "pre-commit" => {
+            ensure_no_extra_hook_args("pre-commit", &args[1..])?;
+            Ok(HookSubcommand::PreCommit)
+        }
+        "commit-msg" => {
+            if args.len() < 2 {
+                bail!(
+                    "Missing required argument '<message-file>' for 'commit-msg'. Run 'sce hooks --help' to see valid usage."
+                );
+            }
+
+            if args.len() > 2 {
+                bail!(
+                    "Unexpected extra argument '{}' for 'commit-msg'. Run 'sce hooks --help' to see valid usage.",
+                    args[2]
+                );
+            }
+
+            Ok(HookSubcommand::CommitMsg {
+                message_file: PathBuf::from_str(&args[1])?,
+            })
+        }
+        "post-commit" => {
+            ensure_no_extra_hook_args("post-commit", &args[1..])?;
+            Ok(HookSubcommand::PostCommit)
+        }
+        "post-rewrite" => {
+            if args.len() < 2 {
+                bail!(
+                    "Missing required argument '<amend|rebase|other>' for 'post-rewrite'. Run 'sce hooks --help' to see valid usage."
+                );
+            }
+
+            if args.len() > 2 {
+                bail!(
+                    "Unexpected extra argument '{}' for 'post-rewrite'. Run 'sce hooks --help' to see valid usage.",
+                    args[2]
+                );
+            }
+
+            Ok(HookSubcommand::PostRewrite {
+                rewrite_method: args[1].clone(),
+            })
+        }
+        unknown => bail!(
+            "Unknown hook subcommand '{}'. Run 'sce hooks --help' to see valid usage.",
+            unknown
+        ),
+    }
+}
+
+fn ensure_no_extra_hook_args(hook: &str, args: &[String]) -> Result<()> {
+    if args.is_empty() {
+        return Ok(());
+    }
+
+    bail!(
+        "Unexpected extra argument '{}' for '{}'. Run 'sce hooks --help' to see valid usage.",
+        args[0],
+        hook
+    )
+}
+
+pub fn run_hooks_subcommand(subcommand: HookSubcommand) -> Result<String> {
+    match subcommand {
+        HookSubcommand::PreCommit => run_pre_commit_subcommand(),
+        HookSubcommand::CommitMsg { message_file } => run_commit_msg_subcommand(message_file),
+        HookSubcommand::PostCommit => run_post_commit_subcommand(),
+        HookSubcommand::PostRewrite { rewrite_method } => {
+            run_post_rewrite_subcommand(&rewrite_method)
+        }
+    }
+}
+
+fn run_pre_commit_subcommand() -> Result<String> {
+    let outcome = finalize_pre_commit_checkpoint(
+        &PreCommitRuntimeState {
+            sce_disabled: false,
+            cli_available: true,
+            is_bare_repo: false,
+        },
+        PreCommitTreeAnchors {
+            index_tree: "pending-index-tree".to_string(),
+            head_tree: None,
+        },
+        PendingCheckpoint { files: Vec::new() },
+    );
+
+    let message = match outcome {
+        PreCommitFinalization::NoOp(reason) => {
+            format!("pre-commit hook executed with no-op runtime state: {reason:?}")
+        }
+        PreCommitFinalization::Finalized(checkpoint) => format!(
+            "pre-commit hook executed and finalized staged checkpoint for {} file(s).",
+            checkpoint.files.len()
+        ),
+    };
+
+    Ok(message)
+}
+
+fn run_commit_msg_subcommand(message_file: PathBuf) -> Result<String> {
+    let metadata = fs::metadata(&message_file).with_context(|| {
+        format!(
+            "Invalid commit message file '{}': file does not exist or is not readable.",
+            message_file.display()
+        )
+    })?;
+
+    if !metadata.is_file() {
+        bail!(
+            "Invalid commit message file '{}': expected a regular file path.",
+            message_file.display()
+        );
+    }
+
+    Ok(format!(
+        "commit-msg hook accepted message file '{}'.",
+        message_file.display()
+    ))
+}
+
+fn run_post_commit_subcommand() -> Result<String> {
+    Ok("post-commit hook accepted runtime invocation.".to_string())
+}
+
+fn run_post_rewrite_subcommand(rewrite_method: &str) -> Result<String> {
+    let stdin = std::io::read_to_string(std::io::stdin())
+        .context("Failed to read post-rewrite pair input from STDIN")?;
+    let mut ingestion = AcceptAllRewriteRemapIngestion;
+    let outcome = finalize_post_rewrite_remap(
+        &PostRewriteRuntimeState {
+            sce_disabled: false,
+            cli_available: true,
+            is_bare_repo: false,
+        },
+        rewrite_method,
+        &stdin,
+        &mut ingestion,
+    )?;
+
+    match outcome {
+        PostRewriteFinalization::NoOp(reason) => Ok(format!(
+            "post-rewrite hook executed with no-op runtime state: {reason:?}"
+        )),
+        PostRewriteFinalization::Ingested(ingested) => Ok(format!(
+            "post-rewrite hook ingested {} pair(s), skipped {} duplicate pair(s), method='{}'.",
+            ingested.ingested_pairs,
+            ingested.skipped_pairs,
+            ingested.rewrite_method.canonical_label()
+        )),
+    }
+}
+
+struct AcceptAllRewriteRemapIngestion;
+
+impl RewriteRemapIngestion for AcceptAllRewriteRemapIngestion {
+    fn ingest(&mut self, _request: RewriteRemapRequest) -> Result<bool> {
+        Ok(true)
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreCommitRuntimeState {

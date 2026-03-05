@@ -29,7 +29,7 @@ Connect the existing Agent Trace service seams into a fully functional local Git
   - Verification notes (commands or checks):
     - Context review parity against `cli/src/services/{hooks,agent_trace,local_db,setup,doctor}.rs` and relevant context artifacts.
 
-- [ ] T02: Implement real `sce hooks` command routing and hook argument handling (status:todo)
+- [x] T02: Implement real `sce hooks` command routing and hook argument handling (status:done)
   - Task ID: T02
   - Goal: Replace placeholder-only hooks dispatch with concrete subcommand routing for `pre-commit`, `commit-msg`, `post-commit`, and `post-rewrite` execution.
   - Boundaries (in/out of scope):

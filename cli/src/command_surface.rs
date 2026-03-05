@@ -36,8 +36,8 @@ pub const COMMANDS: &[CommandContract] = &[
     },
     CommandContract {
         name: services::hooks::NAME,
-        status: ImplementationStatus::Placeholder,
-        purpose: "Manage git-hook listener and generated-region awareness",
+        status: ImplementationStatus::Implemented,
+        purpose: "Run git-hook runtime entrypoints for local Agent Trace flows",
     },
     CommandContract {
         name: services::sync::NAME,
@@ -71,7 +71,7 @@ Setup usage:\n  sce setup [--opencode|--claude|--both]\n  sce setup --hooks [--r
 Commands:\n{}\n\n\
 Setup defaults to interactive target selection when no setup target flag is passed.\n\
 Use '--hooks' to install required git hooks for the current repository or '--repo <path>' for a specific repository.\n\
-`setup` and `doctor` are implemented; `mcp`, `hooks`, and `sync` remain placeholder-oriented.\n",
+`setup`, `doctor`, and `hooks` are implemented; `mcp` and `sync` remain placeholder-oriented.\n",
         command_rows
     )
 }
