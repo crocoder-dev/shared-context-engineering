@@ -1,3 +1,10 @@
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
 use anyhow::{anyhow, bail, Result};
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_otlp::WithExportConfig;
@@ -9,6 +16,8 @@ pub const NAME: &str = "observability";
 
 const ENV_LOG_LEVEL: &str = "SCE_LOG_LEVEL";
 const ENV_LOG_FORMAT: &str = "SCE_LOG_FORMAT";
+const ENV_LOG_FILE: &str = "SCE_LOG_FILE";
+const ENV_LOG_FILE_MODE: &str = "SCE_LOG_FILE_MODE";
 const ENV_OTEL_ENABLED: &str = "SCE_OTEL_ENABLED";
 const ENV_OTEL_ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
 const ENV_OTEL_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
@@ -265,9 +274,104 @@ impl Default for ObservabilityConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct Logger {
     config: ObservabilityConfig,
+    file_sink: Option<LogFileSink>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LogFileMode {
+    Truncate,
+    Append,
+}
+
+impl LogFileMode {
+    fn parse(raw: &str) -> Result<Self> {
+        match raw {
+            "truncate" => Ok(Self::Truncate),
+            "append" => Ok(Self::Append),
+            _ => bail!(
+                "Invalid {} '{}'. Valid values: truncate, append.",
+                ENV_LOG_FILE_MODE,
+                raw
+            ),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct LogFileSink {
+    path: PathBuf,
+    writer: Arc<Mutex<File>>,
+}
+
+impl LogFileSink {
+    fn open(path: PathBuf, mode: LogFileMode) -> Result<Self> {
+        if path.as_os_str().is_empty() {
+            bail!(
+                "Invalid {} ''. Try: set it to an absolute or relative file path, for example .sce/sce.log.",
+                ENV_LOG_FILE
+            );
+        }
+
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|error| {
+                    anyhow!(
+                        "Failed to prepare log directory '{}': {}",
+                        parent.display(),
+                        error
+                    )
+                })?;
+            }
+        }
+
+        let mut options = OpenOptions::new();
+        options.create(true).write(true);
+        match mode {
+            LogFileMode::Truncate => {
+                options.truncate(true);
+            }
+            LogFileMode::Append => {
+                options.append(true);
+            }
+        }
+
+        #[cfg(unix)]
+        {
+            options.mode(0o600);
+        }
+
+        let file = options.open(&path).map_err(|error| {
+            anyhow!(
+                "Failed to open {} '{}': {}. Try: verify the path is writable or unset {}.",
+                ENV_LOG_FILE,
+                path.display(),
+                error,
+                ENV_LOG_FILE
+            )
+        })?;
+
+        #[cfg(unix)]
+        enforce_unix_log_file_permissions(&path)?;
+
+        Ok(Self {
+            path,
+            writer: Arc::new(Mutex::new(file)),
+        })
+    }
+
+    fn write_line(&self, line: &str) -> Result<()> {
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| anyhow!("Log file writer lock poisoned"))?;
+        writer.write_all(line.as_bytes())?;
+        writer.write_all(b"\n")?;
+        writer.flush()?;
+        Ok(())
+    }
 }
 
 impl Logger {
@@ -280,6 +384,9 @@ impl Logger {
         F: Fn(&str) -> Option<String>,
     {
         let mut config = ObservabilityConfig::default();
+        let mut file_path = None;
+        let mut file_mode_raw_seen = false;
+        let mut file_mode = LogFileMode::Truncate;
 
         if let Some(raw) = lookup(ENV_LOG_LEVEL) {
             config.level = LogLevel::parse(&raw)?;
@@ -289,7 +396,31 @@ impl Logger {
             config.format = LogFormat::parse(&raw)?;
         }
 
-        Ok(Self { config })
+        if let Some(raw) = lookup(ENV_LOG_FILE) {
+            file_path = Some(PathBuf::from(raw));
+        }
+
+        if let Some(raw) = lookup(ENV_LOG_FILE_MODE) {
+            file_mode_raw_seen = true;
+            file_mode = LogFileMode::parse(&raw)?;
+        }
+
+        if file_path.is_none() && file_mode_raw_seen {
+            bail!(
+                "{} requires {}. Try: set {} to a file path or unset {}.",
+                ENV_LOG_FILE_MODE,
+                ENV_LOG_FILE,
+                ENV_LOG_FILE,
+                ENV_LOG_FILE_MODE
+            );
+        }
+
+        let file_sink = match file_path {
+            Some(path) => Some(LogFileSink::open(path, file_mode)?),
+            None => None,
+        };
+
+        Ok(Self { config, file_sink })
     }
 
     pub fn info(&self, event_id: &str, message: &str, fields: &[(&str, &str)]) {
@@ -307,7 +438,19 @@ impl Logger {
 
         emit_tracing_event(level, event_id, message, fields);
 
-        eprintln!("{}", self.render_line(level, event_id, message, fields));
+        let line = self.render_line(level, event_id, message, fields);
+        eprintln!("{}", line);
+
+        if let Some(file_sink) = &self.file_sink {
+            if let Err(error) = file_sink.write_line(&line) {
+                eprintln!(
+                    "Error: Failed to write log file '{}': {}. Try: verify the file is writable or unset {}.",
+                    file_sink.path.display(),
+                    error,
+                    ENV_LOG_FILE
+                );
+            }
+        }
     }
 
     fn enabled(&self, level: LogLevel) -> bool {
@@ -403,11 +546,51 @@ fn emit_tracing_event(level: LogLevel, event_id: &str, message: &str, fields: &[
     }
 }
 
+#[cfg(unix)]
+fn enforce_unix_log_file_permissions(path: &Path) -> Result<()> {
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        anyhow!(
+            "Failed to inspect permissions for log file '{}': {}",
+            path.display(),
+            error
+        )
+    })?;
+
+    let mode = metadata.mode() & 0o777;
+    if mode & 0o077 != 0 {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(
+            |error| {
+                anyhow!(
+                    "Failed to secure permissions for {} '{}': {}. Try: run 'chmod 600 {}' and retry.",
+                    ENV_LOG_FILE,
+                    path.display(),
+                    error,
+                    path.display()
+                )
+            },
+        )?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
     use super::{
         validate_otlp_endpoint, LogFormat, LogLevel, Logger, TelemetryConfig, TelemetryRuntime,
     };
+
+    fn unique_temp_log_path(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be monotonic")
+            .as_nanos();
+        std::env::temp_dir().join(format!("sce-observability-{label}-{nanos}.log"))
+    }
 
     #[test]
     fn logger_defaults_to_info_text() {
@@ -454,6 +637,108 @@ mod tests {
             error.to_string(),
             "Invalid SCE_LOG_LEVEL 'trace'. Valid values: error, warn, info, debug."
         );
+    }
+
+    #[test]
+    fn logger_rejects_log_file_mode_without_path() {
+        let error = Logger::from_env_lookup(|key| {
+            if key == "SCE_LOG_FILE_MODE" {
+                return Some("append".to_string());
+            }
+            None
+        })
+        .expect_err("log file mode without path should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "SCE_LOG_FILE_MODE requires SCE_LOG_FILE. Try: set SCE_LOG_FILE to a file path or unset SCE_LOG_FILE_MODE."
+        );
+    }
+
+    #[test]
+    fn logger_rejects_invalid_log_file_mode() {
+        let error = Logger::from_env_lookup(|key| match key {
+            "SCE_LOG_FILE" => Some(".sce/sce.log".to_string()),
+            "SCE_LOG_FILE_MODE" => Some("rotate".to_string()),
+            _ => None,
+        })
+        .expect_err("invalid log file mode should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "Invalid SCE_LOG_FILE_MODE 'rotate'. Valid values: truncate, append."
+        );
+    }
+
+    #[test]
+    fn logger_file_sink_truncates_by_default() {
+        let log_path = unique_temp_log_path("truncate-default");
+        std::fs::write(&log_path, "old-data\n").expect("should write prior content");
+
+        let logger = Logger::from_env_lookup(|key| {
+            if key == "SCE_LOG_FILE" {
+                return Some(log_path.display().to_string());
+            }
+            None
+        })
+        .expect("logger should initialize with file sink");
+
+        logger.info("sce.test.event", "hello", &[("command", "setup")]);
+
+        let content = std::fs::read_to_string(&log_path).expect("should read log file");
+        assert!(content.contains("event_id=sce.test.event"));
+        assert!(!content.contains("old-data"));
+
+        let _ = std::fs::remove_file(log_path);
+    }
+
+    #[test]
+    fn logger_file_sink_appends_when_requested() {
+        let log_path = unique_temp_log_path("append");
+        std::fs::write(&log_path, "first\n").expect("should write prior content");
+
+        let logger = Logger::from_env_lookup(|key| match key {
+            "SCE_LOG_FILE" => Some(log_path.display().to_string()),
+            "SCE_LOG_FILE_MODE" => Some("append".to_string()),
+            _ => None,
+        })
+        .expect("logger should initialize with append sink");
+
+        logger.info("sce.test.event", "hello", &[]);
+
+        let content = std::fs::read_to_string(&log_path).expect("should read log file");
+        assert!(content.starts_with("first\n"));
+        assert!(content.contains("event_id=sce.test.event"));
+
+        let _ = std::fs::remove_file(log_path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn logger_tightens_world_readable_log_file_permissions() {
+        let log_path = unique_temp_log_path("permissions");
+        std::fs::write(&log_path, "seed\n").expect("should write seed file");
+        std::fs::set_permissions(&log_path, std::fs::Permissions::from_mode(0o644))
+            .expect("should set loose mode");
+
+        let logger = Logger::from_env_lookup(|key| {
+            if key == "SCE_LOG_FILE" {
+                return Some(log_path.display().to_string());
+            }
+            None
+        })
+        .expect("logger should repair loose permissions");
+
+        logger.info("sce.test.event", "hello", &[]);
+
+        let mode = std::fs::metadata(&log_path)
+            .expect("metadata should be readable")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+
+        let _ = std::fs::remove_file(log_path);
     }
 
     #[test]

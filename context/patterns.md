@@ -74,6 +74,7 @@
 - Parse CLI args with `lexopt`, classify top-level failures into stable exit-code classes (`parse`, `validation`, `runtime`, `dependency`), and keep user-facing failures deterministic/actionable.
 - Keep CLI observability separate from command payloads: emit deterministic lifecycle logs to `stderr` only with stable `event_id` values, and preserve `stdout` for command result payloads.
 - For baseline runtime observability controls, use deterministic env switches (`SCE_LOG_LEVEL`, `SCE_LOG_FORMAT`) with strict allowed values and fail-fast validation on invalid inputs.
+- For optional observability file sinks, gate enablement behind explicit `SCE_LOG_FILE`, require `SCE_LOG_FILE_MODE` only when file sink is set, default write policy to deterministic `truncate`, and enforce owner-only file permissions (`0600`) on Unix.
 - For OTEL baseline wiring, keep exporter bootstrap opt-in (`SCE_OTEL_ENABLED`), keep exporter mode env-addressable (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`), and validate invalid endpoint/protocol values as invocation validation failures before command dispatch.
 - Mirror lifecycle logger events into tracing events and attach OTEL subscriber context only around command execution so stdout payload contracts remain unchanged.
 - For runtime CLI configuration, keep precedence deterministic and explicit (`flags > env > config file > defaults`) and expose inspect/validate command entrypoints with stable text/JSON outputs.

@@ -88,7 +88,7 @@ Non-goals:
   - Done when: when no explicit config path/env override is provided, `sce config` discovers both global and local files (when present), merges them in memory with local stronger than global per key, then applies env and flags on top; output contracts/tests document merged-source behavior deterministically.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml services::config::tests`; `cargo test --manifest-path cli/Cargo.toml app::tests`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T04: Add file logging mode with safe defaults (status:todo)
+- [x] T04: Add file logging mode with safe defaults (status:done)
   - Task ID: T04
   - Goal: Support optional log sink to file path with deterministic behavior and safe permission handling.
   - Boundaries (in/out of scope): In: CLI flags/config for file logging, file-open/write/rotation-or-truncation policy, and tests; Out: remote log shipping.
