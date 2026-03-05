@@ -35,6 +35,7 @@ Feature/domain context:
 - `context/sce/agent-trace-rewrite-mapping-engine.md` (T13 hosted rewrite mapping engine contract with patch-id exact precedence, range-diff/fuzzy scoring, and deterministic unresolved outcomes)
 - `context/sce/agent-trace-retry-queue-observability.md` (T14 retry queue recovery contract plus reconciliation/runtime observability metrics and DB-first queue schema additions)
 - `context/sce/agent-trace-local-hooks-mvp-contract-gap-matrix.md` (T01 Local Hooks MVP production contract freeze and deterministic gap matrix for `agent-trace-local-hooks-production-mvp`)
+- `context/sce/agent-trace-hooks-command-routing.md` (T02 implemented `sce hooks` command routing, subcommand contracts, and deterministic invocation validation behavior)
 
 Working areas:
 - `context/plans/` (active plan execution artifacts, not durable history)
