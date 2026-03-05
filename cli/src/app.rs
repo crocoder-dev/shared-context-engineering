@@ -97,6 +97,8 @@ enum Command {
     HooksHelp,
     Sync,
     SyncHelp,
+    Version(services::version::VersionRequest),
+    VersionHelp,
 }
 
 impl Command {
@@ -109,6 +111,7 @@ impl Command {
             Self::Mcp | Self::McpHelp => services::mcp::NAME,
             Self::Hooks(_) | Self::HooksHelp => services::hooks::NAME,
             Self::Sync | Self::SyncHelp => services::sync::NAME,
+            Self::Version(_) | Self::VersionHelp => services::version::NAME,
         }
     }
 }
@@ -316,6 +319,7 @@ fn parse_subcommand(value: String, tail_args: Vec<String>) -> Result<Command, Cl
         "mcp" => parse_non_setup_subcommand(Command::Mcp, Command::McpHelp, tail_args),
         "hooks" => parse_hooks_subcommand(tail_args),
         "sync" => parse_non_setup_subcommand(Command::Sync, Command::SyncHelp, tail_args),
+        "version" => parse_version_subcommand(tail_args),
         _ => {
             if command_surface::is_known_command(&value) {
                 return Err(ClassifiedError::parse(format!(
@@ -389,6 +393,16 @@ fn parse_hooks_subcommand(args: Vec<String>) -> Result<Command, ClassifiedError>
     Ok(Command::Hooks(subcommand))
 }
 
+fn parse_version_subcommand(args: Vec<String>) -> Result<Command, ClassifiedError> {
+    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
+        return Ok(Command::VersionHelp);
+    }
+
+    let request = services::version::parse_version_request(args)
+        .map_err(|error| ClassifiedError::validation(error.to_string()))?;
+    Ok(Command::Version(request))
+}
+
 fn dispatch(command: &Command) -> Result<String, ClassifiedError> {
     match command {
         Command::Help => Ok(command_surface::help_text()),
@@ -434,6 +448,9 @@ fn dispatch(command: &Command) -> Result<String, ClassifiedError> {
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::SyncHelp => Ok(services::sync::sync_usage_text().to_string()),
         Command::Sync => services::sync::run_placeholder_sync()
+            .map_err(|error| ClassifiedError::runtime(error.to_string())),
+        Command::VersionHelp => Ok(services::version::version_usage_text().to_string()),
+        Command::Version(request) => services::version::render_version(*request)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
     }
 }
@@ -562,6 +579,22 @@ mod tests {
         let code = run(vec![
             "sce".to_string(),
             "sync".to_string(),
+            "--help".to_string(),
+        ]);
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn version_command_exits_success() {
+        let code = run(vec!["sce".to_string(), "version".to_string()]);
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn version_help_exits_success() {
+        let code = run(vec![
+            "sce".to_string(),
+            "version".to_string(),
             "--help".to_string(),
         ]);
         assert_eq!(code, ExitCode::SUCCESS);
@@ -787,6 +820,46 @@ mod tests {
         ])
         .expect("command should parse");
         assert_eq!(command, Command::SyncHelp);
+    }
+
+    #[test]
+    fn parser_routes_version_text_by_default() {
+        let command = parse_command(vec!["sce".to_string(), "version".to_string()])
+            .expect("command should parse");
+        assert_eq!(
+            command,
+            Command::Version(crate::services::version::VersionRequest {
+                format: crate::services::version::VersionFormat::Text,
+            })
+        );
+    }
+
+    #[test]
+    fn parser_routes_version_json_format() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "version".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(
+            command,
+            Command::Version(crate::services::version::VersionRequest {
+                format: crate::services::version::VersionFormat::Json,
+            })
+        );
+    }
+
+    #[test]
+    fn parser_routes_version_help() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "version".to_string(),
+            "--help".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(command, Command::VersionHelp);
     }
 
     #[test]

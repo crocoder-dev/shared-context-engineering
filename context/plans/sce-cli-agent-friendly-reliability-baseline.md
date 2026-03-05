@@ -130,7 +130,7 @@ Non-goals:
   - Done when: `sce <command> --help` works consistently and examples are deterministic/copy-ready.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml app::tests`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T10: Add machine-readable version command (status:todo)
+- [x] T10: Add machine-readable version command (status:done)
   - Task ID: T10
   - Goal: Introduce `sce version` with stable text and JSON output fields for runtime identification.
   - Boundaries (in/out of scope): In: command surface, parser/dispatch, and version payload wiring (for example version/build metadata fields); Out: release pipeline redesign.

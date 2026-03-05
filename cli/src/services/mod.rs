@@ -10,3 +10,4 @@ pub mod resilience;
 pub mod security;
 pub mod setup;
 pub mod sync;
+pub mod version;
