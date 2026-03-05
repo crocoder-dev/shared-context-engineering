@@ -137,7 +137,7 @@ Non-goals:
   - Done when: `sce version` and `sce version --format json` return deterministic version metadata with tests locking field names.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml app::tests command_surface::tests`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T11: Introduce stable error-code taxonomy (status:todo)
+- [x] T11: Introduce stable error-code taxonomy (status:done)
   - Task ID: T11
   - Goal: Add stable error identifiers to actionable user-facing errors so automation can branch on codes and operators can search remediation docs quickly.
   - Boundaries (in/out of scope): In: top-level parse/invocation error strings and selected service-validation failures; Out: internationalization or deep logging system changes.

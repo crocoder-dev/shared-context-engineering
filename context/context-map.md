@@ -39,6 +39,7 @@ Feature/domain context:
 - `context/sce/agent-trace-local-hooks-mvp-contract-gap-matrix.md` (T01 Local Hooks MVP production contract freeze and deterministic gap matrix for `agent-trace-local-hooks-production-mvp`)
 - `context/sce/agent-trace-hooks-command-routing.md` (implemented `sce hooks` command routing plus current runtime entrypoint behavior, including commit-msg policy gating/file mutation and post-rewrite remap+rewrite finalization wiring)
 - `context/sce/cli-exit-code-contract.md` (implemented stable `sce` exit-code class contract and `parse`/`validation`/`runtime`/`dependency` failure mapping)
+- `context/sce/cli-error-code-taxonomy.md` (implemented stable user-facing stderr error-code classes, `Error [<code>]` rendering contract, and class-default `Try:` remediation injection behavior)
 - `context/sce/cli-observability-contract.md` (implemented structured observability baseline for `sce` app runtime: deterministic level/format env controls, optional file sink controls/policy, OTEL bootstrap wiring, stable event IDs, and stderr-only primary log emission)
 - `context/sce/cli-stdout-stderr-contract.md` (implemented app-level stream routing contract: success payload emission on stdout, redacted diagnostics on stderr, and centralized stream ownership in `cli/src/app.rs`)
 - `context/sce/cli-version-command-contract.md` (implemented `sce version` command contract with deterministic text output, `--format <text|json>` parsing/validation, and stable JSON runtime-identification fields)
