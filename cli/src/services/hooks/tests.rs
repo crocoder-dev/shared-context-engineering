@@ -10,6 +10,7 @@ use crate::services::agent_trace::{
     FileAttributionInput, QualityStatus, RangeInput, TraceAdapterInput, METADATA_QUALITY_STATUS,
     METADATA_REWRITE_CONFIDENCE, METADATA_REWRITE_FROM, METADATA_REWRITE_METHOD,
 };
+use crate::services::local_db::resolve_agent_trace_local_db_path;
 
 use super::{
     apply_commit_msg_coauthor_policy, finalize_post_commit_trace, finalize_post_rewrite_remap,
@@ -66,16 +67,6 @@ fn run_git_output_in_repo(repo: &Path, args: &[&str]) -> Result<String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn resolve_git_path_in_repo(repo: &Path, git_path: &str) -> Result<PathBuf> {
-    let resolved = run_git_output_in_repo(repo, &["rev-parse", "--git-path", git_path])?;
-    let path = PathBuf::from(resolved);
-    if path.is_absolute() {
-        return Ok(path);
-    }
-
-    Ok(repo.join(path))
 }
 
 fn create_temp_repo() -> Result<PathBuf> {
@@ -1069,10 +1060,32 @@ fn post_commit_runtime_persists_notes_and_local_record_store() -> Result<()> {
         Some("refs/notes/agent-trace")
     );
 
-    let records_path = resolve_git_path_in_repo(&repo, "sce/trace-records.jsonl")?;
-    let persisted = fs::read_to_string(records_path)?;
-    assert!(persisted.contains("post-commit:"));
-    assert!(persisted.contains("application/vnd.agent-trace.record+json"));
+    let db_path = resolve_agent_trace_local_db_path()?;
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let persisted_count = runtime.block_on(async {
+        let location = db_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("test DB path must be UTF-8"))?;
+        let db = turso::Builder::new_local(location).build().await?;
+        let conn = db.connect()?;
+        let mut rows = conn
+            .query(
+                "SELECT COUNT(*) FROM trace_records tr JOIN commits c ON c.id = tr.commit_id WHERE c.commit_sha = ?1",
+                [head_sha.as_str()],
+            )
+            .await?;
+        let row = rows
+            .next()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("trace record count query returned no rows"))?;
+        let value = row.get_value(0)?;
+        value
+            .as_integer()
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("trace record count query returned non-integer"))
+    })?;
+
+    assert_eq!(persisted_count, 1);
 
     Ok(())
 }

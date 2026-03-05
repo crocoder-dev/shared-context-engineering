@@ -19,7 +19,7 @@
 ## Current runtime entrypoint behavior
 - `pre-commit`: executes the pre-commit runtime entrypoint and reports staged-checkpoint finalization outcome.
 - `commit-msg`: validates `<message-file>`, resolves runtime gates (`SCE_DISABLED`, `SCE_COAUTHOR_ENABLED`, staged checkpoint presence), applies canonical co-author policy, and writes back only when trailer mutation is required.
-- `post-commit`: resolves runtime guards, builds commit attribution input from git + pre-commit checkpoint artifacts, executes `finalize_post_commit_trace`, writes canonical note payloads to `refs/notes/agent-trace`, persists trace records to git-path JSONL storage (`sce/trace-records.jsonl`), maintains commit-level emission ledger (`sce/trace-emission-ledger.txt`), and enqueues fallback entries (`sce/trace-retry-queue.jsonl`) when a persistence target fails.
+- `post-commit`: resolves runtime guards, builds commit attribution input from git + pre-commit checkpoint artifacts, executes `finalize_post_commit_trace`, writes canonical note payloads to `refs/notes/agent-trace`, ensures persistent local DB readiness (`.../sce/agent-trace/local.db`) with migrations before write attempts, persists trace records to local Turso-backed tables, maintains commit-level emission ledger (`sce/trace-emission-ledger.txt`), and enqueues fallback entries (`sce/trace-retry-queue.jsonl`) when a persistence target fails.
 - `post-rewrite`: reads hook pair input from STDIN, validates pair format through remap finalization parsing, and reports ingested/skipped outcomes.
 
 ## Notes for next tasks
