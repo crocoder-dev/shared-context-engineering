@@ -8,6 +8,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use crate::services::security::{ensure_directory_is_writable, redact_sensitive_text};
+
 pub const NAME: &str = "setup";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -142,9 +144,39 @@ pub fn run_setup_for_mode(repository_root: &Path, mode: SetupMode) -> Result<Str
 }
 
 pub fn run_setup_hooks(repository_root: &Path) -> Result<String> {
-    let outcome = install_required_git_hooks(repository_root)
+    let normalized_repository_root = normalize_user_repository_path(repository_root)?;
+    let outcome = install_required_git_hooks(&normalized_repository_root)
         .context("Hook setup failed while installing required git hooks")?;
     Ok(format_required_hook_install_success_message(&outcome))
+}
+
+fn normalize_user_repository_path(repository_root: &Path) -> Result<PathBuf> {
+    if repository_root.as_os_str().is_empty() {
+        bail!("Option '--repo' must not be empty. Try: pass a path to an existing git repository.");
+    }
+
+    let canonical_repository_root = fs::canonicalize(repository_root).with_context(|| {
+        format!(
+            "Failed to resolve repository path '{}'. Try: pass a path to an existing git repository.",
+            repository_root.display()
+        )
+    })?;
+
+    let metadata = fs::metadata(&canonical_repository_root).with_context(|| {
+        format!(
+            "Failed to inspect repository path '{}'.",
+            canonical_repository_root.display()
+        )
+    })?;
+
+    if !metadata.is_dir() {
+        bail!(
+            "Repository path '{}' is not a directory. Try: pass a path to an existing git repository.",
+            canonical_repository_root.display()
+        );
+    }
+
+    Ok(canonical_repository_root)
 }
 
 fn format_setup_install_success_message(outcome: &SetupInstallOutcome) -> String {
@@ -267,6 +299,7 @@ where
     F: FnMut(&Path, &Path) -> io::Result<()>,
 {
     let resolved_repository_root = resolve_git_repository_root(repository_root)?;
+    ensure_directory_is_writable(&resolved_repository_root, "repository root")?;
     let hooks_directory = resolve_git_hooks_directory(&resolved_repository_root)?;
     fs::create_dir_all(&hooks_directory).with_context(|| {
         format!(
@@ -274,6 +307,7 @@ where
             hooks_directory.display()
         )
     })?;
+    ensure_directory_is_writable(&hooks_directory, "git hooks directory")?;
 
     let mut hook_results = Vec::new();
     for hook_asset in iter_required_hook_assets() {
@@ -485,7 +519,7 @@ fn run_git_command_in_directory(
         let diagnostic = if stderr.is_empty() {
             "git command exited with a non-zero status".to_string()
         } else {
-            stderr
+            redact_sensitive_text(&stderr)
         };
         bail!("{} {}", context_message, diagnostic);
     }
@@ -556,6 +590,8 @@ fn install_embedded_setup_assets_with_rename<F>(
 where
     F: FnMut(&Path, &Path) -> io::Result<()>,
 {
+    ensure_directory_is_writable(repository_root, "setup repository root")?;
+
     let mut target_results = Vec::new();
 
     for concrete_target in concrete_targets_for(target) {

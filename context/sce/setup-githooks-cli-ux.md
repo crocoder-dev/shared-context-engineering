@@ -19,6 +19,7 @@ Validation is deterministic and enforced during setup option resolution:
 - `--repo` requires `--hooks`
 - `--hooks` cannot be combined with `--opencode`, `--claude`, or `--both`
 - `--repo` may only be provided once and must include a value
+- `--repo` path is canonicalized and must resolve to an existing directory before hook setup runs
 
 Target-install mode remains unchanged:
 

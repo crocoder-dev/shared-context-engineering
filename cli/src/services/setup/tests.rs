@@ -143,6 +143,27 @@ fn run_setup_hooks_reports_per_hook_statuses() -> Result<()> {
 }
 
 #[test]
+fn run_setup_hooks_rejects_missing_repo_path() {
+    let missing_path = PathBuf::from("/definitely/missing/sce-test-repo");
+    let error = run_setup_hooks(&missing_path).expect_err("missing repo path should fail");
+    assert!(error
+        .to_string()
+        .contains("Failed to resolve repository path"));
+}
+
+#[test]
+fn run_setup_hooks_rejects_file_repo_path() -> Result<()> {
+    let temp = TestTempDir::new("sce-setup-hook-install-tests")?;
+    let file_path = temp.path().join("not-a-directory");
+    fs::write(&file_path, b"not a repo")?;
+
+    let error = run_setup_hooks(&file_path).expect_err("file path should fail");
+    assert!(error.to_string().contains("is not a directory"));
+
+    Ok(())
+}
+
+#[test]
 fn setup_help_option_sets_help_flag() -> Result<()> {
     let options = parse_setup_cli_options(vec!["--help".to_string()])?;
     assert!(options.help);

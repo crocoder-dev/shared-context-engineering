@@ -7,5 +7,6 @@ pub mod local_db;
 pub mod mcp;
 pub mod observability;
 pub mod resilience;
+pub mod security;
 pub mod setup;
 pub mod sync;

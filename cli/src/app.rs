@@ -125,7 +125,10 @@ where
     match try_run_with_dependency_check(args, dependency_check) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("Error: {error}");
+            eprintln!(
+                "Error: {}",
+                services::security::redact_sensitive_text(&error.to_string())
+            );
             ExitCode::from(error.class.exit_code())
         }
     }
