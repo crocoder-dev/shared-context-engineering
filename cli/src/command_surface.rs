@@ -49,6 +49,11 @@ pub const COMMANDS: &[CommandContract] = &[
         status: ImplementationStatus::Placeholder,
         purpose: "Coordinate future cloud sync workflows",
     },
+    CommandContract {
+        name: services::version::NAME,
+        status: ImplementationStatus::Implemented,
+        purpose: "Print deterministic runtime version metadata",
+    },
 ];
 
 pub fn is_known_command(name: &str) -> bool {
@@ -102,5 +107,11 @@ mod tests {
         let help = help_text();
         assert!(help.contains("sce setup [--opencode|--claude|--both]"));
         assert!(help.contains("sce setup --hooks [--repo <path>]"));
+    }
+
+    #[test]
+    fn help_text_mentions_version_command() {
+        let help = help_text();
+        assert!(help.contains("version"));
     }
 }
