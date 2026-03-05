@@ -23,7 +23,11 @@ Config file selection follows this deterministic order:
 
 1. `--config <path>`
 2. `SCE_CONFIG_FILE`
-3. discovered default path: `.sce/config.json` under current working directory (only when present)
+3. discovered defaults when no explicit path/env override is provided:
+   - global: `${state_root}/sce/config.json` where `state_root` follows the same platform policy as Agent Trace local DB path derivation
+   - local: `.sce/config.json` under current working directory
+
+When both discovered defaults exist, they are merged in memory in deterministic order `global -> local`, and local values override global values per key.
 
 ## Validation contract
 
@@ -38,6 +42,8 @@ Config file selection follows this deterministic order:
 - `show` and `validate` support deterministic `text` and `json` outputs.
 - JSON responses include a top-level `status` and nested `result` object.
 - Text output includes the canonical precedence string: `flags > env > config file > defaults`.
+- Output reports discovered config files as `config_paths` (JSON) / `Config files:` (text).
+- Resolved values continue to report `source`; when source is `config_file`, output also reports a deterministic `config_source` value (`flag`, `env`, `default_discovered_global`, `default_discovered_local`).
 
 ## Related files
 

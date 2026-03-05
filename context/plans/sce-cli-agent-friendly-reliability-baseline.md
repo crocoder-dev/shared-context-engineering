@@ -81,7 +81,7 @@ Non-goals:
      - Endpoint/config should be env-addressable (for example `OTEL_EXPORTER_OTLP_ENDPOINT`), with deterministic defaults and actionable validation errors for invalid configuration.
      - Keep command payload contract safe: observability output/export path must not pollute stdout command result payloads.
 
-- [ ] T22: Add global config discovery aligned with Agent Trace state root (status:todo)
+- [x] T22: Add global config discovery aligned with Agent Trace state root (status:done)
   - Task ID: T22
   - Goal: Add deterministic user-global config discovery for `sce config` and merge global+local config in memory, with local values overriding global values per key.
   - Boundaries (in/out of scope): In: platform-aware global path derivation, in-memory global+local merge behavior, explicit precedence integration with `--config` and `SCE_CONFIG_FILE`, clear source/merge reporting in `config show/validate`, and focused tests/docs/context updates; Out: config schema expansion beyond existing keys and migration tooling.
