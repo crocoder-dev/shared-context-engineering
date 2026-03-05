@@ -18,10 +18,12 @@
 
 ## Current runtime entrypoint behavior
 - `pre-commit`: executes the pre-commit runtime entrypoint and reports staged-checkpoint finalization outcome.
-- `commit-msg`: validates that `<message-file>` exists and is a regular file before accepting invocation.
+- `commit-msg`: validates `<message-file>`, resolves runtime gates (`SCE_DISABLED`, `SCE_COAUTHOR_ENABLED`, staged checkpoint presence), applies canonical co-author policy, and writes back only when trailer mutation is required.
 - `post-commit`: accepts runtime invocation through implemented dispatch entrypoint.
 - `post-rewrite`: reads hook pair input from STDIN, validates pair format through remap finalization parsing, and reports ingested/skipped outcomes.
 
 ## Notes for next tasks
-- T02 implements routing and invocation contracts only.
-- Deep runtime wiring for staged attribution, commit-msg mutation, post-commit persistence adapters, and rewrite-trace persistence remains in `T03+`.
+- T02 established routing and invocation contracts.
+- T03 implemented pre-commit staged-checkpoint runtime wiring.
+- T04 implemented commit-msg file IO mutation wiring to canonical co-author policy.
+- Post-commit persistence adapters and rewrite-trace persistence remain in `T05+`.

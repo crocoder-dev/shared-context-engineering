@@ -55,7 +55,7 @@ Connect the existing Agent Trace service seams into a fully functional local Git
     - `cargo test --manifest-path cli/Cargo.toml pre_commit`
     - End-to-end local repo fixture test proving unstaged ranges are excluded.
 
-- [ ] T04: Wire commit-msg hook file mutation to canonical co-author policy (status:todo)
+- [x] T04: Wire commit-msg hook file mutation to canonical co-author policy (status:done)
   - Task ID: T04
   - Goal: Connect `apply_commit_msg_coauthor_policy` to real commit message file IO in hook runtime with idempotent trailer handling.
   - Boundaries (in/out of scope):
