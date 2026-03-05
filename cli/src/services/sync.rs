@@ -105,11 +105,7 @@ fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
         .build()
         .context("failed to create shared tokio runtime for sync placeholder")?;
 
-    let _ = SYNC_RUNTIME.set(runtime);
-
-    SYNC_RUNTIME
-        .get()
-        .context("shared tokio runtime for sync placeholder is unavailable")
+    Ok(SYNC_RUNTIME.get_or_init(|| runtime))
 }
 
 pub fn run_placeholder_sync() -> Result<String> {

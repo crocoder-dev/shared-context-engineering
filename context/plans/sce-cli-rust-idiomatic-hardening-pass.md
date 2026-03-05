@@ -77,7 +77,7 @@ Non-goals (deferred):
   - Done when: `parse_command` no longer clones `tail_args` for `Parser::from_args`, with behavior preserved and tests passing.
   - Verification notes: run `cargo test --manifest-path cli/Cargo.toml app::tests` and `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T07: Simplify sync runtime initialization with idiomatic OnceLock API (status:todo)
+- [x] T07: Simplify sync runtime initialization with idiomatic OnceLock API (status:done)
   - Goal: Replace manual get/set/get runtime init in `shared_runtime` with `OnceLock` idioms (`get_or_try_init` or equivalent safe pattern).
   - Boundaries (in): `cli/src/services/sync.rs` runtime init path and relevant tests.
   - Boundaries (out): Async architecture changes beyond runtime initialization style.
