@@ -68,7 +68,7 @@ Connect the existing Agent Trace service seams into a fully functional local Git
     - `cargo test --manifest-path cli/Cargo.toml commit_msg_policy`
     - Hook-runtime integration test with on-disk commit message fixture.
 
-- [ ] T05: Implement post-commit production persistence adapters (notes + DB + ledger + queue) (status:todo)
+- [x] T05: Implement post-commit production persistence adapters (notes + DB + ledger + queue) (status:done)
   - Task ID: T05
   - Goal: Connect `finalize_post_commit_trace` to concrete production adapters for notes writes, DB writes, emission ledger, and retry queue enqueue.
   - Boundaries (in/out of scope):

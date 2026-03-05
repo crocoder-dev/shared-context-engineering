@@ -1,14 +1,17 @@
 use anyhow::{bail, Context, Result};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
 use std::time::Instant;
 
 use crate::services::agent_trace::{
-    build_trace_payload, AgentTraceRecord, FileAttributionInput, QualityStatus, RewriteInfo,
-    TraceAdapterInput, METADATA_IDEMPOTENCY_KEY, TRACE_CONTENT_TYPE,
+    build_trace_payload, AgentTraceContributor, AgentTraceConversation, AgentTraceFile,
+    AgentTraceRange, AgentTraceRecord, AgentTraceVcs, ContributorInput, ContributorType,
+    ConversationInput, FileAttributionInput, QualityStatus, RangeInput, RewriteInfo,
+    TraceAdapterInput, METADATA_IDEMPOTENCY_KEY, TRACE_CONTENT_TYPE, TRACE_VERSION, VCS_TYPE_GIT,
 };
 
 pub const NAME: &str = "hooks";
@@ -576,7 +579,300 @@ fn staged_sce_attribution_present(repository_root: &Path) -> bool {
 }
 
 fn run_post_commit_subcommand() -> Result<String> {
-    Ok("post-commit hook accepted runtime invocation.".to_string())
+    let repository_root = std::env::current_dir()
+        .context("Failed to determine current directory for post-commit runtime invocation.")?;
+    run_post_commit_subcommand_in_repo(&repository_root)
+}
+
+fn run_post_commit_subcommand_in_repo(repository_root: &Path) -> Result<String> {
+    let runtime = resolve_post_commit_runtime_state(repository_root);
+
+    if runtime.sce_disabled || !runtime.cli_available || runtime.is_bare_repo {
+        let reason = if runtime.sce_disabled {
+            PostCommitNoOpReason::Disabled
+        } else if !runtime.cli_available {
+            PostCommitNoOpReason::CliUnavailable
+        } else {
+            PostCommitNoOpReason::BareRepository
+        };
+
+        return Ok(format!(
+            "post-commit hook executed with no-op runtime state: {reason:?}"
+        ));
+    }
+
+    let runtime_paths = match resolve_post_commit_runtime_paths(repository_root) {
+        Ok(paths) => paths,
+        Err(error) => {
+            return Ok(format!(
+                "post-commit hook skipped trace finalization: failed to resolve persistence targets ({error})"
+            ));
+        }
+    };
+
+    let input = match build_post_commit_input(repository_root) {
+        Ok(input) => input,
+        Err(error) => {
+            return Ok(format!(
+                "post-commit hook skipped trace finalization: failed to collect commit attribution input ({error})"
+            ));
+        }
+    };
+
+    let mut notes_writer = GitNotesTraceWriter {
+        repository_root: repository_root.to_path_buf(),
+    };
+    let mut record_store = JsonFileTraceRecordStore {
+        path: runtime_paths.trace_records_path,
+    };
+    let mut retry_queue = JsonFileTraceRetryQueue {
+        path: runtime_paths.retry_queue_path,
+    };
+    let mut emission_ledger = FileTraceEmissionLedger {
+        path: runtime_paths.emission_ledger_path,
+    };
+
+    let outcome = match finalize_post_commit_trace(
+        &runtime,
+        input,
+        &mut notes_writer,
+        &mut record_store,
+        &mut retry_queue,
+        &mut emission_ledger,
+    ) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            return Ok(format!(
+                "post-commit hook skipped trace finalization: finalizer execution failed ({error})"
+            ));
+        }
+    };
+
+    let message = match outcome {
+        PostCommitFinalization::NoOp(reason) => {
+            format!("post-commit hook executed with no-op runtime state: {reason:?}")
+        }
+        PostCommitFinalization::Persisted(persisted) => format!(
+            "post-commit hook finalized trace for commit '{}' (trace_id='{}', notes={:?}, database={:?}).",
+            persisted.commit_sha, persisted.trace_id, persisted.notes, persisted.database
+        ),
+        PostCommitFinalization::QueuedFallback(queued) => format!(
+            "post-commit hook enqueued fallback for commit '{}' (trace_id='{}', failed_targets={:?}).",
+            queued.commit_sha, queued.trace_id, queued.failed_targets
+        ),
+    };
+
+    Ok(message)
+}
+
+fn resolve_post_commit_runtime_state(repository_root: &Path) -> PostCommitRuntimeState {
+    PostCommitRuntimeState {
+        sce_disabled: env_flag_is_truthy("SCE_DISABLED"),
+        cli_available: git_command_success(repository_root, &["--version"]),
+        is_bare_repo: git_command_output(repository_root, &["rev-parse", "--is-bare-repository"])
+            .is_some_and(|output| output == "true"),
+    }
+}
+
+struct PostCommitRuntimePaths {
+    trace_records_path: PathBuf,
+    retry_queue_path: PathBuf,
+    emission_ledger_path: PathBuf,
+}
+
+fn resolve_post_commit_runtime_paths(repository_root: &Path) -> Result<PostCommitRuntimePaths> {
+    let trace_records_path = resolve_git_path(repository_root, "sce/trace-records.jsonl")?;
+    let retry_queue_path = resolve_git_path(repository_root, "sce/trace-retry-queue.jsonl")?;
+    let emission_ledger_path = resolve_git_path(repository_root, "sce/trace-emission-ledger.txt")?;
+
+    Ok(PostCommitRuntimePaths {
+        trace_records_path,
+        retry_queue_path,
+        emission_ledger_path,
+    })
+}
+
+fn resolve_git_path(repository_root: &Path, git_path: &str) -> Result<PathBuf> {
+    let resolved = run_git_command(
+        repository_root,
+        &["rev-parse", "--git-path", git_path],
+        "Failed to resolve git persistence path.",
+    )?;
+    let path = PathBuf::from(resolved);
+    if path.is_absolute() {
+        return Ok(path);
+    }
+
+    Ok(repository_root.join(path))
+}
+
+fn build_post_commit_input(repository_root: &Path) -> Result<PostCommitInput> {
+    let commit_sha = run_git_command(
+        repository_root,
+        &["rev-parse", "--verify", "HEAD"],
+        "Failed to resolve post-commit HEAD SHA.",
+    )?;
+    let parent_sha = git_command_output(repository_root, &["rev-parse", "--verify", "HEAD^"]);
+    let timestamp_rfc3339 = run_git_command(
+        repository_root,
+        &["show", "-s", "--format=%cI", "HEAD"],
+        "Failed to resolve post-commit timestamp.",
+    )?;
+    let files = collect_post_commit_file_attribution(repository_root)?;
+    let idempotency_key = format!("post-commit:{commit_sha}");
+    let record_id = deterministic_uuid_v4_from_seed(&format!("{commit_sha}:{timestamp_rfc3339}"));
+
+    Ok(PostCommitInput {
+        record_id,
+        timestamp_rfc3339,
+        commit_sha,
+        parent_sha,
+        idempotency_key,
+        files,
+    })
+}
+
+fn collect_post_commit_file_attribution(
+    repository_root: &Path,
+) -> Result<Vec<FileAttributionInput>> {
+    let checkpoint_files = load_post_commit_checkpoint_files(repository_root)?;
+    if !checkpoint_files.is_empty() {
+        return Ok(checkpoint_files);
+    }
+
+    let changed_paths = run_git_command_allow_empty(
+        repository_root,
+        &["show", "--pretty=format:", "--name-only", "HEAD"],
+        "Failed to resolve changed files for post-commit attribution.",
+    )?;
+
+    let mut files = Vec::new();
+    for line in changed_paths.lines() {
+        let path = line.trim();
+        if path.is_empty() {
+            continue;
+        }
+
+        files.push(FileAttributionInput {
+            path: path.to_string(),
+            conversations: vec![ConversationInput {
+                url: "https://crocoder.dev/sce/local-hooks/post-commit".to_string(),
+                related: Vec::new(),
+                ranges: vec![RangeInput {
+                    start_line: 1,
+                    end_line: 1,
+                    contributor: ContributorInput {
+                        kind: ContributorType::Unknown,
+                        model_id: None,
+                    },
+                }],
+            }],
+        });
+    }
+
+    Ok(files)
+}
+
+fn load_post_commit_checkpoint_files(repository_root: &Path) -> Result<Vec<FileAttributionInput>> {
+    let checkpoint_path = resolve_pre_commit_checkpoint_path(repository_root)?;
+    let payload = match fs::read_to_string(&checkpoint_path) {
+        Ok(payload) => payload,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            bail!(
+                "Failed to read pre-commit checkpoint '{}' for post-commit finalization: {}",
+                checkpoint_path.display(),
+                error
+            )
+        }
+    };
+
+    let checkpoint = serde_json::from_str::<serde_json::Value>(&payload).with_context(|| {
+        format!(
+            "Failed to parse pre-commit checkpoint '{}' as JSON.",
+            checkpoint_path.display()
+        )
+    })?;
+
+    let Some(files_json) = checkpoint
+        .get("files")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(Vec::new());
+    };
+
+    let mut files = Vec::new();
+    for file_json in files_json {
+        let Some(path) = file_json.get("path").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+
+        let ranges = file_json
+            .get("ranges")
+            .and_then(serde_json::Value::as_array)
+            .map(|ranges| {
+                ranges
+                    .iter()
+                    .filter_map(|range_json| {
+                        let start_line = range_json
+                            .get("start_line")
+                            .and_then(serde_json::Value::as_u64)
+                            .map(|value| value as u32)?;
+                        let end_line = range_json
+                            .get("end_line")
+                            .and_then(serde_json::Value::as_u64)
+                            .map(|value| value as u32)?;
+
+                        Some(RangeInput {
+                            start_line,
+                            end_line,
+                            contributor: ContributorInput {
+                                kind: ContributorType::Unknown,
+                                model_id: None,
+                            },
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        if ranges.is_empty() {
+            continue;
+        }
+
+        files.push(FileAttributionInput {
+            path: path.to_string(),
+            conversations: vec![ConversationInput {
+                url: "https://crocoder.dev/sce/local-hooks/pre-commit-checkpoint".to_string(),
+                related: Vec::new(),
+                ranges,
+            }],
+        });
+    }
+
+    Ok(files)
+}
+
+fn deterministic_uuid_v4_from_seed(seed: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let digest = Sha256::digest(seed.as_bytes());
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+        u16::from_be_bytes([bytes[4], bytes[5]]),
+        u16::from_be_bytes([bytes[6], bytes[7]]),
+        u16::from_be_bytes([bytes[8], bytes[9]]),
+        u64::from_be_bytes([
+            0, 0, bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+        ])
+    )
 }
 
 fn run_post_rewrite_subcommand(rewrite_method: &str) -> Result<String> {
@@ -782,6 +1078,512 @@ pub struct RetryQueueProcessSummary {
 pub trait TraceEmissionLedger {
     fn has_emitted(&self, commit_sha: &str) -> bool;
     fn mark_emitted(&mut self, commit_sha: &str);
+}
+
+struct GitNotesTraceWriter {
+    repository_root: PathBuf,
+}
+
+impl TraceNotesWriter for GitNotesTraceWriter {
+    fn write_note(&mut self, note: TraceNote) -> PersistenceWriteResult {
+        let payload = match serialize_note_payload(&note) {
+            Ok(payload) => payload,
+            Err(error) => {
+                return PersistenceWriteResult::Failed(PersistenceFailure {
+                    class: PersistenceErrorClass::Permanent,
+                    message: format!("failed to serialize trace note payload: {error}"),
+                });
+            }
+        };
+
+        let existing = Command::new("git")
+            .args([
+                "notes",
+                "--ref",
+                note.notes_ref.as_str(),
+                "show",
+                note.commit_sha.as_str(),
+            ])
+            .current_dir(&self.repository_root)
+            .output();
+        if let Ok(output) = &existing {
+            if output.status.success() {
+                let existing_payload = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if existing_payload == payload {
+                    return PersistenceWriteResult::AlreadyExists;
+                }
+            }
+        }
+
+        match Command::new("git")
+            .args([
+                "notes",
+                "--ref",
+                note.notes_ref.as_str(),
+                "add",
+                "-f",
+                "-m",
+                payload.as_str(),
+                note.commit_sha.as_str(),
+            ])
+            .current_dir(&self.repository_root)
+            .output()
+        {
+            Ok(output) if output.status.success() => PersistenceWriteResult::Written,
+            Ok(output) => PersistenceWriteResult::Failed(PersistenceFailure {
+                class: classify_persistence_error_class_from_stderr(&String::from_utf8_lossy(
+                    &output.stderr,
+                )),
+                message: format!(
+                    "failed to write git note for commit '{}': {}",
+                    note.commit_sha,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+            }),
+            Err(error) => PersistenceWriteResult::Failed(PersistenceFailure {
+                class: classify_persistence_error_class_from_io(&error),
+                message: format!(
+                    "failed to execute git notes command for commit '{}': {}",
+                    note.commit_sha, error
+                ),
+            }),
+        }
+    }
+}
+
+struct JsonFileTraceRecordStore {
+    path: PathBuf,
+}
+
+impl TraceRecordStore for JsonFileTraceRecordStore {
+    fn write_trace_record(&mut self, record: PersistedTraceRecord) -> PersistenceWriteResult {
+        if let Some(existing_key) =
+            load_record_with_idempotency_key(&self.path, &record.idempotency_key)
+        {
+            if existing_key == record.idempotency_key {
+                return PersistenceWriteResult::AlreadyExists;
+            }
+        }
+
+        if let Some(parent) = self.path.parent() {
+            if let Err(error) = fs::create_dir_all(parent) {
+                return PersistenceWriteResult::Failed(PersistenceFailure {
+                    class: classify_persistence_error_class_from_io(&error),
+                    message: format!(
+                        "failed to create trace record store directory '{}': {}",
+                        parent.display(),
+                        error
+                    ),
+                });
+            }
+        }
+
+        let line = serde_json::json!({
+            "commit_sha": record.commit_sha,
+            "idempotency_key": record.idempotency_key,
+            "content_type": record.content_type,
+            "notes_ref": record.notes_ref,
+            "record": trace_record_to_json(&record.record),
+        })
+        .to_string();
+
+        match append_jsonl_line(&self.path, &line) {
+            Ok(()) => PersistenceWriteResult::Written,
+            Err(error) => PersistenceWriteResult::Failed(PersistenceFailure {
+                class: classify_persistence_error_class_from_io(&error),
+                message: format!(
+                    "failed to write trace record into local JSON store '{}': {}",
+                    self.path.display(),
+                    error
+                ),
+            }),
+        }
+    }
+}
+
+struct JsonFileTraceRetryQueue {
+    path: PathBuf,
+}
+
+impl TraceRetryQueue for JsonFileTraceRetryQueue {
+    fn enqueue(&mut self, entry: TraceRetryQueueEntry) -> Result<()> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "Failed to create retry queue directory '{}'",
+                    parent.display()
+                )
+            })?;
+        }
+
+        let line = serde_json::json!({
+            "commit_sha": entry.commit_sha,
+            "failed_targets": entry
+                .failed_targets
+                .iter()
+                .map(persistence_target_label)
+                .collect::<Vec<_>>(),
+            "content_type": entry.content_type,
+            "notes_ref": entry.notes_ref,
+            "record": trace_record_to_json(&entry.record),
+        })
+        .to_string();
+        append_jsonl_line(&self.path, &line)?;
+
+        Ok(())
+    }
+
+    fn dequeue_next(&mut self) -> Result<Option<TraceRetryQueueEntry>> {
+        if !self.path.exists() {
+            return Ok(None);
+        }
+
+        let payload = fs::read_to_string(&self.path).with_context(|| {
+            format!(
+                "Failed to read retry queue file '{}' for dequeue.",
+                self.path.display()
+            )
+        })?;
+
+        let mut lines = payload.lines();
+        let Some(first_line) = lines.next() else {
+            return Ok(None);
+        };
+
+        let mut remaining = String::new();
+        for line in lines {
+            remaining.push_str(line);
+            remaining.push('\n');
+        }
+        fs::write(&self.path, remaining).with_context(|| {
+            format!(
+                "Failed to rewrite retry queue file '{}' after dequeue.",
+                self.path.display()
+            )
+        })?;
+
+        let parsed = serde_json::from_str::<serde_json::Value>(first_line)
+            .context("Failed to parse retry queue entry JSON during dequeue")?;
+        let commit_sha = parsed
+            .get("commit_sha")
+            .and_then(serde_json::Value::as_str)
+            .context("Retry queue entry missing 'commit_sha' string")?
+            .to_string();
+        let content_type = parsed
+            .get("content_type")
+            .and_then(serde_json::Value::as_str)
+            .context("Retry queue entry missing 'content_type' string")?
+            .to_string();
+        let notes_ref = parsed
+            .get("notes_ref")
+            .and_then(serde_json::Value::as_str)
+            .context("Retry queue entry missing 'notes_ref' string")?
+            .to_string();
+        let record = trace_record_from_json(
+            parsed
+                .get("record")
+                .context("Retry queue entry missing 'record' object")?,
+        )?;
+
+        let failed_targets = parsed
+            .get("failed_targets")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|value| value.as_str())
+            .filter_map(persistence_target_from_label)
+            .collect::<Vec<_>>();
+
+        Ok(Some(TraceRetryQueueEntry {
+            commit_sha,
+            failed_targets,
+            content_type,
+            notes_ref,
+            record,
+        }))
+    }
+}
+
+struct FileTraceEmissionLedger {
+    path: PathBuf,
+}
+
+impl TraceEmissionLedger for FileTraceEmissionLedger {
+    fn has_emitted(&self, commit_sha: &str) -> bool {
+        fs::read_to_string(&self.path)
+            .ok()
+            .is_some_and(|contents| contents.lines().any(|line| line.trim() == commit_sha))
+    }
+
+    fn mark_emitted(&mut self, commit_sha: &str) {
+        if self.has_emitted(commit_sha) {
+            return;
+        }
+
+        if let Some(parent) = self.path.parent() {
+            if fs::create_dir_all(parent).is_err() {
+                return;
+            }
+        }
+
+        if let Ok(mut file) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+        {
+            let _ = writeln!(file, "{commit_sha}");
+        }
+    }
+}
+
+fn append_jsonl_line(path: &Path, line: &str) -> std::io::Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "{line}")?;
+    Ok(())
+}
+
+fn load_record_with_idempotency_key(path: &Path, idempotency_key: &str) -> Option<String> {
+    let payload = fs::read_to_string(path).ok()?;
+    for line in payload.lines() {
+        let parsed = serde_json::from_str::<serde_json::Value>(line).ok()?;
+        let Some(existing_key) = parsed
+            .get("idempotency_key")
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        if existing_key == idempotency_key {
+            return Some(existing_key.to_string());
+        }
+    }
+
+    None
+}
+
+fn classify_persistence_error_class_from_io(error: &std::io::Error) -> PersistenceErrorClass {
+    match error.kind() {
+        std::io::ErrorKind::Interrupted
+        | std::io::ErrorKind::WouldBlock
+        | std::io::ErrorKind::TimedOut
+        | std::io::ErrorKind::ConnectionRefused
+        | std::io::ErrorKind::ConnectionReset
+        | std::io::ErrorKind::ConnectionAborted
+        | std::io::ErrorKind::NotConnected => PersistenceErrorClass::Transient,
+        _ => PersistenceErrorClass::Permanent,
+    }
+}
+
+fn classify_persistence_error_class_from_stderr(stderr: &str) -> PersistenceErrorClass {
+    let lowered = stderr.to_ascii_lowercase();
+    if lowered.contains("timed out")
+        || lowered.contains("temporar")
+        || lowered.contains("try again")
+        || lowered.contains("index.lock")
+    {
+        return PersistenceErrorClass::Transient;
+    }
+
+    PersistenceErrorClass::Permanent
+}
+
+fn persistence_target_label(target: &PersistenceTarget) -> &'static str {
+    match target {
+        PersistenceTarget::Notes => "notes",
+        PersistenceTarget::Database => "database",
+    }
+}
+
+fn persistence_target_from_label(label: &str) -> Option<PersistenceTarget> {
+    match label {
+        "notes" => Some(PersistenceTarget::Notes),
+        "database" => Some(PersistenceTarget::Database),
+        _ => None,
+    }
+}
+
+fn serialize_note_payload(note: &TraceNote) -> Result<String> {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "content_type": note.content_type,
+        "record": trace_record_to_json(&note.record),
+    }))
+    .context("Failed to serialize trace note payload")
+}
+
+fn trace_record_to_json(record: &AgentTraceRecord) -> serde_json::Value {
+    serde_json::json!({
+        "version": record.version,
+        "id": record.id,
+        "timestamp": record.timestamp,
+        "vcs": {
+            "type": record.vcs.r#type,
+            "revision": record.vcs.revision,
+        },
+        "files": record.files.iter().map(|file| {
+            serde_json::json!({
+                "path": file.path,
+                "conversations": file.conversations.iter().map(|conversation| {
+                    serde_json::json!({
+                        "url": conversation.url,
+                        "related": conversation.related,
+                        "ranges": conversation.ranges.iter().map(|range| {
+                            serde_json::json!({
+                                "start_line": range.start_line,
+                                "end_line": range.end_line,
+                                "contributor": {
+                                    "type": range.contributor.r#type,
+                                    "model_id": range.contributor.model_id,
+                                },
+                            })
+                        }).collect::<Vec<_>>(),
+                    })
+                }).collect::<Vec<_>>(),
+            })
+        }).collect::<Vec<_>>(),
+        "metadata": record.metadata,
+    })
+}
+
+fn trace_record_from_json(value: &serde_json::Value) -> Result<AgentTraceRecord> {
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(TRACE_VERSION)
+        .to_string();
+    let id = value
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .context("trace record JSON missing id")?
+        .to_string();
+    let timestamp = value
+        .get("timestamp")
+        .and_then(serde_json::Value::as_str)
+        .context("trace record JSON missing timestamp")?
+        .to_string();
+
+    let vcs = value
+        .get("vcs")
+        .and_then(serde_json::Value::as_object)
+        .context("trace record JSON missing vcs object")?;
+    let vcs_type = vcs
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(VCS_TYPE_GIT)
+        .to_string();
+    let vcs_revision = vcs
+        .get("revision")
+        .and_then(serde_json::Value::as_str)
+        .context("trace record JSON missing vcs.revision")?
+        .to_string();
+
+    let files_json = value
+        .get("files")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut files = Vec::new();
+    for file in files_json {
+        let Some(path) = file.get("path").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let mut conversations = Vec::new();
+        for conversation in file
+            .get("conversations")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(url) = conversation.get("url").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let related = conversation
+                .get("related")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_str().map(ToString::to_string))
+                .collect::<Vec<_>>();
+            let mut ranges = Vec::new();
+            for range in conversation
+                .get("ranges")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let Some(start_line) = range
+                    .get("start_line")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|value| value as u32)
+                else {
+                    continue;
+                };
+                let Some(end_line) = range
+                    .get("end_line")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|value| value as u32)
+                else {
+                    continue;
+                };
+                let contributor = range
+                    .get("contributor")
+                    .and_then(serde_json::Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                ranges.push(AgentTraceRange {
+                    start_line,
+                    end_line,
+                    contributor: AgentTraceContributor {
+                        r#type: contributor
+                            .get("type")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("unknown")
+                            .to_string(),
+                        model_id: contributor
+                            .get("model_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(ToString::to_string),
+                    },
+                });
+            }
+
+            conversations.push(AgentTraceConversation {
+                url: url.to_string(),
+                related,
+                ranges,
+            });
+        }
+
+        files.push(AgentTraceFile {
+            path: path.to_string(),
+            conversations,
+        });
+    }
+
+    let metadata = value
+        .get("metadata")
+        .and_then(serde_json::Value::as_object)
+        .map(|map| {
+            map.iter()
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|value| (key.clone(), value.to_string()))
+                })
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+
+    Ok(AgentTraceRecord {
+        version,
+        id,
+        timestamp,
+        vcs: AgentTraceVcs {
+            r#type: vcs_type,
+            revision: vcs_revision,
+        },
+        files,
+        metadata,
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
