@@ -595,6 +595,21 @@ mod tests {
     }
 
     #[test]
+    fn parser_routes_setup_target_with_non_interactive_flag() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "setup".to_string(),
+            "--opencode".to_string(),
+            "--non-interactive".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(
+            command,
+            Command::Setup(SetupMode::NonInteractive(SetupTarget::OpenCode,))
+        );
+    }
+
+    #[test]
     fn parser_routes_setup_hooks_without_repo() {
         let command = parse_command(vec![
             "sce".to_string(),
@@ -648,6 +663,20 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "Option '--repo' requires '--hooks'. Run 'sce setup --help' to see valid usage."
+        );
+    }
+
+    #[test]
+    fn parser_rejects_setup_non_interactive_without_target() {
+        let error = parse_command(vec![
+            "sce".to_string(),
+            "setup".to_string(),
+            "--non-interactive".to_string(),
+        ])
+        .expect_err("--non-interactive without a target should fail");
+        assert_eq!(
+            error.to_string(),
+            "Option '--non-interactive' requires a target flag. Try: 'sce setup --opencode --non-interactive', 'sce setup --claude --non-interactive', or 'sce setup --both --non-interactive'."
         );
     }
 

@@ -21,10 +21,12 @@ Validation is deterministic and enforced during setup option resolution:
 - `--repo` may only be provided once and must include a value
 - `--repo` path is canonicalized and must resolve to an existing directory before hook setup runs
 
-Target-install mode remains unchanged:
+Target-install mode contract:
 
 - `sce setup` defaults to interactive target selection
 - `--opencode`, `--claude`, and `--both` remain mutually exclusive for non-interactive target install
+- `--non-interactive` is an explicit fail-fast control that disables prompting and requires one target flag (`--opencode`, `--claude`, or `--both`)
+- interactive setup without a TTY returns actionable guidance to rerun with `--non-interactive` plus a target flag
 
 ## Output contract
 

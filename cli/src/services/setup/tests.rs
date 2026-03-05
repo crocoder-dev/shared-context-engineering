@@ -60,6 +60,7 @@ fn setup_options_parse_opencode_flag() -> Result<()> {
 fn setup_options_reject_mutually_exclusive_flags() {
     let error = resolve_setup_mode(SetupCliOptions {
         help: false,
+        non_interactive: false,
         opencode: true,
         claude: true,
         both: false,
@@ -78,7 +79,27 @@ fn setup_options_reject_mutually_exclusive_flags() {
 fn setup_usage_contract_mentions_target_flags() {
     let usage = setup_usage_text();
     assert!(usage.contains("--opencode|--claude|--both"));
+    assert!(usage.contains("--non-interactive"));
     assert!(usage.contains("sce setup --hooks [--repo <path>]"));
+}
+
+#[test]
+fn setup_options_parse_non_interactive_flag() -> Result<()> {
+    let options = parse_setup_cli_options(vec!["--non-interactive".to_string()])?;
+    assert!(options.non_interactive);
+    Ok(())
+}
+
+#[test]
+fn setup_options_reject_non_interactive_without_target() {
+    let options = parse_setup_cli_options(vec!["--non-interactive".to_string()])
+        .expect("parsing should succeed before validation");
+    let error = resolve_setup_mode(options)
+        .expect_err("--non-interactive without a target should fail validation");
+    assert_eq!(
+        error.to_string(),
+        "Option '--non-interactive' requires a target flag. Try: 'sce setup --opencode --non-interactive', 'sce setup --claude --non-interactive', or 'sce setup --both --non-interactive'."
+    );
 }
 
 #[test]

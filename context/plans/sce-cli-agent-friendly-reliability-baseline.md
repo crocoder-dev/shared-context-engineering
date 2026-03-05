@@ -109,7 +109,7 @@ Non-goals:
   - Done when: sensitive values are redacted from diagnostics/logs, unsafe paths are rejected deterministically, and security-focused tests cover core threat paths.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T07: Add explicit non-interactive setup controls (status:todo)
+- [x] T07: Add explicit non-interactive setup controls (status:done)
   - Task ID: T07
   - Goal: Add `setup` flags that let operators opt out of prompts deterministically (for example fail-fast non-interactive mode) while preserving existing target-flag behavior.
   - Boundaries (in/out of scope): In: setup parser/dispatch and setup usage text in `cli/src/app.rs` + `cli/src/services/setup.rs`; Out: replacing the interactive prompt engine or adding unrelated setup features.
