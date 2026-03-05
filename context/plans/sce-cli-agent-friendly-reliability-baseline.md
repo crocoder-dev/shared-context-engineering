@@ -68,7 +68,7 @@ Non-goals:
   - Done when: operators can set log level/format predictably, logs include stable event identifiers, and stdout payload contracts remain unchanged.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T21: Add OpenTelemetry setup baseline (status:todo)
+- [x] T21: Add OpenTelemetry setup baseline (status:done)
   - Task ID: T21
   - Goal: Add an OpenTelemetry-based observability setup path for the CLI so structured events can be exported through standard OTEL tooling while preserving command payload contracts.
   - Boundaries (in/out of scope): In: OTEL bootstrap wiring, deterministic env/flag configuration for exporter mode, and tests/docs for setup behavior; Out: hosted telemetry backend provisioning and production collector deployment.
@@ -78,8 +78,15 @@ Non-goals:
     - Instrumentation stack should use Rust `tracing` + `tracing-subscriber` with `tracing-opentelemetry` bridging into OpenTelemetry OTLP export (`opentelemetry`, `opentelemetry-sdk`, `opentelemetry-otlp`).
     - Prefer app-embedded instrumentation and exporter wiring in the CLI runtime (not a separate "OTel CLI" binary).
     - Baseline setup should follow standard flow: initialize tracer provider, attach OpenTelemetry layer to subscriber registry, run command with spans/events, and flush/shutdown provider before process exit.
-    - Endpoint/config should be env-addressable (for example `OTEL_EXPORTER_OTLP_ENDPOINT`), with deterministic defaults and actionable validation errors for invalid configuration.
-    - Keep command payload contract safe: observability output/export path must not pollute stdout command result payloads.
+     - Endpoint/config should be env-addressable (for example `OTEL_EXPORTER_OTLP_ENDPOINT`), with deterministic defaults and actionable validation errors for invalid configuration.
+     - Keep command payload contract safe: observability output/export path must not pollute stdout command result payloads.
+
+- [ ] T22: Add global config discovery aligned with Agent Trace state root (status:todo)
+  - Task ID: T22
+  - Goal: Add deterministic user-global config discovery for `sce config` and merge global+local config in memory, with local values overriding global values per key.
+  - Boundaries (in/out of scope): In: platform-aware global path derivation, in-memory global+local merge behavior, explicit precedence integration with `--config` and `SCE_CONFIG_FILE`, clear source/merge reporting in `config show/validate`, and focused tests/docs/context updates; Out: config schema expansion beyond existing keys and migration tooling.
+  - Done when: when no explicit config path/env override is provided, `sce config` discovers both global and local files (when present), merges them in memory with local stronger than global per key, then applies env and flags on top; output contracts/tests document merged-source behavior deterministically.
+  - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml services::config::tests`; `cargo test --manifest-path cli/Cargo.toml app::tests`; `cargo check --manifest-path cli/Cargo.toml`.
 
 - [ ] T04: Add file logging mode with safe defaults (status:todo)
   - Task ID: T04

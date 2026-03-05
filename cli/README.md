@@ -83,6 +83,17 @@ Crates.io is prepared but intentionally disabled in this phase.
 - `sync` is a placeholder that runs a local Turso smoke check, then reports a
   deferred cloud-sync plan.
 
+### Observability baseline
+
+- Lifecycle logs remain stderr-only and deterministic through
+  `SCE_LOG_LEVEL` (`error|warn|info|debug`) and `SCE_LOG_FORMAT` (`text|json`).
+- OpenTelemetry export can be enabled with `SCE_OTEL_ENABLED=true`.
+- OTLP exporter configuration is env-addressable:
+  - `OTEL_EXPORTER_OTLP_ENDPOINT` (default: `http://127.0.0.1:4317`)
+  - `OTEL_EXPORTER_OTLP_PROTOCOL` (`grpc` or `http/protobuf`, default `grpc`)
+- Invalid OpenTelemetry configuration fails invocation validation with
+  actionable error messages.
+
 ## Safety and limitations
 
 - `mcp` and `sync` remain placeholders and do not perform MCP transport or
