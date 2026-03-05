@@ -143,52 +143,57 @@ where
     let logger = services::observability::Logger::from_env().map_err(|error| {
         ClassifiedError::validation(format!("Invalid observability configuration: {error}"))
     })?;
+    let telemetry = services::observability::TelemetryRuntime::from_env().map_err(|error| {
+        ClassifiedError::validation(format!("Invalid observability configuration: {error}"))
+    })?;
 
-    logger.info(
-        "sce.app.start",
-        "Starting command dispatch",
-        &[("component", services::observability::NAME)],
-    );
+    telemetry.with_default_subscriber(|| {
+        logger.info(
+            "sce.app.start",
+            "Starting command dispatch",
+            &[("component", services::observability::NAME)],
+        );
 
-    let command = match parse_command(args) {
-        Ok(command) => command,
-        Err(error) => {
-            logger.error(
-                "sce.command.parse_failed",
-                "Command parse failed",
-                &[("failure_class", error.class.as_str())],
-            );
-            return Err(error);
+        let command = match parse_command(args) {
+            Ok(command) => command,
+            Err(error) => {
+                logger.error(
+                    "sce.command.parse_failed",
+                    "Command parse failed",
+                    &[("failure_class", error.class.as_str())],
+                );
+                return Err(error);
+            }
+        };
+
+        logger.info(
+            "sce.command.parsed",
+            "Command parsed",
+            &[("command", command.name())],
+        );
+
+        match dispatch(&command) {
+            Ok(()) => {
+                logger.info(
+                    "sce.command.completed",
+                    "Command completed",
+                    &[("command", command.name())],
+                );
+                Ok(())
+            }
+            Err(error) => {
+                logger.error(
+                    "sce.command.failed",
+                    "Command failed",
+                    &[
+                        ("command", command.name()),
+                        ("failure_class", error.class.as_str()),
+                    ],
+                );
+                Err(error)
+            }
         }
-    };
-
-    logger.info(
-        "sce.command.parsed",
-        "Command parsed",
-        &[("command", command.name())],
-    );
-
-    match dispatch(&command) {
-        Ok(()) => {
-            logger.info(
-                "sce.command.completed",
-                "Command completed",
-                &[("command", command.name())],
-            );
-            Ok(())
-        }
-        Err(error) => {
-            logger.error(
-                "sce.command.failed",
-                "Command failed",
-                &[
-                    ("command", command.name()),
-                    ("failure_class", error.class.as_str()),
-                ],
-            );
-            Err(error)
-        }
-    }
+    })
 }
 
 fn parse_command<I>(args: I) -> Result<Command, ClassifiedError>
