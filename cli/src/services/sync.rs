@@ -1,12 +1,64 @@
 use anyhow::{Context, Result};
+use lexopt::Arg;
+use lexopt::ValueExt;
+use serde_json::json;
 use std::sync::OnceLock;
 
 use crate::services::local_db::{run_smoke_check, LocalDatabaseTarget};
+use crate::services::output_format::OutputFormat;
 use crate::services::resilience::{run_with_retry, RetryPolicy};
 
 pub const NAME: &str = "sync";
+
+pub type SyncFormat = OutputFormat;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SyncRequest {
+    pub format: SyncFormat,
+}
+
 pub fn sync_usage_text() -> &'static str {
-    "Usage:\n  sce sync\n\nExamples:\n  sce sync"
+    "Usage:\n  sce sync [--format <text|json>]\n\nExamples:\n  sce sync\n  sce sync --format json"
+}
+
+pub fn parse_sync_request(args: Vec<String>) -> Result<SyncRequest> {
+    let mut parser = lexopt::Parser::from_args(args);
+    let mut format = SyncFormat::Text;
+
+    while let Some(arg) = parser.next()? {
+        match arg {
+            Arg::Long("format") => {
+                let value = parser
+                    .value()
+                    .context("Option '--format' requires a value")?;
+                let raw = value.string()?;
+                format = SyncFormat::parse(&raw, "sce sync --help")?;
+            }
+            Arg::Long("help") | Arg::Short('h') => {
+                anyhow::bail!("Use 'sce sync --help' for sync usage.");
+            }
+            Arg::Long(option) => {
+                anyhow::bail!(
+                    "Unknown sync option '--{}'. Run 'sce sync --help' to see valid usage.",
+                    option
+                );
+            }
+            Arg::Short(option) => {
+                anyhow::bail!(
+                    "Unknown sync option '-{}'. Run 'sce sync --help' to see valid usage.",
+                    option
+                );
+            }
+            Arg::Value(value) => {
+                anyhow::bail!(
+                    "Unexpected sync argument '{}'. Run 'sce sync --help' to see valid usage.",
+                    value.string()?
+                );
+            }
+        }
+    }
+
+    Ok(SyncRequest { format })
 }
 
 const SUPPORTED_PHASES: [CloudSyncPhase; 3] = [
@@ -40,6 +92,15 @@ pub struct CloudSyncRequest {
 pub struct CloudSyncPlan {
     pub checkpoints: Vec<&'static str>,
     pub can_execute: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SyncPlaceholderReport {
+    workspace: &'static str,
+    phase: CloudSyncPhase,
+    inserted_rows: u64,
+    checkpoints: Vec<&'static str>,
+    can_execute: bool,
 }
 
 pub trait CloudSyncGateway {
@@ -89,7 +150,7 @@ where
         Self { gateway }
     }
 
-    pub fn run(&self, request: &CloudSyncRequest) -> Result<String> {
+    fn run(&self, request: &CloudSyncRequest) -> Result<SyncPlaceholderReport> {
         let runtime = shared_runtime()?;
 
         let outcome = runtime
@@ -103,12 +164,13 @@ where
 
         let plan = self.gateway.plan(request);
 
-        Ok(format!(
-            "TODO: '{NAME}' cloud workflows are planned and not implemented yet. Local Turso smoke check succeeded ({}) row inserted; cloud sync placeholder enumerates {} phase(s) and plan holds {} checkpoint(s).",
-            outcome.inserted_rows,
-            SUPPORTED_PHASES.len(),
-            plan.checkpoints.len()
-        ))
+        Ok(SyncPlaceholderReport {
+            workspace: request.workspace,
+            phase: request.phase,
+            inserted_rows: outcome.inserted_rows,
+            checkpoints: plan.checkpoints,
+            can_execute: plan.can_execute,
+        })
     }
 }
 
@@ -125,29 +187,104 @@ fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
     Ok(SYNC_RUNTIME.get_or_init(|| runtime))
 }
 
-pub fn run_placeholder_sync() -> Result<String> {
+pub fn run_placeholder_sync(request: SyncRequest) -> Result<String> {
     let service = PlaceholderSyncService::new(PlaceholderCloudSyncGateway);
-    let request = CloudSyncRequest {
+    let cloud_request = CloudSyncRequest {
         workspace: "local",
         phase: CloudSyncPhase::PlanOnly,
     };
-    service.run(&request)
+    let report = service.run(&cloud_request)?;
+
+    match request.format {
+        SyncFormat::Text => Ok(format!(
+            "TODO: '{NAME}' cloud workflows are planned and not implemented yet. Local Turso smoke check succeeded ({}) row inserted; cloud sync placeholder enumerates {} phase(s) and plan holds {} checkpoint(s). Next step: rerun with '--format json' for machine-readable placeholder checkpoints.",
+            report.inserted_rows,
+            SUPPORTED_PHASES.len(),
+            report.checkpoints.len()
+        )),
+        SyncFormat::Json => {
+            let payload = json!({
+                "status": "ok",
+                "command": NAME,
+                "placeholder_state": "planned",
+                "workspace": report.workspace,
+                "phase": phase_name(report.phase),
+                "supported_phases": SUPPORTED_PHASES
+                    .iter()
+                    .map(|phase| phase_name(*phase))
+                    .collect::<Vec<_>>(),
+                "local_smoke_check": {
+                    "status": "ok",
+                    "target": "in_memory",
+                    "inserted_rows": report.inserted_rows,
+                    "retry_policy": {
+                        "max_attempts": SYNC_SMOKE_RETRY_POLICY.max_attempts,
+                        "timeout_ms": SYNC_SMOKE_RETRY_POLICY.timeout_ms,
+                        "initial_backoff_ms": SYNC_SMOKE_RETRY_POLICY.initial_backoff_ms,
+                        "max_backoff_ms": SYNC_SMOKE_RETRY_POLICY.max_backoff_ms,
+                    },
+                },
+                "cloud_plan": {
+                    "can_execute": report.can_execute,
+                    "checkpoints": report.checkpoints,
+                },
+                "next_step": "Rerun with '--format json' for machine-readable placeholder checkpoints.",
+            });
+
+            serde_json::to_string_pretty(&payload)
+                .context("failed to serialize sync placeholder report to JSON")
+        }
+    }
+}
+
+fn phase_name(phase: CloudSyncPhase) -> &'static str {
+    match phase {
+        CloudSyncPhase::PlanOnly => "plan_only",
+        CloudSyncPhase::DryRun => "dry_run",
+        CloudSyncPhase::Apply => "apply",
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
+    use serde_json::Value;
 
     use super::{
-        run_placeholder_sync, CloudSyncGateway, CloudSyncPhase, CloudSyncRequest,
-        PlaceholderCloudSyncGateway,
+        parse_sync_request, run_placeholder_sync, CloudSyncGateway, CloudSyncPhase,
+        CloudSyncRequest, PlaceholderCloudSyncGateway, SyncFormat, SyncRequest, NAME,
     };
 
     use super::shared_runtime;
 
     #[test]
+    fn parse_defaults_to_text_format() {
+        let request = parse_sync_request(vec![]).expect("sync request should parse");
+        assert_eq!(request.format, SyncFormat::Text);
+    }
+
+    #[test]
+    fn parse_accepts_json_format() {
+        let request = parse_sync_request(vec!["--format".to_string(), "json".to_string()])
+            .expect("sync request should parse");
+        assert_eq!(request.format, SyncFormat::Json);
+    }
+
+    #[test]
+    fn parse_rejects_invalid_format_with_help_guidance() {
+        let error = parse_sync_request(vec!["--format".to_string(), "yaml".to_string()])
+            .expect_err("invalid sync format should fail");
+        assert_eq!(
+            error.to_string(),
+            "Invalid --format value 'yaml'. Valid values: text, json. Run 'sce sync --help' to see valid usage."
+        );
+    }
+
+    #[test]
     fn sync_placeholder_runs_local_smoke_check() -> Result<()> {
-        let message = run_placeholder_sync()?;
+        let message = run_placeholder_sync(SyncRequest {
+            format: SyncFormat::Text,
+        })?;
         assert!(message.contains("Local Turso smoke check succeeded"));
         assert!(message.contains("cloud sync placeholder enumerates"));
         Ok(())
@@ -170,6 +307,24 @@ mod tests {
         let first = shared_runtime()?;
         let second = shared_runtime()?;
         assert!(std::ptr::eq(first, second));
+        Ok(())
+    }
+
+    #[test]
+    fn sync_json_output_includes_stable_fields() -> Result<()> {
+        let output = run_placeholder_sync(SyncRequest {
+            format: SyncFormat::Json,
+        })?;
+        let parsed: Value = serde_json::from_str(&output)?;
+        assert_eq!(parsed["status"], "ok");
+        assert_eq!(parsed["command"], NAME);
+        assert_eq!(parsed["placeholder_state"], "planned");
+        assert_eq!(parsed["workspace"], "local");
+        assert_eq!(parsed["phase"], "plan_only");
+        assert!(parsed["supported_phases"].is_array());
+        assert!(parsed["local_smoke_check"].is_object());
+        assert!(parsed["cloud_plan"].is_object());
+        assert!(parsed["next_step"].as_str().is_some());
         Ok(())
     }
 }

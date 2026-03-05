@@ -172,7 +172,7 @@ Non-goals:
   - Done when: `doctor --format json` emits stable object structure (readiness, hook path source, repository/hook paths, hook states, diagnostics), and text output remains deterministic.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml services::doctor::tests`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T16: Standardize placeholder command output contracts for agent parsing (status:todo)
+- [x] T16: Standardize placeholder command output contracts for agent parsing (status:done)
   - Task ID: T16
   - Goal: Make `mcp` and `sync` placeholder responses emit structured status payloads in JSON format and deterministic text summaries.
   - Boundaries (in/out of scope): In: `cli/src/services/mcp.rs`, `cli/src/services/sync.rs`, and related tests; Out: enabling non-placeholder runtime behavior.
