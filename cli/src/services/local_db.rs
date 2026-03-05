@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, ensure, Context, Result};
 use turso::Builder;
 
+use crate::services::resilience::{run_with_retry, RetryPolicy};
+
 const CORE_SCHEMA_STATEMENTS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS repositories (\
         id INTEGER PRIMARY KEY,\
@@ -126,6 +128,13 @@ const CORE_SCHEMA_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_reconciliation_metrics_created_at ON reconciliation_metrics(created_at)",
 ];
 
+const CORE_SCHEMA_RETRY_POLICY: RetryPolicy = RetryPolicy {
+    max_attempts: 3,
+    timeout_ms: 5_000,
+    initial_backoff_ms: 150,
+    max_backoff_ms: 600,
+};
+
 #[derive(Clone, Copy, Debug)]
 #[allow(dead_code)]
 pub enum LocalDatabaseTarget<'a> {
@@ -159,10 +168,15 @@ pub fn ensure_agent_trace_local_db_ready_blocking() -> Result<PathBuf> {
         })?;
     }
 
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    runtime.block_on(apply_core_schema_migrations(LocalDatabaseTarget::Path(
-        &db_path,
-    )))?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()?;
+    runtime.block_on(run_with_retry(
+        CORE_SCHEMA_RETRY_POLICY,
+        "local_db.apply_core_schema_migrations",
+        "retry the command; if it persists, verify state-directory permissions and available disk space.",
+        |_| apply_core_schema_migrations(LocalDatabaseTarget::Path(&db_path)),
+    ))?;
     Ok(db_path)
 }
 

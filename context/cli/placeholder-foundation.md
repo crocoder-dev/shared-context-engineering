@@ -11,7 +11,7 @@ The repository now includes a Rust CLI crate at `cli/` for SCE automation work.
 - Command contract catalog: `cli/src/command_surface.rs`
 - Dependency contract snapshot: `cli/src/dependency_contract.rs`
 - Local Turso adapter: `cli/src/services/local_db.rs`
-- Service domains: `cli/src/services/{agent_trace,config,setup,doctor,mcp,hooks,sync}.rs`
+- Service domains: `cli/src/services/{agent_trace,config,setup,doctor,mcp,hooks,resilience,sync}.rs`
 - Shared test temp-path helper: `cli/src/test_support.rs` (`TestTempDir`, test-only module)
 
 ## Onboarding documentation
@@ -57,7 +57,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 `setup` additionally includes a repository-root install engine (`install_embedded_setup_assets`) that stages embedded files and applies backup-and-replace safety for `.opencode/`/`.claude/` with rollback restoration if staged swap fails.
 `setup` now executes end-to-end and prints deterministic completion details including selected target(s), per-target install count, and backup actions.
 `doctor` now executes end-to-end and reports hook rollout readiness by validating effective hook-path source plus required hook presence/executable permissions.
-`sync` includes a local Turso smoke gate backed by a lazily initialized shared tokio current-thread runtime and a placeholder cloud-sync gateway plan.
+`sync` includes a local Turso smoke gate backed by a lazily initialized shared tokio current-thread runtime, bounded retry/timeout/backoff policy for the smoke operation, and a placeholder cloud-sync gateway plan.
 
 ## Command loop and error model
 
@@ -81,6 +81,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - `cli/src/services/agent_trace.rs` defines the task-scoped schema adapter contract (`adapt_trace_payload`) from internal attribution input structs to Agent Trace-shaped record structs, including fixed git `vcs` mapping, contributor type mapping, and reserved `dev.crocoder.sce.*` metadata placement.
 - `cli/src/services/mcp.rs` defines `McpService`, a `McpCapabilitySnapshot` model (primary + supported transports), and `CachePolicy` defaults for future file-cache workflows (`cache-put`/`cache-get`) with `runnable: false` placeholders.
 - `cli/src/services/hooks.rs` defines production local hook runtime parsing/dispatch (`HookSubcommand`, `parse_hooks_subcommand`, `run_hooks_subcommand`) for `pre-commit`, `commit-msg`, `post-commit`, and `post-rewrite`, plus checkpoint/persistence/retry finalization seams used by hook entrypoints.
+- `cli/src/services/resilience.rs` defines shared bounded retry/timeout/backoff execution policy (`RetryPolicy`, `run_with_retry`) with deterministic failure messaging and retry observability hooks.
 - `cli/src/services/sync.rs` defines cloud-sync abstraction points (`CloudSyncGateway`, `CloudSyncRequest`, `CloudSyncPlan`) layered after the local Turso smoke gate.
 - `cli/src/app.rs` dispatches `config`, `setup`, `doctor`, `mcp`, and `hooks` through service-level modules so runtime messages are sourced from domain modules instead of inline strings.
 
@@ -90,14 +91,16 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
   - in-memory (`:memory:`)
   - file-backed path (`Builder::new_local(<path>)`)
 - The smoke path creates `sce_smoke`, inserts one row, and runs a query round-trip to confirm readable results.
-- `cli/src/services/sync.rs` wraps this in a lazily initialized shared tokio current-thread runtime and returns placeholder-safe messaging when local checks pass.
+- `cli/src/services/sync.rs` wraps this in a lazily initialized shared tokio current-thread runtime and applies bounded retries (3 attempts), operation timeout (2000ms), and capped backoff (100-400ms) before returning placeholder-safe messaging.
 - The same sync path now derives deferred cloud checkpoint messaging from `PlaceholderCloudSyncGateway`.
+- `cli/src/services/local_db.rs` applies the same resilience wrapper when bootstrapping persistent Agent Trace schema migrations (`ensure_agent_trace_local_db_ready_blocking`) with deterministic retries/timeouts/backoff and actionable terminal failure hints.
 
 ## Parser-focused tests
 
 - `cli/src/app.rs` unit tests cover default-help behavior, known command routing, and failure paths for unknown commands/options and extra arguments.
 - `cli/src/app.rs` additionally validates setup contract routing for interactive default, explicit target flags, and mutually-exclusive setup flag failures.
 - `cli/src/services/local_db.rs` tests cover in-memory and file-backed local Turso initialization plus execute/query smoke checks.
+- `cli/src/services/resilience.rs` tests lock deterministic retry behavior for transient failures, timeout exhaustion, and actionable terminal error messaging.
 - `cli/src/services/sync.rs` test confirms `sync` runs the local smoke gate and returns deterministic placeholder messaging.
 - `cli/src/services/{setup,mcp,hooks,sync}.rs` include contract-focused tests for setup flag parsing/validation, interactive selection/cancellation dispatch, setup run messaging, and hook runtime argument/IO/finalization behavior.
 - `cli/src/services/agent_trace.rs` includes adapter mapping tests for required field projection, contributor enum/model_id handling, and extension metadata placement under reserved reverse-domain keys.
@@ -107,7 +110,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 ## Dependency baseline
 
 - `cli/Cargo.toml` declares only: `anyhow`, `hmac`, `inquire`, `lexopt`, `serde_json`, `sha2`, `tokio`, and `turso`.
-- `tokio` is pinned with `default-features = false` and `features = ["rt"]` to match current runtime usage (current-thread runtime builder and `Runtime::block_on` without broader async feature surface).
+- `tokio` is pinned with `default-features = false` and keeps a constrained runtime footprint for current-thread `Runtime::block_on` usage, plus timer-backed bounded retry/timeout behavior in resilience-wrapped operations.
 - `cli/src/dependency_contract.rs` keeps compile-time crate references centralized for this placeholder slice.
 
 ## Scope boundary for this phase
