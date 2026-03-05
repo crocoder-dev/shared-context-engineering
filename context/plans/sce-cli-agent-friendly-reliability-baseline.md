@@ -54,7 +54,7 @@ Non-goals:
   - Done when: precedence is codified and tested, `sce config show` and `sce config validate` (or equivalent) return deterministic text/JSON output, and existing commands can consume resolved config without behavior drift.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T02: Establish stable exit-code contract (status:todo)
+- [x] T02: Establish stable exit-code contract (status:done)
   - Task ID: T02
   - Goal: Define and enforce fixed exit-code classes for parse/validation/runtime/dependency failures.
   - Boundaries (in/out of scope): In: top-level run/dispatch failure mapping and docs/tests for code meanings; Out: shell-specific wrapper behavior.

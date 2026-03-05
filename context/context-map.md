@@ -37,6 +37,7 @@ Feature/domain context:
 - `context/sce/agent-trace-retry-queue-observability.md` (T14 retry queue recovery contract plus reconciliation/runtime observability metrics and DB-first queue schema additions)
 - `context/sce/agent-trace-local-hooks-mvp-contract-gap-matrix.md` (T01 Local Hooks MVP production contract freeze and deterministic gap matrix for `agent-trace-local-hooks-production-mvp`)
 - `context/sce/agent-trace-hooks-command-routing.md` (implemented `sce hooks` command routing plus current runtime entrypoint behavior, including commit-msg policy gating/file mutation and post-rewrite remap+rewrite finalization wiring)
+- `context/sce/cli-exit-code-contract.md` (implemented stable `sce` exit-code class contract and `parse`/`validation`/`runtime`/`dependency` failure mapping)
 
 Working areas:
 - `context/plans/` (active plan execution artifacts, not durable history)
