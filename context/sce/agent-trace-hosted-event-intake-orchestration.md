@@ -6,6 +6,12 @@
 - Accepts hosted provider rewrite events and turns them into replay-safe reconciliation run requests.
 - Covers provider parsing/signature/idempotency intake only; mapping heuristics remain out of scope (`T13`).
 
+## Deployment model
+
+- GitHub and GitLab webhook handling is owned by a hosted reconciliation server (not local per-repo `.git/hooks`).
+- The hosted reconciliation server is the cross-machine synchronization point for attribution/rewrite reconciliation data coming from all user computers.
+- Local hooks remain responsible for local capture/finalization, while hosted webhooks reconcile repository-history changes that must be synchronized across users.
+
 ## Code ownership
 
 - Hosted intake service: `cli/src/services/hosted_reconciliation.rs`.
