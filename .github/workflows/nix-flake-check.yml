@@ -2,11 +2,6 @@ name: Nix flake check
 
 on:
   push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
 
 permissions:
   contents: read
