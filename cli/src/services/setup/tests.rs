@@ -95,7 +95,8 @@ fn setup_usage_contract_mentions_target_flags() {
     assert!(usage.contains("--opencode|--claude|--both"));
     assert!(usage.contains("--non-interactive"));
     assert!(usage.contains("[--hooks] [--repo <path>]"));
-    assert!(usage.contains("sce setup --opencode --hooks"));
+    assert!(usage.contains("sce setup --opencode --non-interactive --hooks"));
+    assert!(usage.contains("sce doctor --format json"));
 }
 
 #[test]
