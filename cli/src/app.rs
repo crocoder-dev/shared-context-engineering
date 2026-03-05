@@ -108,8 +108,7 @@ enum Command {
     Completion(services::completion::CompletionRequest),
     CompletionHelp,
     Config(services::config::ConfigSubcommand),
-    Setup(services::setup::SetupMode),
-    SetupHooks(Option<std::path::PathBuf>),
+    Setup(services::setup::SetupRequest),
     SetupHelp,
     Doctor,
     DoctorHelp,
@@ -129,7 +128,7 @@ impl Command {
             Self::Help => "help",
             Self::Completion(_) | Self::CompletionHelp => services::completion::NAME,
             Self::Config(_) => services::config::NAME,
-            Self::Setup(_) | Self::SetupHooks(_) | Self::SetupHelp => services::setup::NAME,
+            Self::Setup(_) | Self::SetupHelp => services::setup::NAME,
             Self::Doctor | Self::DoctorHelp => services::doctor::NAME,
             Self::Mcp | Self::McpHelp => services::mcp::NAME,
             Self::Hooks(_) | Self::HooksHelp => services::hooks::NAME,
@@ -395,18 +394,9 @@ fn parse_setup_subcommand(args: Vec<String>) -> Result<Command, ClassifiedError>
         return Ok(Command::SetupHelp);
     }
 
-    if options.hooks {
-        let repo_path = services::setup::resolve_setup_hooks_repository(&options)
-            .map_err(|error| ClassifiedError::validation(error.to_string()))?;
-        return Ok(Command::SetupHooks(repo_path));
-    }
-
-    services::setup::resolve_setup_hooks_repository(&options)
+    let request = services::setup::resolve_setup_request(options)
         .map_err(|error| ClassifiedError::validation(error.to_string()))?;
-
-    let mode = services::setup::resolve_setup_mode(options)
-        .map_err(|error| ClassifiedError::validation(error.to_string()))?;
-    Ok(Command::Setup(mode))
+    Ok(Command::Setup(request))
 }
 
 fn parse_non_setup_subcommand(
@@ -455,33 +445,44 @@ fn dispatch(command: &Command) -> Result<String, ClassifiedError> {
         Command::Completion(request) => Ok(services::completion::render_completion(*request)),
         Command::Config(subcommand) => services::config::run_config_subcommand(subcommand.clone())
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
-        Command::Setup(mode) => {
-            let dispatch = services::setup::resolve_setup_dispatch(
-                *mode,
-                &services::setup::InquireSetupTargetPrompter,
-            )
-            .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
-
-            match dispatch {
-                services::setup::SetupDispatch::Proceed(mode) => {
-                    let repository_root = std::env::current_dir()
-                        .context("Failed to determine current directory")
-                        .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
-                    services::setup::run_setup_for_mode(&repository_root, mode)
-                        .map_err(|error| ClassifiedError::runtime(error.to_string()))
-                }
-                services::setup::SetupDispatch::Cancelled => {
-                    Ok(services::setup::setup_cancelled_text().to_string())
-                }
-            }
-        }
-        Command::SetupHooks(repo_path) => {
+        Command::Setup(request) => {
             let current_dir = std::env::current_dir()
                 .context("Failed to determine current directory")
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
-            let repository_root = repo_path.as_deref().unwrap_or(current_dir.as_path());
-            services::setup::run_setup_hooks(repository_root)
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))
+
+            let mut sections = Vec::new();
+
+            if let Some(mode) = request.config_mode {
+                let dispatch = services::setup::resolve_setup_dispatch(
+                    mode,
+                    &services::setup::InquireSetupTargetPrompter,
+                )
+                .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
+
+                match dispatch {
+                    services::setup::SetupDispatch::Proceed(resolved_mode) => {
+                        let setup_message =
+                            services::setup::run_setup_for_mode(&current_dir, resolved_mode)
+                                .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
+                        sections.push(setup_message);
+                    }
+                    services::setup::SetupDispatch::Cancelled => {
+                        return Ok(services::setup::setup_cancelled_text().to_string());
+                    }
+                }
+            }
+
+            if request.install_hooks {
+                let repository_root = request
+                    .hooks_repo_path
+                    .as_deref()
+                    .unwrap_or(current_dir.as_path());
+                let hooks_message = services::setup::run_setup_hooks(repository_root)
+                    .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
+                sections.push(hooks_message);
+            }
+
+            Ok(sections.join("\n\n"))
         }
         Command::SetupHelp => Ok(services::setup::setup_usage_text().to_string()),
         Command::DoctorHelp => Ok(services::doctor::doctor_usage_text().to_string()),
@@ -506,7 +507,7 @@ fn dispatch(command: &Command) -> Result<String, ClassifiedError> {
 mod tests {
     use std::process::ExitCode;
 
-    use crate::services::setup::{SetupMode, SetupTarget};
+    use crate::services::setup::{SetupMode, SetupRequest, SetupTarget};
 
     use super::{
         parse_command, run, run_with_dependency_check, run_with_dependency_check_and_streams,
@@ -784,7 +785,11 @@ mod tests {
         .expect("command should parse");
         assert_eq!(
             command,
-            Command::Setup(SetupMode::NonInteractive(SetupTarget::OpenCode,))
+            Command::Setup(SetupRequest {
+                config_mode: Some(SetupMode::NonInteractive(SetupTarget::OpenCode,)),
+                install_hooks: false,
+                hooks_repo_path: None,
+            })
         );
     }
 
@@ -798,7 +803,11 @@ mod tests {
         .expect("command should parse");
         assert_eq!(
             command,
-            Command::Setup(SetupMode::NonInteractive(SetupTarget::Claude,))
+            Command::Setup(SetupRequest {
+                config_mode: Some(SetupMode::NonInteractive(SetupTarget::Claude,)),
+                install_hooks: false,
+                hooks_repo_path: None,
+            })
         );
     }
 
@@ -812,7 +821,11 @@ mod tests {
         .expect("command should parse");
         assert_eq!(
             command,
-            Command::Setup(SetupMode::NonInteractive(SetupTarget::Both,))
+            Command::Setup(SetupRequest {
+                config_mode: Some(SetupMode::NonInteractive(SetupTarget::Both,)),
+                install_hooks: false,
+                hooks_repo_path: None,
+            })
         );
     }
 
@@ -820,7 +833,14 @@ mod tests {
     fn parser_routes_setup_without_flags_to_interactive_mode() {
         let command = parse_command(vec!["sce".to_string(), "setup".to_string()])
             .expect("command should parse");
-        assert_eq!(command, Command::Setup(SetupMode::Interactive));
+        assert_eq!(
+            command,
+            Command::Setup(SetupRequest {
+                config_mode: Some(SetupMode::Interactive),
+                install_hooks: true,
+                hooks_repo_path: None,
+            })
+        );
     }
 
     #[test]
@@ -834,7 +854,11 @@ mod tests {
         .expect("command should parse");
         assert_eq!(
             command,
-            Command::Setup(SetupMode::NonInteractive(SetupTarget::OpenCode,))
+            Command::Setup(SetupRequest {
+                config_mode: Some(SetupMode::NonInteractive(SetupTarget::OpenCode,)),
+                install_hooks: false,
+                hooks_repo_path: None,
+            })
         );
     }
 
@@ -846,7 +870,14 @@ mod tests {
             "--hooks".to_string(),
         ])
         .expect("command should parse");
-        assert_eq!(command, Command::SetupHooks(None));
+        assert_eq!(
+            command,
+            Command::Setup(SetupRequest {
+                config_mode: None,
+                install_hooks: true,
+                hooks_repo_path: None,
+            })
+        );
     }
 
     #[test]
@@ -861,7 +892,30 @@ mod tests {
         .expect("command should parse");
         assert_eq!(
             command,
-            Command::SetupHooks(Some(std::path::PathBuf::from("../demo-repo")))
+            Command::Setup(SetupRequest {
+                config_mode: None,
+                install_hooks: true,
+                hooks_repo_path: Some(std::path::PathBuf::from("../demo-repo")),
+            })
+        );
+    }
+
+    #[test]
+    fn parser_routes_setup_target_plus_hooks_in_single_request() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "setup".to_string(),
+            "--opencode".to_string(),
+            "--hooks".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(
+            command,
+            Command::Setup(SetupRequest {
+                config_mode: Some(SetupMode::NonInteractive(SetupTarget::OpenCode,)),
+                install_hooks: true,
+                hooks_repo_path: None,
+            })
         );
     }
 
@@ -990,21 +1044,6 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "Option '--non-interactive' requires a target flag. Try: 'sce setup --opencode --non-interactive', 'sce setup --claude --non-interactive', or 'sce setup --both --non-interactive'."
-        );
-    }
-
-    #[test]
-    fn parser_rejects_hooks_with_target_flag() {
-        let error = parse_command(vec![
-            "sce".to_string(),
-            "setup".to_string(),
-            "--hooks".to_string(),
-            "--opencode".to_string(),
-        ])
-        .expect_err("--hooks with target flag should fail");
-        assert_eq!(
-            error.to_string(),
-            "Option '--hooks' cannot be combined with '--opencode', '--claude', or '--both'. Run 'sce setup --help' to see valid usage."
         );
     }
 

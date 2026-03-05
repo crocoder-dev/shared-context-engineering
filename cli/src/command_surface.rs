@@ -83,11 +83,11 @@ pub fn help_text() -> String {
         "sce - Shared Context Engineering CLI (placeholder foundation)\n\n\
 Usage:\n  sce [command]\n\n\
 Config usage:\n  sce config <show|validate> [options]\n\n\
-Setup usage:\n  sce setup [--opencode|--claude|--both]\n  sce setup --hooks [--repo <path>]\n\n\
+Setup usage:\n  sce setup [--opencode|--claude|--both] [--non-interactive] [--hooks] [--repo <path>]\n\n\
 Completion usage:\n  sce completion --shell <bash|zsh|fish>\n\n\
 Output format contract:\n  Supported commands accept --format <text|json>\n\n\
 Commands:\n{}\n\n\
-Setup defaults to interactive target selection when no setup target flag is passed.\n\
+Setup defaults to interactive target selection when no setup target flag is passed, and installs hooks in the same run.\n\
 Use '--hooks' to install required git hooks for the current repository or '--repo <path>' for a specific repository.\n\
 `setup`, `doctor`, and `hooks` are implemented; `mcp` and `sync` remain placeholder-oriented.\n",
         command_rows
@@ -112,8 +112,10 @@ mod tests {
     #[test]
     fn help_text_mentions_setup_target_flags() {
         let help = help_text();
-        assert!(help.contains("sce setup [--opencode|--claude|--both]"));
-        assert!(help.contains("sce setup --hooks [--repo <path>]"));
+        assert!(help.contains(
+            "sce setup [--opencode|--claude|--both] [--non-interactive] [--hooks] [--repo <path>]"
+        ));
+        assert!(help.contains("installs hooks in the same run"));
     }
 
     #[test]
