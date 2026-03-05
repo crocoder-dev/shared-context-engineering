@@ -24,6 +24,7 @@
 - `sce dependency contract`: Minimal crate dependency baseline declared in `cli/Cargo.toml` and referenced via `cli/src/dependency_contract.rs` (`anyhow`, `hmac`, `inquire`, `lexopt`, `serde_json`, `sha2`, `tokio`, `turso`).
 - `local Turso adapter`: Async data-layer module in `cli/src/services/local_db.rs` that initializes local DB targets with `turso::Builder::new_local(...)` and runs execute/query smoke checks.
 - `sync Turso smoke gate`: Behavior in `cli/src/services/sync.rs` where the `sync` placeholder command runs an in-memory local Turso smoke check under a lazily initialized shared tokio current-thread runtime before returning placeholder cloud-sync messaging.
+- `CLI bounded resilience wrapper`: Shared policy in `cli/src/services/resilience.rs` (`RetryPolicy`, `run_with_retry`) that applies deterministic retries/timeouts/capped backoff to transient operations, emits retry observability events, and returns actionable terminal failure guidance.
 - `setup service orchestration`: Setup execution logic in `cli/src/services/setup.rs` that resolves target selection, installs embedded assets, and emits deterministic success messaging per target.
 - `setup target flags`: Mutually-exclusive `sce setup` target selectors (`--opencode`, `--claude`, `--both`) that force non-interactive mode for automation.
 - `setup mode contract`: `cli/src/services/setup.rs` model where `SetupMode::Interactive` is the default and `SetupMode::NonInteractive(SetupTarget)` is selected only when exactly one target flag is provided.

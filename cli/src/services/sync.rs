@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::sync::OnceLock;
 
 use crate::services::local_db::{run_smoke_check, LocalDatabaseTarget};
+use crate::services::resilience::{run_with_retry, RetryPolicy};
 
 pub const NAME: &str = "sync";
 const SUPPORTED_PHASES: [CloudSyncPhase; 3] = [
@@ -11,6 +12,12 @@ const SUPPORTED_PHASES: [CloudSyncPhase; 3] = [
 ];
 
 static SYNC_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+const SYNC_SMOKE_RETRY_POLICY: RetryPolicy = RetryPolicy {
+    max_attempts: 3,
+    timeout_ms: 2_000,
+    initial_backoff_ms: 100,
+    max_backoff_ms: 400,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CloudSyncPhase {
@@ -82,8 +89,13 @@ where
         let runtime = shared_runtime()?;
 
         let outcome = runtime
-            .block_on(run_smoke_check(LocalDatabaseTarget::InMemory))
-            .context("local Turso smoke check failed")?;
+            .block_on(run_with_retry(
+                SYNC_SMOKE_RETRY_POLICY,
+                "sync.local_db_smoke_check",
+                "rerun 'sce sync'; if the failure persists, verify local runtime health with 'sce doctor'.",
+                |_| run_smoke_check(LocalDatabaseTarget::InMemory),
+            ))
+            .context("local Turso smoke check failed after bounded retries")?;
 
         let plan = self.gateway.plan(request);
 
@@ -102,6 +114,7 @@ fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
     }
 
     let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
         .build()
         .context("failed to create shared tokio runtime for sync placeholder")?;
 

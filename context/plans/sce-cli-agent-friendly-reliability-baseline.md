@@ -95,7 +95,7 @@ Non-goals:
   - Done when: file logging can be enabled explicitly, output location/policy is documented, writes are deterministic, and failure cases are actionable.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T05: Add resilience policy for retries/timeouts/backoff (status:todo)
+- [x] T05: Add resilience policy for retries/timeouts/backoff (status:done)
   - Task ID: T05
   - Goal: Define bounded retry/timeout behavior for eligible operations and surface retry outcomes clearly.
   - Boundaries (in/out of scope): In: operation-level resilience wrappers for IO/process/database hotspots and user-facing retry diagnostics; Out: unbounded retry loops or hidden automatic mutation.

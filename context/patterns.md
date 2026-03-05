@@ -90,6 +90,7 @@
 - Keep dependency additions explicit and minimal in `cli/Cargo.toml`, and anchor dependency intent in lightweight compile-time code references (`cli/src/dependency_contract.rs`).
 - Route local Turso access through a dedicated adapter module (`cli/src/services/local_db.rs`) so command handlers do not expose low-level `turso` API details.
 - For placeholder commands that need real infrastructure checks, use a lazily initialized shared tokio current-thread runtime wrapper in the service layer (`cli/src/services/sync.rs`) and keep user-facing output explicit about remaining placeholder scope.
+- For transient local IO/database hotspots, apply bounded resilience wrappers with explicit retry count, timeout, and capped backoff (`cli/src/services/resilience.rs`) and surface terminal failures with deterministic `Try:` remediation guidance.
 - For rollout health commands, prefer deterministic local diagnostics over implicit pass/fail behavior: report hook-path source, effective directories, required-hook checks, and actionable remediation text (`cli/src/services/doctor.rs`).
 - For future CLI domains, define trait-first service contracts with request/plan models in `cli/src/services/*` and keep placeholder implementations explicitly non-runnable until production behavior is approved.
 - Model deferred integration boundaries with concrete event/capability data structures (for example MCP file-cache snapshots/policies and cloud-sync checkpoints) so later tasks can implement behavior without reshaping public seams.
