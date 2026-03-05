@@ -112,11 +112,11 @@ enum Command {
     SetupHelp,
     Doctor(services::doctor::DoctorRequest),
     DoctorHelp,
-    Mcp,
+    Mcp(services::mcp::McpRequest),
     McpHelp,
     Hooks(services::hooks::HookSubcommand),
     HooksHelp,
-    Sync,
+    Sync(services::sync::SyncRequest),
     SyncHelp,
     Version(services::version::VersionRequest),
     VersionHelp,
@@ -130,9 +130,9 @@ impl Command {
             Self::Config(_) => services::config::NAME,
             Self::Setup(_) | Self::SetupHelp => services::setup::NAME,
             Self::Doctor(_) | Self::DoctorHelp => services::doctor::NAME,
-            Self::Mcp | Self::McpHelp => services::mcp::NAME,
+            Self::Mcp(_) | Self::McpHelp => services::mcp::NAME,
             Self::Hooks(_) | Self::HooksHelp => services::hooks::NAME,
-            Self::Sync | Self::SyncHelp => services::sync::NAME,
+            Self::Sync(_) | Self::SyncHelp => services::sync::NAME,
             Self::Version(_) | Self::VersionHelp => services::version::NAME,
         }
     }
@@ -350,9 +350,9 @@ fn parse_subcommand(value: String, tail_args: Vec<String>) -> Result<Command, Cl
         "config" => parse_config_subcommand(tail_args),
         "setup" => parse_setup_subcommand(tail_args),
         "doctor" => parse_doctor_subcommand(tail_args),
-        "mcp" => parse_non_setup_subcommand(Command::Mcp, Command::McpHelp, tail_args),
+        "mcp" => parse_mcp_subcommand(tail_args),
         "hooks" => parse_hooks_subcommand(tail_args),
-        "sync" => parse_non_setup_subcommand(Command::Sync, Command::SyncHelp, tail_args),
+        "sync" => parse_sync_subcommand(tail_args),
         "version" => parse_version_subcommand(tail_args),
         _ => {
             if command_surface::is_known_command(&value) {
@@ -399,25 +399,6 @@ fn parse_setup_subcommand(args: Vec<String>) -> Result<Command, ClassifiedError>
     Ok(Command::Setup(request))
 }
 
-fn parse_non_setup_subcommand(
-    command: Command,
-    help_command: Command,
-    tail_args: Vec<String>,
-) -> Result<Command, ClassifiedError> {
-    if tail_args.is_empty() {
-        return Ok(command);
-    }
-
-    if tail_args.len() == 1 && (tail_args[0] == "--help" || tail_args[0] == "-h") {
-        return Ok(help_command);
-    }
-
-    Err(ClassifiedError::validation(format!(
-        "Unexpected extra argument '{}'. Run 'sce --help' to see valid usage.",
-        tail_args[0]
-    )))
-}
-
 fn parse_doctor_subcommand(args: Vec<String>) -> Result<Command, ClassifiedError> {
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
         return Ok(Command::DoctorHelp);
@@ -426,6 +407,26 @@ fn parse_doctor_subcommand(args: Vec<String>) -> Result<Command, ClassifiedError
     let request = services::doctor::parse_doctor_request(args)
         .map_err(|error| ClassifiedError::validation(error.to_string()))?;
     Ok(Command::Doctor(request))
+}
+
+fn parse_mcp_subcommand(args: Vec<String>) -> Result<Command, ClassifiedError> {
+    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
+        return Ok(Command::McpHelp);
+    }
+
+    let request = services::mcp::parse_mcp_request(args)
+        .map_err(|error| ClassifiedError::validation(error.to_string()))?;
+    Ok(Command::Mcp(request))
+}
+
+fn parse_sync_subcommand(args: Vec<String>) -> Result<Command, ClassifiedError> {
+    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
+        return Ok(Command::SyncHelp);
+    }
+
+    let request = services::sync::parse_sync_request(args)
+        .map_err(|error| ClassifiedError::validation(error.to_string()))?;
+    Ok(Command::Sync(request))
 }
 
 fn parse_hooks_subcommand(args: Vec<String>) -> Result<Command, ClassifiedError> {
@@ -499,13 +500,13 @@ fn dispatch(command: &Command) -> Result<String, ClassifiedError> {
         Command::Doctor(request) => services::doctor::run_doctor(*request)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::McpHelp => Ok(services::mcp::mcp_usage_text().to_string()),
-        Command::Mcp => services::mcp::run_placeholder_mcp()
+        Command::Mcp(request) => services::mcp::run_placeholder_mcp(*request)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::HooksHelp => Ok(services::hooks::hooks_usage_text().to_string()),
         Command::Hooks(subcommand) => services::hooks::run_hooks_subcommand(subcommand.clone())
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::SyncHelp => Ok(services::sync::sync_usage_text().to_string()),
-        Command::Sync => services::sync::run_placeholder_sync()
+        Command::Sync(request) => services::sync::run_placeholder_sync(*request)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::VersionHelp => Ok(services::version::version_usage_text().to_string()),
         Command::Version(request) => services::version::render_version(*request)
@@ -969,6 +970,23 @@ mod tests {
     }
 
     #[test]
+    fn parser_routes_mcp_json_format() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "mcp".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(
+            command,
+            Command::Mcp(crate::services::mcp::McpRequest {
+                format: crate::services::mcp::McpFormat::Json,
+            })
+        );
+    }
+
+    #[test]
     fn parser_routes_hooks_help() {
         let command = parse_command(vec![
             "sce".to_string(),
@@ -988,6 +1006,23 @@ mod tests {
         ])
         .expect("command should parse");
         assert_eq!(command, Command::SyncHelp);
+    }
+
+    #[test]
+    fn parser_routes_sync_json_format() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "sync".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(
+            command,
+            Command::Sync(crate::services::sync::SyncRequest {
+                format: crate::services::sync::SyncFormat::Json,
+            })
+        );
     }
 
     #[test]
