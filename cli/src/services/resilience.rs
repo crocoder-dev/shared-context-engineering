@@ -41,8 +41,14 @@ where
     Op: FnMut(u32) -> Fut,
     Fut: Future<Output = Result<T>>,
 {
-    ensure!(policy.max_attempts > 0, "Retry policy requires max_attempts >= 1");
-    ensure!(policy.timeout_ms > 0, "Retry policy requires timeout_ms >= 1");
+    ensure!(
+        policy.max_attempts > 0,
+        "Retry policy requires max_attempts >= 1"
+    );
+    ensure!(
+        policy.timeout_ms > 0,
+        "Retry policy requires timeout_ms >= 1"
+    );
     ensure!(
         policy.max_backoff_ms >= policy.initial_backoff_ms,
         "Retry policy requires max_backoff_ms >= initial_backoff_ms"
