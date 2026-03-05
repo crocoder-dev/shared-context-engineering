@@ -79,6 +79,8 @@
 - Mirror lifecycle logger events into tracing events and attach OTEL subscriber context only around command execution so stdout payload contracts remain unchanged.
 - For runtime CLI configuration, keep precedence deterministic and explicit (`flags > env > config file > defaults`) and expose inspect/validate command entrypoints with stable text/JSON outputs.
 - For setup-style command contracts, keep interactive mode as the zero-flag default and enforce mutually-exclusive explicit target flags for non-interactive automation.
+- For security-sensitive CLI UX, redact common secret-bearing token/value forms before emitting diagnostics/log lines, including app-level errors, setup git stderr diagnostics, and observability sink output.
+- For user-supplied setup repository paths (`sce setup --hooks --repo <path>`), canonicalize/validate the path as an existing directory before git command execution, and run deterministic write-permission probes on setup write targets before staging/swap operations.
 - For interactive setup flows, isolate prompt handling behind a service-layer prompter seam so selection mapping and cancellation behavior can be tested without a live TTY.
 - Treat setup prompt cancellation/interrupt as a non-destructive exit path with explicit user messaging (no file mutations and no partial side effects).
 - For setup install prep, generate compile-time embedded asset manifests from `config/.opencode/**`, `config/.claude/**`, and `cli/assets/hooks/**` in `cli/build.rs`, keep relative paths normalized to forward-slash form, and expose target-scoped iterators/lookups from the setup service layer for installer wiring.

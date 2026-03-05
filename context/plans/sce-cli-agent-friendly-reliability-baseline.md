@@ -102,7 +102,7 @@ Non-goals:
   - Done when: targeted operations use deterministic timeout/retry settings, retries are observable in logs, and terminal failures provide actionable next steps.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T06: Apply security hardening for CLI interfaces (status:todo)
+- [x] T06: Apply security hardening for CLI interfaces (status:done)
   - Task ID: T06
   - Goal: Harden user input/output and filesystem interaction surfaces with secret redaction, path safety checks, and permission validation.
   - Boundaries (in/out of scope): In: error/log redaction rules, path canonicalization/allow checks (including `--repo`), and install/write permission checks; Out: network auth redesign.

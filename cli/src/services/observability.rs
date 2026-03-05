@@ -12,6 +12,8 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use serde_json::json;
 use tracing_subscriber::prelude::*;
 
+use crate::services::security::redact_sensitive_text;
+
 pub const NAME: &str = "observability";
 
 const ENV_LOG_LEVEL: &str = "SCE_LOG_LEVEL";
@@ -439,15 +441,19 @@ impl Logger {
         emit_tracing_event(level, event_id, message, fields);
 
         let line = self.render_line(level, event_id, message, fields);
-        eprintln!("{}", line);
+        let redacted_line = redact_sensitive_text(&line);
+        eprintln!("{}", redacted_line);
 
         if let Some(file_sink) = &self.file_sink {
-            if let Err(error) = file_sink.write_line(&line) {
+            if let Err(error) = file_sink.write_line(&redacted_line) {
                 eprintln!(
-                    "Error: Failed to write log file '{}': {}. Try: verify the file is writable or unset {}.",
-                    file_sink.path.display(),
-                    error,
-                    ENV_LOG_FILE
+                    "Error: {}",
+                    redact_sensitive_text(&format!(
+                        "Failed to write log file '{}': {}. Try: verify the file is writable or unset {}.",
+                        file_sink.path.display(),
+                        error,
+                        ENV_LOG_FILE
+                    ))
                 );
             }
         }

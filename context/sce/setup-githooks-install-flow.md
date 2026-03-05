@@ -22,7 +22,11 @@ For the provided repository path, setup resolves git truth before any writes:
 1. `git rev-parse --show-toplevel`
 2. `git rev-parse --git-path hooks`
 
+Before those git operations, setup canonicalizes/validates the user-provided repository path (`--repo`) as an existing directory.
+
 If the hooks path is relative, it is resolved against the git toplevel.
+
+Before staged hook writes, setup runs explicit directory write-permission probes for the resolved repository root and effective hooks directory to fail fast on non-writable targets.
 
 This keeps behavior compatible with:
 
