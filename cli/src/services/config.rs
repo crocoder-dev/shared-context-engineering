@@ -51,7 +51,7 @@ impl LogLevel {
 enum ValueSource {
     Flag,
     Env,
-    ConfigFile,
+    ConfigFile(ConfigPathSource),
     Default,
 }
 
@@ -60,8 +60,15 @@ impl ValueSource {
         match self {
             Self::Flag => "flag",
             Self::Env => "env",
-            Self::ConfigFile => "config_file",
+            Self::ConfigFile(_) => "config_file",
             Self::Default => "default",
+        }
+    }
+
+    fn config_source(self) -> Option<ConfigPathSource> {
+        match self {
+            Self::ConfigFile(source) => Some(source),
+            _ => None,
         }
     }
 }
@@ -85,7 +92,8 @@ pub struct ConfigRequest {
 enum ConfigPathSource {
     Flag,
     Env,
-    DefaultDiscovered,
+    DefaultDiscoveredGlobal,
+    DefaultDiscoveredLocal,
 }
 
 impl ConfigPathSource {
@@ -93,7 +101,8 @@ impl ConfigPathSource {
         match self {
             Self::Flag => "flag",
             Self::Env => "env",
-            Self::DefaultDiscovered => "default_discovered",
+            Self::DefaultDiscoveredGlobal => "default_discovered_global",
+            Self::DefaultDiscoveredLocal => "default_discovered_local",
         }
     }
 }
@@ -112,15 +121,21 @@ struct LoadedConfigPath {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeConfig {
-    loaded_config_path: Option<LoadedConfigPath>,
+    loaded_config_paths: Vec<LoadedConfigPath>,
     log_level: ResolvedValue<LogLevel>,
     timeout_ms: ResolvedValue<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FileConfig {
-    log_level: Option<LogLevel>,
-    timeout_ms: Option<u64>,
+    log_level: Option<FileConfigValue<LogLevel>>,
+    timeout_ms: Option<FileConfigValue<u64>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FileConfigValue<T> {
+    value: T,
+    source: ConfigPathSource,
 }
 
 pub fn parse_config_subcommand(mut args: Vec<String>) -> Result<ConfigSubcommand> {
@@ -250,7 +265,7 @@ pub fn run_config_subcommand(subcommand: ConfigSubcommand) -> Result<String> {
 }
 
 pub fn config_usage_text() -> &'static str {
-    "Usage:\n  sce config show [--config <path>] [--log-level <error|warn|info|debug>] [--timeout-ms <value>] [--format <text|json>]\n  sce config validate [--config <path>] [--log-level <error|warn|info|debug>] [--timeout-ms <value>] [--format <text|json>]\n\nResolution precedence: flags > env > config file > defaults\nEnvironment keys: SCE_CONFIG_FILE, SCE_LOG_LEVEL, SCE_TIMEOUT_MS"
+    "Usage:\n  sce config show [--config <path>] [--log-level <error|warn|info|debug>] [--timeout-ms <value>] [--format <text|json>]\n  sce config validate [--config <path>] [--log-level <error|warn|info|debug>] [--timeout-ms <value>] [--format <text|json>]\n\nResolution precedence: flags > env > config file > defaults\nConfig discovery order: --config, SCE_CONFIG_FILE, then discovered global+local defaults (global merged first, local overrides per key)\nEnvironment keys: SCE_CONFIG_FILE, SCE_LOG_LEVEL, SCE_TIMEOUT_MS"
 }
 
 fn resolve_runtime_config(request: &ConfigRequest, cwd: &Path) -> Result<RuntimeConfig> {
@@ -263,31 +278,45 @@ fn resolve_runtime_config(request: &ConfigRequest, cwd: &Path) -> Result<Runtime
                 .with_context(|| format!("Failed to read config file '{}'.", path.display()))
         },
         Path::exists,
+        resolve_default_global_config_path,
     )
 }
 
-fn resolve_runtime_config_with<FEnv, FRead>(
+fn resolve_runtime_config_with<FEnv, FRead, FGlobalPath>(
     request: &ConfigRequest,
     cwd: &Path,
     env_lookup: FEnv,
     read_file: FRead,
     path_exists: fn(&Path) -> bool,
+    resolve_global_config_path: FGlobalPath,
 ) -> Result<RuntimeConfig>
 where
     FEnv: Fn(&str) -> Option<String>,
     FRead: Fn(&Path) -> Result<String>,
+    FGlobalPath: Fn() -> Result<PathBuf>,
 {
-    let loaded_config_path = resolve_config_path(request, cwd, &env_lookup, path_exists)?;
-    let file_config = match loaded_config_path.as_ref() {
-        Some(path) => {
-            let raw = read_file(&path.path)?;
-            parse_file_config(&raw, &path.path)?
-        }
-        None => FileConfig {
-            log_level: None,
-            timeout_ms: None,
-        },
+    let loaded_config_paths = resolve_config_paths(
+        request,
+        cwd,
+        &env_lookup,
+        path_exists,
+        resolve_global_config_path,
+    )?;
+
+    let mut file_config = FileConfig {
+        log_level: None,
+        timeout_ms: None,
     };
+    for loaded_path in &loaded_config_paths {
+        let raw = read_file(&loaded_path.path)?;
+        let layer = parse_file_config(&raw, &loaded_path.path, loaded_path.source)?;
+        if let Some(log_level) = layer.log_level {
+            file_config.log_level = Some(log_level);
+        }
+        if let Some(timeout_ms) = layer.timeout_ms {
+            file_config.timeout_ms = Some(timeout_ms);
+        }
+    }
 
     let mut resolved_log_level = ResolvedValue {
         value: LogLevel::Info,
@@ -295,8 +324,8 @@ where
     };
     if let Some(value) = file_config.log_level {
         resolved_log_level = ResolvedValue {
-            value,
-            source: ValueSource::ConfigFile,
+            value: value.value,
+            source: ValueSource::ConfigFile(value.source),
         };
     }
     if let Some(raw) = env_lookup("SCE_LOG_LEVEL") {
@@ -318,8 +347,8 @@ where
     };
     if let Some(value) = file_config.timeout_ms {
         resolved_timeout_ms = ResolvedValue {
-            value,
-            source: ValueSource::ConfigFile,
+            value: value.value,
+            source: ValueSource::ConfigFile(value.source),
         };
     }
     if let Some(raw) = env_lookup("SCE_TIMEOUT_MS") {
@@ -339,20 +368,22 @@ where
     }
 
     Ok(RuntimeConfig {
-        loaded_config_path,
+        loaded_config_paths,
         log_level: resolved_log_level,
         timeout_ms: resolved_timeout_ms,
     })
 }
 
-fn resolve_config_path<FEnv>(
+fn resolve_config_paths<FEnv, FGlobalPath>(
     request: &ConfigRequest,
     cwd: &Path,
     env_lookup: &FEnv,
     path_exists: fn(&Path) -> bool,
-) -> Result<Option<LoadedConfigPath>>
+    resolve_global_config_path: FGlobalPath,
+) -> Result<Vec<LoadedConfigPath>>
 where
     FEnv: Fn(&str) -> Option<String>,
+    FGlobalPath: Fn() -> Result<PathBuf>,
 {
     if let Some(path) = request.config_path.as_ref() {
         if !path_exists(path) {
@@ -361,10 +392,10 @@ where
                 path.display()
             );
         }
-        return Ok(Some(LoadedConfigPath {
+        return Ok(vec![LoadedConfigPath {
             path: path.clone(),
             source: ConfigPathSource::Flag,
-        }));
+        }]);
     }
 
     if let Some(raw) = env_lookup("SCE_CONFIG_FILE") {
@@ -375,24 +406,40 @@ where
                 path.display()
             );
         }
-        return Ok(Some(LoadedConfigPath {
+        return Ok(vec![LoadedConfigPath {
             path,
             source: ConfigPathSource::Env,
-        }));
+        }]);
     }
 
-    let default_path = cwd.join(".sce").join("config.json");
-    if path_exists(&default_path) {
-        return Ok(Some(LoadedConfigPath {
-            path: default_path,
-            source: ConfigPathSource::DefaultDiscovered,
-        }));
+    let mut discovered_paths = Vec::new();
+
+    let global_path = resolve_global_config_path()?
+        .join("sce")
+        .join("config.json");
+    if path_exists(&global_path) {
+        discovered_paths.push(LoadedConfigPath {
+            path: global_path,
+            source: ConfigPathSource::DefaultDiscoveredGlobal,
+        });
     }
 
-    Ok(None)
+    let local_path = cwd.join(".sce").join("config.json");
+    if path_exists(&local_path) {
+        discovered_paths.push(LoadedConfigPath {
+            path: local_path,
+            source: ConfigPathSource::DefaultDiscoveredLocal,
+        });
+    }
+
+    Ok(discovered_paths)
 }
 
-fn parse_file_config(raw: &str, path: &Path) -> Result<FileConfig> {
+fn resolve_default_global_config_path() -> Result<PathBuf> {
+    crate::services::local_db::resolve_state_data_root()
+}
+
+fn parse_file_config(raw: &str, path: &Path, source: ConfigPathSource) -> Result<FileConfig> {
     let parsed: Value = serde_json::from_str(raw)
         .with_context(|| format!("Config file '{}' must contain valid JSON.", path.display()))?;
 
@@ -421,10 +468,10 @@ fn parse_file_config(raw: &str, path: &Path) -> Result<FileConfig> {
                     path.display()
                 )
             })?;
-            Some(LogLevel::parse(
-                raw,
-                &format!("config file '{}'", path.display()),
-            )?)
+            Some(FileConfigValue {
+                value: LogLevel::parse(raw, &format!("config file '{}'", path.display()))?,
+                source,
+            })
         }
         None => None,
     };
@@ -437,7 +484,10 @@ fn parse_file_config(raw: &str, path: &Path) -> Result<FileConfig> {
                     path.display()
                 )
             })?;
-            Some(parsed)
+            Some(FileConfigValue {
+                value: parsed,
+                source,
+            })
         }
         None => None,
     };
@@ -454,16 +504,16 @@ fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> S
             let lines = vec![
                 "SCE config: resolved".to_string(),
                 "Precedence: flags > env > config file > defaults".to_string(),
-                format_config_path_text(runtime),
-                format!(
-                    "- log_level: {} (source: {})",
+                format_config_paths_text(runtime),
+                format_resolved_value_text(
+                    "log_level",
                     runtime.log_level.value.as_str(),
-                    runtime.log_level.source.as_str()
+                    runtime.log_level.source,
                 ),
-                format!(
-                    "- timeout_ms: {} (source: {})",
-                    runtime.timeout_ms.value,
-                    runtime.timeout_ms.source.as_str()
+                format_resolved_value_text(
+                    "timeout_ms",
+                    &runtime.timeout_ms.value.to_string(),
+                    runtime.timeout_ms.source,
                 ),
             ];
             lines.join("\n")
@@ -474,15 +524,17 @@ fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> S
                 "result": {
                     "command": "config_show",
                     "precedence": "flags > env > config file > defaults",
-                    "config_path": format_config_path_json(runtime),
+                    "config_paths": format_config_paths_json(runtime),
                     "resolved": {
                         "log_level": {
                             "value": runtime.log_level.value.as_str(),
                             "source": runtime.log_level.source.as_str(),
+                            "config_source": runtime.log_level.source.config_source().map(ConfigPathSource::as_str),
                         },
                         "timeout_ms": {
                             "value": runtime.timeout_ms.value,
                             "source": runtime.timeout_ms.source.as_str(),
+                            "config_source": runtime.timeout_ms.source.config_source().map(ConfigPathSource::as_str),
                         }
                     }
                 }
@@ -498,7 +550,7 @@ fn format_validate_output(runtime: &RuntimeConfig, report_format: ReportFormat) 
             let lines = vec![
                 "SCE config validation: valid".to_string(),
                 "Precedence: flags > env > config file > defaults".to_string(),
-                format_config_path_text(runtime),
+                format_config_paths_text(runtime),
                 "Validation issues: none".to_string(),
             ];
             lines.join("\n")
@@ -510,7 +562,7 @@ fn format_validate_output(runtime: &RuntimeConfig, report_format: ReportFormat) 
                     "command": "config_validate",
                     "valid": true,
                     "precedence": "flags > env > config file > defaults",
-                    "config_path": format_config_path_json(runtime),
+                    "config_paths": format_config_paths_json(runtime),
                     "issues": []
                 }
             });
@@ -520,24 +572,47 @@ fn format_validate_output(runtime: &RuntimeConfig, report_format: ReportFormat) 
     }
 }
 
-fn format_config_path_text(runtime: &RuntimeConfig) -> String {
-    match runtime.loaded_config_path.as_ref() {
-        Some(path) => format!(
-            "Config file: {} (source: {})",
+fn format_config_paths_text(runtime: &RuntimeConfig) -> String {
+    if runtime.loaded_config_paths.is_empty() {
+        return "Config files: (none discovered)".to_string();
+    }
+
+    let mut lines = vec!["Config files:".to_string()];
+    for path in &runtime.loaded_config_paths {
+        lines.push(format!(
+            "- {} (source: {})",
             path.path.display(),
             path.source.as_str()
-        ),
-        None => "Config file: (none discovered)".to_string(),
+        ));
     }
+    lines.join("\n")
 }
 
-fn format_config_path_json(runtime: &RuntimeConfig) -> Value {
-    match runtime.loaded_config_path.as_ref() {
-        Some(path) => json!({
-            "path": path.path.display().to_string(),
-            "source": path.source.as_str(),
-        }),
-        None => Value::Null,
+fn format_config_paths_json(runtime: &RuntimeConfig) -> Value {
+    Value::Array(
+        runtime
+            .loaded_config_paths
+            .iter()
+            .map(|path| {
+                json!({
+                "path": path.path.display().to_string(),
+                "source": path.source.as_str(),
+                    })
+            })
+            .collect(),
+    )
+}
+
+fn format_resolved_value_text(key: &str, value: &str, source: ValueSource) -> String {
+    match source.config_source() {
+        Some(config_source) => format!(
+            "- {}: {} (source: {}, config_source: {})",
+            key,
+            value,
+            source.as_str(),
+            config_source.as_str()
+        ),
+        None => format!("- {}: {} (source: {})", key, value, source.as_str()),
     }
 }
 
@@ -609,6 +684,7 @@ mod tests {
             },
             |_| Ok("{\"log_level\":\"error\",\"timeout_ms\":500}".to_string()),
             |_| true,
+            || Ok(PathBuf::from("/state")),
         )?;
 
         assert_eq!(resolved.log_level.value, LogLevel::Warn);
@@ -636,6 +712,7 @@ mod tests {
             },
             |_| Ok("{\"log_level\":\"error\",\"timeout_ms\":500}".to_string()),
             |_| true,
+            || Ok(PathBuf::from("/state")),
         )?;
 
         assert_eq!(resolved.log_level.value, LogLevel::Warn);
@@ -654,6 +731,7 @@ mod tests {
             |_| None,
             |_| Ok("{}".to_string()),
             |_| false,
+            || Ok(PathBuf::from("/state")),
         )?;
 
         assert_eq!(resolved.log_level.value, LogLevel::Info);
@@ -677,8 +755,69 @@ mod tests {
             |_| None,
             |_| Ok("{\"unknown\":true}".to_string()),
             |_| true,
+            || Ok(PathBuf::from("/state")),
         )
         .expect_err("unknown config keys should fail");
         assert!(error.to_string().contains("contains unknown key 'unknown'"));
+    }
+
+    #[test]
+    fn resolver_merges_discovered_global_and_local_configs() -> Result<()> {
+        let req = request();
+        let resolved = resolve_runtime_config_with(
+            &req,
+            Path::new("/workspace"),
+            |_| None,
+            |path| {
+                if path == Path::new("/state/sce/config.json") {
+                    return Ok("{\"log_level\":\"error\",\"timeout_ms\":500}".to_string());
+                }
+                if path == Path::new("/workspace/.sce/config.json") {
+                    return Ok("{\"timeout_ms\":700}".to_string());
+                }
+                Err(anyhow::anyhow!(
+                    "unexpected config path: {}",
+                    path.display()
+                ))
+            },
+            |path| {
+                path == Path::new("/state/sce/config.json")
+                    || path == Path::new("/workspace/.sce/config.json")
+            },
+            || Ok(PathBuf::from("/state")),
+        )?;
+
+        assert_eq!(resolved.loaded_config_paths.len(), 2);
+        assert_eq!(
+            resolved.loaded_config_paths[0].source.as_str(),
+            "default_discovered_global"
+        );
+        assert_eq!(
+            resolved.loaded_config_paths[1].source.as_str(),
+            "default_discovered_local"
+        );
+
+        assert_eq!(resolved.log_level.value, LogLevel::Error);
+        assert_eq!(resolved.log_level.source.as_str(), "config_file");
+        assert_eq!(
+            resolved
+                .log_level
+                .source
+                .config_source()
+                .map(|source| source.as_str()),
+            Some("default_discovered_global")
+        );
+
+        assert_eq!(resolved.timeout_ms.value, 700);
+        assert_eq!(resolved.timeout_ms.source.as_str(), "config_file");
+        assert_eq!(
+            resolved
+                .timeout_ms
+                .source
+                .config_source()
+                .map(|source| source.as_str()),
+            Some("default_discovered_local")
+        );
+        Ok(())
     }
 }

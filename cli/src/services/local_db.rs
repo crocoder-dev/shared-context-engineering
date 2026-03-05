@@ -183,7 +183,7 @@ fn target_location(target: LocalDatabaseTarget<'_>) -> Result<&str> {
     }
 }
 
-fn resolve_state_data_root() -> Result<PathBuf> {
+pub(crate) fn resolve_state_data_root() -> Result<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
