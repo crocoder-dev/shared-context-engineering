@@ -2,11 +2,23 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+use lexopt::Arg;
+use lexopt::ValueExt;
+use serde_json::json;
+
+use crate::services::output_format::OutputFormat;
 
 pub const NAME: &str = "doctor";
 
 const REQUIRED_HOOKS: [&str; 3] = ["pre-commit", "commit-msg", "post-commit"];
+
+pub type DoctorFormat = OutputFormat;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DoctorRequest {
+    pub format: DoctorFormat,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Readiness {
@@ -39,15 +51,55 @@ struct HookDoctorReport {
     diagnostics: Vec<String>,
 }
 
-pub fn run_doctor() -> Result<String> {
+pub fn run_doctor(request: DoctorRequest) -> Result<String> {
     let repository_root =
         std::env::current_dir().context("Failed to determine current directory")?;
     let report = build_report(&repository_root);
-    Ok(format_report(&report))
+    render_report(request, &report)
 }
 
 pub fn doctor_usage_text() -> &'static str {
-    "Usage:\n  sce doctor\n\nExamples:\n  sce doctor\n  sce doctor | rg 'not ready'"
+    "Usage:\n  sce doctor [--format <text|json>]\n\nExamples:\n  sce doctor\n  sce doctor --format json\n  sce doctor | rg 'not ready'"
+}
+
+pub fn parse_doctor_request(args: Vec<String>) -> Result<DoctorRequest> {
+    let mut parser = lexopt::Parser::from_args(args);
+    let mut format = DoctorFormat::Text;
+
+    while let Some(arg) = parser.next()? {
+        match arg {
+            Arg::Long("format") => {
+                let value = parser
+                    .value()
+                    .context("Option '--format' requires a value")?;
+                let raw = value.string()?;
+                format = DoctorFormat::parse(&raw, "sce doctor --help")?;
+            }
+            Arg::Long("help") | Arg::Short('h') => {
+                bail!("Use 'sce doctor --help' for doctor usage.");
+            }
+            Arg::Long(option) => {
+                bail!(
+                    "Unknown doctor option '--{}'. Run 'sce doctor --help' to see valid usage.",
+                    option
+                );
+            }
+            Arg::Short(option) => {
+                bail!(
+                    "Unknown doctor option '-{}'. Run 'sce doctor --help' to see valid usage.",
+                    option
+                );
+            }
+            Arg::Value(value) => {
+                bail!(
+                    "Unexpected doctor argument '{}'. Run 'sce doctor --help' to see valid usage.",
+                    value.string()?
+                );
+            }
+        }
+    }
+
+    Ok(DoctorRequest { format })
 }
 
 fn build_report(repository_root: &Path) -> HookDoctorReport {
@@ -248,6 +300,65 @@ fn format_report(report: &HookDoctorReport) -> String {
     lines.join("\n")
 }
 
+fn render_report(request: DoctorRequest, report: &HookDoctorReport) -> Result<String> {
+    match request.format {
+        DoctorFormat::Text => Ok(format_report(report)),
+        DoctorFormat::Json => render_report_json(report),
+    }
+}
+
+fn render_report_json(report: &HookDoctorReport) -> Result<String> {
+    let hooks = report
+        .hooks
+        .iter()
+        .map(|hook| {
+            json!({
+                "name": hook.name,
+                "path": hook.path.display().to_string(),
+                "exists": hook.exists,
+                "executable": hook.executable,
+                "state": hook_state(hook),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let payload = json!({
+        "status": "ok",
+        "command": NAME,
+        "readiness": match report.readiness {
+            Readiness::Ready => "ready",
+            Readiness::NotReady => "not_ready",
+        },
+        "hook_path_source": match report.hook_path_source {
+            HookPathSource::Default => "default",
+            HookPathSource::LocalConfig => "local_config",
+            HookPathSource::GlobalConfig => "global_config",
+        },
+        "repository_root": report
+            .repository_root
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        "hooks_directory": report
+            .hooks_directory
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        "hooks": hooks,
+        "diagnostics": report.diagnostics,
+    });
+
+    serde_json::to_string_pretty(&payload).context("failed to serialize doctor report to JSON")
+}
+
+fn hook_state(hook: &HookFileHealth) -> &'static str {
+    if hook.exists && hook.executable {
+        "ok"
+    } else if !hook.exists {
+        "missing"
+    } else {
+        "misconfigured"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -256,14 +367,38 @@ mod tests {
     use std::process::Command;
 
     use anyhow::Result;
+    use serde_json::Value;
 
     use crate::services::setup::install_required_git_hooks;
     use crate::test_support::TestTempDir;
 
     use super::{
-        build_report, collect_hook_health, format_report, HookDoctorReport, HookPathSource,
-        Readiness,
+        build_report, collect_hook_health, format_report, parse_doctor_request, render_report,
+        DoctorFormat, DoctorRequest, HookDoctorReport, HookPathSource, Readiness, NAME,
     };
+
+    #[test]
+    fn parse_defaults_to_text_format() {
+        let request = parse_doctor_request(vec![]).expect("doctor request should parse");
+        assert_eq!(request.format, DoctorFormat::Text);
+    }
+
+    #[test]
+    fn parse_accepts_json_format() {
+        let request = parse_doctor_request(vec!["--format".to_string(), "json".to_string()])
+            .expect("doctor request should parse");
+        assert_eq!(request.format, DoctorFormat::Json);
+    }
+
+    #[test]
+    fn parse_rejects_invalid_format_with_help_guidance() {
+        let error = parse_doctor_request(vec!["--format".to_string(), "yaml".to_string()])
+            .expect_err("invalid doctor format should fail");
+        assert_eq!(
+            error.to_string(),
+            "Invalid --format value 'yaml'. Valid values: text, json. Run 'sce doctor --help' to see valid usage."
+        );
+    }
 
     #[test]
     fn doctor_output_reports_healthy_state_when_all_required_hooks_exist() -> Result<()> {
@@ -397,6 +532,28 @@ mod tests {
         assert!(output.contains("SCE doctor: ready"));
         assert!(output.contains("Hooks path source: per-repo core.hooksPath"));
         assert!(output.contains(".githooks"));
+        Ok(())
+    }
+
+    #[test]
+    fn render_json_includes_stable_fields() -> Result<()> {
+        let temp_dir = TestTempDir::new("doctor-json-shape")?;
+        let report = build_report(temp_dir.path());
+
+        let output = render_report(
+            DoctorRequest {
+                format: DoctorFormat::Json,
+            },
+            &report,
+        )?;
+
+        let parsed: Value = serde_json::from_str(&output)?;
+        assert_eq!(parsed["status"], "ok");
+        assert_eq!(parsed["command"], NAME);
+        assert!(parsed["readiness"].as_str().is_some());
+        assert!(parsed["hook_path_source"].as_str().is_some());
+        assert!(parsed["hooks"].is_array());
+        assert!(parsed["diagnostics"].is_array());
         Ok(())
     }
 

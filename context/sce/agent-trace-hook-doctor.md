@@ -8,16 +8,27 @@ Task `agent-trace-attribution-no-git-wrapper` `T07` adds local rollout validatio
 
 - Entrypoint: `sce doctor`
 - Service implementation: `cli/src/services/doctor.rs`
-- Command dispatch: `cli/src/app.rs` (`Command::Doctor`)
+- Command dispatch: `cli/src/app.rs` (`Command::Doctor(DoctorRequest)`)
 - Command surface status: implemented in `cli/src/command_surface.rs`
 
-`sce doctor` always returns a deterministic text report with:
+`sce doctor` supports deterministic dual output via `--format <text|json>`.
+
+Text output includes:
 
 - readiness verdict (`ready` or `not ready`)
 - hook-path source (`default (.git/hooks)`, per-repo `core.hooksPath`, or global `core.hooksPath`)
 - detected repository root and effective hooks directory
 - required hook checks for `pre-commit`, `commit-msg`, `post-commit`
 - actionable diagnostics for missing or misconfigured hooks
+
+JSON output includes stable top-level fields:
+
+- `status`, `command`
+- `readiness` (`ready` or `not_ready`)
+- `hook_path_source` (`default`, `local_config`, `global_config`)
+- `repository_root`, `hooks_directory`
+- `hooks[]` with `name`, `path`, `exists`, `executable`, `state`
+- `diagnostics[]`
 
 ## Health validation rules
 
@@ -48,5 +59,7 @@ If no diagnostics are present, readiness is `ready`.
 - misconfigured state (required hook present but non-executable)
 - post-setup ready state after required hooks are installed
 - post-setup ready state for per-repo custom `core.hooksPath`
+- request parsing defaults and `--format json` support
+- JSON report shape contract (`status`, `command`, `readiness`, `hook_path_source`, `hooks`, `diagnostics`)
 
-`cli/src/app.rs` includes command-level routing/exit success coverage for `sce doctor`.
+`cli/src/app.rs` includes command-level routing/exit success coverage for `sce doctor`, including `--format json` routing.

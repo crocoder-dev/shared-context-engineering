@@ -110,7 +110,7 @@ enum Command {
     Config(services::config::ConfigSubcommand),
     Setup(services::setup::SetupRequest),
     SetupHelp,
-    Doctor,
+    Doctor(services::doctor::DoctorRequest),
     DoctorHelp,
     Mcp,
     McpHelp,
@@ -129,7 +129,7 @@ impl Command {
             Self::Completion(_) | Self::CompletionHelp => services::completion::NAME,
             Self::Config(_) => services::config::NAME,
             Self::Setup(_) | Self::SetupHelp => services::setup::NAME,
-            Self::Doctor | Self::DoctorHelp => services::doctor::NAME,
+            Self::Doctor(_) | Self::DoctorHelp => services::doctor::NAME,
             Self::Mcp | Self::McpHelp => services::mcp::NAME,
             Self::Hooks(_) | Self::HooksHelp => services::hooks::NAME,
             Self::Sync | Self::SyncHelp => services::sync::NAME,
@@ -349,7 +349,7 @@ fn parse_subcommand(value: String, tail_args: Vec<String>) -> Result<Command, Cl
         "completion" => parse_completion_subcommand(tail_args),
         "config" => parse_config_subcommand(tail_args),
         "setup" => parse_setup_subcommand(tail_args),
-        "doctor" => parse_non_setup_subcommand(Command::Doctor, Command::DoctorHelp, tail_args),
+        "doctor" => parse_doctor_subcommand(tail_args),
         "mcp" => parse_non_setup_subcommand(Command::Mcp, Command::McpHelp, tail_args),
         "hooks" => parse_hooks_subcommand(tail_args),
         "sync" => parse_non_setup_subcommand(Command::Sync, Command::SyncHelp, tail_args),
@@ -416,6 +416,16 @@ fn parse_non_setup_subcommand(
         "Unexpected extra argument '{}'. Run 'sce --help' to see valid usage.",
         tail_args[0]
     )))
+}
+
+fn parse_doctor_subcommand(args: Vec<String>) -> Result<Command, ClassifiedError> {
+    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
+        return Ok(Command::DoctorHelp);
+    }
+
+    let request = services::doctor::parse_doctor_request(args)
+        .map_err(|error| ClassifiedError::validation(error.to_string()))?;
+    Ok(Command::Doctor(request))
 }
 
 fn parse_hooks_subcommand(args: Vec<String>) -> Result<Command, ClassifiedError> {
@@ -486,7 +496,7 @@ fn dispatch(command: &Command) -> Result<String, ClassifiedError> {
         }
         Command::SetupHelp => Ok(services::setup::setup_usage_text().to_string()),
         Command::DoctorHelp => Ok(services::doctor::doctor_usage_text().to_string()),
-        Command::Doctor => services::doctor::run_doctor()
+        Command::Doctor(request) => services::doctor::run_doctor(*request)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::McpHelp => Ok(services::mcp::mcp_usage_text().to_string()),
         Command::Mcp => services::mcp::run_placeholder_mcp()
@@ -928,6 +938,23 @@ mod tests {
         ])
         .expect("command should parse");
         assert_eq!(command, Command::DoctorHelp);
+    }
+
+    #[test]
+    fn parser_routes_doctor_json_format() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "doctor".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(
+            command,
+            Command::Doctor(crate::services::doctor::DoctorRequest {
+                format: crate::services::doctor::DoctorFormat::Json,
+            })
+        );
     }
 
     #[test]

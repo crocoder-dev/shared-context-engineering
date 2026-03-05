@@ -165,7 +165,7 @@ Non-goals:
   - Done when: commands like `sce setup --opencode --hooks` and interactive `sce setup` can complete both config install and hook install deterministically in one run, while legacy one-purpose invocations continue to work.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml app::tests services::setup::tests`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T15: Implement deterministic JSON/text dual output for `doctor` (status:todo)
+- [x] T15: Implement deterministic JSON/text dual output for `doctor` (status:done)
   - Task ID: T15
   - Goal: Extend doctor reporting to return a stable machine-readable JSON form while preserving readable text output.
   - Boundaries (in/out of scope): In: `cli/src/services/doctor.rs` report rendering, JSON schema shaping, and tests; Out: changing doctor readiness semantics or required-hook policy.
