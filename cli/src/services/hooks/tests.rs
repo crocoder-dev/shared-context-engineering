@@ -16,17 +16,18 @@ use super::{
     finalize_pre_commit_checkpoint, finalize_rewrite_trace, parse_hooks_subcommand,
     process_trace_retry_queue, resolve_pre_commit_checkpoint_path,
     run_commit_msg_subcommand_in_repo, run_hooks_subcommand, run_placeholder_hooks,
-    run_pre_commit_subcommand_in_repo, CommitMsgRuntimeState, GeneratedRegionEvent,
-    GeneratedRegionLifecycle, GitHookKind, HookEvent, HookService, HookSubcommand,
-    PendingCheckpoint, PendingFileCheckpoint, PendingLineRange, PersistenceErrorClass,
-    PersistenceFailure, PersistenceTarget, PersistenceWriteResult, PlaceholderHookService,
-    PostCommitFinalization, PostCommitInput, PostCommitNoOpReason, PostCommitRuntimeState,
-    PostRewriteFinalization, PostRewriteNoOpReason, PostRewriteRuntimeState, PreCommitFinalization,
-    PreCommitNoOpReason, PreCommitRuntimeState, PreCommitTreeAnchors, RetryMetricsSink,
-    RetryProcessingMetric, RewriteMethod, RewriteRemapIngestion, RewriteRemapRequest,
-    RewriteTraceFinalization, RewriteTraceInput, RewriteTraceNoOpReason, TraceEmissionLedger,
-    TraceNote, TraceNotesWriter, TraceRecordStore, TraceRetryQueue, TraceRetryQueueEntry,
-    CANONICAL_SCE_COAUTHOR_TRAILER, POST_COMMIT_PARENT_SHA_METADATA_KEY,
+    run_post_commit_subcommand_in_repo, run_pre_commit_subcommand_in_repo, CommitMsgRuntimeState,
+    GeneratedRegionEvent, GeneratedRegionLifecycle, GitHookKind, HookEvent, HookService,
+    HookSubcommand, PendingCheckpoint, PendingFileCheckpoint, PendingLineRange,
+    PersistenceErrorClass, PersistenceFailure, PersistenceTarget, PersistenceWriteResult,
+    PlaceholderHookService, PostCommitFinalization, PostCommitInput, PostCommitNoOpReason,
+    PostCommitRuntimeState, PostRewriteFinalization, PostRewriteNoOpReason,
+    PostRewriteRuntimeState, PreCommitFinalization, PreCommitNoOpReason, PreCommitRuntimeState,
+    PreCommitTreeAnchors, RetryMetricsSink, RetryProcessingMetric, RewriteMethod,
+    RewriteRemapIngestion, RewriteRemapRequest, RewriteTraceFinalization, RewriteTraceInput,
+    RewriteTraceNoOpReason, TraceEmissionLedger, TraceNote, TraceNotesWriter, TraceRecordStore,
+    TraceRetryQueue, TraceRetryQueueEntry, CANONICAL_SCE_COAUTHOR_TRAILER,
+    POST_COMMIT_PARENT_SHA_METADATA_KEY,
 };
 
 fn run_git_in_repo(repo: &Path, args: &[&str]) -> Result<()> {
@@ -46,6 +47,35 @@ fn run_git_in_repo(repo: &Path, args: &[&str]) -> Result<()> {
             stderr
         }
     )
+}
+
+fn run_git_output_in_repo(repo: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git").args(args).current_dir(repo).output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        anyhow::bail!(
+            "git {:?} failed in '{}': {}",
+            args,
+            repo.display(),
+            if stderr.is_empty() {
+                "git command exited non-zero".to_string()
+            } else {
+                stderr
+            }
+        );
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn resolve_git_path_in_repo(repo: &Path, git_path: &str) -> Result<PathBuf> {
+    let resolved = run_git_output_in_repo(repo, &["rev-parse", "--git-path", git_path])?;
+    let path = PathBuf::from(resolved);
+    if path.is_absolute() {
+        return Ok(path);
+    }
+
+    Ok(repo.join(path))
 }
 
 fn create_temp_repo() -> Result<PathBuf> {
@@ -988,6 +1018,62 @@ fn commit_msg_runtime_noops_when_staged_attribution_checkpoint_missing() -> Resu
 
     let persisted = fs::read_to_string(&message_file)?;
     assert_eq!(persisted, original);
+    Ok(())
+}
+
+#[test]
+fn post_commit_runtime_persists_notes_and_local_record_store() -> Result<()> {
+    let repo = create_temp_repo()?;
+    let tracked_file = repo.join("src").join("lib.rs");
+    fs::create_dir_all(
+        tracked_file
+            .parent()
+            .expect("tracked file path should have parent"),
+    )?;
+    fs::write(&tracked_file, "one\ntwo\n")?;
+    run_git_in_repo(&repo, &["add", "."])?;
+    run_git_in_repo(&repo, &["commit", "-m", "initial"])?;
+
+    fs::write(&tracked_file, "one\ntwo\nthree\n")?;
+    run_git_in_repo(&repo, &["add", "src/lib.rs"])?;
+    run_git_in_repo(&repo, &["commit", "-m", "feat: update file"])?;
+    write_staged_checkpoint_artifact(&repo)?;
+
+    let message = run_post_commit_subcommand_in_repo(&repo)?;
+    assert!(message.contains("post-commit hook finalized trace"));
+
+    let head_sha = run_git_output_in_repo(&repo, &["rev-parse", "--verify", "HEAD"])?;
+    let note = run_git_output_in_repo(
+        &repo,
+        &[
+            "notes",
+            "--ref",
+            "refs/notes/agent-trace",
+            "show",
+            &head_sha,
+        ],
+    )?;
+    let note_json = serde_json::from_str::<serde_json::Value>(&note)?;
+    assert_eq!(
+        note_json
+            .get("content_type")
+            .and_then(serde_json::Value::as_str),
+        Some("application/vnd.agent-trace.record+json")
+    );
+    assert_eq!(
+        note_json
+            .get("record")
+            .and_then(|record| record.get("metadata"))
+            .and_then(|metadata| metadata.get("dev.crocoder.sce.notes_ref"))
+            .and_then(serde_json::Value::as_str),
+        Some("refs/notes/agent-trace")
+    );
+
+    let records_path = resolve_git_path_in_repo(&repo, "sce/trace-records.jsonl")?;
+    let persisted = fs::read_to_string(records_path)?;
+    assert!(persisted.contains("post-commit:"));
+    assert!(persisted.contains("application/vnd.agent-trace.record+json"));
+
     Ok(())
 }
 

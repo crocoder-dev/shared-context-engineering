@@ -26,6 +26,21 @@
 - Any failed target (`PersistenceWriteResult::Failed`) enqueues one retry item via `TraceRetryQueue` with explicit failed target list and returns `QueuedFallback`.
 - Retry queue entries carry the full trace record, MIME type, notes ref, and failed target list to support replay-safe recovery.
 
+## Local hook runtime adapter wiring
+- Runtime entrypoint: `cli/src/services/hooks.rs` -> `run_post_commit_subcommand_in_repo`.
+- Runtime input assembly:
+  - resolves `HEAD` + optional `HEAD^` via git
+  - derives commit timestamp from `git show -s --format=%cI HEAD`
+  - derives file attribution from the pre-commit checkpoint artifact first, then falls back to changed-file discovery (`git show --name-only HEAD`)
+  - derives deterministic idempotency (`post-commit:<sha>`) and deterministic UUIDv4 trace IDs from commit/timestamp seed
+- Production adapters currently bound in runtime:
+  - notes adapter: `GitNotesTraceWriter` writes canonical JSON note payloads to `refs/notes/agent-trace`
+  - local record store adapter: `JsonFileTraceRecordStore` writes trace records to git-path JSONL storage at `sce/trace-records.jsonl`
+  - emission ledger adapter: `FileTraceEmissionLedger` stores emitted commit SHAs at `sce/trace-emission-ledger.txt`
+  - retry queue adapter: `JsonFileTraceRetryQueue` appends failed-target fallback entries to `sce/trace-retry-queue.jsonl`
+- Runtime posture remains fail-open: operational errors return deterministic skip/fallback messages instead of aborting commit progression.
+
 ## Verification evidence
 - `cargo test --manifest-path cli/Cargo.toml post_commit_finalization`
+- `cargo test --manifest-path cli/Cargo.toml post_commit`
 - `cargo build --manifest-path cli/Cargo.toml`
