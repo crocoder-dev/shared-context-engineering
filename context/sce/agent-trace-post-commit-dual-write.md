@@ -35,9 +35,12 @@
   - derives deterministic idempotency (`post-commit:<sha>`) and deterministic UUIDv4 trace IDs from commit/timestamp seed
 - Production adapters currently bound in runtime:
   - notes adapter: `GitNotesTraceWriter` writes canonical JSON note payloads to `refs/notes/agent-trace`
-  - local record store adapter: `JsonFileTraceRecordStore` writes trace records to git-path JSONL storage at `sce/trace-records.jsonl`
+  - local record store adapter: `LocalDbTraceRecordStore` writes trace records and flattened ranges into the persistent Turso target at `.../sce/agent-trace/local.db`
   - emission ledger adapter: `FileTraceEmissionLedger` stores emitted commit SHAs at `sce/trace-emission-ledger.txt`
   - retry queue adapter: `JsonFileTraceRetryQueue` appends failed-target fallback entries to `sce/trace-retry-queue.jsonl`
+- Runtime schema bootstrap is mandatory before post-commit persistence:
+  - `resolve_post_commit_runtime_paths` calls `ensure_agent_trace_local_db_ready_blocking`.
+  - `ensure_agent_trace_local_db_ready_blocking` resolves platform state-data DB path (`${XDG_STATE_HOME:-~/.local/state}/sce/agent-trace/local.db` on Linux, platform-equivalent user state root elsewhere), creates parent directories, and applies `apply_core_schema_migrations` before writes.
 - Runtime posture remains fail-open: operational errors return deterministic skip/fallback messages instead of aborting commit progression.
 
 ## Verification evidence

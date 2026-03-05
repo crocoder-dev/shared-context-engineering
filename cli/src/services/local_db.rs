@@ -1,6 +1,6 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, ensure, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use turso::Builder;
 
 const CORE_SCHEMA_STATEMENTS: &[&str] = &[
@@ -143,6 +143,29 @@ pub struct CoreSchemaMigrationOutcome {
     pub executed_statements: usize,
 }
 
+pub fn resolve_agent_trace_local_db_path() -> Result<PathBuf> {
+    let state_root = resolve_state_data_root()?;
+    Ok(state_root.join("sce").join("agent-trace").join("local.db"))
+}
+
+pub fn ensure_agent_trace_local_db_ready_blocking() -> Result<PathBuf> {
+    let db_path = resolve_agent_trace_local_db_path()?;
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "Failed to create Agent Trace local DB directory '{}'.",
+                parent.display()
+            )
+        })?;
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    runtime.block_on(apply_core_schema_migrations(LocalDatabaseTarget::Path(
+        &db_path,
+    )))?;
+    Ok(db_path)
+}
+
 async fn connect_local(target: LocalDatabaseTarget<'_>) -> Result<turso::Connection> {
     let location = target_location(target)?;
     let db = Builder::new_local(location).build().await?;
@@ -158,6 +181,52 @@ fn target_location(target: LocalDatabaseTarget<'_>) -> Result<&str> {
             .to_str()
             .ok_or_else(|| anyhow!("Local DB path must be valid UTF-8: {}", path.display())),
     }
+}
+
+fn resolve_state_data_root() -> Result<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            return Ok(PathBuf::from(local_app_data));
+        }
+        if let Some(app_data) = std::env::var_os("APPDATA") {
+            return Ok(PathBuf::from(app_data));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return Ok(resolve_home_dir()?
+            .join("Library")
+            .join("Application Support"));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(xdg_state_home) = std::env::var_os("XDG_STATE_HOME") {
+            return Ok(PathBuf::from(xdg_state_home));
+        }
+        return Ok(resolve_home_dir()?.join(".local").join("state"));
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        Ok(resolve_home_dir()?.join(".local").join("state"))
+    }
+}
+
+fn resolve_home_dir() -> Result<PathBuf> {
+    if let Some(home) = std::env::var_os("HOME") {
+        return Ok(PathBuf::from(home));
+    }
+
+    if let Some(user_profile) = std::env::var_os("USERPROFILE") {
+        return Ok(PathBuf::from(user_profile));
+    }
+
+    Err(anyhow!(
+        "Unable to resolve home directory from HOME or USERPROFILE environment variables"
+    ))
 }
 
 pub async fn apply_core_schema_migrations(
@@ -475,6 +544,35 @@ mod tests {
             "SELECT COUNT(*) FROM conversations WHERE repository_id = 1 AND source = 'github'",
         ))?;
         assert_eq!(conversation_count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn persistent_target_survives_process_restart() -> Result<()> {
+        let temp = TestTempDir::new("sce-persistent-local-db-tests")?;
+        let path = temp.path().join("persistent.db");
+
+        {
+            let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+            runtime.block_on(apply_core_schema_migrations(LocalDatabaseTarget::Path(
+                &path,
+            )))?;
+            runtime.block_on(async {
+                let conn = super::connect_local(LocalDatabaseTarget::Path(&path)).await?;
+                conn.execute(
+                    "INSERT INTO repositories (canonical_root) VALUES (?1)",
+                    ["/tmp/restart-proof-repo"],
+                )
+                .await?;
+                Ok::<(), anyhow::Error>(())
+            })?;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        let repository_rows =
+            runtime.block_on(repository_count(LocalDatabaseTarget::Path(&path)))?;
+        assert_eq!(repository_rows, 1);
 
         Ok(())
     }

@@ -81,7 +81,7 @@ Connect the existing Agent Trace service seams into a fully functional local Git
     - `cargo test --manifest-path cli/Cargo.toml post_commit_finalization`
     - Local integration test validating notes content type/ref and DB persistence parity.
 
-- [ ] T06: Productionize local DB runtime policy and schema bootstrap (status:todo)
+- [x] T06: Productionize local DB runtime policy and schema bootstrap (status:done)
   - Task ID: T06
   - Goal: Establish and implement production local DB location/bootstrap policy for Linux and other supported local platforms, then wire schema migration lifecycle.
   - Boundaries (in/out of scope):
