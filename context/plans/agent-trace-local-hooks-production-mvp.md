@@ -94,7 +94,7 @@ Connect the existing Agent Trace service seams into a fully functional local Git
     - `cargo test --manifest-path cli/Cargo.toml local_db::tests`
     - Integration test proving persisted data survives process restart with configured local DB path.
 
-- [ ] T07: Wire post-rewrite runtime flow (remap ingestion + rewrite trace finalization) (status:todo)
+- [x] T07: Wire post-rewrite runtime flow (remap ingestion + rewrite trace finalization) (status:done)
   - Task ID: T07
   - Goal: Connect `post-rewrite` hook runtime input parsing and rewrite-method normalization to real remap ingestion and rewritten-trace emission paths.
   - Boundaries (in/out of scope):
