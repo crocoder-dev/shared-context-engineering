@@ -743,10 +743,22 @@ fn collect_post_commit_file_attribution(
         return Ok(checkpoint_files);
     }
 
+    collect_commit_file_attribution(
+        repository_root,
+        "HEAD",
+        "https://crocoder.dev/sce/local-hooks/post-commit",
+    )
+}
+
+fn collect_commit_file_attribution(
+    repository_root: &Path,
+    revision: &str,
+    conversation_url: &str,
+) -> Result<Vec<FileAttributionInput>> {
     let changed_paths = run_git_command_allow_empty(
         repository_root,
-        &["show", "--pretty=format:", "--name-only", "HEAD"],
-        "Failed to resolve changed files for post-commit attribution.",
+        &["show", "--pretty=format:", "--name-only", revision],
+        "Failed to resolve changed files for commit attribution.",
     )?;
 
     let mut files = Vec::new();
@@ -759,7 +771,7 @@ fn collect_post_commit_file_attribution(
         files.push(FileAttributionInput {
             path: path.to_string(),
             conversations: vec![ConversationInput {
-                url: "https://crocoder.dev/sce/local-hooks/post-commit".to_string(),
+                url: conversation_url.to_string(),
                 related: Vec::new(),
                 ranges: vec![RangeInput {
                     start_line: 1,
@@ -879,39 +891,291 @@ fn deterministic_uuid_v4_from_seed(seed: &str) -> String {
 }
 
 fn run_post_rewrite_subcommand(rewrite_method: &str) -> Result<String> {
+    let repository_root = std::env::current_dir()
+        .context("Failed to determine current directory for post-rewrite runtime invocation.")?;
     let stdin = std::io::read_to_string(std::io::stdin())
         .context("Failed to read post-rewrite pair input from STDIN")?;
-    let mut ingestion = AcceptAllRewriteRemapIngestion;
-    let outcome = finalize_post_rewrite_remap(
-        &PostRewriteRuntimeState {
-            sce_disabled: false,
-            cli_available: true,
-            is_bare_repo: false,
-        },
+
+    run_post_rewrite_subcommand_in_repo(&repository_root, rewrite_method, &stdin)
+}
+
+fn run_post_rewrite_subcommand_in_repo(
+    repository_root: &Path,
+    rewrite_method: &str,
+    pairs_file_contents: &str,
+) -> Result<String> {
+    let runtime = resolve_post_rewrite_runtime_state(repository_root);
+
+    if runtime.sce_disabled || !runtime.cli_available || runtime.is_bare_repo {
+        let reason = if runtime.sce_disabled {
+            PostRewriteNoOpReason::Disabled
+        } else if !runtime.cli_available {
+            PostRewriteNoOpReason::CliUnavailable
+        } else {
+            PostRewriteNoOpReason::BareRepository
+        };
+
+        return Ok(format!(
+            "post-rewrite hook executed with no-op runtime state: {reason:?}"
+        ));
+    }
+
+    let runtime_paths = match resolve_post_commit_runtime_paths(repository_root) {
+        Ok(paths) => paths,
+        Err(error) => {
+            return Ok(format!(
+                "post-rewrite hook skipped rewrite finalization: failed to resolve persistence targets ({error})"
+            ));
+        }
+    };
+
+    let mut ingestion = LocalDbRewriteRemapIngestion {
+        repository_root: repository_root.to_path_buf(),
+        db_path: runtime_paths.local_db_path.clone(),
+        accepted_requests: Vec::new(),
+    };
+
+    let outcome = match finalize_post_rewrite_remap(
+        &runtime,
         rewrite_method,
-        &stdin,
+        pairs_file_contents,
         &mut ingestion,
-    )?;
+    ) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            return Ok(format!(
+                "post-rewrite hook skipped rewrite finalization: remap ingestion failed ({error})"
+            ));
+        }
+    };
+
+    let mut notes_writer = GitNotesTraceWriter {
+        repository_root: repository_root.to_path_buf(),
+    };
+    let mut record_store = LocalDbTraceRecordStore {
+        repository_root: repository_root.to_path_buf(),
+        db_path: runtime_paths.local_db_path,
+    };
+    let mut retry_queue = JsonFileTraceRetryQueue {
+        path: runtime_paths.retry_queue_path,
+    };
+    let mut emission_ledger = FileTraceEmissionLedger {
+        path: runtime_paths.emission_ledger_path,
+    };
+
+    let mut rewrite_persisted = 0_usize;
+    let mut rewrite_queued = 0_usize;
+    let mut rewrite_noops = 0_usize;
+    let mut rewrite_failures = 0_usize;
+
+    for request in &ingestion.accepted_requests {
+        let input = match build_rewrite_trace_input(repository_root, request) {
+            Ok(input) => input,
+            Err(_) => {
+                rewrite_failures += 1;
+                continue;
+            }
+        };
+
+        match finalize_rewrite_trace(
+            &runtime,
+            input,
+            &mut notes_writer,
+            &mut record_store,
+            &mut retry_queue,
+            &mut emission_ledger,
+        ) {
+            Ok(RewriteTraceFinalization::Persisted(_)) => rewrite_persisted += 1,
+            Ok(RewriteTraceFinalization::QueuedFallback(_)) => rewrite_queued += 1,
+            Ok(RewriteTraceFinalization::NoOp(_)) => rewrite_noops += 1,
+            Err(_) => rewrite_failures += 1,
+        }
+    }
 
     match outcome {
         PostRewriteFinalization::NoOp(reason) => Ok(format!(
             "post-rewrite hook executed with no-op runtime state: {reason:?}"
         )),
         PostRewriteFinalization::Ingested(ingested) => Ok(format!(
-            "post-rewrite hook ingested {} pair(s), skipped {} duplicate pair(s), method='{}'.",
+            "post-rewrite hook ingested {} pair(s), skipped {} duplicate pair(s), method='{}', rewrite_traces=(persisted={}, queued={}, no_op={}, failed={}).",
             ingested.ingested_pairs,
             ingested.skipped_pairs,
-            ingested.rewrite_method.canonical_label()
+            ingested.rewrite_method.canonical_label(),
+            rewrite_persisted,
+            rewrite_queued,
+            rewrite_noops,
+            rewrite_failures
         )),
     }
 }
 
-struct AcceptAllRewriteRemapIngestion;
-
-impl RewriteRemapIngestion for AcceptAllRewriteRemapIngestion {
-    fn ingest(&mut self, _request: RewriteRemapRequest) -> Result<bool> {
-        Ok(true)
+fn resolve_post_rewrite_runtime_state(repository_root: &Path) -> PostRewriteRuntimeState {
+    PostRewriteRuntimeState {
+        sce_disabled: env_flag_is_truthy("SCE_DISABLED"),
+        cli_available: git_command_success(repository_root, &["--version"]),
+        is_bare_repo: git_command_output(repository_root, &["rev-parse", "--is-bare-repository"])
+            .is_some_and(|output| output == "true"),
     }
+}
+
+fn build_rewrite_trace_input(
+    repository_root: &Path,
+    request: &RewriteRemapRequest,
+) -> Result<RewriteTraceInput> {
+    let timestamp_rfc3339 = run_git_command(
+        repository_root,
+        &["show", "-s", "--format=%cI", request.new_sha.as_str()],
+        "Failed to resolve rewritten commit timestamp.",
+    )?;
+    let files = collect_commit_file_attribution(
+        repository_root,
+        request.new_sha.as_str(),
+        "https://crocoder.dev/sce/local-hooks/post-rewrite",
+    )?;
+
+    Ok(RewriteTraceInput {
+        record_id: deterministic_uuid_v4_from_seed(&format!(
+            "{}:{}",
+            request.idempotency_key, timestamp_rfc3339
+        )),
+        timestamp_rfc3339,
+        rewritten_commit_sha: request.new_sha.clone(),
+        rewrite_from_sha: request.old_sha.clone(),
+        rewrite_method: request.rewrite_method.clone(),
+        rewrite_confidence: 1.0,
+        idempotency_key: request.idempotency_key.clone(),
+        files,
+    })
+}
+
+struct LocalDbRewriteRemapIngestion {
+    repository_root: PathBuf,
+    db_path: PathBuf,
+    accepted_requests: Vec<RewriteRemapRequest>,
+}
+
+impl RewriteRemapIngestion for LocalDbRewriteRemapIngestion {
+    fn ingest(&mut self, request: RewriteRemapRequest) -> Result<bool> {
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        let accepted = runtime.block_on(ingest_rewrite_mapping_to_local_db(
+            &self.repository_root,
+            &self.db_path,
+            &request,
+        ))?;
+        if accepted {
+            self.accepted_requests.push(request);
+        }
+        Ok(accepted)
+    }
+}
+
+async fn ingest_rewrite_mapping_to_local_db(
+    repository_root: &Path,
+    db_path: &Path,
+    request: &RewriteRemapRequest,
+) -> Result<bool> {
+    let location = db_path.to_str().ok_or_else(|| {
+        anyhow::anyhow!("Local DB path must be valid UTF-8: {}", db_path.display())
+    })?;
+    let db = turso::Builder::new_local(location).build().await?;
+    let conn = db.connect()?;
+    conn.execute("PRAGMA foreign_keys = ON", ()).await?;
+
+    let canonical_root = repository_root
+        .canonicalize()
+        .unwrap_or_else(|_| repository_root.to_path_buf())
+        .to_string_lossy()
+        .to_string();
+
+    conn.execute(
+        "INSERT OR IGNORE INTO repositories (canonical_root) VALUES (?1)",
+        [canonical_root.as_str()],
+    )
+    .await?;
+
+    let repository_id = {
+        let mut rows = conn
+            .query(
+                "SELECT id FROM repositories WHERE canonical_root = ?1 LIMIT 1",
+                [canonical_root.as_str()],
+            )
+            .await?;
+        let row = rows
+            .next()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("repository id query returned no rows"))?;
+        let value = row.get_value(0)?;
+        value
+            .as_integer()
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("repository id query returned non-integer"))?
+    };
+
+    let existing = {
+        let mut rows = conn
+            .query(
+                "SELECT COUNT(*) FROM rewrite_mappings WHERE repository_id = ?1 AND idempotency_key = ?2",
+                (repository_id, request.idempotency_key.as_str()),
+            )
+            .await?;
+        let row = rows
+            .next()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("rewrite mapping count query returned no rows"))?;
+        let value = row.get_value(0)?;
+        value
+            .as_integer()
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("rewrite mapping count query returned non-integer"))?
+    };
+    if existing > 0 {
+        return Ok(false);
+    }
+
+    let reconciliation_key = format!(
+        "local-post-rewrite:{}:{}",
+        request.rewrite_method.canonical_label(),
+        request.new_sha
+    );
+    conn.execute(
+        "INSERT OR IGNORE INTO reconciliation_runs (repository_id, provider, idempotency_key, status) VALUES (?1, ?2, ?3, ?4)",
+        (repository_id, "local-hook", reconciliation_key.as_str(), "completed"),
+    )
+    .await?;
+
+    let run_id = {
+        let mut rows = conn
+            .query(
+                "SELECT id FROM reconciliation_runs WHERE repository_id = ?1 AND idempotency_key = ?2 LIMIT 1",
+                (repository_id, reconciliation_key.as_str()),
+            )
+            .await?;
+        let row = rows
+            .next()
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("reconciliation run id query returned no rows"))?;
+        let value = row.get_value(0)?;
+        value
+            .as_integer()
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("reconciliation run id query returned non-integer"))?
+    };
+
+    conn.execute(
+        "INSERT INTO rewrite_mappings (reconciliation_run_id, repository_id, old_commit_sha, new_commit_sha, mapping_status, confidence, idempotency_key) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        (
+            run_id,
+            repository_id,
+            request.old_sha.as_str(),
+            request.new_sha.as_str(),
+            "mapped",
+            1.0_f64,
+            request.idempotency_key.as_str(),
+        ),
+    )
+    .await?;
+
+    Ok(true)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
