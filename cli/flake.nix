@@ -29,7 +29,10 @@
         };
 
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-          extensions = [ "rustfmt" ];
+          extensions = [
+            "rustfmt"
+            "clippy"
+          ];
         };
 
         rustPlatform = pkgs.makeRustPlatform {
@@ -65,6 +68,18 @@
           };
         };
 
+        apps.clippy = {
+          type = "app";
+          program = toString (
+            pkgs.writeShellScript "sce-clippy" ''
+              exec ${rustToolchain}/bin/cargo clippy --manifest-path cli/Cargo.toml --all-targets --all-features "$@"
+            ''
+          );
+          meta = {
+            description = "Run clippy for the sce CLI crate";
+          };
+        };
+
         checks.cli-setup-command-surface = rustPlatform.buildRustPackage {
           pname = "sce-cli-setup-command-surface-check";
           version = "0.1.0";
@@ -89,6 +104,38 @@
             cargo test command_surface::tests::help_text_mentions_setup_target_flags
             cargo test parser_routes_setup
             cargo test run_setup_reports
+
+            runHook postCheck
+          '';
+
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            runHook postInstall
+          '';
+        };
+
+        checks.cli-clippy = rustPlatform.buildRustPackage {
+          pname = "sce-cli-clippy-check";
+          version = "0.1.0";
+          inherit src;
+          sourceRoot = "source/cli";
+
+          cargoLock = {
+            lockFile = ../cli/Cargo.lock;
+          };
+
+          nativeBuildInputs = [ rustToolchain ];
+
+          buildPhase = ''
+            runHook preBuild
+            runHook postBuild
+          '';
+
+          checkPhase = ''
+            runHook preCheck
+
+            cargo clippy --all-targets --all-features
 
             runHook postCheck
           '';
