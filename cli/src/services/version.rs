@@ -131,6 +131,20 @@ mod tests {
     }
 
     #[test]
+    fn render_json_is_deterministic_for_same_request() {
+        let first = render_version(VersionRequest {
+            format: VersionFormat::Json,
+        })
+        .expect("first json render should succeed");
+        let second = render_version(VersionRequest {
+            format: VersionFormat::Json,
+        })
+        .expect("second json render should succeed");
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
     fn render_text_includes_binary_and_version() {
         let output = render_version(VersionRequest {
             format: VersionFormat::Text,

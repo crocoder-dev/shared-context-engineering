@@ -241,4 +241,17 @@ mod tests {
         assert!(parsed["next_step"].as_str().is_some());
         Ok(())
     }
+
+    #[test]
+    fn mcp_json_output_is_deterministic_for_same_request() -> Result<()> {
+        let first = run_placeholder_mcp(McpRequest {
+            format: McpFormat::Json,
+        })?;
+        let second = run_placeholder_mcp(McpRequest {
+            format: McpFormat::Json,
+        })?;
+
+        assert_eq!(first, second);
+        Ok(())
+    }
 }

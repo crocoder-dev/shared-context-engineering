@@ -193,19 +193,47 @@ Non-goals:
   - Done when: `sce --help` and `sce setup --help` include clear usage blocks + concrete examples, including one-run setup+hooks examples, and README mirrors canonical examples without contradiction.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml command_surface::tests services::setup::tests`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T19: Add output-contract regression tests for determinism (status:todo)
+- [x] T19: Add output-contract regression tests for determinism (status:done)
   - Task ID: T19
   - Goal: Lock the new output and error contracts with targeted tests to prevent accidental format drift.
   - Boundaries (in/out of scope): In: parser/service tests for JSON shape, required keys, deterministic field ordering expectations where applicable, and error text assertions; Out: introducing snapshot frameworks or broad new test infrastructure.
   - Done when: deterministic contract tests exist for representative success/failure paths across updated commands and pass reliably.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T20: Validation and cleanup (status:todo)
+- [x] T20: Validation and cleanup (status:done)
   - Task ID: T20
   - Goal: Run full verification, ensure no temporary scaffolding remains, and sync context artifacts to final current-state behavior.
   - Boundaries (in/out of scope): In: final CLI verification pass, plan status updates, and context sync checks/updates for changed command contracts; Out: new feature work.
   - Done when: all verification checks pass, plan task statuses are current, and context documentation reflects final command/output/error contracts.
   - Verification notes (commands or checks): `cargo fmt --manifest-path cli/Cargo.toml --all -- --check`; `cargo test --manifest-path cli/Cargo.toml`; `cargo build --manifest-path cli/Cargo.toml`; `nix run .#pkl-check-generated`; `nix flake check`.
+
+### T20 validation report
+
+- Commands run and exit codes:
+  - `cargo fmt --manifest-path cli/Cargo.toml --all -- --check` (exit 0)
+  - `cargo test --manifest-path cli/Cargo.toml` (exit 0)
+  - `cargo build --manifest-path cli/Cargo.toml` (exit 0)
+  - `nix run .#pkl-check-generated` (exit 0)
+  - `nix flake check` (exit 0)
+- Key outputs:
+  - Rust test suite passed: `221 passed; 0 failed`.
+  - Generated output parity check reported: `Generated outputs are up to date.`
+  - Flake checks completed for this system; Nix reported other-system checks omitted unless `--all-systems` is requested.
+  - `cargo build` completed with existing `dead_code` warnings in `cli/src/services/hosted_reconciliation.rs` and no build failure.
+- Failed checks and follow-ups:
+  - No failed checks.
+  - No in-scope follow-up fixes required for this task.
+- Temporary scaffolding cleanup:
+  - No task-scoped temporary scaffolding found that required removal.
+- Context sync verdict:
+  - Sync mode: verify-only root context pass (no cross-cutting behavior/policy/architecture/terminology changes introduced by T20).
+  - Verified against current code truth: `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/patterns.md`, `context/context-map.md`.
+  - No additional context edits required.
+- Success criteria verification summary:
+  - Reliability baseline criteria remain satisfied by passing CLI checks/tests and current context coverage for command/output/error contracts.
+  - Plan task stack is fully complete (`T01..T22` all done; no open unchecked tasks).
+- Residual risks:
+  - Non-failing compile warnings remain in hosted reconciliation code paths; not in scope for this validation/cleanup task.
 
 ## 5) Open questions (if any)
 

@@ -561,6 +561,37 @@ mod tests {
     }
 
     #[test]
+    fn parse_failure_stderr_contract_is_exact_and_deterministic() {
+        let mut first_stdout = Vec::new();
+        let mut first_stderr = Vec::new();
+        let first_code = run_with_dependency_check_and_streams(
+            vec!["sce".to_string(), "does-not-exist".to_string()],
+            || Ok(()),
+            &mut first_stdout,
+            &mut first_stderr,
+        );
+        assert_eq!(first_code, ExitCode::from(EXIT_CODE_PARSE_FAILURE));
+        assert!(first_stdout.is_empty());
+
+        let mut second_stdout = Vec::new();
+        let mut second_stderr = Vec::new();
+        let second_code = run_with_dependency_check_and_streams(
+            vec!["sce".to_string(), "does-not-exist".to_string()],
+            || Ok(()),
+            &mut second_stdout,
+            &mut second_stderr,
+        );
+        assert_eq!(second_code, ExitCode::from(EXIT_CODE_PARSE_FAILURE));
+        assert!(second_stdout.is_empty());
+
+        let expected = "Error [SCE-ERR-PARSE]: Unknown command 'does-not-exist'. Try: run 'sce --help' to list valid commands, then rerun with a valid command such as 'sce version' or 'sce setup --help'.\n";
+        let first_stderr = String::from_utf8(first_stderr).expect("stderr should be utf-8");
+        let second_stderr = String::from_utf8(second_stderr).expect("stderr should be utf-8");
+        assert_eq!(first_stderr, expected);
+        assert_eq!(second_stderr, expected);
+    }
+
+    #[test]
     fn dependency_failure_reports_stable_error_code_and_try_guidance() {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
