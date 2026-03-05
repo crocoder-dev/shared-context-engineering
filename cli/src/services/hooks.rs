@@ -31,7 +31,7 @@ pub enum HookSubcommand {
 }
 
 pub fn hooks_usage_text() -> &'static str {
-    "Usage:\n  sce hooks pre-commit\n  sce hooks commit-msg <message-file>\n  sce hooks post-commit\n  sce hooks post-rewrite <amend|rebase|other>\n\nGit executes hook scripts with these subcommands. `post-rewrite` reads rewrite pairs from STDIN."
+    "Usage:\n  sce hooks pre-commit\n  sce hooks commit-msg <message-file>\n  sce hooks post-commit\n  sce hooks post-rewrite <amend|rebase|other>\n\nExamples:\n  sce hooks pre-commit\n  sce hooks commit-msg .git/COMMIT_EDITMSG\n  sce hooks post-commit\n  printf 'oldsha newsha\\n' | sce hooks post-rewrite amend\n\nGit executes hook scripts with these subcommands. `post-rewrite` reads rewrite pairs from STDIN."
 }
 
 pub fn parse_hooks_subcommand(args: Vec<String>) -> Result<HookSubcommand> {

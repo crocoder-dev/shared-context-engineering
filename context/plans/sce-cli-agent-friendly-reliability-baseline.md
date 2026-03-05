@@ -123,7 +123,7 @@ Non-goals:
   - Done when: success payloads are pipe-safe from stdout, and non-success diagnostics are emitted consistently via stderr.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml app::tests`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T09: Add command-local help surfaces with examples (status:todo)
+- [x] T09: Add command-local help surfaces with examples (status:done)
   - Task ID: T09
   - Goal: Ensure each command supports `--help` with concise usage and examples (including one JSON example where format applies).
   - Boundaries (in/out of scope): In: parser/help surfaces for `setup`, `doctor`, `mcp`, `hooks`, and `sync`; Out: broad doc-site generation.

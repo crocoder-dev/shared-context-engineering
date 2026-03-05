@@ -90,9 +90,13 @@ enum Command {
     SetupHooks(Option<std::path::PathBuf>),
     SetupHelp,
     Doctor,
+    DoctorHelp,
     Mcp,
+    McpHelp,
     Hooks(services::hooks::HookSubcommand),
+    HooksHelp,
     Sync,
+    SyncHelp,
 }
 
 impl Command {
@@ -101,10 +105,10 @@ impl Command {
             Self::Help => "help",
             Self::Config(_) => services::config::NAME,
             Self::Setup(_) | Self::SetupHooks(_) | Self::SetupHelp => services::setup::NAME,
-            Self::Doctor => services::doctor::NAME,
-            Self::Mcp => services::mcp::NAME,
-            Self::Hooks(_) => services::hooks::NAME,
-            Self::Sync => services::sync::NAME,
+            Self::Doctor | Self::DoctorHelp => services::doctor::NAME,
+            Self::Mcp | Self::McpHelp => services::mcp::NAME,
+            Self::Hooks(_) | Self::HooksHelp => services::hooks::NAME,
+            Self::Sync | Self::SyncHelp => services::sync::NAME,
         }
     }
 }
@@ -308,10 +312,10 @@ fn parse_subcommand(value: String, tail_args: Vec<String>) -> Result<Command, Cl
         "help" => Ok(Command::Help),
         "config" => parse_config_subcommand(tail_args),
         "setup" => parse_setup_subcommand(tail_args),
-        "doctor" => parse_non_setup_subcommand(Command::Doctor, tail_args),
-        "mcp" => parse_non_setup_subcommand(Command::Mcp, tail_args),
+        "doctor" => parse_non_setup_subcommand(Command::Doctor, Command::DoctorHelp, tail_args),
+        "mcp" => parse_non_setup_subcommand(Command::Mcp, Command::McpHelp, tail_args),
         "hooks" => parse_hooks_subcommand(tail_args),
-        "sync" => parse_non_setup_subcommand(Command::Sync, tail_args),
+        "sync" => parse_non_setup_subcommand(Command::Sync, Command::SyncHelp, tail_args),
         _ => {
             if command_surface::is_known_command(&value) {
                 return Err(ClassifiedError::parse(format!(
@@ -358,10 +362,15 @@ fn parse_setup_subcommand(args: Vec<String>) -> Result<Command, ClassifiedError>
 
 fn parse_non_setup_subcommand(
     command: Command,
+    help_command: Command,
     tail_args: Vec<String>,
 ) -> Result<Command, ClassifiedError> {
     if tail_args.is_empty() {
         return Ok(command);
+    }
+
+    if tail_args.len() == 1 && (tail_args[0] == "--help" || tail_args[0] == "-h") {
+        return Ok(help_command);
     }
 
     Err(ClassifiedError::validation(format!(
@@ -371,6 +380,10 @@ fn parse_non_setup_subcommand(
 }
 
 fn parse_hooks_subcommand(args: Vec<String>) -> Result<Command, ClassifiedError> {
+    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
+        return Ok(Command::HooksHelp);
+    }
+
     let subcommand = services::hooks::parse_hooks_subcommand(args)
         .map_err(|error| ClassifiedError::validation(error.to_string()))?;
     Ok(Command::Hooks(subcommand))
@@ -410,12 +423,16 @@ fn dispatch(command: &Command) -> Result<String, ClassifiedError> {
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))
         }
         Command::SetupHelp => Ok(services::setup::setup_usage_text().to_string()),
+        Command::DoctorHelp => Ok(services::doctor::doctor_usage_text().to_string()),
         Command::Doctor => services::doctor::run_doctor()
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
+        Command::McpHelp => Ok(services::mcp::mcp_usage_text().to_string()),
         Command::Mcp => services::mcp::run_placeholder_mcp()
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
+        Command::HooksHelp => Ok(services::hooks::hooks_usage_text().to_string()),
         Command::Hooks(subcommand) => services::hooks::run_hooks_subcommand(subcommand.clone())
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
+        Command::SyncHelp => Ok(services::sync::sync_usage_text().to_string()),
         Command::Sync => services::sync::run_placeholder_sync()
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
     }
@@ -507,6 +524,46 @@ mod tests {
     #[test]
     fn sync_command_exits_success() {
         let code = run(vec!["sce".to_string(), "sync".to_string()]);
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn doctor_help_exits_success() {
+        let code = run(vec![
+            "sce".to_string(),
+            "doctor".to_string(),
+            "--help".to_string(),
+        ]);
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn mcp_help_exits_success() {
+        let code = run(vec![
+            "sce".to_string(),
+            "mcp".to_string(),
+            "--help".to_string(),
+        ]);
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn hooks_help_exits_success() {
+        let code = run(vec![
+            "sce".to_string(),
+            "hooks".to_string(),
+            "--help".to_string(),
+        ]);
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn sync_help_exits_success() {
+        let code = run(vec![
+            "sce".to_string(),
+            "sync".to_string(),
+            "--help".to_string(),
+        ]);
         assert_eq!(code, ExitCode::SUCCESS);
     }
 
@@ -686,6 +743,50 @@ mod tests {
             command,
             Command::SetupHooks(Some(std::path::PathBuf::from("../demo-repo")))
         );
+    }
+
+    #[test]
+    fn parser_routes_doctor_help() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "doctor".to_string(),
+            "--help".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(command, Command::DoctorHelp);
+    }
+
+    #[test]
+    fn parser_routes_mcp_help() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "mcp".to_string(),
+            "--help".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(command, Command::McpHelp);
+    }
+
+    #[test]
+    fn parser_routes_hooks_help() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "hooks".to_string(),
+            "--help".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(command, Command::HooksHelp);
+    }
+
+    #[test]
+    fn parser_routes_sync_help() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "sync".to_string(),
+            "--help".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(command, Command::SyncHelp);
     }
 
     #[test]

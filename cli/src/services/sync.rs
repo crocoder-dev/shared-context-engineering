@@ -5,6 +5,10 @@ use crate::services::local_db::{run_smoke_check, LocalDatabaseTarget};
 use crate::services::resilience::{run_with_retry, RetryPolicy};
 
 pub const NAME: &str = "sync";
+pub fn sync_usage_text() -> &'static str {
+    "Usage:\n  sce sync\n\nExamples:\n  sce sync"
+}
+
 const SUPPORTED_PHASES: [CloudSyncPhase; 3] = [
     CloudSyncPhase::PlanOnly,
     CloudSyncPhase::DryRun,

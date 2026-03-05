@@ -875,7 +875,7 @@ pub fn setup_cancelled_text() -> &'static str {
 }
 
 pub fn setup_usage_text() -> &'static str {
-    "Usage:\n  sce setup [--opencode|--claude|--both] [--non-interactive]\n  sce setup --hooks [--repo <path>]\n\nWithout a target flag, setup defaults to interactive target selection.\nUse '--non-interactive' to fail fast instead of prompting; it requires '--opencode', '--claude', or '--both'.\nTarget flags are mutually exclusive and intended for non-interactive automation.\n'--hooks' installs required git hooks for the current repository by default, or for '--repo <path>' when provided."
+    "Usage:\n  sce setup [--opencode|--claude|--both] [--non-interactive]\n  sce setup --hooks [--repo <path>]\n\nExamples:\n  sce setup\n  sce setup --opencode --non-interactive\n  sce setup --hooks\n  sce setup --hooks --repo ../demo-repo\n\nWithout a target flag, setup defaults to interactive target selection.\nUse '--non-interactive' to fail fast instead of prompting; it requires '--opencode', '--claude', or '--both'.\nTarget flags are mutually exclusive and intended for non-interactive automation.\n'--hooks' installs required git hooks for the current repository by default, or for '--repo <path>' when provided."
 }
 
 pub fn parse_setup_cli_options<I>(args: I) -> Result<SetupCliOptions>

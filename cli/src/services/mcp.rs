@@ -2,6 +2,10 @@ use anyhow::Result;
 
 pub const NAME: &str = "mcp";
 
+pub fn mcp_usage_text() -> &'static str {
+    "Usage:\n  sce mcp\n\nExamples:\n  sce mcp"
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum McpTransport {
     Stdio,
