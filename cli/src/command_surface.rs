@@ -54,6 +54,11 @@ pub const COMMANDS: &[CommandContract] = &[
         status: ImplementationStatus::Implemented,
         purpose: "Print deterministic runtime version metadata",
     },
+    CommandContract {
+        name: services::completion::NAME,
+        status: ImplementationStatus::Implemented,
+        purpose: "Generate deterministic shell completion scripts",
+    },
 ];
 
 pub fn is_known_command(name: &str) -> bool {
@@ -79,6 +84,7 @@ pub fn help_text() -> String {
 Usage:\n  sce [command]\n\n\
 Config usage:\n  sce config <show|validate> [options]\n\n\
 Setup usage:\n  sce setup [--opencode|--claude|--both]\n  sce setup --hooks [--repo <path>]\n\n\
+Completion usage:\n  sce completion --shell <bash|zsh|fish>\n\n\
 Commands:\n{}\n\n\
 Setup defaults to interactive target selection when no setup target flag is passed.\n\
 Use '--hooks' to install required git hooks for the current repository or '--repo <path>' for a specific repository.\n\
@@ -113,5 +119,12 @@ mod tests {
     fn help_text_mentions_version_command() {
         let help = help_text();
         assert!(help.contains("version"));
+    }
+
+    #[test]
+    fn help_text_mentions_completion_command() {
+        let help = help_text();
+        assert!(help.contains("completion"));
+        assert!(help.contains("sce completion --shell <bash|zsh|fish>"));
     }
 }
