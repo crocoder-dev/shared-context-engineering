@@ -116,7 +116,7 @@ Non-goals:
   - Done when: automation can run `setup` without ever entering prompts, and prompt-required paths return actionable non-interactive guidance.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml app::tests services::setup::tests`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T08: Enforce stdout/stderr output contract (status:todo)
+- [x] T08: Enforce stdout/stderr output contract (status:done)
   - Task ID: T08
   - Goal: Establish and apply a deterministic stream contract where primary result payloads go to stdout and diagnostics/errors go to stderr.
   - Boundaries (in/out of scope): In: top-level run/error handling and affected command output paths; Out: changing core command semantics.

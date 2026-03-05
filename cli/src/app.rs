@@ -1,3 +1,4 @@
+use std::io::{self, Write};
 use std::process::ExitCode;
 
 use crate::{command_surface, dependency_contract, services};
@@ -122,19 +123,63 @@ where
     I: IntoIterator<Item = String>,
     F: FnOnce() -> anyhow::Result<()>,
 {
+    let mut stdout = io::stdout();
+    let mut stderr = io::stderr();
+    run_with_dependency_check_and_streams(args, dependency_check, &mut stdout, &mut stderr)
+}
+
+fn run_with_dependency_check_and_streams<I, F, StdoutW, StderrW>(
+    args: I,
+    dependency_check: F,
+    stdout: &mut StdoutW,
+    stderr: &mut StderrW,
+) -> ExitCode
+where
+    I: IntoIterator<Item = String>,
+    F: FnOnce() -> anyhow::Result<()>,
+    StdoutW: Write,
+    StderrW: Write,
+{
     match try_run_with_dependency_check(args, dependency_check) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(payload) => {
+            if let Err(error) = write_stdout_payload(stdout, &payload) {
+                write_error_diagnostic(stderr, &error);
+                ExitCode::from(error.class.exit_code())
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
         Err(error) => {
-            eprintln!(
-                "Error: {}",
-                services::security::redact_sensitive_text(&error.to_string())
-            );
+            write_error_diagnostic(stderr, &error);
             ExitCode::from(error.class.exit_code())
         }
     }
 }
 
-fn try_run_with_dependency_check<I, F>(args: I, dependency_check: F) -> Result<(), ClassifiedError>
+fn write_stdout_payload<W>(writer: &mut W, payload: &str) -> Result<(), ClassifiedError>
+where
+    W: Write,
+{
+    writeln!(writer, "{payload}").map_err(|error| {
+        ClassifiedError::runtime(format!("Failed to write command output to stdout: {error}"))
+    })
+}
+
+fn write_error_diagnostic<W>(writer: &mut W, error: &ClassifiedError)
+where
+    W: Write,
+{
+    let _ = writeln!(
+        writer,
+        "Error: {}",
+        services::security::redact_sensitive_text(&error.to_string())
+    );
+}
+
+fn try_run_with_dependency_check<I, F>(
+    args: I,
+    dependency_check: F,
+) -> Result<String, ClassifiedError>
 where
     I: IntoIterator<Item = String>,
     F: FnOnce() -> anyhow::Result<()>,
@@ -176,13 +221,13 @@ where
         );
 
         match dispatch(&command) {
-            Ok(()) => {
+            Ok(payload) => {
                 logger.info(
                     "sce.command.completed",
                     "Command completed",
                     &[("command", command.name())],
                 );
-                Ok(())
+                Ok(payload)
             }
             Err(error) => {
                 logger.error(
@@ -331,16 +376,11 @@ fn parse_hooks_subcommand(args: Vec<String>) -> Result<Command, ClassifiedError>
     Ok(Command::Hooks(subcommand))
 }
 
-fn dispatch(command: &Command) -> Result<(), ClassifiedError> {
+fn dispatch(command: &Command) -> Result<String, ClassifiedError> {
     match command {
-        Command::Help => println!("{}", command_surface::help_text()),
-        Command::Config(subcommand) => {
-            println!(
-                "{}",
-                services::config::run_config_subcommand(subcommand.clone())
-                    .map_err(|error| ClassifiedError::runtime(error.to_string()))?
-            );
-        }
+        Command::Help => Ok(command_surface::help_text()),
+        Command::Config(subcommand) => services::config::run_config_subcommand(subcommand.clone())
+            .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::Setup(mode) => {
             let dispatch = services::setup::resolve_setup_dispatch(
                 *mode,
@@ -353,14 +393,11 @@ fn dispatch(command: &Command) -> Result<(), ClassifiedError> {
                     let repository_root = std::env::current_dir()
                         .context("Failed to determine current directory")
                         .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
-                    println!(
-                        "{}",
-                        services::setup::run_setup_for_mode(&repository_root, mode)
-                            .map_err(|error| ClassifiedError::runtime(error.to_string()))?
-                    );
+                    services::setup::run_setup_for_mode(&repository_root, mode)
+                        .map_err(|error| ClassifiedError::runtime(error.to_string()))
                 }
                 services::setup::SetupDispatch::Cancelled => {
-                    println!("{}", services::setup::setup_cancelled_text());
+                    Ok(services::setup::setup_cancelled_text().to_string())
                 }
             }
         }
@@ -369,38 +406,19 @@ fn dispatch(command: &Command) -> Result<(), ClassifiedError> {
                 .context("Failed to determine current directory")
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
             let repository_root = repo_path.as_deref().unwrap_or(current_dir.as_path());
-            println!(
-                "{}",
-                services::setup::run_setup_hooks(repository_root)
-                    .map_err(|error| ClassifiedError::runtime(error.to_string()))?
-            );
+            services::setup::run_setup_hooks(repository_root)
+                .map_err(|error| ClassifiedError::runtime(error.to_string()))
         }
-        Command::SetupHelp => println!("{}", services::setup::setup_usage_text()),
-        Command::Doctor => println!(
-            "{}",
-            services::doctor::run_doctor()
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))?
-        ),
-        Command::Mcp => println!(
-            "{}",
-            services::mcp::run_placeholder_mcp()
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))?
-        ),
-        Command::Hooks(subcommand) => {
-            println!(
-                "{}",
-                services::hooks::run_hooks_subcommand(subcommand.clone())
-                    .map_err(|error| ClassifiedError::runtime(error.to_string()))?
-            )
-        }
-        Command::Sync => println!(
-            "{}",
-            services::sync::run_placeholder_sync()
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))?
-        ),
+        Command::SetupHelp => Ok(services::setup::setup_usage_text().to_string()),
+        Command::Doctor => services::doctor::run_doctor()
+            .map_err(|error| ClassifiedError::runtime(error.to_string())),
+        Command::Mcp => services::mcp::run_placeholder_mcp()
+            .map_err(|error| ClassifiedError::runtime(error.to_string())),
+        Command::Hooks(subcommand) => services::hooks::run_hooks_subcommand(subcommand.clone())
+            .map_err(|error| ClassifiedError::runtime(error.to_string())),
+        Command::Sync => services::sync::run_placeholder_sync()
+            .map_err(|error| ClassifiedError::runtime(error.to_string())),
     }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -410,9 +428,43 @@ mod tests {
     use crate::services::setup::{SetupMode, SetupTarget};
 
     use super::{
-        parse_command, run, run_with_dependency_check, Command, EXIT_CODE_DEPENDENCY_FAILURE,
-        EXIT_CODE_PARSE_FAILURE, EXIT_CODE_RUNTIME_FAILURE, EXIT_CODE_VALIDATION_FAILURE,
+        parse_command, run, run_with_dependency_check, run_with_dependency_check_and_streams,
+        Command, EXIT_CODE_DEPENDENCY_FAILURE, EXIT_CODE_PARSE_FAILURE, EXIT_CODE_RUNTIME_FAILURE,
+        EXIT_CODE_VALIDATION_FAILURE,
     };
+
+    #[test]
+    fn successful_output_is_written_to_stdout() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run_with_dependency_check_and_streams(
+            vec!["sce".to_string(), "--help".to_string()],
+            || Ok(()),
+            &mut stdout,
+            &mut stderr,
+        );
+        assert_eq!(code, ExitCode::SUCCESS);
+
+        let stdout = String::from_utf8(stdout).expect("stdout should be utf-8");
+        assert!(stdout.contains("Usage:"));
+    }
+
+    #[test]
+    fn parse_failure_keeps_stdout_empty_and_reports_stderr() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run_with_dependency_check_and_streams(
+            vec!["sce".to_string(), "does-not-exist".to_string()],
+            || Ok(()),
+            &mut stdout,
+            &mut stderr,
+        );
+        assert_eq!(code, ExitCode::from(EXIT_CODE_PARSE_FAILURE));
+        assert!(stdout.is_empty());
+
+        let stderr = String::from_utf8(stderr).expect("stderr should be utf-8");
+        assert!(stderr.contains("Error: Unknown command 'does-not-exist'."));
+    }
 
     #[test]
     fn help_path_exits_success() {
