@@ -26,6 +26,15 @@ impl FailureClass {
             Self::Dependency => EXIT_CODE_DEPENDENCY_FAILURE,
         }
     }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Parse => "parse",
+            Self::Validation => "validation",
+            Self::Runtime => "runtime",
+            Self::Dependency => "dependency",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -85,6 +94,20 @@ enum Command {
     Sync,
 }
 
+impl Command {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Help => "help",
+            Self::Config(_) => services::config::NAME,
+            Self::Setup(_) | Self::SetupHooks(_) | Self::SetupHelp => services::setup::NAME,
+            Self::Doctor => services::doctor::NAME,
+            Self::Mcp => services::mcp::NAME,
+            Self::Hooks(_) => services::hooks::NAME,
+            Self::Sync => services::sync::NAME,
+        }
+    }
+}
+
 pub fn run<I>(args: I) -> ExitCode
 where
     I: IntoIterator<Item = String>,
@@ -116,8 +139,56 @@ where
     dependency_check().map_err(|error| {
         ClassifiedError::dependency(format!("Failed to initialize dependency contract: {error}"))
     })?;
-    let command = parse_command(args)?;
-    dispatch(command)
+
+    let logger = services::observability::Logger::from_env().map_err(|error| {
+        ClassifiedError::validation(format!("Invalid observability configuration: {error}"))
+    })?;
+
+    logger.info(
+        "sce.app.start",
+        "Starting command dispatch",
+        &[("component", services::observability::NAME)],
+    );
+
+    let command = match parse_command(args) {
+        Ok(command) => command,
+        Err(error) => {
+            logger.error(
+                "sce.command.parse_failed",
+                "Command parse failed",
+                &[("failure_class", error.class.as_str())],
+            );
+            return Err(error);
+        }
+    };
+
+    logger.info(
+        "sce.command.parsed",
+        "Command parsed",
+        &[("command", command.name())],
+    );
+
+    match dispatch(&command) {
+        Ok(()) => {
+            logger.info(
+                "sce.command.completed",
+                "Command completed",
+                &[("command", command.name())],
+            );
+            Ok(())
+        }
+        Err(error) => {
+            logger.error(
+                "sce.command.failed",
+                "Command failed",
+                &[
+                    ("command", command.name()),
+                    ("failure_class", error.class.as_str()),
+                ],
+            );
+            Err(error)
+        }
+    }
 }
 
 fn parse_command<I>(args: I) -> Result<Command, ClassifiedError>
@@ -252,19 +323,19 @@ fn parse_hooks_subcommand(args: Vec<String>) -> Result<Command, ClassifiedError>
     Ok(Command::Hooks(subcommand))
 }
 
-fn dispatch(command: Command) -> Result<(), ClassifiedError> {
+fn dispatch(command: &Command) -> Result<(), ClassifiedError> {
     match command {
         Command::Help => println!("{}", command_surface::help_text()),
         Command::Config(subcommand) => {
             println!(
                 "{}",
-                services::config::run_config_subcommand(subcommand)
+                services::config::run_config_subcommand(subcommand.clone())
                     .map_err(|error| ClassifiedError::runtime(error.to_string()))?
             );
         }
         Command::Setup(mode) => {
             let dispatch = services::setup::resolve_setup_dispatch(
-                mode,
+                *mode,
                 &services::setup::InquireSetupTargetPrompter,
             )
             .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
@@ -310,7 +381,7 @@ fn dispatch(command: Command) -> Result<(), ClassifiedError> {
         Command::Hooks(subcommand) => {
             println!(
                 "{}",
-                services::hooks::run_hooks_subcommand(subcommand)
+                services::hooks::run_hooks_subcommand(subcommand.clone())
                     .map_err(|error| ClassifiedError::runtime(error.to_string()))?
             )
         }

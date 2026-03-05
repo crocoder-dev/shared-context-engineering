@@ -72,6 +72,8 @@
 - For early CLI foundation tasks, keep implemented behavior and planned behavior explicitly separated in a single command contract table.
 - Mark placeholder commands in help output and runtime responses so scaffolding cannot be confused with production capability.
 - Parse CLI args with `lexopt`, classify top-level failures into stable exit-code classes (`parse`, `validation`, `runtime`, `dependency`), and keep user-facing failures deterministic/actionable.
+- Keep CLI observability separate from command payloads: emit deterministic lifecycle logs to `stderr` only with stable `event_id` values, and preserve `stdout` for command result payloads.
+- For baseline runtime observability controls, use deterministic env switches (`SCE_LOG_LEVEL`, `SCE_LOG_FORMAT`) with strict allowed values and fail-fast validation on invalid inputs.
 - For runtime CLI configuration, keep precedence deterministic and explicit (`flags > env > config file > defaults`) and expose inspect/validate command entrypoints with stable text/JSON outputs.
 - For setup-style command contracts, keep interactive mode as the zero-flag default and enforce mutually-exclusive explicit target flags for non-interactive automation.
 - For interactive setup flows, isolate prompt handling behind a service-layer prompter seam so selection mapping and cancellation behavior can be tested without a live TTY.

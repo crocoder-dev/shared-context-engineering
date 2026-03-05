@@ -45,7 +45,7 @@ Non-goals:
 - Replacing the full setup interaction model with a new wizard or TUI.
 - Large refactors unrelated to output/error/help reliability.
 
-## 4) Task stack (`T01..T20`)
+## 4) Task stack (`T01..T21`)
 
 - [x] T01: Define deterministic config model and precedence (status:done)
   - Task ID: T01
@@ -61,12 +61,25 @@ Non-goals:
   - Done when: representative failure paths return documented stable exit codes and tests assert mappings.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml app::tests`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T03: Add structured observability contract (status:todo)
+- [x] T03: Add structured observability contract (status:done)
   - Task ID: T03
   - Goal: Introduce deterministic logging modes/levels (for example plain and JSON logs) that are separate from command result payloads.
   - Boundaries (in/out of scope): In: logging facade/options and service integration points; Out: external telemetry backends.
   - Done when: operators can set log level/format predictably, logs include stable event identifiers, and stdout payload contracts remain unchanged.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml`; `cargo check --manifest-path cli/Cargo.toml`.
+
+- [ ] T21: Add OpenTelemetry setup baseline (status:todo)
+  - Task ID: T21
+  - Goal: Add an OpenTelemetry-based observability setup path for the CLI so structured events can be exported through standard OTEL tooling while preserving command payload contracts.
+  - Boundaries (in/out of scope): In: OTEL bootstrap wiring, deterministic env/flag configuration for exporter mode, and tests/docs for setup behavior; Out: hosted telemetry backend provisioning and production collector deployment.
+  - Done when: `sce` can initialize OTEL instrumentation deterministically, export path configuration is explicit/actionable, and stdout/stderr payload boundaries remain contract-safe.
+  - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml`; `cargo check --manifest-path cli/Cargo.toml`.
+  - User-provided implementation context (locked):
+    - Instrumentation stack should use Rust `tracing` + `tracing-subscriber` with `tracing-opentelemetry` bridging into OpenTelemetry OTLP export (`opentelemetry`, `opentelemetry-sdk`, `opentelemetry-otlp`).
+    - Prefer app-embedded instrumentation and exporter wiring in the CLI runtime (not a separate "OTel CLI" binary).
+    - Baseline setup should follow standard flow: initialize tracer provider, attach OpenTelemetry layer to subscriber registry, run command with spans/events, and flush/shutdown provider before process exit.
+    - Endpoint/config should be env-addressable (for example `OTEL_EXPORTER_OTLP_ENDPOINT`), with deterministic defaults and actionable validation errors for invalid configuration.
+    - Keep command payload contract safe: observability output/export path must not pollute stdout command result payloads.
 
 - [ ] T04: Add file logging mode with safe defaults (status:todo)
   - Task ID: T04
