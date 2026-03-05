@@ -14,19 +14,19 @@ use crate::services::agent_trace::{
 use super::{
     apply_commit_msg_coauthor_policy, finalize_post_commit_trace, finalize_post_rewrite_remap,
     finalize_pre_commit_checkpoint, finalize_rewrite_trace, parse_hooks_subcommand,
-    process_trace_retry_queue, resolve_pre_commit_checkpoint_path, run_hooks_subcommand,
-    run_placeholder_hooks, run_pre_commit_subcommand_in_repo, CommitMsgRuntimeState,
-    GeneratedRegionEvent, GeneratedRegionLifecycle, GitHookKind, HookEvent, HookService,
-    HookSubcommand, PendingCheckpoint, PendingFileCheckpoint, PendingLineRange,
-    PersistenceErrorClass, PersistenceFailure, PersistenceTarget, PersistenceWriteResult,
-    PlaceholderHookService, PostCommitFinalization, PostCommitInput, PostCommitNoOpReason,
-    PostCommitRuntimeState, PostRewriteFinalization, PostRewriteNoOpReason,
-    PostRewriteRuntimeState, PreCommitFinalization, PreCommitNoOpReason, PreCommitRuntimeState,
-    PreCommitTreeAnchors, RetryMetricsSink, RetryProcessingMetric, RewriteMethod,
-    RewriteRemapIngestion, RewriteRemapRequest, RewriteTraceFinalization, RewriteTraceInput,
-    RewriteTraceNoOpReason, TraceEmissionLedger, TraceNote, TraceNotesWriter, TraceRecordStore,
-    TraceRetryQueue, TraceRetryQueueEntry, CANONICAL_SCE_COAUTHOR_TRAILER,
-    POST_COMMIT_PARENT_SHA_METADATA_KEY,
+    process_trace_retry_queue, resolve_pre_commit_checkpoint_path,
+    run_commit_msg_subcommand_in_repo, run_hooks_subcommand, run_placeholder_hooks,
+    run_pre_commit_subcommand_in_repo, CommitMsgRuntimeState, GeneratedRegionEvent,
+    GeneratedRegionLifecycle, GitHookKind, HookEvent, HookService, HookSubcommand,
+    PendingCheckpoint, PendingFileCheckpoint, PendingLineRange, PersistenceErrorClass,
+    PersistenceFailure, PersistenceTarget, PersistenceWriteResult, PlaceholderHookService,
+    PostCommitFinalization, PostCommitInput, PostCommitNoOpReason, PostCommitRuntimeState,
+    PostRewriteFinalization, PostRewriteNoOpReason, PostRewriteRuntimeState, PreCommitFinalization,
+    PreCommitNoOpReason, PreCommitRuntimeState, PreCommitTreeAnchors, RetryMetricsSink,
+    RetryProcessingMetric, RewriteMethod, RewriteRemapIngestion, RewriteRemapRequest,
+    RewriteTraceFinalization, RewriteTraceInput, RewriteTraceNoOpReason, TraceEmissionLedger,
+    TraceNote, TraceNotesWriter, TraceRecordStore, TraceRetryQueue, TraceRetryQueueEntry,
+    CANONICAL_SCE_COAUTHOR_TRAILER, POST_COMMIT_PARENT_SHA_METADATA_KEY,
 };
 
 fn run_git_in_repo(repo: &Path, args: &[&str]) -> Result<()> {
@@ -842,6 +842,36 @@ fn sample_commit_msg_runtime() -> CommitMsgRuntimeState {
     }
 }
 
+fn write_staged_checkpoint_artifact(repo: &Path) -> Result<()> {
+    let checkpoint_path = resolve_pre_commit_checkpoint_path(repo)?;
+    if let Some(parent) = checkpoint_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        checkpoint_path,
+        r#"{
+  "version": 1,
+  "anchors": {
+    "index_tree": "index-tree",
+    "head_tree": "head-tree"
+  },
+  "files": [
+    {
+      "path": "src/lib.rs",
+      "ranges": [
+        {
+          "start_line": 1,
+          "end_line": 1
+        }
+      ]
+    }
+  ]
+}
+"#,
+    )?;
+    Ok(())
+}
+
 #[test]
 fn commit_msg_policy_noops_when_sce_disabled() {
     let mut runtime = sample_commit_msg_runtime();
@@ -911,6 +941,54 @@ fn commit_msg_policy_is_idempotent() {
     let second = apply_commit_msg_coauthor_policy(&sample_commit_msg_runtime(), &first);
 
     assert_eq!(first, second);
+}
+
+#[test]
+fn commit_msg_runtime_mutates_message_file_when_policy_gate_passes() -> Result<()> {
+    let repo = create_temp_repo()?;
+    write_staged_checkpoint_artifact(&repo)?;
+    let message_file = repo.join("COMMIT_EDITMSG");
+    fs::write(&message_file, "feat: add attribution\n")?;
+
+    let message = run_commit_msg_subcommand_in_repo(&repo, &message_file)?;
+    assert_eq!(
+        message,
+        format!(
+            "commit-msg hook processed message file '{}' (policy_gate_passed=true, trailer_applied=true).",
+            message_file.display()
+        )
+    );
+
+    let mutated = fs::read_to_string(&message_file)?;
+    assert_eq!(
+        mutated,
+        format!(
+            "feat: add attribution\n\n{}\n",
+            CANONICAL_SCE_COAUTHOR_TRAILER
+        )
+    );
+    Ok(())
+}
+
+#[test]
+fn commit_msg_runtime_noops_when_staged_attribution_checkpoint_missing() -> Result<()> {
+    let repo = create_temp_repo()?;
+    let message_file = repo.join("COMMIT_EDITMSG");
+    let original = "feat: add attribution\n";
+    fs::write(&message_file, original)?;
+
+    let message = run_commit_msg_subcommand_in_repo(&repo, &message_file)?;
+    assert_eq!(
+        message,
+        format!(
+            "commit-msg hook processed message file '{}' (policy_gate_passed=false, trailer_applied=false).",
+            message_file.display()
+        )
+    );
+
+    let persisted = fs::read_to_string(&message_file)?;
+    assert_eq!(persisted, original);
+    Ok(())
 }
 
 #[test]

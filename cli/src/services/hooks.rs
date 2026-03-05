@@ -186,12 +186,23 @@ fn resolve_pre_commit_runtime_state(repository_root: &Path) -> PreCommitRuntimeS
 }
 
 fn env_flag_is_truthy(name: &str) -> bool {
-    std::env::var(name).ok().is_some_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
+    std::env::var(name)
+        .ok()
+        .is_some_and(|value| env_value_is_truthy(&value))
+}
+
+fn env_flag_is_enabled_by_default(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(value) => env_value_is_truthy(&value),
+        Err(_) => true,
+    }
+}
+
+fn env_value_is_truthy(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn git_command_success(repository_root: &Path, args: &[&str]) -> bool {
@@ -480,7 +491,16 @@ fn write_finalized_checkpoint(
 }
 
 fn run_commit_msg_subcommand(message_file: PathBuf) -> Result<String> {
-    let metadata = fs::metadata(&message_file).with_context(|| {
+    let repository_root = std::env::current_dir()
+        .context("Failed to determine current directory for commit-msg runtime invocation.")?;
+    run_commit_msg_subcommand_in_repo(&repository_root, &message_file)
+}
+
+fn run_commit_msg_subcommand_in_repo(
+    repository_root: &Path,
+    message_file: &Path,
+) -> Result<String> {
+    let metadata = fs::metadata(message_file).with_context(|| {
         format!(
             "Invalid commit message file '{}': file does not exist or is not readable.",
             message_file.display()
@@ -494,10 +514,65 @@ fn run_commit_msg_subcommand(message_file: PathBuf) -> Result<String> {
         );
     }
 
+    let runtime = resolve_commit_msg_runtime_state(repository_root);
+    let original = fs::read_to_string(message_file).with_context(|| {
+        format!(
+            "Invalid commit message file '{}': failed to read UTF-8 content.",
+            message_file.display()
+        )
+    })?;
+
+    let transformed = apply_commit_msg_coauthor_policy(&runtime, &original);
+    let gate_passed =
+        !runtime.sce_disabled && runtime.sce_coauthor_enabled && runtime.has_staged_sce_attribution;
+    let trailer_applied = gate_passed && transformed != original;
+
+    if trailer_applied {
+        fs::write(message_file, transformed.as_bytes()).with_context(|| {
+            format!(
+                "Failed to update commit message file '{}' with canonical co-author trailer.",
+                message_file.display()
+            )
+        })?;
+    }
+
     Ok(format!(
-        "commit-msg hook accepted message file '{}'.",
-        message_file.display()
+        "commit-msg hook processed message file '{}' (policy_gate_passed={}, trailer_applied={}).",
+        message_file.display(),
+        gate_passed,
+        trailer_applied
     ))
+}
+
+fn resolve_commit_msg_runtime_state(repository_root: &Path) -> CommitMsgRuntimeState {
+    CommitMsgRuntimeState {
+        sce_disabled: env_flag_is_truthy("SCE_DISABLED"),
+        sce_coauthor_enabled: env_flag_is_enabled_by_default("SCE_COAUTHOR_ENABLED"),
+        has_staged_sce_attribution: staged_sce_attribution_present(repository_root),
+    }
+}
+
+fn staged_sce_attribution_present(repository_root: &Path) -> bool {
+    let Ok(checkpoint_path) = resolve_pre_commit_checkpoint_path(repository_root) else {
+        return false;
+    };
+
+    let Ok(payload) = fs::read_to_string(&checkpoint_path) else {
+        return false;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&payload) else {
+        return false;
+    };
+
+    json.get("files")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|files| {
+            files.iter().any(|file| {
+                file.get("ranges")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|ranges| !ranges.is_empty())
+            })
+        })
 }
 
 fn run_post_commit_subcommand() -> Result<String> {

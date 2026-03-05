@@ -4,24 +4,33 @@
 - Plan: `agent-trace-attribution-no-git-wrapper`
 - Task: `T05`
 - Implementation state: done
+- Runtime hook wiring: `agent-trace-local-hooks-production-mvp` `T04` (done)
 
 ## Canonical contract
 - Policy entrypoint: `cli/src/services/hooks.rs` -> `apply_commit_msg_coauthor_policy`.
+- Runtime entrypoint: `cli/src/services/hooks.rs` -> `run_commit_msg_subcommand` / `run_commit_msg_subcommand_in_repo`.
 - Canonical trailer string: `Co-authored-by: SCE <sce@crocoder.dev>`.
 - Runtime gating conditions:
   - `sce_disabled = false`
   - `sce_coauthor_enabled = true`
   - `has_staged_sce_attribution = true`
+- Runtime gate source mapping:
+  - `sce_disabled` resolves from `SCE_DISABLED` truthy evaluation.
+  - `sce_coauthor_enabled` resolves from `SCE_COAUTHOR_ENABLED` with enabled-by-default semantics.
+  - `has_staged_sce_attribution` resolves from staged pre-commit checkpoint artifact content (`files[].ranges[]` non-empty).
 - When all gate conditions pass, output commit message MUST contain exactly one canonical SCE trailer.
 - When any gate condition fails, commit message is returned unchanged.
 
 ## Behavior details
+- Hook runtime reads commit message file content as UTF-8 and returns deterministic actionable errors for missing/non-file/non-UTF-8 paths.
 - Canonical trailer dedupe removes duplicate canonical lines before final insertion.
 - Trailer insertion is idempotent: applying the policy repeatedly yields the same message.
 - Existing trailing newline is preserved when present.
+- Commit-msg runtime writes the file only when policy gates pass and transformed content differs from original content.
 - Human author/committer identity is not rewritten; only commit message trailer content is affected.
 
 ## Verification evidence
 - `cargo fmt --manifest-path cli/Cargo.toml -- --check`
 - `cargo test --manifest-path cli/Cargo.toml commit_msg_policy`
+- `cargo test --manifest-path cli/Cargo.toml commit_msg_runtime`
 - `cargo build --manifest-path cli/Cargo.toml`
