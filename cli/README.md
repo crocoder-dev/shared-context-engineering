@@ -156,9 +156,15 @@ cargo test --manifest-path cli/Cargo.toml
 cargo build --manifest-path cli/Cargo.toml
 ```
 
-Run repository flake checks (includes targeted setup command-surface checks from
-`cli/`):
+Run repository flake checks (includes targeted setup command-surface and setup
+integration checks from `cli/`):
 
 ```bash
 nix flake check
+```
+
+Run the setup integration suite through the repository flake app entrypoint:
+
+```bash
+nix run .#cli-integration-tests
 ```

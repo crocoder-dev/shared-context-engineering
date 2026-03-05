@@ -25,10 +25,12 @@ Current target renderer helper modules:
 - `config/pkl/check-generated.sh` (dev-shell integration stale-output detection against committed generated files)
 - `nix run .#sync-opencode-config` (flake app entrypoint for config regeneration and sync workflow)
 - `nix run .#token-count-workflows` (flake app entrypoint for static workflow token-count execution via `evals/token-count-workflows.ts`)
-- `nix flake check` / `checks.<system>.cli-setup-command-surface` (flake check derivation that runs targeted CLI setup command-surface verification from `cli/`)
+- `nix run .#cli-integration-tests` (flake app entrypoint for binary-driven Rust setup integration tests)
+- `nix flake check` / `checks.<system>.cli-setup-command-surface` / `checks.<system>.cli-setup-integration` (flake check derivations that run targeted CLI setup command-surface and setup integration verification from `cli/`)
 - `.github/workflows/pkl-generated-parity.yml` (CI wrapper that runs the parity check for pushes to `main` and pull requests targeting `main`)
 - `.github/workflows/agnix-config-validate-report.yml` (CI wrapper that runs `agnix validate` from `config/`, writes `context/tmp/ci-reports/agnix-validate-report.txt`, uploads it when non-info findings are present, and fails on any non-info finding)
 - `.github/workflows/workflow-token-count.yml` (CI wrapper that runs `nix run .#token-count-workflows` for pushes/pull requests targeting `main` and uploads token-footprint artifacts from `context/tmp/token-footprint/`)
+- `.github/workflows/cli-integration-tests.yml` (CI wrapper that runs `nix run .#cli-integration-tests` for pushes/pull requests targeting `main`)
 
 The scaffold provides stable canonical content-unit identifiers and reusable target-agnostic text primitives for all planned authored generated classes (agents, commands, skills, shared library file).
 

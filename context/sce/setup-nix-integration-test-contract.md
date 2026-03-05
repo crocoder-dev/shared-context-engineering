@@ -2,9 +2,18 @@
 
 ## Scope
 
-Task `sce-nix-setup-hooks-integration-tests` `T01` defines the canonical scenario matrix and assertion policy for the setup integration suite that will be run through a deterministic Nix entrypoint.
+Task `sce-nix-setup-hooks-integration-tests` defines the canonical setup integration-test matrix and harness contracts for the suite that will run through a deterministic Nix entrypoint.
 
-This contract is planning-state documentation only. It does not implement tests, harness wiring, or Nix check integration.
+Current implementation state:
+
+- `T01` is implemented as this scenario/assertion contract.
+- `T02` is implemented in `cli/tests/setup_integration.rs` as reusable integration harness primitives (ephemeral repo setup, compiled-binary invocation wrappers, deterministic stdout/stderr capture, default/custom hooks-path prep helpers, and per-test Turso state-home isolation).
+- `T03` is implemented in `cli/tests/setup_integration.rs` as target-install integration scenarios covering `sce setup --opencode`, `sce setup --claude`, and `sce setup --both`, each with first-run install assertions and deterministic rerun assertions.
+- `T04` is implemented in `cli/tests/setup_integration.rs` as hook-install integration scenarios for default `.git/hooks` and custom per-repo `core.hooksPath`, including rerun idempotency and executable-state assertions.
+- `T05` is implemented via root and nested flake wiring:
+  - root app entrypoint: `nix run .#cli-integration-tests`
+  - nested check derivation: `checks.<system>.cli-setup-integration` in `cli/flake.nix`
+  - root check pass-through: `checks.<system>.cli-setup-integration` in `flake.nix`
 
 ## Required execution model
 
@@ -55,12 +64,26 @@ This contract is planning-state documentation only. It does not implement tests,
 - CLI invocation environment pins state-home style variables so Turso local DB paths resolve under the scenario temp root.
 - Scenario assertions never depend on execution order across unrelated scenarios.
 
+## Implemented harness surface (T02)
+
+- `SetupIntegrationHarness` creates a unique test temp root with explicit subpaths for repo, state home, and HOME isolation.
+- `run_sce(...)` invokes the compiled `sce` binary path directly (prefers `CARGO_BIN_EXE_sce`, with deterministic target-profile fallback path resolution) and captures stdout/stderr/status for assertions.
+- `run_git(...)` uses the same isolated environment (`XDG_STATE_HOME`, temp-scoped `HOME`, `GIT_CONFIG_GLOBAL` null device, `GIT_CONFIG_NOSYSTEM=1`) to avoid global-machine config drift.
+- Harness helpers include repository bootstrap (`git init -q`) and per-repo custom hook-path setup (`git config core.hooksPath <relative-path>`).
+- Harness validation includes proof that runtime local DB bootstrap for `sce hooks post-commit` lands at `${XDG_STATE_HOME}/sce/agent-trace/local.db` under each test temp root.
+
+## Implemented target scenario coverage (T03)
+
+- `setup_targets_opencode_install_and_rerun_are_deterministic` validates `sce setup --opencode` output markers, `.opencode/command/next-task.md` presence, `.claude` absence, and deterministic rerun backup-and-replace messaging.
+- `setup_targets_claude_install_and_rerun_are_deterministic` validates `sce setup --claude` output markers, `.claude/commands/next-task.md` presence, `.opencode` absence, and deterministic rerun backup-and-replace messaging.
+- `setup_targets_both_install_and_rerun_are_deterministic` validates `sce setup --both` output markers plus both target trees and deterministic rerun backup-and-replace messaging.
+
 ## Planned implementation mapping (1:1)
 
 - `SETUP-TARGET-*` scenarios map to planned implementation task `T03`.
 - `SETUP-HOOKS-*` scenarios map to planned implementation task `T04`.
 - Harness-level temp-repo, compiled-binary invocation, and Turso-state helpers map to planned implementation task `T02`.
-- Nix entrypoint and flake check wiring map to planned implementation task `T05`.
+- Nix entrypoint and flake check wiring map to implemented task `T05`.
 
 ## Parity anchors
 

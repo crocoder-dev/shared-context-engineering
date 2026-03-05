@@ -50,7 +50,11 @@
             lockFile = ../cli/Cargo.lock;
           };
 
-          nativeBuildInputs = [ rustToolchain ];
+          nativeBuildInputs = [
+            rustToolchain
+          ];
+
+          nativeCheckInputs = [ pkgs.git ];
           doCheck = false;
         };
       in
@@ -104,6 +108,39 @@
             cargo test command_surface::tests::help_text_mentions_setup_target_flags
             cargo test parser_routes_setup
             cargo test run_setup_reports
+
+            runHook postCheck
+          '';
+
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            runHook postInstall
+          '';
+        };
+
+        checks.cli-setup-integration = rustPlatform.buildRustPackage {
+          pname = "sce-cli-setup-integration-check";
+          version = "0.1.0";
+          inherit src;
+          sourceRoot = "source/cli";
+
+          cargoLock = {
+            lockFile = ../cli/Cargo.lock;
+          };
+
+          nativeBuildInputs = [ rustToolchain ];
+
+          buildPhase = ''
+            runHook preBuild
+            runHook postBuild
+          '';
+
+          checkPhase = ''
+            runHook preCheck
+
+            export PATH="${pkgs.git}/bin:$PATH"
+            cargo test --test setup_integration
 
             runHook postCheck
           '';

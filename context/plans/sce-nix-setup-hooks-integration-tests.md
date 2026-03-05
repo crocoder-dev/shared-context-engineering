@@ -36,7 +36,7 @@ Add a Nix-driven Rust integration-test slice that builds the `sce` CLI and valid
   - Verification notes (commands or checks):
     - Contract parity review against existing setup behavior docs: `context/sce/setup-githooks-cli-ux.md` and `context/sce/setup-githooks-install-flow.md`.
 
-- [ ] T02: Add integration-test harness for ephemeral git repositories (status:todo)
+- [x] T02: Add integration-test harness for ephemeral git repositories (status:done)
   - Task ID: T02
   - Goal: Implement reusable Rust integration-test support that provisions isolated repos, compiles `sce`, runs the built binary for setup invocations, and captures deterministic assertions.
   - Boundaries (in/out of scope):
@@ -50,7 +50,7 @@ Add a Nix-driven Rust integration-test slice that builds the `sce` CLI and valid
     - `cargo test --manifest-path cli/Cargo.toml --test setup_integration -- --nocapture`.
     - Inspect fixture assertions/logging to confirm Turso paths resolve under test temp roots.
 
-- [ ] T03: Implement OpenCode/Claude/Both setup integration scenarios (status:todo)
+- [x] T03: Implement OpenCode/Claude/Both setup integration scenarios (status:done)
   - Task ID: T03
   - Goal: Add Rust integration tests that validate target asset installation for `--opencode`, `--claude`, and `--both`, including rerun idempotency outcomes via compiled-binary invocations.
   - Boundaries (in/out of scope):
@@ -62,7 +62,7 @@ Add a Nix-driven Rust integration-test slice that builds the `sce` CLI and valid
   - Verification notes (commands or checks):
     - `cargo test --manifest-path cli/Cargo.toml --test setup_integration setup_targets -- --nocapture`.
 
-- [ ] T04: Implement hook setup integration scenarios for default and custom hooks paths (status:todo)
+- [x] T04: Implement hook setup integration scenarios for default and custom hooks paths (status:done)
   - Task ID: T04
   - Goal: Add Rust integration tests for `sce setup --hooks` across default `.git/hooks` and per-repo `core.hooksPath`, including rerun idempotency and executable-state checks via compiled-binary execution.
   - Boundaries (in/out of scope):
@@ -75,7 +75,7 @@ Add a Nix-driven Rust integration-test slice that builds the `sce` CLI and valid
   - Verification notes (commands or checks):
     - `cargo test --manifest-path cli/Cargo.toml --test setup_integration setup_hooks -- --nocapture`.
 
-- [ ] T05: Wire Nix entrypoint and check integration for setup test suite (status:todo)
+- [x] T05: Wire Nix entrypoint and check integration for setup test suite (status:done)
   - Task ID: T05
   - Goal: Expose and integrate a Nix-runner path for the Rust setup integration suite so contributors and CI-style flows can deterministically build `sce` and execute binary-driven integration tests.
   - Boundaries (in/out of scope):
@@ -85,10 +85,10 @@ Add a Nix-driven Rust integration-test slice that builds the `sce` CLI and valid
     - A documented Nix command runs the new setup integration suite from repo root.
     - `nix flake check` includes or validates the new setup integration slice according to repo check conventions.
   - Verification notes (commands or checks):
-    - `nix run .#<setup-integration-entrypoint>`.
+    - `nix run .#cli-integration-tests`.
     - `nix flake check`.
 
-- [ ] T06: Validation and cleanup (status:todo)
+- [x] T06: Validation and cleanup (status:done)
   - Task ID: T06
   - Goal: Run final verification, clean temporary artifacts, and sync context to current-state behavior for the new Nix integration-test contract.
   - Boundaries (in/out of scope):
@@ -102,7 +102,30 @@ Add a Nix-driven Rust integration-test slice that builds the `sce` CLI and valid
   - Verification notes (commands or checks):
     - `nix run .#pkl-check-generated`.
     - `nix flake check`.
-    - `nix run .#<setup-integration-entrypoint>`.
+    - `nix run .#cli-integration-tests`.
+
+### T06 validation report (2026-03-05)
+- Commands run:
+  - `nix run .#pkl-check-generated` (exit `0`) -> `Generated outputs are up to date.`
+  - `nix run .#cli-integration-tests` (exit `0`) -> `setup_integration` passed (`6 passed; 0 failed`), including `harness_scopes_turso_state_home_to_test_temp_root`.
+  - `nix flake check` (exit `0`) -> evaluated `cli-setup-command-surface` and `cli-setup-integration` checks successfully.
+- Lint/format/full-project verification:
+  - Best available repository-wide validation is `nix flake check`; it passed and includes configured CLI check derivations.
+- Temporary scaffolding cleanup:
+  - No temporary scaffolding produced by this task; repository `context/tmp/` contains only `.gitignore`.
+- Context sync verification:
+  - Added CI workflow `.github/workflows/cli-integration-tests.yml`.
+  - Updated root context contracts in `context/overview.md`, `context/architecture.md`, `context/patterns.md`, and `context/glossary.md`.
+- Failed checks and follow-ups:
+  - No command failures.
+  - `nix run .#cli-integration-tests` emits existing Rust dead-code warnings from `cli/src/services/hosted_reconciliation.rs`; non-blocking for this task.
+- Success-criteria evidence:
+  - Deterministic Nix setup integration entrypoint exists and runs in CI + local verification (`nix run .#cli-integration-tests`).
+  - Binary-driven setup/hook scenarios remain covered by passing integration tests.
+  - Turso state isolation is validated by passing harness test and no leaked local DB artifacts in repo workspace.
+  - Discoverability/context alignment is updated with explicit CI workflow and entrypoint references.
+- Residual risks:
+  - CI runtime can vary with Nix cache availability; no functional drift observed in current verification pass.
 
 ## 5) Open questions
 - None.

@@ -248,6 +248,40 @@
           '';
         };
 
+        cliIntegrationTestsApp = pkgs.writeShellApplication {
+          name = "cli-integration-tests";
+          runtimeInputs = [
+            pkgs.git
+            pkgs.nix
+          ];
+          text = ''
+            set -euo pipefail
+
+            usage() {
+              cat <<'EOF'
+            Usage: nix run .#cli-integration-tests [-- --help]
+
+            Deterministic flake entrypoint for setup integration tests.
+            Runs the Rust setup integration suite from cli/tests/setup_integration.rs.
+            EOF
+            }
+
+            case "''${1:-}" in
+              -h|--help)
+                usage
+                exit 0
+                ;;
+            esac
+
+            repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+            if [ -z "''${repo_root}" ]; then
+              repo_root="$(pwd)"
+            fi
+
+            exec nix develop "''${repo_root}" -c cargo test --manifest-path cli/Cargo.toml --test setup_integration -- --nocapture
+          '';
+        };
+
         agnixLspShim = pkgs.writeShellScriptBin "agnix-lsp" ''
                     set -euo pipefail
 
@@ -275,6 +309,7 @@
       in
       {
         checks.cli-setup-command-surface = cli.checks.${system}.cli-setup-command-surface;
+        checks.cli-setup-integration = cli.checks.${system}.cli-setup-integration;
 
         apps.sync-opencode-config = {
           type = "app";
@@ -297,6 +332,14 @@
           program = "${tokenCountWorkflowsApp}/bin/token-count-workflows";
           meta = {
             description = "Run static workflow token counting via evals Bun runtime";
+          };
+        };
+
+        apps.cli-integration-tests = {
+          type = "app";
+          program = "${cliIntegrationTestsApp}/bin/cli-integration-tests";
+          meta = {
+            description = "Run setup integration tests via Rust harness";
           };
         };
 
@@ -333,6 +376,7 @@
             echo "- sync-opencode-config: nix run .#sync-opencode-config"
             echo "- sync-opencode-config help: nix run .#sync-opencode-config -- --help"
             echo "- pkl-check-generated: nix run .#pkl-check-generated"
+            echo "- cli-integration-tests: nix run .#cli-integration-tests"
           '';
         };
       }
