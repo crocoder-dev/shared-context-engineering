@@ -84,14 +84,14 @@ Non-goals (deferred):
   - Done when: runtime initialization code is single-flow and atomic in style, preserving current error context and reuse behavior.
   - Verification notes: run `cargo test --manifest-path cli/Cargo.toml services::sync::tests` and `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T08: Apply incremental test/runtime separation in hooks/setup modules (status:todo)
+- [x] T08: Apply incremental test/runtime separation in hooks/setup modules (status:done)
   - Goal: Improve maintainability by extracting selected large in-file test sections from `hooks.rs` and `setup.rs` into focused sibling test modules/files while preserving current test semantics.
   - Boundaries (in): test module organization and local helper placement for `cli/src/services/hooks.rs` and `cli/src/services/setup.rs`.
   - Boundaries (out): Full integration-test migration and non-test production refactors not needed for extraction.
   - Done when: high-churn/large test slices are moved out of primary runtime files, module compiles cleanly, and affected test suites pass.
   - Verification notes: run `cargo test --manifest-path cli/Cargo.toml services::hooks::tests services::setup::tests` and `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T09: Validation and cleanup (status:todo)
+- [x] T09: Validation and cleanup (status:done)
   - Goal: Execute full verification sweep, confirm behavior parity for touched domains, and sync context artifacts to current state (including dependency contract references).
   - Boundaries (in): formatting/build/test checks, plan status finalization, and required context updates in `context/`.
   - Boundaries (out): New feature work beyond this hardening pass.
@@ -101,3 +101,25 @@ Non-goals (deferred):
 ## 5) Open questions (if any)
 
 None. Scope, dependency direction, tie policy, and test-split depth were resolved during clarification.
+
+## 6) Validation report (T09)
+
+- Commands run:
+  - `cargo fmt --manifest-path cli/Cargo.toml --all -- --check` (exit 0)
+  - `cargo test --manifest-path cli/Cargo.toml` (exit 0, 114 passed)
+  - `cargo build --manifest-path cli/Cargo.toml` (exit 0, placeholder dead-code warnings only)
+  - `nix run .#pkl-check-generated` (exit 0, generated outputs up to date)
+  - `nix flake check` (initial failure: Nix git-source omitted untracked extracted test modules; after tracking `cli/src/services/hooks/tests.rs` and `cli/src/services/setup/tests.rs`, rerun exit 0)
+
+- Cleanup actions:
+  - No temporary scaffolding under `context/tmp/` was required for this task.
+  - Ensured extracted test modules are tracked so Nix flake source evaluation matches compile-time module layout.
+
+- Success-criteria verification:
+  - Hosted crypto + structured JSON parsing + epsilon tie handling: preserved and passing in full suite.
+  - Local DB path handling, parser/runtime ergonomics, and OnceLock flow: preserved and passing in full suite.
+  - Incremental hooks/setup test extraction: validated in Cargo and Nix checks once extracted module files were tracked.
+  - Context alignment + plan finalization: task marked done and root context files verified as current-state accurate for this localized finalization pass.
+
+- Residual risk:
+  - `cargo build` still emits expected placeholder-surface dead-code warnings in Agent Trace/hosted/hooks/local-db seams; no functional regressions observed.
