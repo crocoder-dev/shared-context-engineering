@@ -46,6 +46,10 @@ pub fn run_doctor() -> Result<String> {
     Ok(format_report(&report))
 }
 
+pub fn doctor_usage_text() -> &'static str {
+    "Usage:\n  sce doctor\n\nExamples:\n  sce doctor\n  sce doctor | rg 'not ready'"
+}
+
 fn build_report(repository_root: &Path) -> HookDoctorReport {
     let detected_repository_root =
         run_git_command(repository_root, &["rev-parse", "--show-toplevel"]).map(PathBuf::from);
