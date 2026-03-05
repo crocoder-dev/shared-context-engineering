@@ -70,7 +70,7 @@ Non-goals (deferred):
   - Done when: crate-level dead-code allow is absent and compile/test remain green without broad suppression.
   - Verification notes: run `cargo test --manifest-path cli/Cargo.toml services::agent_trace::tests` and `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T06: Remove avoidable `tail_args` clone in top-level parser (status:todo)
+- [x] T06: Remove avoidable `tail_args` clone in top-level parser (status:done)
   - Goal: Restructure top-level parsing so `lexopt` consumes arguments without cloning `tail_args` solely for parser initialization.
   - Boundaries (in): `cli/src/app.rs` parse flow and parser tests.
   - Boundaries (out): Command-surface behavioral changes unrelated to clone removal.

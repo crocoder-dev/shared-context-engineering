@@ -52,7 +52,7 @@ where
         return Ok(Command::Help);
     }
 
-    let mut parser = lexopt::Parser::from_args(tail_args.clone());
+    let mut parser = lexopt::Parser::from_args(tail_args.iter().map(String::as_str));
     match parser.next()? {
         Some(lexopt::Arg::Long("help")) => {
             if tail_args.len() == 1 {
