@@ -151,7 +151,7 @@ Non-goals:
   - Done when: completion outputs are generated deterministically, install/use instructions are documented, and docs/examples align with actual parser behavior.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T13: Add shared output-format contract and parser wiring (status:todo)
+- [x] T13: Add shared output-format contract and parser wiring (status:done)
   - Task ID: T13
   - Goal: Introduce a single CLI-level output format contract (text/json) and route supported commands through it.
   - Boundaries (in/out of scope): In: parsing/wiring in `cli/src/app.rs`, command-surface/help exposure, and any small shared output-type helpers; Out: changing command business logic beyond format selection.

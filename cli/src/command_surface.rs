@@ -85,6 +85,7 @@ Usage:\n  sce [command]\n\n\
 Config usage:\n  sce config <show|validate> [options]\n\n\
 Setup usage:\n  sce setup [--opencode|--claude|--both]\n  sce setup --hooks [--repo <path>]\n\n\
 Completion usage:\n  sce completion --shell <bash|zsh|fish>\n\n\
+Output format contract:\n  Supported commands accept --format <text|json>\n\n\
 Commands:\n{}\n\n\
 Setup defaults to interactive target selection when no setup target flag is passed.\n\
 Use '--hooks' to install required git hooks for the current repository or '--repo <path>' for a specific repository.\n\
@@ -126,5 +127,12 @@ mod tests {
         let help = help_text();
         assert!(help.contains("completion"));
         assert!(help.contains("sce completion --shell <bash|zsh|fish>"));
+    }
+
+    #[test]
+    fn help_text_mentions_shared_output_format_contract() {
+        let help = help_text();
+        assert!(help.contains("Output format contract:"));
+        assert!(help.contains("--format <text|json>"));
     }
 }
