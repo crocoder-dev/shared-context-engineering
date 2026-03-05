@@ -1,7 +1,8 @@
 use anyhow::{bail, Context, Result};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::str::FromStr;
 use std::time::Instant;
 
@@ -13,6 +14,7 @@ use crate::services::agent_trace::{
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
 pub const POST_COMMIT_PARENT_SHA_METADATA_KEY: &str = "dev.crocoder.sce.parent_revision";
+const PRE_COMMIT_CHECKPOINT_GIT_PATH: &str = "sce/pre-commit-checkpoint.json";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HookSubcommand {
@@ -111,30 +113,370 @@ pub fn run_hooks_subcommand(subcommand: HookSubcommand) -> Result<String> {
 }
 
 fn run_pre_commit_subcommand() -> Result<String> {
-    let outcome = finalize_pre_commit_checkpoint(
-        &PreCommitRuntimeState {
-            sce_disabled: false,
-            cli_available: true,
-            is_bare_repo: false,
-        },
-        PreCommitTreeAnchors {
-            index_tree: "pending-index-tree".to_string(),
-            head_tree: None,
-        },
-        PendingCheckpoint { files: Vec::new() },
-    );
+    let repository_root = std::env::current_dir()
+        .context("Failed to determine current directory for pre-commit runtime invocation.")?;
+    run_pre_commit_subcommand_in_repo(&repository_root)
+}
+
+fn run_pre_commit_subcommand_in_repo(repository_root: &Path) -> Result<String> {
+    let runtime = resolve_pre_commit_runtime_state(repository_root);
+
+    if runtime.sce_disabled || !runtime.cli_available || runtime.is_bare_repo {
+        let reason = if runtime.sce_disabled {
+            PreCommitNoOpReason::Disabled
+        } else if !runtime.cli_available {
+            PreCommitNoOpReason::CliUnavailable
+        } else {
+            PreCommitNoOpReason::BareRepository
+        };
+
+        return Ok(format!(
+            "pre-commit hook executed with no-op runtime state: {reason:?}"
+        ));
+    }
+
+    let anchors = match capture_pre_commit_tree_anchors(repository_root) {
+        Ok(anchors) => anchors,
+        Err(error) => {
+            return Ok(format!(
+                "pre-commit hook skipped checkpoint finalization: failed to capture git anchors ({error})"
+            ));
+        }
+    };
+
+    let pending = match collect_pending_checkpoint(repository_root) {
+        Ok(pending) => pending,
+        Err(error) => {
+            return Ok(format!(
+                "pre-commit hook skipped checkpoint finalization: failed to collect staged attribution ({error})"
+            ));
+        }
+    };
+
+    let outcome = finalize_pre_commit_checkpoint(&runtime, anchors, pending);
 
     let message = match outcome {
         PreCommitFinalization::NoOp(reason) => {
             format!("pre-commit hook executed with no-op runtime state: {reason:?}")
         }
-        PreCommitFinalization::Finalized(checkpoint) => format!(
-            "pre-commit hook executed and finalized staged checkpoint for {} file(s).",
-            checkpoint.files.len()
-        ),
+        PreCommitFinalization::Finalized(checkpoint) => {
+            if let Err(error) = write_finalized_checkpoint(repository_root, &checkpoint) {
+                return Ok(format!(
+                    "pre-commit hook finalized staged checkpoint for {} file(s) but failed to persist handoff artifact ({error})",
+                    checkpoint.files.len()
+                ));
+            }
+            format!(
+                "pre-commit hook executed and finalized staged checkpoint for {} file(s).",
+                checkpoint.files.len()
+            )
+        }
     };
 
     Ok(message)
+}
+
+fn resolve_pre_commit_runtime_state(repository_root: &Path) -> PreCommitRuntimeState {
+    PreCommitRuntimeState {
+        sce_disabled: env_flag_is_truthy("SCE_DISABLED"),
+        cli_available: git_command_success(repository_root, &["--version"]),
+        is_bare_repo: git_command_output(repository_root, &["rev-parse", "--is-bare-repository"])
+            .is_some_and(|output| output == "true"),
+    }
+}
+
+fn env_flag_is_truthy(name: &str) -> bool {
+    std::env::var(name).ok().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+fn git_command_success(repository_root: &Path, args: &[&str]) -> bool {
+    Command::new("git")
+        .args(args)
+        .current_dir(repository_root)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn git_command_output(repository_root: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repository_root)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    Some(stdout.trim().to_string())
+}
+
+fn run_git_command(repository_root: &Path, args: &[&str], context_message: &str) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repository_root)
+        .output()
+        .with_context(|| {
+            format!(
+                "{} (directory: '{}')",
+                context_message,
+                repository_root.display()
+            )
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let diagnostic = if stderr.is_empty() {
+            "git command exited with a non-zero status".to_string()
+        } else {
+            stderr
+        };
+        bail!("{} {}", context_message, diagnostic);
+    }
+
+    String::from_utf8(output.stdout)
+        .context("git command output contained invalid UTF-8")
+        .map(|stdout| stdout.trim().to_string())
+}
+
+fn run_git_command_allow_empty(
+    repository_root: &Path,
+    args: &[&str],
+    context_message: &str,
+) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repository_root)
+        .output()
+        .with_context(|| {
+            format!(
+                "{} (directory: '{}')",
+                context_message,
+                repository_root.display()
+            )
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let diagnostic = if stderr.is_empty() {
+            "git command exited with a non-zero status".to_string()
+        } else {
+            stderr
+        };
+        bail!("{} {}", context_message, diagnostic);
+    }
+
+    String::from_utf8(output.stdout).context("git command output contained invalid UTF-8")
+}
+
+fn capture_pre_commit_tree_anchors(repository_root: &Path) -> Result<PreCommitTreeAnchors> {
+    let index_tree = run_git_command(
+        repository_root,
+        &["write-tree"],
+        "Failed to capture index tree anchor for pre-commit checkpoint.",
+    )?;
+    let head_tree = git_command_output(repository_root, &["rev-parse", "--verify", "HEAD^{tree}"]);
+
+    Ok(PreCommitTreeAnchors {
+        index_tree,
+        head_tree,
+    })
+}
+
+fn collect_pending_checkpoint(repository_root: &Path) -> Result<PendingCheckpoint> {
+    let staged_diff = run_git_command_allow_empty(
+        repository_root,
+        &[
+            "diff",
+            "--cached",
+            "--unified=0",
+            "--no-color",
+            "--no-ext-diff",
+        ],
+        "Failed to collect staged diff for pre-commit attribution.",
+    )?;
+    let unstaged_diff = run_git_command_allow_empty(
+        repository_root,
+        &["diff", "--unified=0", "--no-color", "--no-ext-diff"],
+        "Failed to collect unstaged diff for pre-commit attribution.",
+    )?;
+
+    let staged_ranges = parse_unified_zero_diff_ranges(&staged_diff)?;
+    let unstaged_ranges = parse_unified_zero_diff_ranges(&unstaged_diff)?;
+
+    let mut all_paths = BTreeMap::new();
+    for path in staged_ranges.keys() {
+        all_paths.insert(path.clone(), ());
+    }
+    for path in unstaged_ranges.keys() {
+        all_paths.insert(path.clone(), ());
+    }
+
+    let files = all_paths
+        .keys()
+        .map(|path| PendingFileCheckpoint {
+            path: path.clone(),
+            staged_ranges: staged_ranges.get(path).cloned().unwrap_or_default(),
+            unstaged_ranges: unstaged_ranges.get(path).cloned().unwrap_or_default(),
+        })
+        .collect();
+
+    Ok(PendingCheckpoint { files })
+}
+
+fn parse_unified_zero_diff_ranges(
+    contents: &str,
+) -> Result<BTreeMap<String, Vec<PendingLineRange>>> {
+    let mut ranges_by_path: BTreeMap<String, Vec<PendingLineRange>> = BTreeMap::new();
+    let mut current_path: Option<String> = None;
+
+    for line in contents.lines() {
+        if let Some(path) = line.strip_prefix("+++ b/") {
+            current_path = Some(path.to_string());
+            continue;
+        }
+
+        if line.starts_with("+++") {
+            current_path = None;
+            continue;
+        }
+
+        if !line.starts_with("@@") {
+            continue;
+        }
+
+        let Some(path) = current_path.clone() else {
+            continue;
+        };
+
+        if let Some(range) = parse_hunk_new_range(line)? {
+            ranges_by_path.entry(path).or_default().push(range);
+        }
+    }
+
+    Ok(ranges_by_path)
+}
+
+fn parse_hunk_new_range(header_line: &str) -> Result<Option<PendingLineRange>> {
+    let mut fields = header_line.split_whitespace();
+    let _ = fields.next();
+    let _ = fields.next();
+    let Some(new_range_field) = fields.next() else {
+        bail!(
+            "Invalid unified diff hunk header '{}': missing new-range field",
+            header_line
+        );
+    };
+
+    let Some(range_body) = new_range_field.strip_prefix('+') else {
+        bail!(
+            "Invalid unified diff hunk header '{}': malformed new-range field",
+            header_line
+        );
+    };
+
+    let mut parts = range_body.split(',');
+    let start_line: u32 = parts
+        .next()
+        .context("Unified diff hunk is missing start line")?
+        .parse()
+        .with_context(|| {
+            format!(
+                "Invalid hunk start line in '{}': expected integer",
+                header_line
+            )
+        })?;
+    let line_count: u32 = parts
+        .next()
+        .map(str::parse)
+        .transpose()
+        .with_context(|| {
+            format!(
+                "Invalid hunk line count in '{}': expected integer",
+                header_line
+            )
+        })?
+        .unwrap_or(1);
+
+    if line_count == 0 {
+        return Ok(None);
+    }
+
+    Ok(Some(PendingLineRange {
+        start_line,
+        end_line: start_line + line_count - 1,
+    }))
+}
+
+fn resolve_pre_commit_checkpoint_path(repository_root: &Path) -> Result<PathBuf> {
+    let resolved = run_git_command(
+        repository_root,
+        &["rev-parse", "--git-path", PRE_COMMIT_CHECKPOINT_GIT_PATH],
+        "Failed to resolve pre-commit checkpoint handoff path.",
+    )?;
+    let path = PathBuf::from(resolved);
+
+    if path.is_absolute() {
+        return Ok(path);
+    }
+
+    Ok(repository_root.join(path))
+}
+
+fn write_finalized_checkpoint(
+    repository_root: &Path,
+    checkpoint: &FinalizedCheckpoint,
+) -> Result<()> {
+    let checkpoint_path = resolve_pre_commit_checkpoint_path(repository_root)?;
+    let parent = checkpoint_path
+        .parent()
+        .context("Resolved pre-commit checkpoint path has no parent directory")?;
+    fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "Failed to create pre-commit checkpoint directory '{}'.",
+            parent.display()
+        )
+    })?;
+
+    let mut files = Vec::new();
+    for file in &checkpoint.files {
+        let mut ranges = Vec::new();
+        for range in &file.ranges {
+            ranges.push(serde_json::json!({
+                "start_line": range.start_line,
+                "end_line": range.end_line,
+            }));
+        }
+        files.push(serde_json::json!({
+            "path": file.path,
+            "ranges": ranges,
+        }));
+    }
+
+    let payload = serde_json::json!({
+        "version": 1,
+        "anchors": {
+            "index_tree": checkpoint.anchors.index_tree.clone(),
+            "head_tree": checkpoint.anchors.head_tree.clone(),
+        },
+        "files": files,
+    });
+
+    let serialized = serde_json::to_vec_pretty(&payload)
+        .context("Failed to serialize pre-commit checkpoint artifact")?;
+    fs::write(&checkpoint_path, serialized).with_context(|| {
+        format!(
+            "Failed to persist pre-commit checkpoint artifact '{}'.",
+            checkpoint_path.display()
+        )
+    })
 }
 
 fn run_commit_msg_subcommand(message_file: PathBuf) -> Result<String> {

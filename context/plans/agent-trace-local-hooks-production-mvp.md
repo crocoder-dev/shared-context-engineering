@@ -42,7 +42,7 @@ Connect the existing Agent Trace service seams into a fully functional local Git
     - `cargo test --manifest-path cli/Cargo.toml app::tests`
     - Focused hook command-surface tests for valid/invalid hook invocations.
 
-- [ ] T03: Wire pre-commit runtime finalization to real staged attribution inputs (status:todo)
+- [x] T03: Wire pre-commit runtime finalization to real staged attribution inputs (status:done)
   - Task ID: T03
   - Goal: Connect `finalize_pre_commit_checkpoint` to real runtime data collection and deterministic checkpoint persistence handoff.
   - Boundaries (in/out of scope):
