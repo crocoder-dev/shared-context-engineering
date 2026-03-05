@@ -4,15 +4,13 @@ use anyhow::{anyhow, bail, Context, Result};
 use lexopt::{Arg, ValueExt};
 use serde_json::{json, Value};
 
+use crate::services::output_format::OutputFormat;
+
 pub const NAME: &str = "config";
 
 const DEFAULT_TIMEOUT_MS: u64 = 30000;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReportFormat {
-    Text,
-    Json,
-}
+pub type ReportFormat = OutputFormat;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LogLevel {
@@ -177,7 +175,7 @@ fn parse_config_request(args: Vec<String>) -> Result<ConfigRequest> {
                     .value()
                     .context("Option '--format' requires a value")?;
                 let raw = value.string()?;
-                request.report_format = parse_report_format(&raw)?;
+                request.report_format = ReportFormat::parse(&raw, "sce config --help")?;
             }
             Arg::Long("config") => {
                 let value = parser
@@ -235,17 +233,6 @@ fn parse_config_request(args: Vec<String>) -> Result<ConfigRequest> {
     }
 
     Ok(request)
-}
-
-fn parse_report_format(raw: &str) -> Result<ReportFormat> {
-    match raw {
-        "text" => Ok(ReportFormat::Text),
-        "json" => Ok(ReportFormat::Json),
-        _ => bail!(
-            "Invalid format '{}'. Valid values: text, json. Run 'sce config --help' to see valid usage.",
-            raw
-        ),
-    }
 }
 
 pub fn run_config_subcommand(subcommand: ConfigSubcommand) -> Result<String> {
@@ -664,6 +651,20 @@ mod tests {
             })
         );
         Ok(())
+    }
+
+    #[test]
+    fn parser_rejects_invalid_format_with_help_guidance() {
+        let error = parse_config_subcommand(vec![
+            "show".to_string(),
+            "--format".to_string(),
+            "yaml".to_string(),
+        ])
+        .expect_err("invalid format should fail");
+        assert_eq!(
+            error.to_string(),
+            "Invalid --format value 'yaml'. Valid values: text, json. Run 'sce config --help' to see valid usage."
+        );
     }
 
     #[test]

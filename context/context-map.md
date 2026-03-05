@@ -44,6 +44,7 @@ Feature/domain context:
 - `context/sce/cli-stdout-stderr-contract.md` (implemented app-level stream routing contract: success payload emission on stdout, redacted diagnostics on stderr, and centralized stream ownership in `cli/src/app.rs`)
 - `context/sce/cli-version-command-contract.md` (implemented `sce version` command contract with deterministic text output, `--format <text|json>` parsing/validation, and stable JSON runtime-identification fields)
 - `context/sce/cli-shell-completion-contract.md` (implemented `sce completion` command contract with deterministic Bash/Zsh/Fish script generation, strict `--shell` validation, and parser/docs alignment coverage)
+- `context/sce/cli-shared-output-format-contract.md` (implemented T13 canonical shared `--format <text|json>` parser contract and wiring across supported commands)
 
 Working areas:
 - `context/plans/` (active plan execution artifacts, not durable history)

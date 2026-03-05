@@ -7,6 +7,7 @@ pub mod hosted_reconciliation;
 pub mod local_db;
 pub mod mcp;
 pub mod observability;
+pub mod output_format;
 pub mod resilience;
 pub mod security;
 pub mod setup;

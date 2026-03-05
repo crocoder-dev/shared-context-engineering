@@ -3,16 +3,14 @@ use lexopt::Arg;
 use lexopt::ValueExt;
 use serde_json::json;
 
+use crate::services::output_format::OutputFormat;
+
 pub const NAME: &str = "version";
 
 const BINARY_NAME: &str = env!("CARGO_PKG_NAME");
 const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum VersionFormat {
-    Text,
-    Json,
-}
+pub type VersionFormat = OutputFormat;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VersionRequest {
@@ -34,7 +32,7 @@ pub fn parse_version_request(args: Vec<String>) -> Result<VersionRequest> {
                     .value()
                     .context("Option '--format' requires a value")?;
                 let raw = value.string()?;
-                format = parse_version_format(&raw)?;
+                format = VersionFormat::parse(&raw, "sce version --help")?;
             }
             Arg::Long("help") | Arg::Short('h') => {
                 bail!("Use 'sce version --help' for version usage.");
@@ -88,17 +86,6 @@ pub fn render_version(request: VersionRequest) -> Result<String> {
     }
 }
 
-fn parse_version_format(raw: &str) -> Result<VersionFormat> {
-    match raw {
-        "text" => Ok(VersionFormat::Text),
-        "json" => Ok(VersionFormat::Json),
-        _ => bail!(
-            "Unsupported --format value '{}'. Valid values: text, json.",
-            raw
-        ),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::Value;
@@ -116,6 +103,16 @@ mod tests {
         let request = parse_version_request(vec!["--format".to_string(), "json".to_string()])
             .expect("request should parse");
         assert_eq!(request.format, VersionFormat::Json);
+    }
+
+    #[test]
+    fn parse_rejects_invalid_format_with_help_guidance() {
+        let error = parse_version_request(vec!["--format".to_string(), "yaml".to_string()])
+            .expect_err("invalid format should fail");
+        assert_eq!(
+            error.to_string(),
+            "Invalid --format value 'yaml'. Valid values: text, json. Run 'sce version --help' to see valid usage."
+        );
     }
 
     #[test]
