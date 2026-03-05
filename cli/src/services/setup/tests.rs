@@ -85,7 +85,7 @@ fn setup_options_reject_mutually_exclusive_flags() {
 
     assert_eq!(
         error.to_string(),
-        "Options '--opencode', '--claude', and '--both' are mutually exclusive. Choose exactly one target flag or none for interactive mode."
+        "Options '--opencode', '--claude', and '--both' are mutually exclusive. Try: choose exactly one target flag (for example 'sce setup --opencode --non-interactive') or omit all target flags for interactive mode."
     );
 }
 
@@ -158,7 +158,7 @@ fn setup_options_reject_repo_without_hooks() {
     let error = resolve_setup_request(options).expect_err("--repo without --hooks should fail");
     assert_eq!(
         error.to_string(),
-        "Option '--repo' requires '--hooks'. Run 'sce setup --help' to see valid usage."
+        "Option '--repo' requires '--hooks'. Try: run 'sce setup --hooks --repo <path>' or remove '--repo'."
     );
 }
 

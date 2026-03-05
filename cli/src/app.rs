@@ -301,7 +301,7 @@ where
     let mut parser = lexopt::Parser::from_args(tail_args.iter().map(String::as_str));
     match parser.next().map_err(|error| {
         ClassifiedError::parse(format!(
-            "Failed to parse arguments: {error}. Run 'sce --help' to see valid usage."
+            "Failed to parse arguments: {error}. Try: run 'sce --help' to list valid commands, then retry with a supported form such as 'sce version' or 'sce setup --help'."
         ))
     })? {
         Some(lexopt::Arg::Long("help")) => {
@@ -327,7 +327,7 @@ where
         Some(lexopt::Arg::Value(value)) => {
             let subcommand = value.string().map_err(|error| {
                 ClassifiedError::parse(format!(
-                    "Failed to parse command token: {error}. Run 'sce --help' to see valid usage."
+                    "Failed to parse command token: {error}. Try: run 'sce --help' to list valid commands, then rerun with one of them."
                 ))
             })?;
             parse_subcommand(subcommand, tail_args.into_iter().skip(1).collect())
@@ -338,7 +338,7 @@ where
 
 fn unknown_option_message(option: &str) -> String {
     format!(
-        "Unknown option '{}'. Run 'sce --help' to see valid usage.",
+        "Unknown option '{}'. Try: run 'sce --help' to see top-level usage, or use 'sce <command> --help' for command-specific options.",
         option
     )
 }
@@ -357,13 +357,13 @@ fn parse_subcommand(value: String, tail_args: Vec<String>) -> Result<Command, Cl
         _ => {
             if command_surface::is_known_command(&value) {
                 return Err(ClassifiedError::parse(format!(
-                    "Command '{}' is currently unavailable in this build.",
+                    "Command '{}' is currently unavailable in this build. Try: run 'sce --help' to see available commands in this build.",
                     value,
                 )));
             }
 
             Err(ClassifiedError::parse(format!(
-                "Unknown command '{}'. Run 'sce --help' to see the current command surface.",
+                "Unknown command '{}'. Try: run 'sce --help' to list valid commands, then rerun with a valid command such as 'sce version' or 'sce setup --help'.",
                 value,
             )))
         }
@@ -782,7 +782,7 @@ mod tests {
         .expect_err("unknown hook subcommand should fail");
         assert_eq!(
             error.to_string(),
-            "Unknown hook subcommand 'unknown'. Run 'sce hooks --help' to see valid usage."
+            "Unknown hook subcommand 'unknown'. Try: run 'sce hooks --help' and use one of 'pre-commit', 'commit-msg', 'post-commit', or 'post-rewrite'."
         );
     }
 
@@ -1076,7 +1076,7 @@ mod tests {
         .expect_err("mutually exclusive flags should fail");
         assert_eq!(
             error.to_string(),
-            "Options '--opencode', '--claude', and '--both' are mutually exclusive. Choose exactly one target flag or none for interactive mode."
+            "Options '--opencode', '--claude', and '--both' are mutually exclusive. Try: choose exactly one target flag (for example 'sce setup --opencode --non-interactive') or omit all target flags for interactive mode."
         );
     }
 
@@ -1091,7 +1091,7 @@ mod tests {
         .expect_err("--repo without --hooks should fail");
         assert_eq!(
             error.to_string(),
-            "Option '--repo' requires '--hooks'. Run 'sce setup --help' to see valid usage."
+            "Option '--repo' requires '--hooks'. Try: run 'sce setup --hooks --repo <path>' or remove '--repo'."
         );
     }
 
@@ -1115,7 +1115,7 @@ mod tests {
             .expect_err("unknown command should fail");
         assert_eq!(
             error.to_string(),
-            "Unknown command 'nope'. Run 'sce --help' to see the current command surface."
+            "Unknown command 'nope'. Try: run 'sce --help' to list valid commands, then rerun with a valid command such as 'sce version' or 'sce setup --help'."
         );
     }
 
@@ -1125,7 +1125,7 @@ mod tests {
             .expect_err("unknown option should fail");
         assert_eq!(
             error.to_string(),
-            "Unknown option '--verbose'. Run 'sce --help' to see valid usage."
+            "Unknown option '--verbose'. Try: run 'sce --help' to see top-level usage, or use 'sce <command> --help' for command-specific options."
         );
     }
 
@@ -1139,7 +1139,7 @@ mod tests {
         .expect_err("extra argument should fail");
         assert_eq!(
             error.to_string(),
-            "Unexpected setup argument 'extra'. Run 'sce setup --help' to see valid usage."
+            "Unexpected setup argument 'extra'. Try: remove the extra argument and use 'sce setup --help' for supported forms."
         );
     }
 

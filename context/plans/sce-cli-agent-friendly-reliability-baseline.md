@@ -179,7 +179,7 @@ Non-goals:
   - Done when: both commands support `--format json` with stable fields indicating placeholder state, capabilities/checkpoints, and actionable next-step messaging.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml services::mcp::tests services::sync::tests`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T17: Make parser and invocation errors consistently actionable (status:todo)
+- [x] T17: Make parser and invocation errors consistently actionable (status:done)
   - Task ID: T17
   - Goal: Normalize high-frequency parse/invocation errors to include explicit remediation examples (required flag guidance, valid alternatives, and targeted help pointers).
   - Boundaries (in/out of scope): In: top-level parser and command-specific validation errors in `cli/src/app.rs` and relevant service parsers; Out: changing exit-code policy or introducing interactive recovery prompts.

@@ -19,6 +19,14 @@ It complements the numeric process exit-code classes documented in `context/sce/
 - If the message already contains `Try:`, runtime preserves the original remediation text and does not append a second one.
 - Diagnostic text is still redaction-filtered through `services::security::redact_sensitive_text` before emission.
 
+## Actionable parser/invocation guidance contract
+
+- High-frequency parse/invocation failures use explicit `Try:` remediations instead of generic usage-only hints.
+- Top-level unknown command/option messages include targeted retry guidance (`sce --help` and command-local `sce <command> --help`).
+- Setup invocation validation failures (`--repo` without `--hooks`, mutually exclusive target flags, unexpected args) include concrete valid alternatives.
+- Hooks invocation validation failures (missing hook subcommand, missing `commit-msg` message file, unknown subcommand) include command-form examples that are copyable for retry automation.
+- This actionable-message normalization is owned by parser/validation paths in `cli/src/app.rs`, `cli/src/services/setup.rs`, and `cli/src/services/hooks.rs`.
+
 ## Ownership
 
 - `FailureClass` in `cli/src/app.rs` owns class selection.

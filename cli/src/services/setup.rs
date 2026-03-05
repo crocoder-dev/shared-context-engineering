@@ -117,7 +117,9 @@ pub struct SetupRequest {
 
 pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
     if options.repo_path.is_some() && !options.hooks {
-        bail!("Option '--repo' requires '--hooks'. Run 'sce setup --help' to see valid usage.");
+        bail!(
+            "Option '--repo' requires '--hooks'. Try: run 'sce setup --hooks --repo <path>' or remove '--repo'."
+        );
     }
 
     let mut selected_targets = Vec::new();
@@ -134,7 +136,7 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
 
     if selected_targets.len() > 1 {
         bail!(
-            "Options '--opencode', '--claude', and '--both' are mutually exclusive. Choose exactly one target flag or none for interactive mode."
+            "Options '--opencode', '--claude', and '--both' are mutually exclusive. Try: choose exactly one target flag (for example 'sce setup --opencode --non-interactive') or omit all target flags for interactive mode."
         );
     }
 
@@ -929,10 +931,12 @@ where
             Arg::Long("repo") => {
                 let value = parser
                     .value()
-                    .context("Option '--repo' requires a path value")?;
+                    .context(
+                        "Option '--repo' requires a path value. Try: 'sce setup --hooks --repo ../demo-repo'.",
+                    )?;
                 if options.repo_path.is_some() {
                     bail!(
-                        "Option '--repo' may only be provided once. Run 'sce setup --help' to see valid usage."
+                        "Option '--repo' may only be provided once. Try: keep a single '--repo <path>' value and rerun."
                     );
                 }
                 options.repo_path = Some(PathBuf::from(value.string()?));
@@ -940,20 +944,20 @@ where
             Arg::Long("help") | Arg::Short('h') => options.help = true,
             Arg::Long(option) => {
                 bail!(
-                    "Unknown setup option '--{}'. Run 'sce setup --help' to see valid usage.",
+                    "Unknown setup option '--{}'. Try: run 'sce setup --help' to see supported setup options.",
                     option
                 );
             }
             Arg::Short(option) => {
                 bail!(
-                    "Unknown setup option '-{}'. Run 'sce setup --help' to see valid usage.",
+                    "Unknown setup option '-{}'. Try: run 'sce setup --help' to see supported setup options.",
                     option
                 );
             }
             Arg::Value(value) => {
                 let value = value.string()?;
                 bail!(
-                    "Unexpected setup argument '{}'. Run 'sce setup --help' to see valid usage.",
+                    "Unexpected setup argument '{}'. Try: remove the extra argument and use 'sce setup --help' for supported forms.",
                     value
                 );
             }
