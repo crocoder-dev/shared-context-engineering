@@ -107,7 +107,7 @@ Connect the existing Agent Trace service seams into a fully functional local Git
     - `cargo test --manifest-path cli/Cargo.toml post_rewrite_finalization`
     - `cargo test --manifest-path cli/Cargo.toml rewrite_trace_finalization`
 
-- [ ] T08: Wire retry replay processor into operational runtime and observability outputs (status:todo)
+- [x] T08: Wire retry replay processor into operational runtime and observability outputs (status:done)
   - Task ID: T08
   - Goal: Ensure retry queue processing is invokable in production local workflow with deterministic metrics emission and target-scoped recovery.
   - Boundaries (in/out of scope):
