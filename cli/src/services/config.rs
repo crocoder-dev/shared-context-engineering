@@ -606,10 +606,12 @@ fn format_resolved_value_text(key: &str, value: &str, source: ValueSource) -> St
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_config_subcommand, resolve_runtime_config_with, ConfigRequest, ConfigSubcommand,
-        LogLevel, ReportFormat,
+        format_show_output, format_validate_output, parse_config_subcommand,
+        resolve_runtime_config_with, ConfigPathSource, ConfigRequest, ConfigSubcommand,
+        LoadedConfigPath, LogLevel, ReportFormat, ResolvedValue, RuntimeConfig, ValueSource,
     };
     use anyhow::Result;
+    use serde_json::Value;
     use std::path::{Path, PathBuf};
 
     fn request() -> ConfigRequest {
@@ -819,6 +821,63 @@ mod tests {
                 .map(|source| source.as_str()),
             Some("default_discovered_local")
         );
+        Ok(())
+    }
+
+    fn sample_runtime() -> RuntimeConfig {
+        RuntimeConfig {
+            loaded_config_paths: vec![
+                LoadedConfigPath {
+                    path: PathBuf::from("/state/sce/config.json"),
+                    source: ConfigPathSource::DefaultDiscoveredGlobal,
+                },
+                LoadedConfigPath {
+                    path: PathBuf::from("/workspace/.sce/config.json"),
+                    source: ConfigPathSource::DefaultDiscoveredLocal,
+                },
+            ],
+            log_level: ResolvedValue {
+                value: LogLevel::Warn,
+                source: ValueSource::Env,
+            },
+            timeout_ms: ResolvedValue {
+                value: 1200,
+                source: ValueSource::Flag,
+            },
+        }
+    }
+
+    #[test]
+    fn show_json_output_is_deterministic_for_same_runtime() -> Result<()> {
+        let runtime = sample_runtime();
+        let first = format_show_output(&runtime, ReportFormat::Json);
+        let second = format_show_output(&runtime, ReportFormat::Json);
+        assert_eq!(first, second);
+
+        let parsed: Value = serde_json::from_str(&first)?;
+        assert_eq!(parsed["status"], "ok");
+        assert_eq!(parsed["result"]["command"], "config_show");
+        assert_eq!(
+            parsed["result"]["precedence"],
+            "flags > env > config file > defaults"
+        );
+        assert_eq!(parsed["result"]["resolved"]["log_level"]["source"], "env");
+        assert_eq!(parsed["result"]["resolved"]["timeout_ms"]["source"], "flag");
+        Ok(())
+    }
+
+    #[test]
+    fn validate_json_output_is_deterministic_for_same_runtime() -> Result<()> {
+        let runtime = sample_runtime();
+        let first = format_validate_output(&runtime, ReportFormat::Json);
+        let second = format_validate_output(&runtime, ReportFormat::Json);
+        assert_eq!(first, second);
+
+        let parsed: Value = serde_json::from_str(&first)?;
+        assert_eq!(parsed["status"], "ok");
+        assert_eq!(parsed["result"]["command"], "config_validate");
+        assert_eq!(parsed["result"]["valid"], true);
+        assert!(parsed["result"]["issues"].as_array().is_some());
         Ok(())
     }
 }

@@ -327,4 +327,17 @@ mod tests {
         assert!(parsed["next_step"].as_str().is_some());
         Ok(())
     }
+
+    #[test]
+    fn sync_json_output_is_deterministic_for_same_request() -> Result<()> {
+        let first = run_placeholder_sync(SyncRequest {
+            format: SyncFormat::Json,
+        })?;
+        let second = run_placeholder_sync(SyncRequest {
+            format: SyncFormat::Json,
+        })?;
+
+        assert_eq!(first, second);
+        Ok(())
+    }
 }

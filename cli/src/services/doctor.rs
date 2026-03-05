@@ -557,6 +557,28 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn render_json_is_deterministic_for_same_report() -> Result<()> {
+        let temp_dir = TestTempDir::new("doctor-json-determinism")?;
+        let report = build_report(temp_dir.path());
+
+        let first = render_report(
+            DoctorRequest {
+                format: DoctorFormat::Json,
+            },
+            &report,
+        )?;
+        let second = render_report(
+            DoctorRequest {
+                format: DoctorFormat::Json,
+            },
+            &report,
+        )?;
+
+        assert_eq!(first, second);
+        Ok(())
+    }
+
     fn init_git_repo(repository_root: &Path) -> Result<()> {
         run_git_in_repo(repository_root, &["init", "-q"])
     }
