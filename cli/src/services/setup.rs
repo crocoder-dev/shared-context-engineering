@@ -100,6 +100,7 @@ pub enum SetupDispatch {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SetupCliOptions {
     pub help: bool,
+    pub non_interactive: bool,
     pub opencode: bool,
     pub claude: bool,
     pub both: bool,
@@ -831,7 +832,7 @@ impl SetupTargetPrompter for InquireSetupTargetPrompter {
                 Ok(SetupDispatch::Cancelled)
             }
             Err(InquireError::NotTTY) => bail!(
-                "Interactive setup requires a TTY. Re-run with '--opencode', '--claude', or '--both' for non-interactive automation."
+                "Interactive setup requires a TTY. Re-run with '--non-interactive' and one of '--opencode', '--claude', or '--both'."
             ),
             Err(error) => Err(error.into()),
         }
@@ -874,7 +875,7 @@ pub fn setup_cancelled_text() -> &'static str {
 }
 
 pub fn setup_usage_text() -> &'static str {
-    "Usage:\n  sce setup [--opencode|--claude|--both]\n  sce setup --hooks [--repo <path>]\n\nWithout a target flag, setup defaults to interactive target selection.\nTarget flags are mutually exclusive and intended for non-interactive automation.\n'--hooks' installs required git hooks for the current repository by default, or for '--repo <path>' when provided."
+    "Usage:\n  sce setup [--opencode|--claude|--both] [--non-interactive]\n  sce setup --hooks [--repo <path>]\n\nWithout a target flag, setup defaults to interactive target selection.\nUse '--non-interactive' to fail fast instead of prompting; it requires '--opencode', '--claude', or '--both'.\nTarget flags are mutually exclusive and intended for non-interactive automation.\n'--hooks' installs required git hooks for the current repository by default, or for '--repo <path>' when provided."
 }
 
 pub fn parse_setup_cli_options<I>(args: I) -> Result<SetupCliOptions>
@@ -886,6 +887,7 @@ where
 
     while let Some(arg) = parser.next()? {
         match arg {
+            Arg::Long("non-interactive") => options.non_interactive = true,
             Arg::Long("opencode") => options.opencode = true,
             Arg::Long("claude") => options.claude = true,
             Arg::Long("both") => options.both = true,
@@ -941,7 +943,15 @@ pub fn resolve_setup_mode(options: SetupCliOptions) -> Result<SetupMode> {
     }
 
     match selected_targets.as_slice() {
-        [] => Ok(SetupMode::Interactive),
+        [] => {
+            if options.non_interactive {
+                bail!(
+                    "Option '--non-interactive' requires a target flag. Try: 'sce setup --opencode --non-interactive', 'sce setup --claude --non-interactive', or 'sce setup --both --non-interactive'."
+                );
+            }
+
+            Ok(SetupMode::Interactive)
+        }
         [target] => Ok(SetupMode::NonInteractive(*target)),
         _ => bail!(
             "Options '--opencode', '--claude', and '--both' are mutually exclusive. Choose exactly one target flag or none for interactive mode."
