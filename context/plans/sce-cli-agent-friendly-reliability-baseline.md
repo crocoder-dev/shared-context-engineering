@@ -186,7 +186,7 @@ Non-goals:
   - Done when: unknown command/option, missing required args, and incompatible-flag failures all provide deterministic actionable guidance suitable for automated retry.
   - Verification notes (commands or checks): `cargo test --manifest-path cli/Cargo.toml app::tests services::setup::tests services::hooks::tests`; `cargo check --manifest-path cli/Cargo.toml`.
 
-- [ ] T18: Strengthen help/usage content with agent-oriented examples (status:todo)
+- [x] T18: Strengthen help/usage content with agent-oriented examples (status:done)
   - Task ID: T18
   - Goal: Upgrade help text and setup usage docs with concise examples showing non-interactive usage, JSON output, and composable command flows.
   - Boundaries (in/out of scope): In: `cli/src/command_surface.rs`, setup usage text in `cli/src/services/setup.rs`, and `cli/README.md`; Out: large documentation restructuring outside CLI scope.

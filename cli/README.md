@@ -14,12 +14,28 @@ still deferred.
 ```bash
 cargo run --manifest-path cli/Cargo.toml -- --help
 cargo run --manifest-path cli/Cargo.toml -- setup
+cargo run --manifest-path cli/Cargo.toml -- setup --opencode --non-interactive --hooks
+cargo run --manifest-path cli/Cargo.toml -- setup --hooks --repo ../demo-repo
 cargo run --manifest-path cli/Cargo.toml -- doctor
+cargo run --manifest-path cli/Cargo.toml -- doctor --format json
 cargo run --manifest-path cli/Cargo.toml -- mcp
 cargo run --manifest-path cli/Cargo.toml -- hooks pre-commit
 cargo run --manifest-path cli/Cargo.toml -- hooks commit-msg .git/COMMIT_EDITMSG
 cargo run --manifest-path cli/Cargo.toml -- sync
+cargo run --manifest-path cli/Cargo.toml -- version --format json
 cargo run --manifest-path cli/Cargo.toml -- completion --shell bash
+```
+
+### Agent-oriented command examples
+
+Canonical examples mirrored from `sce --help` and `sce setup --help`:
+
+```bash
+sce setup
+sce setup --opencode --non-interactive --hooks
+sce setup --hooks --repo ../demo-repo
+sce setup --opencode --non-interactive --hooks && sce doctor --format json
+sce version --format json
 ```
 
 ## Install and release paths
