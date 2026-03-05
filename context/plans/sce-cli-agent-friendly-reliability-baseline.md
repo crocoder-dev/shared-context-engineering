@@ -47,7 +47,7 @@ Non-goals:
 
 ## 4) Task stack (`T01..T20`)
 
-- [ ] T01: Define deterministic config model and precedence (status:todo)
+- [x] T01: Define deterministic config model and precedence (status:done)
   - Task ID: T01
   - Goal: Add a config contract that resolves values in deterministic order (`flags > env > config file > defaults`) and expose inspect/validate entrypoints.
   - Boundaries (in/out of scope): In: config model/types, parser integration, env mapping, config-file load/validation, and command help/docs; Out: remote config services.
