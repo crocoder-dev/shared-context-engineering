@@ -74,6 +74,7 @@ impl QualityStatus {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContributorType {
     Human,

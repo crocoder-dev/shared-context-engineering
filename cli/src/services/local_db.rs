@@ -206,7 +206,7 @@ fn resolve_state_data_root() -> Result<PathBuf> {
         if let Some(xdg_state_home) = std::env::var_os("XDG_STATE_HOME") {
             return Ok(PathBuf::from(xdg_state_home));
         }
-        return Ok(resolve_home_dir()?.join(".local").join("state"));
+        Ok(resolve_home_dir()?.join(".local").join("state"))
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]

@@ -23,6 +23,7 @@ pub struct EmbeddedAsset {
     pub bytes: &'static [u8],
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RequiredHookAsset {
     PreCommit,
@@ -36,6 +37,7 @@ pub fn iter_required_hook_assets() -> std::slice::Iter<'static, EmbeddedAsset> {
     HOOK_EMBEDDED_ASSETS.iter()
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn get_required_hook_asset(hook: RequiredHookAsset) -> Option<&'static EmbeddedAsset> {
     let hook_name = match hook {
         RequiredHookAsset::PreCommit => "pre-commit",

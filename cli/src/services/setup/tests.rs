@@ -376,10 +376,7 @@ fn install_engine_rolls_back_when_swap_fails() -> Result<()> {
         |from, to| {
             rename_calls.set(rename_calls.get() + 1);
             if rename_calls.get() == 2 {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "injected swap failure",
-                ));
+                return Err(io::Error::other("injected swap failure"));
             }
 
             fs::rename(from, to)

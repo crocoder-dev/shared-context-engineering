@@ -17,12 +17,10 @@ use super::{
     apply_commit_msg_coauthor_policy, finalize_post_commit_trace, finalize_post_rewrite_remap,
     finalize_pre_commit_checkpoint, finalize_rewrite_trace, parse_hooks_subcommand,
     process_trace_retry_queue, resolve_pre_commit_checkpoint_path,
-    run_commit_msg_subcommand_in_repo, run_hooks_subcommand, run_placeholder_hooks,
-    run_post_commit_subcommand_in_repo, run_post_rewrite_subcommand_in_repo,
-    run_pre_commit_subcommand_in_repo, CommitMsgRuntimeState, GeneratedRegionEvent,
-    GeneratedRegionLifecycle, GitHookKind, HookEvent, HookService, HookSubcommand,
-    PendingCheckpoint, PendingFileCheckpoint, PendingLineRange, PersistenceErrorClass,
-    PersistenceFailure, PersistenceTarget, PersistenceWriteResult, PlaceholderHookService,
+    run_commit_msg_subcommand_in_repo, run_hooks_subcommand, run_post_commit_subcommand_in_repo,
+    run_post_rewrite_subcommand_in_repo, run_pre_commit_subcommand_in_repo, CommitMsgRuntimeState,
+    HookSubcommand, PendingCheckpoint, PendingFileCheckpoint, PendingLineRange,
+    PersistenceErrorClass, PersistenceFailure, PersistenceTarget, PersistenceWriteResult,
     PostCommitFinalization, PostCommitInput, PostCommitNoOpReason, PostCommitRuntimeState,
     PostRewriteFinalization, PostRewriteNoOpReason, PostRewriteRuntimeState, PreCommitFinalization,
     PreCommitNoOpReason, PreCommitRuntimeState, PreCommitTreeAnchors, RetryMetricsSink,
@@ -1247,36 +1245,6 @@ fn post_rewrite_runtime_skips_duplicate_pair_replay() -> Result<()> {
     );
 
     Ok(())
-}
-
-#[test]
-fn hooks_placeholder_event_model_reserves_generated_region_tracking() {
-    let service = PlaceholderHookService;
-    let model = service.event_model();
-    assert!(model.generated_region_tracking);
-    assert_eq!(model.supported_hooks.len(), 3);
-}
-
-#[test]
-fn hooks_placeholder_message_mentions_event_model() -> Result<()> {
-    let message = run_placeholder_hooks()?;
-    assert!(message.contains("Hook event model reserves"));
-    Ok(())
-}
-
-#[test]
-fn hooks_placeholder_accepts_generated_region_events() -> Result<()> {
-    let service = PlaceholderHookService;
-    let event = HookEvent {
-        hook: GitHookKind::PreCommit,
-        region_event: Some(GeneratedRegionEvent {
-            file_path: "context/plans/example.md".to_string(),
-            marker_id: "generated:example".to_string(),
-            lifecycle: GeneratedRegionLifecycle::Updated,
-        }),
-    };
-
-    service.record(event)
 }
 
 #[test]
