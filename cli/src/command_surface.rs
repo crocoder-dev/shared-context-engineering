@@ -20,6 +20,11 @@ pub const COMMANDS: &[CommandContract] = &[
         purpose: "Print the current placeholder command surface",
     },
     CommandContract {
+        name: services::config::NAME,
+        status: ImplementationStatus::Implemented,
+        purpose: "Inspect and validate resolved CLI configuration",
+    },
+    CommandContract {
         name: services::setup::NAME,
         status: ImplementationStatus::Implemented,
         purpose: "Prepare local repository/workspace prerequisites",
@@ -67,6 +72,7 @@ pub fn help_text() -> String {
     format!(
         "sce - Shared Context Engineering CLI (placeholder foundation)\n\n\
 Usage:\n  sce [command]\n\n\
+Config usage:\n  sce config <show|validate> [options]\n\n\
 Setup usage:\n  sce setup [--opencode|--claude|--both]\n  sce setup --hooks [--repo <path>]\n\n\
 Commands:\n{}\n\n\
 Setup defaults to interactive target selection when no setup target flag is passed.\n\

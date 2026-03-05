@@ -1,4 +1,5 @@
 pub mod agent_trace;
+pub mod config;
 pub mod doctor;
 pub mod hooks;
 pub mod hosted_reconciliation;

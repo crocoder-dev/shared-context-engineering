@@ -7,6 +7,7 @@ use lexopt::ValueExt;
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Command {
     Help,
+    Config(services::config::ConfigSubcommand),
     Setup(services::setup::SetupMode),
     SetupHooks(Option<std::path::PathBuf>),
     SetupHelp,
@@ -92,6 +93,7 @@ fn unknown_option_message(option: &str) -> String {
 fn parse_subcommand(value: String, tail_args: Vec<String>) -> Result<Command> {
     match value.as_str() {
         "help" => Ok(Command::Help),
+        "config" => parse_config_subcommand(tail_args),
         "setup" => parse_setup_subcommand(tail_args),
         "doctor" => parse_non_setup_subcommand(Command::Doctor, tail_args),
         "mcp" => parse_non_setup_subcommand(Command::Mcp, tail_args),
@@ -111,6 +113,11 @@ fn parse_subcommand(value: String, tail_args: Vec<String>) -> Result<Command> {
             );
         }
     }
+}
+
+fn parse_config_subcommand(args: Vec<String>) -> Result<Command> {
+    let subcommand = services::config::parse_config_subcommand(args)?;
+    Ok(Command::Config(subcommand))
 }
 
 fn parse_setup_subcommand(args: Vec<String>) -> Result<Command> {
@@ -150,6 +157,9 @@ fn parse_hooks_subcommand(args: Vec<String>) -> Result<Command> {
 fn dispatch(command: Command) -> Result<()> {
     match command {
         Command::Help => println!("{}", command_surface::help_text()),
+        Command::Config(subcommand) => {
+            println!("{}", services::config::run_config_subcommand(subcommand)?);
+        }
         Command::Setup(mode) => {
             let dispatch = services::setup::resolve_setup_dispatch(
                 mode,
@@ -211,6 +221,16 @@ mod tests {
     #[test]
     fn doctor_command_exits_success() {
         let code = run(vec!["sce".to_string(), "doctor".to_string()]);
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn config_show_command_exits_success() {
+        let code = run(vec![
+            "sce".to_string(),
+            "config".to_string(),
+            "show".to_string(),
+        ]);
         assert_eq!(code, ExitCode::SUCCESS);
     }
 
@@ -439,6 +459,27 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "Unexpected setup argument 'extra'. Run 'sce setup --help' to see valid usage."
+        );
+    }
+
+    #[test]
+    fn parser_routes_config_show_subcommand() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "config".to_string(),
+            "show".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(
+            command,
+            Command::Config(crate::services::config::ConfigSubcommand::Show(
+                crate::services::config::ConfigRequest {
+                    report_format: crate::services::config::ReportFormat::Text,
+                    config_path: None,
+                    log_level: None,
+                    timeout_ms: None,
+                }
+            ))
         );
     }
 }

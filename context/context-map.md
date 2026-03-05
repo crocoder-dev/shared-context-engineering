@@ -8,6 +8,7 @@ Primary context files:
 
 Feature/domain context:
 - `context/cli/placeholder-foundation.md` (CLI command surface, setup install flow, shared-runtime sync smoke gate, nested flake release package/app installability, and Cargo local install + crates.io readiness policy)
+- `context/cli/config-precedence-contract.md` (implemented `sce config` show/validate command contract, deterministic `flags > env > config file > defaults` resolution order, config-file selection order, and text/JSON output schema)
 - `context/sce/shared-context-code-workflow.md`
 - `context/sce/shared-context-plan-workflow.md` (canonical `/change-to-plan` workflow, clarification/readiness gate contract, and one-task/one-atomic-commit task-slicing policy)
 - `context/sce/plan-code-overlap-map.md` (T01 overlap matrix for Shared Context Plan/Code, related commands, and core skill ownership/dedup targets)
