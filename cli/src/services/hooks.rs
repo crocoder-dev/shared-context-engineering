@@ -20,6 +20,7 @@ pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
 pub const POST_COMMIT_PARENT_SHA_METADATA_KEY: &str = "dev.crocoder.sce.parent_revision";
 const PRE_COMMIT_CHECKPOINT_GIT_PATH: &str = "sce/pre-commit-checkpoint.json";
+const RETRY_QUEUE_MAX_ITEMS_PER_RUN: usize = 16;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HookSubcommand {
@@ -651,17 +652,31 @@ fn run_post_commit_subcommand_in_repo(repository_root: &Path) -> Result<String> 
         }
     };
 
+    let retry_report =
+        match process_runtime_retry_queue(&mut retry_queue, &mut notes_writer, &mut record_store) {
+            Ok(report) => report,
+            Err(error) => {
+                return Ok(format!(
+                "post-commit hook completed trace finalization but retry replay failed ({error})"
+            ));
+            }
+        };
+
     let message = match outcome {
         PostCommitFinalization::NoOp(reason) => {
             format!("post-commit hook executed with no-op runtime state: {reason:?}")
         }
         PostCommitFinalization::Persisted(persisted) => format!(
-            "post-commit hook finalized trace for commit '{}' (trace_id='{}', notes={:?}, database={:?}).",
+            "post-commit hook finalized trace for commit '{}' (trace_id='{}', notes={:?}, database={:?}) {}.",
             persisted.commit_sha, persisted.trace_id, persisted.notes, persisted.database
+            , retry_report.summary_text()
         ),
         PostCommitFinalization::QueuedFallback(queued) => format!(
-            "post-commit hook enqueued fallback for commit '{}' (trace_id='{}', failed_targets={:?}).",
-            queued.commit_sha, queued.trace_id, queued.failed_targets
+            "post-commit hook enqueued fallback for commit '{}' (trace_id='{}', failed_targets={:?}) {}.",
+            queued.commit_sha,
+            queued.trace_id,
+            queued.failed_targets,
+            retry_report.summary_text()
         ),
     };
 
@@ -992,21 +1007,95 @@ fn run_post_rewrite_subcommand_in_repo(
         }
     }
 
+    let retry_report =
+        match process_runtime_retry_queue(&mut retry_queue, &mut notes_writer, &mut record_store) {
+            Ok(report) => report,
+            Err(error) => {
+                return Ok(format!(
+                "post-rewrite hook completed rewrite finalization but retry replay failed ({error})"
+            ));
+            }
+        };
+
     match outcome {
         PostRewriteFinalization::NoOp(reason) => Ok(format!(
             "post-rewrite hook executed with no-op runtime state: {reason:?}"
         )),
         PostRewriteFinalization::Ingested(ingested) => Ok(format!(
-            "post-rewrite hook ingested {} pair(s), skipped {} duplicate pair(s), method='{}', rewrite_traces=(persisted={}, queued={}, no_op={}, failed={}).",
+            "post-rewrite hook ingested {} pair(s), skipped {} duplicate pair(s), method='{}', rewrite_traces=(persisted={}, queued={}, no_op={}, failed={}) {}.",
             ingested.ingested_pairs,
             ingested.skipped_pairs,
             ingested.rewrite_method.canonical_label(),
             rewrite_persisted,
             rewrite_queued,
             rewrite_noops,
-            rewrite_failures
+            rewrite_failures,
+            retry_report.summary_text()
         )),
     }
+}
+
+#[derive(Default)]
+struct InMemoryRetryMetricsSink {
+    events: Vec<RetryProcessingMetric>,
+}
+
+impl RetryMetricsSink for InMemoryRetryMetricsSink {
+    fn record_retry_metric(&mut self, metric: RetryProcessingMetric) {
+        self.events.push(metric);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RuntimeRetryReport {
+    summary: RetryQueueProcessSummary,
+    transient_failures: usize,
+    permanent_failures: usize,
+}
+
+impl RuntimeRetryReport {
+    fn summary_text(&self) -> String {
+        format!(
+            "retry_queue=(attempted={}, recovered={}, requeued={}, transient_failures={}, permanent_failures={})",
+            self.summary.attempted,
+            self.summary.recovered,
+            self.summary.requeued,
+            self.transient_failures,
+            self.permanent_failures
+        )
+    }
+}
+
+fn process_runtime_retry_queue(
+    retry_queue: &mut impl TraceRetryQueue,
+    notes_writer: &mut impl TraceNotesWriter,
+    record_store: &mut impl TraceRecordStore,
+) -> Result<RuntimeRetryReport> {
+    let mut metrics_sink = InMemoryRetryMetricsSink::default();
+    let summary = process_trace_retry_queue(
+        retry_queue,
+        notes_writer,
+        record_store,
+        &mut metrics_sink,
+        RETRY_QUEUE_MAX_ITEMS_PER_RUN,
+    )?;
+
+    let mut transient_failures = 0_usize;
+    let mut permanent_failures = 0_usize;
+
+    for metric in metrics_sink.events {
+        match metric.error_class {
+            Some(PersistenceErrorClass::Transient) => transient_failures += 1,
+            Some(PersistenceErrorClass::Permanent) => permanent_failures += 1,
+            None => {}
+        }
+    }
+
+    Ok(RuntimeRetryReport {
+        summary,
+        transient_failures,
+        permanent_failures,
+    })
 }
 
 fn resolve_post_rewrite_runtime_state(repository_root: &Path) -> PostRewriteRuntimeState {
