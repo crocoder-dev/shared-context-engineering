@@ -14,6 +14,7 @@
 ## Parser and dispatch behavior
 - `cli/src/app.rs` routes `hooks` through dedicated hook-subcommand parsing instead of generic no-arg subcommand parsing.
 - `cli/src/services/hooks.rs` now owns hook CLI usage text, deterministic parse errors, and runtime dispatch through `HookSubcommand` + `run_hooks_subcommand`.
+- Placeholder hook-event/generated-region scaffolding has been removed from production hook modules; local hook runtime behavior is driven only by production entrypoint/finalization seams.
 - Invalid and ambiguous invocations return deterministic actionable errors pointing to `sce hooks --help`.
 
 ## Current runtime entrypoint behavior

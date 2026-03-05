@@ -3,9 +3,11 @@
 This crate provides the early command-surface scaffold for the Shared Context
 Engineering CLI (`sce`).
 
-Current scope is intentionally narrow: deterministic command dispatch, an
-implemented repository `setup` flow, implemented local rollout health checks
-via `doctor`, and explicit placeholders for commands that are still deferred.
+Current scope is intentionally narrow: deterministic command dispatch,
+implemented repository `setup` flows (including hook installation),
+implemented local rollout health checks via `doctor`, production local
+`hooks` runtime execution, and explicit placeholders for commands that are
+still deferred.
 
 ## Quick start
 
@@ -14,7 +16,8 @@ cargo run --manifest-path cli/Cargo.toml -- --help
 cargo run --manifest-path cli/Cargo.toml -- setup
 cargo run --manifest-path cli/Cargo.toml -- doctor
 cargo run --manifest-path cli/Cargo.toml -- mcp
-cargo run --manifest-path cli/Cargo.toml -- hooks
+cargo run --manifest-path cli/Cargo.toml -- hooks pre-commit
+cargo run --manifest-path cli/Cargo.toml -- hooks commit-msg .git/COMMIT_EDITMSG
 cargo run --manifest-path cli/Cargo.toml -- sync
 ```
 
@@ -57,6 +60,9 @@ Crates.io is prepared but intentionally disabled in this phase.
     `config/.claude/**`
   - installation writes to repository-root `.opencode/` and/or `.claude/`
     using backup-and-replace safety with rollback on swap failures
+  - required local hooks can be installed with `sce setup --hooks` (optionally
+    `--repo <path>`) with deterministic per-hook
+    `installed`/`updated`/`skipped` outcomes
 - `doctor` is implemented and validates hook rollout readiness:
   - detects effective hooks directory for default, per-repo `core.hooksPath`,
     and global `core.hooksPath` installs
@@ -65,25 +71,32 @@ Crates.io is prepared but intentionally disabled in this phase.
   - reports actionable diagnostics for missing or misconfigured hooks
 - `mcp` is a placeholder for future file-cache tooling contracts
   (`cache-put`/`cache-get`).
-- `hooks` is a placeholder for future git hook event and generated-region
-  tracking integration.
+- `hooks` is implemented for local Git hook execution:
+  - `sce hooks pre-commit` captures staged-only checkpoint attribution
+  - `sce hooks commit-msg <message-file>` enforces canonical co-author trailer
+    policy when runtime gates pass
+  - `sce hooks post-commit` finalizes Agent Trace records and performs
+    notes+DB persistence with retry fallback
+  - `sce hooks post-rewrite <amend|rebase|other>` ingests rewrite pairs from
+    STDIN, applies rewrite remap + rewritten-trace finalization, and runs
+    bounded retry replay
 - `sync` is a placeholder that runs a local Turso smoke check, then reports a
   deferred cloud-sync plan.
 
 ## Safety and limitations
 
-- `mcp`, `hooks`, and `sync` remain placeholders and do not perform MCP
-  transport or cloud sync.
+- `mcp` and `sync` remain placeholders and do not perform MCP transport or
+  cloud sync.
 - `sync` only validates local adapter wiring and does not require remote auth.
-- This crate is scaffolding for incremental delivery and should not be treated
-  as production-ready workflow automation.
+- Hosted reconciliation intake/mapping paths are not wired to public CLI
+  commands yet.
 
 ## Near-term roadmap mapping
 
 - Repository setup automation seam: `cli/src/services/setup.rs`
 - Hook install health validation seam: `cli/src/services/doctor.rs`
 - MCP file-cache seam: `cli/src/services/mcp.rs`
-- Hook event and generated-region seam: `cli/src/services/hooks.rs`
+- Local hook runtime + persistence seam: `cli/src/services/hooks.rs`
 - Cloud sync seam + local Turso gate: `cli/src/services/sync.rs`
 - Command catalog and placeholder status: `cli/src/command_surface.rs`
 

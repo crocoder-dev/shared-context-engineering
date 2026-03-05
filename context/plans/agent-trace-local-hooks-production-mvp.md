@@ -120,7 +120,7 @@ Connect the existing Agent Trace service seams into a fully functional local Git
     - `cargo test --manifest-path cli/Cargo.toml hooks::tests::retry_processor_recovers_failed_notes_write_and_emits_success_metric`
     - `cargo test --manifest-path cli/Cargo.toml hooks::tests::retry_processor_requeues_when_db_write_still_fails`
 
-- [ ] T09: Hardening pass for production gates (warnings, docs, rollout/runbook) (status:todo)
+- [x] T09: Hardening pass for production gates (warnings, docs, rollout/runbook) (status:done)
   - Task ID: T09
   - Goal: Satisfy hard release gates by eliminating dead-code warnings in MVP modules through real wiring, tightening failure diagnostics, and updating operator docs.
   - Boundaries (in/out of scope):
@@ -134,7 +134,7 @@ Connect the existing Agent Trace service seams into a fully functional local Git
     - `cargo test --manifest-path cli/Cargo.toml`
     - Documentation parity review across `cli/README.md` and context artifacts.
 
-- [ ] T10: Validation and cleanup (status:todo)
+- [x] T10: Validation and cleanup (status:done)
   - Task ID: T10
   - Goal: Execute final end-to-end validation, evidence capture, artifact cleanup, and context sync verification for production-readiness signoff.
   - Boundaries (in/out of scope):
@@ -151,6 +151,30 @@ Connect the existing Agent Trace service seams into a fully functional local Git
     - `nix run ./cli#clippy`
     - `nix run .#pkl-check-generated`
     - `nix flake check`
+  - Completion evidence:
+    - 2026-03-05: All listed verification commands executed in this session; checks passed.
+    - `cargo fmt --check` initially reported formatting drift in `cli/src/services/hooks/tests.rs`; `cargo fmt` applied and re-check passed.
+    - Residual risk/deferred item: `cargo build` and `nix run ./cli#clippy` still report dead-code warnings in hosted reconciliation scaffolding (`cli/src/services/hosted_reconciliation.rs`); this remains outside Local Hooks MVP scope.
+  - Validation report:
+    - Commands run + outcomes:
+      - `cargo fmt --manifest-path cli/Cargo.toml -- --check` -> exit 1 initially (formatting drift in `cli/src/services/hooks/tests.rs`), then exit 0 after `cargo fmt --manifest-path cli/Cargo.toml`.
+      - `cargo build --manifest-path cli/Cargo.toml` -> exit 0 (build succeeded; warnings only).
+      - `cargo test --manifest-path cli/Cargo.toml` -> exit 0 (`124 passed; 0 failed`).
+      - `nix run ./cli#clippy` -> exit 0 (clippy completed; warnings only).
+      - `nix run .#pkl-check-generated` -> exit 0 (`Generated outputs are up to date.`).
+      - `nix flake check` -> exit 0 (all configured checks evaluated/built successfully).
+    - Failed checks + follow-up:
+      - Initial `cargo fmt --check` failure resolved in-task by running `cargo fmt` and rerunning `cargo fmt --check`.
+    - Success-criteria verification summary:
+      - Local hooks MVP runtime criteria remain satisfied by passing full CLI test suite, including local hook runtime paths (`pre-commit`, `commit-msg`, `post-commit`, `post-rewrite`) and retry behavior coverage.
+      - Persistence/readiness criteria remain validated by tests and successful build/lint/check gates.
+      - Hard release gates for this final validation task executed with deterministic command evidence recorded above.
+    - Cleanup:
+      - No task-scoped temporary scaffolding/artifacts required cleanup in `context/tmp/` for this session.
+    - Context sync verification:
+      - Shared root files verified against current code truth: `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/patterns.md`, and `context/context-map.md`.
+      - Verify-only root pass applied (no additional root context edits needed for this validation-only task).
+      - Feature discoverability links confirmed in `context/context-map.md` for Local Hooks MVP behavior and related Agent Trace domain files.
 
 ## 5) Open questions
 - None.
