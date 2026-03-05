@@ -41,6 +41,7 @@ impl FailureClass {
 #[derive(Debug)]
 struct ClassifiedError {
     class: FailureClass,
+    code: &'static str,
     message: String,
 }
 
@@ -48,6 +49,7 @@ impl ClassifiedError {
     fn parse(message: impl Into<String>) -> Self {
         Self {
             class: FailureClass::Parse,
+            code: "SCE-ERR-PARSE",
             message: message.into(),
         }
     }
@@ -55,6 +57,7 @@ impl ClassifiedError {
     fn validation(message: impl Into<String>) -> Self {
         Self {
             class: FailureClass::Validation,
+            code: "SCE-ERR-VALIDATION",
             message: message.into(),
         }
     }
@@ -62,6 +65,7 @@ impl ClassifiedError {
     fn runtime(message: impl Into<String>) -> Self {
         Self {
             class: FailureClass::Runtime,
+            code: "SCE-ERR-RUNTIME",
             message: message.into(),
         }
     }
@@ -69,7 +73,23 @@ impl ClassifiedError {
     fn dependency(message: impl Into<String>) -> Self {
         Self {
             class: FailureClass::Dependency,
+            code: "SCE-ERR-DEPENDENCY",
             message: message.into(),
+        }
+    }
+}
+
+impl FailureClass {
+    fn default_try_guidance(self) -> &'static str {
+        match self {
+            Self::Parse => "run 'sce --help' to see valid usage.",
+            Self::Validation => {
+                "run the command-specific '--help' usage shown in the error and retry."
+            }
+            Self::Runtime => "inspect the runtime diagnostic details, then retry.",
+            Self::Dependency => {
+                "verify required runtime dependencies and environment setup, then retry."
+            }
         }
     }
 }
@@ -176,10 +196,21 @@ fn write_error_diagnostic<W>(writer: &mut W, error: &ClassifiedError)
 where
     W: Write,
 {
+    let rendered = if error.message.contains("Try:") {
+        error.message.clone()
+    } else {
+        format!(
+            "{} Try: {}",
+            error.message,
+            error.class.default_try_guidance()
+        )
+    };
+
     let _ = writeln!(
         writer,
-        "Error: {}",
-        services::security::redact_sensitive_text(&error.to_string())
+        "Error [{}]: {}",
+        error.code,
+        services::security::redact_sensitive_text(&rendered)
     );
 }
 
@@ -497,7 +528,26 @@ mod tests {
         assert!(stdout.is_empty());
 
         let stderr = String::from_utf8(stderr).expect("stderr should be utf-8");
-        assert!(stderr.contains("Error: Unknown command 'does-not-exist'."));
+        assert!(stderr.contains("Error [SCE-ERR-PARSE]: Unknown command 'does-not-exist'."));
+        assert!(stderr.contains("Try:"));
+    }
+
+    #[test]
+    fn dependency_failure_reports_stable_error_code_and_try_guidance() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run_with_dependency_check_and_streams(
+            vec!["sce".to_string(), "--help".to_string()],
+            || anyhow::bail!("simulated dependency check failure"),
+            &mut stdout,
+            &mut stderr,
+        );
+        assert_eq!(code, ExitCode::from(EXIT_CODE_DEPENDENCY_FAILURE));
+        assert!(stdout.is_empty());
+
+        let stderr = String::from_utf8(stderr).expect("stderr should be utf-8");
+        assert!(stderr.contains("Error [SCE-ERR-DEPENDENCY]:"));
+        assert!(stderr.contains("Try:"));
     }
 
     #[test]

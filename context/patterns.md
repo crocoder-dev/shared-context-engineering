@@ -72,6 +72,7 @@
 - For early CLI foundation tasks, keep implemented behavior and planned behavior explicitly separated in a single command contract table.
 - Mark placeholder commands in help output and runtime responses so scaffolding cannot be confused with production capability.
 - Parse CLI args with `lexopt`, classify top-level failures into stable exit-code classes (`parse`, `validation`, `runtime`, `dependency`), and keep user-facing failures deterministic/actionable.
+- Emit user-facing CLI diagnostics with stable class-based error IDs (`SCE-ERR-PARSE`, `SCE-ERR-VALIDATION`, `SCE-ERR-RUNTIME`, `SCE-ERR-DEPENDENCY`) using deterministic `Error [<code>]: ...` stderr formatting, and auto-append class-default `Try:` remediation only when the message does not already provide one.
 - Keep CLI observability separate from command payloads: emit deterministic lifecycle logs to `stderr` only with stable `event_id` values, and preserve `stdout` for command result payloads.
 - For baseline runtime observability controls, use deterministic env switches (`SCE_LOG_LEVEL`, `SCE_LOG_FORMAT`) with strict allowed values and fail-fast validation on invalid inputs.
 - For optional observability file sinks, gate enablement behind explicit `SCE_LOG_FILE`, require `SCE_LOG_FILE_MODE` only when file sink is set, default write policy to deterministic `truncate`, and enforce owner-only file permissions (`0600`) on Unix.

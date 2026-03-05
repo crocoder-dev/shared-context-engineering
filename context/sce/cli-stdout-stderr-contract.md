@@ -8,7 +8,7 @@ This document defines the implemented stream contract for CLI command payload an
 
 - Command success payloads are emitted to `stdout` only through app-level stream handling.
 - User-facing diagnostics and failures are emitted to `stderr` only.
-- Failure diagnostics are prefixed with `Error:` and passed through shared redaction (`services::security::redact_sensitive_text`) before emission.
+- Failure diagnostics are emitted as `Error [<code>]: ...` on `stderr`, where `<code>` is the stable class-based `SCE-ERR-*` identifier from `ClassifiedError` in `cli/src/app.rs`; diagnostics are passed through shared redaction (`services::security::redact_sensitive_text`) before emission.
 - Command handlers now return payload strings to the app dispatcher; the app owns stream selection and final emission.
 
 ## Implementation surface
@@ -18,6 +18,8 @@ This document defines the implemented stream contract for CLI command payload an
 - `dispatch(...)` returns payload text for each command path rather than writing directly to process streams.
 - `write_stdout_payload(...)` handles success payload writes.
 - `write_error_diagnostic(...)` handles redacted error writes.
+
+See also: `context/sce/cli-error-code-taxonomy.md` for the canonical error-code classes and `Try:` remediation injection rules.
 
 ## Determinism notes
 
