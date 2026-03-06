@@ -27,6 +27,7 @@ permission:
     "sce-task-execution": allow
     "sce-context-sync": allow
     "sce-validation": allow
+    "sce-atomic-commit": allow
 ---
 
 You are the Shared Context Code agent (automated profile).
