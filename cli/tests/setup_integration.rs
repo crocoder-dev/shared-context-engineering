@@ -141,7 +141,7 @@ fn setup_hooks_default_path_install_and_rerun_are_deterministic() -> TestResult<
     let harness = SetupIntegrationHarness::new("sce-setup-integration")?;
     harness.init_git_repo()?;
 
-    let expected_hooks_dir = harness.repo_root().join(".git/hooks");
+    let expected_hooks_dir = harness.repo_root().canonicalize()?.join(".git/hooks");
     assert_setup_hooks_install_and_rerun(&harness, &expected_hooks_dir)?;
 
     Ok(())
@@ -153,7 +153,7 @@ fn setup_hooks_custom_path_install_and_rerun_are_deterministic() -> TestResult<(
     harness.init_git_repo()?;
     harness.configure_local_hooks_path(".githooks")?;
 
-    let expected_hooks_dir = harness.repo_root().join(".githooks");
+    let expected_hooks_dir = harness.repo_root().canonicalize()?.join(".githooks");
     assert_setup_hooks_install_and_rerun(&harness, &expected_hooks_dir)?;
 
     let result = harness.run_git(["config", "--get", "core.hooksPath"])?;
@@ -256,6 +256,7 @@ fn setup_hooks_update_path() -> TestResult<()> {
 fn setup_backup_suffix_collision() -> TestResult<()> {
     let harness = SetupIntegrationHarness::new("sce-setup-backup-collision")?;
     harness.init_git_repo()?;
+    let canonical_repo_root = harness.repo_root().canonicalize()?;
 
     let first = harness.run_sce(["setup", "--opencode"])?;
     assert!(
@@ -286,7 +287,7 @@ fn setup_backup_suffix_collision() -> TestResult<()> {
         second.stderr
     );
 
-    let expected_backup = harness.repo_root().join(".opencode.backup.2");
+    let expected_backup = canonical_repo_root.join(".opencode.backup.2");
     assert!(
         second.stdout.contains(&format!(
             "backup: existing target moved to '{}'",
@@ -449,7 +450,7 @@ fn harness_scopes_turso_state_home_to_test_temp_root() -> TestResult<()> {
         post_commit.stderr
     );
 
-    let expected_local_db = harness.state_home().join("sce/agent-trace/local.db");
+    let expected_local_db = expected_agent_trace_local_db_path(&harness);
     assert!(
         expected_local_db.exists(),
         "expected Turso local DB path '{}' to exist",
@@ -1440,6 +1441,39 @@ fn render_command_result(output: Output) -> CommandResult {
         status: output.status,
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+fn expected_agent_trace_local_db_path(harness: &SetupIntegrationHarness) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        harness
+            .home_dir
+            .join("AppData")
+            .join("Local")
+            .join("sce")
+            .join("agent-trace")
+            .join("local.db")
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        harness
+            .home_dir
+            .join("Library")
+            .join("Application Support")
+            .join("sce")
+            .join("agent-trace")
+            .join("local.db")
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        harness
+            .state_home
+            .join("sce")
+            .join("agent-trace")
+            .join("local.db")
     }
 }
 
