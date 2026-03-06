@@ -1,4 +1,5 @@
 import "renderers/opencode-content.pkl" as opencode
+import "renderers/opencode-automated-content.pkl" as opencode_automated
 import "renderers/claude-content.pkl" as claude
 
 local sharedLibrarySource = read("./lib/drift-collectors.js").text
@@ -7,6 +8,11 @@ output {
   files {
     for (slug, document in opencode.agents) {
       ["config/.opencode/agent/\(document.title).md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in opencode_automated.agents) {
+      ["config/automated/.opencode/agent/\(document.title).md"] {
         text = document.rendered
       }
     }
@@ -21,6 +27,11 @@ output {
         text = document.rendered
       }
     }
+    for (slug, document in opencode_automated.commands) {
+      ["config/automated/.opencode/command/\(slug).md"] {
+        text = document.rendered
+      }
+    }
     for (slug, document in claude.commands) {
       ["config/.claude/commands/\(slug).md"] {
         text = document.rendered
@@ -32,6 +43,11 @@ output {
         text = document.rendered
       }
     }
+    for (slug, document in opencode_automated.skills) {
+      ["config/automated/.opencode/skills/\(slug)/SKILL.md"] {
+        text = document.rendered
+      }
+    }
     for (slug, document in claude.skills) {
       ["config/.claude/skills/\(slug)/SKILL.md"] {
         text = document.rendered
@@ -39,6 +55,9 @@ output {
     }
 
     ["config/.opencode/lib/drift-collectors.js"] {
+      text = sharedLibrarySource
+    }
+    ["config/automated/.opencode/lib/drift-collectors.js"] {
       text = sharedLibrarySource
     }
     ["config/.claude/lib/drift-collectors.js"] {

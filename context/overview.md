@@ -1,6 +1,7 @@
 # Overview
 
 This repository maintains shared assistant configuration for OpenCode and Claude from a single canonical authoring source, then validates that generated outputs stay deterministic and in sync.
+It now supports both manual and automated profile variants: the manual profile preserves interactive approval gates, while the automated profile applies deterministic non-interactive behavior for CI/automation workflows.
 
 It also includes an early Rust CLI foundation at `cli/` for Shared Context Engineering workflows.
 The crate ships onboarding and usage documentation at `cli/README.md` that reflects current implemented vs placeholder behavior.
@@ -51,14 +52,14 @@ The setup command parser/dispatch now also supports composable setup+hooks runs 
 
 ## Repository model
 
-- Author once in canonical Pkl content (`config/pkl/base/shared-content.pkl`).
+- Author once in canonical Pkl content (`config/pkl/base/shared-content.pkl` for manual profile, `config/pkl/base/shared-content-automated.pkl` for automated profile).
 - Apply target-specific metadata/rendering in `config/pkl/renderers/`.
-- Generate derived artifacts into `config/.opencode/**` and `config/.claude/**` via `config/pkl/generate.pkl`.
+- Generate derived artifacts into `config/.opencode/**` (manual profile), `config/automated/.opencode/**` (automated profile), and `config/.claude/**` via `config/pkl/generate.pkl`.
 - Treat generated outputs as build artifacts, not primary editing surfaces.
 
 ## Ownership boundaries
 
-- Generation-owned paths are authored config artifacts under `config/.opencode/**` and `config/.claude/**` (agents, commands, skills, shared drift library).
+- Generation-owned paths are authored config artifacts under `config/.opencode/**`, `config/automated/.opencode/**`, and `config/.claude/**` (agents, commands, skills, shared drift library).
 - Runtime/install artifacts are not generation-owned (for example `node_modules`, lockfiles, install outputs).
 - Code and behavior changes must be made in canonical sources and renderer metadata, then regenerated.
 
@@ -118,10 +119,5 @@ Lightweight post-task verification baseline (required after each completed task)
 - Use `context/sce/agent-trace-hooks-command-routing.md` for the implemented T02 `sce hooks` command routing contract (subcommand parsing, deterministic invocation errors, and initial runtime entrypoint behavior).
 - Use `context/sce/setup-githooks-hook-asset-packaging.md` for the implemented `sce-setup-githooks-any-repo` T02 compile-time hook-template packaging contract and setup-service required-hook embedded accessor surface.
 - Use `context/sce/setup-githooks-install-flow.md` for the implemented `sce-setup-githooks-any-repo` T03 required-hook install orchestration contract (git-truth hooks-path resolution, per-hook installed/updated/skipped outcomes, and backup/rollback behavior).
-- Use `context/sce/setup-githooks-cli-ux.md` for the implemented `sce-setup-githooks-any-repo` T04 setup command-surface contract (composable target+`--hooks`, optional `--repo`), compatibility validation rules, and deterministic setup/hook messaging.
-- Use `context/sce/cli-observability-contract.md` for the implemented structured observability baseline (env-controlled level/format, OTEL bootstrap wiring, stable event IDs, and stderr-only log emission contract).
-- Use `context/sce/cli-stdout-stderr-contract.md` for the implemented app-level stream routing contract (`stdout` for success payloads, `stderr` for redacted diagnostics, and centralized stream ownership in `cli/src/app.rs`).
-- Use `context/sce/cli-version-command-contract.md` for the implemented `sce version` command contract (`--format <text|json>`, deterministic text output, and stable JSON runtime-identification fields).
-- Use `context/sce/cli-shell-completion-contract.md` for the implemented `sce completion` command contract (`--shell <bash|zsh|fish>`, deterministic script output, and parser/docs alignment requirements).
-- Use `context/sce/cli-shared-output-format-contract.md` for the implemented T13 shared `--format <text|json>` parser contract and current command wiring (`config`, `version`).
-- Use `context/sce/cli-error-code-taxonomy.md` for the implemented stderr error-code taxonomy (`SCE-ERR-*` classes), deterministic `Error [<code>]` diagnostic rendering, and class-default `Try:` guidance injection.
+- Use `context/sce/setup-githooks-cli-ux.md` for the implemented `sce-setup-githooks-any-repo` T04 setup command-surface contract (`--hooks`, optional `--repo`), compatibility validation rules, and deterministic hook setup messaging.
+- Use `context/sce/automated-profile-contract.md` for the automated OpenCode profile deterministic gate policy (10 gate categories, permission mappings, and automated profile constraints for non-interactive SCE workflows).

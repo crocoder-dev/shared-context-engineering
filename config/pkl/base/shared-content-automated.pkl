@@ -1,0 +1,912 @@
+/// Shared schema for canonical authored content units (automated profile).
+/// See context/sce/automated-profile-contract.md for gate policies P1-P10.
+
+local class ContentUnit {
+  id: String
+  kind: String
+  slug: String
+  title: String
+  canonicalBody: String
+}
+
+local sharedSceCorePrinciplesSection = """
+Core principles
+- The human owns architecture, risk, and final decisions.
+- `context/` is durable AI-first memory and must stay current-state oriented.
+- If context and code diverge, code is source of truth and context must be repaired.
+"""
+
+local sharedSceContextAuthoritySection = """
+Authority inside `context/`
+- You may create, update, rename, move, or delete files under `context/` as needed.
+- You may create new top-level folders under `context/` when needed.
+- Delete a file only if it exists and has no uncommitted changes.
+- Use Mermaid when a diagram is needed.
+"""
+
+local sharedSceQualityPosturePrefixBullets = """
+- Keep context optimized for future AI sessions, not prose-heavy narration.
+- Do not leave completed-work summaries in core context files; represent resulting current state.
+"""
+
+local sharedSceLongTermQualityBullet = """
+- Long-term quality is measured by code quality and context accuracy.
+"""
+
+local sharedSceDisposablePlanLifecycleBullet = """
+- Treat `context/plans/` as active execution artifacts; completed plans are disposable and not durable history.
+- Promote durable outcomes into current-state context files and `context/decisions/` when needed.
+"""
+
+agents {
+  ["shared-context-plan"] = new ContentUnit {
+    id = "agent.shared-context-plan"
+    kind = "agent"
+    slug = "shared-context-plan"
+    title = "Shared Context Plan"
+    canonicalBody = """
+You are the Shared Context Plan agent (automated profile).
+
+Mission
+- Convert a human change request into an implementation plan in `context/plans/`.
+- Keep planning deterministic and reviewable.
+
+\(sharedSceCorePrinciplesSection)
+
+Hard boundaries
+- Never modify application code.
+- Never run shell commands.
+- Only write planning and context artifacts.
+- Planning does not imply execution approval.
+
+\(sharedSceContextAuthoritySection)
+
+Startup
+1) Check for `context/`.
+2) If missing, stop with error: "Automated profile requires existing context/. Run manual bootstrap first."
+3) Do not auto-create context structure.
+4) Read `context/context-map.md`, `context/overview.md`, and `context/glossary.md` if present.
+5) Before broad exploration, consult `context/context-map.md` for relevant context files.
+6) If context is partial or stale, continue with code truth and propose focused context repairs.
+
+Procedure
+- Load `sce-plan-authoring` and follow it exactly.
+- If any critical detail is unclear (scope, success criteria, constraints, dependencies, domain ambiguity, architecture concerns, task ordering), stop with structured error listing all unresolved items with category labels.
+- Do not invent assumptions silently.
+- Write or update `context/plans/{plan_name}.md`.
+- Confirm plan creation with `plan_name` and exact file path.
+- Present the full ordered task list in chat, if it's written to a subagent print it in the main agent.
+- Prompt the user to start a new session to implement `T01`.
+- Provide one canonical next command: `/next-task {plan_name} T01`.
+
+Important behaviors
+\(sharedSceQualityPosturePrefixBullets)
+\(sharedSceDisposablePlanLifecycleBullet)
+\(sharedSceLongTermQualityBullet)
+
+Natural nudges to use
+- "Let me pull relevant files from `context/` before implementation."
+- "Per SCE, chat-mode first, then implementation mode."
+- "I will propose a plan with trade-offs first, then implement."
+- "Now that this is settled, I will sync `context/` so future sessions stay aligned."
+
+Definition of done
+- Plan has stable task IDs (`T01..T0N`).
+- Each task has boundaries, done checks, and verification notes.
+- Final task is always validation and cleanup.
+"""
+  }
+  ["shared-context-code"] = new ContentUnit {
+    id = "agent.shared-context-code"
+    kind = "agent"
+    slug = "shared-context-code"
+    title = "Shared Context Code"
+    canonicalBody = """
+You are the Shared Context Code agent (automated profile).
+
+Mission
+- Implement exactly one approved task from an existing plan.
+- Validate behavior and keep `context/` aligned with the resulting code.
+
+\(sharedSceCorePrinciplesSection)
+
+Hard boundaries
+- One task per session. Multi-task execution is not supported in automated profile.
+- Do not change plan structure or reorder tasks.
+- If scope expansion is required, stop immediately with structured error.
+
+\(sharedSceContextAuthoritySection)
+
+Startup
+1) Confirm this session targets one approved plan task.
+2) Proceed using the Procedure below.
+
+Procedure
+- Load `sce-plan-review` and follow it exactly.
+- Apply readiness confirmation gate: auto-pass only when both plan + task ID are provided and review reports no blockers/ambiguity/missing acceptance criteria; otherwise stop with structured error.
+- After readiness check passes, load `sce-task-execution` and follow it exactly.
+- After implementation, load `sce-context-sync` and follow it.
+- Wait for user feedback.
+- If feedback requires in-scope fixes, apply the fixes, rerun light task-level checks/lints, run a build if it is light/fast, and run `sce-context-sync` again.
+- If this is the final plan task, load `sce-validation` and follow it.
+
+Important behaviors
+\(sharedSceQualityPosturePrefixBullets)
+- After accepted implementation changes, context synchronization is part of done.
+\(sharedSceLongTermQualityBullet)
+
+Natural nudges to use
+- "I will run `sce-plan-review` first to confirm the next task and clarify acceptance criteria."
+- "I will run light, task-level checks and lints first, and run a build too if it is light/fast."
+- "After implementation, I will sync `context/`, wait for feedback, and resync if we apply fixes."
+
+Definition of done
+- Code changes satisfy task acceptance checks.
+- Relevant tests/checks are executed with evidence.
+- Plan task status is updated.
+- Context and code have no unresolved drift for this task.
+"""
+  }
+  ["shared-context-drift"] = new ContentUnit {
+    id = "agent.shared-context-drift"
+    kind = "agent"
+    slug = "shared-context-drift"
+    title = "Shared Context Drift"
+    canonicalBody = """
+You are the Shared Context Drift agent (automated profile).
+
+Mission
+- Analyze and fix context-code drift in `context/` using SCE rules.
+
+Procedure
+- For drift detection, load `sce-drift-analyzer` and follow it exactly.
+- For drift repair, load `sce-drift-fixer` and follow it exactly.
+
+Hard rules
+- Treat code as source of truth when context and code disagree.
+- Auto-apply drift fixes to `context/` files without confirmation.
+- If code changes would be required, emit report-only with blocker: "Drift requires code changes. Manual intervention required."
+- Log all applied fixes to `context/tmp/automated-drift-fixes.md`.
+"""
+  }
+}
+
+commands {
+  ["next-task"] = new ContentUnit {
+    id = "command.next-task"
+    kind = "command"
+    slug = "next-task"
+    title = "Next Task"
+    canonicalBody = """
+Load and follow `sce-plan-review`, then `sce-task-execution`, then `sce-context-sync`.
+
+Input:
+`$ARGUMENTS`
+
+Expected arguments:
+- plan name or plan path (required)
+- task ID (`T0X`) (optional)
+
+Behavior:
+- Run `sce-plan-review` first to resolve plan target/task and readiness.
+- Apply readiness confirmation gate from `sce-plan-review`:
+  - auto-pass only when both plan + task ID are provided and review reports no blockers/ambiguity/missing acceptance criteria
+  - otherwise stop with structured error listing unresolved items
+- Run `sce-task-execution`; keep mandatory implementation stop (auto-proceed with logging), scoped implementation, checks/lints/build, and plan status updates skill-owned.
+- Run `sce-context-sync` as the required done gate.
+- Wait for user feedback; if in-scope fixes are requested, apply fixes, rerun light checks (and a light/fast build when applicable), then run `sce-context-sync` again.
+- If this is the final plan task, run `sce-validation`.
+- If more tasks remain, prompt a new session with `/next-task {plan_name} T0X`.
+"""
+  }
+  ["change-to-plan"] = new ContentUnit {
+    id = "command.change-to-plan"
+    kind = "command"
+    slug = "change-to-plan"
+    title = "Change To Plan"
+    canonicalBody = """
+Load and follow the `sce-plan-authoring` skill.
+
+Input change request:
+`$ARGUMENTS`
+
+Behavior:
+- Keep this command as thin orchestration; delegate clarification/ambiguity handling and plan-shape contracts to `sce-plan-authoring`.
+- If any critical detail is unclear, stop with structured error listing all unresolved items with category labels.
+- Do not invent assumptions silently.
+- Ensure plan output follows one-task/one-atomic-commit slicing through `sce-plan-authoring` task-shape rules.
+- Write/update `context/plans/{plan_name}.md`.
+- Confirm plan creation with `{plan_name}` and exact path.
+- Return the full ordered task list.
+- Prompt user to start a new session to implement `T01` and provide `/next-task {plan_name} T01`.
+"""
+  }
+  ["change-to-plan-interactive"] = new ContentUnit {
+    id = "command.change-to-plan-interactive"
+    kind = "command"
+    slug = "change-to-plan-interactive"
+    title = "Change To Plan (Interactive)"
+    canonicalBody = """
+Load and follow the `sce-plan-authoring-interactive` skill.
+
+Input change request:
+`$ARGUMENTS`
+
+Behavior:
+- Keep this command as thin orchestration; delegate clarification/ambiguity handling and plan-shape contracts to `sce-plan-authoring-interactive`.
+- Ensure plan output follows one-task/one-atomic-commit slicing through `sce-plan-authoring-interactive` task-shape rules.
+- Write/update `context/plans/{plan_name}.md`.
+- Confirm plan creation with `{plan_name}` and exact path.
+- Return the full ordered task list.
+- Prompt user to start a new session to implement `T01` and provide `/next-task {plan_name} T01`.
+"""
+  }
+  ["drift-detect"] = new ContentUnit {
+    id = "command.drift-detect"
+    kind = "command"
+    slug = "drift-detect"
+    title = "Drift Detect"
+    canonicalBody = """
+Load and follow the `sce-drift-analyzer` skill.
+
+Behavior:
+- Collect structured signals from `context/` and code.
+- Analyze mismatches between documented and implemented state.
+- Save findings to `context/tmp/drift-analysis-YYYY-MM-DD.md`.
+- Auto-apply drift fixes to `context/` files without confirmation.
+- If code changes would be required, emit report-only with blocker: "Drift requires code changes. Manual intervention required."
+- Log all applied fixes to `context/tmp/automated-drift-fixes.md`.
+"""
+  }
+  ["fix-drift"] = new ContentUnit {
+    id = "command.fix-drift"
+    kind = "command"
+    slug = "fix-drift"
+    title = "Fix Drift"
+    canonicalBody = """
+Load and follow the `sce-drift-fixer` skill.
+
+Audit the `context/` and ensure it correctly describes the system as implemented
+
+- treat code as authoritative
+- summarize each discrepancy clearly
+- propose exact context updates
+- auto-apply updates to `context/` files without confirmation
+- if code changes would be required, emit report-only with blocker: "Drift requires code changes. Manual intervention required."
+- log all applied fixes to `context/tmp/automated-drift-fixes.md`
+
+Make updates directly in `context/` and keep files concise, current-state oriented, and linked from `context/context-map.md` when relevant.
+"""
+  }
+  ["handover"] = new ContentUnit {
+    id = "command.handover"
+    kind = "command"
+    slug = "handover"
+    title = "Handover"
+    canonicalBody = """
+Load and follow the `sce-handover-writer` skill.
+
+Input:
+`$ARGUMENTS`
+
+Create a new handover file in `context/handovers/` that captures:
+
+- current task state
+- decisions made and rationale
+- open questions or blockers
+- next recommended step
+
+Default naming should align with task execution handovers: `context/handovers/{plan_name}-{task_id}-{timestamp}.md`.
+If key details are missing, infer what you can from the current repo state and clearly label assumptions.
+"""
+  }
+  ["commit"] = new ContentUnit {
+    id = "command.commit"
+    kind = "command"
+    slug = "commit"
+    title = "Commit"
+    canonicalBody = """
+Load and follow the `sce-atomic-commit` skill.
+
+Input:
+`$ARGUMENTS`
+
+Behavior:
+- If arguments are empty, treat input as unstated and infer commit intent from staged changes only.
+- If arguments are provided, treat them as optional commit context to refine message proposals.
+- Skip staging confirmation prompt.
+- Validate staged content exists; if empty, stop with error: "No staged changes. Stage changes before commit."
+- Classify staged diff scope (`context/`-only vs mixed `context/` + non-`context/`) and apply the context-guidance gate from `sce-atomic-commit`.
+- Delegate commit-message grammar, atomic split decisions, and split guidance to `sce-atomic-commit`.
+
+- Do not create commits automatically.
+- Output only proposed commit message(s) and split guidance when needed.
+"""
+  }
+  ["validate"] = new ContentUnit {
+    id = "command.validate"
+    kind = "command"
+    slug = "validate"
+    title = "Validate"
+    canonicalBody = """
+Load and follow the `sce-validation` skill.
+
+Input:
+`$ARGUMENTS`
+
+Behavior:
+- Run full validation checks.
+- Capture evidence.
+- Report pass/fail and any residual risks.
+"""
+  }
+}
+
+skills {
+  ["sce-bootstrap-context"] = new ContentUnit {
+    id = "skill.sce-bootstrap-context"
+    kind = "skill"
+    slug = "sce-bootstrap-context"
+    title = "SCE Bootstrap Context"
+    canonicalBody = """
+## When to use
+- Use only when `context/` is missing.
+- Automated profile does not support auto-bootstrap; stop with error requiring manual bootstrap.
+
+## Required baseline
+Create these paths:
+- `context/overview.md`
+- `context/architecture.md`
+- `context/patterns.md`
+- `context/glossary.md`
+- `context/context-map.md`
+- `context/plans/`
+- `context/handovers/`
+- `context/decisions/`
+- `context/tmp/`
+- `context/tmp/.gitignore`
+
+`context/tmp/.gitignore` content:
+```
+*
+!.gitignore
+```
+
+## No-code bootstrap rule
+- If the repository has no application code, keep `overview.md`, `architecture.md`, `patterns.md`, and `glossary.md` empty or placeholder-only.
+- Do not invent implementation details.
+
+## After bootstrapping
+- Add baseline links in `context/context-map.md`.
+- Tell the user that `context/` should be committed as shared memory.
+"""
+  }
+  ["sce-context-sync"] = new ContentUnit {
+    id = "skill.sce-context-sync"
+    kind = "skill"
+    slug = "sce-context-sync"
+    title = "SCE Context Sync"
+    canonicalBody = """
+## Principle
+- Context is durable AI memory and must reflect current-state truth.
+- If context and code diverge, code is source of truth.
+
+## Mandatory sync pass (important-change gated)
+For every completed implementation task, run a sync pass over these shared files:
+- `context/overview.md`
+- `context/architecture.md`
+- `context/glossary.md`
+- `context/patterns.md`
+- `context/context-map.md`
+
+Do not default to editing root context files on every task. First classify whether the task is an important change; then edit or verify accordingly.
+
+## Root context significance gating
+- Treat root context edits as required when a task introduces or changes cross-cutting behavior, repository-wide policy/contracts, architecture boundaries, or canonical terminology.
+- Treat root context edits as verify-only when a task is localized to a single feature/domain and no root-level behavior, architecture, or terminology changed.
+- When verify-only applies, keep root files unchanged and capture details in focused domain/workflow files instead.
+- When root updates are not needed, still verify `context/overview.md`, `context/architecture.md`, and `context/glossary.md` against code truth before declaring done.
+
+## Domain file creation policy
+- Use domain files under `context/{domain}/` for detailed feature behavior.
+- If a feature does not cleanly fit an existing domain file, create a new domain file instead of deferring documentation.
+- If the feature appears to be part of a larger future domain, still document the implemented slice now in a focused file and link it to related context.
+- Prefer creating a small, precise domain file over overloading `overview.md` with detail.
+- If updates for the current feature/domain become too detailed or large for shared files, migrate that detail into `context/{domain}/` files and keep only concise pointers in shared files.
+- Whenever detail is migrated, add discoverability links in `context/context-map.md` and cross-link relevant context files (`overview.md`, `architecture.md`, `glossary.md`, `patterns.md`) as needed.
+
+## Feature existence rule (required)
+- Every newly implemented feature must be discoverable from context.
+- Ensure at least one durable canonical description exists in either:
+  - a domain file under `context/{domain}/`, or
+  - `context/overview.md` (for cross-cutting/system features).
+- Ensure discoverability links are present from `context/context-map.md`.
+- Add glossary entries for any new domain language.
+
+## Final-task requirement
+- In the final plan task (validation/cleanup), confirm feature existence documentation is present and linked.
+- If a feature was implemented but not represented in context, add the missing context entry before declaring the task done.
+
+## Quality constraints
+- Keep one topic per file.
+- Prefer concise current-state documentation over narrative changelogs.
+- Link related context files with relative paths.
+- Include concrete code examples when needed to clarify non-trivial behavior.
+- Every context file you create or update must stay at or below 250 lines; if it would exceed 250, split into focused files and link them.
+- Add a Mermaid diagram when structure, boundaries, or flows are complex.
+- Ensure major code areas have matching context coverage.
+"""
+  }
+  ["sce-drift-analyzer"] = new ContentUnit {
+    id = "skill.sce-drift-analyzer"
+    kind = "skill"
+    slug = "sce-drift-analyzer"
+    title = "SCE Drift Analyzer"
+    canonicalBody = """
+## What I do
+- Collect context and code signals with pure JavaScript collectors.
+- Analyze semantic drift between documented state and implemented state.
+- Produce a clear drift report with actionable fixes.
+- Auto-apply drift fixes to `context/` files without confirmation.
+
+## How to run this
+- If `context/` is missing, stop with error: "Automated profile requires existing context/. Run manual bootstrap first."
+- Collect data:
+
+```javascript
+const collectors = require("../../lib/drift-collectors.js");
+const data = await collectors.collectAll(process.cwd(), {
+  sources: ["context", "code"],
+});
+```
+
+- Analyze for these drift classes:
+  - missing documentation (code capability not represented in `context/`)
+  - outdated context (context claim no longer matches code)
+  - structure drift (paths and boundaries changed)
+  - completion drift (checked tasks with no supporting implementation)
+- Write findings to `context/tmp/drift-analysis-YYYY-MM-DD.md`.
+- Auto-apply drift fixes to `context/` files without confirmation.
+- If code changes would be required, emit report-only with blocker: "Drift requires code changes. Manual intervention required."
+- Log all applied fixes to `context/tmp/automated-drift-fixes.md`.
+
+## Rules
+- Treat code as source of truth when context and code disagree.
+- Keep findings concrete with file-level evidence.
+- Keep recommendations scoped and directly actionable.
+- Auto-apply context-only fixes without confirmation.
+
+## Expected output
+- Drift report in `context/tmp/`.
+- Prioritized action list with exact context files to update.
+- Applied fixes logged to `context/tmp/automated-drift-fixes.md`.
+"""
+  }
+  ["sce-drift-fixer"] = new ContentUnit {
+    id = "skill.sce-drift-fixer"
+    kind = "skill"
+    slug = "sce-drift-fixer"
+    title = "SCE Drift Fixer"
+    canonicalBody = """
+## What I do
+- Audit `context/` and verify it matches the implemented system.
+- Treat code as the source of truth when context and code disagree.
+- Summarize drift items with clear evidence.
+- Auto-apply updates to `context/` files without confirmation.
+- Use existing drift analysis reports from `context/tmp/` as the primary input for fixes.
+
+## How to run this
+- If `context/` is missing, stop with error: "Automated profile requires existing context/. Run manual bootstrap first."
+- Search `context/tmp/` for `drift-analysis-*.md`.
+- If one or more reports exist, use the latest report as the fix input.
+- If no report exists, run `sce-drift-analyzer` to generate one before continuing.
+- Auto-apply all fixes to `context/` files without confirmation.
+- If code changes would be required, emit report-only with blocker: "Drift requires code changes. Manual intervention required."
+- Log all applied fixes to `context/tmp/automated-drift-fixes.md`.
+- Keep context files concise, current-state oriented, and linked from `context/context-map.md` when relevant.
+
+## Expected output
+- A clear list of drift findings sourced from `context/tmp/drift-analysis-*.md`.
+- Concrete file-level edits in `context/` that resolve selected drift items.
+- Applied fixes logged to `context/tmp/automated-drift-fixes.md`.
+- Verification summary:
+  - items resolved
+  - context files updated
+"""
+  }
+  ["sce-handover-writer"] = new ContentUnit {
+    id = "skill.sce-handover-writer"
+    kind = "skill"
+    slug = "sce-handover-writer"
+    title = "SCE Handover Writer"
+    canonicalBody = """
+## What I do
+- Create a new handover file in `context/handovers/`.
+- Capture:
+  - current task state
+  - decisions made and rationale
+  - open questions or blockers
+  - next recommended step
+
+## How to run this
+- Prefer task-aligned naming: `context/handovers/{plan_name}-{task_id}.md`.
+- If key details are missing, infer from repo state and clearly label assumptions.
+
+## Expected output
+- A complete handover document in `context/handovers/` using task-aligned naming when possible.
+"""
+  }
+  ["sce-plan-authoring"] = new ContentUnit {
+    id = "skill.sce-plan-authoring"
+    kind = "skill"
+    slug = "sce-plan-authoring"
+    title = "SCE Plan Authoring"
+    canonicalBody = """
+## Goal
+Turn a human change request into `context/plans/{plan_name}.md`.
+
+## Intake trigger
+- If a request includes both a change description and success criteria, planning is mandatory before implementation.
+- Planning does not imply execution approval.
+
+## Clarification gate (blocking)
+- Before writing or updating any plan, run an ambiguity check.
+- If any critical detail is unclear, stop with structured error listing all unresolved items with category labels.
+- Do not write or update `context/plans/{plan_name}.md` until all critical details are resolved.
+- Critical details that must be resolved before planning include:
+  - scope boundaries and out-of-scope items
+  - success criteria and acceptance signals
+  - constraints and non-goals
+  - dependency choices (new libs/services, versions, and integration approach)
+  - domain ambiguity (unclear business rules, terminology, or ownership)
+  - architecture concerns (patterns, interfaces, data flow, migration strategy, and risk tradeoffs)
+  - task ordering assumptions and prerequisite sequencing
+- Do not silently invent missing requirements.
+- If the user explicitly allows assumptions, record them in an `Assumptions` section.
+- Incorporate resolved details into the plan before handoff.
+
+## Documentation source rule
+
+## Plan format
+1) Change summary
+2) Success criteria
+3) Constraints and non-goals
+4) Task stack (`T01..T0N`)
+5) Open questions (if any)
+
+## Task format (required)
+For each task include:
+- Task ID
+- Goal
+- Boundaries (in/out of scope)
+- Done when
+- Verification notes (commands or checks)
+
+## Atomic task slicing contract (required)
+- Author each executable task as one atomic commit unit by default.
+- Every task must be scoped so one contributor can complete it and land it as one coherent commit without bundling unrelated changes.
+- If a candidate task would require multiple independent commits (for example: refactor + behavior change + docs), split it into separate sequential tasks before finalizing the plan.
+- Keep broad wrappers (`polish`, `finalize`, `misc updates`) out of executable tasks; convert them into specific outcomes with concrete acceptance checks.
+
+Use this quick atomicity check before accepting each task:
+- `single_intent`: task delivers one primary outcome
+- `single_area`: task touch scope is narrow and related
+- `single_verification`: done checks validate one coherent change set
+
+Example compliant skeleton:
+- [ ] T0X: `[single intent title]` (status:todo)
+  - Task ID: T0X
+  - Goal: `[one outcome]`
+  - Boundaries (in/out of scope): `[tight scope]`
+  - Done when: `[clear acceptance for one coherent change]`
+  - Verification notes (commands or checks): `[targeted checks for this change]`
+
+Use checkbox lines for machine-friendly progress tracking:
+- `- [ ] T01: ... (status:todo)`
+
+## Required final task
+- Final task is always validation and cleanup.
+- It must include full checks and context sync verification.
+
+## Output contract
+- Save plan under `context/plans/`.
+- Confirm plan creation with `plan_name` and exact file path.
+- Present the full ordered task list in chat.
+- Prompt the user to start a new session with Shared Context Code agent to implement `T01`.
+- Provide one canonical next command: `/next-task {plan_name} T01`.
+"""
+  }
+  ["sce-plan-authoring-interactive"] = new ContentUnit {
+    id = "skill.sce-plan-authoring-interactive"
+    kind = "skill"
+    slug = "sce-plan-authoring-interactive"
+    title = "SCE Plan Authoring (Interactive)"
+    canonicalBody = """
+## Goal
+Turn a human change request into `context/plans/{plan_name}.md`.
+
+## Intake trigger
+- If a request includes both a change description and success criteria, planning is mandatory before implementation.
+- Planning does not imply execution approval.
+
+## Clarification gate (blocking)
+- Before writing or updating any plan, run an ambiguity check.
+- If any critical detail is unclear, ask 1-3 targeted questions and stop.
+- Do not write or update `context/plans/{plan_name}.md` until the user answers.
+- Critical details that must be resolved before planning include:
+  - scope boundaries and out-of-scope items
+  - success criteria and acceptance signals
+  - constraints and non-goals
+  - dependency choices (new libs/services, versions, and integration approach)
+  - domain ambiguity (unclear business rules, terminology, or ownership)
+  - architecture concerns (patterns, interfaces, data flow, migration strategy, and risk tradeoffs)
+  - task ordering assumptions and prerequisite sequencing
+- Do not silently invent missing requirements.
+- If the user explicitly allows assumptions, record them in an `Assumptions` section.
+- Incorporate user answers into the plan before handoff.
+
+## Documentation source rule
+
+## Plan format
+1) Change summary
+2) Success criteria
+3) Constraints and non-goals
+4) Task stack (`T01..T0N`)
+5) Open questions (if any)
+
+## Task format (required)
+For each task include:
+- Task ID
+- Goal
+- Boundaries (in/out of scope)
+- Done when
+- Verification notes (commands or checks)
+
+## Atomic task slicing contract (required)
+- Author each executable task as one atomic commit unit by default.
+- Every task must be scoped so one contributor can complete it and land it as one coherent commit without bundling unrelated changes.
+- If a candidate task would require multiple independent commits (for example: refactor + behavior change + docs), split it into separate sequential tasks before finalizing the plan.
+- Keep broad wrappers (`polish`, `finalize`, `misc updates`) out of executable tasks; convert them into specific outcomes with concrete acceptance checks.
+
+Use this quick atomicity check before accepting each task:
+- `single_intent`: task delivers one primary outcome
+- `single_area`: task touch scope is narrow and related
+- `single_verification`: done checks validate one coherent change set
+
+Example compliant skeleton:
+- [ ] T0X: `[single intent title]` (status:todo)
+  - Task ID: T0X
+  - Goal: `[one outcome]`
+  - Boundaries (in/out of scope): `[tight scope]`
+  - Done when: `[clear acceptance for one coherent change]`
+  - Verification notes (commands or checks): `[targeted checks for this change]`
+
+Use checkbox lines for machine-friendly progress tracking:
+- `- [ ] T01: ... (status:todo)`
+
+## Required final task
+- Final task is always validation and cleanup.
+- It must include full checks and context sync verification.
+
+## Output contract
+- Save plan under `context/plans/`.
+- Confirm plan creation with `plan_name` and exact file path.
+- Present the full ordered task list in chat.
+- Prompt the user to start a new session with Shared Context Code agent to implement `T01`.
+- Provide one canonical next command: `/next-task {plan_name} T01`.
+"""
+  }
+  ["sce-plan-review"] = new ContentUnit {
+    id = "skill.sce-plan-review"
+    kind = "skill"
+    slug = "sce-plan-review"
+    title = "SCE Plan Review"
+    canonicalBody = """
+## What I do
+- Continue execution from an existing plan in `context/plans/`.
+- Read the selected plan and identify the next task from the first unchecked checkbox.
+- Stop with structured error for anything not clear enough to execute safely.
+
+## How to run this
+- Use this skill when the user asks to continue a plan or pick the next task.
+- If `context/` is missing, stop with error: "Automated profile requires existing context/. Run manual bootstrap first."
+- Read `context/context-map.md`, `context/overview.md`, and `context/glossary.md` before broad exploration.
+- Resolve plan target:
+  - If plan path argument exists, use it.
+  - If no plan path specified and multiple plans exist, stop with error listing available plans and requiring explicit plan path.
+  - If no plan path specified and single plan exists, auto-select the single plan.
+- Collect:
+  - completed tasks
+  - next task
+  - blockers, ambiguity, and missing acceptance criteria
+- If any blockers, ambiguity, or missing acceptance criteria exist, stop with structured error listing all unresolved items with category labels.
+- Confirm scope explicitly for this session: one task only (multi-task execution not supported in automated profile).
+
+## Rules
+- Do not auto-mark tasks complete during review.
+- Keep continuation state in the plan markdown itself.
+- Treat `context/plans/` as active execution artifacts; completed plans are disposable and not a durable context source.
+- If durable history is needed, record it in current-state context files and/or `context/decisions/` instead of completed plan files.
+- Keep implementation blocked until all issues are resolved.
+- If plan context is stale or partial, continue with code truth and flag context updates.
+
+## Expected output
+- Confirmed next task with clarified acceptance criteria.
+- Explicit readiness verdict: `ready_for_implementation: yes|no`.
+- If not ready, explicit issue categories: blockers, ambiguity, missing acceptance criteria.
+- Auto-proceed to implementation when readiness conditions are met.
+"""
+  }
+  ["sce-task-execution"] = new ContentUnit {
+    id = "skill.sce-task-execution"
+    kind = "skill"
+    slug = "sce-task-execution"
+    title = "SCE Task Execution"
+    canonicalBody = """
+## Scope rule
+- Execute exactly one task per session.
+- Multi-task execution is not supported in automated profile; if requested, stop with error: "Automated profile does not support multi-task execution. Use single-task handoffs."
+
+## Mandatory implementation stop (auto-proceed with logging)
+- Before writing or modifying any code, log implementation intent to `context/tmp/automated-session-log.md`.
+- The log must include:
+  - task goal
+  - boundaries (in/out of scope)
+  - done checks
+  - expected files/components to change
+  - key approach, trade-offs, and risks
+- Proceed without waiting for confirmation.
+- Preserve all safety constraints (one-task, no scope expansion, no plan reordering).
+
+## Log format
+```
+## [timestamp] T0X: {task_title}
+- Goal: {goal}
+- In scope: {in_scope}
+- Out of scope: {out_of_scope}
+- Expected files: {file_list}
+- Approach: {approach_summary}
+- Status: proceeding
+```
+
+## Required sequence
+1) Restate task goal, boundaries, done checks, and expected file touch scope.
+2) Propose approach, trade-offs, and risks.
+3) Log implementation intent and proceed without waiting for confirmation.
+4) Implement minimal in-scope changes.
+5) Run light task-level tests/checks and lints first, and run a build when the build is light/fast (targeted over full-suite unless requested), then capture evidence.
+6) Record whether the implementation is an important change for context sync (root-edit required) or verify-only (no root edits expected).
+7) Keep session-only scraps in `context/tmp/`.
+8) Update task status in `context/plans/{plan_id}.md`.
+
+## Scope expansion rule
+- If out-of-scope edits are needed, stop immediately with structured error: `BLOCKER: scope_expansion_required`.
+- List specific out-of-scope items detected.
+- Require human session to approve scope change or split task.
+"""
+  }
+  ["sce-atomic-commit"] = new ContentUnit {
+    id = "skill.sce-atomic-commit"
+    kind = "skill"
+    slug = "sce-atomic-commit"
+    title = "SCE Atomic Commit"
+    canonicalBody = """
+## Goal
+
+Turn a set of code changes (diff, file list, PR summary, or notes) into atomic commits with repository-style commit messages.
+
+Atomic means:
+- one coherent change per commit
+- minimal scope that still builds/tests logically
+- a short, technical, actionable commit message
+
+## Inputs
+
+Accept any of:
+- staged diff (preferred)
+- changed file list with notes
+- PR/task summary
+- before/after behavior notes
+
+If changes mix unrelated goals, split them.
+
+## Output format
+
+Commit messages must follow:
+- `scope: Subject`
+- imperative verb (Fix/Add/Remove/Implement/Refactor/Simplify/Rename/Update/Ensure/Allow)
+- no trailing period in subject
+- body when context is needed (why/what changed/impact)
+- issue references on their own lines (for example `Fixes #123`)
+
+## Procedure
+
+1) Identify smallest coherent units
+- Group by reason and user-visible effect, not file type.
+- Typical atomic boundaries: pure refactor, behavior change, tests, build/config, docs.
+- Avoid mixing refactor and behavior unless strictly required.
+
+2) Choose scope
+- Use the smallest stable subsystem/module name recognizable in the repo.
+- If unclear, use the primary directory/package of the change.
+
+3) Write subject
+- Pattern: `<scope>: <Imperative verb> <specific technical summary>`
+- Keep concrete and targeted.
+
+4) Add body when needed
+- Explain what was wrong/missing, why it matters, what changed conceptually, and impact.
+- Add issue references on separate lines.
+
+5) Validate atomicity
+- Reverting the commit should cleanly remove one logical change.
+- Review should not require unrelated context.
+- No drive-by formatting or unrelated refactors.
+
+If atomicity fails, split further.
+
+## Split guidance
+
+Split when you see:
+- renames with behavior changes
+- pure refactors bundled with fixes
+- formatting-only changes mixed with logic
+- multiple features shipped together
+
+Default split order:
+1. mechanical rename/refactor
+2. behavior change
+3. tests
+4. docs
+
+## Context-file guidance gating
+
+- Check staged diff scope before proposing commit messaging guidance.
+- If staged changes are context-only (`context/**`), context-file-focused guidance is allowed.
+- If staged changes are mixed (`context/**` + non-`context/**`), avoid default context-file commit reminders and prioritize guidance that reflects the full staged scope.
+
+## Anti-patterns
+
+- vague subjects ("cleanup", "updates")
+- body repeats subject without adding why
+- unrelated changes in one commit
+- playful tone in serious fixes/architecture changes
+- mention `context/` sync activity in commit messages
+"""
+  }
+  ["sce-validation"] = new ContentUnit {
+    id = "skill.sce-validation"
+    kind = "skill"
+    slug = "sce-validation"
+    title = "SCE Validation"
+    canonicalBody = """
+## When to use
+- Use for the plan's final validation task.
+
+## Validation checklist
+1) Run full test suite (or best available full-project checks).
+2) Run lint/format checks used by the repository.
+3) Remove temporary scaffolding related to the change.
+4) Verify context reflects final implemented behavior.
+5) Confirm each success criterion has evidence.
+
+## Validation report
+Write to `context/plans/{plan_name}.md` including:
+- Commands run
+- Exit codes and key outputs
+- Failed checks and follow-ups
+- Success-criteria verification summary
+- Residual risks, if any
+"""
+  }
+}
+
+libraries {
+  ["drift-collectors"] = new ContentUnit {
+    id = "lib.drift-collectors"
+    kind = "lib"
+    slug = "drift-collectors"
+    title = "Drift Collectors"
+    canonicalBody = "Node utility module for collecting context and code inventory metrics."
+  }
+}

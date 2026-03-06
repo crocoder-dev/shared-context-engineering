@@ -39,13 +39,7 @@ Feature/domain context:
 - `context/sce/agent-trace-retry-queue-observability.md` (T14 retry queue recovery contract plus reconciliation/runtime observability metrics and DB-first queue schema additions)
 - `context/sce/agent-trace-local-hooks-mvp-contract-gap-matrix.md` (T01 Local Hooks MVP production contract freeze and deterministic gap matrix for `agent-trace-local-hooks-production-mvp`)
 - `context/sce/agent-trace-hooks-command-routing.md` (implemented `sce hooks` command routing plus current runtime entrypoint behavior, including commit-msg policy gating/file mutation and post-rewrite remap+rewrite finalization wiring)
-- `context/sce/cli-exit-code-contract.md` (implemented stable `sce` exit-code class contract and `parse`/`validation`/`runtime`/`dependency` failure mapping)
-- `context/sce/cli-error-code-taxonomy.md` (implemented stable user-facing stderr error-code classes, `Error [<code>]` rendering contract, and class-default `Try:` remediation injection behavior)
-- `context/sce/cli-observability-contract.md` (implemented structured observability baseline for `sce` app runtime: deterministic level/format env controls, optional file sink controls/policy, OTEL bootstrap wiring, stable event IDs, and stderr-only primary log emission)
-- `context/sce/cli-stdout-stderr-contract.md` (implemented app-level stream routing contract: success payload emission on stdout, redacted diagnostics on stderr, and centralized stream ownership in `cli/src/app.rs`)
-- `context/sce/cli-version-command-contract.md` (implemented `sce version` command contract with deterministic text output, `--format <text|json>` parsing/validation, and stable JSON runtime-identification fields)
-- `context/sce/cli-shell-completion-contract.md` (implemented `sce completion` command contract with deterministic Bash/Zsh/Fish script generation, strict `--shell` validation, and parser/docs alignment coverage)
-- `context/sce/cli-shared-output-format-contract.md` (implemented T13 canonical shared `--format <text|json>` parser contract and wiring across supported commands)
+- `context/sce/automated-profile-contract.md` (deterministic gate policy for automated OpenCode profile, including 10 gate categories, permission mappings, and automated profile constraints)
 
 Working areas:
 - `context/plans/` (active plan execution artifacts, not durable history)

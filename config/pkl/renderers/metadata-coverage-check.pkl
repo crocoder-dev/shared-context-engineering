@@ -1,6 +1,8 @@
 import "../base/shared-content.pkl" as shared
+import "../base/shared-content-automated.pkl" as sharedAutomated
 import "common.pkl" as common
 import "opencode-metadata.pkl" as opencode
+import "opencode-automated-metadata.pkl" as opencodeAutomated
 import "claude-metadata.pkl" as claude
 
 opencodeAgentCoverage {
@@ -56,6 +58,36 @@ claudeSkillCoverage {
     [unitSlug] = new {
       description = common.skillDescriptions[unitSlug]
       compatibility = claude.skillCompatibility
+    }
+  }
+}
+
+// Automated OpenCode profile coverage checks
+opencodeAutomatedAgentCoverage {
+  for (unitSlug, _ in sharedAutomated.agents) {
+    [unitSlug] = new {
+      description = opencodeAutomated.agentDescriptions[unitSlug]
+      displayName = opencodeAutomated.agentDisplayNames[unitSlug]
+      color = opencodeAutomated.agentColors[unitSlug]
+      permissionBlock = opencodeAutomated.agentPermissionBlocks[unitSlug]
+    }
+  }
+}
+
+opencodeAutomatedCommandCoverage {
+  for (unitSlug, _ in sharedAutomated.commands) {
+    [unitSlug] = new {
+      description = common.commandDescriptions[unitSlug]
+      agent = opencodeAutomated.commandAgents[unitSlug]
+    }
+  }
+}
+
+opencodeAutomatedSkillCoverage {
+  for (unitSlug, _ in sharedAutomated.skills) {
+    [unitSlug] = new {
+      description = common.skillDescriptions[unitSlug]
+      compatibility = opencodeAutomated.skillCompatibility
     }
   }
 }
