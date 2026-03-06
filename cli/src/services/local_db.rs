@@ -206,6 +206,8 @@ pub(crate) fn resolve_state_data_root() -> Result<PathBuf> {
         if let Some(app_data) = std::env::var_os("APPDATA") {
             return Ok(PathBuf::from(app_data));
         }
+
+        return Ok(resolve_home_dir()?.join("AppData").join("Local"));
     }
 
     #[cfg(target_os = "macos")]
