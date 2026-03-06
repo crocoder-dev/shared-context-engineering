@@ -1,0 +1,73 @@
+import "../base/shared-content-automated.pkl" as shared
+import "common.pkl" as common
+import "opencode-automated-metadata.pkl" as metadata
+
+local agentFrontmatterBySlug = new Mapping {
+  for (unitSlug, _ in shared.agents) {
+    [unitSlug] = """
+---
+name: "\(metadata.agentDisplayNames[unitSlug])"
+description: \(metadata.agentDescriptions[unitSlug])
+temperature: 0.1
+color: "\(metadata.agentColors[unitSlug])"\(metadata.agentBehaviorBlocks[unitSlug])
+\(metadata.agentPermissionBlocks[unitSlug])
+---
+"""
+  }
+}
+
+local commandFrontmatterBySlug = new Mapping {
+  for (unitSlug, _ in shared.commands) {
+    [unitSlug] = """
+---
+description: "\(common.commandDescriptions[unitSlug])"
+agent: "\(metadata.commandAgents[unitSlug])"
+---
+"""
+  }
+}
+
+local skillFrontmatterBySlug = new Mapping {
+  for (unitSlug, _ in shared.skills) {
+    [unitSlug] = """
+---
+name: \(unitSlug)
+description: \(common.skillDescriptions[unitSlug])
+compatibility: \(metadata.skillCompatibility)
+---
+"""
+  }
+}
+
+agents {
+  for (unitSlug, unit in shared.agents) {
+    [unitSlug] = new common.RenderedTargetDocument {
+      slug = unitSlug
+      title = unit.title
+      frontmatter = agentFrontmatterBySlug[unitSlug]
+      body = unit.canonicalBody
+    }
+  }
+}
+
+commands {
+  for (unitSlug, unit in shared.commands) {
+    [unitSlug] = new common.RenderedTargetDocument {
+      slug = unitSlug
+      title = unit.title
+      frontmatter = commandFrontmatterBySlug[unitSlug]
+      body = unit.canonicalBody
+    }
+  }
+}
+
+skills {
+  for (unitSlug, unit in shared.skills) {
+    [unitSlug] = new common.RenderedTargetDocument {
+      slug = unitSlug
+      title = unit.title
+      frontmatter = skillFrontmatterBySlug[unitSlug]
+      body = unit.canonicalBody
+    }
+  }
+}

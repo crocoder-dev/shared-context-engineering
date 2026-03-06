@@ -9,6 +9,7 @@ class RenderedTargetDocument {
 commandDescriptions = new Mapping {
   ["next-task"] = "Review a plan and execute one SCE task from an approved plan"
   ["change-to-plan"] = "Create or update an SCE plan from a change request"
+  ["change-to-plan-interactive"] = "Create or update an SCE plan from a change request with interactive clarification"
   ["drift-detect"] = "Analyze and report drift between context and code"
   ["fix-drift"] = "Resolve code-context drift using SCE rules"
   ["handover"] = "Create a structured SCE handover of the current task"
@@ -23,6 +24,7 @@ skillDescriptions = new Mapping {
   ["sce-drift-fixer"] = "Use when user wants to audit and repair code-context drift in context/ using SCE rules."
   ["sce-handover-writer"] = "Use when user wants to create a structured SCE handover for the current task."
   ["sce-plan-authoring"] = "Use when user wants to Create or update an SCE implementation plan with scoped atomic tasks."
+  ["sce-plan-authoring-interactive"] = "Use when user wants to Create or update an SCE implementation plan with interactive clarification."
   ["sce-plan-review"] = "Use when user wants to review an existing plan and prepare the next task safely."
   ["sce-task-execution"] = "Use when user wants to Execute one approved task with explicit scope, evidence, and status updates."
   ["sce-atomic-commit"] = "Write atomic, repo-style git commits from a change summary or diff. Use when preparing commit messages, splitting work into coherent commits, or reviewing whether a commit is too broad."
