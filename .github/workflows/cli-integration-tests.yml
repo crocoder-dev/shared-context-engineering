@@ -9,7 +9,10 @@ permissions:
 jobs:
   cli-integration-tests:
     name: Run cli integration tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     timeout-minutes: 25
     steps:
       - name: Check out repository
