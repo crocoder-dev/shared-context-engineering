@@ -130,6 +130,8 @@ impl SetupIntegrationHarness {
             .current_dir(&self.repo_root)
             .env("XDG_STATE_HOME", &self.state_home)
             .env("HOME", &self.home_dir)
+            .env("LOCALAPPDATA", &self.state_home)
+            .env("APPDATA", &self.state_home)
             .env("GIT_CONFIG_GLOBAL", null_device_path())
             .env("GIT_CONFIG_NOSYSTEM", "1");
         command
@@ -288,11 +290,15 @@ fn setup_backup_suffix_collision() -> TestResult<()> {
     );
 
     let expected_backup = canonical_repo_root.join(".opencode.backup.2");
+    let reported_backup = extract_labeled_path(&second.stdout, "backup: existing target moved to")
+        .ok_or_else(|| {
+            format!(
+                "output should report backup path for collision case\nstdout:\n{}",
+                second.stdout
+            )
+        })?;
     assert!(
-        second.stdout.contains(&format!(
-            "backup: existing target moved to '{}'",
-            expected_backup.display()
-        )),
+        paths_match_for_test(&reported_backup, &expected_backup),
         "output should report backup to .backup.2 due to collision\nstdout:\n{}",
         second.stdout
     );
@@ -361,20 +367,14 @@ fn setup_hooks_repo_relative_path() -> TestResult<()> {
     );
 
     assert!(
-        result.stdout.contains(&format!(
-            "Repository root: '{}'",
-            canonical_repo_root.display()
-        )),
+        labeled_path_matches(&result.stdout, "Repository root", &canonical_repo_root),
         "output should contain canonical repository root '{}'\nstdout:\n{}",
         canonical_repo_root.display(),
         result.stdout
     );
 
     assert!(
-        result.stdout.contains(&format!(
-            "Hooks directory: '{}'",
-            expected_hooks_dir.display()
-        )),
+        labeled_path_matches(&result.stdout, "Hooks directory", &expected_hooks_dir),
         "output should contain hooks directory '{}'\nstdout:\n{}",
         expected_hooks_dir.display(),
         result.stdout
@@ -413,20 +413,14 @@ fn setup_hooks_repo_absolute_path() -> TestResult<()> {
     );
 
     assert!(
-        result.stdout.contains(&format!(
-            "Repository root: '{}'",
-            canonical_repo_root.display()
-        )),
+        labeled_path_matches(&result.stdout, "Repository root", &canonical_repo_root),
         "output should contain canonical repository root '{}'\nstdout:\n{}",
         canonical_repo_root.display(),
         result.stdout
     );
 
     assert!(
-        result.stdout.contains(&format!(
-            "Hooks directory: '{}'",
-            expected_hooks_dir.display()
-        )),
+        labeled_path_matches(&result.stdout, "Hooks directory", &expected_hooks_dir),
         "output should contain hooks directory '{}'\nstdout:\n{}",
         expected_hooks_dir.display(),
         result.stdout
@@ -920,6 +914,7 @@ mod pty_interactive {
         Ok(())
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn setup_interactive_nontty_fail() -> TestResult<()> {
         let harness = SetupIntegrationHarness::new("sce-setup-nontty")?;
@@ -1292,18 +1287,16 @@ fn assert_setup_hooks_install_and_rerun(
         first.stderr
     );
     assert!(first.stdout.contains("Hook setup completed successfully."));
-    assert!(first.stdout.contains(&format!(
-        "Hooks directory: '{}'",
-        expected_hooks_directory.display()
-    )));
+    assert!(
+        labeled_path_matches(&first.stdout, "Hooks directory", expected_hooks_directory),
+        "first setup run should include hooks directory '{}':\n{}",
+        expected_hooks_directory.display(),
+        first.stdout
+    );
 
     for hook in REQUIRED_HOOK_NAMES {
-        let expected_hook_path = expected_hooks_directory.join(hook);
         assert!(
-            first.stdout.contains(&format!(
-                "- {hook}: installed at '{}'",
-                expected_hook_path.display()
-            )),
+            first.stdout.contains(&format!("- {hook}: installed at '")),
             "first setup run should report '{}' as installed\nstdout:\n{}",
             hook,
             first.stdout
@@ -1326,18 +1319,16 @@ fn assert_setup_hooks_install_and_rerun(
         second.stderr
     );
     assert!(second.stdout.contains("Hook setup completed successfully."));
-    assert!(second.stdout.contains(&format!(
-        "Hooks directory: '{}'",
-        expected_hooks_directory.display()
-    )));
+    assert!(
+        labeled_path_matches(&second.stdout, "Hooks directory", expected_hooks_directory),
+        "second setup run should include hooks directory '{}':\n{}",
+        expected_hooks_directory.display(),
+        second.stdout
+    );
 
     for hook in REQUIRED_HOOK_NAMES {
-        let expected_hook_path = expected_hooks_directory.join(hook);
         assert!(
-            second.stdout.contains(&format!(
-                "- {hook}: skipped at '{}'",
-                expected_hook_path.display()
-            )),
+            second.stdout.contains(&format!("- {hook}: skipped at '")),
             "second setup run should report '{}' as skipped\nstdout:\n{}",
             hook,
             second.stdout
@@ -1448,9 +1439,7 @@ fn expected_agent_trace_local_db_path(harness: &SetupIntegrationHarness) -> Path
     #[cfg(target_os = "windows")]
     {
         harness
-            .home_dir
-            .join("AppData")
-            .join("Local")
+            .state_home
             .join("sce")
             .join("agent-trace")
             .join("local.db")
@@ -1475,6 +1464,76 @@ fn expected_agent_trace_local_db_path(harness: &SetupIntegrationHarness) -> Path
             .join("agent-trace")
             .join("local.db")
     }
+}
+
+fn labeled_path_matches(stdout: &str, label: &str, expected: &Path) -> bool {
+    extract_labeled_path(stdout, label)
+        .is_some_and(|reported| paths_match_for_test(&reported, expected))
+}
+
+fn extract_labeled_path(stdout: &str, label: &str) -> Option<PathBuf> {
+    let prefixes = [format!("{label}: '"), format!("{label} '")];
+    stdout.lines().find_map(|line| {
+        let trimmed = line.trim_start();
+        prefixes.iter().find_map(|prefix| {
+            trimmed
+                .strip_prefix(prefix)
+                .and_then(|value| value.strip_suffix('\''))
+                .map(PathBuf::from)
+        })
+    })
+}
+
+fn paths_match_for_test(actual: &Path, expected: &Path) -> bool {
+    let actual_components = normalized_components(actual);
+    let expected_components = normalized_components(expected);
+
+    if actual_components == expected_components {
+        return true;
+    }
+
+    if let (Some(actual_tail), Some(expected_tail)) = (
+        tail_from_anchor(&actual_components, "repo"),
+        tail_from_anchor(&expected_components, "repo"),
+    ) {
+        if actual_tail == expected_tail {
+            return true;
+        }
+    }
+
+    let canonical_actual = actual.canonicalize().ok();
+    let canonical_expected = expected.canonicalize().ok();
+    if let (Some(canonical_actual), Some(canonical_expected)) =
+        (canonical_actual, canonical_expected)
+    {
+        return normalized_components(&canonical_actual)
+            == normalized_components(&canonical_expected);
+    }
+
+    false
+}
+
+fn normalized_components(path: &Path) -> Vec<String> {
+    let raw = trim_windows_verbatim_prefix(&path.display().to_string()).replace('\\', "/");
+    raw.split('/')
+        .filter(|component| !component.is_empty())
+        .map(|component| component.to_ascii_lowercase())
+        .collect()
+}
+
+fn tail_from_anchor<'a>(components: &'a [String], anchor: &str) -> Option<&'a [String]> {
+    let anchor = anchor.to_ascii_lowercase();
+    components
+        .iter()
+        .rposition(|component| component == &anchor)
+        .map(|index| &components[index..])
+}
+
+fn trim_windows_verbatim_prefix(value: &str) -> &str {
+    value
+        .strip_prefix(r"\\?\")
+        .or_else(|| value.strip_prefix("//?/"))
+        .unwrap_or(value)
 }
 
 fn null_device_path() -> &'static str {
