@@ -30,3 +30,8 @@ opentelemetry-otlp = { version = "0.28", features = ["grpc-tonic", "http-proto",
 
 [dev-dependencies]
 jsonschema = "0.33"
+portable-pty = "0.8"
+regex = "1"
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
