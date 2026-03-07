@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Smoke tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Dry build SCE package
+        run: nix build .#checks.x86_64-linux.sce-package --dry-run --print-out-paths
+
+      - name: Run pkl generated parity check
+        run: nix run .#pkl-check-generated
+
+      - name: Run agnix validate
+        working-directory: config
+        run: nix develop -c agnix validate .
+
+  nix-flake-check:
+    name: Nix flake check
+    needs: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Run nix flake check
+        run: nix flake check
+
+  cli-ubuntu:
+    name: CLI tests (Ubuntu)
+    needs: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Run CLI integration tests
+        run: nix run .#cli-integration-tests
+
+  cli-macos:
+    name: CLI tests (macOS)
+    needs: smoke
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Run CLI integration tests
+        run: nix run .#cli-integration-tests
+
+  cli-windows:
+    name: CLI tests (Windows)
+    needs: smoke
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Run clippy
+        working-directory: cli
+        run: cargo clippy --all-targets --all-features
+
+      - name: Run setup integration tests
+        working-directory: cli
+        run: cargo test --test setup_integration
+
+  token-count:
+    name: Token count
+    needs: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Run workflow token-count
+        run: nix run .#token-count-workflows
+
+      - name: Upload token-count artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-token-footprint
+          path: |
+            context/tmp/token-footprint/workflow-token-count-latest.json
+            context/tmp/token-footprint/workflow-token-count-latest.md
+            context/tmp/token-footprint/workflow-token-count-*.json
+            context/tmp/token-footprint/workflow-token-count-*.md
+          if-no-files-found: error
