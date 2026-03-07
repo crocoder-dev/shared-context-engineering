@@ -362,6 +362,7 @@ fn hook_state(hook: &HookFileHealth) -> &'static str {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::process::Command;
@@ -401,6 +402,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn doctor_output_reports_healthy_state_when_all_required_hooks_exist() -> Result<()> {
         let temp_dir = TestTempDir::new("doctor-healthy")?;
         let hooks_dir = temp_dir.path().join("hooks");
@@ -437,6 +439,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn doctor_output_reports_missing_hook_state() -> Result<()> {
         let temp_dir = TestTempDir::new("doctor-missing")?;
         let hooks_dir = temp_dir.path().join("hooks");
@@ -471,6 +474,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn doctor_output_reports_misconfigured_hook_permissions() -> Result<()> {
         let temp_dir = TestTempDir::new("doctor-misconfigured")?;
         let hooks_dir = temp_dir.path().join("hooks");
