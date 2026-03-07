@@ -47,7 +47,7 @@
           sourceRoot = "source/cli";
 
           cargoLock = {
-            lockFile = ../cli/Cargo.lock;
+            lockFile = ./Cargo.lock;
           };
 
           nativeBuildInputs = [
@@ -57,6 +57,33 @@
           nativeCheckInputs = [ pkgs.git ];
           doCheck = false;
         };
+
+        mkCheck =
+          pname: checkPhase:
+          rustPlatform.buildRustPackage {
+            inherit pname src;
+            version = "0.1.0";
+            sourceRoot = "source/cli";
+
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+            };
+
+            nativeBuildInputs = [ rustToolchain ];
+
+            buildPhase = ''
+              runHook preBuild
+              runHook postBuild
+            '';
+
+            inherit checkPhase;
+
+            installPhase = ''
+              runHook preInstall
+              mkdir -p "$out"
+              runHook postInstall
+            '';
+          };
       in
       {
         packages = {
@@ -84,105 +111,33 @@
           };
         };
 
-        checks.cli-setup-command-surface = rustPlatform.buildRustPackage {
-          pname = "sce-cli-setup-command-surface-check";
-          version = "0.1.0";
-          inherit src;
-          sourceRoot = "source/cli";
+        checks.cli-setup-command-surface = mkCheck "sce-cli-setup-command-surface-check" ''
+          runHook preCheck
 
-          cargoLock = {
-            lockFile = ../cli/Cargo.lock;
-          };
+          cargo fmt --check
+          cargo test command_surface::tests::help_text_mentions_setup_target_flags
+          cargo test parser_routes_setup
+          cargo test run_setup_reports
 
-          nativeBuildInputs = [ rustToolchain ];
+          runHook postCheck
+        '';
 
-          buildPhase = ''
-            runHook preBuild
-            runHook postBuild
-          '';
+        checks.cli-setup-integration = mkCheck "sce-cli-setup-integration-check" ''
+          runHook preCheck
 
-          checkPhase = ''
-            runHook preCheck
+          export PATH="${pkgs.git}/bin:$PATH"
+          cargo test --test setup_integration
 
-            cargo fmt --check
-            cargo test command_surface::tests::help_text_mentions_setup_target_flags
-            cargo test parser_routes_setup
-            cargo test run_setup_reports
+          runHook postCheck
+        '';
 
-            runHook postCheck
-          '';
+        checks.cli-clippy = mkCheck "sce-cli-clippy-check" ''
+          runHook preCheck
 
-          installPhase = ''
-            runHook preInstall
-            mkdir -p "$out"
-            runHook postInstall
-          '';
-        };
+          cargo clippy --all-targets --all-features
 
-        checks.cli-setup-integration = rustPlatform.buildRustPackage {
-          pname = "sce-cli-setup-integration-check";
-          version = "0.1.0";
-          inherit src;
-          sourceRoot = "source/cli";
-
-          cargoLock = {
-            lockFile = ../cli/Cargo.lock;
-          };
-
-          nativeBuildInputs = [ rustToolchain ];
-
-          buildPhase = ''
-            runHook preBuild
-            runHook postBuild
-          '';
-
-          checkPhase = ''
-            runHook preCheck
-
-            export PATH="${pkgs.git}/bin:$PATH"
-            cargo test --test setup_integration
-
-            runHook postCheck
-          '';
-
-          installPhase = ''
-            runHook preInstall
-            mkdir -p "$out"
-            runHook postInstall
-          '';
-        };
-
-        checks.cli-clippy = rustPlatform.buildRustPackage {
-          pname = "sce-cli-clippy-check";
-          version = "0.1.0";
-          inherit src;
-          sourceRoot = "source/cli";
-
-          cargoLock = {
-            lockFile = ../cli/Cargo.lock;
-          };
-
-          nativeBuildInputs = [ rustToolchain ];
-
-          buildPhase = ''
-            runHook preBuild
-            runHook postBuild
-          '';
-
-          checkPhase = ''
-            runHook preCheck
-
-            cargo clippy --all-targets --all-features
-
-            runHook postCheck
-          '';
-
-          installPhase = ''
-            runHook preInstall
-            mkdir -p "$out"
-            runHook postInstall
-          '';
-        };
+          runHook postCheck
+        '';
       }
     );
 }
