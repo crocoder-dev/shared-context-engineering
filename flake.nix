@@ -24,6 +24,14 @@
       let
         pkgs = import nixpkgs {
           inherit system;
+          overlays = [ rust-overlay.overlays.default ];
+        };
+
+        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+          extensions = [
+            "rustfmt"
+            "clippy"
+          ];
         };
 
         syncOpencodeConfigApp = pkgs.writeShellApplication {
@@ -310,6 +318,8 @@
       {
         checks.cli-setup-command-surface = cli.checks.${system}.cli-setup-command-surface;
         checks.cli-setup-integration = cli.checks.${system}.cli-setup-integration;
+        checks.cli-clippy = cli.checks.${system}.cli-clippy;
+        checks.sce-package = cli.packages.${system}.default;
 
         apps.sync-opencode-config = {
           type = "app";
@@ -344,16 +354,17 @@
         };
 
         devShells.default = pkgs.mkShell {
-          packages = with pkgs; [
-            bun
-            jq
-            pkl
-            typescript
-            nodePackages.typescript-language-server
-            agnixLspShim
-            cargo
-            rustc
-          ];
+          packages =
+            with pkgs;
+            [
+              bun
+              jq
+              pkl
+              typescript
+              nodePackages.typescript-language-server
+              agnixLspShim
+            ]
+            ++ [ rustToolchain ];
 
           shellHook = ''
             version_of() {

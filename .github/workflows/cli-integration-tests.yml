@@ -29,6 +29,13 @@ jobs:
       - name: Install Rust toolchain
         if: matrix.os == 'windows-latest'
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Run clippy on Windows
+        if: matrix.os == 'windows-latest'
+        working-directory: cli
+        run: cargo clippy --all-targets --all-features
 
       - name: Run setup integration tests on Windows
         if: matrix.os == 'windows-latest'
