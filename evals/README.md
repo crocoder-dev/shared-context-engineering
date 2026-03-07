@@ -1,25 +1,13 @@
 # Evals
 
-## Workflow token counting
+Evaluation scripts for workflow token counting.
 
-Run from the `evals/` directory:
+---
 
-```bash
-bun install
-bun run token-count-workflows
-```
+## Count workflow tokens
 
-Common options:
+Run from the `evals/` directory with bun install and bun run token-count-workflows.
 
-```bash
-bun run token-count-workflows --run-id local-test
-bun run token-count-workflows --baseline context/tmp/token-footprint/workflow-token-count-latest.json
-bun run token-count-workflows --tokenizer cl100k_base
-bun run token-count-workflows --manifest context/sce/workflow-token-footprint-manifest.json
-```
+Common options include --run-id, --baseline, --tokenizer, and --manifest. The baseline flag accepts a path to a previous token-count artifact.
 
-Output artifacts are written to `context/tmp/token-footprint/`:
-
-- `workflow-token-count-latest.json`
-- `workflow-token-count-latest.md`
-- `workflow-token-count-<run_id>.json` (when `--run-id` is provided)
+Output artifacts are written to `context/tmp/token-footprint/`. Artifacts include `workflow-token-count-latest.json`, `workflow-token-count-latest.md`, and run-specific JSON files when --run-id is provided.
