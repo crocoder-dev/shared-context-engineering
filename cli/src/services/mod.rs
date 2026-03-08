@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod agent_trace;
 pub mod completion;
 pub mod config;
