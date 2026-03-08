@@ -78,7 +78,7 @@ Add WorkOS SSO/OIDC authentication to the existing `sce` CLI using the OAuth 2.0
     - Verify auth types serialize/deserialize correctly in unit tests
     - Run `cargo test --manifest-path cli/Cargo.toml` to ensure no broken references
 
-- [ ] T02: Implement cross-platform token storage service (status:todo)
+- [x] T02: Implement cross-platform token storage service (status:done)
   - Task ID: T02
   - Goal: Create secure file-based token storage with proper permissions across Linux, macOS, and Windows
   - Boundaries (in/out of scope):
