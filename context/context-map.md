@@ -9,7 +9,7 @@ Primary context files:
 Feature/domain context:
 - `context/cli/placeholder-foundation.md` (CLI command surface, setup install flow, bounded resilience-wrapped sync/local-DB smoke and bootstrap behavior, nested flake release package/app installability, and Cargo local install + crates.io readiness policy)
 - `context/cli/config-precedence-contract.md` (implemented `sce config` show/validate command contract, deterministic `flags > env > config file > defaults` resolution order, config-file selection order, and text/JSON output schema)
-- `context/cli/auth-service.md` (WorkOS authentication service type definitions for OAuth 2.0 Device Authorization Flow, token types, error handling, and planned implementation tasks)
+- `context/cli/auth-service.md` (WorkOS authentication service type definitions, OAuth 2.0 Device Authorization Flow, token storage, and token refresh logic)
 - `context/sce/shared-context-code-workflow.md`
 - `context/sce/shared-context-plan-workflow.md` (canonical `/change-to-plan` workflow, clarification/readiness gate contract, and one-task/one-atomic-commit task-slicing policy)
 - `context/sce/plan-code-overlap-map.md` (T01 overlap matrix for Shared Context Plan/Code, related commands, and core skill ownership/dedup targets)

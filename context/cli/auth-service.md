@@ -12,8 +12,9 @@ The `cli/src/services/token_storage.rs` module provides secure cross-platform to
 
 **T03 device flow complete:** HTTP-based Device Authorization Flow with polling.
 
-**Planned (T04-T10):**
-- Token refresh logic (T04)
+**T04 token refresh complete:** Automatic token refresh with expiry checking.
+
+**Planned (T05-T10):**
 - `login` command (T05)
 - `logout` command (T06)
 - `auth status` command (T07)
@@ -48,6 +49,37 @@ The `auth` module provides blocking HTTP-based device authorization:
 - Adds 5 seconds on `slow_down` error
 - Times out based on `expires_in` from device code response
 - Uses `tokio::runtime::Builder::new_current_thread()` for async HTTP
+
+## Token Refresh (T04 implemented)
+
+The `auth` module provides automatic token refresh with expiry checking:
+
+### Public API
+
+- `is_token_expired(tokens: &StoredTokens) -> bool`: Checks if access token is expired or about to expire (60-second buffer)
+- `refresh_access_token(config: &WorkOSConfig, tokens: &StoredTokens) -> Result<StoredTokens, AuthError>`: Refreshes expired access token using refresh token
+- `ensure_valid_token(config: &WorkOSConfig) -> Result<StoredTokens, AuthError>`: High-level API that loads tokens, checks expiry, and refreshes if needed
+
+### Refresh behavior
+
+1. **Load stored tokens**: Returns `ConfigurationError` if not logged in
+2. **Check expiry**: Uses 60-second buffer to account for clock skew
+3. **Refresh if expired**: POSTs to `/user_management/authenticate` with refresh token
+4. **Update storage**: Saves new tokens after successful refresh
+5. **Handle failures**: Maps `invalid_grant` errors to require re-authentication
+
+### Expiry checking
+
+- Uses 60-second buffer before actual expiry (defined in `TOKEN_EXPIRY_BUFFER_SECS`)
+- Accounts for clock skew and network latency
+- Conservative approach: refreshes early rather than late
+
+### Error handling
+
+- Empty refresh token: Returns `AuthError::InvalidGrant`
+- Invalid/expired refresh token: Returns `AuthError::InvalidGrant` (requires re-login)
+- Network failures: Returns `AuthError::NetworkError` with actionable guidance
+- Storage failures: Returns `AuthError::StorageError` with actionable guidance
 
 ## Token Storage (T02 implemented)
 
@@ -93,7 +125,14 @@ All functions return `anyhow::Result` with actionable error messages including "
 ### Configuration
 
 - `WorkOSConfig`: Client configuration (client ID, domain, API base URL)
-- Constants: `WORKOS_API_BASE_URL`, `WORKOS_AUTHKIT_DEVICE_URL_TEMPLATE`
+- Constants: `WORKOS_API_BASE_URL`, `WORKOS_AUTHKIT_DEVICE_URL_TEMPLATE`, `TOKEN_EXPIRY_BUFFER_SECS`
+
+### Internal constants
+
+- `SLOW_DOWN_INTERVAL_ADDITION_SECS`: 5 seconds added to polling interval on `slow_down` error
+- `TOKEN_EXPIRY_BUFFER_SECS`: 60 seconds buffer for token expiry checking
+- `GRANT_TYPE_DEVICE_CODE`: OAuth 2.0 grant type for device flow
+- `GRANT_TYPE_REFRESH_TOKEN`: OAuth 2.0 grant type for token refresh
 
 ### Error Handling
 

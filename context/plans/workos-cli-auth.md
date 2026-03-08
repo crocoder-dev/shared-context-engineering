@@ -120,7 +120,7 @@ Add WorkOS SSO/OIDC authentication to the existing `sce` CLI using the OAuth 2.0
     - Manual test with real WorkOS credentials (document in test plan)
     - Verify error messages include "Try:" guidance
 
-- [ ] T04: Implement token refresh logic (status:todo)
+- [x] T04: Implement token refresh logic (status:done)
   - Task ID: T04
   - Goal: Automatically refresh expired access tokens using refresh tokens
   - Boundaries (in/out of scope):

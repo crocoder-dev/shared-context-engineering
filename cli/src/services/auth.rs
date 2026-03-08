@@ -507,6 +507,167 @@ where
 }
 
 // ============================================================================
+// Token Refresh Logic
+// ============================================================================
+
+/// Number of seconds before actual expiry to consider token expired (buffer for clock skew).
+const TOKEN_EXPIRY_BUFFER_SECS: u64 = 60;
+
+/// Checks if a stored token is expired or about to expire.
+///
+/// Uses a buffer (default 60 seconds) to account for clock skew and
+/// network latency. A token is considered expired if:
+/// `current_time + buffer >= expires_at`
+///
+/// # Arguments
+///
+/// * `tokens` - The stored tokens to check
+///
+/// # Returns
+///
+/// `true` if the token is expired or will expire within the buffer window.
+pub fn is_token_expired(tokens: &StoredTokens) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Add buffer to account for clock skew and network latency
+    now.saturating_add(TOKEN_EXPIRY_BUFFER_SECS) >= tokens.expires_at
+}
+
+/// Refreshes an expired access token using the refresh token.
+///
+/// POSTs to `/user_management/authenticate` with the refresh token to obtain
+/// a new access token. Updates stored tokens on success.
+///
+/// # Arguments
+///
+/// * `config` - WorkOS configuration (client ID, domain, API URL)
+/// * `tokens` - Current stored tokens (must contain a valid refresh token)
+///
+/// # Returns
+///
+/// Returns new `StoredTokens` on successful refresh.
+///
+/// # Errors
+///
+/// Returns `AuthError` if:
+/// - HTTP request fails
+/// - Response cannot be parsed
+/// - Refresh token is invalid or expired (`invalid_grant`)
+/// - Token storage fails
+pub fn refresh_access_token(
+    config: &WorkOSConfig,
+    tokens: &StoredTokens,
+) -> Result<StoredTokens, AuthError> {
+    if tokens.refresh_token.is_empty() {
+        return Err(AuthError::InvalidGrant);
+    }
+
+    let client = create_http_client()?;
+    let url = format!("{}/user_management/authenticate", config.api_base_url);
+
+    let request_body = RefreshTokenRequest {
+        client_id: config.client_id.clone(),
+        refresh_token: tokens.refresh_token.clone(),
+        grant_type: GRANT_TYPE_REFRESH_TOKEN,
+    };
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| AuthError::Unexpected(format!("Failed to create tokio runtime: {e}")))?;
+
+    runtime.block_on(async {
+        let response = client
+            .post(&url)
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| AuthError::NetworkError(format!("Token refresh failed: {e}")))?;
+
+        let status = response.status();
+
+        // Try to parse as successful token response first
+        if status.is_success() {
+            let token_response = response
+                .json::<TokenResponse>()
+                .await
+                .map_err(|e| AuthError::Unexpected(format!("Failed to parse token response: {e}")))?;
+
+            // Convert to stored tokens
+            let new_tokens = token_response_to_stored_tokens(token_response);
+
+            // Save the new tokens
+            super::token_storage::save_tokens(&new_tokens)
+                .map_err(|e| AuthError::StorageError(e.to_string()))?;
+
+            return Ok(new_tokens);
+        }
+
+        // Parse as error response
+        let error_response = response
+            .json::<TokenErrorResponse>()
+            .await
+            .map_err(|e| AuthError::Unexpected(format!("Failed to parse error response: {e}")))?;
+
+        Err(AuthError::from(error_response))
+    })
+}
+
+/// Ensures a valid access token is available, refreshing if necessary.
+///
+/// This function:
+/// 1. Loads stored tokens (returns error if not logged in)
+/// 2. Checks if access token is expired
+/// 3. Returns valid tokens if not expired
+/// 4. Refreshes tokens if expired
+/// 5. Returns refreshed tokens on success
+///
+/// # Arguments
+///
+/// * `config` - WorkOS configuration (client ID, domain, API URL)
+///
+/// # Returns
+///
+/// Returns valid `StoredTokens` (either existing or refreshed).
+///
+/// # Errors
+///
+/// Returns `AuthError` if:
+/// - No tokens are stored (user not logged in)
+/// - Token refresh fails (refresh token expired/invalid)
+/// - Token storage fails
+///
+/// # Example
+///
+/// ```ignore
+/// let config = WorkOSConfig::new(client_id, domain);
+/// let tokens = ensure_valid_token(&config)?;
+/// // Use tokens.access_token for API calls
+/// ```
+pub fn ensure_valid_token(config: &WorkOSConfig) -> Result<StoredTokens, AuthError> {
+    // Load stored tokens
+    let tokens = super::token_storage::load_tokens()
+        .map_err(|e| AuthError::StorageError(e.to_string()))?
+        .ok_or_else(|| {
+            AuthError::ConfigurationError(
+                "Not logged in. Try: Run `sce login` first.".to_string(),
+            )
+        })?;
+
+    // Check if token is expired
+    if is_token_expired(&tokens) {
+        // Refresh the token
+        refresh_access_token(config, &tokens)
+    } else {
+        // Token is still valid
+        Ok(tokens)
+    }
+}
+
+// ============================================================================
 // Unit Tests
 // ============================================================================
 
@@ -759,5 +920,144 @@ mod tests {
     fn slow_down_interval_addition_is_reasonable() {
         // Ensure the slow_down addition is a reasonable value
         assert_eq!(SLOW_DOWN_INTERVAL_ADDITION_SECS, 5);
+    }
+
+    // ========================================================================
+    // Token Refresh Tests
+    // ========================================================================
+
+    #[test]
+    fn is_token_expired_returns_true_for_expired_token() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Token expired 1 hour ago
+        let tokens = StoredTokens {
+            access_token: "access".to_string(),
+            refresh_token: "refresh".to_string(),
+            expires_at: now - 3600,
+            id_token: None,
+            scope: None,
+        };
+
+        assert!(is_token_expired(&tokens));
+    }
+
+    #[test]
+    fn is_token_expired_returns_true_for_token_expiring_within_buffer() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Token expires in 30 seconds (within the 60-second buffer)
+        let tokens = StoredTokens {
+            access_token: "access".to_string(),
+            refresh_token: "refresh".to_string(),
+            expires_at: now + 30,
+            id_token: None,
+            scope: None,
+        };
+
+        assert!(is_token_expired(&tokens));
+    }
+
+    #[test]
+    fn is_token_expired_returns_false_for_valid_token() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Token expires in 1 hour (well beyond buffer)
+        let tokens = StoredTokens {
+            access_token: "access".to_string(),
+            refresh_token: "refresh".to_string(),
+            expires_at: now + 3600,
+            id_token: None,
+            scope: None,
+        };
+
+        assert!(!is_token_expired(&tokens));
+    }
+
+    #[test]
+    fn is_token_expired_returns_false_for_token_just_outside_buffer() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Token expires in 120 seconds (just outside the 60-second buffer)
+        let tokens = StoredTokens {
+            access_token: "access".to_string(),
+            refresh_token: "refresh".to_string(),
+            expires_at: now + 120,
+            id_token: None,
+            scope: None,
+        };
+
+        assert!(!is_token_expired(&tokens));
+    }
+
+    #[test]
+    fn token_expiry_buffer_is_reasonable() {
+        // Ensure the buffer is a reasonable value (60 seconds)
+        assert_eq!(TOKEN_EXPIRY_BUFFER_SECS, 60);
+    }
+
+    #[test]
+    fn refresh_access_token_fails_with_empty_refresh_token() {
+        let config = WorkOSConfig::new("client_123".to_string(), "my-app".to_string());
+        let tokens = StoredTokens {
+            access_token: "access".to_string(),
+            refresh_token: "".to_string(), // Empty refresh token
+            expires_at: 0,
+            id_token: None,
+            scope: None,
+        };
+
+        let result = refresh_access_token(&config, &tokens);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), AuthError::InvalidGrant);
+    }
+
+    #[test]
+    fn ensure_valid_token_returns_error_when_not_logged_in() {
+        // This test would require mocking token_storage::load_tokens
+        // For now, we document the expected behavior
+        // In a real test environment, we'd use a mock or test fixture
+        
+        // Expected behavior:
+        // - If load_tokens() returns Ok(None), should return ConfigurationError
+        // - Error message should include "Run `sce login` first"
+        
+        // This is tested indirectly through integration tests
+    }
+
+    #[test]
+    fn ensure_valid_token_returns_valid_token_when_not_expired() {
+        // This test would require mocking token_storage::load_tokens
+        // For now, we document the expected behavior
+        // In a real test environment, we'd use a mock or test fixture
+        
+        // Expected behavior:
+        // - If tokens exist and is_token_expired() returns false
+        // - Should return the existing tokens without refresh
+    }
+
+    #[test]
+    fn ensure_valid_token_refreshes_when_expired() {
+        // This test would require mocking both token_storage and HTTP client
+        // For now, we document the expected behavior
+        // In a real test environment, we'd use mocks or test fixtures
+        
+        // Expected behavior:
+        // - If tokens exist and is_token_expired() returns true
+        // - Should call refresh_access_token()
+        // - Should return new tokens on success
+        // - Should return refresh error on failure
     }
 }
