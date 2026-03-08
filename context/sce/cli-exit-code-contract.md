@@ -11,7 +11,7 @@ The contract is intentionally class-based so automation can branch on failure ca
 - `2` (`parse_failure`): top-level CLI parsing failed (for example unknown top-level command/option or malformed command token).
 - `3` (`validation_failure`): command/subcommand arguments parsed but failed invocation validation (for example incompatible or missing command-local arguments).
 - `4` (`runtime_failure`): command invocation was valid but runtime execution failed (filesystem/process/environment/runtime operation errors).
-- `5` (`dependency_failure`): startup dependency contract check failed before command parsing/dispatch.
+- `5` (`dependency_failure`): startup dependency checks failed before command parsing/dispatch.
 
 ## Classification ownership
 

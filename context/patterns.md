@@ -93,7 +93,7 @@
 - For hook setup CLI UX, allow `--hooks` as both hooks-only and composable target+hooks execution (optional `--repo <path>`), enforce deterministic option compatibility (`--repo` requires `--hooks`; target flags stay mutually exclusive), and emit stable section-ordered setup/hook status lines for automation-friendly logs.
 - For setup command messaging, emit deterministic completion output that includes selected target(s), per-target install counts, and whether backup was created.
 - Keep module seams for future domains present and compile-safe even when behavior is deferred.
-- Keep dependency additions explicit and minimal in `cli/Cargo.toml`, and anchor dependency intent in lightweight compile-time code references (`cli/src/dependency_contract.rs`).
+- Keep dependency additions explicit and minimal in `cli/Cargo.toml`, and anchor dependency intent in domain-owned service types/tests rather than a separate compile-time dependency snapshot module.
 - Route local Turso access through a dedicated adapter module (`cli/src/services/local_db.rs`) so command handlers do not expose low-level `turso` API details.
 - For placeholder commands that need real infrastructure checks, use a lazily initialized shared tokio current-thread runtime wrapper in the service layer (`cli/src/services/sync.rs`) and keep user-facing output explicit about remaining placeholder scope.
 - For transient local IO/database hotspots, apply bounded resilience wrappers with explicit retry count, timeout, and capped backoff (`cli/src/services/resilience.rs`) and surface terminal failures with deterministic `Try:` remediation guidance.
