@@ -1,4 +1,5 @@
 pub mod agent_trace;
+pub mod auth;
 pub mod completion;
 pub mod config;
 pub mod doctor;

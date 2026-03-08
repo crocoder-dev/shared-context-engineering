@@ -11,7 +11,7 @@ The repository now includes a Rust CLI crate at `cli/` for SCE automation work.
 - Command contract catalog: `cli/src/command_surface.rs`
 - Dependency contract snapshot: `cli/src/dependency_contract.rs`
 - Local Turso adapter: `cli/src/services/local_db.rs`
-- Service domains: `cli/src/services/{agent_trace,completion,config,setup,doctor,mcp,hooks,resilience,sync,version}.rs`
+- Service domains: `cli/src/services/{agent_trace,auth,completion,config,setup,doctor,mcp,hooks,resilience,sync,version}.rs`
 - Shared test temp-path helper: `cli/src/test_support.rs` (`TestTempDir`, test-only module)
 
 ## Onboarding documentation
@@ -119,8 +119,9 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 
 ## Dependency baseline
 
-- `cli/Cargo.toml` declares only: `anyhow`, `hmac`, `inquire`, `lexopt`, `serde_json`, `sha2`, `tokio`, and `turso`.
+- `cli/Cargo.toml` declares only: `anyhow`, `dirs`, `hmac`, `inquire`, `lexopt`, `reqwest`, `serde`, `serde_json`, `sha2`, `tokio`, and `turso`.
 - `tokio` is pinned with `default-features = false` and keeps a constrained runtime footprint for current-thread `Runtime::block_on` usage, plus timer-backed bounded retry/timeout behavior in resilience-wrapped operations.
+- `reqwest` is pinned with `default-features = false` and uses `rustls-tls` for async HTTP operations (WorkOS authentication).
 - `cli/src/dependency_contract.rs` keeps compile-time crate references centralized for this placeholder slice.
 
 ## Scope boundary for this phase

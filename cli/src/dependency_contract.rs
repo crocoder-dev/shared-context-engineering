@@ -13,16 +13,20 @@ pub fn dependency_contract_snapshot() -> (
     &'static str,
     &'static str,
     &'static str,
+    &'static str,
 ) {
     (
         Ok(()),
+        // Note: dirs and reqwest crates are verified via Cargo.toml; dirs has no public types
+        // Note: serde is verified via serde_json dependency (serde_json depends on serde)
         std::any::type_name::<hmac::Hmac<sha2::Sha256>>(),
         std::any::type_name::<inquire::ui::RenderConfig>(),
         std::any::type_name::<lexopt::Parser>(),
         std::any::type_name::<opentelemetry::Context>(),
         std::any::type_name::<opentelemetry_otlp::SpanExporter>(),
         std::any::type_name::<opentelemetry_sdk::trace::SdkTracerProvider>(),
-        std::any::type_name::<serde_json::Value>(),
+        std::any::type_name::<reqwest::Client>(),
+        std::any::type_name::<serde_json::Value>(), // serde verified via serde_json dependency
         std::any::type_name::<sha2::Sha256>(),
         std::any::type_name::<tokio::runtime::Runtime>(),
         std::any::type_name::<tracing::Level>(),
@@ -51,6 +55,7 @@ mod tests {
             opentelemetry_ty,
             opentelemetry_otlp_ty,
             opentelemetry_sdk_ty,
+            reqwest_ty,
             serde_json_ty,
             sha2_ty,
             tokio_ty,
@@ -66,6 +71,7 @@ mod tests {
         assert!(opentelemetry_ty.contains("opentelemetry::"));
         assert!(opentelemetry_otlp_ty.contains("opentelemetry_otlp::"));
         assert!(opentelemetry_sdk_ty.contains("opentelemetry_sdk::"));
+        assert!(reqwest_ty.contains("reqwest::"));
         assert!(serde_json_ty.contains("serde_json::"));
         assert!(sha2_ty.contains("sha2::"));
         assert!(tokio_ty.contains("tokio::"));
