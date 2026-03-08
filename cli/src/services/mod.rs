@@ -1,5 +1,5 @@
-pub mod auth;
 pub mod agent_trace;
+pub mod auth;
 pub mod completion;
 pub mod config;
 pub mod doctor;
@@ -13,4 +13,5 @@ pub mod resilience;
 pub mod security;
 pub mod setup;
 pub mod sync;
+pub mod token_storage;
 pub mod version;
