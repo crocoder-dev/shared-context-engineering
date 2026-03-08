@@ -30,7 +30,7 @@ Replace the manual `lexopt`-based CLI parsing with `clap` derive macros across a
 ## Task stack
 
 - [x] T01: Add clap and clap_complete dependencies (status:done)
-- [ ] T02: Create clap-based CLI schema module (status:todo)
+- [x] T02: Create clap-based CLI schema module (status:done)
 - [ ] T03: Migrate app.rs to use clap parser (status:todo)
 - [ ] T04: Remove lexopt from service modules (status:todo)
 - [ ] T05: Replace completion.rs with clap_complete (status:todo)
