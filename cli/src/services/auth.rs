@@ -1029,11 +1029,11 @@ mod tests {
         // This test would require mocking token_storage::load_tokens
         // For now, we document the expected behavior
         // In a real test environment, we'd use a mock or test fixture
-        
+
         // Expected behavior:
         // - If load_tokens() returns Ok(None), should return ConfigurationError
         // - Error message should include "Run `sce login` first"
-        
+
         // This is tested indirectly through integration tests
     }
 
@@ -1042,7 +1042,7 @@ mod tests {
         // This test would require mocking token_storage::load_tokens
         // For now, we document the expected behavior
         // In a real test environment, we'd use a mock or test fixture
-        
+
         // Expected behavior:
         // - If tokens exist and is_token_expired() returns false
         // - Should return the existing tokens without refresh
@@ -1053,7 +1053,7 @@ mod tests {
         // This test would require mocking both token_storage and HTTP client
         // For now, we document the expected behavior
         // In a real test environment, we'd use mocks or test fixtures
-        
+
         // Expected behavior:
         // - If tokens exist and is_token_expired() returns true
         // - Should call refresh_access_token()
