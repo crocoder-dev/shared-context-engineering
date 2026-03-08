@@ -107,7 +107,7 @@ Add WorkOS SSO/OIDC authentication to the existing `sce` CLI using the OAuth 2.0
     - Test with missing/invalid token files on all platforms
     - Verify correct state directory resolution on each platform
 
-- [ ] T03: Implement Device Authorization Flow (status:todo)
+- [x] T03: Implement Device Authorization Flow (status:done)
   - Task ID: T03
   - Goal: Implement complete OAuth 2.0 Device Authorization Flow with polling
   - Boundaries (in/out of scope):

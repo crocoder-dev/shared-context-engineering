@@ -114,6 +114,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - `cli/src/services/sync.rs` tests confirm `sync` runs the local smoke gate, preserves deterministic text placeholder messaging, and emits stable JSON placeholder fields.
 - `cli/src/services/{setup,mcp,hooks,sync}.rs` include contract-focused tests for setup flag parsing/validation, interactive selection/cancellation dispatch, setup run messaging, and hook runtime argument/IO/finalization behavior.
 - `cli/src/services/token_storage.rs` tests cover token save/load round-trips, missing-file handling, invalid JSON corruption handling, and Unix `0600` file-permission enforcement.
+- `cli/src/services/auth.rs` tests cover WorkOS device/token payload shape parsing, RFC 8628 device grant constant wiring, terminal OAuth error mapping with `Try:` guidance, and polling decision handling for `authorization_pending`/`slow_down`/terminal outcomes.
 - `cli/src/services/agent_trace.rs` includes adapter mapping tests for required field projection, contributor enum/model_id handling, and extension metadata placement under reserved reverse-domain keys.
 - `cli/src/services/setup.rs` tests also verify embedded-manifest completeness against runtime `config/` trees, deterministic sorted path normalization, target-scoped iterator behavior (`OpenCode`, `Claude`, `Both`), install backup creation/replacement, and rollback restoration after injected swap failures.
 - `cli/src/services/setup.rs` and `cli/src/services/local_db.rs` now share temporary path setup through `crate::test_support::TestTempDir` to keep filesystem test fixtures consistent and cleanup deterministic.
@@ -122,7 +123,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 
 - `cli/Cargo.toml` currently declares: `anyhow`, `dirs`, `hmac`, `inquire`, `lexopt`, `opentelemetry`, `opentelemetry-otlp`, `opentelemetry_sdk`, `reqwest`, `serde`, `serde_json`, `sha2`, `tokio`, `tracing`, `tracing-opentelemetry`, `tracing-subscriber`, and `turso`.
 - `tokio` is pinned with `default-features = false` and keeps a constrained runtime footprint for current-thread `Runtime::block_on` usage, plus timer-backed bounded retry/timeout behavior in resilience-wrapped operations.
-- `cli/src/services/auth.rs` defines the WorkOS auth domain model surface (device authorization payloads, token payloads, OAuth error payload, grant-type constants, and typed `AuthError` variants); runtime token persistence now lives in `cli/src/services/token_storage.rs` while HTTP login/refresh flow wiring remains pending.
+- `cli/src/services/auth.rs` now includes the T03 Device Authorization Flow runtime (`start_device_auth_flow`) for WorkOS: it requests device codes, polls `/oauth/device/token` at fixed API interval (adding 5 seconds on `slow_down`), maps RFC 8628 terminal errors to actionable `Try:` guidance, and persists successful tokens via `cli/src/services/token_storage.rs`; refresh-token runtime wiring remains pending.
 
 ## Scope boundary for this phase
 
