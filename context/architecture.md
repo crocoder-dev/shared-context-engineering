@@ -98,7 +98,7 @@ The repository includes a new placeholder Rust binary crate at `cli/`.
 - `flake.nix` (root) keeps nested CLI input wiring aligned by forwarding `nixpkgs`, `flake-utils`, and `rust-overlay` into the `cli` path input so repository-level `nix flake check` can evaluate nested CLI checks deterministically.
 - `cli/Cargo.toml` keeps crates.io-ready package metadata populated while `publish = false` remains the current policy; local Cargo release/install verification targets `cargo build --manifest-path cli/Cargo.toml --release` and `cargo install --path cli --locked`. Tokio remains intentionally constrained (`default-features = false`) with current-thread runtime usage plus timer-backed bounded resilience wrappers for retry/timeout behavior.
 
-This phase establishes compile-safe extension seams with a minimal dependency baseline (`anyhow`, `hmac`, `inquire`, `lexopt`, `opentelemetry`, `opentelemetry-otlp`, `opentelemetry_sdk`, `serde_json`, `sha2`, `tokio`, `tracing`, `tracing-opentelemetry`, `tracing-subscriber`, `turso`); local Turso connectivity smoke checks now exist, while broader runtime integrations remain deferred.
+This phase establishes compile-safe extension seams with a dependency baseline (`anyhow`, `dirs`, `hmac`, `inquire`, `lexopt`, `opentelemetry`, `opentelemetry-otlp`, `opentelemetry_sdk`, `reqwest`, `serde`, `serde_json`, `sha2`, `tokio`, `tracing`, `tracing-opentelemetry`, `tracing-subscriber`, `turso`); local Turso connectivity smoke checks now exist, while broader runtime integrations remain deferred.
 
 ## Shared Context Drift parity mapping
 

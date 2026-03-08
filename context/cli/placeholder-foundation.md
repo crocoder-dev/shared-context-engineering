@@ -9,9 +9,8 @@ The repository now includes a Rust CLI crate at `cli/` for SCE automation work.
 - Binary entrypoint: `cli/src/main.rs`
 - Runtime shell: `cli/src/app.rs`
 - Command contract catalog: `cli/src/command_surface.rs`
-- Dependency contract snapshot: `cli/src/dependency_contract.rs`
 - Local Turso adapter: `cli/src/services/local_db.rs`
-- Service domains: `cli/src/services/{agent_trace,completion,config,setup,doctor,mcp,hooks,resilience,sync,version}.rs`
+- Service domains: `cli/src/services/{agent_trace,auth,completion,config,setup,doctor,mcp,hooks,resilience,sync,version}.rs`
 - Shared test temp-path helper: `cli/src/test_support.rs` (`TestTempDir`, test-only module)
 
 ## Onboarding documentation
@@ -119,9 +118,9 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 
 ## Dependency baseline
 
-- `cli/Cargo.toml` declares only: `anyhow`, `hmac`, `inquire`, `lexopt`, `serde_json`, `sha2`, `tokio`, and `turso`.
+- `cli/Cargo.toml` currently declares: `anyhow`, `dirs`, `hmac`, `inquire`, `lexopt`, `opentelemetry`, `opentelemetry-otlp`, `opentelemetry_sdk`, `reqwest`, `serde`, `serde_json`, `sha2`, `tokio`, `tracing`, `tracing-opentelemetry`, `tracing-subscriber`, and `turso`.
 - `tokio` is pinned with `default-features = false` and keeps a constrained runtime footprint for current-thread `Runtime::block_on` usage, plus timer-backed bounded retry/timeout behavior in resilience-wrapped operations.
-- `cli/src/dependency_contract.rs` keeps compile-time crate references centralized for this placeholder slice.
+- `cli/src/services/auth.rs` defines the initial WorkOS auth domain model surface (device authorization payloads, token payloads, OAuth error payload, grant-type constants, and typed `AuthError` variants) without runtime HTTP/persistence wiring yet.
 
 ## Scope boundary for this phase
 

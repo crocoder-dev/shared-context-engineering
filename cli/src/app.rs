@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-use crate::{command_surface, dependency_contract, services};
+use crate::{command_surface, services};
 use anyhow::Context;
 use lexopt::ValueExt;
 
@@ -142,9 +142,7 @@ pub fn run<I>(args: I) -> ExitCode
 where
     I: IntoIterator<Item = String>,
 {
-    run_with_dependency_check(args, || {
-        dependency_contract::dependency_contract_snapshot().0
-    })
+    run_with_dependency_check(args, || Ok(()))
 }
 
 fn run_with_dependency_check<I, F>(args: I, dependency_check: F) -> ExitCode
@@ -225,7 +223,7 @@ where
     F: FnOnce() -> anyhow::Result<()>,
 {
     dependency_check().map_err(|error| {
-        ClassifiedError::dependency(format!("Failed to initialize dependency contract: {error}"))
+        ClassifiedError::dependency(format!("Failed to initialize dependency checks: {error}"))
     })?;
 
     let logger = services::observability::Logger::from_env().map_err(|error| {
