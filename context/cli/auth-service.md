@@ -1,6 +1,6 @@
 # WorkOS Authentication Service
 
-The `cli/src/services/auth.rs` module provides type definitions for WorkOS SSO/OIDC authentication via OAuth 2.0 Device Authorization Flow (RFC 8628).
+The `cli/src/services/auth.rs` module provides type definitions and OAuth 2.0 Device Authorization Flow (RFC 8628) implementation for WorkOS SSO/OIDC authentication.
 
 The `cli/src/services/token_storage.rs` module provides secure cross-platform token storage.
 
@@ -10,8 +10,9 @@ The `cli/src/services/token_storage.rs` module provides secure cross-platform to
 
 **T02 token storage complete:** Cross-platform secure token storage with proper file permissions.
 
-**Planned (T03-T10):**
-- Device Authorization Flow HTTP implementation (T03)
+**T03 device flow complete:** HTTP-based Device Authorization Flow with polling.
+
+**Planned (T04-T10):**
 - Token refresh logic (T04)
 - `login` command (T05)
 - `logout` command (T06)
@@ -19,6 +20,34 @@ The `cli/src/services/token_storage.rs` module provides secure cross-platform to
 - Authentication guard on `sync` command (T08)
 - WorkOS configuration support (T09)
 - Documentation updates (T10)
+
+## Device Authorization Flow (T03 implemented)
+
+The `auth` module provides blocking HTTP-based device authorization:
+
+### Public API
+
+- `request_device_code(config: &WorkOSConfig) -> Result<DeviceCodeResponse, AuthError>`: Requests device code from WorkOS
+- `poll_for_token<F>(config: &WorkOSConfig, device_code: &DeviceCodeResponse, status_callback: Option<F>) -> Result<TokenResponse, AuthError>`: Polls until authentication completes
+- `start_device_auth_flow<F, G>(config: &WorkOSConfig, display_instructions: F, status_callback: Option<G>) -> Result<StoredTokens, AuthError>`: Orchestrates complete flow
+
+### Flow behavior
+
+1. **Request device code**: POST to `/user_management/authorize/device`
+2. **Display instructions**: Callback receives `user_code` and `verification_url`
+3. **Poll for token**: Polls `/user_management/authenticate` with WorkOS-specified interval
+4. **Handle errors**:
+   - `authorization_pending`: Continue polling
+   - `slow_down`: Increase interval by 5 seconds
+   - Terminal errors: Return immediately
+5. **Store tokens**: Converts `TokenResponse` to `StoredTokens` and persists
+
+### Polling behavior
+
+- Respects `interval` from device code response
+- Adds 5 seconds on `slow_down` error
+- Times out based on `expires_in` from device code response
+- Uses `tokio::runtime::Builder::new_current_thread()` for async HTTP
 
 ## Token Storage (T02 implemented)
 

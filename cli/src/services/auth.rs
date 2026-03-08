@@ -277,6 +277,236 @@ impl From<TokenErrorResponse> for AuthError {
 }
 
 // ============================================================================
+// Device Authorization Flow Implementation
+// ============================================================================
+
+/// Additional seconds to add to polling interval when receiving `slow_down` error.
+const SLOW_DOWN_INTERVAL_ADDITION_SECS: u64 = 5;
+
+/// Creates a new HTTP client for WorkOS API requests.
+fn create_http_client() -> Result<reqwest::Client, AuthError> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| AuthError::NetworkError(format!("Failed to create HTTP client: {e}")))
+}
+
+/// Requests a device code from WorkOS Device Authorization endpoint.
+///
+/// POST to `/user_management/authorize/device` to initiate the device flow.
+///
+/// # Errors
+///
+/// Returns `AuthError` if:
+/// - HTTP request fails
+/// - Response cannot be parsed
+/// - WorkOS returns an error
+pub fn request_device_code(config: &WorkOSConfig) -> Result<DeviceCodeResponse, AuthError> {
+    let client = create_http_client()?;
+
+    let url = format!("{}/user_management/authorize/device", config.api_base_url);
+    let request_body = DeviceCodeRequest {
+        client_id: config.client_id.clone(),
+        scope: None, // Use default scopes for MVP
+    };
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| AuthError::Unexpected(format!("Failed to create tokio runtime: {e}")))?;
+
+    runtime.block_on(async {
+        let response = client
+            .post(&url)
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| AuthError::NetworkError(format!("Device code request failed: {e}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(AuthError::Unexpected(format!(
+                "Device code request failed with status {}: {}",
+                status, error_text
+            )));
+        }
+
+        response
+            .json::<DeviceCodeResponse>()
+            .await
+            .map_err(|e| AuthError::Unexpected(format!("Failed to parse device code response: {e}")))
+    })
+}
+
+/// Polls the WorkOS token endpoint until authentication is complete or an error occurs.
+///
+/// Handles `authorization_pending` by continuing to poll, and `slow_down` by increasing
+/// the polling interval. Respects the device code expiry time.
+///
+/// # Arguments
+///
+/// * `config` - WorkOS configuration
+/// * `device_code_response` - The device code response from `request_device_code`
+/// * `status_callback` - Optional callback for polling status updates (receives message)
+///
+/// # Errors
+///
+/// Returns `AuthError` if:
+/// - User denies authorization (`access_denied`)
+/// - Device code expires (`expired_token`)
+/// - Any other terminal error occurs
+pub fn poll_for_token<F>(
+    config: &WorkOSConfig,
+    device_code_response: &DeviceCodeResponse,
+    mut status_callback: Option<F>,
+) -> Result<TokenResponse, AuthError>
+where
+    F: FnMut(&str),
+{
+    let client = create_http_client()?;
+    let url = format!("{}/user_management/authenticate", config.api_base_url);
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| AuthError::Unexpected(format!("Failed to create tokio runtime: {e}")))?;
+
+    let mut interval_secs = device_code_response.interval as u64;
+    let expires_at = std::time::Instant::now()
+        + std::time::Duration::from_secs(device_code_response.expires_in as u64);
+
+    loop {
+        // Check if device code has expired
+        if std::time::Instant::now() >= expires_at {
+            return Err(AuthError::ExpiredToken);
+        }
+
+        // Wait before polling
+        runtime.block_on(tokio::time::sleep(std::time::Duration::from_secs(interval_secs)));
+
+        // Build token request
+        let request_body = TokenRequest {
+            client_id: config.client_id.clone(),
+            device_code: device_code_response.device_code.clone(),
+            grant_type: GRANT_TYPE_DEVICE_CODE,
+        };
+
+        let result = runtime.block_on(async {
+            let response = client
+                .post(&url)
+                .json(&request_body)
+                .send()
+                .await
+                .map_err(|e| AuthError::NetworkError(format!("Token polling failed: {e}")))?;
+
+            let status = response.status();
+
+            // Try to parse as successful token response first
+            if status.is_success() {
+                return response
+                    .json::<TokenResponse>()
+                    .await
+                    .map_err(|e| AuthError::Unexpected(format!("Failed to parse token response: {e}")));
+            }
+
+            // Parse as error response
+            let error_response = response
+                .json::<TokenErrorResponse>()
+                .await
+                .map_err(|e| AuthError::Unexpected(format!("Failed to parse error response: {e}")))?;
+
+            Err(AuthError::from(error_response))
+        });
+
+        match result {
+            Ok(token_response) => return Ok(token_response),
+            Err(AuthError::AuthorizationPending) => {
+                if let Some(ref mut callback) = status_callback {
+                    callback("Waiting for authentication...");
+                }
+                // Continue polling with same interval
+            }
+            Err(AuthError::SlowDown) => {
+                interval_secs += SLOW_DOWN_INTERVAL_ADDITION_SECS;
+                if let Some(ref mut callback) = status_callback {
+                    callback(&format!("Slowing down polling (now {}s interval)", interval_secs));
+                }
+                // Continue polling with increased interval
+            }
+            Err(e) => return Err(e), // Terminal error
+        }
+    }
+}
+
+/// Converts a TokenResponse to StoredTokens with calculated expiry timestamp.
+fn token_response_to_stored_tokens(response: TokenResponse) -> StoredTokens {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    StoredTokens {
+        access_token: response.access_token,
+        refresh_token: response.refresh_token.unwrap_or_default(),
+        expires_at: now + response.expires_in as u64,
+        id_token: response.id_token,
+        scope: response.scope,
+    }
+}
+
+/// Executes the complete Device Authorization Flow.
+///
+/// This function:
+/// 1. Requests a device code from WorkOS
+/// 2. Displays user instructions (verification URL and user code)
+/// 3. Polls for token completion
+/// 4. Stores tokens on success
+///
+/// # Arguments
+///
+/// * `config` - WorkOS configuration (client ID, domain, API URL)
+/// * `display_instructions` - Callback to display user instructions (receives user_code and verification_url)
+/// * `status_callback` - Optional callback for polling status updates
+///
+/// # Returns
+///
+/// Returns `StoredTokens` on successful authentication.
+///
+/// # Errors
+///
+/// Returns `AuthError` if any step of the flow fails.
+pub fn start_device_auth_flow<F, G>(
+    config: &WorkOSConfig,
+    mut display_instructions: F,
+    mut status_callback: Option<G>,
+) -> Result<StoredTokens, AuthError>
+where
+    F: FnMut(&str, &str),
+    G: FnMut(&str),
+{
+    // Step 1: Request device code
+    let device_code_response = request_device_code(config)?;
+
+    // Step 2: Display instructions to user
+    display_instructions(
+        &device_code_response.user_code,
+        &device_code_response.verification_url,
+    );
+
+    // Step 3: Poll for token
+    let token_response = poll_for_token(config, &device_code_response, status_callback.as_mut())?;
+
+    // Step 4: Convert and store tokens
+    let stored_tokens = token_response_to_stored_tokens(token_response);
+
+    super::token_storage::save_tokens(&stored_tokens)
+        .map_err(|e| AuthError::StorageError(e.to_string()))?;
+
+    Ok(stored_tokens)
+}
+
+// ============================================================================
 // Unit Tests
 // ============================================================================
 
@@ -466,5 +696,68 @@ mod tests {
         // Should NOT contain "Try:" since this is auto-handled
         assert!(!guidance.contains("Try:"));
         assert!(guidance.contains("interval"));
+    }
+
+    // ========================================================================
+    // Device Authorization Flow Tests
+    // ========================================================================
+
+    #[test]
+    fn create_http_client_succeeds() {
+        let result = create_http_client();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn token_response_to_stored_tokens_calculates_expiry() {
+        let response = TokenResponse {
+            access_token: "access_123".to_string(),
+            refresh_token: Some("refresh_456".to_string()),
+            token_type: "Bearer".to_string(),
+            expires_in: 3600, // 1 hour
+            id_token: Some("id_token".to_string()),
+            scope: Some("openid profile".to_string()),
+        };
+
+        let stored = token_response_to_stored_tokens(response);
+
+        assert_eq!(stored.access_token, "access_123");
+        assert_eq!(stored.refresh_token, "refresh_456");
+        assert!(stored.expires_at > 0);
+        assert!(stored.id_token.is_some());
+        assert!(stored.scope.is_some());
+    }
+
+    #[test]
+    fn token_response_to_stored_tokens_handles_missing_optional_fields() {
+        let response = TokenResponse {
+            access_token: "access_123".to_string(),
+            refresh_token: None,
+            token_type: "Bearer".to_string(),
+            expires_in: 3600,
+            id_token: None,
+            scope: None,
+        };
+
+        let stored = token_response_to_stored_tokens(response);
+
+        assert_eq!(stored.access_token, "access_123");
+        assert_eq!(stored.refresh_token, ""); // Default for missing refresh_token
+        assert!(stored.id_token.is_none());
+        assert!(stored.scope.is_none());
+    }
+
+    #[test]
+    fn workos_config_has_api_base_url() {
+        let config = WorkOSConfig::new("client_123".to_string(), "my-app".to_string());
+        assert_eq!(config.api_base_url, WORKOS_API_BASE_URL);
+        assert_eq!(config.client_id, "client_123");
+        assert_eq!(config.domain, "my-app");
+    }
+
+    #[test]
+    fn slow_down_interval_addition_is_reasonable() {
+        // Ensure the slow_down addition is a reasonable value
+        assert_eq!(SLOW_DOWN_INTERVAL_ADDITION_SECS, 5);
     }
 }
