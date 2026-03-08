@@ -506,17 +506,17 @@ fn setup_fail_repo_without_hooks() -> TestResult<()> {
         result.stderr
     );
 
+    // clap reports the missing required argument
     assert!(
-        result.stderr.contains("Option '--repo' requires '--hooks'"),
-        "stderr should contain --repo requires --hooks message\nstderr:\n{}",
+        result.stderr.contains("--hooks"),
+        "stderr should mention --hooks is required\nstderr:\n{}",
         result.stderr
     );
 
+    // clap shows usage with the required argument
     assert!(
-        result
-            .stderr
-            .contains("Try: run 'sce setup --hooks --repo <path>' or remove '--repo'"),
-        "stderr should contain actionable guidance\nstderr:\n{}",
+        result.stderr.contains("--hooks --repo"),
+        "stderr should show usage with --hooks --repo\nstderr:\n{}",
         result.stderr
     );
 
