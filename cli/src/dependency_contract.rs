@@ -14,11 +14,13 @@ pub fn dependency_contract_snapshot() -> (
     &'static str,
     &'static str,
     &'static str,
+    &'static str,
 ) {
     (
         Ok(()),
-        // Note: dirs and reqwest crates are verified via Cargo.toml; dirs has no public types
         // Note: serde is verified via serde_json dependency (serde_json depends on serde)
+        // Note: dirs crate provides functions, not types; we reference the function pointer
+        std::any::type_name::<fn() -> Option<std::path::PathBuf>>(), // dirs::state_dir signature
         std::any::type_name::<hmac::Hmac<sha2::Sha256>>(),
         std::any::type_name::<inquire::ui::RenderConfig>(),
         std::any::type_name::<lexopt::Parser>(),
@@ -49,6 +51,7 @@ mod tests {
     fn dependency_contract_snapshot_references_agreed_crates() {
         let (
             result,
+            dirs_ty,
             hmac_ty,
             inquire_ty,
             lexopt_ty,
@@ -65,6 +68,8 @@ mod tests {
             turso_ty,
         ) = dependency_contract_snapshot();
         assert!(result.is_ok());
+        // dirs crate provides functions (fn() -> Option<PathBuf>), not types
+        assert!(dirs_ty.contains("fn") || dirs_ty.contains("PathBuf"));
         assert!(hmac_ty.contains("hmac::"));
         assert!(inquire_ty.contains("inquire::"));
         assert!(lexopt_ty.contains("lexopt::"));

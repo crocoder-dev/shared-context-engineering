@@ -2,12 +2,15 @@
 
 The `cli/src/services/auth.rs` module provides type definitions for WorkOS SSO/OIDC authentication via OAuth 2.0 Device Authorization Flow (RFC 8628).
 
+The `cli/src/services/token_storage.rs` module provides secure cross-platform token storage.
+
 ## Current implementation status
 
 **T01 skeleton complete:** Type definitions and error handling for Device Authorization Flow.
 
-**Planned (T02-T10):**
-- Cross-platform token storage (T02)
+**T02 token storage complete:** Cross-platform secure token storage with proper file permissions.
+
+**Planned (T03-T10):**
 - Device Authorization Flow HTTP implementation (T03)
 - Token refresh logic (T04)
 - `login` command (T05)
@@ -17,7 +20,33 @@ The `cli/src/services/auth.rs` module provides type definitions for WorkOS SSO/O
 - WorkOS configuration support (T09)
 - Documentation updates (T10)
 
-## Type definitions
+## Token Storage (T02 implemented)
+
+The `token_storage` module provides secure file-based token storage:
+
+### Public API
+
+- `resolve_token_storage_path() -> Result<PathBuf>`: Resolves platform-appropriate token file path
+- `save_tokens(tokens: &StoredTokens) -> Result<()>`: Saves tokens with secure permissions
+- `load_tokens() -> Result<Option<StoredTokens>>`: Loads tokens (returns `None` if missing)
+- `delete_tokens() -> Result<()>`: Deletes stored tokens (idempotent)
+
+### Platform paths
+
+- Linux: `${XDG_STATE_HOME:-~/.local/state}/sce/auth/tokens.json`
+- macOS: `~/Library/Application Support/sce/auth/tokens.json`
+- Windows: `%APPDATA%\sce\auth\tokens.json`
+
+### File security
+
+- Unix (Linux/macOS): 0600 file permissions (owner read/write only)
+- Windows: Relies on directory-level security in user's AppData directory
+
+### Error handling
+
+All functions return `anyhow::Result` with actionable error messages including "Try:" guidance for user-facing errors.
+
+## Type definitions (auth.rs)
 
 ### Device Code Flow
 
@@ -47,16 +76,10 @@ The `cli/src/services/auth.rs` module provides type definitions for WorkOS SSO/O
 - `InvalidGrant`, `InvalidClient`, `InvalidRequest`: Configuration/request errors
 - `NetworkError`, `StorageError`, `ConfigurationError`, `Unexpected`: Runtime errors
 
-## Token storage paths (planned)
-
-- Linux: `${XDG_STATE_HOME:-~/.local/state}/sce/auth/tokens.json`
-- macOS: `~/Library/Application Support/sce/auth/tokens.json`
-- Windows: `%APPDATA%\sce\auth\tokens.json`
-
 ## Dependencies
 
 - `reqwest`: Async HTTP client for WorkOS API calls
-- `serde`/`serde_json`: JSON serialization for API requests/responses
+- `serde`/`serde_json`: JSON serialization for API requests/responses and token storage
 - `dirs`: Cross-platform state directory resolution
 
 ## Related context
