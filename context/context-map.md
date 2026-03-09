@@ -50,3 +50,4 @@ Working areas:
 Recent decision records:
 - `context/decisions/2026-02-28-pkl-generation-architecture.md`
 - `context/decisions/2026-03-03-plan-code-agent-separation.md`
+- `context/decisions/2026-03-09-migrate-lexopt-to-clap.md` (CLI argument parsing migration from lexopt to clap derive macros)
