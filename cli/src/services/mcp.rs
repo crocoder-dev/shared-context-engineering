@@ -1,6 +1,4 @@
-use anyhow::{bail, Context, Result};
-use lexopt::Arg;
-use lexopt::ValueExt;
+use anyhow::{Context, Result};
 use serde_json::json;
 
 use crate::services::output_format::OutputFormat;
@@ -12,50 +10,6 @@ pub type McpFormat = OutputFormat;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct McpRequest {
     pub format: McpFormat,
-}
-
-pub fn mcp_usage_text() -> &'static str {
-    "Usage:\n  sce mcp [--format <text|json>]\n\nExamples:\n  sce mcp\n  sce mcp --format json"
-}
-
-pub fn parse_mcp_request(args: Vec<String>) -> Result<McpRequest> {
-    let mut parser = lexopt::Parser::from_args(args);
-    let mut format = McpFormat::Text;
-
-    while let Some(arg) = parser.next()? {
-        match arg {
-            Arg::Long("format") => {
-                let value = parser
-                    .value()
-                    .context("Option '--format' requires a value")?;
-                let raw = value.string()?;
-                format = McpFormat::parse(&raw, "sce mcp --help")?;
-            }
-            Arg::Long("help") | Arg::Short('h') => {
-                bail!("Use 'sce mcp --help' for mcp usage.");
-            }
-            Arg::Long(option) => {
-                bail!(
-                    "Unknown mcp option '--{}'. Run 'sce mcp --help' to see valid usage.",
-                    option
-                );
-            }
-            Arg::Short(option) => {
-                bail!(
-                    "Unknown mcp option '-{}'. Run 'sce mcp --help' to see valid usage.",
-                    option
-                );
-            }
-            Arg::Value(value) => {
-                bail!(
-                    "Unexpected mcp argument '{}'. Run 'sce mcp --help' to see valid usage.",
-                    value.string()?
-                );
-            }
-        }
-    }
-
-    Ok(McpRequest { format })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -176,32 +130,8 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        parse_mcp_request, run_placeholder_mcp, McpFormat, McpRequest, McpService,
-        PlaceholderMcpService, NAME,
+        run_placeholder_mcp, McpFormat, McpRequest, McpService, PlaceholderMcpService, NAME,
     };
-
-    #[test]
-    fn parse_defaults_to_text_format() {
-        let request = parse_mcp_request(vec![]).expect("mcp request should parse");
-        assert_eq!(request.format, McpFormat::Text);
-    }
-
-    #[test]
-    fn parse_accepts_json_format() {
-        let request = parse_mcp_request(vec!["--format".to_string(), "json".to_string()])
-            .expect("mcp request should parse");
-        assert_eq!(request.format, McpFormat::Json);
-    }
-
-    #[test]
-    fn parse_rejects_invalid_format_with_help_guidance() {
-        let error = parse_mcp_request(vec!["--format".to_string(), "yaml".to_string()])
-            .expect_err("invalid mcp format should fail");
-        assert_eq!(
-            error.to_string(),
-            "Invalid --format value 'yaml'. Valid values: text, json. Run 'sce mcp --help' to see valid usage."
-        );
-    }
 
     #[test]
     fn mcp_placeholder_snapshot_is_non_runnable() {

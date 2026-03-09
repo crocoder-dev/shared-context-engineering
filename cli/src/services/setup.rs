@@ -1,6 +1,5 @@
 use anyhow::{bail, Context, Result};
 use inquire::{InquireError, Select};
-use lexopt::{Arg, ValueExt};
 use std::{
     fs, io,
     path::{Component, Path, PathBuf},
@@ -908,63 +907,6 @@ where
 
 pub fn setup_cancelled_text() -> &'static str {
     "Setup cancelled. No files were changed."
-}
-
-pub fn setup_usage_text() -> &'static str {
-    "Usage:\n  sce setup [--opencode|--claude|--both] [--non-interactive] [--hooks] [--repo <path>]\n\nExamples:\n  sce setup\n  sce setup --opencode --non-interactive --hooks\n  sce setup --both --non-interactive\n  sce setup --hooks\n  sce setup --hooks --repo ../demo-repo\n  sce setup --opencode --non-interactive --hooks && sce doctor --format json\n\nWithout a target flag, setup defaults to interactive target selection.\nDefault interactive setup installs selected config assets and required hooks in one run.\nUse '--non-interactive' to fail fast instead of prompting; it requires '--opencode', '--claude', or '--both' when running config setup.\nTarget flags are mutually exclusive and intended for non-interactive automation.\n'--hooks' installs required git hooks for the current repository by default, or for '--repo <path>' when provided.\nLegacy one-purpose invocations remain supported: target-only runs install config assets, and '--hooks' without a target installs hooks only."
-}
-
-pub fn parse_setup_cli_options<I>(args: I) -> Result<SetupCliOptions>
-where
-    I: IntoIterator<Item = String>,
-{
-    let mut parser = lexopt::Parser::from_args(args);
-    let mut options = SetupCliOptions::default();
-
-    while let Some(arg) = parser.next()? {
-        match arg {
-            Arg::Long("non-interactive") => options.non_interactive = true,
-            Arg::Long("opencode") => options.opencode = true,
-            Arg::Long("claude") => options.claude = true,
-            Arg::Long("both") => options.both = true,
-            Arg::Long("hooks") => options.hooks = true,
-            Arg::Long("repo") => {
-                let value = parser
-                    .value()
-                    .context(
-                        "Option '--repo' requires a path value. Try: 'sce setup --hooks --repo ../demo-repo'.",
-                    )?;
-                if options.repo_path.is_some() {
-                    bail!(
-                        "Option '--repo' may only be provided once. Try: keep a single '--repo <path>' value and rerun."
-                    );
-                }
-                options.repo_path = Some(PathBuf::from(value.string()?));
-            }
-            Arg::Long("help") | Arg::Short('h') => options.help = true,
-            Arg::Long(option) => {
-                bail!(
-                    "Unknown setup option '--{}'. Try: run 'sce setup --help' to see supported setup options.",
-                    option
-                );
-            }
-            Arg::Short(option) => {
-                bail!(
-                    "Unknown setup option '-{}'. Try: run 'sce setup --help' to see supported setup options.",
-                    option
-                );
-            }
-            Arg::Value(value) => {
-                let value = value.string()?;
-                bail!(
-                    "Unexpected setup argument '{}'. Try: remove the extra argument and use 'sce setup --help' for supported forms.",
-                    value
-                );
-            }
-        }
-    }
-
-    Ok(options)
 }
 
 #[cfg(test)]

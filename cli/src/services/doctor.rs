@@ -2,9 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
-use lexopt::Arg;
-use lexopt::ValueExt;
+use anyhow::{Context, Result};
 use serde_json::json;
 
 use crate::services::output_format::OutputFormat;
@@ -56,50 +54,6 @@ pub fn run_doctor(request: DoctorRequest) -> Result<String> {
         std::env::current_dir().context("Failed to determine current directory")?;
     let report = build_report(&repository_root);
     render_report(request, &report)
-}
-
-pub fn doctor_usage_text() -> &'static str {
-    "Usage:\n  sce doctor [--format <text|json>]\n\nExamples:\n  sce doctor\n  sce doctor --format json\n  sce doctor | rg 'not ready'"
-}
-
-pub fn parse_doctor_request(args: Vec<String>) -> Result<DoctorRequest> {
-    let mut parser = lexopt::Parser::from_args(args);
-    let mut format = DoctorFormat::Text;
-
-    while let Some(arg) = parser.next()? {
-        match arg {
-            Arg::Long("format") => {
-                let value = parser
-                    .value()
-                    .context("Option '--format' requires a value")?;
-                let raw = value.string()?;
-                format = DoctorFormat::parse(&raw, "sce doctor --help")?;
-            }
-            Arg::Long("help") | Arg::Short('h') => {
-                bail!("Use 'sce doctor --help' for doctor usage.");
-            }
-            Arg::Long(option) => {
-                bail!(
-                    "Unknown doctor option '--{}'. Run 'sce doctor --help' to see valid usage.",
-                    option
-                );
-            }
-            Arg::Short(option) => {
-                bail!(
-                    "Unknown doctor option '-{}'. Run 'sce doctor --help' to see valid usage.",
-                    option
-                );
-            }
-            Arg::Value(value) => {
-                bail!(
-                    "Unexpected doctor argument '{}'. Run 'sce doctor --help' to see valid usage.",
-                    value.string()?
-                );
-            }
-        }
-    }
-
-    Ok(DoctorRequest { format })
 }
 
 fn build_report(repository_root: &Path) -> HookDoctorReport {
@@ -374,32 +328,9 @@ mod tests {
     use crate::test_support::TestTempDir;
 
     use super::{
-        build_report, collect_hook_health, format_report, parse_doctor_request, render_report,
-        DoctorFormat, DoctorRequest, HookDoctorReport, HookPathSource, Readiness, NAME,
+        build_report, collect_hook_health, format_report, render_report, DoctorFormat,
+        DoctorRequest, HookDoctorReport, HookPathSource, Readiness, NAME,
     };
-
-    #[test]
-    fn parse_defaults_to_text_format() {
-        let request = parse_doctor_request(vec![]).expect("doctor request should parse");
-        assert_eq!(request.format, DoctorFormat::Text);
-    }
-
-    #[test]
-    fn parse_accepts_json_format() {
-        let request = parse_doctor_request(vec!["--format".to_string(), "json".to_string()])
-            .expect("doctor request should parse");
-        assert_eq!(request.format, DoctorFormat::Json);
-    }
-
-    #[test]
-    fn parse_rejects_invalid_format_with_help_guidance() {
-        let error = parse_doctor_request(vec!["--format".to_string(), "yaml".to_string()])
-            .expect_err("invalid doctor format should fail");
-        assert_eq!(
-            error.to_string(),
-            "Invalid --format value 'yaml'. Valid values: text, json. Run 'sce doctor --help' to see valid usage."
-        );
-    }
 
     #[test]
     #[cfg(unix)]

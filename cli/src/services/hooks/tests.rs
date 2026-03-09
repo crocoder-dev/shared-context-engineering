@@ -15,9 +15,9 @@ use crate::services::local_db::resolve_agent_trace_local_db_path;
 
 use super::{
     apply_commit_msg_coauthor_policy, finalize_post_commit_trace, finalize_post_rewrite_remap,
-    finalize_pre_commit_checkpoint, finalize_rewrite_trace, parse_hooks_subcommand,
-    process_trace_retry_queue, resolve_pre_commit_checkpoint_path,
-    run_commit_msg_subcommand_in_repo, run_hooks_subcommand, run_post_commit_subcommand_in_repo,
+    finalize_pre_commit_checkpoint, finalize_rewrite_trace, process_trace_retry_queue,
+    resolve_pre_commit_checkpoint_path, run_commit_msg_subcommand_in_repo,
+    run_hooks_subcommand, run_post_commit_subcommand_in_repo,
     run_post_rewrite_subcommand_in_repo, run_pre_commit_subcommand_in_repo, CommitMsgRuntimeState,
     HookSubcommand, PendingCheckpoint, PendingFileCheckpoint, PendingLineRange,
     PersistenceErrorClass, PersistenceFailure, PersistenceTarget, PersistenceWriteResult,
@@ -1245,33 +1245,6 @@ fn post_rewrite_runtime_skips_duplicate_pair_replay() -> Result<()> {
     );
 
     Ok(())
-}
-
-#[test]
-fn parse_hooks_subcommand_routes_pre_commit() -> Result<()> {
-    let parsed = parse_hooks_subcommand(vec!["pre-commit".to_string()])?;
-    assert_eq!(parsed, HookSubcommand::PreCommit);
-    Ok(())
-}
-
-#[test]
-fn parse_hooks_subcommand_rejects_missing_hook_name() {
-    let error = parse_hooks_subcommand(Vec::new())
-        .expect_err("missing hook subcommand should return usage error");
-    assert_eq!(
-        error.to_string(),
-        "Missing hook subcommand. Try: run 'sce hooks --help' and use one of 'pre-commit', 'commit-msg', 'post-commit', or 'post-rewrite'."
-    );
-}
-
-#[test]
-fn parse_hooks_subcommand_requires_commit_msg_path() {
-    let error = parse_hooks_subcommand(vec!["commit-msg".to_string()])
-        .expect_err("commit-msg requires <message-file>");
-    assert_eq!(
-        error.to_string(),
-        "Missing required argument '<message-file>' for 'commit-msg'. Try: run 'sce hooks commit-msg .git/COMMIT_EDITMSG'."
-    );
 }
 
 #[test]
