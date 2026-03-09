@@ -1,7 +1,6 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-<<<<<<< HEAD
 use crate::{cli_schema, command_surface, services};
 use anyhow::Context;
 
