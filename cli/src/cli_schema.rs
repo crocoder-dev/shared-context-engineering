@@ -1,7 +1,6 @@
 //! Clap-based CLI schema for the Shared Context Engineering CLI.
 //!
 //! This module defines the complete command-line interface using clap derive macros.
-//! It preserves the exact same command structure, flags, and behavior as the lexopt-based parser.
 
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;

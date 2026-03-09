@@ -34,7 +34,7 @@ Replace the manual `lexopt`-based CLI parsing with `clap` derive macros across a
 - [x] T03: Migrate app.rs to use clap parser (status:done)
 - [x] T04: Remove lexopt from service modules (status:done)
 - [x] T05: Replace completion.rs with clap_complete (status:done)
-- [ ] T06: Remove lexopt dependency (status:todo)
+- [x] T06: Remove lexopt dependency (status:done)
 - [ ] T07: Update context documentation (status:todo)
 - [ ] T08: Validation and cleanup (status:todo)
 
@@ -231,6 +231,17 @@ cargo test --manifest-path cli/Cargo.toml services::completion::tests
 ### T06: Remove lexopt dependency
 
 **Task ID:** T06
+
+**Status:** done
+
+**Completion notes:**
+- Removed `lexopt = "0.3"` from `cli/Cargo.toml`
+- Updated comment in `cli/src/cli_schema.rs` to remove lexopt reference
+- Verified no lexopt imports remain in source code
+- Verified `cli/src/dependency_contract.rs` already references clap instead of lexopt
+- `cargo build --manifest-path cli/Cargo.toml` succeeds
+- All 206 unit tests + 19 integration tests pass
+- Context drift note: Context files still reference lexopt; this is explicitly scoped to T07
 
 **Goal:** Remove lexopt from Cargo.toml now that all parsing uses clap.
 
