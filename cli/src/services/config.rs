@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
-use lexopt::{Arg, ValueExt};
 use serde_json::{json, Value};
 
 use crate::services::output_format::OutputFormat;
@@ -73,7 +72,6 @@ impl ValueSource {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConfigSubcommand {
-    Help,
     Show(ConfigRequest),
     Validate(ConfigRequest),
 }
@@ -136,108 +134,8 @@ struct FileConfigValue<T> {
     source: ConfigPathSource,
 }
 
-pub fn parse_config_subcommand(mut args: Vec<String>) -> Result<ConfigSubcommand> {
-    if args.is_empty() {
-        bail!("Missing config subcommand. Run 'sce config --help' to see valid usage.");
-    }
-
-    if let [only] = args.as_slice() {
-        if only == "--help" || only == "-h" {
-            return Ok(ConfigSubcommand::Help);
-        }
-    }
-
-    let subcommand = args.remove(0);
-    let tail = args;
-    match subcommand.as_str() {
-        "show" => Ok(ConfigSubcommand::Show(parse_config_request(tail)?)),
-        "validate" => Ok(ConfigSubcommand::Validate(parse_config_request(tail)?)),
-        _ => bail!(
-            "Unknown config subcommand '{}'. Run 'sce config --help' to see valid usage.",
-            subcommand
-        ),
-    }
-}
-
-fn parse_config_request(args: Vec<String>) -> Result<ConfigRequest> {
-    let mut parser = lexopt::Parser::from_args(args);
-    let mut request = ConfigRequest {
-        report_format: ReportFormat::Text,
-        config_path: None,
-        log_level: None,
-        timeout_ms: None,
-    };
-
-    while let Some(arg) = parser.next()? {
-        match arg {
-            Arg::Long("format") => {
-                let value = parser
-                    .value()
-                    .context("Option '--format' requires a value")?;
-                let raw = value.string()?;
-                request.report_format = ReportFormat::parse(&raw, "sce config --help")?;
-            }
-            Arg::Long("config") => {
-                let value = parser
-                    .value()
-                    .context("Option '--config' requires a path value")?;
-                if request.config_path.is_some() {
-                    bail!(
-                        "Option '--config' may only be provided once. Run 'sce config --help' to see valid usage."
-                    );
-                }
-                request.config_path = Some(PathBuf::from(value.string()?));
-            }
-            Arg::Long("log-level") => {
-                let value = parser
-                    .value()
-                    .context("Option '--log-level' requires a value")?;
-                let raw = value.string()?;
-                request.log_level = Some(LogLevel::parse(&raw, "--log-level")?);
-            }
-            Arg::Long("timeout-ms") => {
-                let value = parser
-                    .value()
-                    .context("Option '--timeout-ms' requires a numeric value")?;
-                let raw = value.string()?;
-                let timeout = raw
-                    .parse::<u64>()
-                    .map_err(|_| anyhow!("Invalid timeout '{}' from --timeout-ms.", raw))?;
-                request.timeout_ms = Some(timeout);
-            }
-            Arg::Long("help") | Arg::Short('h') => {
-                bail!(
-                    "Use 'sce config --help' for config usage. Command-local help does not accept additional arguments."
-                );
-            }
-            Arg::Long(option) => {
-                bail!(
-                    "Unknown config option '--{}'. Run 'sce config --help' to see valid usage.",
-                    option
-                );
-            }
-            Arg::Short(option) => {
-                bail!(
-                    "Unknown config option '-{}'. Run 'sce config --help' to see valid usage.",
-                    option
-                );
-            }
-            Arg::Value(value) => {
-                let raw = value.string()?;
-                bail!(
-                    "Unexpected config argument '{}'. Run 'sce config --help' to see valid usage.",
-                    raw
-                );
-            }
-        }
-    }
-
-    Ok(request)
-}
-
 pub fn run_config_subcommand(subcommand: ConfigSubcommand) -> Result<String> {
     match subcommand {
-        ConfigSubcommand::Help => Ok(config_usage_text().to_string()),
         ConfigSubcommand::Show(request) => {
             let cwd = std::env::current_dir().context("Failed to determine current directory")?;
             let runtime = resolve_runtime_config(&request, &cwd)?;
@@ -249,10 +147,6 @@ pub fn run_config_subcommand(subcommand: ConfigSubcommand) -> Result<String> {
             Ok(format_validate_output(&runtime, request.report_format))
         }
     }
-}
-
-pub fn config_usage_text() -> &'static str {
-    "Usage:\n  sce config show [--config <path>] [--log-level <error|warn|info|debug>] [--timeout-ms <value>] [--format <text|json>]\n  sce config validate [--config <path>] [--log-level <error|warn|info|debug>] [--timeout-ms <value>] [--format <text|json>]\n\nResolution precedence: flags > env > config file > defaults\nConfig discovery order: --config, SCE_CONFIG_FILE, then discovered global+local defaults (global merged first, local overrides per key)\nEnvironment keys: SCE_CONFIG_FILE, SCE_LOG_LEVEL, SCE_TIMEOUT_MS"
 }
 
 fn resolve_runtime_config(request: &ConfigRequest, cwd: &Path) -> Result<RuntimeConfig> {
@@ -606,9 +500,9 @@ fn format_resolved_value_text(key: &str, value: &str, source: ValueSource) -> St
 #[cfg(test)]
 mod tests {
     use super::{
-        format_show_output, format_validate_output, parse_config_subcommand,
-        resolve_runtime_config_with, ConfigPathSource, ConfigRequest, ConfigSubcommand,
-        LoadedConfigPath, LogLevel, ReportFormat, ResolvedValue, RuntimeConfig, ValueSource,
+        format_show_output, format_validate_output, resolve_runtime_config_with, ConfigPathSource,
+        ConfigRequest, ConfigSubcommand, LoadedConfigPath, LogLevel, ReportFormat, ResolvedValue,
+        RuntimeConfig, ValueSource,
     };
     use anyhow::Result;
     use serde_json::Value;
@@ -621,52 +515,6 @@ mod tests {
             log_level: None,
             timeout_ms: None,
         }
-    }
-
-    #[test]
-    fn parser_routes_show_subcommand() -> Result<()> {
-        let parsed = parse_config_subcommand(vec!["show".to_string()])?;
-        assert_eq!(parsed, ConfigSubcommand::Show(request()));
-        Ok(())
-    }
-
-    #[test]
-    fn parser_routes_validate_subcommand_with_options() -> Result<()> {
-        let parsed = parse_config_subcommand(vec![
-            "validate".to_string(),
-            "--format".to_string(),
-            "json".to_string(),
-            "--log-level".to_string(),
-            "debug".to_string(),
-            "--timeout-ms".to_string(),
-            "100".to_string(),
-            "--config".to_string(),
-            "./demo.json".to_string(),
-        ])?;
-        assert_eq!(
-            parsed,
-            ConfigSubcommand::Validate(ConfigRequest {
-                report_format: ReportFormat::Json,
-                config_path: Some(PathBuf::from("./demo.json")),
-                log_level: Some(LogLevel::Debug),
-                timeout_ms: Some(100),
-            })
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn parser_rejects_invalid_format_with_help_guidance() {
-        let error = parse_config_subcommand(vec![
-            "show".to_string(),
-            "--format".to_string(),
-            "yaml".to_string(),
-        ])
-        .expect_err("invalid format should fail");
-        assert_eq!(
-            error.to_string(),
-            "Invalid --format value 'yaml'. Valid values: text, json. Run 'sce config --help' to see valid usage."
-        );
     }
 
     #[test]

@@ -1,6 +1,4 @@
 use anyhow::{Context, Result};
-use lexopt::Arg;
-use lexopt::ValueExt;
 use serde_json::json;
 use std::sync::OnceLock;
 
@@ -15,50 +13,6 @@ pub type SyncFormat = OutputFormat;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SyncRequest {
     pub format: SyncFormat,
-}
-
-pub fn sync_usage_text() -> &'static str {
-    "Usage:\n  sce sync [--format <text|json>]\n\nExamples:\n  sce sync\n  sce sync --format json"
-}
-
-pub fn parse_sync_request(args: Vec<String>) -> Result<SyncRequest> {
-    let mut parser = lexopt::Parser::from_args(args);
-    let mut format = SyncFormat::Text;
-
-    while let Some(arg) = parser.next()? {
-        match arg {
-            Arg::Long("format") => {
-                let value = parser
-                    .value()
-                    .context("Option '--format' requires a value")?;
-                let raw = value.string()?;
-                format = SyncFormat::parse(&raw, "sce sync --help")?;
-            }
-            Arg::Long("help") | Arg::Short('h') => {
-                anyhow::bail!("Use 'sce sync --help' for sync usage.");
-            }
-            Arg::Long(option) => {
-                anyhow::bail!(
-                    "Unknown sync option '--{}'. Run 'sce sync --help' to see valid usage.",
-                    option
-                );
-            }
-            Arg::Short(option) => {
-                anyhow::bail!(
-                    "Unknown sync option '-{}'. Run 'sce sync --help' to see valid usage.",
-                    option
-                );
-            }
-            Arg::Value(value) => {
-                anyhow::bail!(
-                    "Unexpected sync argument '{}'. Run 'sce sync --help' to see valid usage.",
-                    value.string()?
-                );
-            }
-        }
-    }
-
-    Ok(SyncRequest { format })
 }
 
 const SUPPORTED_PHASES: [CloudSyncPhase; 3] = [
@@ -251,34 +205,11 @@ mod tests {
     use serde_json::Value;
 
     use super::{
-        parse_sync_request, run_placeholder_sync, CloudSyncGateway, CloudSyncPhase,
-        CloudSyncRequest, PlaceholderCloudSyncGateway, SyncFormat, SyncRequest, NAME,
+        run_placeholder_sync, CloudSyncGateway, CloudSyncPhase, CloudSyncRequest,
+        PlaceholderCloudSyncGateway, SyncFormat, SyncRequest, NAME,
     };
 
     use super::shared_runtime;
-
-    #[test]
-    fn parse_defaults_to_text_format() {
-        let request = parse_sync_request(vec![]).expect("sync request should parse");
-        assert_eq!(request.format, SyncFormat::Text);
-    }
-
-    #[test]
-    fn parse_accepts_json_format() {
-        let request = parse_sync_request(vec!["--format".to_string(), "json".to_string()])
-            .expect("sync request should parse");
-        assert_eq!(request.format, SyncFormat::Json);
-    }
-
-    #[test]
-    fn parse_rejects_invalid_format_with_help_guidance() {
-        let error = parse_sync_request(vec!["--format".to_string(), "yaml".to_string()])
-            .expect_err("invalid sync format should fail");
-        assert_eq!(
-            error.to_string(),
-            "Invalid --format value 'yaml'. Valid values: text, json. Run 'sce sync --help' to see valid usage."
-        );
-    }
 
     #[test]
     fn sync_placeholder_runs_local_smoke_check() -> Result<()> {

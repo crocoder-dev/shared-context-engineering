@@ -32,7 +32,7 @@ Replace the manual `lexopt`-based CLI parsing with `clap` derive macros across a
 - [x] T01: Add clap and clap_complete dependencies (status:done)
 - [x] T02: Create clap-based CLI schema module (status:done)
 - [x] T03: Migrate app.rs to use clap parser (status:done)
-- [ ] T04: Remove lexopt from service modules (status:todo)
+- [x] T04: Remove lexopt from service modules (status:done)
 - [ ] T05: Replace completion.rs with clap_complete (status:todo)
 - [ ] T06: Remove lexopt dependency (status:todo)
 - [ ] T07: Update context documentation (status:todo)
@@ -138,6 +138,22 @@ cargo test --manifest-path cli/Cargo.toml app::tests
 ### T04: Remove lexopt from service modules
 
 **Task ID:** T04
+
+**Status:** done
+
+**Completion notes:**
+- Removed `parse_*` functions and `*_usage_text()` functions from:
+  - `version.rs` (removed `parse_version_request`, `version_usage_text`)
+  - `doctor.rs` (removed `parse_doctor_request`, `doctor_usage_text`)
+  - `sync.rs` (removed `parse_sync_request`, `sync_usage_text`)
+  - `mcp.rs` (removed `parse_mcp_request`, `mcp_usage_text`)
+  - `config.rs` (removed `parse_config_subcommand`, `parse_config_request`, `config_usage_text`, `ConfigSubcommand::Help`)
+  - `setup.rs` (removed `parse_setup_cli_options`, `setup_usage_text`)
+  - `hooks.rs` (removed `parse_hooks_subcommand`, `hooks_usage_text`, `ensure_no_extra_hook_args`)
+- Removed all `lexopt` imports from service modules
+- Removed parse-related tests from service test modules
+- All service tests pass (205 unit tests + 19 integration tests)
+- `cargo check` succeeds with no errors
 
 **Goal:** Remove lexopt-based parsing from all service modules since clap handles all parsing at the app layer.
 

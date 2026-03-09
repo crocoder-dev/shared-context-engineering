@@ -1,6 +1,4 @@
-use anyhow::{bail, Context, Result};
-use lexopt::Arg;
-use lexopt::ValueExt;
+use anyhow::{Context, Result};
 use serde_json::json;
 
 use crate::services::output_format::OutputFormat;
@@ -15,50 +13,6 @@ pub type VersionFormat = OutputFormat;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VersionRequest {
     pub format: VersionFormat,
-}
-
-pub fn version_usage_text() -> &'static str {
-    "Usage:\n  sce version [--format <text|json>]\n\nExamples:\n  sce version\n  sce version --format json"
-}
-
-pub fn parse_version_request(args: Vec<String>) -> Result<VersionRequest> {
-    let mut parser = lexopt::Parser::from_args(args);
-    let mut format = VersionFormat::Text;
-
-    while let Some(arg) = parser.next()? {
-        match arg {
-            Arg::Long("format") => {
-                let value = parser
-                    .value()
-                    .context("Option '--format' requires a value")?;
-                let raw = value.string()?;
-                format = VersionFormat::parse(&raw, "sce version --help")?;
-            }
-            Arg::Long("help") | Arg::Short('h') => {
-                bail!("Use 'sce version --help' for version usage.");
-            }
-            Arg::Long(option) => {
-                bail!(
-                    "Unknown version option '--{}'. Run 'sce version --help' to see valid usage.",
-                    option
-                );
-            }
-            Arg::Short(option) => {
-                bail!(
-                    "Unknown version option '-{}'. Run 'sce version --help' to see valid usage.",
-                    option
-                );
-            }
-            Arg::Value(value) => {
-                bail!(
-                    "Unexpected version argument '{}'. Run 'sce version --help' to see valid usage.",
-                    value.string()?
-                );
-            }
-        }
-    }
-
-    Ok(VersionRequest { format })
 }
 
 pub fn render_version(request: VersionRequest) -> Result<String> {
@@ -90,30 +44,7 @@ pub fn render_version(request: VersionRequest) -> Result<String> {
 mod tests {
     use serde_json::Value;
 
-    use super::{parse_version_request, render_version, VersionFormat, VersionRequest, NAME};
-
-    #[test]
-    fn parse_defaults_to_text_format() {
-        let request = parse_version_request(vec![]).expect("request should parse");
-        assert_eq!(request.format, VersionFormat::Text);
-    }
-
-    #[test]
-    fn parse_accepts_json_format() {
-        let request = parse_version_request(vec!["--format".to_string(), "json".to_string()])
-            .expect("request should parse");
-        assert_eq!(request.format, VersionFormat::Json);
-    }
-
-    #[test]
-    fn parse_rejects_invalid_format_with_help_guidance() {
-        let error = parse_version_request(vec!["--format".to_string(), "yaml".to_string()])
-            .expect_err("invalid format should fail");
-        assert_eq!(
-            error.to_string(),
-            "Invalid --format value 'yaml'. Valid values: text, json. Run 'sce version --help' to see valid usage."
-        );
-    }
+    use super::{render_version, VersionFormat, VersionRequest, NAME};
 
     #[test]
     fn render_json_includes_stable_fields() {
