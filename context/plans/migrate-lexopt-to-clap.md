@@ -33,7 +33,7 @@ Replace the manual `lexopt`-based CLI parsing with `clap` derive macros across a
 - [x] T02: Create clap-based CLI schema module (status:done)
 - [x] T03: Migrate app.rs to use clap parser (status:done)
 - [x] T04: Remove lexopt from service modules (status:done)
-- [ ] T05: Replace completion.rs with clap_complete (status:todo)
+- [x] T05: Replace completion.rs with clap_complete (status:done)
 - [ ] T06: Remove lexopt dependency (status:todo)
 - [ ] T07: Update context documentation (status:todo)
 - [ ] T08: Validation and cleanup (status:todo)
@@ -184,6 +184,20 @@ cargo test --manifest-path cli/Cargo.toml
 ### T05: Replace completion.rs with clap_complete
 
 **Task ID:** T05
+
+**Status:** done
+
+**Completion notes:**
+- Removed manual `bash_completion_script()`, `zsh_completion_script()`, `fish_completion_script()` functions
+- Removed 175+ lines of manual completion script code
+- Implemented `render_completion()` using `clap_complete::generate()`
+- Added `use clap::CommandFactory` import to access `Cli::command()`
+- Mapped `CompletionShell` enum to `clap_complete::Shell` types
+- Updated tests to verify clap_complete output characteristics instead of manual script patterns
+- All 4 completion tests pass
+- All 206 unit tests pass
+- `cargo check` succeeds with no errors
+- Verified bash/zsh/fish completion scripts are generated correctly via manual inspection
 
 **Goal:** Replace manual shell completion scripts with clap_complete auto-generated completions.
 
