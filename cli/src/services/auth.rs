@@ -1,14 +1,21 @@
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 
-use crate::services::token_storage::{save_tokens, StoredTokens, TokenStorageError};
+use crate::services::resilience::{run_with_retry, RetryPolicy};
+use crate::services::token_storage::{load_tokens, save_tokens, StoredTokens, TokenStorageError};
 
 pub const DEVICE_CODE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 pub const REFRESH_TOKEN_GRANT_TYPE: &str = "refresh_token";
 pub const WORKOS_DEFAULT_BASE_URL: &str = "https://api.workos.com";
 pub const DEFAULT_DEVICE_POLL_INTERVAL_SECONDS: u64 = 5;
+const TOKEN_EXPIRY_SKEW_SECONDS: u64 = 30;
+const TOKEN_REFRESH_MAX_ATTEMPTS: u32 = 3;
+const TOKEN_REFRESH_TIMEOUT_MS: u64 = 10_000;
+const TOKEN_REFRESH_INITIAL_BACKOFF_MS: u64 = 250;
+const TOKEN_REFRESH_MAX_BACKOFF_MS: u64 = 2_000;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DeviceAuthorizationRequest {
@@ -141,6 +148,31 @@ pub async fn start_device_auth_flow(
     })
 }
 
+pub async fn ensure_valid_token(
+    client: &reqwest::Client,
+    api_base_url: &str,
+    client_id: &str,
+) -> Result<StoredTokens, AuthError> {
+    if client_id.trim().is_empty() {
+        return Err(AuthError::MissingClientId);
+    }
+
+    let Some(stored) = load_tokens()? else {
+        return Err(AuthError::Unauthorized(
+            "No stored WorkOS credentials were found. Try: run 'sce login' before running authenticated commands.".to_string(),
+        ));
+    };
+
+    let now_unix_seconds = current_unix_timestamp_seconds()?;
+    if !is_token_expired(&stored, now_unix_seconds) {
+        return Ok(stored);
+    }
+
+    let refreshed = refresh_access_token(client, api_base_url, client_id, &stored.refresh_token).await?;
+    let updated = save_tokens(&refreshed)?;
+    Ok(updated)
+}
+
 async fn request_device_authorization(
     client: &reqwest::Client,
     api_base_url: &str,
@@ -247,6 +279,117 @@ fn poll_decision_for_error_code(code: &str) -> PollDecision {
     }
 }
 
+fn is_token_expired(stored: &StoredTokens, now_unix_seconds: u64) -> bool {
+    let lifetime_seconds = stored.expires_in.saturating_sub(TOKEN_EXPIRY_SKEW_SECONDS);
+    let expires_at = stored
+        .stored_at_unix_seconds
+        .saturating_add(lifetime_seconds);
+    now_unix_seconds >= expires_at
+}
+
+fn current_unix_timestamp_seconds() -> Result<u64, AuthError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|error| {
+            AuthError::InvalidResponse(format!("system clock is invalid for token expiry checks: {error}"))
+        })
+}
+
+async fn refresh_access_token(
+    client: &reqwest::Client,
+    api_base_url: &str,
+    client_id: &str,
+    refresh_token: &str,
+) -> Result<TokenResponse, AuthError> {
+    if refresh_token.trim().is_empty() {
+        return Err(AuthError::Unauthorized(
+            "Stored WorkOS refresh token is missing. Try: run 'sce login' to authenticate again."
+                .to_string(),
+        ));
+    }
+
+    let endpoint = format!("{}/oauth/token", api_base_url.trim_end_matches('/'));
+    let request = RefreshTokenRequest {
+        grant_type: REFRESH_TOKEN_GRANT_TYPE.to_string(),
+        refresh_token: refresh_token.to_string(),
+        client_id: client_id.to_string(),
+    };
+    let retry_policy = RetryPolicy {
+        max_attempts: TOKEN_REFRESH_MAX_ATTEMPTS,
+        timeout_ms: TOKEN_REFRESH_TIMEOUT_MS,
+        initial_backoff_ms: TOKEN_REFRESH_INITIAL_BACKOFF_MS,
+        max_backoff_ms: TOKEN_REFRESH_MAX_BACKOFF_MS,
+    };
+
+    let response = run_with_retry(
+        retry_policy,
+        "auth.refresh_token",
+        "check network connectivity and rerun the command",
+        |_| {
+            let endpoint = endpoint.clone();
+            let request = request.clone();
+            async move {
+                client
+                    .post(&endpoint)
+                    .json(&request)
+                    .send()
+                    .await
+                    .map_err(|error| anyhow!(error))
+            }
+        },
+    )
+    .await
+    .map_err(|error| {
+        AuthError::Unauthorized(format!(
+            "WorkOS token refresh failed due to repeated transient errors: {error}. Try: rerun the command; if this persists, run 'sce login' to re-authenticate."
+        ))
+    })?;
+
+    if response.status().is_success() {
+        let token = response
+            .json::<TokenResponse>()
+            .await
+            .map_err(AuthError::RequestFailed)?;
+        return Ok(token);
+    }
+
+    let oauth_error = parse_oauth_error_response(response).await?;
+    Err(map_refresh_terminal_error(
+        &oauth_error.error,
+        oauth_error.error_description.as_deref(),
+    ))
+}
+
+fn map_refresh_terminal_error(code: &str, description: Option<&str>) -> AuthError {
+    let detail = description
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!(" ({value})"))
+        .unwrap_or_default();
+
+    match code {
+        "invalid_grant" | "expired_token" => AuthError::Unauthorized(format!(
+            "Stored WorkOS refresh token is no longer valid{detail}. Try: run 'sce login' to authenticate again."
+        )),
+        "invalid_client" => AuthError::Unauthorized(format!(
+            "WorkOS rejected the configured client ID during token refresh{detail}. Try: verify WORKOS_CLIENT_ID (or config value) and rerun 'sce login'."
+        )),
+        "invalid_request" => AuthError::Unauthorized(format!(
+            "WorkOS rejected the refresh token request as invalid{detail}. Try: run 'sce login' to reset local credentials."
+        )),
+        "unsupported_grant_type" => AuthError::Unauthorized(format!(
+            "WorkOS rejected the refresh OAuth grant type{detail}. Try: update the CLI and rerun 'sce login'."
+        )),
+        "access_denied" => AuthError::Unauthorized(format!(
+            "WorkOS denied the refresh token request{detail}. Try: run 'sce login' to re-authenticate."
+        )),
+        other => AuthError::Unauthorized(format!(
+            "WorkOS returned OAuth error '{other}' while refreshing credentials{detail}. Try: run 'sce login' to restore authentication."
+        )),
+    }
+}
+
 async fn parse_oauth_error_response(
     response: reqwest::Response,
 ) -> Result<OAuthErrorResponse, AuthError> {
@@ -293,10 +436,12 @@ fn map_oauth_terminal_error(code: &str, description: Option<&str>) -> AuthError 
 #[cfg(test)]
 mod tests {
     use super::{
-        map_oauth_terminal_error, poll_decision_for_error_code, DeviceAuthorizationResponse,
-        DeviceTokenPollRequest, OAuthErrorResponse, PollDecision, TokenResponse,
-        DEVICE_CODE_GRANT_TYPE,
+        is_token_expired, map_oauth_terminal_error, map_refresh_terminal_error,
+        poll_decision_for_error_code, DeviceAuthorizationResponse, DeviceTokenPollRequest,
+        OAuthErrorResponse, PollDecision, RefreshTokenRequest, TokenResponse,
+        DEVICE_CODE_GRANT_TYPE, REFRESH_TOKEN_GRANT_TYPE,
     };
+    use crate::services::token_storage::StoredTokens;
 
     #[test]
     fn device_authorization_response_deserializes_from_workos_shape() {
@@ -415,5 +560,39 @@ mod tests {
             poll_decision_for_error_code("invalid_client"),
             PollDecision::Stop
         );
+    }
+
+    #[test]
+    fn refresh_token_request_uses_refresh_grant_type_constant() {
+        let request = RefreshTokenRequest {
+            grant_type: REFRESH_TOKEN_GRANT_TYPE.to_string(),
+            refresh_token: "refresh_abc".to_string(),
+            client_id: "client_abc".to_string(),
+        };
+
+        let encoded = serde_json::to_string(&request).expect("refresh request should serialize");
+        assert!(encoded.contains(REFRESH_TOKEN_GRANT_TYPE));
+    }
+
+    #[test]
+    fn token_expiry_check_honors_stored_timestamp_and_expiry() {
+        let stored = StoredTokens {
+            access_token: "access_abc".to_string(),
+            token_type: "Bearer".to_string(),
+            expires_in: 3600,
+            refresh_token: "refresh_abc".to_string(),
+            scope: None,
+            stored_at_unix_seconds: 1_700_000_000,
+        };
+
+        assert!(!is_token_expired(&stored, 1_700_003_500));
+        assert!(is_token_expired(&stored, 1_700_003_570));
+    }
+
+    #[test]
+    fn refresh_terminal_error_mapping_requires_relogin_on_invalid_grant() {
+        let message = map_refresh_terminal_error("invalid_grant", Some("expired")).to_string();
+        assert!(message.contains("sce login"));
+        assert!(message.contains("Try:"));
     }
 }
