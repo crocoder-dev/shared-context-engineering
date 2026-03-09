@@ -68,7 +68,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 
 ## Command loop and error model
 
-- Argument parsing is handled by `lexopt` in `cli/src/app.rs`.
+- Argument parsing is handled by `clap` derive macros in `cli/src/cli_schema.rs` and dispatched from `cli/src/app.rs`.
 - Runtime errors are normalized through `anyhow` and rendered as `Error: ...` with exit code `2`.
 - Unknown commands/options and extra positional arguments return deterministic, actionable guidance to run `sce --help`.
 - `sce setup --help` returns setup-specific usage output with target-flag contract details and deterministic examples, including one-run non-interactive setup+hooks and a composable follow-up validation flow (`sce doctor --format json`).
@@ -119,7 +119,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 
 ## Dependency baseline
 
-- `cli/Cargo.toml` declares only: `anyhow`, `hmac`, `inquire`, `lexopt`, `serde_json`, `sha2`, `tokio`, and `turso`.
+- `cli/Cargo.toml` declares: `anyhow`, `clap`, `clap_complete`, `hmac`, `inquire`, `opentelemetry`, `opentelemetry-otlp`, `opentelemetry_sdk`, `serde_json`, `sha2`, `tokio`, `tracing`, `tracing-opentelemetry`, `tracing-subscriber`, and `turso`.
 - `tokio` is pinned with `default-features = false` and keeps a constrained runtime footprint for current-thread `Runtime::block_on` usage, plus timer-backed bounded retry/timeout behavior in resilience-wrapped operations.
 - `cli/src/dependency_contract.rs` keeps compile-time crate references centralized for this placeholder slice.
 
