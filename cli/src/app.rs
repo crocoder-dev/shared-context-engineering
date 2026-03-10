@@ -105,6 +105,7 @@ impl std::error::Error for ClassifiedError {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Command {
     Help,
+    Auth(services::auth_command::AuthRequest),
     Completion(services::completion::CompletionRequest),
     Config(services::config::ConfigSubcommand),
     Setup(services::setup::SetupRequest),
@@ -119,6 +120,7 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Self::Help => "help",
+            Self::Auth(_) => services::auth_command::NAME,
             Self::Completion(_) => services::completion::NAME,
             Self::Config(_) => services::config::NAME,
             Self::Setup(_) => services::setup::NAME,
@@ -441,9 +443,7 @@ fn extract_quoted_value(message: &str) -> Option<String> {
 fn convert_clap_command(command: cli_schema::Commands) -> Result<Command, ClassifiedError> {
     match command {
         cli_schema::Commands::Config { subcommand } => convert_config_subcommand(subcommand),
-        cli_schema::Commands::Auth { .. } => Err(ClassifiedError::validation(
-            "The 'auth' command schema is available, but command execution is not wired yet. Try: continue with task T02/T03 to implement auth dispatch.",
-        )),
+        cli_schema::Commands::Auth { subcommand } => convert_auth_subcommand(subcommand),
         cli_schema::Commands::Setup {
             opencode,
             claude,
@@ -475,6 +475,32 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<Command, Classi
             },
         )),
     }
+}
+
+fn convert_auth_subcommand(
+    subcommand: cli_schema::AuthSubcommand,
+) -> Result<Command, ClassifiedError> {
+    let subcommand = match subcommand {
+        cli_schema::AuthSubcommand::Login { format } => {
+            services::auth_command::AuthSubcommand::Login {
+                format: convert_output_format(format),
+            }
+        }
+        cli_schema::AuthSubcommand::Logout { format } => {
+            services::auth_command::AuthSubcommand::Logout {
+                format: convert_output_format(format),
+            }
+        }
+        cli_schema::AuthSubcommand::Status { format } => {
+            services::auth_command::AuthSubcommand::Status {
+                format: convert_output_format(format),
+            }
+        }
+    };
+
+    Ok(Command::Auth(services::auth_command::AuthRequest {
+        subcommand,
+    }))
 }
 
 /// Convert clap output format to service output format.
@@ -593,6 +619,8 @@ fn convert_hooks_subcommand(
 fn dispatch(command: &Command) -> Result<String, ClassifiedError> {
     match command {
         Command::Help => Ok(command_surface::help_text()),
+        Command::Auth(request) => services::auth_command::run_auth_subcommand(*request)
+            .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::Completion(request) => Ok(services::completion::render_completion(*request)),
         Command::Config(subcommand) => services::config::run_config_subcommand(subcommand.clone())
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
@@ -656,8 +684,8 @@ mod tests {
 
     use super::{
         parse_command, run, run_with_dependency_check, run_with_dependency_check_and_streams,
-        Command, FailureClass, EXIT_CODE_DEPENDENCY_FAILURE, EXIT_CODE_PARSE_FAILURE,
-        EXIT_CODE_RUNTIME_FAILURE, EXIT_CODE_VALIDATION_FAILURE,
+        Command, EXIT_CODE_DEPENDENCY_FAILURE, EXIT_CODE_PARSE_FAILURE, EXIT_CODE_RUNTIME_FAILURE,
+        EXIT_CODE_VALIDATION_FAILURE,
     };
 
     #[test]
@@ -1060,18 +1088,40 @@ mod tests {
     }
 
     #[test]
-    fn parser_rejects_auth_until_dispatch_is_implemented() {
-        let error = parse_command(vec![
+    fn parser_routes_auth_login_subcommand() {
+        let command = parse_command(vec![
             "sce".to_string(),
             "auth".to_string(),
             "login".to_string(),
         ])
-        .expect_err("auth should stay blocked until follow-up tasks wire execution");
-        assert_eq!(error.class, FailureClass::Validation);
-        assert_eq!(error.code, "SCE-ERR-VALIDATION");
+        .expect("auth login should parse");
         assert_eq!(
-            error.message,
-            "The 'auth' command schema is available, but command execution is not wired yet. Try: continue with task T02/T03 to implement auth dispatch."
+            command,
+            Command::Auth(crate::services::auth_command::AuthRequest {
+                subcommand: crate::services::auth_command::AuthSubcommand::Login {
+                    format: crate::services::auth_command::AuthFormat::Text,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn parser_routes_auth_status_json_subcommand() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "auth".to_string(),
+            "status".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+        ])
+        .expect("auth status json should parse");
+        assert_eq!(
+            command,
+            Command::Auth(crate::services::auth_command::AuthRequest {
+                subcommand: crate::services::auth_command::AuthSubcommand::Status {
+                    format: crate::services::auth_command::AuthFormat::Json,
+                },
+            })
         );
     }
 

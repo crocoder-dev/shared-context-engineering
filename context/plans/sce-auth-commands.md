@@ -87,7 +87,7 @@ Add `sce auth` command group with nested `login`, `logout`, and `status` subcomm
     - Verify logout removes token file gracefully
     - Verify status shows correct state with expiry calculation
 
-- [ ] T03: Wire auth commands into app dispatch (status:todo)
+- [x] T03: Wire auth commands into app dispatch (status:done)
   - Task ID: T03
   - Goal: Add auth command conversion and dispatch to `app.rs`
   - Boundaries (in/out of scope):
