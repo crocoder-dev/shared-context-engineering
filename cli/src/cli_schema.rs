@@ -36,6 +36,12 @@ impl Cli {
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum Commands {
+    /// Authenticate with WorkOS device authorization flow
+    Auth {
+        #[command(subcommand)]
+        subcommand: AuthSubcommand,
+    },
+
     /// Inspect and validate resolved CLI configuration
     Config {
         #[command(subcommand)]
@@ -115,6 +121,31 @@ pub enum Commands {
         /// Shell type for completion script
         #[arg(long, value_enum)]
         shell: CompletionShell,
+    },
+}
+
+/// Config subcommands
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum AuthSubcommand {
+    /// Start login flow and store credentials
+    Login {
+        /// Output format
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+
+    /// Clear stored credentials
+    Logout {
+        /// Output format
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+
+    /// Show current authentication status
+    Status {
+        /// Output format
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
     },
 }
 
@@ -223,6 +254,93 @@ pub enum LogLevel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_auth_login() {
+        let cli = Cli::try_parse_from(["sce", "auth", "login"]).expect("auth login should parse");
+        match cli.command {
+            Some(Commands::Auth { subcommand }) => match subcommand {
+                AuthSubcommand::Login { format } => {
+                    assert_eq!(format, OutputFormat::Text);
+                }
+                _ => panic!("Expected Login subcommand"),
+            },
+            _ => panic!("Expected Auth command"),
+        }
+    }
+
+    #[test]
+    fn parse_auth_login_json() {
+        let cli = Cli::try_parse_from(["sce", "auth", "login", "--format", "json"])
+            .expect("auth login --format json should parse");
+        match cli.command {
+            Some(Commands::Auth { subcommand }) => match subcommand {
+                AuthSubcommand::Login { format } => {
+                    assert_eq!(format, OutputFormat::Json);
+                }
+                _ => panic!("Expected Login subcommand"),
+            },
+            _ => panic!("Expected Auth command"),
+        }
+    }
+
+    #[test]
+    fn parse_auth_logout() {
+        let cli = Cli::try_parse_from(["sce", "auth", "logout"]).expect("auth logout should parse");
+        match cli.command {
+            Some(Commands::Auth { subcommand }) => match subcommand {
+                AuthSubcommand::Logout { format } => {
+                    assert_eq!(format, OutputFormat::Text);
+                }
+                _ => panic!("Expected Logout subcommand"),
+            },
+            _ => panic!("Expected Auth command"),
+        }
+    }
+
+    #[test]
+    fn parse_auth_logout_json() {
+        let cli = Cli::try_parse_from(["sce", "auth", "logout", "--format", "json"])
+            .expect("auth logout --format json should parse");
+        match cli.command {
+            Some(Commands::Auth { subcommand }) => match subcommand {
+                AuthSubcommand::Logout { format } => {
+                    assert_eq!(format, OutputFormat::Json);
+                }
+                _ => panic!("Expected Logout subcommand"),
+            },
+            _ => panic!("Expected Auth command"),
+        }
+    }
+
+    #[test]
+    fn parse_auth_status() {
+        let cli = Cli::try_parse_from(["sce", "auth", "status"]).expect("auth status should parse");
+        match cli.command {
+            Some(Commands::Auth { subcommand }) => match subcommand {
+                AuthSubcommand::Status { format } => {
+                    assert_eq!(format, OutputFormat::Text);
+                }
+                _ => panic!("Expected Status subcommand"),
+            },
+            _ => panic!("Expected Auth command"),
+        }
+    }
+
+    #[test]
+    fn parse_auth_status_json() {
+        let cli = Cli::try_parse_from(["sce", "auth", "status", "--format", "json"])
+            .expect("auth status --format json should parse");
+        match cli.command {
+            Some(Commands::Auth { subcommand }) => match subcommand {
+                AuthSubcommand::Status { format } => {
+                    assert_eq!(format, OutputFormat::Json);
+                }
+                _ => panic!("Expected Status subcommand"),
+            },
+            _ => panic!("Expected Auth command"),
+        }
+    }
 
     #[test]
     fn parse_version_command() {

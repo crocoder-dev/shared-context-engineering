@@ -441,6 +441,9 @@ fn extract_quoted_value(message: &str) -> Option<String> {
 fn convert_clap_command(command: cli_schema::Commands) -> Result<Command, ClassifiedError> {
     match command {
         cli_schema::Commands::Config { subcommand } => convert_config_subcommand(subcommand),
+        cli_schema::Commands::Auth { .. } => Err(ClassifiedError::validation(
+            "The 'auth' command schema is available, but command execution is not wired yet. Try: continue with task T02/T03 to implement auth dispatch.",
+        )),
         cli_schema::Commands::Setup {
             opencode,
             claude,
@@ -653,8 +656,8 @@ mod tests {
 
     use super::{
         parse_command, run, run_with_dependency_check, run_with_dependency_check_and_streams,
-        Command, EXIT_CODE_DEPENDENCY_FAILURE, EXIT_CODE_PARSE_FAILURE, EXIT_CODE_RUNTIME_FAILURE,
-        EXIT_CODE_VALIDATION_FAILURE,
+        Command, FailureClass, EXIT_CODE_DEPENDENCY_FAILURE, EXIT_CODE_PARSE_FAILURE,
+        EXIT_CODE_RUNTIME_FAILURE, EXIT_CODE_VALIDATION_FAILURE,
     };
 
     #[test]
@@ -1053,6 +1056,22 @@ mod tests {
             Command::Mcp(crate::services::mcp::McpRequest {
                 format: crate::services::mcp::McpFormat::Json,
             })
+        );
+    }
+
+    #[test]
+    fn parser_rejects_auth_until_dispatch_is_implemented() {
+        let error = parse_command(vec![
+            "sce".to_string(),
+            "auth".to_string(),
+            "login".to_string(),
+        ])
+        .expect_err("auth should stay blocked until follow-up tasks wire execution");
+        assert_eq!(error.class, FailureClass::Validation);
+        assert_eq!(error.code, "SCE-ERR-VALIDATION");
+        assert_eq!(
+            error.message,
+            "The 'auth' command schema is available, but command execution is not wired yet. Try: continue with task T02/T03 to implement auth dispatch."
         );
     }
 
