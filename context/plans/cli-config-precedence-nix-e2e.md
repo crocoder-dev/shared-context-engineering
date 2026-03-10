@@ -90,7 +90,7 @@ Add compiled-binary end-to-end coverage for CLI config precedence so the existin
     - Run `cargo test --manifest-path cli/Cargo.toml --test config_precedence_integration`
     - Verify assertions check stable source markers such as `env`, `config_file`, and `default`
 
-- [ ] T04: Add opt-in canonical Nix entrypoint for config-precedence binary tests (status:todo)
+- [x] T04: Add opt-in canonical Nix entrypoint for config-precedence binary tests (status:done)
   - Task ID: T04
   - Goal: Update flake-managed CLI integration execution so config-precedence binary tests are runnable through a canonical Nix entrypoint without being pulled into the default `nix flake check` path.
   - Boundaries (in/out of scope):
