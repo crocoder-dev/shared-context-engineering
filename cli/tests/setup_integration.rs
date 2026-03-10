@@ -1,142 +1,16 @@
-use std::error::Error;
-use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::Command;
 
-type TestResult<T> = Result<T, Box<dyn Error>>;
+mod support;
 
-#[derive(Debug)]
-struct IntegrationTempDir {
-    path: PathBuf,
-}
+use support::{
+    null_device_path, render_command_result, sce_binary_path, BinaryIntegrationHarness, TestResult,
+};
 
-impl IntegrationTempDir {
-    fn new(prefix: &str) -> TestResult<Self> {
-        let epoch_nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("{prefix}-{}-{epoch_nanos}", std::process::id()));
-        fs::create_dir_all(&path)?;
-        Ok(Self { path })
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for IntegrationTempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-
-#[derive(Debug)]
-struct SetupIntegrationHarness {
-    temp: IntegrationTempDir,
-    repo_root: PathBuf,
-    state_home: PathBuf,
-    home_dir: PathBuf,
-}
-
-#[derive(Debug)]
-struct CommandResult {
-    status: std::process::ExitStatus,
-    stdout: String,
-    stderr: String,
-}
+type SetupIntegrationHarness = BinaryIntegrationHarness;
 
 const REQUIRED_HOOK_NAMES: [&str; 3] = ["pre-commit", "commit-msg", "post-commit"];
-
-impl CommandResult {
-    fn success(&self) -> bool {
-        self.status.success()
-    }
-}
-
-impl SetupIntegrationHarness {
-    fn new(prefix: &str) -> TestResult<Self> {
-        let temp = IntegrationTempDir::new(prefix)?;
-        let repo_root = temp.path().join("repo");
-        let state_home = temp.path().join("xdg-state");
-        let home_dir = temp.path().join("home");
-
-        fs::create_dir_all(&repo_root)?;
-        fs::create_dir_all(&state_home)?;
-        fs::create_dir_all(&home_dir)?;
-
-        Ok(Self {
-            temp,
-            repo_root,
-            state_home,
-            home_dir,
-        })
-    }
-
-    fn repo_root(&self) -> &Path {
-        &self.repo_root
-    }
-
-    fn state_home(&self) -> &Path {
-        &self.state_home
-    }
-
-    fn init_git_repo(&self) -> TestResult<()> {
-        let result = self.run_git(["init", "-q"])?;
-        if !result.success() {
-            return Err(format!(
-                "git init failed:\nstdout:\n{}\nstderr:\n{}",
-                result.stdout, result.stderr
-            )
-            .into());
-        }
-        Ok(())
-    }
-
-    fn configure_local_hooks_path(&self, relative_hooks_path: &str) -> TestResult<()> {
-        let result = self.run_git(["config", "core.hooksPath", relative_hooks_path])?;
-        if !result.success() {
-            return Err(format!(
-                "git config core.hooksPath failed:\nstdout:\n{}\nstderr:\n{}",
-                result.stdout, result.stderr
-            )
-            .into());
-        }
-        Ok(())
-    }
-
-    fn run_sce<I, S>(&self, args: I) -> TestResult<CommandResult>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
-    {
-        let output = self.base_command(sce_binary_path()).args(args).output()?;
-        Ok(render_command_result(output))
-    }
-
-    fn run_git<I, S>(&self, args: I) -> TestResult<CommandResult>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
-    {
-        let output = self.base_command("git").args(args).output()?;
-        Ok(render_command_result(output))
-    }
-
-    fn base_command<P: AsRef<OsStr>>(&self, program: P) -> Command {
-        let mut command = Command::new(program);
-        command
-            .current_dir(&self.repo_root)
-            .env("XDG_STATE_HOME", &self.state_home)
-            .env("HOME", &self.home_dir)
-            .env("LOCALAPPDATA", &self.state_home)
-            .env("APPDATA", &self.state_home)
-            .env("GIT_CONFIG_GLOBAL", null_device_path())
-            .env("GIT_CONFIG_NOSYSTEM", "1");
-        command
-    }
-}
 
 #[test]
 fn setup_hooks_default_path_install_and_rerun_are_deterministic() -> TestResult<()> {
@@ -340,14 +214,14 @@ fn setup_hooks_repo_relative_path() -> TestResult<()> {
     let canonical_repo_root = harness.repo_root().canonicalize()?;
     let expected_hooks_dir = canonical_repo_root.join(".git/hooks");
 
-    let parent_dir = harness.temp.path();
+    let parent_dir = harness.temp_path();
     let relative_repo_path = "repo";
 
     let output = Command::new(sce_binary_path())
         .args(["setup", "--hooks", "--repo", relative_repo_path])
         .current_dir(parent_dir)
         .env("XDG_STATE_HOME", harness.state_home())
-        .env("HOME", &harness.home_dir)
+        .env("HOME", harness.home_dir())
         .env("GIT_CONFIG_GLOBAL", null_device_path())
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .output()?;
@@ -451,10 +325,10 @@ fn harness_scopes_turso_state_home_to_test_temp_root() -> TestResult<()> {
         expected_local_db.display()
     );
     assert!(
-        expected_local_db.starts_with(harness.temp.path()),
+        expected_local_db.starts_with(harness.temp_path()),
         "expected Turso local DB path '{}' to stay within test temp root '{}')",
         expected_local_db.display(),
-        harness.temp.path().display()
+        harness.temp_path().display()
     );
 
     Ok(())
@@ -733,7 +607,7 @@ mod pty_interactive {
             harness.repo_root(),
             &[
                 ("XDG_STATE_HOME", harness.state_home().to_str().unwrap()),
-                ("HOME", harness.home_dir.to_str().unwrap()),
+                ("HOME", harness.home_dir().to_str().unwrap()),
                 ("GIT_CONFIG_GLOBAL", null_device_path()),
                 ("GIT_CONFIG_NOSYSTEM", "1"),
             ],
@@ -787,7 +661,7 @@ mod pty_interactive {
             harness.repo_root(),
             &[
                 ("XDG_STATE_HOME", harness.state_home().to_str().unwrap()),
-                ("HOME", harness.home_dir.to_str().unwrap()),
+                ("HOME", harness.home_dir().to_str().unwrap()),
                 ("GIT_CONFIG_GLOBAL", null_device_path()),
                 ("GIT_CONFIG_NOSYSTEM", "1"),
             ],
@@ -834,7 +708,7 @@ mod pty_interactive {
             .args(["setup"])
             .current_dir(harness.repo_root())
             .env("XDG_STATE_HOME", harness.state_home())
-            .env("HOME", &harness.home_dir)
+            .env("HOME", harness.home_dir())
             .env("GIT_CONFIG_GLOBAL", null_device_path())
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .stdin(std::process::Stdio::null())
@@ -924,7 +798,7 @@ mod pty_interactive {
             .args(["setup"])
             .current_dir(harness.repo_root())
             .env("XDG_STATE_HOME", harness.state_home())
-            .env("HOME", &harness.home_dir)
+            .env("HOME", harness.home_dir())
             .env("GIT_CONFIG_GLOBAL", null_device_path())
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .stdin(std::process::Stdio::null())
@@ -1393,53 +1267,11 @@ fn assert_executable_file(path: &Path) -> TestResult<()> {
     Ok(())
 }
 
-fn sce_binary_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("CARGO_BIN_EXE_sce") {
-        return PathBuf::from(path);
-    }
-
-    let test_executable = std::env::current_exe()
-        .expect("integration test should resolve current executable path for binary fallback");
-    let debug_root = test_executable
-        .parent()
-        .and_then(Path::parent)
-        .expect("integration test executable should run from target/{profile}/deps");
-
-    let candidate = debug_root.join(binary_filename("sce"));
-    assert!(
-        candidate.exists(),
-        "integration test could not resolve compiled sce binary at '{}'",
-        candidate.display()
-    );
-
-    candidate
-}
-
-fn binary_filename(base: &str) -> String {
-    #[cfg(windows)]
-    {
-        format!("{base}.exe")
-    }
-
-    #[cfg(not(windows))]
-    {
-        base.to_string()
-    }
-}
-
-fn render_command_result(output: Output) -> CommandResult {
-    CommandResult {
-        status: output.status,
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    }
-}
-
 fn expected_agent_trace_local_db_path(harness: &SetupIntegrationHarness) -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         harness
-            .state_home
+            .state_home()
             .join("sce")
             .join("agent-trace")
             .join("local.db")
@@ -1448,7 +1280,7 @@ fn expected_agent_trace_local_db_path(harness: &SetupIntegrationHarness) -> Path
     #[cfg(target_os = "macos")]
     {
         harness
-            .home_dir
+            .home_dir()
             .join("Library")
             .join("Application Support")
             .join("sce")
@@ -1459,7 +1291,7 @@ fn expected_agent_trace_local_db_path(harness: &SetupIntegrationHarness) -> Path
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         harness
-            .state_home
+            .state_home()
             .join("sce")
             .join("agent-trace")
             .join("local.db")
@@ -1534,16 +1366,4 @@ fn trim_windows_verbatim_prefix(value: &str) -> &str {
         .strip_prefix(r"\\?\")
         .or_else(|| value.strip_prefix("//?/"))
         .unwrap_or(value)
-}
-
-fn null_device_path() -> &'static str {
-    #[cfg(windows)]
-    {
-        "NUL"
-    }
-
-    #[cfg(not(windows))]
-    {
-        "/dev/null"
-    }
 }
