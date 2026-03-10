@@ -90,7 +90,7 @@ impl fmt::Display for AuthError {
         match self {
             Self::MissingClientId => write!(
                 f,
-                "WorkOS client ID is not configured. Try: set WORKOS_CLIENT_ID or configure the CLI auth client id."
+                "WorkOS client ID is not configured. Try: set WORKOS_CLIENT_ID, add workos_client_id to an SCE config file, or remove an invalid higher-precedence override so the baked default can apply."
             ),
             Self::InvalidResponse(reason) => write!(
                 f,

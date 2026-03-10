@@ -5,6 +5,7 @@ use anyhow::{anyhow, Context, Result};
 use serde_json::json;
 
 use crate::services::auth::{self, DeviceAuthFlowResult};
+use crate::services::config;
 use crate::services::output_format::OutputFormat;
 use crate::services::token_storage::{self, StoredTokens};
 
@@ -62,22 +63,22 @@ where
 
 pub fn run_login(format: AuthFormat) -> Result<String> {
     let client = reqwest::Client::new();
-    let client_id = std::env::var("WORKOS_CLIENT_ID").unwrap_or_default();
     let runtime = shared_runtime()?;
-    let result = runtime
-        .block_on(auth::start_device_auth_flow(
-            &client,
-            auth::WORKOS_DEFAULT_BASE_URL,
-            &client_id,
-        ))
-        .map_err(|error| {
-            anyhow!(with_try_guidance(
-                error.to_string(),
-                "verify WORKOS_CLIENT_ID, confirm network access, and rerun 'sce auth login'."
-            ))
-        })?;
 
-    render_login_result(&result, format)
+    run_login_with(format, resolve_login_client_id, |client_id| {
+        runtime
+                .block_on(auth::start_device_auth_flow(
+                    &client,
+                    auth::WORKOS_DEFAULT_BASE_URL,
+                    client_id,
+                ))
+                .map_err(|error| {
+                    anyhow!(with_try_guidance(
+                        error.to_string(),
+                        "verify the resolved WorkOS client ID source (WORKOS_CLIENT_ID, config file, or baked default), confirm network access, and rerun 'sce auth login'."
+                    ))
+                })
+    })
 }
 
 pub fn run_logout(format: AuthFormat) -> Result<String> {
@@ -119,6 +120,50 @@ fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
         .context("failed to create auth command runtime. Try: rerun the command; if the issue persists, verify the local Tokio runtime environment.")?;
 
     Ok(AUTH_RUNTIME.get_or_init(|| runtime))
+}
+
+fn run_login_with<R, S>(format: AuthFormat, resolve_client_id: R, start_flow: S) -> Result<String>
+where
+    R: FnOnce() -> Result<String>,
+    S: FnOnce(&str) -> Result<DeviceAuthFlowResult>,
+{
+    let client_id = resolve_client_id()?;
+    let result = start_flow(&client_id)?;
+    render_login_result(&result, format)
+}
+
+fn resolve_login_client_id() -> Result<String> {
+    let cwd = std::env::current_dir()
+        .context("failed to determine current directory for auth config resolution")?;
+
+    Ok(config::resolve_auth_runtime_config(&cwd)?
+        .workos_client_id
+        .value
+        .unwrap_or_default())
+}
+
+fn resolve_login_client_id_with<FEnv, FRead, FGlobalPath>(
+    cwd: &std::path::Path,
+    env_lookup: FEnv,
+    read_file: FRead,
+    path_exists: fn(&std::path::Path) -> bool,
+    resolve_global_config_path: FGlobalPath,
+) -> Result<String>
+where
+    FEnv: Fn(&str) -> Option<String>,
+    FRead: Fn(&std::path::Path) -> Result<String>,
+    FGlobalPath: Fn() -> Result<std::path::PathBuf>,
+{
+    Ok(config::resolve_auth_runtime_config_with(
+        cwd,
+        env_lookup,
+        read_file,
+        path_exists,
+        resolve_global_config_path,
+    )?
+    .workos_client_id
+    .value
+    .unwrap_or_default())
 }
 
 fn build_authenticated_status_report(tokens: &StoredTokens) -> Result<AuthStatusReport> {
@@ -248,13 +293,15 @@ fn with_try_guidance(message: String, guidance: &str) -> String {
 mod tests {
     use anyhow::{anyhow, Result};
     use serde_json::Value;
+    use std::path::{Path, PathBuf};
 
     use super::{
         build_authenticated_status_report, render_login_result, render_logout_result,
-        render_status_result, run_auth_subcommand_with, with_try_guidance, AuthFormat, AuthRequest,
-        AuthStatusReport, AuthSubcommand,
+        render_status_result, resolve_login_client_id_with, run_auth_subcommand_with,
+        run_login_with, with_try_guidance, AuthFormat, AuthRequest, AuthStatusReport,
+        AuthSubcommand,
     };
-    use crate::services::auth::{DeviceAuthFlowResult, DeviceAuthorizationResponse};
+    use crate::services::auth::{AuthError, DeviceAuthFlowResult, DeviceAuthorizationResponse};
     use crate::services::token_storage::StoredTokens;
 
     fn fixture_login_result() -> DeviceAuthFlowResult {
@@ -342,6 +389,146 @@ mod tests {
         assert_eq!(parsed["authenticated"], true);
         assert_eq!(parsed["user_code"], "ABCD-EFGH");
         Ok(())
+    }
+
+    #[test]
+    fn login_uses_env_workos_client_id_over_config_sources() -> Result<()> {
+        let output = run_login_with(
+            AuthFormat::Json,
+            || {
+                resolve_login_client_id_with(
+                    Path::new("/workspace"),
+                    |key| match key {
+                        "WORKOS_CLIENT_ID" => Some("env-client".to_string()),
+                        _ => None,
+                    },
+                    |_| Ok("{\"workos_client_id\":\"config-client\"}".to_string()),
+                    |_| true,
+                    || Ok(PathBuf::from("/state")),
+                )
+            },
+            |client_id| {
+                assert_eq!(client_id, "env-client");
+                Ok(fixture_login_result())
+            },
+        )?;
+
+        let parsed: Value = serde_json::from_str(&output)?;
+        assert_eq!(parsed["authenticated"], true);
+        Ok(())
+    }
+
+    #[test]
+    fn login_uses_local_config_workos_client_id_when_env_is_absent() -> Result<()> {
+        run_login_with(
+            AuthFormat::Text,
+            || {
+                resolve_login_client_id_with(
+                    Path::new("/workspace"),
+                    |_| None,
+                    |path| {
+                        if path == Path::new("/state/sce/config.json") {
+                            return Ok("{\"workos_client_id\":\"global-client\"}".to_string());
+                        }
+                        if path == Path::new("/workspace/.sce/config.json") {
+                            return Ok("{\"workos_client_id\":\"local-client\"}".to_string());
+                        }
+                        Err(anyhow!("unexpected config path: {}", path.display()))
+                    },
+                    |path| {
+                        path == Path::new("/state/sce/config.json")
+                            || path == Path::new("/workspace/.sce/config.json")
+                    },
+                    || Ok(PathBuf::from("/state")),
+                )
+            },
+            |client_id| {
+                assert_eq!(client_id, "local-client");
+                Ok(fixture_login_result())
+            },
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn login_uses_global_config_workos_client_id_when_local_omits_key() -> Result<()> {
+        run_login_with(
+            AuthFormat::Text,
+            || {
+                resolve_login_client_id_with(
+                    Path::new("/workspace"),
+                    |_| None,
+                    |path| {
+                        if path == Path::new("/state/sce/config.json") {
+                            return Ok("{\"workos_client_id\":\"global-client\"}".to_string());
+                        }
+                        if path == Path::new("/workspace/.sce/config.json") {
+                            return Ok("{}".to_string());
+                        }
+                        Err(anyhow!("unexpected config path: {}", path.display()))
+                    },
+                    |path| {
+                        path == Path::new("/state/sce/config.json")
+                            || path == Path::new("/workspace/.sce/config.json")
+                    },
+                    || Ok(PathBuf::from("/state")),
+                )
+            },
+            |client_id| {
+                assert_eq!(client_id, "global-client");
+                Ok(fixture_login_result())
+            },
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn login_uses_baked_default_workos_client_id_when_env_and_config_are_absent() -> Result<()> {
+        run_login_with(
+            AuthFormat::Text,
+            || {
+                resolve_login_client_id_with(
+                    Path::new("/workspace"),
+                    |_| None,
+                    |_| Ok("{}".to_string()),
+                    |_| false,
+                    || Ok(PathBuf::from("/state")),
+                )
+            },
+            |client_id| {
+                assert_eq!(client_id, "client_sce_default");
+                Ok(fixture_login_result())
+            },
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn login_preserves_missing_client_id_error_when_highest_precedence_value_is_blank() {
+        let error = run_login_with(
+            AuthFormat::Text,
+            || {
+                resolve_login_client_id_with(
+                    Path::new("/workspace"),
+                    |key| match key {
+                        "WORKOS_CLIENT_ID" => Some("   ".to_string()),
+                        _ => None,
+                    },
+                    |_| Ok("{\"workos_client_id\":\"config-client\"}".to_string()),
+                    |_| true,
+                    || Ok(PathBuf::from("/state")),
+                )
+            },
+            |_| Err(anyhow!(AuthError::MissingClientId.to_string())),
+        )
+        .expect_err("blank env client id should fail");
+
+        assert!(error
+            .to_string()
+            .contains("WorkOS client ID is not configured"));
     }
 
     #[test]
