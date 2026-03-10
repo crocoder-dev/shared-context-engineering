@@ -93,8 +93,8 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - `cli/src/services/resilience.rs` defines shared bounded retry/timeout/backoff execution policy (`RetryPolicy`, `run_with_retry`) with deterministic failure messaging and retry observability hooks.
 - `cli/src/services/sync.rs` defines cloud-sync abstraction points (`CloudSyncGateway`, `CloudSyncRequest`, `CloudSyncPlan`) layered after the local Turso smoke gate, plus `SyncRequest` parsing/rendering for deterministic text or `--format json` placeholder output and command-local usage text (`sync_usage_text`).
 - `cli/src/services/token_storage.rs` defines WorkOS token persistence (`save_tokens`, `load_tokens`) with cross-platform state-path resolution, JSON payload storage including `stored_at_unix_seconds`, missing/corrupted-file handling, and restrictive on-disk permissions (`0600` on Unix; Windows best-effort ACL hardening via `icacls`).
-- `cli/src/services/auth_command.rs` defines the staged auth command orchestration surface (`AuthRequest`, `AuthSubcommand`, `run_auth_subcommand`) for `login`, `logout`, and `status`, including shared text/JSON rendering, local token-file deletion for logout, and expiry-aware status reporting; app-level dispatch remains intentionally unwired until the next auth task.
-- `cli/src/app.rs` dispatches `config`, `setup`, `doctor`, `mcp`, `hooks`, `sync`, `version`, and `completion` through service-level modules so runtime messages are sourced from domain modules instead of inline strings.
+- `cli/src/services/auth_command.rs` defines the auth command orchestration surface (`AuthRequest`, `AuthSubcommand`, `run_auth_subcommand`) for `login`, `logout`, and `status`, including shared text/JSON rendering, local token-file deletion for logout, and expiry-aware status reporting.
+- `cli/src/app.rs` dispatches `auth`, `config`, `setup`, `doctor`, `mcp`, `hooks`, `sync`, `version`, and `completion` through service-level modules so runtime messages are sourced from domain modules instead of inline strings.
 
 ## Local Turso adapter behavior
 
@@ -108,7 +108,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 
 ## Parser-focused tests
 
-- `cli/src/app.rs` unit tests cover default-help behavior, known command routing, command-local `--help` routing for `doctor`/`mcp`/`hooks`/`sync`, and failure paths for unknown commands/options and extra arguments.
+- `cli/src/app.rs` unit tests cover default-help behavior, auth/config/setup/hooks routing, command-local `--help` routing for `doctor`/`mcp`/`hooks`/`sync`, and failure paths for unknown commands/options and extra arguments.
 - `cli/src/app.rs` additionally validates setup contract routing for interactive default, explicit target flags, and mutually-exclusive setup flag failures.
 - `cli/src/services/local_db.rs` tests cover in-memory and file-backed local Turso initialization plus execute/query smoke checks.
 - `cli/src/services/resilience.rs` tests lock deterministic retry behavior for transient failures, timeout exhaustion, and actionable terminal error messaging.
