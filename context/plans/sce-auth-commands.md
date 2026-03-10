@@ -62,7 +62,7 @@ Add `sce auth` command group with nested `login`, `logout`, and `status` subcomm
     - Run `cargo test --manifest-path cli/Cargo.toml --lib cli_schema`
     - Verify `Cli::try_parse_from(["sce", "auth", "login"])` returns `Commands::Auth`
 
-- [ ] T02: Create auth command service module (status:todo)
+- [x] T02: Create auth command service module (status:done)
   - Task ID: T02
   - Goal: Create `cli/src/services/auth_command.rs` for auth command orchestration
   - Boundaries (in/out of scope):

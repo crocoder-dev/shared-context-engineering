@@ -10,7 +10,7 @@ The repository now includes a Rust CLI crate at `cli/` for SCE automation work.
 - Runtime shell: `cli/src/app.rs`
 - Command contract catalog: `cli/src/command_surface.rs`
 - Local Turso adapter: `cli/src/services/local_db.rs`
-- Service domains: `cli/src/services/{agent_trace,auth,completion,config,setup,doctor,mcp,hooks,resilience,sync,token_storage,version}.rs`
+- Service domains: `cli/src/services/{agent_trace,auth,auth_command,completion,config,setup,doctor,mcp,hooks,resilience,sync,token_storage,version}.rs`
 - Shared test temp-path helper: `cli/src/test_support.rs` (`TestTempDir`, test-only module)
 
 ## Onboarding documentation
@@ -93,6 +93,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - `cli/src/services/resilience.rs` defines shared bounded retry/timeout/backoff execution policy (`RetryPolicy`, `run_with_retry`) with deterministic failure messaging and retry observability hooks.
 - `cli/src/services/sync.rs` defines cloud-sync abstraction points (`CloudSyncGateway`, `CloudSyncRequest`, `CloudSyncPlan`) layered after the local Turso smoke gate, plus `SyncRequest` parsing/rendering for deterministic text or `--format json` placeholder output and command-local usage text (`sync_usage_text`).
 - `cli/src/services/token_storage.rs` defines WorkOS token persistence (`save_tokens`, `load_tokens`) with cross-platform state-path resolution, JSON payload storage including `stored_at_unix_seconds`, missing/corrupted-file handling, and restrictive on-disk permissions (`0600` on Unix; Windows best-effort ACL hardening via `icacls`).
+- `cli/src/services/auth_command.rs` defines the staged auth command orchestration surface (`AuthRequest`, `AuthSubcommand`, `run_auth_subcommand`) for `login`, `logout`, and `status`, including shared text/JSON rendering, local token-file deletion for logout, and expiry-aware status reporting; app-level dispatch remains intentionally unwired until the next auth task.
 - `cli/src/app.rs` dispatches `config`, `setup`, `doctor`, `mcp`, `hooks`, `sync`, `version`, and `completion` through service-level modules so runtime messages are sourced from domain modules instead of inline strings.
 
 ## Local Turso adapter behavior
@@ -115,6 +116,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - `cli/src/services/{setup,mcp,hooks,sync}.rs` include contract-focused tests for setup flag parsing/validation, interactive selection/cancellation dispatch, setup run messaging, and hook runtime argument/IO/finalization behavior.
 - `cli/src/services/token_storage.rs` tests cover token save/load round-trips, missing-file handling, invalid JSON corruption handling, and Unix `0600` file-permission enforcement.
 - `cli/src/services/auth.rs` tests cover WorkOS device/token payload shape parsing, RFC 8628 device and refresh grant constant wiring, terminal OAuth error mapping with `Try:` guidance, polling decision handling for `authorization_pending`/`slow_down`/terminal outcomes, token-expiry evaluation, and refresh-token re-login guidance for terminal refresh errors.
+- `cli/src/services/auth_command.rs` tests cover auth subcommand dispatch, login/logout/status text-or-JSON report shapes, logout file deletion behavior, and `Try:` guidance preservation.
 - `cli/src/services/agent_trace.rs` includes adapter mapping tests for required field projection, contributor enum/model_id handling, and extension metadata placement under reserved reverse-domain keys.
 - `cli/src/services/setup.rs` tests also verify embedded-manifest completeness against runtime `config/` trees, deterministic sorted path normalization, target-scoped iterator behavior (`OpenCode`, `Claude`, `Both`), install backup creation/replacement, and rollback restoration after injected swap failures.
 - `cli/src/services/setup.rs` and `cli/src/services/local_db.rs` now share temporary path setup through `crate::test_support::TestTempDir` to keep filesystem test fixtures consistent and cleanup deterministic.
