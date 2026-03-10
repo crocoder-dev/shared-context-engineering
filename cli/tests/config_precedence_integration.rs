@@ -210,6 +210,145 @@ fn config_show_uses_defaults_when_no_higher_precedence_inputs_exist() -> TestRes
     Ok(())
 }
 
+#[test]
+fn config_show_auth_env_overrides_config_and_baked_default() -> TestResult<()> {
+    let harness = ConfigIntegrationHarness::new("sce-config-precedence")?;
+    let config_path = write_config_file(
+        &harness,
+        "explicit-config.json",
+        r#"{"workos_client_id":"from-config"}"#,
+    )?;
+
+    let output = harness
+        .base_command(support::sce_binary_path())
+        .args([
+            OsStr::new("config"),
+            OsStr::new("show"),
+            OsStr::new("--format"),
+            OsStr::new("json"),
+            OsStr::new("--config"),
+            config_path.as_os_str(),
+        ])
+        .env("WORKOS_CLIENT_ID", "from-env")
+        .output()?;
+
+    let result = render_command_result(output);
+    assert!(
+        result.success(),
+        "config show with auth env override should succeed\nstdout:\n{}\nstderr:\n{}",
+        result.stdout,
+        result.stderr
+    );
+
+    let parsed = parse_json_stdout(&result.stdout)?;
+    assert_eq!(
+        parsed["result"]["resolved"]["workos_client_id"]["value"],
+        "from-env"
+    );
+    assert_eq!(
+        parsed["result"]["resolved"]["workos_client_id"]["source"],
+        "env"
+    );
+    assert_eq!(
+        parsed["result"]["resolved"]["workos_client_id"]["config_source"],
+        Value::Null
+    );
+    assert_eq!(
+        parsed["result"]["resolved"]["workos_client_id"]["precedence"],
+        "env (WORKOS_CLIENT_ID) > config file (workos_client_id) > baked default (client_sce_default)"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn config_show_auth_uses_config_when_env_is_absent() -> TestResult<()> {
+    let harness = ConfigIntegrationHarness::new("sce-config-precedence")?;
+    let config_path = write_config_file(
+        &harness,
+        "explicit-config.json",
+        r#"{"workos_client_id":"from-config"}"#,
+    )?;
+
+    let output = harness
+        .base_command(support::sce_binary_path())
+        .args([
+            OsStr::new("config"),
+            OsStr::new("show"),
+            OsStr::new("--format"),
+            OsStr::new("json"),
+            OsStr::new("--config"),
+            config_path.as_os_str(),
+        ])
+        .env_remove("WORKOS_CLIENT_ID")
+        .output()?;
+
+    let result = render_command_result(output);
+    assert!(
+        result.success(),
+        "config show with auth config fallback should succeed\nstdout:\n{}\nstderr:\n{}",
+        result.stdout,
+        result.stderr
+    );
+
+    let parsed = parse_json_stdout(&result.stdout)?;
+    assert_eq!(
+        parsed["result"]["resolved"]["workos_client_id"]["value"],
+        "from-config"
+    );
+    assert_eq!(
+        parsed["result"]["resolved"]["workos_client_id"]["source"],
+        "config_file"
+    );
+    assert_eq!(
+        parsed["result"]["resolved"]["workos_client_id"]["config_source"],
+        "flag"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn config_show_auth_uses_baked_default_when_env_and_config_are_absent() -> TestResult<()> {
+    let harness = ConfigIntegrationHarness::new("sce-config-precedence")?;
+
+    let output = harness
+        .base_command(support::sce_binary_path())
+        .args([
+            OsStr::new("config"),
+            OsStr::new("show"),
+            OsStr::new("--format"),
+            OsStr::new("json"),
+        ])
+        .env_remove("WORKOS_CLIENT_ID")
+        .env_remove("SCE_CONFIG_FILE")
+        .output()?;
+
+    let result = render_command_result(output);
+    assert!(
+        result.success(),
+        "config show with auth baked default should succeed\nstdout:\n{}\nstderr:\n{}",
+        result.stdout,
+        result.stderr
+    );
+
+    let parsed = parse_json_stdout(&result.stdout)?;
+    assert_eq!(
+        parsed["result"]["resolved"]["workos_client_id"]["value"],
+        "client_sce_default"
+    );
+    assert_eq!(
+        parsed["result"]["resolved"]["workos_client_id"]["source"],
+        "default"
+    );
+    assert_eq!(
+        parsed["result"]["resolved"]["workos_client_id"]["config_source"],
+        Value::Null
+    );
+
+    Ok(())
+}
+
 fn write_config_file(
     harness: &ConfigIntegrationHarness,
     relative_path: &str,

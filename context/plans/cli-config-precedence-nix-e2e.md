@@ -75,7 +75,7 @@ Add compiled-binary end-to-end coverage for CLI config precedence so the existin
     - Run `cargo test --manifest-path cli/Cargo.toml --test config_precedence_integration`
     - Verify assertions inspect compiled-binary command output rather than internal structs
 
-- [ ] T03: Add end-to-end tests for `env > config file > baked default` auth precedence (status:todo)
+- [x] T03: Add end-to-end tests for `env > config file > baked default` auth precedence (status:done)
   - Task ID: T03
   - Goal: Add compiled-binary integration scenarios that prove `workos_client_id` resolves through the implemented auth precedence chain.
   - Boundaries (in/out of scope):
