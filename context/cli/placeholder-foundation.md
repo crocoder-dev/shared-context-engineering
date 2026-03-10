@@ -55,7 +55,7 @@ Top-level help also includes copy-ready agent-oriented examples for interactive 
 Placeholder commands currently acknowledge planned behavior and do not claim production implementation.
 `mcp` and `sync` route through explicit service-contract placeholders.
 `hooks` routes through implemented subcommand parsing/dispatch for `pre-commit`, `commit-msg`, `post-commit`, and `post-rewrite`.
-`config` exposes deterministic inspect/validate entrypoints (`sce config show`, `sce config validate`) with explicit precedence (`flags > env > config file > defaults`) and deterministic text/JSON output modes.
+`config` exposes deterministic inspect/validate entrypoints (`sce config show`, `sce config validate`) with explicit precedence (`flags > env > config file > defaults`), shared env/config resolution for auth-adjacent keys starting with `workos_client_id`, and deterministic text/JSON output modes.
 `version` exposes deterministic runtime identification output in text mode by default and JSON mode via `--format json`.
 `completion` exposes deterministic shell completion generation via `sce completion --shell <bash|zsh|fish>`.
 `setup` defaults to an `inquire` interactive target selection (OpenCode, Claude, Both) and accepts mutually-exclusive non-interactive target flags (`--opencode`, `--claude`, `--both`).
@@ -84,7 +84,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 ## Service contracts
 
 - `cli/src/services/setup.rs` defines setup parsing/selection contracts plus runtime install orchestration (`run_setup_for_mode`) over the embedded asset install engine.
-- `cli/src/services/config.rs` defines config parser/runtime contracts (`show`, `validate`, `--help`), strict config-file key/type validation, and deterministic text/JSON rendering.
+- `cli/src/services/config.rs` defines config parser/runtime contracts (`show`, `validate`, `--help`), strict config-file key/type validation, deterministic text/JSON rendering, and shared auth-key metadata for env/config resolution starting with `workos_client_id` (`WORKOS_CLIENT_ID` vs `workos_client_id`).
 - `cli/src/services/doctor.rs` defines hook rollout health validation (`run_doctor`) with path-source detection (default/local/global), required-hook presence/executable checks, and command-local usage text (`doctor_usage_text`).
 - `cli/src/services/agent_trace.rs` defines the task-scoped schema adapter contract (`adapt_trace_payload`) from internal attribution input structs to Agent Trace-shaped record structs, including fixed git `vcs` mapping, contributor type mapping, and reserved `dev.crocoder.sce.*` metadata placement.
 - `cli/src/services/mcp.rs` defines `McpService`, a `McpCapabilitySnapshot` model (primary + supported transports), `CachePolicy` defaults for future file-cache workflows (`cache-put`/`cache-get`) with `runnable: false` placeholders, command-local usage text (`mcp_usage_text`), and `McpRequest` parsing/rendering for deterministic text or `--format json` placeholder output.

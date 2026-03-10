@@ -19,6 +19,12 @@ Resolved runtime values follow this deterministic order:
 3. config file values (`log_level`, `timeout_ms`)
 4. defaults (`log_level=info`, `timeout_ms=30000`)
 
+Auth-adjacent config keys can also participate in the same shared env-over-config path without defining CLI flags. The first implemented key is `workos_client_id`, which resolves as:
+
+1. environment value (`WORKOS_CLIENT_ID`)
+2. config file value (`workos_client_id`)
+3. unset when neither layer provides a value
+
 Config file selection follows this deterministic order:
 
 1. `--config <path>`
@@ -32,10 +38,11 @@ When both discovered defaults exist, they are merged in memory in deterministic 
 ## Validation contract
 
 - Config file content must be valid JSON with a top-level object.
-- Allowed keys: `log_level`, `timeout_ms`.
+- Allowed keys: `log_level`, `timeout_ms`, `workos_client_id`.
 - Unknown keys fail validation.
 - `log_level` must be one of `error|warn|info|debug`.
 - `timeout_ms` must be an unsigned integer.
+- `workos_client_id` must be a string when present.
 
 ## Output contract
 
@@ -44,6 +51,7 @@ When both discovered defaults exist, they are merged in memory in deterministic 
 - Text output includes the canonical precedence string: `flags > env > config file > defaults`.
 - Output reports discovered config files as `config_paths` (JSON) / `Config files:` (text).
 - Resolved values continue to report `source`; when source is `config_file`, output also reports a deterministic `config_source` value (`flag`, `env`, `default_discovered_global`, `default_discovered_local`).
+- `show` includes `workos_client_id` in resolved output; when unset, JSON reports `value: null` and `source: null`, and text reports `(unset) (source: none)`.
 
 ## Related files
 
