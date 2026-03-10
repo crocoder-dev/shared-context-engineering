@@ -168,7 +168,8 @@ pub async fn ensure_valid_token(
         return Ok(stored);
     }
 
-    let refreshed = refresh_access_token(client, api_base_url, client_id, &stored.refresh_token).await?;
+    let refreshed =
+        refresh_access_token(client, api_base_url, client_id, &stored.refresh_token).await?;
     let updated = save_tokens(&refreshed)?;
     Ok(updated)
 }
@@ -292,7 +293,9 @@ fn current_unix_timestamp_seconds() -> Result<u64, AuthError> {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .map_err(|error| {
-            AuthError::InvalidResponse(format!("system clock is invalid for token expiry checks: {error}"))
+            AuthError::InvalidResponse(format!(
+                "system clock is invalid for token expiry checks: {error}"
+            ))
         })
 }
 
