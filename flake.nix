@@ -142,6 +142,41 @@
           '';
         };
 
+        cliConfigPrecedenceIntegrationTestsApp = pkgs.writeShellApplication {
+          name = "cli-config-precedence-integration-tests";
+          runtimeInputs = [
+            pkgs.git
+            pkgs.nix
+          ];
+          text = ''
+            set -euo pipefail
+
+            usage() {
+              cat <<'EOF'
+            Usage: nix run .#cli-config-precedence-integration-tests [-- --help]
+
+            Deterministic flake entrypoint for opt-in config-precedence integration tests.
+            Runs the compiled-binary config precedence suite from cli/tests/config_precedence_integration.rs.
+            This test slice is intentionally excluded from default nix flake check.
+            EOF
+            }
+
+            case "''${1:-}" in
+              -h|--help)
+                usage
+                exit 0
+                ;;
+            esac
+
+            repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+            if [ -z "''${repo_root}" ]; then
+              repo_root="$(pwd)"
+            fi
+
+            exec nix develop "''${repo_root}" -c cargo test --manifest-path cli/Cargo.toml --test config_precedence_integration -- --nocapture
+          '';
+        };
+
         agnixLspShim = pkgs.writeShellScriptBin "agnix-lsp" ''
           set -euo pipefail
 
@@ -205,6 +240,14 @@
           };
         };
 
+        apps.cli-config-precedence-integration-tests = {
+          type = "app";
+          program = "${cliConfigPrecedenceIntegrationTestsApp}/bin/cli-config-precedence-integration-tests";
+          meta = {
+            description = "Run opt-in config-precedence integration tests via Rust harness";
+          };
+        };
+
         devShells.default = pkgs.mkShell {
           packages =
             with pkgs;
@@ -240,6 +283,7 @@
             echo "- sync-opencode-config help: nix run .#sync-opencode-config -- --help"
             echo "- pkl-check-generated: nix run .#pkl-check-generated"
             echo "- cli-integration-tests: nix run .#cli-integration-tests"
+            echo "- cli-config-precedence-integration-tests: nix run .#cli-config-precedence-integration-tests"
           '';
         };
       }
