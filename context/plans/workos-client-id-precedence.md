@@ -67,7 +67,7 @@ Generalize the current WorkOS client ID precedence plan into a reusable auth-con
     - Run `cargo test --manifest-path cli/Cargo.toml --lib config`
     - Verify `sce config show --format json` reports supported auth-key source metadata deterministically
 
-- [ ] T02: Introduce shared auth value precedence resolver with optional baked defaults (status:todo)
+- [x] T02: Introduce shared auth value precedence resolver with optional baked defaults (status:done)
   - Task ID: T02
   - Goal: Add one canonical auth-config resolver that applies an allowed-source chain per key (env > config file > baked default where permitted) and reuse it for `workos_client_id`.
   - Boundaries (in/out of scope):
@@ -85,7 +85,7 @@ Generalize the current WorkOS client ID precedence plan into a reusable auth-con
     - Run `cargo test --manifest-path cli/Cargo.toml --lib config`
     - Add focused tests for resolution order and per-key allowed-source combinations
 
-- [ ] T03: Wire auth command flows to shared auth config resolution (status:todo)
+- [x] T03: Wire auth command flows to shared auth config resolution (status:done)
   - Task ID: T03
   - Goal: Replace direct env-only auth lookup in `cli/src/services/auth_command.rs` with the shared auth-config resolver so runtime auth flows use the generalized precedence contract.
   - Boundaries (in/out of scope):
@@ -102,7 +102,7 @@ Generalize the current WorkOS client ID precedence plan into a reusable auth-con
     - Run `cargo test --manifest-path cli/Cargo.toml --lib auth_command`
     - Add focused tests for auth-command wiring across env, local config, global config, baked default, and invalid/absent outcomes
 
-- [ ] T04: Expose generalized precedence-aware config output and diagnostics (status:todo)
+- [x] T04: Expose generalized precedence-aware config output and diagnostics (status:done)
   - Task ID: T04
   - Goal: Make config inspection and auth failure guidance describe the shared env/config/baked precedence contract for supported auth keys.
   - Boundaries (in/out of scope):
@@ -119,7 +119,7 @@ Generalize the current WorkOS client ID precedence plan into a reusable auth-con
     - Run `cargo test --manifest-path cli/Cargo.toml --lib config`
     - Verify `sce config show` text output distinguishes env/config/default sourcing for supported auth keys
 
-- [ ] T05: Sync focused context contracts for generalized auth config precedence (status:todo)
+- [x] T05: Sync focused context contracts for generalized auth config precedence (status:done)
   - Task ID: T05
   - Goal: Update current-state context files so future sessions reflect the reusable auth precedence contract instead of a one-off client-ID rule.
   - Boundaries (in/out of scope):

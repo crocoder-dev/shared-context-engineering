@@ -9,9 +9,11 @@ pub const NAME: &str = "config";
 
 const DEFAULT_TIMEOUT_MS: u64 = 30000;
 const WORKOS_CLIENT_ID_ENV: &str = "WORKOS_CLIENT_ID";
+const WORKOS_CLIENT_ID_BAKED_DEFAULT: &str = "client_sce_default";
 const WORKOS_CLIENT_ID_KEY: AuthConfigKeySpec = AuthConfigKeySpec {
     config_key: "workos_client_id",
     env_key: WORKOS_CLIENT_ID_ENV,
+    baked_default: Some(WORKOS_CLIENT_ID_BAKED_DEFAULT),
 };
 
 pub type ReportFormat = OutputFormat;
@@ -124,6 +126,22 @@ struct LoadedConfigPath {
 struct AuthConfigKeySpec {
     config_key: &'static str,
     env_key: &'static str,
+    baked_default: Option<&'static str>,
+}
+
+impl AuthConfigKeySpec {
+    fn precedence_description(self) -> String {
+        let mut layers = vec![
+            format!("env ({})", self.env_key),
+            format!("config file ({})", self.config_key),
+        ];
+
+        if let Some(default) = self.baked_default {
+            layers.push(format!("baked default ({default})"));
+        }
+
+        layers.join(" > ")
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -135,9 +153,14 @@ struct RuntimeConfig {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct ResolvedOptionalValue<T> {
-    value: Option<T>,
+pub(crate) struct ResolvedOptionalValue<T> {
+    pub(crate) value: Option<T>,
     source: Option<ValueSource>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedAuthRuntimeConfig {
+    pub(crate) workos_client_id: ResolvedOptionalValue<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -166,6 +189,50 @@ pub fn run_config_subcommand(subcommand: ConfigSubcommand) -> Result<String> {
             Ok(format_validate_output(&runtime, request.report_format))
         }
     }
+}
+
+pub(crate) fn resolve_auth_runtime_config(cwd: &Path) -> Result<ResolvedAuthRuntimeConfig> {
+    resolve_auth_runtime_config_with(
+        cwd,
+        |key| std::env::var(key).ok(),
+        |path| {
+            std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to read config file '{}'.", path.display()))
+        },
+        Path::exists,
+        resolve_default_global_config_path,
+    )
+}
+
+pub(crate) fn resolve_auth_runtime_config_with<FEnv, FRead, FGlobalPath>(
+    cwd: &Path,
+    env_lookup: FEnv,
+    read_file: FRead,
+    path_exists: fn(&Path) -> bool,
+    resolve_global_config_path: FGlobalPath,
+) -> Result<ResolvedAuthRuntimeConfig>
+where
+    FEnv: Fn(&str) -> Option<String>,
+    FRead: Fn(&Path) -> Result<String>,
+    FGlobalPath: Fn() -> Result<PathBuf>,
+{
+    let runtime = resolve_runtime_config_with(
+        &ConfigRequest {
+            report_format: ReportFormat::Text,
+            config_path: None,
+            log_level: None,
+            timeout_ms: None,
+        },
+        cwd,
+        env_lookup,
+        read_file,
+        path_exists,
+        resolve_global_config_path,
+    )?;
+
+    Ok(ResolvedAuthRuntimeConfig {
+        workos_client_id: runtime.workos_client_id,
+    })
 }
 
 fn resolve_runtime_config(request: &ConfigRequest, cwd: &Path) -> Result<RuntimeConfig> {
@@ -271,7 +338,7 @@ where
         };
     }
 
-    let resolved_workos_client_id = resolve_optional_string_config_value(
+    let resolved_workos_client_id = resolve_optional_auth_config_value(
         WORKOS_CLIENT_ID_KEY,
         file_config.workos_client_id,
         &env_lookup,
@@ -285,7 +352,7 @@ where
     })
 }
 
-fn resolve_optional_string_config_value<FEnv>(
+fn resolve_optional_auth_config_value<FEnv>(
     key: AuthConfigKeySpec,
     file_value: Option<FileConfigValue<String>>,
     env_lookup: &FEnv,
@@ -304,6 +371,13 @@ where
         return ResolvedOptionalValue {
             value: Some(value.value),
             source: Some(ValueSource::ConfigFile(value.source)),
+        };
+    }
+
+    if let Some(value) = key.baked_default {
+        return ResolvedOptionalValue {
+            value: Some(value.to_string()),
+            source: Some(ValueSource::Default),
         };
     }
 
@@ -482,10 +556,9 @@ fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> S
                     &runtime.timeout_ms.value.to_string(),
                     runtime.timeout_ms.source,
                 ),
-                format_optional_resolved_value_text(
-                    WORKOS_CLIENT_ID_KEY.config_key,
-                    runtime.workos_client_id.value.as_deref(),
-                    runtime.workos_client_id.source,
+                format_optional_auth_resolved_value_text(
+                    WORKOS_CLIENT_ID_KEY,
+                    &runtime.workos_client_id,
                 ),
             ];
             lines.join("\n")
@@ -508,11 +581,7 @@ fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> S
                             "source": runtime.timeout_ms.source.as_str(),
                             "config_source": runtime.timeout_ms.source.config_source().map(ConfigPathSource::as_str),
                         },
-                        "workos_client_id": {
-                            "value": runtime.workos_client_id.value,
-                            "source": runtime.workos_client_id.source.map(ValueSource::as_str),
-                            "config_source": runtime.workos_client_id.source.and_then(ValueSource::config_source).map(ConfigPathSource::as_str),
-                        }
+                        "workos_client_id": format_optional_auth_resolved_value_json(WORKOS_CLIENT_ID_KEY, &runtime.workos_client_id)
                     }
                 }
             });
@@ -529,6 +598,14 @@ fn format_validate_output(runtime: &RuntimeConfig, report_format: ReportFormat) 
                 "Precedence: flags > env > config file > defaults".to_string(),
                 format_config_paths_text(runtime),
                 "Validation issues: none".to_string(),
+                format!(
+                    "Resolved auth precedence: {}",
+                    WORKOS_CLIENT_ID_KEY.precedence_description()
+                ),
+                format_optional_auth_resolved_value_text(
+                    WORKOS_CLIENT_ID_KEY,
+                    &runtime.workos_client_id,
+                ),
             ];
             lines.join("\n")
         }
@@ -540,7 +617,10 @@ fn format_validate_output(runtime: &RuntimeConfig, report_format: ReportFormat) 
                     "valid": true,
                     "precedence": "flags > env > config file > defaults",
                     "config_paths": format_config_paths_json(runtime),
-                    "issues": []
+                    "issues": [],
+                    "resolved_auth": {
+                        "workos_client_id": format_optional_auth_resolved_value_json(WORKOS_CLIENT_ID_KEY, &runtime.workos_client_id)
+                    }
                 }
             });
             serde_json::to_string_pretty(&payload)
@@ -593,23 +673,105 @@ fn format_resolved_value_text(key: &str, value: &str, source: ValueSource) -> St
     }
 }
 
-fn format_optional_resolved_value_text(
-    key: &str,
-    value: Option<&str>,
-    source: Option<ValueSource>,
+fn format_optional_auth_resolved_value_text(
+    key: AuthConfigKeySpec,
+    value: &ResolvedOptionalValue<String>,
 ) -> String {
-    match (value, source) {
-        (Some(value), Some(source)) => format_resolved_value_text(key, value, source),
-        _ => format!("- {}: (unset) (source: none)", key),
+    match (value.value.as_deref(), value.source) {
+        (Some(raw_value), Some(source)) => {
+            let display_value = format_text_display_value(key.config_key, raw_value);
+            match source.config_source() {
+                Some(config_source) => format!(
+                    "- {}: {} (source: {}, config_source: {}, auth_precedence: {})",
+                    key.config_key,
+                    display_value,
+                    source.as_str(),
+                    config_source.as_str(),
+                    key.precedence_description()
+                ),
+                None => format!(
+                    "- {}: {} (source: {}, auth_precedence: {})",
+                    key.config_key,
+                    display_value,
+                    source.as_str(),
+                    key.precedence_description()
+                ),
+            }
+        }
+        _ => format!(
+            "- {}: (unset) (source: none, auth_precedence: {})",
+            key.config_key,
+            key.precedence_description()
+        ),
     }
+}
+
+fn format_optional_auth_resolved_value_json(
+    key: AuthConfigKeySpec,
+    value: &ResolvedOptionalValue<String>,
+) -> Value {
+    json!({
+        "value": value.value,
+        "display_value": value.value.as_deref().map(|raw| format_text_display_value(key.config_key, raw)),
+        "source": value.source.map(ValueSource::as_str),
+        "config_source": value.source.and_then(ValueSource::config_source).map(ConfigPathSource::as_str),
+        "precedence": key.precedence_description(),
+    })
+}
+
+fn format_text_display_value(key: &str, value: &str) -> String {
+    if should_fully_redact_text_value(key) {
+        return "[REDACTED]".to_string();
+    }
+
+    if looks_credential_like(value) {
+        return abbreviate_text_value(value);
+    }
+
+    value.to_string()
+}
+
+fn should_fully_redact_text_value(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    ["password", "passwd", "secret", "token", "api_key", "apikey"]
+        .iter()
+        .any(|needle| key.contains(needle))
+}
+
+fn looks_credential_like(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.len() >= 16
+        && trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/'))
+}
+
+fn abbreviate_text_value(value: &str) -> String {
+    let total = value.chars().count();
+    if total <= 8 {
+        return value.to_string();
+    }
+
+    let prefix: String = value.chars().take(4).collect();
+    let suffix: String = value
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{prefix}...{suffix}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        format_show_output, format_validate_output, resolve_runtime_config_with, ConfigPathSource,
-        ConfigRequest, LoadedConfigPath, LogLevel, ReportFormat, ResolvedOptionalValue,
-        ResolvedValue, RuntimeConfig, ValueSource,
+        format_show_output, format_validate_output, resolve_optional_auth_config_value,
+        resolve_runtime_config_with, AuthConfigKeySpec, ConfigPathSource, ConfigRequest,
+        FileConfigValue, LoadedConfigPath, LogLevel, ReportFormat, ResolvedOptionalValue,
+        ResolvedValue, RuntimeConfig, ValueSource, WORKOS_CLIENT_ID_BAKED_DEFAULT,
+        WORKOS_CLIENT_ID_KEY,
     };
     use anyhow::Result;
     use serde_json::Value;
@@ -718,9 +880,81 @@ mod tests {
         assert_eq!(resolved.log_level.source.as_str(), "default");
         assert_eq!(resolved.timeout_ms.value, 30000);
         assert_eq!(resolved.timeout_ms.source.as_str(), "default");
-        assert_eq!(resolved.workos_client_id.value, None);
-        assert_eq!(resolved.workos_client_id.source, None);
+        assert_eq!(
+            resolved.workos_client_id.value.as_deref(),
+            Some(WORKOS_CLIENT_ID_BAKED_DEFAULT)
+        );
+        assert_eq!(
+            resolved
+                .workos_client_id
+                .source
+                .map(|source| source.as_str()),
+            Some("default")
+        );
         Ok(())
+    }
+
+    #[test]
+    fn auth_resolver_uses_baked_default_when_env_and_config_are_absent() {
+        let resolved = resolve_optional_auth_config_value(WORKOS_CLIENT_ID_KEY, None, &|_| None);
+
+        assert_eq!(
+            resolved.value.as_deref(),
+            Some(WORKOS_CLIENT_ID_BAKED_DEFAULT)
+        );
+        assert_eq!(resolved.source, Some(ValueSource::Default));
+    }
+
+    #[test]
+    fn auth_resolver_uses_config_when_env_is_absent() {
+        let resolved = resolve_optional_auth_config_value(
+            WORKOS_CLIENT_ID_KEY,
+            Some(FileConfigValue {
+                value: "from-config".to_string(),
+                source: ConfigPathSource::DefaultDiscoveredLocal,
+            }),
+            &|_| None,
+        );
+
+        assert_eq!(resolved.value.as_deref(), Some("from-config"));
+        assert_eq!(
+            resolved.source,
+            Some(ValueSource::ConfigFile(
+                ConfigPathSource::DefaultDiscoveredLocal,
+            ))
+        );
+    }
+
+    #[test]
+    fn auth_resolver_uses_env_over_config_and_baked_default() {
+        let resolved = resolve_optional_auth_config_value(
+            WORKOS_CLIENT_ID_KEY,
+            Some(FileConfigValue {
+                value: "from-config".to_string(),
+                source: ConfigPathSource::DefaultDiscoveredGlobal,
+            }),
+            &|key| match key {
+                "WORKOS_CLIENT_ID" => Some("from-env".to_string()),
+                _ => None,
+            },
+        );
+
+        assert_eq!(resolved.value.as_deref(), Some("from-env"));
+        assert_eq!(resolved.source, Some(ValueSource::Env));
+    }
+
+    #[test]
+    fn auth_resolver_supports_keys_without_baked_defaults() {
+        let key = AuthConfigKeySpec {
+            config_key: "other_auth_key",
+            env_key: "OTHER_AUTH_KEY",
+            baked_default: None,
+        };
+
+        let resolved = resolve_optional_auth_config_value(key, None, &|_| None);
+
+        assert_eq!(resolved.value, None);
+        assert_eq!(resolved.source, None);
     }
 
     #[test]
@@ -957,7 +1191,34 @@ mod tests {
             parsed["result"]["resolved"]["workos_client_id"]["config_source"],
             "default_discovered_local"
         );
+        assert_eq!(
+            parsed["result"]["resolved"]["workos_client_id"]["precedence"],
+            "env (WORKOS_CLIENT_ID) > config file (workos_client_id) > baked default (client_sce_default)"
+        );
         Ok(())
+    }
+
+    #[test]
+    fn show_text_output_abbreviates_credential_like_auth_values() {
+        let runtime = RuntimeConfig {
+            loaded_config_paths: vec![],
+            log_level: ResolvedValue {
+                value: LogLevel::Info,
+                source: ValueSource::Default,
+            },
+            timeout_ms: ResolvedValue {
+                value: 30000,
+                source: ValueSource::Default,
+            },
+            workos_client_id: ResolvedOptionalValue {
+                value: Some("client_1234567890abcdef".to_string()),
+                source: Some(ValueSource::Env),
+            },
+        };
+
+        let output = format_show_output(&runtime, ReportFormat::Text);
+        assert!(output.contains("workos_client_id: clie...cdef"));
+        assert!(output.contains("auth_precedence: env (WORKOS_CLIENT_ID) > config file (workos_client_id) > baked default (client_sce_default)"));
     }
 
     #[test]
@@ -972,6 +1233,35 @@ mod tests {
         assert_eq!(parsed["result"]["command"], "config_validate");
         assert_eq!(parsed["result"]["valid"], true);
         assert!(parsed["result"]["issues"].as_array().is_some());
+        assert!(parsed["result"]["resolved_auth"]["workos_client_id"].is_object());
         Ok(())
+    }
+
+    #[test]
+    fn validate_text_output_reports_auth_precedence_and_source() {
+        let runtime = RuntimeConfig {
+            loaded_config_paths: vec![LoadedConfigPath {
+                path: PathBuf::from("/workspace/.sce/config.json"),
+                source: ConfigPathSource::DefaultDiscoveredLocal,
+            }],
+            log_level: ResolvedValue {
+                value: LogLevel::Info,
+                source: ValueSource::Default,
+            },
+            timeout_ms: ResolvedValue {
+                value: 30000,
+                source: ValueSource::Default,
+            },
+            workos_client_id: ResolvedOptionalValue {
+                value: Some("local-client".to_string()),
+                source: Some(ValueSource::ConfigFile(
+                    ConfigPathSource::DefaultDiscoveredLocal,
+                )),
+            },
+        };
+
+        let output = format_validate_output(&runtime, ReportFormat::Text);
+        assert!(output.contains("Resolved auth precedence: env (WORKOS_CLIENT_ID) > config file (workos_client_id) > baked default (client_sce_default)"));
+        assert!(output.contains("workos_client_id: local-client (source: config_file, config_source: default_discovered_local"));
     }
 }
