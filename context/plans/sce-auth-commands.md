@@ -108,7 +108,7 @@ Add `sce auth` command group with nested `login`, `logout`, and `status` subcomm
     - Run `sce auth status` and verify correct output
     - Run `sce auth login --help` and verify usage displayed
 
-- [ ] T04: Add logout token deletion function (status:todo)
+- [x] T04: Add logout token deletion function (status:done)
   - Task ID: T04
   - Goal: Add `delete_tokens()` function to `token_storage.rs` for logout
   - Boundaries (in/out of scope):

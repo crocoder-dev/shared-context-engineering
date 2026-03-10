@@ -1,5 +1,3 @@
-use std::fs;
-use std::path::Path;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -83,8 +81,12 @@ pub fn run_login(format: AuthFormat) -> Result<String> {
 }
 
 pub fn run_logout(format: AuthFormat) -> Result<String> {
-    let token_path = token_storage::token_file_path()?;
-    let deleted = delete_tokens_at_path(&token_path)?;
+    let deleted = token_storage::delete_tokens().map_err(|error| {
+        anyhow!(with_try_guidance(
+            error.to_string(),
+            "verify file permissions for the auth state directory and rerun 'sce auth logout'."
+        ))
+    })?;
     render_logout_result(deleted, format)
 }
 
@@ -227,18 +229,6 @@ fn render_status_result(report: &AuthStatusReport, format: AuthFormat) -> Result
     }
 }
 
-fn delete_tokens_at_path(path: &Path) -> Result<bool> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(anyhow!(
-            "Failed to remove stored authentication tokens at '{}': {}. Try: verify file permissions for the auth state directory and rerun 'sce auth logout'.",
-            path.display(),
-            error
-        )),
-    }
-}
-
 fn current_unix_timestamp_seconds() -> Result<u64> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -259,12 +249,10 @@ mod tests {
     use anyhow::{anyhow, Result};
     use serde_json::Value;
 
-    use crate::test_support::TestTempDir;
-
     use super::{
-        build_authenticated_status_report, delete_tokens_at_path, render_login_result,
-        render_logout_result, render_status_result, run_auth_subcommand_with, with_try_guidance,
-        AuthFormat, AuthRequest, AuthStatusReport, AuthSubcommand,
+        build_authenticated_status_report, render_login_result, render_logout_result,
+        render_status_result, run_auth_subcommand_with, with_try_guidance, AuthFormat, AuthRequest,
+        AuthStatusReport, AuthSubcommand,
     };
     use crate::services::auth::{DeviceAuthFlowResult, DeviceAuthorizationResponse};
     use crate::services::token_storage::StoredTokens;
@@ -405,30 +393,6 @@ mod tests {
         assert_eq!(parsed["authentication_state"], "authenticated");
         assert!(parsed["has_stored_credentials"].as_bool().unwrap_or(false));
         assert!(parsed["seconds_until_expiry"].as_i64().is_some());
-        Ok(())
-    }
-
-    #[test]
-    fn delete_tokens_at_path_removes_existing_file() -> Result<()> {
-        let temp_dir = TestTempDir::new("auth-command-delete")?;
-        let token_path = temp_dir.path().join("tokens.json");
-        std::fs::write(&token_path, "{}")?;
-
-        let deleted = delete_tokens_at_path(&token_path)?;
-
-        assert!(deleted);
-        assert!(!token_path.exists());
-        Ok(())
-    }
-
-    #[test]
-    fn delete_tokens_at_path_returns_false_when_missing() -> Result<()> {
-        let temp_dir = TestTempDir::new("auth-command-missing")?;
-        let token_path = temp_dir.path().join("tokens.json");
-
-        let deleted = delete_tokens_at_path(&token_path)?;
-
-        assert!(!deleted);
         Ok(())
     }
 
