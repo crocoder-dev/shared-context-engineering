@@ -8,6 +8,11 @@ use crate::services::output_format::OutputFormat;
 pub const NAME: &str = "config";
 
 const DEFAULT_TIMEOUT_MS: u64 = 30000;
+const WORKOS_CLIENT_ID_ENV: &str = "WORKOS_CLIENT_ID";
+const WORKOS_CLIENT_ID_KEY: AuthConfigKeySpec = AuthConfigKeySpec {
+    config_key: "workos_client_id",
+    env_key: WORKOS_CLIENT_ID_ENV,
+};
 
 pub type ReportFormat = OutputFormat;
 
@@ -115,17 +120,31 @@ struct LoadedConfigPath {
     source: ConfigPathSource,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AuthConfigKeySpec {
+    config_key: &'static str,
+    env_key: &'static str,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeConfig {
     loaded_config_paths: Vec<LoadedConfigPath>,
     log_level: ResolvedValue<LogLevel>,
     timeout_ms: ResolvedValue<u64>,
+    workos_client_id: ResolvedOptionalValue<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ResolvedOptionalValue<T> {
+    value: Option<T>,
+    source: Option<ValueSource>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FileConfig {
     log_level: Option<FileConfigValue<LogLevel>>,
     timeout_ms: Option<FileConfigValue<u64>>,
+    workos_client_id: Option<FileConfigValue<String>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -187,6 +206,7 @@ where
     let mut file_config = FileConfig {
         log_level: None,
         timeout_ms: None,
+        workos_client_id: None,
     };
     for loaded_path in &loaded_config_paths {
         let raw = read_file(&loaded_path.path)?;
@@ -196,6 +216,9 @@ where
         }
         if let Some(timeout_ms) = layer.timeout_ms {
             file_config.timeout_ms = Some(timeout_ms);
+        }
+        if let Some(workos_client_id) = layer.workos_client_id {
+            file_config.workos_client_id = Some(workos_client_id);
         }
     }
 
@@ -248,11 +271,46 @@ where
         };
     }
 
+    let resolved_workos_client_id = resolve_optional_string_config_value(
+        WORKOS_CLIENT_ID_KEY,
+        file_config.workos_client_id,
+        &env_lookup,
+    );
+
     Ok(RuntimeConfig {
         loaded_config_paths,
         log_level: resolved_log_level,
         timeout_ms: resolved_timeout_ms,
+        workos_client_id: resolved_workos_client_id,
     })
+}
+
+fn resolve_optional_string_config_value<FEnv>(
+    key: AuthConfigKeySpec,
+    file_value: Option<FileConfigValue<String>>,
+    env_lookup: &FEnv,
+) -> ResolvedOptionalValue<String>
+where
+    FEnv: Fn(&str) -> Option<String>,
+{
+    if let Some(raw) = env_lookup(key.env_key) {
+        return ResolvedOptionalValue {
+            value: Some(raw),
+            source: Some(ValueSource::Env),
+        };
+    }
+
+    if let Some(value) = file_value {
+        return ResolvedOptionalValue {
+            value: Some(value.value),
+            source: Some(ValueSource::ConfigFile(value.source)),
+        };
+    }
+
+    ResolvedOptionalValue {
+        value: None,
+        source: None,
+    }
 }
 
 fn resolve_config_paths<FEnv, FGlobalPath>(
@@ -332,11 +390,12 @@ fn parse_file_config(raw: &str, path: &Path, source: ConfigPathSource) -> Result
     })?;
 
     for key in object.keys() {
-        if key != "log_level" && key != "timeout_ms" {
+        if key != "log_level" && key != "timeout_ms" && key != WORKOS_CLIENT_ID_KEY.config_key {
             bail!(
-                "Config file '{}' contains unknown key '{}'. Allowed keys: log_level, timeout_ms.",
+                "Config file '{}' contains unknown key '{}'. Allowed keys: log_level, timeout_ms, {}.",
                 path.display(),
-                key
+                key,
+                WORKOS_CLIENT_ID_KEY.config_key
             );
         }
     }
@@ -373,10 +432,37 @@ fn parse_file_config(raw: &str, path: &Path, source: ConfigPathSource) -> Result
         None => None,
     };
 
+    let workos_client_id = parse_optional_string_key(object, path, source, WORKOS_CLIENT_ID_KEY)?;
+
     Ok(FileConfig {
         log_level,
         timeout_ms,
+        workos_client_id,
     })
+}
+
+fn parse_optional_string_key(
+    object: &serde_json::Map<String, Value>,
+    path: &Path,
+    source: ConfigPathSource,
+    key: AuthConfigKeySpec,
+) -> Result<Option<FileConfigValue<String>>> {
+    let Some(value) = object.get(key.config_key) else {
+        return Ok(None);
+    };
+
+    let raw = value.as_str().with_context(|| {
+        format!(
+            "Config key '{}' in '{}' must be a string.",
+            key.config_key,
+            path.display()
+        )
+    })?;
+
+    Ok(Some(FileConfigValue {
+        value: raw.to_string(),
+        source,
+    }))
 }
 
 fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> String {
@@ -395,6 +481,11 @@ fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> S
                     "timeout_ms",
                     &runtime.timeout_ms.value.to_string(),
                     runtime.timeout_ms.source,
+                ),
+                format_optional_resolved_value_text(
+                    WORKOS_CLIENT_ID_KEY.config_key,
+                    runtime.workos_client_id.value.as_deref(),
+                    runtime.workos_client_id.source,
                 ),
             ];
             lines.join("\n")
@@ -416,6 +507,11 @@ fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> S
                             "value": runtime.timeout_ms.value,
                             "source": runtime.timeout_ms.source.as_str(),
                             "config_source": runtime.timeout_ms.source.config_source().map(ConfigPathSource::as_str),
+                        },
+                        "workos_client_id": {
+                            "value": runtime.workos_client_id.value,
+                            "source": runtime.workos_client_id.source.map(ValueSource::as_str),
+                            "config_source": runtime.workos_client_id.source.and_then(ValueSource::config_source).map(ConfigPathSource::as_str),
                         }
                     }
                 }
@@ -497,12 +593,23 @@ fn format_resolved_value_text(key: &str, value: &str, source: ValueSource) -> St
     }
 }
 
+fn format_optional_resolved_value_text(
+    key: &str,
+    value: Option<&str>,
+    source: Option<ValueSource>,
+) -> String {
+    match (value, source) {
+        (Some(value), Some(source)) => format_resolved_value_text(key, value, source),
+        _ => format!("- {}: (unset) (source: none)", key),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         format_show_output, format_validate_output, resolve_runtime_config_with, ConfigPathSource,
-        ConfigRequest, ConfigSubcommand, LoadedConfigPath, LogLevel, ReportFormat, ResolvedValue,
-        RuntimeConfig, ValueSource,
+        ConfigRequest, LoadedConfigPath, LogLevel, ReportFormat, ResolvedOptionalValue,
+        ResolvedValue, RuntimeConfig, ValueSource,
     };
     use anyhow::Result;
     use serde_json::Value;
@@ -531,9 +638,12 @@ mod tests {
             |key| match key {
                 "SCE_LOG_LEVEL" => Some("debug".to_string()),
                 "SCE_TIMEOUT_MS" => Some("700".to_string()),
+                "WORKOS_CLIENT_ID" => Some("from-env".to_string()),
                 _ => None,
             },
-            |_| Ok("{\"log_level\":\"error\",\"timeout_ms\":500}".to_string()),
+            |_| {
+                Ok("{\"log_level\":\"error\",\"timeout_ms\":500,\"workos_client_id\":\"from-config\"}".to_string())
+            },
             |_| true,
             || Ok(PathBuf::from("/state")),
         )?;
@@ -542,6 +652,14 @@ mod tests {
         assert_eq!(resolved.log_level.source.as_str(), "flag");
         assert_eq!(resolved.timeout_ms.value, 900);
         assert_eq!(resolved.timeout_ms.source.as_str(), "flag");
+        assert_eq!(resolved.workos_client_id.value.as_deref(), Some("from-env"));
+        assert_eq!(
+            resolved
+                .workos_client_id
+                .source
+                .map(|source| source.as_str()),
+            Some("env")
+        );
         Ok(())
     }
 
@@ -559,9 +677,12 @@ mod tests {
             |key| match key {
                 "SCE_LOG_LEVEL" => Some("warn".to_string()),
                 "SCE_TIMEOUT_MS" => Some("1200".to_string()),
+                "WORKOS_CLIENT_ID" => Some("from-env".to_string()),
                 _ => None,
             },
-            |_| Ok("{\"log_level\":\"error\",\"timeout_ms\":500}".to_string()),
+            |_| {
+                Ok("{\"log_level\":\"error\",\"timeout_ms\":500,\"workos_client_id\":\"from-config\"}".to_string())
+            },
             |_| true,
             || Ok(PathBuf::from("/state")),
         )?;
@@ -570,6 +691,14 @@ mod tests {
         assert_eq!(resolved.log_level.source.as_str(), "env");
         assert_eq!(resolved.timeout_ms.value, 1200);
         assert_eq!(resolved.timeout_ms.source.as_str(), "env");
+        assert_eq!(resolved.workos_client_id.value.as_deref(), Some("from-env"));
+        assert_eq!(
+            resolved
+                .workos_client_id
+                .source
+                .map(|source| source.as_str()),
+            Some("env")
+        );
         Ok(())
     }
 
@@ -589,6 +718,8 @@ mod tests {
         assert_eq!(resolved.log_level.source.as_str(), "default");
         assert_eq!(resolved.timeout_ms.value, 30000);
         assert_eq!(resolved.timeout_ms.source.as_str(), "default");
+        assert_eq!(resolved.workos_client_id.value, None);
+        assert_eq!(resolved.workos_client_id.source, None);
         Ok(())
     }
 
@@ -610,6 +741,7 @@ mod tests {
         )
         .expect_err("unknown config keys should fail");
         assert!(error.to_string().contains("contains unknown key 'unknown'"));
+        assert!(error.to_string().contains("workos_client_id"));
     }
 
     #[test]
@@ -621,10 +753,12 @@ mod tests {
             |_| None,
             |path| {
                 if path == Path::new("/state/sce/config.json") {
-                    return Ok("{\"log_level\":\"error\",\"timeout_ms\":500}".to_string());
+                    return Ok("{\"log_level\":\"error\",\"timeout_ms\":500,\"workos_client_id\":\"global-client\"}".to_string());
                 }
                 if path == Path::new("/workspace/.sce/config.json") {
-                    return Ok("{\"timeout_ms\":700}".to_string());
+                    return Ok(
+                        "{\"timeout_ms\":700,\"workos_client_id\":\"local-client\"}".to_string()
+                    );
                 }
                 Err(anyhow::anyhow!(
                     "unexpected config path: {}",
@@ -669,6 +803,66 @@ mod tests {
                 .map(|source| source.as_str()),
             Some("default_discovered_local")
         );
+
+        assert_eq!(
+            resolved.workos_client_id.value.as_deref(),
+            Some("local-client")
+        );
+        assert_eq!(
+            resolved
+                .workos_client_id
+                .source
+                .map(|source| source.as_str()),
+            Some("config_file")
+        );
+        assert_eq!(
+            resolved
+                .workos_client_id
+                .source
+                .and_then(|source| source.config_source())
+                .map(|source| source.as_str()),
+            Some("default_discovered_local")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resolver_uses_global_workos_client_id_when_local_omits_key() -> Result<()> {
+        let req = request();
+        let resolved = resolve_runtime_config_with(
+            &req,
+            Path::new("/workspace"),
+            |_| None,
+            |path| {
+                if path == Path::new("/state/sce/config.json") {
+                    return Ok("{\"workos_client_id\":\"global-client\"}".to_string());
+                }
+                if path == Path::new("/workspace/.sce/config.json") {
+                    return Ok("{}".to_string());
+                }
+                Err(anyhow::anyhow!(
+                    "unexpected config path: {}",
+                    path.display()
+                ))
+            },
+            |path| {
+                path == Path::new("/state/sce/config.json")
+                    || path == Path::new("/workspace/.sce/config.json")
+            },
+            || Ok(PathBuf::from("/state")),
+        )?;
+
+        assert_eq!(
+            resolved.workos_client_id.value.as_deref(),
+            Some("global-client")
+        );
+        assert_eq!(
+            resolved
+                .workos_client_id
+                .source
+                .map(|source| source.as_str()),
+            Some("config_file")
+        );
         Ok(())
     }
 
@@ -692,6 +886,10 @@ mod tests {
                 value: 1200,
                 source: ValueSource::Flag,
             },
+            workos_client_id: ResolvedOptionalValue {
+                value: None,
+                source: None,
+            },
         }
     }
 
@@ -711,6 +909,54 @@ mod tests {
         );
         assert_eq!(parsed["result"]["resolved"]["log_level"]["source"], "env");
         assert_eq!(parsed["result"]["resolved"]["timeout_ms"]["source"], "flag");
+        assert_eq!(
+            parsed["result"]["resolved"]["workos_client_id"]["value"],
+            Value::Null
+        );
+        assert_eq!(
+            parsed["result"]["resolved"]["workos_client_id"]["source"],
+            Value::Null
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn show_json_output_reports_workos_client_id_source_metadata() -> Result<()> {
+        let runtime = RuntimeConfig {
+            loaded_config_paths: vec![LoadedConfigPath {
+                path: PathBuf::from("/workspace/.sce/config.json"),
+                source: ConfigPathSource::DefaultDiscoveredLocal,
+            }],
+            log_level: ResolvedValue {
+                value: LogLevel::Info,
+                source: ValueSource::Default,
+            },
+            timeout_ms: ResolvedValue {
+                value: 30000,
+                source: ValueSource::Default,
+            },
+            workos_client_id: ResolvedOptionalValue {
+                value: Some("local-client".to_string()),
+                source: Some(ValueSource::ConfigFile(
+                    ConfigPathSource::DefaultDiscoveredLocal,
+                )),
+            },
+        };
+
+        let parsed: Value =
+            serde_json::from_str(&format_show_output(&runtime, ReportFormat::Json))?;
+        assert_eq!(
+            parsed["result"]["resolved"]["workos_client_id"]["value"],
+            "local-client"
+        );
+        assert_eq!(
+            parsed["result"]["resolved"]["workos_client_id"]["source"],
+            "config_file"
+        );
+        assert_eq!(
+            parsed["result"]["resolved"]["workos_client_id"]["config_source"],
+            "default_discovered_local"
+        );
         Ok(())
     }
 
