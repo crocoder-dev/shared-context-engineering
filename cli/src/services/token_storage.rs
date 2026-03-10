@@ -96,6 +96,11 @@ pub fn load_tokens() -> Result<Option<StoredTokens>, TokenStorageError> {
     load_tokens_from_path(&token_path)
 }
 
+pub fn delete_tokens() -> Result<bool, TokenStorageError> {
+    let token_path = token_file_path()?;
+    delete_tokens_at_path(&token_path)
+}
+
 pub fn token_file_path() -> Result<PathBuf, TokenStorageError> {
     #[cfg(target_os = "linux")]
     {
@@ -157,6 +162,14 @@ fn load_tokens_from_path(path: &Path) -> Result<Option<StoredTokens>, TokenStora
     })?;
 
     Ok(Some(parsed))
+}
+
+fn delete_tokens_at_path(path: &Path) -> Result<bool, TokenStorageError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(TokenStorageError::Io(error)),
+    }
 }
 
 fn ensure_parent_directory(path: &Path) -> Result<(), TokenStorageError> {
@@ -259,7 +272,7 @@ fn apply_secure_file_permissions(_path: &Path) -> Result<(), TokenStorageError> 
 
 #[cfg(test)]
 mod tests {
-    use super::{load_tokens_from_path, save_tokens_at_path, StoredTokens};
+    use super::{delete_tokens_at_path, load_tokens_from_path, save_tokens_at_path, StoredTokens};
     use std::fs;
     use std::path::PathBuf;
 
@@ -331,6 +344,33 @@ mod tests {
                 .and_then(|path| path.parent())
                 .expect("temp tree should have two parent levels"),
         );
+    }
+
+    #[test]
+    fn delete_existing_token_file_returns_true() {
+        let token_path = unique_test_path("delete-existing");
+        save_tokens_at_path(&token_path, &fixture_tokens()).expect("tokens should save");
+
+        let deleted = delete_tokens_at_path(&token_path).expect("delete should succeed");
+
+        assert!(deleted);
+        assert!(!token_path.exists());
+
+        let _ = fs::remove_dir_all(
+            token_path
+                .parent()
+                .and_then(|path| path.parent())
+                .expect("temp tree should have two parent levels"),
+        );
+    }
+
+    #[test]
+    fn delete_missing_token_file_returns_false() {
+        let token_path = unique_test_path("delete-missing");
+
+        let deleted = delete_tokens_at_path(&token_path).expect("delete should not fail");
+
+        assert!(!deleted);
     }
 
     #[cfg(unix)]
