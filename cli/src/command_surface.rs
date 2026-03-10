@@ -35,6 +35,11 @@ pub const COMMANDS: &[CommandContract] = &[
         purpose: "Validate local git-hook installation readiness",
     },
     CommandContract {
+        name: services::auth_command::NAME,
+        status: ImplementationStatus::Implemented,
+        purpose: "Authenticate with WorkOS and inspect local auth state",
+    },
+    CommandContract {
         name: services::mcp::NAME,
         status: ImplementationStatus::Placeholder,
         purpose: "Host MCP file-cache tooling commands",
@@ -84,13 +89,14 @@ pub fn help_text() -> String {
 Usage:\n  sce [command]\n\n\
 Config usage:\n  sce config <show|validate> [--format <text|json>] [options]\n\n\
 Setup usage:\n  sce setup [--opencode|--claude|--both] [--non-interactive] [--hooks] [--repo <path>]\n\n\
+Auth usage:\n  sce auth <login|logout|status> [--format <text|json>]\n\n\
 Completion usage:\n  sce completion --shell <bash|zsh|fish>\n\n\
 Output format contract:\n  Supported commands accept --format <text|json>\n\n\
-Examples:\n  sce setup\n  sce setup --opencode --non-interactive --hooks\n  sce setup --hooks --repo ../demo-repo\n  sce doctor --format json\n  sce version --format json\n\n\
+Examples:\n  sce setup\n  sce setup --opencode --non-interactive --hooks\n  sce setup --hooks --repo ../demo-repo\n  sce auth status\n  sce auth login --format json\n  sce doctor --format json\n  sce version --format json\n\n\
 Commands:\n{}\n\n\
 Setup defaults to interactive target selection when no setup target flag is passed, and installs hooks in the same run.\n\
 Use '--hooks' to install required git hooks for the current repository or '--repo <path>' for a specific repository.\n\
-`setup`, `doctor`, and `hooks` are implemented; `mcp` and `sync` remain placeholder-oriented.\n",
+`setup`, `doctor`, `auth`, `hooks`, `version`, and `completion` are implemented; `mcp` and `sync` remain placeholder-oriented.\n",
         command_rows
     )
 }
@@ -124,6 +130,25 @@ mod tests {
     fn help_text_mentions_version_command() {
         let help = help_text();
         assert!(help.contains("version"));
+    }
+
+    #[test]
+    fn command_surface_includes_auth_as_known_implemented_command() {
+        let auth = COMMANDS
+            .iter()
+            .find(|command| command.name == crate::services::auth_command::NAME)
+            .expect("auth command should be listed");
+
+        assert_eq!(auth.status, ImplementationStatus::Implemented);
+        assert!(crate::command_surface::is_known_command("auth"));
+    }
+
+    #[test]
+    fn help_text_mentions_auth_usage_examples() {
+        let help = help_text();
+        assert!(help.contains("sce auth <login|logout|status> [--format <text|json>]"));
+        assert!(help.contains("sce auth status"));
+        assert!(help.contains("sce auth login --format json"));
     }
 
     #[test]

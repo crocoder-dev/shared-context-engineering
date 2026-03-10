@@ -2,7 +2,7 @@
 
 The repository now includes a Rust CLI crate at `cli/` for SCE automation work.
 
-`cli/README.md` is the operator onboarding source for running current commands and understanding safety limitations.
+Operator onboarding currently comes from `sce --help`, command-local `--help` output, and the focused CLI context files under `context/cli/` and `context/sce/`.
 
 ## Current implemented slice
 
@@ -15,9 +15,9 @@ The repository now includes a Rust CLI crate at `cli/` for SCE automation work.
 
 ## Onboarding documentation
 
-- `cli/README.md` includes quick-start commands for `help`, `config`, `setup`, `doctor`, `mcp`, `hooks`, `sync`, and `completion`.
-- The README explicitly distinguishes implemented behavior from placeholders and maps future work to module contracts.
-- Verification guidance in the README uses crate-local `cargo check`, `cargo test`, and `cargo build` commands, plus release/install commands for current installability (`cargo build --manifest-path cli/Cargo.toml --release`, `cargo install --path cli --locked`).
+- `sce --help` includes quick-start commands for `setup`, `auth`, `doctor`, and `version`, plus the implemented-vs-placeholder top-level command catalog.
+- Command-local help is available for implemented commands including `sce auth --help`, `sce auth login --help`, `sce setup --help`, `sce doctor --help`, and `sce completion --help`.
+- Current verification guidance for the CLI slice uses crate-local `cargo test --manifest-path cli/Cargo.toml`, plus release/install commands for installability (`cargo build --manifest-path cli/Cargo.toml --release`, `cargo install --path cli --locked`).
 
 ## Nix release installability surface
 
@@ -43,6 +43,7 @@ The repository now includes a Rust CLI crate at `cli/` for SCE automation work.
 - `config`: implemented
 - `setup`: implemented
 - `doctor`: implemented
+- `auth`: implemented
 - `mcp`: placeholder
 - `hooks`: implemented
 - `sync`: placeholder

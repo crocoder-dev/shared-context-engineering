@@ -4,13 +4,13 @@
 Add `sce auth` command group with nested `login`, `logout`, and `status` subcommands to the CLI. The underlying WorkOS Device Authorization Flow is already implemented in `cli/src/services/auth.rs`; this plan wires up the command surface.
 
 ## Success Criteria
-- [ ] `sce auth login` initiates WorkOS Device Authorization Flow and stores tokens
-- [ ] `sce auth logout` clears stored credentials
-- [ ] `sce auth status` shows current authentication state (authenticated/unauthenticated, expiry info)
-- [ ] All auth commands support `--format text|json` output
-- [ ] Error messages include actionable "Try:" guidance
-- [ ] Help text updated to include auth commands
-- [ ] Unit tests cover command parsing and dispatch
+- [x] `sce auth login` initiates WorkOS Device Authorization Flow and stores tokens
+- [x] `sce auth logout` clears stored credentials
+- [x] `sce auth status` shows current authentication state (authenticated/unauthenticated, expiry info)
+- [x] All auth commands support `--format text|json` output
+- [x] Error messages include actionable "Try:" guidance
+- [x] Help text updated to include auth commands
+- [x] Unit tests cover command parsing and dispatch
 
 ## Constraints and Non-Goals
 
@@ -127,7 +127,7 @@ Add `sce auth` command group with nested `login`, `logout`, and `status` subcomm
     - Run `cargo test --manifest-path cli/Cargo.toml --lib token_storage`
     - Manual test: `sce auth login` then `sce auth logout` then verify file removed
 
-- [ ] T05: Update command surface and help text (status:todo)
+- [x] T05: Update command surface and help text (status:done)
   - Task ID: T05
   - Goal: Add auth commands to command surface registry and help text
   - Boundaries (in/out of scope):
@@ -145,7 +145,7 @@ Add `sce auth` command group with nested `login`, `logout`, and `status` subcomm
     - Run `sce --help` and verify auth is listed
     - Run `cargo test --manifest-path cli/Cargo.toml --lib command_surface`
 
-- [ ] T06: Validation, testing, and context sync (status:todo)
+- [x] T06: Validation, testing, and context sync (status:done)
   - Task ID: T06
   - Goal: Final validation, comprehensive testing, and context synchronization
   - Boundaries (in/out of scope):
@@ -166,6 +166,37 @@ Add `sce auth` command group with nested `login`, `logout`, and `status` subcomm
     - Run `nix run .#pkl-check-generated`
     - Run `cargo test --manifest-path cli/Cargo.toml --all`
     - Complete manual flow: `sce auth status` -> `sce auth login` -> `sce auth status --format json` -> `sce auth logout` -> `sce auth status`
+  - Execution note (2026-03-10): `cargo test --manifest-path cli/Cargo.toml`, `nix run .#pkl-check-generated`, and `nix flake check` passed. Manual unauthenticated `status`, `status --format json`, and `logout` checks passed. Live `auth login --format json` remains environment-blocked here because `WORKOS_CLIENT_ID` is not configured, but it fails with actionable runtime guidance.
+
+## Validation Report
+
+- Commands run:
+  - `cargo test --manifest-path cli/Cargo.toml`
+  - `nix run .#pkl-check-generated`
+  - `nix flake check`
+  - `cargo run --manifest-path cli/Cargo.toml -- auth status`
+  - `cargo run --manifest-path cli/Cargo.toml -- auth status --format json`
+  - `cargo run --manifest-path cli/Cargo.toml -- auth logout`
+  - `cargo run --manifest-path cli/Cargo.toml -- auth login --format json`
+- Exit codes and key outputs:
+  - `cargo test --manifest-path cli/Cargo.toml` -> exit `0`; 242 tests passed.
+  - `nix run .#pkl-check-generated` -> exit `0`; generated outputs are up to date.
+  - `nix flake check` -> exit `0`; repository checks passed on `x86_64-linux`.
+  - `cargo run --manifest-path cli/Cargo.toml -- auth status` -> exit `0`; reported `Authentication status: unauthenticated` and `Stored credentials: none`.
+  - `cargo run --manifest-path cli/Cargo.toml -- auth status --format json` -> exit `0`; emitted structured unauthenticated JSON payload with `has_stored_credentials: false`.
+  - `cargo run --manifest-path cli/Cargo.toml -- auth logout` -> exit `0`; reported `No stored WorkOS credentials were found.`
+  - `cargo run --manifest-path cli/Cargo.toml -- auth login --format json` -> exit `4`; reported `Error [SCE-ERR-RUNTIME]: WorkOS client ID is not configured. Try: set WORKOS_CLIENT_ID or configure the CLI auth client id.`
+- Failed checks and follow-ups:
+  - No automated checks failed.
+  - Live WorkOS device-flow completion remains blocked in this environment until `WORKOS_CLIENT_ID` is configured.
+- Success-criteria verification summary:
+  - `sce auth login` command path is wired and validated up to the expected environment gate; full token-storage confirmation requires a configured WorkOS client ID.
+  - `sce auth logout` and `sce auth status` runtime behavior verified manually.
+  - `--format text|json`, actionable `Try:` guidance, help-surface presence, and command parsing/dispatch coverage are verified by tests plus manual runtime checks.
+  - Auth feature context remains discoverable via `context/overview.md`, `context/glossary.md`, `context/context-map.md`, and `context/cli/placeholder-foundation.md`.
+- Residual risks:
+  - End-to-end token acquisition/storage was not exercised in this shell because the required WorkOS client ID was unavailable.
+  - `cargo test` and `cargo run` currently emit pre-existing Rust warnings unrelated to this task.
 
 ## Open Questions
 None - requirements clarified with user (nested auth command structure confirmed).
