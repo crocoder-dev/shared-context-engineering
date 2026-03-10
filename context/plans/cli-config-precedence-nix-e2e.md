@@ -58,7 +58,7 @@ Add compiled-binary end-to-end coverage for CLI config precedence so the existin
     - Run `cargo test --manifest-path cli/Cargo.toml --test setup_integration`
     - If a new shared test-support module or second integration target is introduced, verify it still resolves the compiled `sce` binary path rather than calling internal library APIs
 
-- [ ] T02: Add end-to-end tests for `flags > env > config file > defaults` runtime precedence (status:todo)
+- [x] T02: Add end-to-end tests for `flags > env > config file > defaults` runtime precedence (status:done)
   - Task ID: T02
   - Goal: Add compiled-binary integration scenarios that prove the implemented precedence chain for `log_level` and `timeout_ms` through `sce config` command output.
   - Boundaries (in/out of scope):
