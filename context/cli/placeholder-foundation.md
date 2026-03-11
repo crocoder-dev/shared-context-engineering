@@ -16,7 +16,7 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 ## Onboarding documentation
 
 - `sce --help` includes quick-start commands for `setup`, `auth`, `doctor`, and `version`, plus the implemented-vs-placeholder top-level command catalog.
-- Command-local help is available for implemented commands including `sce auth --help`, `sce auth login --help`, `sce setup --help`, `sce doctor --help`, and `sce completion --help`.
+- Command-local help is available for implemented commands including bare `sce auth`, `sce auth --help`, `sce auth login --help`, `sce setup --help`, `sce doctor --help`, and `sce completion --help`.
 - Current verification guidance for the CLI slice uses crate-local `cargo test --manifest-path cli/Cargo.toml`, plus release/install commands for installability (`cargo build --manifest-path cli/Cargo.toml --release`, `cargo install --path cli --locked`).
 
 ## Nix release installability surface
@@ -59,11 +59,12 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 `version` exposes deterministic runtime identification output in text mode by default and JSON mode via `--format json`.
 `completion` exposes deterministic shell completion generation via `sce completion --shell <bash|zsh|fish>`.
 `setup` defaults to an `inquire` interactive target selection (OpenCode, Claude, Both) and accepts mutually-exclusive non-interactive target flags (`--opencode`, `--claude`, `--both`).
+`auth` now emits auth-local guidance for bare `sce auth` and `sce auth --help`, listing `login`, `logout`, and `status` plus copy-ready next steps.
 `setup`, `doctor`, `mcp`, `hooks`, `sync`, `version`, and `completion` all support command-local `--help`/`-h` usage output via top-level parser routing in `cli/src/app.rs`.
 `setup` now also exposes compile-time embedded config assets for OpenCode/Claude targets, sourced from `config/.opencode/**` and `config/.claude/**` via `cli/build.rs` with normalized forward-slash relative paths and target-scoped iteration APIs.
 `setup` additionally includes a repository-root install engine (`install_embedded_setup_assets`) that stages embedded files and applies backup-and-replace safety for `.opencode/`/`.claude/` with rollback restoration if staged swap fails.
 `setup` now executes end-to-end and prints deterministic completion details including selected target(s), per-target install count, and backup actions.
-`doctor` now executes end-to-end and reports hook rollout readiness by validating effective hook-path source plus required hook presence/executable permissions.
+`doctor` now executes end-to-end and reports hook rollout readiness by validating effective hook-path source plus required hook presence/executable permissions, while also surfacing default global/local config-file locations and the Agent Trace local DB path as `present` or `expected`.
 `sync` includes a local Turso smoke gate backed by a lazily initialized shared tokio current-thread runtime, bounded retry/timeout/backoff policy for the smoke operation, and a placeholder cloud-sync gateway plan; it now supports deterministic `text` output (default) and `--format json` output with stable placeholder fields.
 
 ## Command loop and error model
@@ -72,11 +73,12 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - Runtime errors are normalized through `anyhow` and rendered as `Error: ...` with exit code `2`.
 - Unknown commands/options and extra positional arguments return deterministic, actionable guidance to run `sce --help`.
 - `sce setup --help` returns setup-specific usage output with target-flag contract details and deterministic examples, including one-run non-interactive setup+hooks and a composable follow-up validation flow (`sce doctor --format json`).
+- `sce auth` and `sce auth --help` return auth-specific usage output with available subcommands and deterministic examples, while `sce auth <subcommand> --help` stays scoped to the selected auth subcommand.
 - `sce doctor --help`, `sce mcp --help`, `sce hooks --help`, and `sce sync --help` return command-local usage output and deterministic copy-ready examples.
 - Interactive `sce setup` prompt cancellation/interrupt exits cleanly with: `Setup cancelled. No files were changed.`
 - Command handlers return deterministic status messaging:
   - `setup`: `Setup completed successfully.` plus selected targets, per-target install destinations/counts, and backup status lines.
-  - `doctor`: `SCE doctor: ready|not ready` plus hook-path source, required hook checks, and actionable diagnostics.
+  - `doctor`: `SCE doctor: ready|not ready` plus hook-path source, config + local-DB locations, required hook checks, and actionable diagnostics.
   - `TODO: 'mcp' is planned and not implemented yet. MCP file-cache surface defines 2 placeholder tool contract(s) with max 1024 entries. Next step: run 'sce mcp --help' for current placeholder usage while runtime execution remains disabled.`
   - `hooks`: deterministic hook subcommand status messaging for runtime entrypoint invocation and argument/STDIN contract validation.
   - `TODO: 'sync' cloud workflows are planned and not implemented yet. Local Turso smoke check succeeded (1) row inserted; cloud sync placeholder enumerates 3 phase(s) and plan holds 3 checkpoint(s). Next step: rerun with '--format json' for machine-readable placeholder checkpoints.`
@@ -85,7 +87,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 
 - `cli/src/services/setup.rs` defines setup parsing/selection contracts plus runtime install orchestration (`run_setup_for_mode`) over the embedded asset install engine.
 - `cli/src/services/config.rs` defines config parser/runtime contracts (`show`, `validate`, `--help`), strict config-file key/type validation, deterministic text/JSON rendering, and shared auth-key metadata that declares env key, config-file key, and optional baked-default eligibility for supported auth runtime values starting with `workos_client_id` (`WORKOS_CLIENT_ID` vs `workos_client_id`); auth-key output includes key-specific precedence metadata in both output modes and abbreviates credential-like values in text output.
-- `cli/src/services/doctor.rs` defines hook rollout health validation (`run_doctor`) with path-source detection (default/local/global), required-hook presence/executable checks, and command-local usage text (`doctor_usage_text`).
+- `cli/src/services/doctor.rs` defines hook rollout health validation (`run_doctor`) with path-source detection (default/local/global), config/local-DB location reporting, and required-hook presence/executable checks.
 - `cli/src/services/agent_trace.rs` defines the task-scoped schema adapter contract (`adapt_trace_payload`) from internal attribution input structs to Agent Trace-shaped record structs, including fixed git `vcs` mapping, contributor type mapping, and reserved `dev.crocoder.sce.*` metadata placement.
 - `cli/src/services/mcp.rs` defines `McpService`, a `McpCapabilitySnapshot` model (primary + supported transports), `CachePolicy` defaults for future file-cache workflows (`cache-put`/`cache-get`) with `runnable: false` placeholders, command-local usage text (`mcp_usage_text`), and `McpRequest` parsing/rendering for deterministic text or `--format json` placeholder output.
 - `cli/src/services/version.rs` defines the version parser/output contract (`parse_version_request`, `render_version`) with deterministic text/JSON output modes.
@@ -94,7 +96,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - `cli/src/services/resilience.rs` defines shared bounded retry/timeout/backoff execution policy (`RetryPolicy`, `run_with_retry`) with deterministic failure messaging and retry observability hooks.
 - `cli/src/services/sync.rs` defines cloud-sync abstraction points (`CloudSyncGateway`, `CloudSyncRequest`, `CloudSyncPlan`) layered after the local Turso smoke gate, plus `SyncRequest` parsing/rendering for deterministic text or `--format json` placeholder output and command-local usage text (`sync_usage_text`).
 - `cli/src/services/token_storage.rs` defines WorkOS token persistence (`save_tokens`, `load_tokens`, `delete_tokens`) with cross-platform state-path resolution, JSON payload storage including `stored_at_unix_seconds`, graceful missing-file deletion behavior, missing/corrupted-file handling, and restrictive on-disk permissions (`0600` on Unix; Windows best-effort ACL hardening via `icacls`).
-- `cli/src/services/auth_command.rs` defines the auth command orchestration surface (`AuthRequest`, `AuthSubcommand`, `run_auth_subcommand`) for `login`, `logout`, and `status`, including shared text/JSON rendering, token-storage-backed logout deletion, expiry-aware status reporting, and precedence-aware client-ID guidance sourced from the shared auth-runtime resolver instead of env-only assumptions.
+- `cli/src/services/auth_command.rs` defines the auth command orchestration surface (`AuthRequest`, `AuthSubcommand`, `run_auth_subcommand`) for `login`, `logout`, and `status`, including shared text/JSON rendering, token-storage-backed logout deletion, expiry-aware status reporting, precedence-aware client-ID guidance sourced from the shared auth-runtime resolver instead of env-only assumptions, and a lazily initialized current-thread Tokio runtime with both I/O and time enabled so `sce auth login` can drive the WorkOS device flow without the prior I/O-disabled panic.
 - `cli/src/app.rs` dispatches `auth`, `config`, `setup`, `doctor`, `mcp`, `hooks`, `sync`, `version`, and `completion` through service-level modules so runtime messages are sourced from domain modules instead of inline strings.
 
 ## Local Turso adapter behavior
@@ -109,7 +111,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 
 ## Parser-focused tests
 
-- `cli/src/app.rs` unit tests cover default-help behavior, auth/config/setup/hooks routing, command-local `--help` routing for `doctor`/`mcp`/`hooks`/`sync`, and failure paths for unknown commands/options and extra arguments.
+- `cli/src/app.rs` unit tests cover default-help behavior, auth/config/setup/hooks routing, auth bare/help/nested-help routing, command-local `--help` routing for `doctor`/`mcp`/`hooks`/`sync`, and failure paths for unknown commands/options and extra arguments.
 - `cli/src/app.rs` additionally validates setup contract routing for interactive default, explicit target flags, and mutually-exclusive setup flag failures.
 - `cli/src/services/local_db.rs` tests cover in-memory and file-backed local Turso initialization plus execute/query smoke checks.
 - `cli/src/services/resilience.rs` tests lock deterministic retry behavior for transient failures, timeout exhaustion, and actionable terminal error messaging.
@@ -117,7 +119,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - `cli/src/services/{setup,mcp,hooks,sync}.rs` include contract-focused tests for setup flag parsing/validation, interactive selection/cancellation dispatch, setup run messaging, and hook runtime argument/IO/finalization behavior.
 - `cli/src/services/token_storage.rs` tests cover token save/load round-trips, missing-file handling, token deletion outcomes, invalid JSON corruption handling, and Unix `0600` file-permission enforcement.
 - `cli/src/services/auth.rs` tests cover WorkOS device/token payload shape parsing, RFC 8628 device and refresh grant constant wiring, terminal OAuth error mapping with `Try:` guidance, polling decision handling for `authorization_pending`/`slow_down`/terminal outcomes, token-expiry evaluation, and refresh-token re-login guidance for terminal refresh errors.
-- `cli/src/services/auth_command.rs` tests cover auth subcommand dispatch, login/logout/status text-or-JSON report shapes, and `Try:` guidance preservation.
+- `cli/src/services/auth_command.rs` tests cover auth subcommand dispatch, login/logout/status text-or-JSON report shapes, `Try:` guidance preservation, and runtime-I/O readiness for the login flow.
 - `cli/src/services/agent_trace.rs` includes adapter mapping tests for required field projection, contributor enum/model_id handling, and extension metadata placement under reserved reverse-domain keys.
 - `cli/src/services/setup.rs` tests also verify embedded-manifest completeness against runtime `config/` trees, deterministic sorted path normalization, target-scoped iterator behavior (`OpenCode`, `Claude`, `Both`), install backup creation/replacement, and rollback restoration after injected swap failures.
 - `cli/src/services/setup.rs` and `cli/src/services/local_db.rs` now share temporary path setup through `crate::test_support::TestTempDir` to keep filesystem test fixtures consistent and cleanup deterministic.

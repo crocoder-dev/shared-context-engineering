@@ -115,6 +115,7 @@ fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
     }
 
     let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
         .enable_time()
         .build()
         .context("failed to create auth command runtime. Try: rerun the command; if the issue persists, verify the local Tokio runtime environment.")?;
@@ -296,6 +297,7 @@ mod tests {
     use anyhow::{anyhow, Result};
     use serde_json::Value;
     use std::path::{Path, PathBuf};
+    use tokio::net::TcpListener;
 
     use super::{
         build_authenticated_status_report, render_login_result, render_logout_result,
@@ -595,6 +597,17 @@ mod tests {
             "something else.",
         );
         assert_eq!(preserved, "runtime failed. Try: rerun the command.");
+    }
+
+    #[test]
+    fn shared_runtime_enables_tokio_io_for_auth_login_flow() -> Result<()> {
+        let runtime = super::shared_runtime()?;
+        let listener = runtime.block_on(async { TcpListener::bind("127.0.0.1:0").await })?;
+
+        let local_addr = listener.local_addr()?;
+        assert!(local_addr.port() > 0);
+
+        Ok(())
     }
 
     #[test]

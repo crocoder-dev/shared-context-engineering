@@ -354,8 +354,8 @@ fn install_required_git_hooks_in_resolved_repository<F>(
 where
     F: FnMut(&Path, &Path) -> io::Result<()>,
 {
-    ensure_directory_is_writable(&resolved_repository_root, "repository root")?;
-    let hooks_directory = resolve_git_hooks_directory(&resolved_repository_root)?;
+    ensure_directory_is_writable(resolved_repository_root, "repository root")?;
+    let hooks_directory = resolve_git_hooks_directory(resolved_repository_root)?;
     fs::create_dir_all(&hooks_directory).with_context(|| {
         format!(
             "Failed to create git hooks directory '{}'",

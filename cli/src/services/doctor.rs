@@ -40,11 +40,20 @@ struct HookFileHealth {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct FileLocationHealth {
+    label: &'static str,
+    path: PathBuf,
+    exists: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct HookDoctorReport {
     readiness: Readiness,
     repository_root: Option<PathBuf>,
     hook_path_source: HookPathSource,
     hooks_directory: Option<PathBuf>,
+    config_locations: Vec<FileLocationHealth>,
+    agent_trace_local_db: Option<FileLocationHealth>,
     hooks: Vec<HookFileHealth>,
     diagnostics: Vec<String>,
 }
@@ -88,6 +97,8 @@ fn build_report(repository_root: &Path) -> HookDoctorReport {
     };
 
     let mut diagnostics = Vec::new();
+    let config_locations = collect_config_locations(repository_root, &mut diagnostics);
+    let agent_trace_local_db = collect_agent_trace_local_db_location(&mut diagnostics);
     let hooks = if let Some(directory) = hooks_directory.as_deref() {
         collect_hook_health(directory, &mut diagnostics)
     } else {
@@ -109,8 +120,58 @@ fn build_report(repository_root: &Path) -> HookDoctorReport {
         repository_root: detected_repository_root,
         hook_path_source,
         hooks_directory,
+        config_locations,
+        agent_trace_local_db,
         hooks,
         diagnostics,
+    }
+}
+
+fn collect_config_locations(
+    repository_root: &Path,
+    diagnostics: &mut Vec<String>,
+) -> Vec<FileLocationHealth> {
+    let mut locations = Vec::new();
+
+    match crate::services::local_db::resolve_state_data_root() {
+        Ok(state_root) => {
+            let global_path = state_root.join("sce").join("config.json");
+            locations.push(FileLocationHealth {
+                label: "Global config",
+                exists: global_path.exists(),
+                path: global_path,
+            });
+        }
+        Err(error) => diagnostics.push(format!(
+            "Unable to resolve expected global config path: {error}"
+        )),
+    }
+
+    let local_path = repository_root.join(".sce").join("config.json");
+    locations.push(FileLocationHealth {
+        label: "Local config",
+        exists: local_path.exists(),
+        path: local_path,
+    });
+
+    locations
+}
+
+fn collect_agent_trace_local_db_location(
+    diagnostics: &mut Vec<String>,
+) -> Option<FileLocationHealth> {
+    match crate::services::local_db::resolve_agent_trace_local_db_path() {
+        Ok(path) => Some(FileLocationHealth {
+            label: "Agent Trace local DB",
+            exists: path.exists(),
+            path,
+        }),
+        Err(error) => {
+            diagnostics.push(format!(
+                "Unable to resolve expected Agent Trace local DB path: {error}"
+            ));
+            None
+        }
     }
 }
 
@@ -222,6 +283,36 @@ fn format_report(report: &HookDoctorReport) -> String {
         )
     ));
 
+    lines.push("Config files:".to_string());
+    for location in &report.config_locations {
+        lines.push(format!(
+            "- {}: {} ({})",
+            location.label,
+            if location.exists {
+                "present"
+            } else {
+                "expected"
+            },
+            location.path.display()
+        ));
+    }
+
+    lines.push(format!(
+        "Agent Trace local DB: {}",
+        report.agent_trace_local_db.as_ref().map_or_else(
+            || "(not detected)".to_string(),
+            |location| format!(
+                "{} ({})",
+                if location.exists {
+                    "present"
+                } else {
+                    "expected"
+                },
+                location.path.display()
+            )
+        )
+    ));
+
     lines.push("Required hooks:".to_string());
     for hook in &report.hooks {
         let state = if hook.exists && hook.executable {
@@ -273,6 +364,19 @@ fn render_report_json(report: &HookDoctorReport) -> Result<String> {
         })
         .collect::<Vec<_>>();
 
+    let config_paths = report
+        .config_locations
+        .iter()
+        .map(|location| {
+            json!({
+                "label": location.label,
+                "path": location.path.display().to_string(),
+                "exists": location.exists,
+                "state": if location.exists { "present" } else { "expected" },
+            })
+        })
+        .collect::<Vec<_>>();
+
     let payload = json!({
         "status": "ok",
         "command": NAME,
@@ -293,6 +397,13 @@ fn render_report_json(report: &HookDoctorReport) -> Result<String> {
             .hooks_directory
             .as_ref()
             .map(|path| path.display().to_string()),
+        "config_paths": config_paths,
+        "agent_trace_local_db": report.agent_trace_local_db.as_ref().map(|location| json!({
+            "label": location.label,
+            "path": location.path.display().to_string(),
+            "exists": location.exists,
+            "state": if location.exists { "present" } else { "expected" },
+        })),
         "hooks": hooks,
         "diagnostics": report.diagnostics,
     });
@@ -317,6 +428,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::process::Command;
+    use std::sync::{Mutex, OnceLock};
 
     use anyhow::Result;
     use serde_json::Value;
@@ -328,6 +440,11 @@ mod tests {
         build_report, collect_hook_health, format_report, render_report, DoctorFormat,
         DoctorRequest, HookDoctorReport, HookPathSource, Readiness, NAME,
     };
+
+    fn environment_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     #[cfg(unix)]
@@ -353,6 +470,8 @@ mod tests {
             repository_root: Some(temp_dir.path().to_path_buf()),
             hook_path_source: HookPathSource::LocalConfig,
             hooks_directory: Some(hooks_dir),
+            config_locations: vec![],
+            agent_trace_local_db: None,
             hooks,
             diagnostics,
         };
@@ -390,6 +509,8 @@ mod tests {
             repository_root: Some(temp_dir.path().to_path_buf()),
             hook_path_source: HookPathSource::GlobalConfig,
             hooks_directory: Some(hooks_dir),
+            config_locations: vec![],
+            agent_trace_local_db: None,
             hooks,
             diagnostics,
         };
@@ -426,6 +547,8 @@ mod tests {
             repository_root: Some(temp_dir.path().to_path_buf()),
             hook_path_source: HookPathSource::Default,
             hooks_directory: Some(hooks_dir),
+            config_locations: vec![],
+            agent_trace_local_db: None,
             hooks,
             diagnostics,
         };
@@ -484,8 +607,133 @@ mod tests {
         assert_eq!(parsed["command"], NAME);
         assert!(parsed["readiness"].as_str().is_some());
         assert!(parsed["hook_path_source"].as_str().is_some());
+        assert!(parsed["config_paths"].is_array());
+        assert!(
+            parsed["agent_trace_local_db"].is_object() || parsed["agent_trace_local_db"].is_null()
+        );
         assert!(parsed["hooks"].is_array());
         assert!(parsed["diagnostics"].is_array());
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_text_reports_config_and_db_locations() -> Result<()> {
+        let _guard = environment_lock().lock().expect("environment lock");
+        let temp_dir = TestTempDir::new("doctor-locations-text")?;
+        let state_root = temp_dir.path().join("state-root");
+        let home_dir = temp_dir.path().join("home");
+        fs::create_dir_all(&state_root)?;
+        fs::create_dir_all(&home_dir)?;
+
+        let global_config = state_root.join("sce").join("config.json");
+        let local_config = temp_dir.path().join(".sce").join("config.json");
+        let local_db = state_root.join("sce").join("agent-trace").join("local.db");
+        fs::create_dir_all(global_config.parent().expect("global config parent"))?;
+        fs::create_dir_all(local_config.parent().expect("local config parent"))?;
+        fs::create_dir_all(local_db.parent().expect("local db parent"))?;
+        fs::write(&global_config, "{}")?;
+        fs::write(&local_config, "{}")?;
+        fs::write(&local_db, "")?;
+
+        let original_home = std::env::var_os("HOME");
+        let original_xdg_state_home = std::env::var_os("XDG_STATE_HOME");
+        std::env::set_var("HOME", &home_dir);
+        std::env::set_var("XDG_STATE_HOME", &state_root);
+
+        let output = format_report(&build_report(temp_dir.path()));
+
+        if let Some(value) = original_home {
+            std::env::set_var("HOME", value);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(value) = original_xdg_state_home {
+            std::env::set_var("XDG_STATE_HOME", value);
+        } else {
+            std::env::remove_var("XDG_STATE_HOME");
+        }
+
+        assert!(output.contains(&format!(
+            "Global config: present ({})",
+            global_config.display()
+        )));
+        assert!(output.contains(&format!(
+            "Local config: present ({})",
+            local_config.display()
+        )));
+        assert!(output.contains(&format!(
+            "Agent Trace local DB: present ({})",
+            local_db.display()
+        )));
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_json_reports_expected_config_and_db_locations_when_absent() -> Result<()> {
+        let _guard = environment_lock().lock().expect("environment lock");
+        let temp_dir = TestTempDir::new("doctor-locations-json")?;
+        let state_root = temp_dir.path().join("state-root");
+        let home_dir = temp_dir.path().join("home");
+        fs::create_dir_all(&state_root)?;
+        fs::create_dir_all(&home_dir)?;
+
+        let expected_global_config = state_root.join("sce").join("config.json");
+        let expected_local_config = temp_dir.path().join(".sce").join("config.json");
+        let expected_local_db = state_root.join("sce").join("agent-trace").join("local.db");
+
+        let original_home = std::env::var_os("HOME");
+        let original_xdg_state_home = std::env::var_os("XDG_STATE_HOME");
+        std::env::set_var("HOME", &home_dir);
+        std::env::set_var("XDG_STATE_HOME", &state_root);
+
+        let output = render_report(
+            DoctorRequest {
+                format: DoctorFormat::Json,
+            },
+            &build_report(temp_dir.path()),
+        )?;
+
+        if let Some(value) = original_home {
+            std::env::set_var("HOME", value);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(value) = original_xdg_state_home {
+            std::env::set_var("XDG_STATE_HOME", value);
+        } else {
+            std::env::remove_var("XDG_STATE_HOME");
+        }
+
+        let parsed: Value = serde_json::from_str(&output)?;
+        let config_paths = parsed["config_paths"]
+            .as_array()
+            .expect("config_paths array");
+        assert_eq!(config_paths.len(), 2);
+        assert_eq!(config_paths[0]["label"], "Global config");
+        assert_eq!(
+            config_paths[0]["path"],
+            expected_global_config.display().to_string()
+        );
+        assert_eq!(config_paths[0]["exists"], false);
+        assert_eq!(config_paths[0]["state"], "expected");
+        assert_eq!(config_paths[1]["label"], "Local config");
+        assert_eq!(
+            config_paths[1]["path"],
+            expected_local_config.display().to_string()
+        );
+        assert_eq!(config_paths[1]["exists"], false);
+        assert_eq!(config_paths[1]["state"], "expected");
+
+        assert_eq!(
+            parsed["agent_trace_local_db"]["label"],
+            "Agent Trace local DB"
+        );
+        assert_eq!(
+            parsed["agent_trace_local_db"]["path"],
+            expected_local_db.display().to_string()
+        );
+        assert_eq!(parsed["agent_trace_local_db"]["exists"], false);
+        assert_eq!(parsed["agent_trace_local_db"]["state"], "expected");
         Ok(())
     }
 

@@ -105,6 +105,7 @@ impl std::error::Error for ClassifiedError {}
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Command {
     Help,
+    HelpText { name: String, text: String },
     Auth(services::auth_command::AuthRequest),
     Completion(services::completion::CompletionRequest),
     Config(services::config::ConfigSubcommand),
@@ -117,9 +118,10 @@ enum Command {
 }
 
 impl Command {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         match self {
             Self::Help => "help",
+            Self::HelpText { name, .. } => name.as_str(),
             Self::Auth(_) => services::auth_command::NAME,
             Self::Completion(_) => services::completion::NAME,
             Self::Config(_) => services::config::NAME,
@@ -294,11 +296,22 @@ where
         Err(error) => {
             // Handle --help specially - user explicitly requested help
             if error.kind() == clap::error::ErrorKind::DisplayHelp {
+                if let Some((name, text)) = render_subcommand_help_from_args(&args_vec) {
+                    return Ok(Command::HelpText { name, text });
+                }
+
                 // Return Help command for successful output
                 return Ok(Command::Help);
             }
             // Handle missing subcommand as validation error, not help display
             if error.kind() == clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand {
+                if args_vec.get(1).map(String::as_str) == Some(services::auth_command::NAME) {
+                    return Ok(Command::HelpText {
+                        name: services::auth_command::NAME.to_string(),
+                        text: cli_schema::auth_help_text(),
+                    });
+                }
+
                 // This means a required subcommand was not provided
                 return Err(ClassifiedError::parse(
                     "Missing required subcommand. Try: run 'sce --help' to see valid commands.",
@@ -348,6 +361,25 @@ fn classify_clap_error(error: &clap::Error) -> ClassifiedError {
         FailureClass::Validation => ClassifiedError::validation(cleaned_message),
         _ => ClassifiedError::parse(cleaned_message),
     }
+}
+
+fn render_subcommand_help_from_args(args: &[String]) -> Option<(String, String)> {
+    let command_name = args.get(1)?.clone();
+    let command_path = args[1..]
+        .iter()
+        .take_while(|arg| !arg.starts_with('-'))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+
+    if command_path.is_empty() {
+        return None;
+    }
+
+    if command_path.as_slice() == [services::auth_command::NAME] {
+        return Some((command_name, cli_schema::auth_help_text()));
+    }
+
+    cli_schema::render_help_for_path(&command_path).map(|text| (command_name, text))
 }
 
 /// Clean up clap error messages to match our error message style.
@@ -603,6 +635,7 @@ fn convert_hooks_subcommand(
 fn dispatch(command: &Command) -> Result<String, ClassifiedError> {
     match command {
         Command::Help => Ok(command_surface::help_text()),
+        Command::HelpText { text, .. } => Ok(text.clone()),
         Command::Auth(request) => services::auth_command::run_auth_subcommand(*request)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::Completion(request) => Ok(services::completion::render_completion(*request)),
@@ -698,6 +731,68 @@ mod tests {
 
         let stdout = String::from_utf8(stdout).expect("stdout should be utf-8");
         assert!(stdout.contains("Usage:"));
+    }
+
+    #[test]
+    fn bare_auth_writes_auth_help_to_stdout() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run_with_dependency_check_and_streams(
+            vec!["sce".to_string(), "auth".to_string()],
+            || Ok(()),
+            &mut stdout,
+            &mut stderr,
+        );
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(stderr.is_empty());
+
+        let stdout = String::from_utf8(stdout).expect("stdout should be utf-8");
+        assert!(stdout.contains("Usage: auth <COMMAND>"));
+        assert!(stdout.contains("login"));
+        assert!(stdout.contains("status"));
+        assert!(stdout.contains("sce auth status"));
+    }
+
+    #[test]
+    fn auth_help_writes_auth_specific_help_to_stdout() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run_with_dependency_check_and_streams(
+            vec!["sce".to_string(), "auth".to_string(), "--help".to_string()],
+            || Ok(()),
+            &mut stdout,
+            &mut stderr,
+        );
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(stderr.is_empty());
+
+        let stdout = String::from_utf8(stdout).expect("stdout should be utf-8");
+        assert!(stdout.contains("Authenticate with `WorkOS` device authorization flow"));
+        assert!(stdout.contains("Usage: auth <COMMAND>"));
+        assert!(stdout.contains("sce auth login"));
+    }
+
+    #[test]
+    fn auth_login_help_writes_nested_auth_help_to_stdout() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run_with_dependency_check_and_streams(
+            vec![
+                "sce".to_string(),
+                "auth".to_string(),
+                "login".to_string(),
+                "--help".to_string(),
+            ],
+            || Ok(()),
+            &mut stdout,
+            &mut stderr,
+        );
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert!(stderr.is_empty());
+
+        let stdout = String::from_utf8(stdout).expect("stdout should be utf-8");
+        assert!(stdout.contains("Start login flow and store credentials"));
+        assert!(stdout.contains("--format <FORMAT>"));
     }
 
     #[test]
@@ -1119,6 +1214,20 @@ mod tests {
                 },
             })
         );
+    }
+
+    #[test]
+    fn parser_routes_bare_auth_to_auth_help_text() {
+        let command = parse_command(vec!["sce".to_string(), "auth".to_string()])
+            .expect("bare auth should parse to help text");
+
+        match command {
+            Command::HelpText { name, text } => {
+                assert_eq!(name, crate::services::auth_command::NAME);
+                assert!(text.contains("Usage: auth <COMMAND>"));
+            }
+            other => panic!("expected auth help text, got {other:?}"),
+        }
     }
 
     #[test]

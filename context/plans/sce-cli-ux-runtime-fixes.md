@@ -49,7 +49,7 @@ Address four current CLI defects/regressions in the Rust `sce` binary: add actio
     - `cargo clippy --manifest-path cli/Cargo.toml -- -D warnings`
     - Manual check in a temp directory without `.git`: `sce setup --hooks`
 
-- [ ] T02: Expand doctor path reporting for config and database locations (status:todo)
+- [x] T02: Expand doctor path reporting for config and database locations (status:done)
   - Task ID: T02
   - Goal: Teach `sce doctor` to report config-file locations and local database location alongside existing rollout readiness details.
   - Boundaries (in/out of scope):
@@ -64,7 +64,7 @@ Address four current CLI defects/regressions in the Rust `sce` binary: add actio
     - `cargo test --manifest-path cli/Cargo.toml doctor`
     - `cargo run --manifest-path cli/Cargo.toml -- doctor --format json`
 
-- [ ] T03: Improve bare `sce auth` subcommand guidance (status:todo)
+- [x] T03: Improve bare `sce auth` subcommand guidance (status:done)
   - Task ID: T03
   - Goal: Make `sce auth` without a nested subcommand present subcommand-oriented guidance similar to help output.
   - Boundaries (in/out of scope):
@@ -79,7 +79,7 @@ Address four current CLI defects/regressions in the Rust `sce` binary: add actio
     - `cargo test --manifest-path cli/Cargo.toml auth`
     - `cargo run --manifest-path cli/Cargo.toml -- auth`
 
-- [ ] T04: Fix auth login Tokio runtime I/O enablement (status:todo)
+- [x] T04: Fix auth login Tokio runtime I/O enablement (status:done)
   - Task ID: T04
   - Goal: Ensure `sce auth login` runs under a Tokio runtime configuration that enables network I/O for the WorkOS device flow.
   - Boundaries (in/out of scope):

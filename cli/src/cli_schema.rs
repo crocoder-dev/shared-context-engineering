@@ -2,7 +2,7 @@
 //!
 //! This module defines the complete command-line interface using clap derive macros.
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 /// Shared Context Engineering CLI
@@ -33,6 +33,27 @@ impl Cli {
     {
         <Self as Parser>::try_parse_from(args)
     }
+}
+
+pub fn render_help_for_path(path: &[&str]) -> Option<String> {
+    let mut command = Cli::command();
+
+    for segment in path {
+        command = command.find_subcommand_mut(segment)?.clone();
+    }
+
+    let mut buffer = Vec::new();
+    command
+        .write_long_help(&mut buffer)
+        .expect("help rendering should write to memory");
+
+    Some(String::from_utf8(buffer).expect("help output should be valid UTF-8"))
+}
+
+pub fn auth_help_text() -> String {
+    let base = render_help_for_path(&["auth"]).expect("auth help should be renderable");
+
+    format!("{base}\nExamples:\n  sce auth login\n  sce auth status\n  sce auth logout\n")
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
@@ -341,6 +362,25 @@ mod tests {
             },
             _ => panic!("Expected Auth command"),
         }
+    }
+
+    #[test]
+    fn auth_help_text_lists_supported_subcommands() {
+        let help = auth_help_text();
+
+        assert!(help.contains("Usage: auth <COMMAND>"));
+        assert!(help.contains("login"));
+        assert!(help.contains("logout"));
+        assert!(help.contains("status"));
+        assert!(help.contains("sce auth status"));
+    }
+
+    #[test]
+    fn render_help_for_auth_login_path_is_specific_to_login() {
+        let help = render_help_for_path(&["auth", "login"]).expect("auth login help should render");
+
+        assert!(help.contains("Start login flow and store credentials"));
+        assert!(help.contains("--format <FORMAT>"));
     }
 
     #[test]

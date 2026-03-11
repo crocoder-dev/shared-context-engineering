@@ -23,7 +23,7 @@ Feature/domain context:
 - `context/sce/agent-trace-pre-commit-staged-checkpoint.md` (T04 pre-commit staged-only finalization contract with no-op guards and index/tree anchor capture)
 - `context/sce/agent-trace-commit-msg-coauthor-policy.md` (T05 commit-msg canonical co-author trailer policy with env-gated injection and idempotent dedupe)
 - `context/sce/agent-trace-post-commit-dual-write.md` (T06 post-commit trace finalization contract, persistent local DB bootstrap/path policy, notes+DB dual-write behavior, idempotency ledger guard, and retry-queue fallback semantics)
-- `context/sce/agent-trace-hook-doctor.md` (T07 `sce doctor` hook install/health validation contract for default, per-repo, and global hook-path rollout)
+- `context/sce/agent-trace-hook-doctor.md` (implemented `sce doctor` contract for default/per-repo/global hook-path rollout plus config-file and Agent Trace local DB location reporting)
 - `context/sce/setup-githooks-install-contract.md` (T01 canonical `sce setup --hooks` install contract for target-path resolution, idempotent outcomes, backup/rollback, and doctor-readiness alignment)
 - `context/sce/setup-githooks-hook-asset-packaging.md` (T02 compile-time `sce setup --hooks` required-hook template packaging contract and setup-service accessor surface)
 - `context/sce/setup-githooks-install-flow.md` (T03 setup-service required-hook install orchestration with git-truth hooks-path resolution, per-hook installed/updated/skipped outcomes, and backup/rollback semantics)
