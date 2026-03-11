@@ -31,10 +31,7 @@ pub fn render_version(request: VersionRequest) -> Result<String> {
     });
 
     match request.format {
-        VersionFormat::Text => Ok(format!(
-            "{} {} ({})",
-            BINARY_NAME, PACKAGE_VERSION, build_profile
-        )),
+        VersionFormat::Text => Ok(format!("{BINARY_NAME} {PACKAGE_VERSION} ({build_profile})")),
         VersionFormat::Json => serde_json::to_string_pretty(&report)
             .context("failed to serialize version report to JSON"),
     }

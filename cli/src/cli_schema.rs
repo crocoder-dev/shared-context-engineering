@@ -16,6 +16,7 @@ pub struct Cli {
 
 impl Cli {
     /// Parse arguments from an iterator of strings
+    #[allow(dead_code)]
     pub fn parse_from<I, T>(args: I) -> Self
     where
         I: IntoIterator<Item = T>,
@@ -36,7 +37,7 @@ impl Cli {
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum Commands {
-    /// Authenticate with WorkOS device authorization flow
+    /// Authenticate with `WorkOS` device authorization flow
     Auth {
         #[command(subcommand)]
         subcommand: AuthSubcommand,
@@ -51,7 +52,7 @@ pub enum Commands {
     /// Prepare local repository/workspace prerequisites
     #[command(about = "Prepare local repository/workspace prerequisites")]
     Setup {
-        /// Install OpenCode configuration
+        /// Install `OpenCode` configuration
         #[arg(long, conflicts_with_all = ["claude", "both"])]
         opencode: bool,
 
@@ -59,7 +60,7 @@ pub enum Commands {
         #[arg(long, conflicts_with_all = ["opencode", "both"])]
         claude: bool,
 
-        /// Install both OpenCode and Claude configuration
+        /// Install both `OpenCode` and Claude configuration
         #[arg(long, conflicts_with_all = ["opencode", "claude"])]
         both: bool,
 
@@ -373,7 +374,7 @@ mod tests {
                 ConfigSubcommand::Show { format, .. } => {
                     assert_eq!(format, OutputFormat::Text);
                 }
-                _ => panic!("Expected Show subcommand"),
+                ConfigSubcommand::Validate { .. } => panic!("Expected Show subcommand"),
             },
             _ => panic!("Expected Config command"),
         }
@@ -388,7 +389,7 @@ mod tests {
                 ConfigSubcommand::Validate { format, .. } => {
                     assert_eq!(format, OutputFormat::Json);
                 }
-                _ => panic!("Expected Validate subcommand"),
+                ConfigSubcommand::Show { .. } => panic!("Expected Validate subcommand"),
             },
             _ => panic!("Expected Config command"),
         }
@@ -420,7 +421,7 @@ mod tests {
                     assert_eq!(log_level, Some(LogLevel::Debug));
                     assert_eq!(timeout_ms, Some(60000));
                 }
-                _ => panic!("Expected Show subcommand"),
+                ConfigSubcommand::Validate { .. } => panic!("Expected Show subcommand"),
             },
             _ => panic!("Expected Config command"),
         }

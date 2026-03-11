@@ -291,7 +291,7 @@ pub async fn run_smoke_check(target: LocalDatabaseTarget<'_>) -> Result<SmokeChe
 #[cfg(test)]
 mod tests {
     use crate::test_support::TestTempDir;
-    use anyhow::Result;
+    use anyhow::{Context, Result};
 
     use super::{apply_core_schema_migrations, run_smoke_check, LocalDatabaseTarget};
 
@@ -320,7 +320,7 @@ mod tests {
         let count = *count
             .as_integer()
             .ok_or_else(|| anyhow::anyhow!("repository count query returned non-integer"))?;
-        Ok(count as u64)
+        u64::try_from(count).context("repository count query returned negative value")
     }
 
     async fn fetch_single_integer(target: LocalDatabaseTarget<'_>, query: &str) -> Result<i64> {

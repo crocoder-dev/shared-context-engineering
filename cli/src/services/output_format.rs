@@ -7,14 +7,13 @@ pub enum OutputFormat {
 }
 
 impl OutputFormat {
+    #[allow(dead_code)]
     pub fn parse(raw: &str, help_command: &str) -> Result<Self> {
         match raw {
             "text" => Ok(Self::Text),
             "json" => Ok(Self::Json),
             _ => bail!(
-                "Invalid --format value '{}'. Valid values: text, json. Run '{}' to see valid usage.",
-                raw,
-                help_command
+                "Invalid --format value '{raw}'. Valid values: text, json. Run '{help_command}' to see valid usage."
             ),
         }
     }

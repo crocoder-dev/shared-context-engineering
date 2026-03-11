@@ -4,7 +4,6 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::str::FromStr;
 use std::time::Instant;
 
 use crate::services::agent_trace::{
@@ -33,7 +32,7 @@ pub enum HookSubcommand {
 pub fn run_hooks_subcommand(subcommand: HookSubcommand) -> Result<String> {
     match subcommand {
         HookSubcommand::PreCommit => run_pre_commit_subcommand(),
-        HookSubcommand::CommitMsg { message_file } => run_commit_msg_subcommand(message_file),
+        HookSubcommand::CommitMsg { message_file } => run_commit_msg_subcommand(&message_file),
         HookSubcommand::PostCommit => run_post_commit_subcommand(),
         HookSubcommand::PostRewrite { rewrite_method } => {
             run_post_rewrite_subcommand(&rewrite_method)
@@ -47,6 +46,7 @@ fn run_pre_commit_subcommand() -> Result<String> {
     run_pre_commit_subcommand_in_repo(&repository_root)
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn run_pre_commit_subcommand_in_repo(repository_root: &Path) -> Result<String> {
     let runtime = resolve_pre_commit_runtime_state(repository_root);
 
@@ -178,7 +178,7 @@ fn run_git_command(repository_root: &Path, args: &[&str], context_message: &str)
         } else {
             stderr
         };
-        bail!("{} {}", context_message, diagnostic);
+        bail!("{context_message} {diagnostic}");
     }
 
     String::from_utf8(output.stdout)
@@ -210,7 +210,7 @@ fn run_git_command_allow_empty(
         } else {
             stderr
         };
-        bail!("{} {}", context_message, diagnostic);
+        bail!("{context_message} {diagnostic}");
     }
 
     String::from_utf8(output.stdout).context("git command output contained invalid UTF-8")
@@ -251,16 +251,16 @@ fn collect_pending_checkpoint(repository_root: &Path) -> Result<PendingCheckpoin
     let staged_ranges = parse_unified_zero_diff_ranges(&staged_diff)?;
     let unstaged_ranges = parse_unified_zero_diff_ranges(&unstaged_diff)?;
 
-    let mut all_paths = BTreeMap::new();
+    let mut all_paths = HashSet::new();
     for path in staged_ranges.keys() {
-        all_paths.insert(path.clone(), ());
+        all_paths.insert(path.clone());
     }
     for path in unstaged_ranges.keys() {
-        all_paths.insert(path.clone(), ());
+        all_paths.insert(path.clone());
     }
 
     let files = all_paths
-        .keys()
+        .iter()
         .map(|path| PendingFileCheckpoint {
             path: path.clone(),
             staged_ranges: staged_ranges.get(path).cloned().unwrap_or_default(),
@@ -309,17 +309,11 @@ fn parse_hunk_new_range(header_line: &str) -> Result<Option<PendingLineRange>> {
     let _ = fields.next();
     let _ = fields.next();
     let Some(new_range_field) = fields.next() else {
-        bail!(
-            "Invalid unified diff hunk header '{}': missing new-range field",
-            header_line
-        );
+        bail!("Invalid unified diff hunk header '{header_line}': missing new-range field");
     };
 
     let Some(range_body) = new_range_field.strip_prefix('+') else {
-        bail!(
-            "Invalid unified diff hunk header '{}': malformed new-range field",
-            header_line
-        );
+        bail!("Invalid unified diff hunk header '{header_line}': malformed new-range field");
     };
 
     let mut parts = range_body.split(',');
@@ -327,22 +321,12 @@ fn parse_hunk_new_range(header_line: &str) -> Result<Option<PendingLineRange>> {
         .next()
         .context("Unified diff hunk is missing start line")?
         .parse()
-        .with_context(|| {
-            format!(
-                "Invalid hunk start line in '{}': expected integer",
-                header_line
-            )
-        })?;
+        .with_context(|| format!("Invalid hunk start line in '{header_line}': expected integer"))?;
     let line_count: u32 = parts
         .next()
         .map(str::parse)
         .transpose()
-        .with_context(|| {
-            format!(
-                "Invalid hunk line count in '{}': expected integer",
-                header_line
-            )
-        })?
+        .with_context(|| format!("Invalid hunk line count in '{header_line}': expected integer"))?
         .unwrap_or(1);
 
     if line_count == 0 {
@@ -419,10 +403,10 @@ fn write_finalized_checkpoint(
     })
 }
 
-fn run_commit_msg_subcommand(message_file: PathBuf) -> Result<String> {
+fn run_commit_msg_subcommand(message_file: &Path) -> Result<String> {
     let repository_root = std::env::current_dir()
         .context("Failed to determine current directory for commit-msg runtime invocation.")?;
-    run_commit_msg_subcommand_in_repo(&repository_root, &message_file)
+    run_commit_msg_subcommand_in_repo(&repository_root, message_file)
 }
 
 fn run_commit_msg_subcommand_in_repo(
@@ -510,6 +494,7 @@ fn run_post_commit_subcommand() -> Result<String> {
     run_post_commit_subcommand_in_repo(&repository_root)
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn run_post_commit_subcommand_in_repo(repository_root: &Path) -> Result<String> {
     let runtime = resolve_post_commit_runtime_state(repository_root);
 
@@ -615,6 +600,7 @@ fn resolve_post_commit_runtime_state(repository_root: &Path) -> PostCommitRuntim
     }
 }
 
+#[allow(clippy::struct_field_names)]
 struct PostCommitRuntimePaths {
     local_db_path: PathBuf,
     retry_queue_path: PathBuf,
@@ -770,11 +756,11 @@ fn load_post_commit_checkpoint_files(repository_root: &Path) -> Result<Vec<FileA
                         let start_line = range_json
                             .get("start_line")
                             .and_then(serde_json::Value::as_u64)
-                            .map(|value| value as u32)?;
+                            .and_then(|value| u32::try_from(value).ok())?;
                         let end_line = range_json
                             .get("end_line")
                             .and_then(serde_json::Value::as_u64)
-                            .map(|value| value as u32)?;
+                            .and_then(|value| u32::try_from(value).ok())?;
 
                         Some(RangeInput {
                             start_line,
@@ -837,6 +823,7 @@ fn run_post_rewrite_subcommand(rewrite_method: &str) -> Result<String> {
     run_post_rewrite_subcommand_in_repo(&repository_root, rewrite_method, &stdin)
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn run_post_rewrite_subcommand_in_repo(
     repository_root: &Path,
     rewrite_method: &str,
@@ -907,12 +894,9 @@ fn run_post_rewrite_subcommand_in_repo(
     let mut rewrite_failures = 0_usize;
 
     for request in &ingestion.accepted_requests {
-        let input = match build_rewrite_trace_input(repository_root, request) {
-            Ok(input) => input,
-            Err(_) => {
-                rewrite_failures += 1;
-                continue;
-            }
+        let Ok(input) = build_rewrite_trace_input(repository_root, request) else {
+            rewrite_failures += 1;
+            continue;
         };
 
         match finalize_rewrite_trace(
@@ -1470,6 +1454,7 @@ impl TraceRecordStore for LocalDbTraceRecordStore {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn write_trace_record_to_local_db(
     db_path: &Path,
     repository_root: &Path,
@@ -1648,6 +1633,7 @@ impl TraceRetryQueue for JsonFileTraceRetryQueue {
             "failed_targets": entry
                 .failed_targets
                 .iter()
+                .copied()
                 .map(persistence_target_label)
                 .collect::<Vec<_>>(),
             "content_type": entry.content_type,
@@ -1811,7 +1797,7 @@ fn classify_persistence_error_class_from_message(message: &str) -> PersistenceEr
     PersistenceErrorClass::Permanent
 }
 
-fn persistence_target_label(target: &PersistenceTarget) -> &'static str {
+fn persistence_target_label(target: PersistenceTarget) -> &'static str {
     match target {
         PersistenceTarget::Notes => "notes",
         PersistenceTarget::Database => "database",
@@ -1868,6 +1854,7 @@ fn trace_record_to_json(record: &AgentTraceRecord) -> serde_json::Value {
     })
 }
 
+#[allow(clippy::too_many_lines)]
 fn trace_record_from_json(value: &serde_json::Value) -> Result<AgentTraceRecord> {
     let version = value
         .get("version")
@@ -1937,14 +1924,14 @@ fn trace_record_from_json(value: &serde_json::Value) -> Result<AgentTraceRecord>
                 let Some(start_line) = range
                     .get("start_line")
                     .and_then(serde_json::Value::as_u64)
-                    .map(|value| value as u32)
+                    .and_then(|value| u32::try_from(value).ok())
                 else {
                     continue;
                 };
                 let Some(end_line) = range
                     .get("end_line")
                     .and_then(serde_json::Value::as_u64)
-                    .map(|value| value as u32)
+                    .and_then(|value| u32::try_from(value).ok())
                 else {
                     continue;
                 };

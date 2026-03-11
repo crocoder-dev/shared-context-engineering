@@ -399,6 +399,77 @@ mod tests {
   }
 }"##;
 
+    fn range_to_json_value(range: &super::AgentTraceRange) -> Value {
+        let mut range_obj = Map::new();
+        range_obj.insert(
+            "start_line".to_string(),
+            Value::Number(range.start_line.into()),
+        );
+        range_obj.insert("end_line".to_string(), Value::Number(range.end_line.into()));
+
+        let mut contributor_obj = Map::new();
+        contributor_obj.insert(
+            "type".to_string(),
+            Value::String(range.contributor.r#type.clone()),
+        );
+        if let Some(model_id) = &range.contributor.model_id {
+            contributor_obj.insert("model_id".to_string(), Value::String(model_id.clone()));
+        }
+        range_obj.insert("contributor".to_string(), Value::Object(contributor_obj));
+
+        Value::Object(range_obj)
+    }
+
+    fn related_to_json_value(url: &str) -> Value {
+        let mut related_obj = Map::new();
+        related_obj.insert("type".to_string(), Value::String("related".to_string()));
+        related_obj.insert("url".to_string(), Value::String(url.to_string()));
+        Value::Object(related_obj)
+    }
+
+    fn conversation_to_json_value(conversation: &super::AgentTraceConversation) -> Value {
+        let mut conv_obj = Map::new();
+        conv_obj.insert("url".to_string(), Value::String(conversation.url.clone()));
+
+        let ranges = conversation
+            .ranges
+            .iter()
+            .map(range_to_json_value)
+            .collect::<Vec<_>>();
+        conv_obj.insert("ranges".to_string(), Value::Array(ranges));
+
+        if !conversation.related.is_empty() {
+            conv_obj.insert(
+                "related".to_string(),
+                Value::Array(
+                    conversation
+                        .related
+                        .iter()
+                        .map(|url| related_to_json_value(url))
+                        .collect::<Vec<_>>(),
+                ),
+            );
+        }
+
+        Value::Object(conv_obj)
+    }
+
+    fn file_to_json_value(file: &super::AgentTraceFile) -> Value {
+        let mut file_obj = Map::new();
+        file_obj.insert("path".to_string(), Value::String(file.path.clone()));
+        file_obj.insert(
+            "conversations".to_string(),
+            Value::Array(
+                file.conversations
+                    .iter()
+                    .map(conversation_to_json_value)
+                    .collect::<Vec<_>>(),
+            ),
+        );
+
+        Value::Object(file_obj)
+    }
+
     fn record_to_json_value(record: &super::AgentTraceRecord) -> Value {
         let mut root = Map::new();
         root.insert("version".to_string(), Value::String(record.version.clone()));
@@ -419,88 +490,7 @@ mod tests {
         let files = record
             .files
             .iter()
-            .map(|file| {
-                let mut file_obj = Map::new();
-                file_obj.insert("path".to_string(), Value::String(file.path.clone()));
-                file_obj.insert(
-                    "conversations".to_string(),
-                    Value::Array(
-                        file.conversations
-                            .iter()
-                            .map(|conversation| {
-                                let mut conv_obj = Map::new();
-                                conv_obj.insert(
-                                    "url".to_string(),
-                                    Value::String(conversation.url.clone()),
-                                );
-
-                                let ranges = conversation
-                                    .ranges
-                                    .iter()
-                                    .map(|range| {
-                                        let mut range_obj = Map::new();
-                                        range_obj.insert(
-                                            "start_line".to_string(),
-                                            Value::Number(range.start_line.into()),
-                                        );
-                                        range_obj.insert(
-                                            "end_line".to_string(),
-                                            Value::Number(range.end_line.into()),
-                                        );
-
-                                        let mut contributor_obj = Map::new();
-                                        contributor_obj.insert(
-                                            "type".to_string(),
-                                            Value::String(range.contributor.r#type.clone()),
-                                        );
-                                        if let Some(model_id) = &range.contributor.model_id {
-                                            contributor_obj.insert(
-                                                "model_id".to_string(),
-                                                Value::String(model_id.clone()),
-                                            );
-                                        }
-                                        range_obj.insert(
-                                            "contributor".to_string(),
-                                            Value::Object(contributor_obj),
-                                        );
-
-                                        Value::Object(range_obj)
-                                    })
-                                    .collect::<Vec<_>>();
-
-                                conv_obj.insert("ranges".to_string(), Value::Array(ranges));
-                                if !conversation.related.is_empty() {
-                                    conv_obj.insert(
-                                        "related".to_string(),
-                                        Value::Array(
-                                            conversation
-                                                .related
-                                                .iter()
-                                                .map(|url| {
-                                                    let mut related_obj = Map::new();
-                                                    related_obj.insert(
-                                                        "type".to_string(),
-                                                        Value::String("related".to_string()),
-                                                    );
-                                                    related_obj.insert(
-                                                        "url".to_string(),
-                                                        Value::String(url.clone()),
-                                                    );
-                                                    Value::Object(related_obj)
-                                                })
-                                                .collect::<Vec<_>>(),
-                                        ),
-                                    );
-                                }
-
-                                Value::Object(conv_obj)
-                            })
-                            .collect::<Vec<_>>(),
-                    ),
-                );
-
-                Value::Object(file_obj)
-            })
+            .map(file_to_json_value)
             .collect::<Vec<_>>();
         root.insert("files".to_string(), Value::Array(files));
 
@@ -833,13 +823,11 @@ mod tests {
         assert!(!errors.is_empty());
         assert!(
             errors.iter().any(|err| err.contains("date-time")),
-            "expected date-time format error, got: {:?}",
-            errors
+            "expected date-time format error, got: {errors:?}"
         );
         assert!(
             errors.iter().any(|err| err.contains("uri")),
-            "expected uri format error, got: {:?}",
-            errors
+            "expected uri format error, got: {errors:?}"
         );
     }
 }

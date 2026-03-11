@@ -310,7 +310,7 @@ where
                     format: services::version::VersionFormat::Text,
                 }));
             }
-            return Err(classify_clap_error(error));
+            return Err(classify_clap_error(&error));
         }
     };
 
@@ -323,34 +323,21 @@ where
     convert_clap_command(command)
 }
 
-/// Classify a clap error into our ClassifiedError taxonomy.
-fn classify_clap_error(error: clap::Error) -> ClassifiedError {
+/// Classify a clap error into our `ClassifiedError` taxonomy.
+fn classify_clap_error(error: &clap::Error) -> ClassifiedError {
     use clap::error::ErrorKind;
 
     let message = error.to_string();
 
     // Determine error class based on clap error kind
+    // Note: Many clap error kinds map to Parse failures
     let class = match error.kind() {
-        // Parse errors: unknown commands, unknown arguments, missing arguments
-        ErrorKind::InvalidSubcommand
-        | ErrorKind::UnknownArgument
-        | ErrorKind::InvalidValue
-        | ErrorKind::ValueValidation
-        | ErrorKind::TooFewValues
-        | ErrorKind::TooManyValues
-        | ErrorKind::WrongNumberOfValues => FailureClass::Parse,
-
         // Validation errors: missing required arguments, argument conflicts
         ErrorKind::MissingRequiredArgument | ErrorKind::ArgumentConflict | ErrorKind::NoEquals => {
             FailureClass::Validation
         }
 
-        // Display errors (help, version) - treat as parse since user asked for something invalid
-        ErrorKind::DisplayHelp
-        | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
-        | ErrorKind::DisplayVersion => FailureClass::Parse,
-
-        // Default to parse for any other error types
+        // All other errors (parse errors, display errors, etc.) map to Parse
         _ => FailureClass::Parse,
     };
 
@@ -358,7 +345,6 @@ fn classify_clap_error(error: clap::Error) -> ClassifiedError {
     let cleaned_message = clean_clap_error_message(&message, error.kind());
 
     match class {
-        FailureClass::Parse => ClassifiedError::parse(cleaned_message),
         FailureClass::Validation => ClassifiedError::validation(cleaned_message),
         _ => ClassifiedError::parse(cleaned_message),
     }
@@ -377,47 +363,41 @@ fn clean_clap_error_message(message: &str, kind: clap::error::ErrorKind) -> Stri
             if let Some(subcommand) = extract_quoted_value(message) {
                 if command_surface::is_known_command(&subcommand) {
                     format!(
-                        "Command '{}' is currently unavailable in this build. Try: run 'sce --help' to see available commands in this build.",
-                        subcommand
+                        "Command '{subcommand}' is currently unavailable in this build. Try: run 'sce --help' to see available commands in this build."
                     )
                 } else {
                     format!(
-                        "Unknown command '{}'. Try: run 'sce --help' to list valid commands, then rerun with a valid command such as 'sce version' or 'sce setup --help'.",
-                        subcommand
+                        "Unknown command '{subcommand}'. Try: run 'sce --help' to list valid commands, then rerun with a valid command such as 'sce version' or 'sce setup --help'."
                     )
                 }
             } else {
-                format!("{}. Try: run 'sce --help' to see valid usage.", message)
+                format!("{message}. Try: run 'sce --help' to see valid usage.")
             }
         }
         ErrorKind::UnknownArgument => {
             // Extract the unknown argument and provide helpful guidance
             if let Some(arg) = extract_quoted_value(message) {
                 format!(
-                    "Unknown option '{}'. Try: run 'sce --help' to see top-level usage, or use 'sce <command> --help' for command-specific options.",
-                    arg
+                    "Unknown option '{arg}'. Try: run 'sce --help' to see top-level usage, or use 'sce <command> --help' for command-specific options."
                 )
             } else {
-                format!("{}. Try: run 'sce --help' to see valid usage.", message)
+                format!("{message}. Try: run 'sce --help' to see valid usage.")
             }
         }
         ErrorKind::MissingRequiredArgument => {
             // Clean up clap's message for missing required arguments
             if message.contains("required") {
-                format!(
-                    "{}. Try: run 'sce --help' to see required arguments.",
-                    message
-                )
+                format!("{message}. Try: run 'sce --help' to see required arguments.")
             } else {
-                format!("{}. Try: run 'sce --help' to see valid usage.", message)
+                format!("{message}. Try: run 'sce --help' to see valid usage.")
             }
         }
         ErrorKind::ArgumentConflict => {
             // Handle mutually exclusive arguments
             if message.contains("cannot be used with") || message.contains("conflicts with") {
-                format!("{}. Try: use only one of the conflicting options.", message)
+                format!("{message}. Try: use only one of the conflicting options.")
             } else {
-                format!("{}. Try: run 'sce --help' to see valid usage.", message)
+                format!("{message}. Try: run 'sce --help' to see valid usage.")
             }
         }
         _ => {
@@ -425,7 +405,7 @@ fn clean_clap_error_message(message: &str, kind: clap::error::ErrorKind) -> Stri
             if message.contains("Try:") {
                 message.to_string()
             } else {
-                format!("{}. Try: run 'sce --help' to see valid usage.", message)
+                format!("{message}. Try: run 'sce --help' to see valid usage.")
             }
         }
     }
@@ -477,6 +457,7 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<Command, Classi
     }
 }
 
+#[allow(clippy::unnecessary_wraps, clippy::needless_pass_by_value)]
 fn convert_auth_subcommand(
     subcommand: cli_schema::AuthSubcommand,
 ) -> Result<Command, ClassifiedError> {
@@ -525,6 +506,7 @@ fn convert_completion_shell(
 }
 
 /// Convert clap config subcommand to service config subcommand.
+#[allow(clippy::unnecessary_wraps)]
 fn convert_config_subcommand(
     subcommand: cli_schema::ConfigSubcommand,
 ) -> Result<Command, ClassifiedError> {
@@ -568,7 +550,8 @@ fn convert_log_level(level: cli_schema::LogLevel) -> services::config::LogLevel 
     }
 }
 
-/// Convert setup command flags to SetupRequest.
+/// Convert setup command flags to `SetupRequest`.
+#[allow(clippy::fn_params_excessive_bools)]
 fn convert_setup_command(
     opencode: bool,
     claude: bool,
@@ -595,6 +578,7 @@ fn convert_setup_command(
 }
 
 /// Convert clap hooks subcommand to service hooks subcommand.
+#[allow(clippy::unnecessary_wraps)]
 fn convert_hooks_subcommand(
     subcommand: cli_schema::HooksSubcommand,
 ) -> Result<Command, ClassifiedError> {

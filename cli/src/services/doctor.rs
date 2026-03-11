@@ -88,15 +88,14 @@ fn build_report(repository_root: &Path) -> HookDoctorReport {
     };
 
     let mut diagnostics = Vec::new();
-    let hooks = match hooks_directory.as_deref() {
-        Some(directory) => collect_hook_health(directory, &mut diagnostics),
-        None => {
-            diagnostics.push(
-                "Unable to resolve git hooks directory. Run this command inside a git repository."
-                    .to_string(),
-            );
-            Vec::new()
-        }
+    let hooks = if let Some(directory) = hooks_directory.as_deref() {
+        collect_hook_health(directory, &mut diagnostics)
+    } else {
+        diagnostics.push(
+            "Unable to resolve git hooks directory. Run this command inside a git repository."
+                .to_string(),
+        );
+        Vec::new()
     };
 
     let readiness = if diagnostics.is_empty() {
@@ -209,20 +208,18 @@ fn format_report(report: &HookDoctorReport) -> String {
 
     lines.push(format!(
         "Repository root: {}",
-        report
-            .repository_root
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "(not detected)".to_string())
+        report.repository_root.as_ref().map_or_else(
+            || "(not detected)".to_string(),
+            |path| path.display().to_string()
+        )
     ));
 
     lines.push(format!(
         "Effective hooks directory: {}",
-        report
-            .hooks_directory
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "(not detected)".to_string())
+        report.hooks_directory.as_ref().map_or_else(
+            || "(not detected)".to_string(),
+            |path| path.display().to_string()
+        )
     ));
 
     lines.push("Required hooks:".to_string());

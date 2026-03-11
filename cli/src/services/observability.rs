@@ -39,11 +39,7 @@ impl OtlpProtocol {
         match raw {
             "grpc" => Ok(Self::Grpc),
             "http/protobuf" => Ok(Self::HttpProtobuf),
-            _ => bail!(
-                "Invalid {} '{}'. Valid values: grpc, http/protobuf.",
-                ENV_OTEL_PROTOCOL,
-                raw
-            ),
+            _ => bail!("Invalid {ENV_OTEL_PROTOCOL} '{raw}'. Valid values: grpc, http/protobuf."),
         }
     }
 }
@@ -108,10 +104,10 @@ impl TelemetryRuntime {
         F: Fn(&str) -> Option<String>,
     {
         let config = TelemetryConfig::from_env_lookup(lookup)?;
-        Self::from_config(config)
+        Self::from_config(&config)
     }
 
-    fn from_config(config: TelemetryConfig) -> Result<Self> {
+    fn from_config(config: &TelemetryConfig) -> Result<Self> {
         if !config.enabled {
             return Ok(Self { provider: None });
         }
@@ -165,20 +161,14 @@ fn parse_bool_env(key: &str, raw: &str) -> Result<bool> {
     match raw {
         "1" | "true" => Ok(true),
         "0" | "false" => Ok(false),
-        _ => bail!(
-            "Invalid {} '{}'. Valid values: true, false, 1, 0.",
-            key,
-            raw
-        ),
+        _ => bail!("Invalid {key} '{raw}'. Valid values: true, false, 1, 0."),
     }
 }
 
 fn validate_otlp_endpoint(endpoint: &str) -> Result<()> {
     if endpoint.is_empty() {
         bail!(
-            "Invalid {} ''. Try: set it to an absolute http(s) URL, for example {}.",
-            ENV_OTEL_ENDPOINT,
-            DEFAULT_OTEL_ENDPOINT
+            "Invalid {ENV_OTEL_ENDPOINT} ''. Try: set it to an absolute http(s) URL, for example {DEFAULT_OTEL_ENDPOINT}."
         );
     }
 
@@ -187,10 +177,7 @@ fn validate_otlp_endpoint(endpoint: &str) -> Result<()> {
     }
 
     bail!(
-        "Invalid {} '{}'. Try: set it to an absolute http(s) URL, for example {}.",
-        ENV_OTEL_ENDPOINT,
-        endpoint,
-        DEFAULT_OTEL_ENDPOINT
+        "Invalid {ENV_OTEL_ENDPOINT} '{endpoint}'. Try: set it to an absolute http(s) URL, for example {DEFAULT_OTEL_ENDPOINT}."
     )
 }
 
@@ -205,11 +192,7 @@ impl LogFormat {
         match raw {
             "text" => Ok(Self::Text),
             "json" => Ok(Self::Json),
-            _ => bail!(
-                "Invalid {} '{}'. Valid values: text, json.",
-                ENV_LOG_FORMAT,
-                raw
-            ),
+            _ => bail!("Invalid {ENV_LOG_FORMAT} '{raw}'. Valid values: text, json."),
         }
     }
 
@@ -236,11 +219,7 @@ impl LogLevel {
             "warn" => Ok(Self::Warn),
             "info" => Ok(Self::Info),
             "debug" => Ok(Self::Debug),
-            _ => bail!(
-                "Invalid {} '{}'. Valid values: error, warn, info, debug.",
-                ENV_LOG_LEVEL,
-                raw
-            ),
+            _ => bail!("Invalid {ENV_LOG_LEVEL} '{raw}'. Valid values: error, warn, info, debug."),
         }
     }
 
@@ -295,11 +274,7 @@ impl LogFileMode {
         match raw {
             "truncate" => Ok(Self::Truncate),
             "append" => Ok(Self::Append),
-            _ => bail!(
-                "Invalid {} '{}'. Valid values: truncate, append.",
-                ENV_LOG_FILE_MODE,
-                raw
-            ),
+            _ => bail!("Invalid {ENV_LOG_FILE_MODE} '{raw}'. Valid values: truncate, append."),
         }
     }
 }
@@ -314,8 +289,7 @@ impl LogFileSink {
     fn open(path: PathBuf, mode: LogFileMode) -> Result<Self> {
         if path.as_os_str().is_empty() {
             bail!(
-                "Invalid {} ''. Try: set it to an absolute or relative file path, for example .sce/sce.log.",
-                ENV_LOG_FILE
+                "Invalid {ENV_LOG_FILE} ''. Try: set it to an absolute or relative file path, for example .sce/sce.log."
             );
         }
 
@@ -411,11 +385,7 @@ impl Logger {
 
         if file_path.is_none() && file_mode_raw_seen {
             bail!(
-                "{} requires {}. Try: set {} to a file path or unset {}.",
-                ENV_LOG_FILE_MODE,
-                ENV_LOG_FILE,
-                ENV_LOG_FILE,
-                ENV_LOG_FILE_MODE
+                "{ENV_LOG_FILE_MODE} requires {ENV_LOG_FILE}. Try: set {ENV_LOG_FILE} to a file path or unset {ENV_LOG_FILE_MODE}."
             );
         }
 
@@ -444,7 +414,7 @@ impl Logger {
 
         let line = self.render_line(level, event_id, message, fields);
         let redacted_line = redact_sensitive_text(&line);
-        eprintln!("{}", redacted_line);
+        eprintln!("{redacted_line}");
 
         if let Some(file_sink) = &self.file_sink {
             if let Err(error) = file_sink.write_line(&redacted_line) {

@@ -142,6 +142,7 @@ fn resolve_login_client_id() -> Result<String> {
         .unwrap_or_default())
 }
 
+#[allow(dead_code)]
 fn resolve_login_client_id_with<FEnv, FRead, FGlobalPath>(
     cwd: &std::path::Path,
     env_lookup: FEnv,
@@ -171,7 +172,8 @@ fn build_authenticated_status_report(tokens: &StoredTokens) -> Result<AuthStatus
     let expires_at_unix_seconds = tokens
         .stored_at_unix_seconds
         .saturating_add(tokens.expires_in);
-    let seconds_until_expiry = expires_at_unix_seconds as i64 - now_unix_seconds as i64;
+    let seconds_until_expiry = i64::try_from(expires_at_unix_seconds).unwrap_or(i64::MAX)
+        - i64::try_from(now_unix_seconds).unwrap_or(0);
 
     Ok(AuthStatusReport {
         authentication_state: "authenticated",

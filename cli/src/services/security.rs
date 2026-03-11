@@ -102,17 +102,15 @@ fn redact_assignment_value(input: &str, key: &str, separator: char) -> String {
             };
             let quoted_value_end = quoted_value_start + relative_end;
             (quoted_value_start, quoted_value_end)
+        } else if key.eq_ignore_ascii_case("authorization")
+            && output[value_start..].to_lowercase().starts_with("bearer ")
+        {
+            let bearer_token_start = value_start + "bearer ".len();
+            let bearer_token_end = find_token_end(&output, bearer_token_start);
+            (bearer_token_start, bearer_token_end)
         } else {
-            if key.eq_ignore_ascii_case("authorization")
-                && output[value_start..].to_lowercase().starts_with("bearer ")
-            {
-                let bearer_token_start = value_start + "bearer ".len();
-                let bearer_token_end = find_token_end(&output, bearer_token_start);
-                (bearer_token_start, bearer_token_end)
-            } else {
-                let plain_value_end = find_token_end(&output, value_start);
-                (value_start, plain_value_end)
-            }
+            let plain_value_end = find_token_end(&output, value_start);
+            (value_start, plain_value_end)
         };
 
         if replace_end == replace_start {
@@ -155,7 +153,7 @@ pub fn ensure_directory_is_writable(path: &std::path::Path, context: &str) -> Re
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|error| anyhow::anyhow!("System clock is before UNIX_EPOCH: {}", error))?
+            .map_err(|error| anyhow::anyhow!("System clock is before UNIX_EPOCH: {error}"))?
             .as_nanos()
     );
 

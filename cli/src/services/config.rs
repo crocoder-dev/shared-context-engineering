@@ -34,9 +34,7 @@ impl LogLevel {
             "info" => Ok(Self::Info),
             "debug" => Ok(Self::Debug),
             _ => bail!(
-                "Invalid log level '{}' from {}. Valid values: error, warn, info, debug.",
-                raw,
-                source
+                "Invalid log level '{raw}' from {source}. Valid values: error, warn, info, debug."
             ),
         }
     }
@@ -325,7 +323,7 @@ where
     if let Some(raw) = env_lookup("SCE_TIMEOUT_MS") {
         let value = raw
             .parse::<u64>()
-            .map_err(|_| anyhow!("Invalid timeout '{}' from SCE_TIMEOUT_MS.", raw))?;
+            .map_err(|_| anyhow!("Invalid timeout '{raw}' from SCE_TIMEOUT_MS."))?;
         resolved_timeout_ms = ResolvedValue {
             value,
             source: ValueSource::Env,
@@ -542,7 +540,7 @@ fn parse_optional_string_key(
 fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> String {
     match report_format {
         ReportFormat::Text => {
-            let lines = vec![
+            let lines = [
                 "SCE config: resolved".to_string(),
                 "Precedence: flags > env > config file > defaults".to_string(),
                 format_config_paths_text(runtime),
@@ -593,7 +591,7 @@ fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> S
 fn format_validate_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> String {
     match report_format {
         ReportFormat::Text => {
-            let lines = vec![
+            let lines = [
                 "SCE config validation: valid".to_string(),
                 "Precedence: flags > env > config file > defaults".to_string(),
                 format_config_paths_text(runtime),
@@ -819,7 +817,7 @@ mod tests {
             resolved
                 .workos_client_id
                 .source
-                .map(|source| source.as_str()),
+                .map(super::ValueSource::as_str),
             Some("env")
         );
         Ok(())
@@ -858,7 +856,7 @@ mod tests {
             resolved
                 .workos_client_id
                 .source
-                .map(|source| source.as_str()),
+                .map(super::ValueSource::as_str),
             Some("env")
         );
         Ok(())
@@ -888,7 +886,7 @@ mod tests {
             resolved
                 .workos_client_id
                 .source
-                .map(|source| source.as_str()),
+                .map(super::ValueSource::as_str),
             Some("default")
         );
         Ok(())
@@ -1023,7 +1021,7 @@ mod tests {
                 .log_level
                 .source
                 .config_source()
-                .map(|source| source.as_str()),
+                .map(super::ConfigPathSource::as_str),
             Some("default_discovered_global")
         );
 
@@ -1034,7 +1032,7 @@ mod tests {
                 .timeout_ms
                 .source
                 .config_source()
-                .map(|source| source.as_str()),
+                .map(super::ConfigPathSource::as_str),
             Some("default_discovered_local")
         );
 
@@ -1046,15 +1044,15 @@ mod tests {
             resolved
                 .workos_client_id
                 .source
-                .map(|source| source.as_str()),
+                .map(super::ValueSource::as_str),
             Some("config_file")
         );
         assert_eq!(
             resolved
                 .workos_client_id
                 .source
-                .and_then(|source| source.config_source())
-                .map(|source| source.as_str()),
+                .and_then(super::ValueSource::config_source)
+                .map(super::ConfigPathSource::as_str),
             Some("default_discovered_local")
         );
         Ok(())
@@ -1094,7 +1092,7 @@ mod tests {
             resolved
                 .workos_client_id
                 .source
-                .map(|source| source.as_str()),
+                .map(super::ValueSource::as_str),
             Some("config_file")
         );
         Ok(())

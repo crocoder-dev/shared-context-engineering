@@ -79,7 +79,7 @@ where
             attempt,
             max_attempts = policy.max_attempts,
             timeout_ms = policy.timeout_ms,
-            backoff_ms = backoff.as_millis() as u64,
+            backoff_ms = u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX),
             error = %last_error,
             "Retrying operation after transient failure"
         );

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::error::Error;
 use std::ffi::OsStr;
 use std::fs;
@@ -118,7 +120,7 @@ impl BinaryIntegrationHarness {
         S: AsRef<OsStr>,
     {
         let output = self.base_command(sce_binary_path()).args(args).output()?;
-        Ok(render_command_result(output))
+        Ok(render_command_result(&output))
     }
 
     pub fn run_git<I, S>(&self, args: I) -> TestResult<CommandResult>
@@ -127,7 +129,7 @@ impl BinaryIntegrationHarness {
         S: AsRef<OsStr>,
     {
         let output = self.base_command("git").args(args).output()?;
-        Ok(render_command_result(output))
+        Ok(render_command_result(&output))
     }
 
     pub fn base_command<P: AsRef<OsStr>>(&self, program: P) -> Command {
@@ -190,7 +192,7 @@ fn binary_filename(base: &str) -> String {
     }
 }
 
-pub fn render_command_result(output: Output) -> CommandResult {
+pub fn render_command_result(output: &Output) -> CommandResult {
     CommandResult {
         status: output.status,
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),

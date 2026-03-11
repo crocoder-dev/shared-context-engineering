@@ -1,6 +1,8 @@
 use std::{
-    env, fs,
-    io::{self, Write},
+    env,
+    fmt::Write,
+    fs,
+    io::{self, Write as IoWrite},
     path::{Path, PathBuf},
 };
 
@@ -35,12 +37,12 @@ fn main() {
 }
 
 fn generate_embedded_asset_manifest() -> io::Result<()> {
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").map_err(invalid_data)?);
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").map_err(|e| invalid_data(&e))?);
     let repository_root = manifest_dir
         .parent()
-        .ok_or_else(|| invalid_data("CARGO_MANIFEST_DIR does not have a parent"))?
+        .ok_or_else(|| invalid_data(&"CARGO_MANIFEST_DIR does not have a parent"))?
         .to_path_buf();
-    let out_dir = PathBuf::from(env::var("OUT_DIR").map_err(invalid_data)?);
+    let out_dir = PathBuf::from(env::var("OUT_DIR").map_err(|e| invalid_data(&e))?);
     let destination_path = out_dir.join("setup_embedded_assets.rs");
 
     let mut output = String::new();
@@ -53,19 +55,21 @@ fn generate_embedded_asset_manifest() -> io::Result<()> {
         collect_files(&source_root, &source_root, &mut files)?;
         files.sort_unstable_by(|a, b| a.relative_path.cmp(&b.relative_path));
 
-        output.push_str(&format!(
-            "pub static {}: &[EmbeddedAsset] = &[\n",
+        let _ = writeln!(
+            output,
+            "pub static {}: &[EmbeddedAsset] = &[",
             target.const_name
-        ));
+        );
 
         for file in &files {
             println!("cargo:rerun-if-changed={}", file.absolute_path.display());
-            output.push_str(&format!(
-                "    EmbeddedAsset {{ relative_path: \"{}\", bytes: include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"{}{}\")) }},\n",
+            let _ = writeln!(
+                output,
+                "    EmbeddedAsset {{ relative_path: \"{}\", bytes: include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"{}{}\")) }},",
                 escape_for_rust_string(&file.relative_path),
                 target.include_prefix,
                 escape_for_rust_string(&file.relative_path),
-            ));
+            );
         }
 
         output.push_str("];\n\n");
@@ -97,7 +101,7 @@ fn collect_files(
 
         let relative_path = path
             .strip_prefix(base_root)
-            .map_err(|_| invalid_data("failed to strip source root from file path"))?;
+            .map_err(|_| invalid_data(&"failed to strip source root from file path"))?;
 
         let relative_path = normalize_relative_path(relative_path)?;
 
@@ -113,15 +117,15 @@ fn collect_files(
 fn normalize_relative_path(path: &Path) -> io::Result<String> {
     let normalized = path
         .to_str()
-        .ok_or_else(|| invalid_data("non-UTF-8 config paths are not supported"))?
+        .ok_or_else(|| invalid_data(&"non-UTF-8 config paths are not supported"))?
         .replace('\\', "/");
 
     if normalized.is_empty() {
-        return Err(invalid_data("relative path cannot be empty"));
+        return Err(invalid_data(&"relative path cannot be empty"));
     }
 
     if normalized.starts_with('/') {
-        return Err(invalid_data("relative path must not start with '/'"));
+        return Err(invalid_data(&"relative path must not start with '/'"));
     }
 
     Ok(normalized)
@@ -131,6 +135,6 @@ fn escape_for_rust_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn invalid_data<E: ToString>(error: E) -> io::Error {
+fn invalid_data<E: ToString>(error: &E) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }

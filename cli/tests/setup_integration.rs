@@ -226,7 +226,7 @@ fn setup_hooks_repo_relative_path() -> TestResult<()> {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .output()?;
 
-    let result = render_command_result(output);
+    let result = render_command_result(&output);
 
     assert!(
         result.success(),
@@ -539,13 +539,12 @@ mod pty_interactive {
                 let mut buf = [0u8; 4096];
                 while !stop_clone.load(Ordering::Relaxed) {
                     match reader.read(&mut buf) {
-                        Ok(0) => break,
+                        Ok(0) | Err(_) => break,
                         Ok(n) => {
                             if let Ok(mut out) = output_clone.lock() {
                                 out.push_str(&String::from_utf8_lossy(&buf[..n]));
                             }
                         }
-                        Err(_) => break,
                     }
                 }
                 let _ = child.wait();
@@ -560,17 +559,17 @@ mod pty_interactive {
             })
         }
 
-        fn wait_for_output(&self, expected: &str, timeout_ms: u64) -> TestResult<bool> {
+        fn wait_for_output(&self, expected: &str, timeout_ms: u64) -> bool {
             let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
             while std::time::Instant::now() < deadline {
                 if let Ok(out) = self.output.lock() {
                     if out.contains(expected) {
-                        return Ok(true);
+                        return true;
                     }
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            Ok(false)
+            false
         }
 
         fn get_output(&self) -> String {
@@ -578,7 +577,7 @@ mod pty_interactive {
         }
 
         fn write_line(&mut self, line: &str) -> TestResult<()> {
-            writeln!(self.writer, "{}", line)?;
+            writeln!(self.writer, "{line}")?;
             self.writer.flush()?;
             Ok(())
         }
@@ -613,30 +612,26 @@ mod pty_interactive {
             ],
         )?;
 
-        let prompt_found =
-            session.wait_for_output("Select setup target", PTY_WAIT_FOR_OUTPUT_MS)?;
+        let prompt_found = session.wait_for_output("Select setup target", PTY_WAIT_FOR_OUTPUT_MS);
         let output = session.get_output();
         assert!(
             prompt_found,
-            "PTY should display prompt for target selection\noutput:\n{}",
-            output
+            "PTY should display prompt for target selection\noutput:\n{output}"
         );
 
         session.write_line("")?;
 
         let completed =
-            session.wait_for_output("Setup completed successfully.", PTY_WAIT_FOR_OUTPUT_MS * 3)?;
+            session.wait_for_output("Setup completed successfully.", PTY_WAIT_FOR_OUTPUT_MS * 3);
         let output = session.get_output();
         assert!(
             completed,
-            "PTY flow should complete successfully after OpenCode selection\noutput:\n{}",
-            output
+            "PTY flow should complete successfully after OpenCode selection\noutput:\n{output}"
         );
 
         assert!(
             output.contains("Selected target(s): OpenCode"),
-            "output should report OpenCode as selected target\noutput:\n{}",
-            output
+            "output should report OpenCode as selected target\noutput:\n{output}"
         );
 
         assert!(
@@ -667,13 +662,11 @@ mod pty_interactive {
             ],
         )?;
 
-        let prompt_found =
-            session.wait_for_output("Select setup target", PTY_WAIT_FOR_OUTPUT_MS)?;
+        let prompt_found = session.wait_for_output("Select setup target", PTY_WAIT_FOR_OUTPUT_MS);
         let output = session.get_output();
         assert!(
             prompt_found,
-            "PTY should display prompt for target selection\noutput:\n{}",
-            output
+            "PTY should display prompt for target selection\noutput:\n{output}"
         );
 
         session.write_raw(&[0x1b])?;
@@ -683,8 +676,7 @@ mod pty_interactive {
 
         assert!(
             output.contains("Setup cancelled") || output.contains("cancelled"),
-            "PTY cancel flow should report cancellation\noutput:\n{}",
-            output
+            "PTY cancel flow should report cancellation\noutput:\n{output}"
         );
 
         assert!(
@@ -716,7 +708,7 @@ mod pty_interactive {
             .stderr(std::process::Stdio::piped())
             .output()?;
 
-        let result = render_command_result(output);
+        let result = render_command_result(&output);
 
         assert_eq!(
             result.status.code(),
@@ -806,7 +798,7 @@ mod pty_interactive {
             .stderr(std::process::Stdio::piped())
             .output()?;
 
-        let result = render_command_result(output);
+        let result = render_command_result(&output);
 
         assert_eq!(
             result.status.code(),
@@ -1089,16 +1081,14 @@ fn assert_setup_target_install_and_rerun(
     for relative_path in required_paths {
         assert!(
             harness.repo_root().join(relative_path).exists(),
-            "expected installed path '{}' to exist after first run",
-            relative_path
+            "expected installed path '{relative_path}' to exist after first run"
         );
     }
 
     for relative_path in forbidden_paths {
         assert!(
             !harness.repo_root().join(relative_path).exists(),
-            "expected path '{}' to remain absent for this setup target",
-            relative_path
+            "expected path '{relative_path}' to remain absent for this setup target"
         );
     }
 
@@ -1133,16 +1123,14 @@ fn assert_setup_target_install_and_rerun(
     for relative_path in required_paths {
         assert!(
             harness.repo_root().join(relative_path).exists(),
-            "expected installed path '{}' to exist after second run",
-            relative_path
+            "expected installed path '{relative_path}' to exist after second run"
         );
     }
 
     for relative_path in forbidden_paths {
         assert!(
             !harness.repo_root().join(relative_path).exists(),
-            "expected path '{}' to remain absent after second run",
-            relative_path
+            "expected path '{relative_path}' to remain absent after second run"
         );
     }
 
@@ -1349,7 +1337,7 @@ fn normalized_components(path: &Path) -> Vec<String> {
     let raw = trim_windows_verbatim_prefix(&path.display().to_string()).replace('\\', "/");
     raw.split('/')
         .filter(|component| !component.is_empty())
-        .map(|component| component.to_ascii_lowercase())
+        .map(str::to_ascii_lowercase)
         .collect()
 }
 

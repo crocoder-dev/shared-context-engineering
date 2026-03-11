@@ -36,7 +36,7 @@ fn config_show_flags_override_env_and_config_values() -> TestResult<()> {
         .env("SCE_TIMEOUT_MS", "1200")
         .output()?;
 
-    let result = render_command_result(output);
+    let result = render_command_result(&output);
     assert!(
         result.success(),
         "config show with layered overrides should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -91,7 +91,7 @@ fn config_show_env_overrides_config_when_flags_are_absent() -> TestResult<()> {
         .env("SCE_TIMEOUT_MS", "1200")
         .output()?;
 
-    let result = render_command_result(output);
+    let result = render_command_result(&output);
     assert!(
         result.success(),
         "config show with env overrides should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -130,7 +130,7 @@ fn config_show_uses_config_values_when_higher_precedence_inputs_are_absent() -> 
         .env_remove("SCE_CONFIG_FILE")
         .output()?;
 
-    let result = render_command_result(output);
+    let result = render_command_result(&output);
     assert!(
         result.success(),
         "config show with discovered config should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -186,7 +186,7 @@ fn config_show_uses_defaults_when_no_higher_precedence_inputs_exist() -> TestRes
         .env_remove("SCE_CONFIG_FILE")
         .output()?;
 
-    let result = render_command_result(output);
+    let result = render_command_result(&output);
     assert!(
         result.success(),
         "config show with no overrides should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -232,7 +232,7 @@ fn config_show_auth_env_overrides_config_and_baked_default() -> TestResult<()> {
         .env("WORKOS_CLIENT_ID", "from-env")
         .output()?;
 
-    let result = render_command_result(output);
+    let result = render_command_result(&output);
     assert!(
         result.success(),
         "config show with auth env override should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -283,7 +283,7 @@ fn config_show_auth_uses_config_when_env_is_absent() -> TestResult<()> {
         .env_remove("WORKOS_CLIENT_ID")
         .output()?;
 
-    let result = render_command_result(output);
+    let result = render_command_result(&output);
     assert!(
         result.success(),
         "config show with auth config fallback should succeed\nstdout:\n{}\nstderr:\n{}",
@@ -324,7 +324,7 @@ fn config_show_auth_uses_baked_default_when_env_and_config_are_absent() -> TestR
         .env_remove("SCE_CONFIG_FILE")
         .output()?;
 
-    let result = render_command_result(output);
+    let result = render_command_result(&output);
     assert!(
         result.success(),
         "config show with auth baked default should succeed\nstdout:\n{}\nstderr:\n{}",

@@ -39,3 +39,13 @@ regex = "1"
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
+
+[lints]
+workspace = true
+
+[workspace.lints.clippy]
+all = { level = "deny" }
+pedantic = { level = "deny" }
+
+[workspace.lints.rust]
+warnings = "deny"

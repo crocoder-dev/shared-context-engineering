@@ -14,7 +14,7 @@ use super::{
     install_required_git_hooks_with_rename, iter_embedded_assets_for_setup_target,
     iter_required_hook_assets, resolve_setup_dispatch, resolve_setup_request, run_setup_for_mode,
     run_setup_hooks, RequiredHookAsset, RequiredHookInstallStatus, SetupCliOptions, SetupDispatch,
-    SetupMode, SetupRequest, SetupTarget,
+    SetupMode, SetupTarget,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -224,8 +224,9 @@ fn embedded_manifest_paths_are_sorted_and_normalized() {
 #[test]
 fn embedded_manifest_matches_runtime_config_tree() -> Result<()> {
     let opencode_expected =
-        collect_runtime_relative_paths(runtime_target_root(SetupTarget::OpenCode))?;
-    let claude_expected = collect_runtime_relative_paths(runtime_target_root(SetupTarget::Claude))?;
+        collect_runtime_relative_paths(&runtime_target_root(SetupTarget::OpenCode))?;
+    let claude_expected =
+        collect_runtime_relative_paths(&runtime_target_root(SetupTarget::Claude))?;
 
     let opencode_actual: Vec<String> = assets_for_target(SetupTarget::OpenCode)
         .iter()
@@ -312,7 +313,7 @@ fn install_engine_replaces_existing_target_with_backup() -> Result<()> {
     assert!(backup_root.exists());
     assert!(backup_root.join("legacy/config.txt").exists());
 
-    let installed_paths = collect_runtime_relative_paths(result.destination_root.clone())?;
+    let installed_paths = collect_runtime_relative_paths(&result.destination_root)?;
     let expected_paths: Vec<String> = assets_for_target(SetupTarget::OpenCode)
         .iter()
         .map(|asset| asset.relative_path.to_string())
@@ -328,8 +329,8 @@ fn install_engine_installs_both_targets() -> Result<()> {
     let outcome = install_embedded_setup_assets(temp.path(), SetupTarget::Both)?;
     assert_eq!(outcome.target_results.len(), 2);
 
-    let opencode_paths = collect_runtime_relative_paths(temp.path().join(".opencode"))?;
-    let claude_paths = collect_runtime_relative_paths(temp.path().join(".claude"))?;
+    let opencode_paths = collect_runtime_relative_paths(&temp.path().join(".opencode"))?;
+    let claude_paths = collect_runtime_relative_paths(&temp.path().join(".claude"))?;
 
     let expected_opencode: Vec<String> = assets_for_target(SetupTarget::OpenCode)
         .iter()
@@ -568,9 +569,9 @@ fn assets_for_target(target: SetupTarget) -> &'static [super::EmbeddedAsset] {
     }
 }
 
-fn collect_runtime_relative_paths(root: PathBuf) -> Result<Vec<String>> {
+fn collect_runtime_relative_paths(root: &Path) -> Result<Vec<String>> {
     let mut files = Vec::new();
-    collect_runtime_files(&root, &root, &mut files)?;
+    collect_runtime_files(root, root, &mut files)?;
 
     files.sort_unstable();
 

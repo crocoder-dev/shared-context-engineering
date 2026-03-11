@@ -97,6 +97,7 @@ pub enum SetupDispatch {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct SetupCliOptions {
     pub help: bool,
     pub non_interactive: bool,
@@ -374,7 +375,7 @@ where
 
     if existing_metadata
         .as_ref()
-        .is_some_and(|metadata| metadata.is_file())
+        .is_some_and(std::fs::Metadata::is_file)
     {
         let existing_bytes = fs::read(&hook_path)
             .with_context(|| format!("Failed to read existing hook '{}'", hook_path.display()))?;
@@ -491,7 +492,7 @@ fn create_hook_staging_path(hooks_directory: &Path, hook_name: &str) -> Result<P
             .open(&candidate)
         {
             Ok(_) => return Ok(candidate),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => {
                 return Err(error).with_context(|| {
                     format!(
@@ -557,7 +558,7 @@ fn run_git_command_in_directory(
         } else {
             redact_sensitive_text(&stderr)
         };
-        bail!("{} {}", context_message, diagnostic);
+        bail!("{context_message} {diagnostic}");
     }
 
     let stdout = String::from_utf8(output.stdout)
@@ -565,7 +566,7 @@ fn run_git_command_in_directory(
         .trim()
         .to_string();
     if stdout.is_empty() {
-        bail!("{} git command returned empty output", context_message);
+        bail!("{context_message} git command returned empty output");
     }
 
     Ok(stdout)
@@ -740,20 +741,14 @@ fn validate_embedded_relative_path(relative_path: &str) -> Result<()> {
     let path = Path::new(relative_path);
 
     if path.is_absolute() {
-        bail!(
-            "Embedded asset path '{}' must be relative, not absolute",
-            relative_path
-        );
+        bail!("Embedded asset path '{relative_path}' must be relative, not absolute");
     }
 
     for component in path.components() {
         match component {
             Component::Normal(_) => {}
             _ => {
-                bail!(
-                    "Embedded asset path '{}' contains disallowed component",
-                    relative_path
-                );
+                bail!("Embedded asset path '{relative_path}' contains disallowed component");
             }
         }
     }
@@ -776,7 +771,7 @@ fn create_staging_root(repository_root: &Path, target: SetupTarget) -> Result<Pa
 
         match fs::create_dir(&candidate) {
             Ok(()) => return Ok(candidate),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => {
                 return Err(error).with_context(|| {
                     format!(
@@ -863,7 +858,7 @@ impl SetupTargetPrompter for InquireSetupTargetPrompter {
             Ok(SetupPromptTarget::Both) => {
                 Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(SetupTarget::Both)))
             }
-            Err(InquireError::OperationCanceled) | Err(InquireError::OperationInterrupted) => {
+            Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
                 Ok(SetupDispatch::Cancelled)
             }
             Err(InquireError::NotTTY) => bail!(

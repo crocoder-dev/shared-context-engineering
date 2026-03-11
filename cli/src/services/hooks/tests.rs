@@ -371,9 +371,8 @@ fn post_commit_finalization_dual_writes_with_parent_metadata_and_mime() -> Resul
         &mut ledger,
     )?;
 
-    let persisted = match outcome {
-        PostCommitFinalization::Persisted(persisted) => persisted,
-        _ => panic!("expected persisted post-commit outcome"),
+    let PostCommitFinalization::Persisted(persisted) = outcome else {
+        panic!("expected persisted post-commit outcome");
     };
     assert_eq!(persisted.commit_sha, input.commit_sha);
     assert_eq!(persisted.trace_id, "550e8400-e29b-41d4-a716-446655440000");
@@ -593,9 +592,8 @@ fn rewrite_trace_finalization_persists_metadata_and_notes_db_parity() -> Result<
         &mut ledger,
     )?;
 
-    let persisted = match outcome {
-        RewriteTraceFinalization::Persisted(persisted) => persisted,
-        _ => panic!("expected persisted rewrite trace outcome"),
+    let RewriteTraceFinalization::Persisted(persisted) = outcome else {
+        panic!("expected persisted rewrite trace outcome");
     };
 
     assert_eq!(persisted.commit_sha, "newsha123");
@@ -803,9 +801,8 @@ fn pre_commit_finalization_uses_only_staged_ranges_and_captures_anchors() {
 
     let outcome = finalize_pre_commit_checkpoint(&sample_runtime(), anchors.clone(), pending);
 
-    let finalized = match outcome {
-        PreCommitFinalization::Finalized(finalized) => finalized,
-        _ => panic!("expected finalized checkpoint"),
+    let PreCommitFinalization::Finalized(finalized) = outcome else {
+        panic!("expected finalized checkpoint");
     };
 
     assert_eq!(finalized.anchors, anchors);
@@ -934,28 +931,21 @@ fn commit_msg_policy_appends_canonical_trailer_once_when_allowed() {
 
     assert_eq!(
         output,
-        format!(
-            "feat: add attribution\n\n{}",
-            CANONICAL_SCE_COAUTHOR_TRAILER
-        )
+        format!("feat: add attribution\n\n{CANONICAL_SCE_COAUTHOR_TRAILER}")
     );
 }
 
 #[test]
 fn commit_msg_policy_dedupes_existing_canonical_trailers() {
     let message = format!(
-        "feat: add attribution\n\n{}\n{}\n",
-        CANONICAL_SCE_COAUTHOR_TRAILER, CANONICAL_SCE_COAUTHOR_TRAILER
+        "feat: add attribution\n\n{CANONICAL_SCE_COAUTHOR_TRAILER}\n{CANONICAL_SCE_COAUTHOR_TRAILER}\n"
     );
 
     let output = apply_commit_msg_coauthor_policy(&sample_commit_msg_runtime(), &message);
 
     assert_eq!(
         output,
-        format!(
-            "feat: add attribution\n\n{}\n",
-            CANONICAL_SCE_COAUTHOR_TRAILER
-        )
+        format!("feat: add attribution\n\n{CANONICAL_SCE_COAUTHOR_TRAILER}\n")
     );
 }
 
@@ -987,10 +977,7 @@ fn commit_msg_runtime_mutates_message_file_when_policy_gate_passes() -> Result<(
     let mutated = fs::read_to_string(&message_file)?;
     assert_eq!(
         mutated,
-        format!(
-            "feat: add attribution\n\n{}\n",
-            CANONICAL_SCE_COAUTHOR_TRAILER
-        )
+        format!("feat: add attribution\n\n{CANONICAL_SCE_COAUTHOR_TRAILER}\n")
     );
     Ok(())
 }
@@ -1124,7 +1111,7 @@ fn post_rewrite_runtime_ingests_remap_and_persists_rewrite_trace() -> Result<()>
     let new_sha = run_git_output_in_repo(&repo, &["rev-parse", "--verify", "HEAD"])?;
 
     let message =
-        run_post_rewrite_subcommand_in_repo(&repo, "amend", &format!("{} {}\n", old_sha, new_sha))?;
+        run_post_rewrite_subcommand_in_repo(&repo, "amend", &format!("{old_sha} {new_sha}\n"))?;
     assert!(
         message.contains("post-rewrite hook ingested 1 pair(s), skipped 0 duplicate pair(s)"),
         "unexpected message: {message}"
@@ -1230,7 +1217,7 @@ fn post_rewrite_runtime_skips_duplicate_pair_replay() -> Result<()> {
     let old_sha = run_git_output_in_repo(&repo, &["rev-parse", "--verify", "HEAD"])?;
     run_git_in_repo(&repo, &["commit", "--amend", "-m", "feat: rewrite amended"])?;
     let new_sha = run_git_output_in_repo(&repo, &["rev-parse", "--verify", "HEAD"])?;
-    let pair_input = format!("{} {}\n", old_sha, new_sha);
+    let pair_input = format!("{old_sha} {new_sha}\n");
 
     let _first = run_post_rewrite_subcommand_in_repo(&repo, "amend", &pair_input)?;
     let second = run_post_rewrite_subcommand_in_repo(&repo, "amend", &pair_input)?;

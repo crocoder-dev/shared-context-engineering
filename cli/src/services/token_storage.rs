@@ -40,6 +40,7 @@ pub enum TokenStorageError {
     Io(std::io::Error),
     Serialization(serde_json::Error),
     CorruptedTokenFile(String),
+    #[allow(dead_code)]
     Permission(String),
 }
 
@@ -104,7 +105,7 @@ pub fn delete_tokens() -> Result<bool, TokenStorageError> {
 pub fn token_file_path() -> Result<PathBuf, TokenStorageError> {
     #[cfg(target_os = "linux")]
     {
-        return linux_token_file_path();
+        linux_token_file_path()
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]

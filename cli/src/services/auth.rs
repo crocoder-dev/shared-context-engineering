@@ -8,13 +8,19 @@ use crate::services::resilience::{run_with_retry, RetryPolicy};
 use crate::services::token_storage::{load_tokens, save_tokens, StoredTokens, TokenStorageError};
 
 pub const DEVICE_CODE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
+#[allow(dead_code)]
 pub const REFRESH_TOKEN_GRANT_TYPE: &str = "refresh_token";
 pub const WORKOS_DEFAULT_BASE_URL: &str = "https://api.workos.com";
 pub const DEFAULT_DEVICE_POLL_INTERVAL_SECONDS: u64 = 5;
+#[allow(dead_code)]
 const TOKEN_EXPIRY_SKEW_SECONDS: u64 = 30;
+#[allow(dead_code)]
 const TOKEN_REFRESH_MAX_ATTEMPTS: u32 = 3;
+#[allow(dead_code)]
 const TOKEN_REFRESH_TIMEOUT_MS: u64 = 10_000;
+#[allow(dead_code)]
 const TOKEN_REFRESH_INITIAL_BACKOFF_MS: u64 = 250;
+#[allow(dead_code)]
 const TOKEN_REFRESH_MAX_BACKOFF_MS: u64 = 2_000;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -40,6 +46,7 @@ pub struct DeviceTokenPollRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct RefreshTokenRequest {
     pub grant_type: String,
     pub refresh_token: String,
@@ -148,6 +155,7 @@ pub async fn start_device_auth_flow(
     })
 }
 
+#[allow(dead_code)]
 pub async fn ensure_valid_token(
     client: &reqwest::Client,
     api_base_url: &str,
@@ -280,6 +288,7 @@ fn poll_decision_for_error_code(code: &str) -> PollDecision {
     }
 }
 
+#[allow(dead_code)]
 fn is_token_expired(stored: &StoredTokens, now_unix_seconds: u64) -> bool {
     let lifetime_seconds = stored.expires_in.saturating_sub(TOKEN_EXPIRY_SKEW_SECONDS);
     let expires_at = stored
@@ -288,6 +297,7 @@ fn is_token_expired(stored: &StoredTokens, now_unix_seconds: u64) -> bool {
     now_unix_seconds >= expires_at
 }
 
+#[allow(dead_code)]
 fn current_unix_timestamp_seconds() -> Result<u64, AuthError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -299,6 +309,7 @@ fn current_unix_timestamp_seconds() -> Result<u64, AuthError> {
         })
 }
 
+#[allow(dead_code)]
 async fn refresh_access_token(
     client: &reqwest::Client,
     api_base_url: &str,
@@ -364,6 +375,7 @@ async fn refresh_access_token(
     ))
 }
 
+#[allow(dead_code)]
 fn map_refresh_terminal_error(code: &str, description: Option<&str>) -> AuthError {
     let detail = description
         .map(str::trim)

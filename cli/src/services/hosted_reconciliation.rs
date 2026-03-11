@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::{bail, ensure, Result};
 use hmac::{Hmac, Mac};
 use serde_json::Value;
@@ -11,6 +13,7 @@ pub enum HostedProvider {
 }
 
 impl HostedProvider {
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     fn as_str(&self) -> &'static str {
         match self {
             HostedProvider::GitHub => "github",
@@ -407,6 +410,7 @@ fn quality_for_confidence(confidence: Score) -> MappingQuality {
     }
 }
 
+#[allow(clippy::needless_pass_by_value)]
 pub fn ingest_hosted_rewrite_event(
     request: HostedWebhookRequest,
     run_store: &mut impl ReconciliationRunStore,
@@ -524,16 +528,13 @@ fn parse_payload_json(payload_json: &str) -> Result<Value> {
 fn find_required_field<'a>(payload: &'a Value, field: &str) -> Result<&'a Value> {
     payload
         .get(field)
-        .ok_or_else(|| anyhow::anyhow!("invalid hosted event payload: missing '{}' field", field))
+        .ok_or_else(|| anyhow::anyhow!("invalid hosted event payload: missing '{field}' field"))
 }
 
 fn find_required_field_string(payload: &Value, field: &str) -> Result<String> {
     let value = find_required_field(payload, field)?;
     let Some(as_str) = value.as_str() else {
-        bail!(
-            "invalid hosted event payload: '{}' field must be a string",
-            field
-        );
+        bail!("invalid hosted event payload: '{field}' field must be a string");
     };
 
     Ok(as_str.to_string())
@@ -546,23 +547,14 @@ fn find_required_nested_field_string(
 ) -> Result<String> {
     let parent = find_required_field(payload, parent_field)?;
     let Some(parent_object) = parent.as_object() else {
-        bail!(
-            "invalid hosted event payload: '{}' field must be an object",
-            parent_field
-        );
+        bail!("invalid hosted event payload: '{parent_field}' field must be an object");
     };
 
     let value = parent_object.get(nested_field).ok_or_else(|| {
-        anyhow::anyhow!(
-            "invalid hosted event payload: missing '{}' field",
-            nested_field
-        )
+        anyhow::anyhow!("invalid hosted event payload: missing '{nested_field}' field")
     })?;
     let Some(as_str) = value.as_str() else {
-        bail!(
-            "invalid hosted event payload: '{}' field must be a string",
-            nested_field
-        );
+        bail!("invalid hosted event payload: '{nested_field}' field must be a string");
     };
 
     Ok(as_str.to_string())
@@ -668,7 +660,7 @@ mod tests {
                 assert_eq!(run.new_head, "2222222222222222222222222222222222222222");
                 assert!(run.idempotency_key.starts_with("hosted:github:"));
             }
-            other => panic!("unexpected outcome: {other:?}"),
+            other @ HostedIntakeOutcome::Duplicate(_) => panic!("unexpected outcome: {other:?}"),
         }
 
         assert_eq!(store.inserted.len(), 1);
@@ -715,7 +707,7 @@ mod tests {
                 assert_eq!(run.new_head, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
                 assert!(run.idempotency_key.starts_with("hosted:gitlab:"));
             }
-            other => panic!("unexpected outcome: {other:?}"),
+            other @ HostedIntakeOutcome::Duplicate(_) => panic!("unexpected outcome: {other:?}"),
         }
 
         assert_eq!(store.inserted.len(), 1);
@@ -877,7 +869,9 @@ mod tests {
                 assert_eq!(mapped.confidence, score(1.0));
                 assert_eq!(mapped.quality, MappingQuality::Final);
             }
-            other => panic!("expected mapped outcome, got {other:?}"),
+            other @ RewriteMappingOutcome::Unresolved(_) => {
+                panic!("expected mapped outcome, got {other:?}")
+            }
         }
     }
 
@@ -912,7 +906,9 @@ mod tests {
                 );
                 assert_eq!(unresolved.best_confidence, Some(score(0.82)));
             }
-            other => panic!("expected ambiguous unresolved outcome, got {other:?}"),
+            other @ RewriteMappingOutcome::Mapped(_) => {
+                panic!("expected ambiguous unresolved outcome, got {other:?}")
+            }
         }
     }
 
@@ -932,7 +928,7 @@ mod tests {
             RewriteCandidateCommit {
                 new_commit_sha: "new-z".to_string(),
                 patch_id: None,
-                range_diff_score: Some(score(0.820009)),
+                range_diff_score: Some(score(0.820_009)),
                 fuzzy_score: None,
             },
         ];
@@ -945,9 +941,11 @@ mod tests {
                     unresolved.candidate_new_shas,
                     vec!["new-a".to_string(), "new-z".to_string()]
                 );
-                assert_eq!(unresolved.best_confidence, Some(score(0.820009)));
+                assert_eq!(unresolved.best_confidence, Some(score(0.820_009)));
             }
-            other => panic!("expected ambiguous unresolved outcome, got {other:?}"),
+            other @ RewriteMappingOutcome::Mapped(_) => {
+                panic!("expected ambiguous unresolved outcome, got {other:?}")
+            }
         }
     }
 
@@ -979,7 +977,9 @@ mod tests {
                 assert_eq!(mapped.method, MappingMethod::RangeDiffHint);
                 assert_eq!(mapped.confidence, score(0.82002));
             }
-            other => panic!("expected mapped outcome, got {other:?}"),
+            other @ RewriteMappingOutcome::Unresolved(_) => {
+                panic!("expected mapped outcome, got {other:?}")
+            }
         }
     }
 
@@ -1006,7 +1006,9 @@ mod tests {
                 );
                 assert_eq!(unresolved.best_confidence, None);
             }
-            other => panic!("expected unmatched unresolved outcome, got {other:?}"),
+            other @ RewriteMappingOutcome::Mapped(_) => {
+                panic!("expected unmatched unresolved outcome, got {other:?}")
+            }
         }
     }
 
@@ -1030,7 +1032,9 @@ mod tests {
                 assert_eq!(unresolved.candidate_new_shas, vec!["new-a".to_string()]);
                 assert_eq!(unresolved.best_confidence, Some(score(0.59)));
             }
-            other => panic!("expected low-confidence unresolved outcome, got {other:?}"),
+            other @ RewriteMappingOutcome::Mapped(_) => {
+                panic!("expected low-confidence unresolved outcome, got {other:?}")
+            }
         }
     }
 
