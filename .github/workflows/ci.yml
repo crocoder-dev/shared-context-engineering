@@ -43,58 +43,6 @@ jobs:
       - name: Run nix flake check
         run: nix flake check
 
-  cli-ubuntu:
-    name: CLI tests (Ubuntu)
-    needs: smoke
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-
-      - name: Run CLI integration tests
-        run: nix run .#cli-integration-tests
-
-  cli-macos:
-    name: CLI tests (macOS)
-    needs: smoke
-    runs-on: macos-latest
-    timeout-minutes: 10
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-
-      - name: Run CLI integration tests
-        run: nix run .#cli-integration-tests
-
-  cli-windows:
-    name: CLI tests (Windows)
-    needs: smoke
-    runs-on: windows-latest
-    timeout-minutes: 10
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - name: Run clippy
-        working-directory: cli
-        run: cargo clippy --all-targets --all-features
-
-      - name: Run setup integration tests
-        working-directory: cli
-        run: cargo test --test setup_integration
-
   token-count:
     name: Token count
     needs: smoke

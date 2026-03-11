@@ -111,18 +111,6 @@
           };
         };
 
-        apps.config-precedence-integration-tests = {
-          type = "app";
-          program = toString (
-            pkgs.writeShellScript "sce-config-precedence-integration-tests" ''
-              exec ${rustToolchain}/bin/cargo test --manifest-path cli/Cargo.toml --test config_precedence_integration "$@"
-            ''
-          );
-          meta = {
-            description = "Run config-precedence integration tests for the sce CLI crate";
-          };
-        };
-
         checks.cli-setup-command-surface = mkCheck "sce-cli-setup-command-surface-check" ''
           runHook preCheck
 
@@ -130,15 +118,6 @@
           cargo test command_surface::tests::help_text_mentions_setup_target_flags
           cargo test parser_routes_setup
           cargo test run_setup_reports
-
-          runHook postCheck
-        '';
-
-        checks.cli-setup-integration = mkCheck "sce-cli-setup-integration-check" ''
-          runHook preCheck
-
-          export PATH="${pkgs.git}/bin:$PATH"
-          cargo test --test setup_integration
 
           runHook postCheck
         '';

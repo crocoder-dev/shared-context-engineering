@@ -18,14 +18,13 @@ The CLI now compiles an embedded setup asset manifest from `config/.opencode/**`
 The setup service also provides repository-root install orchestration: it resolves interactive or flag-based target selection, installs embedded assets, and reports deterministic completion details (selected target(s), installed file counts, and backup actions).
 The CLI now also applies baseline security hardening for reliability-driven automation: diagnostics/logging paths use deterministic secret redaction, `sce setup --hooks --repo <path>` canonicalizes and validates repository paths before execution, and setup write flows run explicit directory write-permission probes before staging/swap operations.
 The config service now provides deterministic runtime config resolution with explicit precedence (`flags > env > config file > defaults`), strict config-file validation (`log_level`, `timeout_ms`, `workos_client_id`), deterministic default discovery/merge of global+local config files (`${state_root}/sce/config.json` then `.sce/config.json` with local override), shared auth-key resolution with optional baked defaults starting at `workos_client_id`, and deterministic text/JSON output contracts for `sce config show` and `sce config validate`.
-The repository root flake now also exposes an opt-in compiled-binary config-precedence integration entrypoint, `nix run .#cli-config-precedence-integration-tests`, which runs `cli/tests/config_precedence_integration.rs` outside the default `nix flake check` path while `nix run .#cli-integration-tests` remains setup-only.
 The `doctor` command now validates Agent Trace local rollout readiness by resolving effective git hook-path source (default, per-repo `core.hooksPath`, or global `core.hooksPath`), checking required hook presence/executable permissions with actionable diagnostics, and reporting default global/local config-file locations plus the Agent Trace local DB path as `present` or `expected` in both text and JSON output.
 The `mcp` placeholder contract is now scoped to future file-cache workflows (`cache-put`/`cache-get`) and remains intentionally non-runnable.
 The `sync` placeholder performs a local Turso smoke check through a lazily initialized shared tokio current-thread runtime with bounded retry/timeout/backoff controls, then reports a deferred cloud-sync plan from a placeholder gateway contract; persistent local DB schema bootstrap now uses the same bounded resilience wrapper.
 The nested CLI flake (`cli/flake.nix`) now applies a Rust overlay-backed stable toolchain (with `rustfmt`) and uses that toolchain contract for CLI check/build derivations.
 The nested CLI flake now also exposes release install/run outputs: `packages.sce` (with `packages.default = packages.sce`) and `apps.sce`, so `nix build ./cli#default` and `nix run ./cli#sce -- --help` execute against the packaged `sce` binary.
 The CLI Cargo package metadata now includes crates.io-facing fields while keeping `publish = false`; local install/release flows are documented as `cargo install --path cli --locked` and `cargo build --manifest-path cli/Cargo.toml --release`. The crate also keeps `cargo clippy --manifest-path cli/Cargo.toml` warnings-denied through `cli/Cargo.toml` lint configuration, so an extra `-- -D warnings` flag is redundant.
-The repository-root flake now keeps nested CLI flake input wiring coherent by passing through `nixpkgs`, `flake-utils`, and `rust-overlay`, so root-level `nix flake check` can evaluate CLI checks (including setup command-surface and setup integration slices) without missing-input failures.
+The repository-root flake now keeps nested CLI flake input wiring coherent by passing through `nixpkgs`, `flake-utils`, and `rust-overlay`, so root-level `nix flake check` can evaluate CLI checks (including setup command-surface) without missing-input failures.
 Shared Context Plan and Shared Context Code remain separate agent roles by design; planning (`/change-to-plan`) and implementation (`/next-task`) stay split while shared baseline guidance is deduplicated via canonical skill-owned contracts.
 Their shared baseline doctrine (core principles, `context/` authority, and quality posture) is defined once as canonical snippets in `config/pkl/base/shared-content.pkl` and composed into both agent bodies during generation.
 The `/next-task` command body is intentionally thin orchestration: readiness gating + phase sequencing are command-owned, while detailed implementation/context-sync contracts are skill-owned (`sce-plan-review`, `sce-task-execution`, `sce-context-sync`).
@@ -70,9 +69,7 @@ The setup command parser/dispatch now also supports composable setup+hooks runs 
 - Verify generated outputs are current: `nix run .#pkl-check-generated`
 - Run staged destructive sync for `config/` and root `.opencode/`: `nix run .#sync-opencode-config`
 - Run workflow token counting from repo root: `nix run .#token-count-workflows`
-- Run setup integration tests through the deterministic flake app entrypoint: `nix run .#cli-integration-tests`
-- Run opt-in config-precedence binary integration tests: `nix run .#cli-config-precedence-integration-tests`
-- Run repository flake checks (includes CLI setup command-surface and setup integration checks): `nix flake check`
+- Run repository flake checks (includes CLI setup command-surface checks): `nix flake check`
 
 Lightweight post-task verification baseline (required after each completed task): run `nix run .#pkl-check-generated` and `nix flake check`.
 
@@ -81,7 +78,6 @@ Lightweight post-task verification baseline (required after each completed task)
 - `.github/workflows/pkl-generated-parity.yml` runs parity checks on pushes to `main` and pull requests targeting `main`.
 - `.github/workflows/agnix-config-validate-report.yml` runs `agnix validate` from `config/`, fails on non-info findings, and uploads a deterministic report artifact when findings are present.
 - `.github/workflows/workflow-token-count.yml` runs `nix run .#token-count-workflows` on pushes to `main` and pull requests targeting `main`, then uploads token-footprint artifacts from `context/tmp/token-footprint/`.
-- `.github/workflows/cli-integration-tests.yml` runs `nix run .#cli-integration-tests` on pushes to `main` and pull requests targeting `main`.
 
 ## Cross-target parity
 

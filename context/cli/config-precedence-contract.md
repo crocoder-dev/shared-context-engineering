@@ -58,14 +58,6 @@ When both discovered defaults exist, they are merged in memory in deterministic 
 - Auth-key text output includes `auth_precedence` and abbreviates full values when they look credential-like; fully secret-bearing key classes remain redacted.
 - For the currently migrated key `workos_client_id`, `show` reports the baked default with `source: default` when env/config inputs are absent.
 
-## Binary end-to-end coverage contract
-
-- Compiled-binary config precedence coverage lives in `cli/tests/config_precedence_integration.rs`.
-- The canonical opt-in Nix entrypoint is `nix run .#cli-config-precedence-integration-tests`.
-- That entrypoint runs `cargo test --manifest-path cli/Cargo.toml --test config_precedence_integration -- --nocapture` through `nix develop`.
-- The test slice is intentionally opt-in and is excluded from default `nix flake check`.
-- Stable end-to-end assertions target compiled-binary `sce config show` / `sce config validate` stdout, using JSON payload fields such as resolved `value`, `source`, and `config_source` rather than internal Rust structs.
-
 ## Auth diagnostics contract
 
 - Auth failure guidance for migrated auth keys no longer assumes env-only configuration.
