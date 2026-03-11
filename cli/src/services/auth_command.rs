@@ -78,15 +78,19 @@ pub fn run_login(format: AuthFormat) -> Result<String> {
 
     match format {
         AuthFormat::Text => run_text_login_with_runtime(runtime, &client, &client_id),
-        AuthFormat::Json => run_login_with(format, || Ok(client_id), |client_id| {
-            runtime
-                .block_on(auth::start_device_auth_flow(
-                    &client,
-                    auth::WORKOS_DEFAULT_BASE_URL,
-                    client_id,
-                ))
-                .map_err(map_login_error)
-        }),
+        AuthFormat::Json => run_login_with(
+            format,
+            || Ok(client_id),
+            |client_id| {
+                runtime
+                    .block_on(auth::start_device_auth_flow(
+                        &client,
+                        auth::WORKOS_DEFAULT_BASE_URL,
+                        client_id,
+                    ))
+                    .map_err(|e| map_login_error(&e))
+            },
+        ),
     }
 }
 
@@ -119,7 +123,7 @@ pub fn run_renew(format: AuthFormat, force: bool) -> Result<String> {
                 auth::WORKOS_DEFAULT_BASE_URL,
                 &client_id,
             ))
-            .map_err(map_login_error)?
+            .map_err(|e| map_login_error(&e))?
     } else {
         runtime
             .block_on(auth::ensure_valid_token(
@@ -127,7 +131,7 @@ pub fn run_renew(format: AuthFormat, force: bool) -> Result<String> {
                 auth::WORKOS_DEFAULT_BASE_URL,
                 &client_id,
             ))
-            .map_err(map_login_error)?
+            .map_err(|e| map_login_error(&e))?
     };
 
     render_renew_result(&updated, force || was_expired, format)
@@ -231,7 +235,7 @@ fn run_text_login_with_runtime(
             auth::WORKOS_DEFAULT_BASE_URL,
             client_id,
         ))
-        .map_err(map_login_error)?;
+        .map_err(|e| map_login_error(&e))?;
 
     write_login_prompt(&authorization)?;
 
@@ -242,7 +246,7 @@ fn run_text_login_with_runtime(
             client_id,
             &authorization,
         ))
-        .map_err(map_login_error)?;
+        .map_err(|e| map_login_error(&e))?;
 
     render_login_result(
         &DeviceAuthFlowResult {
@@ -294,21 +298,19 @@ fn write_login_prompt(authorization: &auth::DeviceAuthorizationResponse) -> Resu
         .verification_uri_complete
         .as_deref()
         .unwrap_or(&authorization.verification_uri);
-    writeln!(
-        stdout,
-        "Open in browser: {}",
-        browser_url
-    )
-    .context("failed to write auth verification URL to stdout")?;
+    writeln!(stdout, "Open in browser: {browser_url}")
+        .context("failed to write auth verification URL to stdout")?;
     writeln!(stdout, "Code: {}", authorization.user_code)
         .context("failed to write auth user code to stdout")?;
     writeln!(stdout, "Waiting for browser confirmation...")
         .context("failed to write auth progress message to stdout")?;
-    stdout.flush().context("failed to flush auth prompt to stdout")?;
+    stdout
+        .flush()
+        .context("failed to flush auth prompt to stdout")?;
     Ok(())
 }
 
-fn map_login_error(error: AuthError) -> anyhow::Error {
+fn map_login_error(error: &AuthError) -> anyhow::Error {
     anyhow!(with_try_guidance(
         error.to_string(),
         "verify the resolved WorkOS client ID source (WORKOS_CLIENT_ID, config file, or baked default), confirm network access, and rerun 'sce auth login'."
@@ -785,7 +787,11 @@ mod tests {
 
     #[test]
     fn renew_json_output_reports_renewal_state() -> Result<()> {
-        let output = render_renew_result(&fixture_login_result().stored_tokens, true, AuthFormat::Json)?;
+        let output = render_renew_result(
+            &fixture_login_result().stored_tokens,
+            true,
+            AuthFormat::Json,
+        )?;
         let parsed: Value = serde_json::from_str(&output)?;
 
         assert_eq!(parsed["subcommand"], "renew");

@@ -198,51 +198,44 @@ fn target_location(target: LocalDatabaseTarget<'_>) -> Result<&str> {
 }
 
 pub(crate) fn resolve_state_data_root() -> Result<PathBuf> {
-    #[cfg(target_os = "windows")]
+    #[cfg(target_os = "linux")]
     {
-        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-            return Ok(PathBuf::from(local_app_data));
+        if let Some(state_dir) = dirs::state_dir() {
+            return Ok(state_dir);
         }
-        if let Some(app_data) = std::env::var_os("APPDATA") {
-            return Ok(PathBuf::from(app_data));
+        if let Some(home_dir) = dirs::home_dir() {
+            return Ok(home_dir.join(".local").join("state"));
         }
-
-        return Ok(resolve_home_dir()?.join("AppData").join("Local"));
+        Err(anyhow!(
+            "Unable to resolve state directory: neither XDG_STATE_HOME nor HOME is set"
+        ))
     }
 
     #[cfg(target_os = "macos")]
     {
-        return Ok(resolve_home_dir()?
-            .join("Library")
-            .join("Application Support"));
+        dirs::data_dir().ok_or_else(|| anyhow!("Unable to resolve data directory for macOS"))
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(target_os = "windows")]
     {
-        if let Some(xdg_state_home) = std::env::var_os("XDG_STATE_HOME") {
-            return Ok(PathBuf::from(xdg_state_home));
-        }
-        Ok(resolve_home_dir()?.join(".local").join("state"))
+        dirs::data_local_dir()
+            .or_else(|| dirs::data_dir())
+            .ok_or_else(|| anyhow!("Unable to resolve local data directory for Windows"))
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
-        Ok(resolve_home_dir()?.join(".local").join("state"))
+        if let Some(state_dir) = dirs::state_dir() {
+            return Ok(state_dir);
+        }
+        if let Some(data_dir) = dirs::data_dir() {
+            return Ok(data_dir);
+        }
+        if let Some(home_dir) = dirs::home_dir() {
+            return Ok(home_dir.join(".local").join("state"));
+        }
+        Err(anyhow!("Unable to resolve state or data directory"))
     }
-}
-
-fn resolve_home_dir() -> Result<PathBuf> {
-    if let Some(home) = std::env::var_os("HOME") {
-        return Ok(PathBuf::from(home));
-    }
-
-    if let Some(user_profile) = std::env::var_os("USERPROFILE") {
-        return Ok(PathBuf::from(user_profile));
-    }
-
-    Err(anyhow!(
-        "Unable to resolve home directory from HOME or USERPROFILE environment variables"
-    ))
 }
 
 pub async fn apply_core_schema_migrations(

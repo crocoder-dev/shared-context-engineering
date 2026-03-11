@@ -157,7 +157,8 @@ pub async fn start_device_auth_flow(
     }
 
     let authorization = request_device_authorization(client, api_base_url, client_id).await?;
-    let stored_tokens = complete_device_auth_flow(client, api_base_url, client_id, &authorization).await?;
+    let stored_tokens =
+        complete_device_auth_flow(client, api_base_url, client_id, &authorization).await?;
 
     Ok(DeviceAuthFlowResult {
         authorization,
@@ -203,7 +204,7 @@ pub async fn ensure_valid_token(
 
     let refreshed = refresh_access_token(client, api_base_url, client_id, &stored.refresh_token)
         .await
-        .map_err(|error| map_refresh_failure_for_public_cli(error))?;
+        .map_err(map_refresh_failure_for_public_cli)?;
     let updated = save_tokens(&refreshed)?;
     Ok(updated)
 }
@@ -537,10 +538,9 @@ mod tests {
     use super::{
         device_authorization_endpoint, is_token_expired, map_oauth_terminal_error,
         map_refresh_failure_for_public_cli, map_refresh_terminal_error,
-        poll_decision_for_error_code, token_endpoint, DeviceAuthorizationResponse,
+        poll_decision_for_error_code, token_endpoint, AuthError, DeviceAuthorizationResponse,
         DeviceTokenPollRequest, OAuthErrorResponse, PollDecision, RefreshTokenRequest,
-        TokenResponse, DEVICE_CODE_GRANT_TYPE,
-        REFRESH_TOKEN_GRANT_TYPE, WORKOS_DEFAULT_BASE_URL, AuthError,
+        TokenResponse, DEVICE_CODE_GRANT_TYPE, REFRESH_TOKEN_GRANT_TYPE, WORKOS_DEFAULT_BASE_URL,
     };
     use crate::services::token_storage::StoredTokens;
 
@@ -723,7 +723,8 @@ mod tests {
 
     #[test]
     fn refresh_terminal_error_mapping_explains_public_cli_fallback_for_invalid_client() {
-        let message = map_refresh_terminal_error("invalid_client", Some("Unknown client.")).to_string();
+        let message =
+            map_refresh_terminal_error("invalid_client", Some("Unknown client.")).to_string();
         assert!(message.contains("public CLI client"));
         assert!(message.contains("sce auth login"));
     }
