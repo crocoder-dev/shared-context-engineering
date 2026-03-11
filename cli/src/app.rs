@@ -613,6 +613,19 @@ fn dispatch(command: &Command) -> Result<String, ClassifiedError> {
                 .context("Failed to determine current directory")
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
 
+            let preflight_hooks_repository = if request.install_hooks {
+                let repository_root = request
+                    .hooks_repo_path
+                    .as_deref()
+                    .unwrap_or(current_dir.as_path());
+                Some(
+                    services::setup::prepare_setup_hooks_repository(repository_root)
+                        .map_err(|error| ClassifiedError::runtime(error.to_string()))?,
+                )
+            } else {
+                None
+            };
+
             let mut sections = Vec::new();
 
             if let Some(mode) = request.config_mode {
@@ -636,10 +649,9 @@ fn dispatch(command: &Command) -> Result<String, ClassifiedError> {
             }
 
             if request.install_hooks {
-                let repository_root = request
-                    .hooks_repo_path
+                let repository_root = preflight_hooks_repository
                     .as_deref()
-                    .unwrap_or(current_dir.as_path());
+                    .expect("hook repository preflight should exist when install_hooks is true");
                 let hooks_message = services::setup::run_setup_hooks(repository_root)
                     .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
                 sections.push(hooks_message);

@@ -115,9 +115,8 @@ fn run_setup_hooks_reports_per_hook_statuses() -> Result<()> {
 fn run_setup_hooks_rejects_missing_repo_path() {
     let missing_path = PathBuf::from("/definitely/missing/sce-test-repo");
     let error = run_setup_hooks(&missing_path).expect_err("missing repo path should fail");
-    assert!(error
-        .to_string()
-        .contains("Failed to resolve repository path"));
+    let message = format!("{error:#}");
+    assert!(message.contains("Failed to resolve repository path"));
 }
 
 #[test]
@@ -127,7 +126,21 @@ fn run_setup_hooks_rejects_file_repo_path() -> Result<()> {
     fs::write(&file_path, b"not a repo")?;
 
     let error = run_setup_hooks(&file_path).expect_err("file path should fail");
-    assert!(error.to_string().contains("is not a directory"));
+    let message = format!("{error:#}");
+    assert!(message.contains("is not a directory"));
+
+    Ok(())
+}
+
+#[test]
+fn run_setup_hooks_rejects_non_git_directory_with_git_init_guidance() -> Result<()> {
+    let temp = TestTempDir::new("sce-setup-hook-install-tests")?;
+
+    let error = run_setup_hooks(temp.path()).expect_err("non-git directory should fail");
+    let message = format!("{error:#}");
+    assert!(message.contains("is not a git repository"));
+    assert!(message.contains("git init"));
+    assert!(message.contains("rerun 'sce setup'"));
 
     Ok(())
 }

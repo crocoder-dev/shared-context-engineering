@@ -181,10 +181,14 @@ pub fn run_setup_for_mode(repository_root: &Path, mode: SetupMode) -> Result<Str
 }
 
 pub fn run_setup_hooks(repository_root: &Path) -> Result<String> {
-    let normalized_repository_root = normalize_user_repository_path(repository_root)?;
-    let outcome = install_required_git_hooks(&normalized_repository_root)
+    let outcome = install_required_git_hooks(repository_root)
         .context("Hook setup failed while installing required git hooks")?;
     Ok(format_required_hook_install_success_message(&outcome))
+}
+
+pub fn prepare_setup_hooks_repository(repository_root: &Path) -> Result<PathBuf> {
+    let normalized_repository_root = normalize_user_repository_path(repository_root)?;
+    resolve_git_repository_root(&normalized_repository_root)
 }
 
 fn normalize_user_repository_path(repository_root: &Path) -> Result<PathBuf> {
@@ -325,9 +329,13 @@ pub struct RequiredHooksInstallOutcome {
 }
 
 pub fn install_required_git_hooks(repository_root: &Path) -> Result<RequiredHooksInstallOutcome> {
-    install_required_git_hooks_with_rename(repository_root, |from, to| fs::rename(from, to))
+    let resolved_repository_root = prepare_setup_hooks_repository(repository_root)?;
+    install_required_git_hooks_in_resolved_repository(&resolved_repository_root, |from, to| {
+        fs::rename(from, to)
+    })
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn install_required_git_hooks_with_rename<F>(
     repository_root: &Path,
     mut rename_fn: F,
@@ -335,7 +343,17 @@ fn install_required_git_hooks_with_rename<F>(
 where
     F: FnMut(&Path, &Path) -> io::Result<()>,
 {
-    let resolved_repository_root = resolve_git_repository_root(repository_root)?;
+    let resolved_repository_root = prepare_setup_hooks_repository(repository_root)?;
+    install_required_git_hooks_in_resolved_repository(&resolved_repository_root, &mut rename_fn)
+}
+
+fn install_required_git_hooks_in_resolved_repository<F>(
+    resolved_repository_root: &Path,
+    mut rename_fn: F,
+) -> Result<RequiredHooksInstallOutcome>
+where
+    F: FnMut(&Path, &Path) -> io::Result<()>,
+{
     ensure_directory_is_writable(&resolved_repository_root, "repository root")?;
     let hooks_directory = resolve_git_hooks_directory(&resolved_repository_root)?;
     fs::create_dir_all(&hooks_directory).with_context(|| {
@@ -354,7 +372,7 @@ where
     }
 
     Ok(RequiredHooksInstallOutcome {
-        repository_root: resolved_repository_root,
+        repository_root: resolved_repository_root.to_path_buf(),
         hooks_directory,
         hook_results,
     })
@@ -515,8 +533,25 @@ fn resolve_git_repository_root(repository_root: &Path) -> Result<PathBuf> {
         repository_root,
         &["rev-parse", "--show-toplevel"],
         "Failed to resolve repository root. Ensure '--repo' points to an accessible git repository.",
-    )?;
+    )
+    .map_err(|error| map_setup_non_git_repository_error(repository_root, error))?;
     Ok(PathBuf::from(repository_root_output))
+}
+
+fn map_setup_non_git_repository_error(
+    repository_root: &Path,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    let message = error.to_string();
+    if message.contains("not a git repository") {
+        anyhow::anyhow!(
+            "Directory '{}' is not a git repository. Try: run 'git init' in '{}', then rerun 'sce setup'.",
+            repository_root.display(),
+            repository_root.display()
+        )
+    } else {
+        error
+    }
 }
 
 fn resolve_git_hooks_directory(repository_root: &Path) -> Result<PathBuf> {

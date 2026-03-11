@@ -366,6 +366,77 @@ fn setup_fail_repo_missing() -> TestResult<()> {
 }
 
 #[test]
+fn setup_fail_hooks_in_non_git_current_directory() -> TestResult<()> {
+    let harness = SetupIntegrationHarness::new("sce-setup-failure-contracts")?;
+
+    let result = harness.run_sce(["setup", "--hooks"])?;
+
+    assert_eq!(
+        result.status.code(),
+        Some(4),
+        "setup --hooks in a non-git directory should exit with runtime_failure code 4\nstdout:\n{}\nstderr:\n{}",
+        result.stdout,
+        result.stderr
+    );
+
+    assert!(
+        result.stderr.contains("is not a git repository"),
+        "stderr should explain the current directory is not a git repository\nstderr:\n{}",
+        result.stderr
+    );
+    assert!(
+        result.stderr.contains("git init"),
+        "stderr should include git init guidance\nstderr:\n{}",
+        result.stderr
+    );
+    assert!(
+        result.stderr.contains("rerun 'sce setup'"),
+        "stderr should tell the user to rerun sce setup\nstderr:\n{}",
+        result.stderr
+    );
+
+    Ok(())
+}
+
+#[test]
+fn setup_fail_hooks_repo_flag_in_non_git_directory() -> TestResult<()> {
+    let harness = SetupIntegrationHarness::new("sce-setup-failure-contracts")?;
+
+    let result = harness.run_sce([
+        "setup",
+        "--hooks",
+        "--repo",
+        harness.repo_root().to_str().unwrap(),
+    ])?;
+
+    assert_eq!(
+        result.status.code(),
+        Some(4),
+        "setup --hooks --repo <non-git-dir> should exit with runtime_failure code 4\nstdout:\n{}\nstderr:\n{}",
+        result.stdout,
+        result.stderr
+    );
+
+    assert!(
+        result.stderr.contains("is not a git repository"),
+        "stderr should explain the supplied path is not a git repository\nstderr:\n{}",
+        result.stderr
+    );
+    assert!(
+        result.stderr.contains("git init"),
+        "stderr should include git init guidance\nstderr:\n{}",
+        result.stderr
+    );
+    assert!(
+        result.stderr.contains("rerun 'sce setup'"),
+        "stderr should tell the user to rerun sce setup\nstderr:\n{}",
+        result.stderr
+    );
+
+    Ok(())
+}
+
+#[test]
 fn setup_fail_repo_without_hooks() -> TestResult<()> {
     let harness = SetupIntegrationHarness::new("sce-setup-failure-contracts")?;
     harness.init_git_repo()?;
