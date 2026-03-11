@@ -2,9 +2,12 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use std::sync::OnceLock;
 
+use crate::services::auth;
+use crate::services::config;
 use crate::services::local_db::{run_smoke_check, LocalDatabaseTarget};
 use crate::services::output_format::OutputFormat;
 use crate::services::resilience::{run_with_retry, RetryPolicy};
+use crate::services::token_storage;
 
 pub const NAME: &str = "sync";
 
@@ -134,6 +137,7 @@ fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
     }
 
     let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
         .enable_time()
         .build()
         .context("failed to create shared tokio runtime for sync placeholder")?;
@@ -142,6 +146,8 @@ fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
 }
 
 pub fn run_placeholder_sync(request: SyncRequest) -> Result<String> {
+    ensure_sync_auth_if_expired()?;
+
     let service = PlaceholderSyncService::new(PlaceholderCloudSyncGateway);
     let cloud_request = CloudSyncRequest {
         workspace: "local",
@@ -189,6 +195,37 @@ pub fn run_placeholder_sync(request: SyncRequest) -> Result<String> {
                 .context("failed to serialize sync placeholder report to JSON")
         }
     }
+}
+
+fn ensure_sync_auth_if_expired() -> Result<()> {
+    let Some(stored_tokens) = token_storage::load_tokens()? else {
+        return Ok(());
+    };
+
+    if !auth::is_stored_token_expired(&stored_tokens)? {
+        return Ok(());
+    }
+
+    let cwd = std::env::current_dir()
+        .context("failed to determine current directory for auth config resolution")?;
+    let client_id = config::resolve_auth_runtime_config(&cwd)?
+        .workos_client_id
+        .value
+        .unwrap_or_default();
+    let client = reqwest::Client::new();
+    let runtime = shared_runtime()?;
+
+    runtime
+        .block_on(auth::ensure_valid_token(
+            &client,
+            auth::WORKOS_DEFAULT_BASE_URL,
+            &client_id,
+        ))
+        .map(|_| ())
+        .map_err(|error| {
+            anyhow::anyhow!(error.to_string())
+                .context("failed to renew expired authentication before running 'sce sync'")
+        })
 }
 
 fn phase_name(phase: CloudSyncPhase) -> &'static str {

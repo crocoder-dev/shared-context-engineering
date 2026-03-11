@@ -53,7 +53,7 @@ pub fn render_help_for_path(path: &[&str]) -> Option<String> {
 pub fn auth_help_text() -> String {
     let base = render_help_for_path(&["auth"]).expect("auth help should be renderable");
 
-    format!("{base}\nExamples:\n  sce auth login\n  sce auth status\n  sce auth logout\n")
+    format!("{base}\nExamples:\n  sce auth login\n  sce auth renew\n  sce auth status\n  sce auth logout\n")
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
@@ -154,6 +154,17 @@ pub enum AuthSubcommand {
         /// Output format
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
+    },
+
+    /// Renew stored credentials when needed
+    Renew {
+        /// Output format
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+
+        /// Renew even when stored credentials are still valid
+        #[arg(long)]
+        force: bool,
     },
 
     /// Clear stored credentials
@@ -321,6 +332,53 @@ mod tests {
     }
 
     #[test]
+    fn parse_auth_renew() {
+        let cli = Cli::try_parse_from(["sce", "auth", "renew"]).expect("auth renew should parse");
+        match cli.command {
+            Some(Commands::Auth { subcommand }) => match subcommand {
+                AuthSubcommand::Renew { format, force } => {
+                    assert_eq!(format, OutputFormat::Text);
+                    assert!(!force);
+                }
+                _ => panic!("Expected Renew subcommand"),
+            },
+            _ => panic!("Expected Auth command"),
+        }
+    }
+
+    #[test]
+    fn parse_auth_renew_json() {
+        let cli = Cli::try_parse_from(["sce", "auth", "renew", "--format", "json"])
+            .expect("auth renew --format json should parse");
+        match cli.command {
+            Some(Commands::Auth { subcommand }) => match subcommand {
+                AuthSubcommand::Renew { format, force } => {
+                    assert_eq!(format, OutputFormat::Json);
+                    assert!(!force);
+                }
+                _ => panic!("Expected Renew subcommand"),
+            },
+            _ => panic!("Expected Auth command"),
+        }
+    }
+
+    #[test]
+    fn parse_auth_renew_force() {
+        let cli = Cli::try_parse_from(["sce", "auth", "renew", "--force"])
+            .expect("auth renew --force should parse");
+        match cli.command {
+            Some(Commands::Auth { subcommand }) => match subcommand {
+                AuthSubcommand::Renew { format, force } => {
+                    assert_eq!(format, OutputFormat::Text);
+                    assert!(force);
+                }
+                _ => panic!("Expected Renew subcommand"),
+            },
+            _ => panic!("Expected Auth command"),
+        }
+    }
+
+    #[test]
     fn parse_auth_logout_json() {
         let cli = Cli::try_parse_from(["sce", "auth", "logout", "--format", "json"])
             .expect("auth logout --format json should parse");
@@ -370,8 +428,10 @@ mod tests {
 
         assert!(help.contains("Usage: auth <COMMAND>"));
         assert!(help.contains("login"));
+        assert!(help.contains("renew"));
         assert!(help.contains("logout"));
         assert!(help.contains("status"));
+        assert!(help.contains("sce auth renew"));
         assert!(help.contains("sce auth status"));
     }
 

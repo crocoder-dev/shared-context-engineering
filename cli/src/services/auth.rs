@@ -56,10 +56,21 @@ pub struct RefreshTokenRequest {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TokenResponse {
     pub access_token: String,
+    #[serde(default = "default_token_type")]
     pub token_type: String,
+    #[serde(default = "default_access_token_expires_in")]
     pub expires_in: u64,
     pub refresh_token: String,
+    #[serde(default)]
     pub scope: Option<String>,
+}
+
+fn default_token_type() -> String {
+    "Bearer".to_string()
+}
+
+fn default_access_token_expires_in() -> u64 {
+    3600
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -146,13 +157,27 @@ pub async fn start_device_auth_flow(
     }
 
     let authorization = request_device_authorization(client, api_base_url, client_id).await?;
-    let token = poll_for_device_token(client, api_base_url, client_id, &authorization).await?;
-    let stored_tokens = save_tokens(&token)?;
+    let stored_tokens = complete_device_auth_flow(client, api_base_url, client_id, &authorization).await?;
 
     Ok(DeviceAuthFlowResult {
         authorization,
         stored_tokens,
     })
+}
+
+pub async fn complete_device_auth_flow(
+    client: &reqwest::Client,
+    api_base_url: &str,
+    client_id: &str,
+    authorization: &DeviceAuthorizationResponse,
+) -> Result<StoredTokens, AuthError> {
+    if client_id.trim().is_empty() {
+        return Err(AuthError::MissingClientId);
+    }
+
+    let token = poll_for_device_token(client, api_base_url, client_id, authorization).await?;
+    let stored_tokens = save_tokens(&token)?;
+    Ok(stored_tokens)
 }
 
 #[allow(dead_code)]
@@ -176,26 +201,51 @@ pub async fn ensure_valid_token(
         return Ok(stored);
     }
 
-    let refreshed =
-        refresh_access_token(client, api_base_url, client_id, &stored.refresh_token).await?;
+    let refreshed = refresh_access_token(client, api_base_url, client_id, &stored.refresh_token)
+        .await
+        .map_err(|error| map_refresh_failure_for_public_cli(error))?;
     let updated = save_tokens(&refreshed)?;
     Ok(updated)
 }
 
-async fn request_device_authorization(
+pub async fn renew_stored_token(
+    client: &reqwest::Client,
+    api_base_url: &str,
+    client_id: &str,
+) -> Result<StoredTokens, AuthError> {
+    if client_id.trim().is_empty() {
+        return Err(AuthError::MissingClientId);
+    }
+
+    let Some(stored) = load_tokens()? else {
+        return Err(AuthError::Unauthorized(
+            "No stored WorkOS credentials were found. Try: run 'sce auth login' before running authenticated commands.".to_string(),
+        ));
+    };
+
+    let refreshed = refresh_access_token(client, api_base_url, client_id, &stored.refresh_token)
+        .await
+        .map_err(map_refresh_failure_for_public_cli)?;
+    let updated = save_tokens(&refreshed)?;
+    Ok(updated)
+}
+
+pub fn is_stored_token_expired(stored: &StoredTokens) -> Result<bool, AuthError> {
+    let now_unix_seconds = current_unix_timestamp_seconds()?;
+    Ok(is_token_expired(stored, now_unix_seconds))
+}
+
+pub async fn request_device_authorization(
     client: &reqwest::Client,
     api_base_url: &str,
     client_id: &str,
 ) -> Result<DeviceAuthorizationResponse, AuthError> {
-    let endpoint = format!(
-        "{}/oauth/device/authorize",
-        api_base_url.trim_end_matches('/')
-    );
+    let endpoint = device_authorization_endpoint(api_base_url);
     let request = DeviceAuthorizationRequest {
         client_id: client_id.to_string(),
     };
 
-    let response = client.post(endpoint).json(&request).send().await?;
+    let response = client.post(endpoint).form(&request).send().await?;
 
     if response.status().is_success() {
         let parsed = response
@@ -226,7 +276,7 @@ async fn poll_for_device_token(
     client_id: &str,
     authorization: &DeviceAuthorizationResponse,
 ) -> Result<TokenResponse, AuthError> {
-    let endpoint = format!("{}/oauth/device/token", api_base_url.trim_end_matches('/'));
+    let endpoint = token_endpoint(api_base_url);
     let request = DeviceTokenPollRequest {
         grant_type: DEVICE_CODE_GRANT_TYPE.to_string(),
         device_code: authorization.device_code.clone(),
@@ -252,7 +302,7 @@ async fn poll_for_device_token(
             ));
         }
 
-        let response = client.post(&endpoint).json(&request).send().await?;
+        let response = client.post(&endpoint).form(&request).send().await?;
         if response.status().is_success() {
             let token = response
                 .json::<TokenResponse>()
@@ -323,7 +373,7 @@ async fn refresh_access_token(
         ));
     }
 
-    let endpoint = format!("{}/oauth/token", api_base_url.trim_end_matches('/'));
+    let endpoint = token_endpoint(api_base_url);
     let request = RefreshTokenRequest {
         grant_type: REFRESH_TOKEN_GRANT_TYPE.to_string(),
         refresh_token: refresh_token.to_string(),
@@ -346,7 +396,7 @@ async fn refresh_access_token(
             async move {
                 client
                     .post(&endpoint)
-                    .json(&request)
+                    .form(&request)
                     .send()
                     .await
                     .map_err(|error| anyhow!(error))
@@ -385,23 +435,32 @@ fn map_refresh_terminal_error(code: &str, description: Option<&str>) -> AuthErro
 
     match code {
         "invalid_grant" | "expired_token" => AuthError::Unauthorized(format!(
-            "Stored WorkOS refresh token is no longer valid{detail}. Try: run 'sce login' to authenticate again."
+            "Stored WorkOS refresh token is no longer valid{detail}. Try: run 'sce auth login' again to authenticate again."
         )),
         "invalid_client" => AuthError::Unauthorized(format!(
-            "WorkOS rejected the configured client ID during token refresh{detail}. Try: verify WORKOS_CLIENT_ID (or config value) and rerun 'sce login'."
+            "WorkOS rejected automatic token refresh for this public CLI client{detail}. Try: run 'sce auth login' again to re-authenticate."
         )),
         "invalid_request" => AuthError::Unauthorized(format!(
-            "WorkOS rejected the refresh token request as invalid{detail}. Try: run 'sce login' to reset local credentials."
+            "WorkOS rejected the refresh token request as invalid{detail}. Try: run 'sce auth login' again to reset local credentials."
         )),
         "unsupported_grant_type" => AuthError::Unauthorized(format!(
-            "WorkOS rejected the refresh OAuth grant type{detail}. Try: update the CLI and rerun 'sce login'."
+            "WorkOS rejected the refresh OAuth grant type{detail}. Try: update the CLI and rerun 'sce auth login'."
         )),
         "access_denied" => AuthError::Unauthorized(format!(
-            "WorkOS denied the refresh token request{detail}. Try: run 'sce login' to re-authenticate."
+            "WorkOS denied the refresh token request{detail}. Try: run 'sce auth login' again to re-authenticate."
         )),
         other => AuthError::Unauthorized(format!(
-            "WorkOS returned OAuth error '{other}' while refreshing credentials{detail}. Try: run 'sce login' to restore authentication."
+            "WorkOS returned OAuth error '{other}' while refreshing credentials{detail}. Try: run 'sce auth login' again to restore authentication."
         )),
+    }
+}
+
+fn map_refresh_failure_for_public_cli(error: AuthError) -> AuthError {
+    match error {
+        AuthError::Unauthorized(reason) => AuthError::Unauthorized(format!(
+            "Stored WorkOS access token expired and automatic refresh did not succeed for this public CLI. {reason}"
+        )),
+        other => other,
     }
 }
 
@@ -448,13 +507,40 @@ fn map_oauth_terminal_error(code: &str, description: Option<&str>) -> AuthError 
     }
 }
 
+fn device_authorization_endpoint(api_base_url: &str) -> String {
+    let base_url = api_base_url.trim_end_matches('/');
+    if uses_connect_oauth_endpoints(api_base_url) {
+        format!("{base_url}/oauth2/device_authorization")
+    } else {
+        format!("{base_url}/user_management/authorize/device")
+    }
+}
+
+fn token_endpoint(api_base_url: &str) -> String {
+    let base_url = api_base_url.trim_end_matches('/');
+    if uses_connect_oauth_endpoints(api_base_url) {
+        format!("{base_url}/oauth2/token")
+    } else {
+        format!("{base_url}/user_management/authenticate")
+    }
+}
+
+fn uses_connect_oauth_endpoints(api_base_url: &str) -> bool {
+    match reqwest::Url::parse(api_base_url) {
+        Ok(url) => url.host_str() != Some("api.workos.com"),
+        Err(_) => api_base_url.trim_end_matches('/') != WORKOS_DEFAULT_BASE_URL,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        is_token_expired, map_oauth_terminal_error, map_refresh_terminal_error,
-        poll_decision_for_error_code, DeviceAuthorizationResponse, DeviceTokenPollRequest,
-        OAuthErrorResponse, PollDecision, RefreshTokenRequest, TokenResponse,
-        DEVICE_CODE_GRANT_TYPE, REFRESH_TOKEN_GRANT_TYPE,
+        device_authorization_endpoint, is_token_expired, map_oauth_terminal_error,
+        map_refresh_failure_for_public_cli, map_refresh_terminal_error,
+        poll_decision_for_error_code, token_endpoint, DeviceAuthorizationResponse,
+        DeviceTokenPollRequest, OAuthErrorResponse, PollDecision, RefreshTokenRequest,
+        TokenResponse, DEVICE_CODE_GRANT_TYPE,
+        REFRESH_TOKEN_GRANT_TYPE, WORKOS_DEFAULT_BASE_URL, AuthError,
     };
     use crate::services::token_storage::StoredTokens;
 
@@ -497,6 +583,30 @@ mod tests {
             serde_json::from_str(&encoded).expect("token response should deserialize");
 
         assert_eq!(decoded, token);
+    }
+
+    #[test]
+    fn token_response_deserializes_from_cli_auth_success_shape() {
+        let payload = r#"{
+            "user": {
+                "object": "user",
+                "id": "user_123",
+                "email": "person@example.com"
+            },
+            "organization_id": "org_123",
+            "access_token": "access_123",
+            "refresh_token": "refresh_123",
+            "authentication_method": "GoogleOAuth"
+        }"#;
+
+        let parsed: TokenResponse =
+            serde_json::from_str(payload).expect("CLI auth token response should parse");
+
+        assert_eq!(parsed.access_token, "access_123");
+        assert_eq!(parsed.refresh_token, "refresh_123");
+        assert_eq!(parsed.token_type, "Bearer");
+        assert_eq!(parsed.expires_in, 3600);
+        assert_eq!(parsed.scope, None);
     }
 
     #[test]
@@ -607,7 +717,49 @@ mod tests {
     #[test]
     fn refresh_terminal_error_mapping_requires_relogin_on_invalid_grant() {
         let message = map_refresh_terminal_error("invalid_grant", Some("expired")).to_string();
-        assert!(message.contains("sce login"));
+        assert!(message.contains("sce auth login"));
         assert!(message.contains("Try:"));
+    }
+
+    #[test]
+    fn refresh_terminal_error_mapping_explains_public_cli_fallback_for_invalid_client() {
+        let message = map_refresh_terminal_error("invalid_client", Some("Unknown client.")).to_string();
+        assert!(message.contains("public CLI client"));
+        assert!(message.contains("sce auth login"));
+    }
+
+    #[test]
+    fn refresh_failure_wrapper_explains_relogin_requirement() {
+        let message = map_refresh_failure_for_public_cli(AuthError::Unauthorized(
+            "WorkOS rejected automatic token refresh for this public CLI client.".to_string(),
+        ))
+        .to_string();
+        assert!(message.contains("Stored WorkOS access token expired"));
+        assert!(message.contains("public CLI"));
+    }
+
+    #[test]
+    fn workos_api_uses_user_management_device_auth_endpoints() {
+        assert_eq!(
+            device_authorization_endpoint(WORKOS_DEFAULT_BASE_URL),
+            "https://api.workos.com/user_management/authorize/device"
+        );
+        assert_eq!(
+            token_endpoint(WORKOS_DEFAULT_BASE_URL),
+            "https://api.workos.com/user_management/authenticate"
+        );
+    }
+
+    #[test]
+    fn authkit_domains_use_connect_oauth_endpoints() {
+        let base_url = "https://example.authkit.app";
+        assert_eq!(
+            device_authorization_endpoint(base_url),
+            "https://example.authkit.app/oauth2/device_authorization"
+        );
+        assert_eq!(
+            token_endpoint(base_url),
+            "https://example.authkit.app/oauth2/token"
+        );
     }
 }

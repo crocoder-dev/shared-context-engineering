@@ -1,10 +1,11 @@
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{io::Write, path::Path};
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::json;
 
-use crate::services::auth::{self, DeviceAuthFlowResult};
+use crate::services::auth::{self, AuthError, DeviceAuthFlowResult};
 use crate::services::config;
 use crate::services::output_format::OutputFormat;
 use crate::services::token_storage::{self, StoredTokens};
@@ -18,6 +19,7 @@ static AUTH_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthSubcommand {
     Login { format: AuthFormat },
+    Renew { format: AuthFormat, force: bool },
     Logout { format: AuthFormat },
     Status { format: AuthFormat },
 }
@@ -40,22 +42,25 @@ struct AuthStatusReport {
 }
 
 pub fn run_auth_subcommand(request: AuthRequest) -> Result<String> {
-    run_auth_subcommand_with(request, run_login, run_logout, run_status)
+    run_auth_subcommand_with(request, run_login, run_renew, run_logout, run_status)
 }
 
-fn run_auth_subcommand_with<L, O, S>(
+fn run_auth_subcommand_with<L, R, O, S>(
     request: AuthRequest,
     login: L,
+    renew: R,
     logout: O,
     status: S,
 ) -> Result<String>
 where
     L: FnOnce(AuthFormat) -> Result<String>,
+    R: FnOnce(AuthFormat, bool) -> Result<String>,
     O: FnOnce(AuthFormat) -> Result<String>,
     S: FnOnce(AuthFormat) -> Result<String>,
 {
     match request.subcommand {
         AuthSubcommand::Login { format } => login(format),
+        AuthSubcommand::Renew { format, force } => renew(format, force),
         AuthSubcommand::Logout { format } => logout(format),
         AuthSubcommand::Status { format } => status(format),
     }
@@ -65,20 +70,24 @@ pub fn run_login(format: AuthFormat) -> Result<String> {
     let client = reqwest::Client::new();
     let runtime = shared_runtime()?;
 
-    run_login_with(format, resolve_login_client_id, |client_id| {
-        runtime
+    let client_id = resolve_login_client_id()?;
+
+    if let Some(stored_tokens) = maybe_renew_expired_credentials(runtime, &client, &client_id)? {
+        return render_login_refresh_result(&stored_tokens, format);
+    }
+
+    match format {
+        AuthFormat::Text => run_text_login_with_runtime(runtime, &client, &client_id),
+        AuthFormat::Json => run_login_with(format, || Ok(client_id), |client_id| {
+            runtime
                 .block_on(auth::start_device_auth_flow(
                     &client,
                     auth::WORKOS_DEFAULT_BASE_URL,
                     client_id,
                 ))
-                .map_err(|error| {
-                    anyhow!(with_try_guidance(
-                        error.to_string(),
-                        "verify the resolved WorkOS client ID source (WORKOS_CLIENT_ID, config file, or baked default), confirm network access, and rerun 'sce auth login'."
-                    ))
-                })
-    })
+                .map_err(map_login_error)
+        }),
+    }
 }
 
 pub fn run_logout(format: AuthFormat) -> Result<String> {
@@ -91,9 +100,45 @@ pub fn run_logout(format: AuthFormat) -> Result<String> {
     render_logout_result(deleted, format)
 }
 
+pub fn run_renew(format: AuthFormat, force: bool) -> Result<String> {
+    let client = reqwest::Client::new();
+    let runtime = shared_runtime()?;
+    let client_id = resolve_login_client_id()?;
+
+    let Some(stored_tokens) = token_storage::load_tokens()? else {
+        return Err(anyhow!(AuthError::Unauthorized(
+            "No stored WorkOS credentials were found. Try: run 'sce auth login' before running 'sce auth renew'.".to_string(),
+        )));
+    };
+
+    let was_expired = auth::is_stored_token_expired(&stored_tokens)?;
+    let updated = if force {
+        runtime
+            .block_on(auth::renew_stored_token(
+                &client,
+                auth::WORKOS_DEFAULT_BASE_URL,
+                &client_id,
+            ))
+            .map_err(map_login_error)?
+    } else {
+        runtime
+            .block_on(auth::ensure_valid_token(
+                &client,
+                auth::WORKOS_DEFAULT_BASE_URL,
+                &client_id,
+            ))
+            .map_err(map_login_error)?
+    };
+
+    render_renew_result(&updated, force || was_expired, format)
+}
+
 pub fn run_status(format: AuthFormat) -> Result<String> {
     let report = match token_storage::load_tokens()? {
-        Some(tokens) => build_authenticated_status_report(&tokens)?,
+        Some(tokens) => {
+            let tokens = maybe_refresh_tokens_for_status(&tokens)?.unwrap_or(tokens);
+            build_authenticated_status_report(&tokens)?
+        }
         None => AuthStatusReport {
             authentication_state: "unauthenticated",
             has_stored_credentials: false,
@@ -133,6 +178,81 @@ where
     render_login_result(&result, format)
 }
 
+fn maybe_renew_expired_credentials(
+    runtime: &tokio::runtime::Runtime,
+    client: &reqwest::Client,
+    client_id: &str,
+) -> Result<Option<StoredTokens>> {
+    let Some(stored_tokens) = token_storage::load_tokens()? else {
+        return Ok(None);
+    };
+
+    if !auth::is_stored_token_expired(&stored_tokens)? {
+        return Ok(None);
+    }
+
+    match runtime.block_on(auth::ensure_valid_token(
+        client,
+        auth::WORKOS_DEFAULT_BASE_URL,
+        client_id,
+    )) {
+        Ok(updated) => Ok(Some(updated)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn maybe_refresh_tokens_for_status(stored_tokens: &StoredTokens) -> Result<Option<StoredTokens>> {
+    if !auth::is_stored_token_expired(stored_tokens)? {
+        return Ok(None);
+    }
+
+    let client_id = resolve_login_client_id()?;
+    let runtime = shared_runtime()?;
+    let client = reqwest::Client::new();
+
+    match runtime.block_on(auth::ensure_valid_token(
+        &client,
+        auth::WORKOS_DEFAULT_BASE_URL,
+        &client_id,
+    )) {
+        Ok(updated) => Ok(Some(updated)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn run_text_login_with_runtime(
+    runtime: &tokio::runtime::Runtime,
+    client: &reqwest::Client,
+    client_id: &str,
+) -> Result<String> {
+    let authorization = runtime
+        .block_on(auth::request_device_authorization(
+            client,
+            auth::WORKOS_DEFAULT_BASE_URL,
+            client_id,
+        ))
+        .map_err(map_login_error)?;
+
+    write_login_prompt(&authorization)?;
+
+    let stored_tokens = runtime
+        .block_on(auth::complete_device_auth_flow(
+            client,
+            auth::WORKOS_DEFAULT_BASE_URL,
+            client_id,
+            &authorization,
+        ))
+        .map_err(map_login_error)?;
+
+    render_login_result(
+        &DeviceAuthFlowResult {
+            authorization,
+            stored_tokens,
+        },
+        AuthFormat::Text,
+    )
+}
+
 fn resolve_login_client_id() -> Result<String> {
     let cwd = std::env::current_dir()
         .context("failed to determine current directory for auth config resolution")?;
@@ -145,15 +265,15 @@ fn resolve_login_client_id() -> Result<String> {
 
 #[allow(dead_code)]
 fn resolve_login_client_id_with<FEnv, FRead, FGlobalPath>(
-    cwd: &std::path::Path,
+    cwd: &Path,
     env_lookup: FEnv,
     read_file: FRead,
-    path_exists: fn(&std::path::Path) -> bool,
+    path_exists: fn(&Path) -> bool,
     resolve_global_config_path: FGlobalPath,
 ) -> Result<String>
 where
     FEnv: Fn(&str) -> Option<String>,
-    FRead: Fn(&std::path::Path) -> Result<String>,
+    FRead: Fn(&Path) -> Result<String>,
     FGlobalPath: Fn() -> Result<std::path::PathBuf>,
 {
     Ok(config::resolve_auth_runtime_config_with(
@@ -166,6 +286,33 @@ where
     .workos_client_id
     .value
     .unwrap_or_default())
+}
+
+fn write_login_prompt(authorization: &auth::DeviceAuthorizationResponse) -> Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    let browser_url = authorization
+        .verification_uri_complete
+        .as_deref()
+        .unwrap_or(&authorization.verification_uri);
+    writeln!(
+        stdout,
+        "Open in browser: {}",
+        browser_url
+    )
+    .context("failed to write auth verification URL to stdout")?;
+    writeln!(stdout, "Code: {}", authorization.user_code)
+        .context("failed to write auth user code to stdout")?;
+    writeln!(stdout, "Waiting for browser confirmation...")
+        .context("failed to write auth progress message to stdout")?;
+    stdout.flush().context("failed to flush auth prompt to stdout")?;
+    Ok(())
+}
+
+fn map_login_error(error: AuthError) -> anyhow::Error {
+    anyhow!(with_try_guidance(
+        error.to_string(),
+        "verify the resolved WorkOS client ID source (WORKOS_CLIENT_ID, config file, or baked default), confirm network access, and rerun 'sce auth login'."
+    ))
 }
 
 fn build_authenticated_status_report(tokens: &StoredTokens) -> Result<AuthStatusReport> {
@@ -193,17 +340,17 @@ fn render_login_result(result: &DeviceAuthFlowResult, format: AuthFormat) -> Res
         .stored_tokens
         .stored_at_unix_seconds
         .saturating_add(result.stored_tokens.expires_in);
+    let browser_url = result
+        .authorization
+        .verification_uri_complete
+        .as_deref()
+        .unwrap_or(&result.authorization.verification_uri);
 
     match format {
         AuthFormat::Text => Ok(format!(
-            "Authentication succeeded. User code: {}\nVerification URL: {}\nVerification URL (complete): {}\nToken type: {}\nExpires at (unix): {}",
+            "Authentication succeeded.\nOpen in browser: {}\nCode: {}\nToken type: {}\nExpires at (unix): {}",
+            browser_url,
             result.authorization.user_code,
-            result.authorization.verification_uri,
-            result
-                .authorization
-                .verification_uri_complete
-                .as_deref()
-                .unwrap_or("(not provided)"),
             result.stored_tokens.token_type,
             expires_at_unix_seconds,
         )),
@@ -222,6 +369,60 @@ fn render_login_result(result: &DeviceAuthFlowResult, format: AuthFormat) -> Res
             "expires_at_unix_seconds": expires_at_unix_seconds,
         }))
         .context("failed to serialize auth login report to JSON. Try: rerun 'sce auth login --format json'."),
+    }
+}
+
+fn render_login_refresh_result(tokens: &StoredTokens, format: AuthFormat) -> Result<String> {
+    let expires_at_unix_seconds = tokens
+        .stored_at_unix_seconds
+        .saturating_add(tokens.expires_in);
+
+    match format {
+        AuthFormat::Text => Ok(format!(
+            "Authentication renewed.\nToken type: {}\nExpires at (unix): {}",
+            tokens.token_type, expires_at_unix_seconds,
+        )),
+        AuthFormat::Json => serde_json::to_string_pretty(&json!({
+            "status": "ok",
+            "command": NAME,
+            "subcommand": "login",
+            "authenticated": true,
+            "renewed": true,
+            "token_type": tokens.token_type,
+            "scope": tokens.scope,
+            "stored_at_unix_seconds": tokens.stored_at_unix_seconds,
+            "expires_in_seconds": tokens.expires_in,
+            "expires_at_unix_seconds": expires_at_unix_seconds,
+        }))
+        .context("failed to serialize auth login renewal report to JSON. Try: rerun 'sce auth login --format json'."),
+    }
+}
+
+fn render_renew_result(tokens: &StoredTokens, renewed: bool, format: AuthFormat) -> Result<String> {
+    let expires_at_unix_seconds = tokens
+        .stored_at_unix_seconds
+        .saturating_add(tokens.expires_in);
+
+    match format {
+        AuthFormat::Text => Ok(format!(
+            "Authentication {}.\nToken type: {}\nExpires at (unix): {}",
+            if renewed { "renewed" } else { "is already valid" },
+            tokens.token_type,
+            expires_at_unix_seconds,
+        )),
+        AuthFormat::Json => serde_json::to_string_pretty(&json!({
+            "status": "ok",
+            "command": NAME,
+            "subcommand": "renew",
+            "authenticated": true,
+            "renewed": renewed,
+            "token_type": tokens.token_type,
+            "scope": tokens.scope,
+            "stored_at_unix_seconds": tokens.stored_at_unix_seconds,
+            "expires_in_seconds": tokens.expires_in,
+            "expires_at_unix_seconds": expires_at_unix_seconds,
+        }))
+        .context("failed to serialize auth renew report to JSON. Try: rerun 'sce auth renew --format json'."),
     }
 }
 
@@ -301,9 +502,9 @@ mod tests {
 
     use super::{
         build_authenticated_status_report, render_login_result, render_logout_result,
-        render_status_result, resolve_login_client_id_with, run_auth_subcommand_with,
-        run_login_with, with_try_guidance, AuthFormat, AuthRequest, AuthStatusReport,
-        AuthSubcommand,
+        render_renew_result, render_status_result, resolve_login_client_id_with,
+        run_auth_subcommand_with, run_login_with, with_try_guidance, AuthFormat, AuthRequest,
+        AuthStatusReport, AuthSubcommand,
     };
     use crate::services::auth::{AuthError, DeviceAuthFlowResult, DeviceAuthorizationResponse};
     use crate::services::token_storage::StoredTokens;
@@ -340,6 +541,7 @@ mod tests {
                 },
             },
             |_| Ok("login".to_string()),
+            |_, _| Ok("renew".to_string()),
             |_| Ok("logout".to_string()),
             |_| Ok("status".to_string()),
         )?;
@@ -357,6 +559,7 @@ mod tests {
                 },
             },
             |_| Ok("login".to_string()),
+            |_, _| Ok("renew".to_string()),
             |_| Ok("logout".to_string()),
             |_| Ok("status".to_string()),
         )?;
@@ -374,11 +577,35 @@ mod tests {
                 },
             },
             |_| Ok("login".to_string()),
+            |_, _| Ok("renew".to_string()),
             |_| Ok("logout".to_string()),
             |_| Ok("status".to_string()),
         )?;
 
         assert_eq!(output, "status");
+        Ok(())
+    }
+
+    #[test]
+    fn dispatcher_routes_renew_to_renew_handler() -> Result<()> {
+        let output = run_auth_subcommand_with(
+            AuthRequest {
+                subcommand: AuthSubcommand::Renew {
+                    format: AuthFormat::Text,
+                    force: true,
+                },
+            },
+            |_| Ok("login".to_string()),
+            |format, force| {
+                assert_eq!(format, AuthFormat::Text);
+                assert!(force);
+                Ok("renew".to_string())
+            },
+            |_| Ok("logout".to_string()),
+            |_| Ok("status".to_string()),
+        )?;
+
+        assert_eq!(output, "renew");
         Ok(())
     }
 
@@ -392,6 +619,17 @@ mod tests {
         assert_eq!(parsed["subcommand"], "login");
         assert_eq!(parsed["authenticated"], true);
         assert_eq!(parsed["user_code"], "ABCD-EFGH");
+        Ok(())
+    }
+
+    #[test]
+    fn login_text_output_is_readable_and_uses_browser_url() -> Result<()> {
+        let output = render_login_result(&fixture_login_result(), AuthFormat::Text)?;
+
+        assert!(output.contains("Authentication succeeded."));
+        assert!(output.contains("Open in browser: https://workos.com/device?user_code=ABCD-EFGH"));
+        assert!(output.contains("Code: ABCD-EFGH"));
+        assert!(!output.contains("Verification URL (complete):"));
         Ok(())
     }
 
@@ -546,6 +784,16 @@ mod tests {
     }
 
     #[test]
+    fn renew_json_output_reports_renewal_state() -> Result<()> {
+        let output = render_renew_result(&fixture_login_result().stored_tokens, true, AuthFormat::Json)?;
+        let parsed: Value = serde_json::from_str(&output)?;
+
+        assert_eq!(parsed["subcommand"], "renew");
+        assert_eq!(parsed["renewed"], true);
+        Ok(())
+    }
+
+    #[test]
     fn status_text_output_reports_unauthenticated_state() -> Result<()> {
         let output = render_status_result(
             &AuthStatusReport {
@@ -619,6 +867,7 @@ mod tests {
                 },
             },
             |_| Err(anyhow!("login failed. Try: rerun login.")),
+            |_, _| Ok("renew".to_string()),
             |_| Ok("logout".to_string()),
             |_| Ok("status".to_string()),
         )

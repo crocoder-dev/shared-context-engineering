@@ -499,6 +499,12 @@ fn convert_auth_subcommand(
                 format: convert_output_format(format),
             }
         }
+        cli_schema::AuthSubcommand::Renew { format, force } => {
+            services::auth_command::AuthSubcommand::Renew {
+                format: convert_output_format(format),
+                force,
+            }
+        }
         cli_schema::AuthSubcommand::Logout { format } => {
             services::auth_command::AuthSubcommand::Logout {
                 format: convert_output_format(format),
@@ -749,6 +755,7 @@ mod tests {
         let stdout = String::from_utf8(stdout).expect("stdout should be utf-8");
         assert!(stdout.contains("Usage: auth <COMMAND>"));
         assert!(stdout.contains("login"));
+        assert!(stdout.contains("renew"));
         assert!(stdout.contains("status"));
         assert!(stdout.contains("sce auth status"));
     }
@@ -770,6 +777,7 @@ mod tests {
         assert!(stdout.contains("Authenticate with `WorkOS` device authorization flow"));
         assert!(stdout.contains("Usage: auth <COMMAND>"));
         assert!(stdout.contains("sce auth login"));
+        assert!(stdout.contains("sce auth renew"));
     }
 
     #[test]
@@ -1211,6 +1219,45 @@ mod tests {
             Command::Auth(crate::services::auth_command::AuthRequest {
                 subcommand: crate::services::auth_command::AuthSubcommand::Status {
                     format: crate::services::auth_command::AuthFormat::Json,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn parser_routes_auth_renew_subcommand() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "auth".to_string(),
+            "renew".to_string(),
+        ])
+        .expect("auth renew should parse");
+        assert_eq!(
+            command,
+            Command::Auth(crate::services::auth_command::AuthRequest {
+                subcommand: crate::services::auth_command::AuthSubcommand::Renew {
+                    format: crate::services::auth_command::AuthFormat::Text,
+                    force: false,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn parser_routes_auth_renew_force_subcommand() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "auth".to_string(),
+            "renew".to_string(),
+            "--force".to_string(),
+        ])
+        .expect("auth renew --force should parse");
+        assert_eq!(
+            command,
+            Command::Auth(crate::services::auth_command::AuthRequest {
+                subcommand: crate::services::auth_command::AuthSubcommand::Renew {
+                    format: crate::services::auth_command::AuthFormat::Text,
+                    force: true,
                 },
             })
         );
