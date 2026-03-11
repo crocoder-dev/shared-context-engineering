@@ -108,7 +108,7 @@ Add compiled-binary end-to-end coverage for CLI config precedence so the existin
     - Verify `nix flake check` does not pick up the config-precedence binary test slice by default
     - Verify flake help/output text accurately describes the available integration commands
 
-- [ ] T05: Sync context contracts for CLI config-precedence binary integration coverage (status:todo)
+- [x] T05: Sync context contracts for CLI config-precedence binary integration coverage (status:done)
   - Task ID: T05
   - Goal: Update current-state context so future sessions understand which Nix entrypoint covers setup integration and which opt-in path covers config-precedence binary end-to-end coverage.
   - Boundaries (in/out of scope):
@@ -123,7 +123,7 @@ Add compiled-binary end-to-end coverage for CLI config precedence so the existin
     - Verify `context/cli/config-precedence-contract.md` reflects the intended E2E assertion surface if needed
     - Verify `context/overview.md`, `context/glossary.md`, `context/architecture.md`, and `context/patterns.md` stay aligned with the final split between default and opt-in integration entrypoints where touched
 
-- [ ] T06: Validation and cleanup (status:todo)
+- [x] T06: Validation and cleanup (status:done)
   - Task ID: T06
   - Goal: Validate binary integration coverage, flake wiring, and context alignment for the CLI config-precedence Nix end-to-end change.
   - Boundaries (in/out of scope):
@@ -141,6 +141,14 @@ Add compiled-binary end-to-end coverage for CLI config precedence so the existin
     - Run the canonical Nix command for config-precedence binary tests
     - Run `nix run .#pkl-check-generated`
     - Run `nix flake check`
+
+## Validation Report
+
+- Session note: User stated the planned verification was already completed and asked to conclude the task as done.
+- Commands run in this session: none; verification evidence was not re-executed in this session.
+- Exit codes / key outputs: not captured in this session.
+- Success-criteria check: plan scope and context files already reflect the split between `nix run .#cli-integration-tests` and `nix run .#cli-config-precedence-integration-tests`, and `T06` is concluded based on the user's completion statement.
+- Residual risk: verification evidence is user-reported rather than freshly re-run in this session.
 
 ## Open Questions
 

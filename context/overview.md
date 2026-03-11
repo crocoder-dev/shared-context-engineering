@@ -18,6 +18,7 @@ The CLI now compiles an embedded setup asset manifest from `config/.opencode/**`
 The setup service also provides repository-root install orchestration: it resolves interactive or flag-based target selection, installs embedded assets, and reports deterministic completion details (selected target(s), installed file counts, and backup actions).
 The CLI now also applies baseline security hardening for reliability-driven automation: diagnostics/logging paths use deterministic secret redaction, `sce setup --hooks --repo <path>` canonicalizes and validates repository paths before execution, and setup write flows run explicit directory write-permission probes before staging/swap operations.
 The config service now provides deterministic runtime config resolution with explicit precedence (`flags > env > config file > defaults`), strict config-file validation (`log_level`, `timeout_ms`, `workos_client_id`), deterministic default discovery/merge of global+local config files (`${state_root}/sce/config.json` then `.sce/config.json` with local override), shared auth-key resolution with optional baked defaults starting at `workos_client_id`, and deterministic text/JSON output contracts for `sce config show` and `sce config validate`.
+The repository root flake now also exposes an opt-in compiled-binary config-precedence integration entrypoint, `nix run .#cli-config-precedence-integration-tests`, which runs `cli/tests/config_precedence_integration.rs` outside the default `nix flake check` path while `nix run .#cli-integration-tests` remains setup-only.
 The `doctor` command now validates Agent Trace local rollout readiness by resolving effective git hook-path source (default, per-repo `core.hooksPath`, or global `core.hooksPath`) and checking required hook presence/executable permissions with actionable diagnostics.
 The `mcp` placeholder contract is now scoped to future file-cache workflows (`cache-put`/`cache-get`) and remains intentionally non-runnable.
 The `sync` placeholder performs a local Turso smoke check through a lazily initialized shared tokio current-thread runtime with bounded retry/timeout/backoff controls, then reports a deferred cloud-sync plan from a placeholder gateway contract; persistent local DB schema bootstrap now uses the same bounded resilience wrapper.
@@ -70,6 +71,7 @@ The setup command parser/dispatch now also supports composable setup+hooks runs 
 - Run staged destructive sync for `config/` and root `.opencode/`: `nix run .#sync-opencode-config`
 - Run workflow token counting from repo root: `nix run .#token-count-workflows`
 - Run setup integration tests through the deterministic flake app entrypoint: `nix run .#cli-integration-tests`
+- Run opt-in config-precedence binary integration tests: `nix run .#cli-config-precedence-integration-tests`
 - Run repository flake checks (includes CLI setup command-surface and setup integration checks): `nix flake check`
 
 Lightweight post-task verification baseline (required after each completed task): run `nix run .#pkl-check-generated` and `nix flake check`.
