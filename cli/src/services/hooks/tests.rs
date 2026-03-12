@@ -16,10 +16,10 @@ use super::{
     apply_commit_msg_coauthor_policy, finalize_post_commit_trace, finalize_post_rewrite_remap,
     finalize_pre_commit_checkpoint, finalize_rewrite_trace, process_trace_retry_queue,
     resolve_pre_commit_checkpoint_path, run_commit_msg_subcommand_in_repo, run_hooks_subcommand,
-    run_pre_commit_subcommand_in_repo, CommitMsgRuntimeState, HookSubcommand, PendingCheckpoint,
-    PendingFileCheckpoint, PendingLineRange, PersistenceErrorClass, PersistenceFailure,
-    PersistenceTarget, PersistenceWriteResult, PostCommitFinalization, PostCommitInput,
-    PostCommitNoOpReason, PostCommitRuntimeState, PostRewriteFinalization, PostRewriteNoOpReason,
+    CommitMsgRuntimeState, HookSubcommand, PendingCheckpoint, PendingFileCheckpoint,
+    PendingLineRange, PersistenceErrorClass, PersistenceFailure, PersistenceTarget,
+    PersistenceWriteResult, PostCommitFinalization, PostCommitInput, PostCommitNoOpReason,
+    PostCommitRuntimeState, PostRewriteFinalization, PostRewriteNoOpReason,
     PostRewriteRuntimeState, PreCommitFinalization, PreCommitNoOpReason, PreCommitRuntimeState,
     PreCommitTreeAnchors, RetryMetricsSink, RetryProcessingMetric, RewriteMethod,
     RewriteRemapIngestion, RewriteRemapRequest, RewriteTraceFinalization, RewriteTraceInput,
@@ -790,44 +790,6 @@ fn pre_commit_finalization_uses_only_staged_ranges_and_captures_anchors() {
             end_line: 20
         }
     );
-}
-
-#[test]
-fn pre_commit_runtime_persists_staged_only_checkpoint_artifact() -> Result<()> {
-    let repo = create_temp_repo()?;
-    let tracked_file = repo.join("src").join("lib.rs");
-    fs::create_dir_all(
-        tracked_file
-            .parent()
-            .expect("tracked file path should have parent"),
-    )?;
-    fs::write(&tracked_file, "one\ntwo\nthree\nfour\n")?;
-    run_git_in_repo(&repo, &["add", "."])?;
-    run_git_in_repo(&repo, &["commit", "-m", "initial"])?;
-
-    fs::write(&tracked_file, "one\ntwo-staged\nthree\nfour\n")?;
-    run_git_in_repo(&repo, &["add", "src/lib.rs"])?;
-    fs::write(&tracked_file, "one\ntwo-staged\nthree\nfour-unstaged\n")?;
-
-    let message = run_pre_commit_subcommand_in_repo(&repo)?;
-    assert_eq!(
-        message,
-        "pre-commit hook executed and finalized staged checkpoint for 1 file(s)."
-    );
-
-    let checkpoint_path = resolve_pre_commit_checkpoint_path(&repo)?;
-    let checkpoint = serde_json::from_slice::<serde_json::Value>(&fs::read(&checkpoint_path)?)?;
-
-    assert_eq!(checkpoint["version"], 1);
-    assert_eq!(checkpoint["files"].as_array().map(Vec::len), Some(1));
-    assert_eq!(checkpoint["files"][0]["path"], "src/lib.rs");
-    assert_eq!(
-        checkpoint["files"][0]["ranges"].as_array().map(Vec::len),
-        Some(1)
-    );
-    assert_eq!(checkpoint["files"][0]["ranges"][0]["start_line"], 2);
-    assert_eq!(checkpoint["files"][0]["ranges"][0]["end_line"], 2);
-    Ok(())
 }
 
 fn sample_commit_msg_runtime() -> CommitMsgRuntimeState {

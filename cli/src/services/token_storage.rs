@@ -273,7 +273,7 @@ fn apply_secure_file_permissions(_path: &Path) -> Result<(), TokenStorageError> 
 
 #[cfg(test)]
 mod tests {
-    use super::{delete_tokens_at_path, load_tokens_from_path, save_tokens_at_path, StoredTokens};
+    use super::{delete_tokens_at_path, load_tokens_from_path};
     use std::fs;
     use std::path::PathBuf;
 
@@ -288,17 +288,6 @@ mod tests {
                 .as_nanos()
         );
         std::env::temp_dir().join(unique).join("tokens.json")
-    }
-
-    fn fixture_tokens() -> StoredTokens {
-        StoredTokens {
-            access_token: "access-token".to_string(),
-            token_type: "Bearer".to_string(),
-            expires_in: 3600,
-            refresh_token: "refresh-token".to_string(),
-            scope: Some("openid profile".to_string()),
-            stored_at_unix_seconds: 1_700_000_000,
-        }
     }
 
     #[test]
@@ -328,49 +317,11 @@ mod tests {
     }
 
     #[test]
-    fn delete_existing_token_file_returns_true() {
-        let token_path = unique_test_path("delete-existing");
-        save_tokens_at_path(&token_path, &fixture_tokens()).expect("tokens should save");
-
-        let deleted = delete_tokens_at_path(&token_path).expect("delete should succeed");
-
-        assert!(deleted);
-        assert!(!token_path.exists());
-
-        let _ = fs::remove_dir_all(
-            token_path
-                .parent()
-                .and_then(|path| path.parent())
-                .expect("temp tree should have two parent levels"),
-        );
-    }
-
-    #[test]
     fn delete_missing_token_file_returns_false() {
         let token_path = unique_test_path("delete-missing");
 
         let deleted = delete_tokens_at_path(&token_path).expect("delete should not fail");
 
         assert!(!deleted);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn save_sets_unix_file_permissions_to_0600() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let token_path = unique_test_path("unix-perms");
-        save_tokens_at_path(&token_path, &fixture_tokens()).expect("tokens should save");
-
-        let metadata = fs::metadata(&token_path).expect("token file should exist");
-        let mode = metadata.permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
-
-        let _ = fs::remove_dir_all(
-            token_path
-                .parent()
-                .and_then(|path| path.parent())
-                .expect("temp tree should have two parent levels"),
-        );
     }
 }

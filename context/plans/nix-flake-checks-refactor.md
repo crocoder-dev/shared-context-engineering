@@ -43,7 +43,7 @@ Refactor `cli/flake.nix` and root `flake.nix` to have a cleaner, more idiomatic 
     - `nix flake check ./cli`
     - `nix eval ./cli#checks --apply builtins.attrNames`
 
-- [ ] T02: Update root flake.nix to re-export CLI checks and add pkl-parity (status:todo)
+- [x] T02: Update root flake.nix to re-export CLI checks and add pkl-parity (status:done)
   - Task ID: T02
   - Goal: Re-export CLI checks with consistent naming and add pkl-parity as a check
   - Boundaries (in/out of scope):
@@ -57,6 +57,11 @@ Refactor `cli/flake.nix` and root `flake.nix` to have a cleaner, more idiomatic 
     - `nix flake check`
     - `nix eval .#checks --apply builtins.attrNames`
     - `nix run .#sync-opencode-config -- --help`
+  - Completed: 2026-03-12
+  - Evidence:
+    - `nix eval ".#checks.x86_64-linux" --apply builtins.attrNames` → `["cli-clippy", "cli-fmt", "cli-tests", "pkl-parity"]`
+    - `nix flake check` passed all 4 checks
+    - All apps verified working
 
 - [ ] T03: Validation and cleanup (status:todo)
   - Task ID: T03

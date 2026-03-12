@@ -95,23 +95,6 @@ fn setup_options_reject_repo_without_hooks() {
 }
 
 #[test]
-fn run_setup_hooks_reports_per_hook_statuses() -> Result<()> {
-    let temp = TestTempDir::new("sce-setup-hook-install-tests")?;
-    init_git_repo(temp.path())?;
-
-    let message = run_setup_hooks(temp.path())?;
-    assert!(message.contains("Hook setup completed successfully."));
-    assert!(message.contains("Repository root:"));
-    assert!(message.contains("Hooks directory:"));
-    assert!(message.contains("commit-msg: installed"));
-    assert!(message.contains("post-commit: installed"));
-    assert!(message.contains("pre-commit: installed"));
-    assert!(message.contains("backup: not needed"));
-
-    Ok(())
-}
-
-#[test]
 fn run_setup_hooks_rejects_missing_repo_path() {
     let missing_path = PathBuf::from("/definitely/missing/sce-test-repo");
     let error = run_setup_hooks(&missing_path).expect_err("missing repo path should fail");

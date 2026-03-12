@@ -132,10 +132,78 @@
           exit 1
         '';
 
+        pklParityCheck =
+          pkgs.runCommand "pkl-parity-check"
+            {
+              nativeBuildInputs = [
+                pkgs.git
+                pkgs.pkl
+              ];
+            }
+            ''
+              set -euo pipefail
+
+              # Copy source files
+              cp -r "${./.}" ./repo
+              chmod -R u+w ./repo
+              cd ./repo
+
+              tmp_dir="$(mktemp -d)"
+              cleanup() {
+                rm -rf "$tmp_dir"
+              }
+              trap cleanup EXIT
+
+              pkl eval -m "$tmp_dir" config/pkl/generate.pkl >/dev/null
+
+              paths=(
+                "config/.opencode/agent"
+                "config/.opencode/command"
+                "config/.opencode/skills"
+                "config/.opencode/lib/drift-collectors.js"
+                "config/automated/.opencode/agent"
+                "config/automated/.opencode/command"
+                "config/automated/.opencode/skills"
+                "config/automated/.opencode/lib/drift-collectors.js"
+                "config/.claude/agents"
+                "config/.claude/commands"
+                "config/.claude/skills"
+                "config/.claude/lib/drift-collectors.js"
+              )
+
+              stale=0
+              for path in "''${paths[@]}"; do
+                if [ -d "$tmp_dir/$path" ] && [ -d "$path" ]; then
+                  if ! git diff --no-index --exit-code -- "$tmp_dir/$path" "$path" >/dev/null 2>&1; then
+                    stale=1
+                    printf 'Generated output drift detected at %s\n' "$path"
+                    git diff --no-index -- "$tmp_dir/$path" "$path" || true
+                  fi
+                fi
+              done
+
+              if [[ "$stale" -ne 0 ]]; then
+                cat <<'EOF'
+              Generated files are stale.
+
+              Regenerate with:
+                nix develop -c pkl eval -m . config/pkl/generate.pkl
+              EOF
+                exit 1
+              fi
+
+              printf 'Generated outputs are up to date.\n'
+              mkdir -p "$out"
+            '';
+
       in
       {
-        checks.cli-clippy = cli.checks.${system}.cli-clippy;
-        checks.sce-package = cli.packages.${system}.default;
+        checks = {
+          cli-tests = cli.checks.${system}.cli-tests;
+          cli-clippy = cli.checks.${system}.cli-clippy;
+          cli-fmt = cli.checks.${system}.cli-fmt;
+          pkl-parity = pklParityCheck;
+        };
 
         apps.sync-opencode-config = {
           type = "app";

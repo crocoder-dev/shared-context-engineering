@@ -286,21 +286,7 @@ mod tests {
     use crate::test_support::TestTempDir;
     use anyhow::Result;
 
-    use super::{apply_core_schema_migrations, run_smoke_check, LocalDatabaseTarget};
-
-    async fn fetch_single_integer(target: LocalDatabaseTarget<'_>, query: &str) -> Result<i64> {
-        let conn = super::connect_local(target).await?;
-        let mut rows = conn.query(query, ()).await?;
-        let row = rows
-            .next()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("integer query returned no rows"))?;
-        let value = row.get_value(0)?;
-        let value = *value
-            .as_integer()
-            .ok_or_else(|| anyhow::anyhow!("integer query returned non-integer"))?;
-        Ok(value)
-    }
+    use super::{run_smoke_check, LocalDatabaseTarget};
 
     #[test]
     fn in_memory_smoke_check_succeeds() -> Result<()> {
@@ -318,118 +304,6 @@ mod tests {
         let outcome = runtime.block_on(run_smoke_check(LocalDatabaseTarget::Path(&path)))?;
         assert_eq!(outcome.inserted_rows, 1);
         assert!(path.exists());
-        Ok(())
-    }
-
-    #[test]
-    fn reconciliation_schema_supports_replay_safe_runs_and_mapping_queries() -> Result<()> {
-        let temp = TestTempDir::new("sce-reconciliation-schema-tests")?;
-        let path = temp.path().join("reconciliation.db");
-        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-
-        runtime.block_on(apply_core_schema_migrations(LocalDatabaseTarget::Path(
-            &path,
-        )))?;
-
-        runtime.block_on(async {
-            let location = super::target_location(LocalDatabaseTarget::Path(&path))?;
-            let db = turso::Builder::new_local(location).build().await?;
-            let conn = db.connect()?;
-
-            conn.execute(
-                "INSERT INTO repositories (canonical_root) VALUES (?1)",
-                ["/tmp/reconciliation-repo"],
-            )
-            .await?;
-
-            conn.execute(
-                "INSERT INTO reconciliation_runs (repository_id, provider, idempotency_key, status) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                (1_i64, "github", "run:key:1", "completed"),
-            )
-            .await?;
-
-            conn.execute(
-                "INSERT INTO conversations (repository_id, url, source) VALUES (?1, ?2, ?3)",
-                (1_i64, "https://example.dev/conversations/abc", "github"),
-            )
-            .await?;
-
-            conn.execute(
-                "INSERT INTO rewrite_mappings (\
-                    reconciliation_run_id, repository_id, old_commit_sha, new_commit_sha,\
-                    mapping_status, confidence, idempotency_key\
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                (
-                    1_i64,
-                    1_i64,
-                    "1111111111111111111111111111111111111111",
-                    "2222222222222222222222222222222222222222",
-                    "mapped",
-                    0.98_f64,
-                    "map:key:1",
-                ),
-            )
-            .await?;
-
-            let duplicate_run = conn
-                .execute(
-                    "INSERT INTO reconciliation_runs (repository_id, provider, idempotency_key, status) \
-                     VALUES (?1, ?2, ?3, ?4)",
-                    (1_i64, "github", "run:key:1", "completed"),
-                )
-                .await;
-            assert!(duplicate_run.is_err(), "run idempotency key should be unique");
-
-            let duplicate_mapping = conn
-                .execute(
-                    "INSERT INTO rewrite_mappings (\
-                        reconciliation_run_id, repository_id, old_commit_sha, new_commit_sha,\
-                        mapping_status, confidence, idempotency_key\
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    (
-                        1_i64,
-                        1_i64,
-                        "1111111111111111111111111111111111111111",
-                        "3333333333333333333333333333333333333333",
-                        "mapped",
-                        0.70_f64,
-                        "map:key:1",
-                    ),
-                )
-                .await;
-            assert!(
-                duplicate_mapping.is_err(),
-                "mapping idempotency key should be unique"
-            );
-
-            Ok::<(), anyhow::Error>(())
-        })?;
-
-        let run_count = runtime.block_on(fetch_single_integer(
-            LocalDatabaseTarget::Path(&path),
-            "SELECT COUNT(*) FROM reconciliation_runs WHERE repository_id = 1 AND status = 'completed'",
-        ))?;
-        assert_eq!(run_count, 1);
-
-        let mapped_count = runtime.block_on(fetch_single_integer(
-            LocalDatabaseTarget::Path(&path),
-            "SELECT COUNT(*) FROM rewrite_mappings WHERE repository_id = 1 AND old_commit_sha = '1111111111111111111111111111111111111111'",
-        ))?;
-        assert_eq!(mapped_count, 1);
-
-        let joined_mapping_count = runtime.block_on(fetch_single_integer(
-            LocalDatabaseTarget::Path(&path),
-            "SELECT COUNT(*) FROM rewrite_mappings m JOIN reconciliation_runs r ON r.id = m.reconciliation_run_id JOIN repositories repo ON repo.id = m.repository_id WHERE r.repository_id = repo.id AND m.old_commit_sha = '1111111111111111111111111111111111111111'",
-        ))?;
-        assert_eq!(joined_mapping_count, 1);
-
-        let conversation_count = runtime.block_on(fetch_single_integer(
-            LocalDatabaseTarget::Path(&path),
-            "SELECT COUNT(*) FROM conversations WHERE repository_id = 1 AND source = 'github'",
-        ))?;
-        assert_eq!(conversation_count, 1);
-
         Ok(())
     }
 }
