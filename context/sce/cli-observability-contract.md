@@ -12,7 +12,7 @@ It covers deterministic stderr logger controls, optional OpenTelemetry export bo
 - `SCE_LOG_FILE` optionally enables a file log sink at the provided file path.
 - `SCE_LOG_FILE_MODE` controls file-write policy with allowed values `truncate` and `append`.
 - `SCE_LOG_FILE_MODE` requires `SCE_LOG_FILE`.
-- Defaults are deterministic: `SCE_LOG_LEVEL=info` and `SCE_LOG_FORMAT=text` when env keys are unset.
+- Defaults are deterministic: `SCE_LOG_LEVEL=error` and `SCE_LOG_FORMAT=text` when env keys are unset.
 - When file logging is enabled and `SCE_LOG_FILE_MODE` is unset, default policy is `truncate`.
 - Invalid observability env values fail invocation validation with actionable error text.
 - OpenTelemetry bootstrap is opt-in via `SCE_OTEL_ENABLED` (`true|false|1|0`, default `false`).

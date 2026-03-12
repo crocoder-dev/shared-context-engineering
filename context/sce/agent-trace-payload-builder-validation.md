@@ -27,7 +27,7 @@
 
 ## Published-schema compatibility note
 
-- The published schema pattern for `version` currently accepts two-segment versions (`x.y`) while RFC examples and this implementation emit `0.1.0`.
+- The published schema pattern for `version` currently accepts two-segment versions (`x.y`) while RFC examples and this implementation emit the CLI app version from `CARGO_PKG_VERSION` (currently sourced from the repo's centralized app version).
 - Test validation applies a local compatibility patch to the version regex (`x.y` or `x.y.z`) to keep compliance tests aligned with the current emitted contract.
 
 ## Verification commands

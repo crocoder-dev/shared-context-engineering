@@ -251,7 +251,7 @@ pub struct ObservabilityConfig {
 impl Default for ObservabilityConfig {
     fn default() -> Self {
         Self {
-            level: LogLevel::Info,
+            level: LogLevel::Error,
             format: LogFormat::Text,
         }
     }
@@ -571,12 +571,12 @@ mod tests {
     }
 
     #[test]
-    fn logger_defaults_to_info_text() {
+    fn logger_defaults_to_error_text() {
         let logger = Logger::from_env_lookup(|_| None).expect("logger should parse defaults");
-        let line = logger.render_line(LogLevel::Info, "sce.test.event", "hello", &[]);
+        let line = logger.render_line(LogLevel::Error, "sce.test.event", "hello", &[]);
         assert_eq!(
             line,
-            "log_format=text level=info event_id=sce.test.event message=hello"
+            "log_format=text level=error event_id=sce.test.event message=hello"
         );
     }
 
@@ -661,7 +661,7 @@ mod tests {
         })
         .expect("logger should initialize with file sink");
 
-        logger.info("sce.test.event", "hello", &[("command", "setup")]);
+        logger.error("sce.test.event", "hello", &[("command", "setup")]);
 
         let content = std::fs::read_to_string(&log_path).expect("should read log file");
         assert!(content.contains("event_id=sce.test.event"));
@@ -682,7 +682,7 @@ mod tests {
         })
         .expect("logger should initialize with append sink");
 
-        logger.info("sce.test.event", "hello", &[]);
+        logger.error("sce.test.event", "hello", &[]);
 
         let content = std::fs::read_to_string(&log_path).expect("should read log file");
         assert!(content.starts_with("first\n"));
@@ -707,7 +707,7 @@ mod tests {
         })
         .expect("logger should repair loose permissions");
 
-        logger.info("sce.test.event", "hello", &[]);
+        logger.error("sce.test.event", "hello", &[]);
 
         let mode = std::fs::metadata(&log_path)
             .expect("metadata should be readable")

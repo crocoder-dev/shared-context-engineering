@@ -17,7 +17,7 @@ Resolved runtime values follow this deterministic order:
 1. flag values (`--log-level`, `--timeout-ms`)
 2. environment values (`SCE_LOG_LEVEL`, `SCE_TIMEOUT_MS`)
 3. config file values (`log_level`, `timeout_ms`)
-4. defaults (`log_level=info`, `timeout_ms=30000`)
+4. defaults (`log_level=error`, `timeout_ms=30000`)
 
 Supported auth-adjacent runtime keys can participate in one shared key-declared precedence path without defining CLI flags. Each key declares its config-file name, environment variable name, and whether a baked default is allowed. The shared resolver supports keys that allow a baked default and keys that intentionally omit one. The first implemented migrated key is `workos_client_id`, which resolves as:
 
@@ -32,7 +32,7 @@ Config file selection follows this deterministic order:
 1. `--config <path>`
 2. `SCE_CONFIG_FILE`
 3. discovered defaults when no explicit path/env override is provided:
-   - global: `${state_root}/sce/config.json` where `state_root` follows the same platform policy as Agent Trace local DB path derivation
+   - global: `${global_config_root}/sce/config.json`, where `global_config_root` uses `dirs::state_dir()` on Linux (with `~/.local/state` fallback when needed), `dirs::data_dir()` on macOS/Windows, and `state_dir` then `data_dir` fallback on other targets
    - local: `.sce/config.json` under current working directory
 
 When both discovered defaults exist, they are merged in memory in deterministic order `global -> local`, and local values override global values per key.

@@ -288,7 +288,7 @@ where
     }
 
     let mut resolved_log_level = ResolvedValue {
-        value: LogLevel::Info,
+        value: LogLevel::Error,
         source: ValueSource::Default,
     };
     if let Some(value) = file_config.log_level {
@@ -447,7 +447,35 @@ where
 }
 
 fn resolve_default_global_config_path() -> Result<PathBuf> {
-    crate::services::local_db::resolve_state_data_root()
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(state_dir) = dirs::state_dir() {
+            return Ok(state_dir);
+        }
+
+        let Some(home_dir) = dirs::home_dir() else {
+            bail!("Unable to resolve state directory: neither XDG_STATE_HOME nor HOME is set");
+        };
+
+        Ok(home_dir.join(".local").join("state"))
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        return dirs::data_dir().ok_or_else(|| anyhow!("Unable to resolve data directory"));
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        if let Some(state_dir) = dirs::state_dir() {
+            return Ok(state_dir);
+        }
+        if let Some(data_dir) = dirs::data_dir() {
+            return Ok(data_dir);
+        }
+
+        bail!("Unable to resolve state or data directory")
+    }
 }
 
 fn parse_file_config(raw: &str, path: &Path, source: ConfigPathSource) -> Result<FileConfig> {
@@ -874,7 +902,7 @@ mod tests {
             || Ok(PathBuf::from("/state")),
         )?;
 
-        assert_eq!(resolved.log_level.value, LogLevel::Info);
+        assert_eq!(resolved.log_level.value, LogLevel::Error);
         assert_eq!(resolved.log_level.source.as_str(), "default");
         assert_eq!(resolved.timeout_ms.value, 30000);
         assert_eq!(resolved.timeout_ms.source.as_str(), "default");
@@ -1160,7 +1188,7 @@ mod tests {
                 source: ConfigPathSource::DefaultDiscoveredLocal,
             }],
             log_level: ResolvedValue {
-                value: LogLevel::Info,
+                value: LogLevel::Error,
                 source: ValueSource::Default,
             },
             timeout_ms: ResolvedValue {
@@ -1201,7 +1229,7 @@ mod tests {
         let runtime = RuntimeConfig {
             loaded_config_paths: vec![],
             log_level: ResolvedValue {
-                value: LogLevel::Info,
+                value: LogLevel::Error,
                 source: ValueSource::Default,
             },
             timeout_ms: ResolvedValue {
@@ -1243,7 +1271,7 @@ mod tests {
                 source: ConfigPathSource::DefaultDiscoveredLocal,
             }],
             log_level: ResolvedValue {
-                value: LogLevel::Info,
+                value: LogLevel::Error,
                 source: ValueSource::Default,
             },
             timeout_ms: ResolvedValue {

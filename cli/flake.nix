@@ -28,6 +28,8 @@
           name = "source";
         };
 
+        version = pkgs.lib.strings.trim (builtins.readFile "${src}/.version");
+
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = [
             "rustfmt"
@@ -42,7 +44,7 @@
 
         scePackage = rustPlatform.buildRustPackage {
           pname = "sce";
-          version = "0.1.0";
+          inherit version;
           inherit src;
           sourceRoot = "source/cli";
 
@@ -75,7 +77,7 @@
         checks = {
           cli-tests = rustPlatform.buildRustPackage {
             pname = "sce-cli-tests";
-            version = "0.1.0";
+            inherit version;
             inherit src;
             sourceRoot = "source/cli";
 
@@ -106,7 +108,7 @@
 
           cli-clippy = rustPlatform.buildRustPackage {
             pname = "sce-cli-clippy";
-            version = "0.1.0";
+            inherit version;
             inherit src;
             sourceRoot = "source/cli";
 

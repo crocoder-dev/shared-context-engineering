@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-pub const TRACE_VERSION: &str = "0.1.0";
+pub const TRACE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const VCS_TYPE_GIT: &str = "git";
 pub const NOTES_REF: &str = "refs/notes/agent-trace";
 pub const TRACE_CONTENT_TYPE: &str = "application/vnd.agent-trace.record+json";
@@ -548,7 +548,7 @@ mod tests {
             idempotency_key: None,
         });
 
-        assert_eq!(record.version, "0.1.0");
+        assert_eq!(record.version, env!("CARGO_PKG_VERSION"));
         assert_eq!(record.id, "f8cabb2a-18e4-4e52-a6df-cf5bf8c0fbe7");
         assert_eq!(record.timestamp, "2026-03-04T10:11:12Z");
         assert_eq!(record.vcs.r#type, "git");

@@ -48,7 +48,7 @@ jobs:
           bump="${{ inputs.bump }}"
 
           if [ -z "$latest" ]; then
-            next="v0.1.0"
+            next="v$(tr -d '\n' < .version)"
           else
             version="${latest#v}"
             IFS='.' read -r major minor patch <<< "$version"

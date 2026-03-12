@@ -17,7 +17,7 @@
   - fixed local VCS block (`vcs.type = "git"`, `vcs.revision = <commit sha>`)
   - reverse-domain metadata keys under `dev.crocoder.sce.*`
 - Canonical constants are centralized for trace/media/reference values:
-  - `TRACE_VERSION = "0.1.0"`
+  - `TRACE_VERSION = env!("CARGO_PKG_VERSION")` so emitted Agent Trace record versions follow the CLI app version at compile time
   - `NOTES_REF = "refs/notes/agent-trace"`
   - `TRACE_CONTENT_TYPE = "application/vnd.agent-trace.record+json"`
 

@@ -13,7 +13,7 @@ Define one canonical, implementation-ready contract for Agent Trace attribution 
 - Native Git workflows are preserved. Developers MUST continue to use normal Git entrypoints (`git commit`, `git rebase`, IDE commit UIs). This system MUST NOT replace `git` on `PATH`.
 - Canonical interchange is Agent Trace JSON. Local and hosted flows MUST treat Agent Trace records as the source of truth for line-level attribution.
 - Local VCS identity is fixed. Emitted records MUST set `vcs.type = "git"`.
-- One canonical finalized trace per commit. Each finalized commit SHA MUST map to one canonical Agent Trace record (`version = "0.1.0"`) attached to `refs/notes/agent-trace` and mirrored to backend persistence.
+- One canonical finalized trace per commit. Each finalized commit SHA MUST map to one canonical Agent Trace record whose `version` follows the CLI app version (`CARGO_PKG_VERSION`) attached to `refs/notes/agent-trace` and mirrored to backend persistence.
 - Co-author behavior is metadata-only UX. Human author/committer identity MUST NOT be rewritten by this system.
 - SCE co-author trailer, when applicable, MUST use exactly `Co-authored-by: SCE <sce@crocoder.dev>` with idempotent insertion.
 
@@ -102,7 +102,7 @@ Before enforcement is considered enabled in a repository, the following MUST pas
 
 | Agent Trace field | Requirement | Local contract rule |
 | --- | --- | --- |
-| `version` | required | MUST emit `0.1.0` |
+| `version` | required | MUST emit the CLI app version from `CARGO_PKG_VERSION` |
 | `id` | required | MUST be UUID |
 | `timestamp` | required | MUST be RFC 3339 date-time |
 | `files` | required | MUST be non-empty when attributed file changes exist |
@@ -136,7 +136,7 @@ Before enforcement is considered enabled in a repository, the following MUST pas
 
 | Internal model element | Agent Trace destination | Mapping rule |
 | --- | --- | --- |
-| `TraceDraft.version` | `version` | Constant `0.1.0` |
+| `TraceDraft.version` | `version` | Compile-time app version from `CARGO_PKG_VERSION` |
 | `TraceDraft.record_uuid` | `id` | UUID v4 string |
 | `TraceDraft.emitted_at` | `timestamp` | RFC 3339 UTC timestamp |
 | `CommitIdentity.sha` | `vcs.revision` | Finalized commit SHA |
@@ -158,7 +158,7 @@ Before enforcement is considered enabled in a repository, the following MUST pas
 
 ## 10. Version-format interoperability note
 - Known ambiguity: public RFC page currently shows a possible pattern/example mismatch for `version` formatting.
-- Contract decision: emit `version = "0.1.0"` canonically, and keep readers tolerant to equivalent semver-like variants where needed.
+- Contract decision: emit the compile-time CLI app version (`CARGO_PKG_VERSION`) canonically, and keep readers tolerant to equivalent semver-like variants where needed.
 
 ## 11. Implementation sequencing implications
 - `T02` MUST implement schema adapter outputs matching section 8 and section 9.
