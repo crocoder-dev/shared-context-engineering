@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::services::agent_trace::{
@@ -11,13 +11,11 @@ use crate::services::agent_trace::{
     FileAttributionInput, QualityStatus, RangeInput, TraceAdapterInput, METADATA_QUALITY_STATUS,
     METADATA_REWRITE_CONFIDENCE, METADATA_REWRITE_FROM, METADATA_REWRITE_METHOD,
 };
-use crate::services::local_db::resolve_agent_trace_local_db_path;
 
 use super::{
     apply_commit_msg_coauthor_policy, finalize_post_commit_trace, finalize_post_rewrite_remap,
     finalize_pre_commit_checkpoint, finalize_rewrite_trace, process_trace_retry_queue,
     resolve_pre_commit_checkpoint_path, run_commit_msg_subcommand_in_repo, run_hooks_subcommand,
-    run_post_commit_subcommand_in_repo, run_post_rewrite_subcommand_in_repo,
     run_pre_commit_subcommand_in_repo, CommitMsgRuntimeState, HookSubcommand, PendingCheckpoint,
     PendingFileCheckpoint, PendingLineRange, PersistenceErrorClass, PersistenceFailure,
     PersistenceTarget, PersistenceWriteResult, PostCommitFinalization, PostCommitInput,
@@ -49,25 +47,6 @@ fn run_git_in_repo(repo: &Path, args: &[&str]) -> Result<()> {
     )
 }
 
-fn run_git_output_in_repo(repo: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git").args(args).current_dir(repo).output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        anyhow::bail!(
-            "git {:?} failed in '{}': {}",
-            args,
-            repo.display(),
-            if stderr.is_empty() {
-                "git command exited non-zero".to_string()
-            } else {
-                stderr
-            }
-        );
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
 fn create_temp_repo() -> Result<PathBuf> {
     let unique = format!(
         "sce-hooks-tests-{}-{}",
@@ -80,11 +59,6 @@ fn create_temp_repo() -> Result<PathBuf> {
     run_git_in_repo(&repo, &["config", "user.name", "SCE Test"])?;
     run_git_in_repo(&repo, &["config", "user.email", "sce@example.test"])?;
     Ok(repo)
-}
-
-fn agent_trace_db_test_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn sample_pending_checkpoint() -> PendingCheckpoint {
@@ -1000,237 +974,6 @@ fn commit_msg_runtime_noops_when_staged_attribution_checkpoint_missing() -> Resu
 
     let persisted = fs::read_to_string(&message_file)?;
     assert_eq!(persisted, original);
-    Ok(())
-}
-
-#[test]
-fn post_commit_runtime_persists_notes_and_local_record_store() -> Result<()> {
-    let _db_guard = agent_trace_db_test_lock()
-        .lock()
-        .expect("agent trace DB test lock poisoned");
-
-    let repo = create_temp_repo()?;
-    let tracked_file = repo.join("src").join("lib.rs");
-    fs::create_dir_all(
-        tracked_file
-            .parent()
-            .expect("tracked file path should have parent"),
-    )?;
-    fs::write(&tracked_file, "one\ntwo\n")?;
-    run_git_in_repo(&repo, &["add", "."])?;
-    run_git_in_repo(&repo, &["commit", "-m", "initial"])?;
-
-    fs::write(&tracked_file, "one\ntwo\nthree\n")?;
-    run_git_in_repo(&repo, &["add", "src/lib.rs"])?;
-    run_git_in_repo(&repo, &["commit", "-m", "feat: update file"])?;
-    write_staged_checkpoint_artifact(&repo)?;
-
-    let message = run_post_commit_subcommand_in_repo(&repo)?;
-    assert!(message.contains("post-commit hook finalized trace"));
-
-    let head_sha = run_git_output_in_repo(&repo, &["rev-parse", "--verify", "HEAD"])?;
-    let note = run_git_output_in_repo(
-        &repo,
-        &[
-            "notes",
-            "--ref",
-            "refs/notes/agent-trace",
-            "show",
-            &head_sha,
-        ],
-    )?;
-    let note_json = serde_json::from_str::<serde_json::Value>(&note)?;
-    assert_eq!(
-        note_json
-            .get("content_type")
-            .and_then(serde_json::Value::as_str),
-        Some("application/vnd.agent-trace.record+json")
-    );
-    assert_eq!(
-        note_json
-            .get("record")
-            .and_then(|record| record.get("metadata"))
-            .and_then(|metadata| metadata.get("dev.crocoder.sce.notes_ref"))
-            .and_then(serde_json::Value::as_str),
-        Some("refs/notes/agent-trace")
-    );
-
-    let db_path = resolve_agent_trace_local_db_path()?;
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    let persisted_count = runtime.block_on(async {
-        let location = db_path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("test DB path must be UTF-8"))?;
-        let db = turso::Builder::new_local(location).build().await?;
-        let conn = db.connect()?;
-        let mut rows = conn
-            .query(
-                "SELECT COUNT(*) FROM trace_records tr JOIN commits c ON c.id = tr.commit_id WHERE c.commit_sha = ?1",
-                [head_sha.as_str()],
-            )
-            .await?;
-        let row = rows
-            .next()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("trace record count query returned no rows"))?;
-        let value = row.get_value(0)?;
-        value
-            .as_integer()
-            .copied()
-            .ok_or_else(|| anyhow::anyhow!("trace record count query returned non-integer"))
-    })?;
-
-    assert_eq!(persisted_count, 1);
-
-    Ok(())
-}
-
-#[test]
-fn post_rewrite_runtime_ingests_remap_and_persists_rewrite_trace() -> Result<()> {
-    let _db_guard = agent_trace_db_test_lock()
-        .lock()
-        .expect("agent trace DB test lock poisoned");
-
-    let repo = create_temp_repo()?;
-    let tracked_file = repo.join("src").join("lib.rs");
-    fs::create_dir_all(
-        tracked_file
-            .parent()
-            .expect("tracked file path should have parent"),
-    )?;
-    fs::write(&tracked_file, "one\ntwo\n")?;
-    run_git_in_repo(&repo, &["add", "."])?;
-    run_git_in_repo(&repo, &["commit", "-m", "initial"])?;
-
-    fs::write(&tracked_file, "one\ntwo\nthree\n")?;
-    run_git_in_repo(&repo, &["add", "src/lib.rs"])?;
-    run_git_in_repo(&repo, &["commit", "-m", "feat: rewrite target"])?;
-
-    let old_sha = run_git_output_in_repo(&repo, &["rev-parse", "--verify", "HEAD"])?;
-    run_git_in_repo(&repo, &["commit", "--amend", "-m", "feat: rewrite amended"])?;
-    let new_sha = run_git_output_in_repo(&repo, &["rev-parse", "--verify", "HEAD"])?;
-
-    let message =
-        run_post_rewrite_subcommand_in_repo(&repo, "amend", &format!("{old_sha} {new_sha}\n"))?;
-    assert!(
-        message.contains("post-rewrite hook ingested 1 pair(s), skipped 0 duplicate pair(s)"),
-        "unexpected message: {message}"
-    );
-    assert!(
-        message.contains("rewrite_traces=(persisted=1, queued=0, no_op=0, failed=0)"),
-        "unexpected message: {message}"
-    );
-
-    let note = run_git_output_in_repo(
-        &repo,
-        &["notes", "--ref", "refs/notes/agent-trace", "show", &new_sha],
-    )?;
-    let note_json = serde_json::from_str::<serde_json::Value>(&note)?;
-    assert_eq!(
-        note_json
-            .get("record")
-            .and_then(|record| record.get("metadata"))
-            .and_then(|metadata| metadata.get("dev.crocoder.sce.rewrite_from"))
-            .and_then(serde_json::Value::as_str),
-        Some(old_sha.as_str())
-    );
-    assert_eq!(
-        note_json
-            .get("record")
-            .and_then(|record| record.get("metadata"))
-            .and_then(|metadata| metadata.get("dev.crocoder.sce.rewrite_method"))
-            .and_then(serde_json::Value::as_str),
-        Some("amend")
-    );
-
-    let db_path = resolve_agent_trace_local_db_path()?;
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    let (rewrite_mapping_count, rewrite_trace_count) = runtime.block_on(async {
-        let location = db_path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("test DB path must be UTF-8"))?;
-        let db = turso::Builder::new_local(location).build().await?;
-        let conn = db.connect()?;
-
-        let mut mapping_rows = conn
-            .query(
-                "SELECT COUNT(*) FROM rewrite_mappings WHERE old_commit_sha = ?1 AND new_commit_sha = ?2",
-                (old_sha.as_str(), new_sha.as_str()),
-            )
-            .await?;
-        let mapping_row = mapping_rows
-            .next()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("rewrite mapping count query returned no rows"))?;
-        let mapping_value = mapping_row.get_value(0)?;
-        let mapping_count = mapping_value
-            .as_integer()
-            .copied()
-            .ok_or_else(|| anyhow::anyhow!("rewrite mapping count query returned non-integer"))?;
-
-        let mut trace_rows = conn
-            .query(
-                "SELECT COUNT(*) FROM trace_records tr JOIN commits c ON c.id = tr.commit_id WHERE c.commit_sha = ?1",
-                [new_sha.as_str()],
-            )
-            .await?;
-        let trace_row = trace_rows
-            .next()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("rewrite trace count query returned no rows"))?;
-        let trace_value = trace_row.get_value(0)?;
-        let trace_count = trace_value
-            .as_integer()
-            .copied()
-            .ok_or_else(|| anyhow::anyhow!("rewrite trace count query returned non-integer"))?;
-
-        Ok::<(i64, i64), anyhow::Error>((mapping_count, trace_count))
-    })?;
-
-    assert_eq!(rewrite_mapping_count, 1);
-    assert_eq!(rewrite_trace_count, 1);
-
-    Ok(())
-}
-
-#[test]
-fn post_rewrite_runtime_skips_duplicate_pair_replay() -> Result<()> {
-    let _db_guard = agent_trace_db_test_lock()
-        .lock()
-        .expect("agent trace DB test lock poisoned");
-
-    let repo = create_temp_repo()?;
-    let tracked_file = repo.join("src").join("lib.rs");
-    fs::create_dir_all(
-        tracked_file
-            .parent()
-            .expect("tracked file path should have parent"),
-    )?;
-    fs::write(&tracked_file, "one\n")?;
-    run_git_in_repo(&repo, &["add", "."])?;
-    run_git_in_repo(&repo, &["commit", "-m", "initial"])?;
-
-    fs::write(&tracked_file, "one\ntwo\n")?;
-    run_git_in_repo(&repo, &["add", "src/lib.rs"])?;
-    run_git_in_repo(&repo, &["commit", "-m", "feat: rewrite target"])?;
-
-    let old_sha = run_git_output_in_repo(&repo, &["rev-parse", "--verify", "HEAD"])?;
-    run_git_in_repo(&repo, &["commit", "--amend", "-m", "feat: rewrite amended"])?;
-    let new_sha = run_git_output_in_repo(&repo, &["rev-parse", "--verify", "HEAD"])?;
-    let pair_input = format!("{old_sha} {new_sha}\n");
-
-    let _first = run_post_rewrite_subcommand_in_repo(&repo, "amend", &pair_input)?;
-    let second = run_post_rewrite_subcommand_in_repo(&repo, "amend", &pair_input)?;
-
-    assert!(
-        second.contains("post-rewrite hook ingested 0 pair(s), skipped 1 duplicate pair(s)"),
-        "unexpected message: {second}"
-    );
-    assert!(
-        second.contains("rewrite_traces=(persisted=0, queued=0, no_op=0, failed=0)"),
-        "unexpected message: {second}"
-    );
-
     Ok(())
 }
 

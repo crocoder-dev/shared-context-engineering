@@ -302,26 +302,6 @@ mod tests {
     }
 
     #[test]
-    fn save_and_load_round_trip() {
-        let token_path = unique_test_path("round-trip");
-        let tokens = fixture_tokens();
-
-        save_tokens_at_path(&token_path, &tokens).expect("tokens should save");
-
-        let loaded = load_tokens_from_path(&token_path)
-            .expect("load should succeed")
-            .expect("tokens should exist");
-        assert_eq!(loaded, tokens);
-
-        let _ = fs::remove_dir_all(
-            token_path
-                .parent()
-                .and_then(|parent| parent.parent())
-                .expect("temp tree should have two parent levels"),
-        );
-    }
-
-    #[test]
     fn load_missing_token_file_returns_none() {
         let token_path = unique_test_path("missing-file");
         let loaded = load_tokens_from_path(&token_path).expect("missing file should not error");

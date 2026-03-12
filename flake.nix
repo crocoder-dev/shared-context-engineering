@@ -134,7 +134,6 @@
 
       in
       {
-        checks.cli-setup-command-surface = cli.checks.${system}.cli-setup-command-surface;
         checks.cli-clippy = cli.checks.${system}.cli-clippy;
         checks.sce-package = cli.packages.${system}.default;
 

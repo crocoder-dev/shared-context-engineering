@@ -57,33 +57,6 @@
           nativeCheckInputs = [ pkgs.git ];
           doCheck = false;
         };
-
-        mkCheck =
-          pname: checkPhase:
-          rustPlatform.buildRustPackage {
-            inherit pname src;
-            version = "0.1.0";
-            sourceRoot = "source/cli";
-
-            cargoLock = {
-              lockFile = ./Cargo.lock;
-            };
-
-            nativeBuildInputs = [ rustToolchain ];
-
-            buildPhase = ''
-              runHook preBuild
-              runHook postBuild
-            '';
-
-            inherit checkPhase;
-
-            installPhase = ''
-              runHook preInstall
-              mkdir -p "$out"
-              runHook postInstall
-            '';
-          };
       in
       {
         packages = {
@@ -99,36 +72,81 @@
           };
         };
 
-        apps.clippy = {
-          type = "app";
-          program = toString (
-            pkgs.writeShellScript "sce-clippy" ''
-              exec ${rustToolchain}/bin/cargo clippy --manifest-path cli/Cargo.toml --all-targets --all-features "$@"
-            ''
-          );
-          meta = {
-            description = "Run clippy for the sce CLI crate";
+        checks = {
+          cli-tests = rustPlatform.buildRustPackage {
+            pname = "sce-cli-tests";
+            version = "0.1.0";
+            inherit src;
+            sourceRoot = "source/cli";
+
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+            };
+
+            nativeBuildInputs = [ rustToolchain ];
+            nativeCheckInputs = [ pkgs.git ];
+
+            buildPhase = ''
+              runHook preBuild
+              runHook postBuild
+            '';
+
+            checkPhase = ''
+              runHook preCheck
+              cargo test
+              runHook postCheck
+            '';
+
+            installPhase = ''
+              runHook preInstall
+              mkdir -p "$out"
+              runHook postInstall
+            '';
           };
+
+          cli-clippy = rustPlatform.buildRustPackage {
+            pname = "sce-cli-clippy";
+            version = "0.1.0";
+            inherit src;
+            sourceRoot = "source/cli";
+
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+            };
+
+            nativeBuildInputs = [ rustToolchain ];
+
+            buildPhase = ''
+              runHook preBuild
+              runHook postBuild
+            '';
+
+            checkPhase = ''
+              runHook preCheck
+              cargo clippy --all-targets --all-features
+              runHook postCheck
+            '';
+
+            installPhase = ''
+              runHook preInstall
+              mkdir -p "$out"
+              runHook postInstall
+            '';
+          };
+
+          cli-fmt =
+            pkgs.runCommand "sce-cli-fmt-check"
+              {
+                nativeBuildInputs = [ rustToolchain ];
+              }
+              ''
+                cp -r "${src}/cli" ./cli
+                chmod -R u+w ./cli
+                cd ./cli
+                cargo fmt --check
+                mkdir -p "$out"
+              '';
         };
-
-        checks.cli-setup-command-surface = mkCheck "sce-cli-setup-command-surface-check" ''
-          runHook preCheck
-
-          cargo fmt --check
-          cargo test command_surface::tests::help_text_mentions_setup_target_flags
-          cargo test parser_routes_setup
-          cargo test run_setup_reports
-
-          runHook postCheck
-        '';
-
-        checks.cli-clippy = mkCheck "sce-cli-clippy-check" ''
-          runHook preCheck
-
-          cargo clippy --all-targets --all-features
-
-          runHook postCheck
-        '';
       }
     );
 }

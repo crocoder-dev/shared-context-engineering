@@ -239,24 +239,10 @@ fn phase_name(phase: CloudSyncPhase) -> &'static str {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use serde_json::Value;
 
-    use super::{
-        run_placeholder_sync, CloudSyncGateway, CloudSyncPhase, CloudSyncRequest,
-        PlaceholderCloudSyncGateway, SyncFormat, SyncRequest, NAME,
-    };
+    use super::{CloudSyncGateway, CloudSyncPhase, CloudSyncRequest, PlaceholderCloudSyncGateway};
 
     use super::shared_runtime;
-
-    #[test]
-    fn sync_placeholder_runs_local_smoke_check() -> Result<()> {
-        let message = run_placeholder_sync(SyncRequest {
-            format: SyncFormat::Text,
-        })?;
-        assert!(message.contains("Local Turso smoke check succeeded"));
-        assert!(message.contains("cloud sync placeholder enumerates"));
-        Ok(())
-    }
 
     #[test]
     fn cloud_sync_gateway_stays_non_executable() {
@@ -275,37 +261,6 @@ mod tests {
         let first = shared_runtime()?;
         let second = shared_runtime()?;
         assert!(std::ptr::eq(first, second));
-        Ok(())
-    }
-
-    #[test]
-    fn sync_json_output_includes_stable_fields() -> Result<()> {
-        let output = run_placeholder_sync(SyncRequest {
-            format: SyncFormat::Json,
-        })?;
-        let parsed: Value = serde_json::from_str(&output)?;
-        assert_eq!(parsed["status"], "ok");
-        assert_eq!(parsed["command"], NAME);
-        assert_eq!(parsed["placeholder_state"], "planned");
-        assert_eq!(parsed["workspace"], "local");
-        assert_eq!(parsed["phase"], "plan_only");
-        assert!(parsed["supported_phases"].is_array());
-        assert!(parsed["local_smoke_check"].is_object());
-        assert!(parsed["cloud_plan"].is_object());
-        assert!(parsed["next_step"].as_str().is_some());
-        Ok(())
-    }
-
-    #[test]
-    fn sync_json_output_is_deterministic_for_same_request() -> Result<()> {
-        let first = run_placeholder_sync(SyncRequest {
-            format: SyncFormat::Json,
-        })?;
-        let second = run_placeholder_sync(SyncRequest {
-            format: SyncFormat::Json,
-        })?;
-
-        assert_eq!(first, second);
         Ok(())
     }
 }

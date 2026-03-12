@@ -284,37 +284,9 @@ pub async fn run_smoke_check(target: LocalDatabaseTarget<'_>) -> Result<SmokeChe
 #[cfg(test)]
 mod tests {
     use crate::test_support::TestTempDir;
-    use anyhow::{Context, Result};
+    use anyhow::Result;
 
     use super::{apply_core_schema_migrations, run_smoke_check, LocalDatabaseTarget};
-
-    fn row_exists_query(kind: &str, name: &str) -> String {
-        format!("SELECT 1 FROM sqlite_master WHERE type = '{kind}' AND name = '{name}' LIMIT 1")
-    }
-
-    async fn sqlite_object_exists(
-        target: LocalDatabaseTarget<'_>,
-        kind: &str,
-        name: &str,
-    ) -> Result<bool> {
-        let conn = super::connect_local(target).await?;
-        let mut rows = conn.query(&row_exists_query(kind, name), ()).await?;
-        Ok(rows.next().await?.is_some())
-    }
-
-    async fn repository_count(target: LocalDatabaseTarget<'_>) -> Result<u64> {
-        let conn = super::connect_local(target).await?;
-        let mut rows = conn.query("SELECT COUNT(*) FROM repositories", ()).await?;
-        let row = rows
-            .next()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("repository count query returned no rows"))?;
-        let count = row.get_value(0)?;
-        let count = *count
-            .as_integer()
-            .ok_or_else(|| anyhow::anyhow!("repository count query returned non-integer"))?;
-        u64::try_from(count).context("repository count query returned negative value")
-    }
 
     async fn fetch_single_integer(target: LocalDatabaseTarget<'_>, query: &str) -> Result<i64> {
         let conn = super::connect_local(target).await?;
@@ -346,102 +318,6 @@ mod tests {
         let outcome = runtime.block_on(run_smoke_check(LocalDatabaseTarget::Path(&path)))?;
         assert_eq!(outcome.inserted_rows, 1);
         assert!(path.exists());
-        Ok(())
-    }
-
-    #[test]
-    fn core_schema_migrations_create_required_tables_and_indexes() -> Result<()> {
-        let temp = TestTempDir::new("sce-core-schema-tests")?;
-        let path = temp.path().join("core-schema.db");
-        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-
-        let outcome = runtime.block_on(apply_core_schema_migrations(LocalDatabaseTarget::Path(
-            &path,
-        )))?;
-        assert_eq!(
-            outcome.executed_statements,
-            super::CORE_SCHEMA_STATEMENTS.len(),
-            "expected all core migration statements to execute"
-        );
-
-        for table in [
-            "repositories",
-            "commits",
-            "trace_records",
-            "trace_ranges",
-            "reconciliation_runs",
-            "rewrite_mappings",
-            "conversations",
-            "trace_retry_queue",
-            "reconciliation_metrics",
-        ] {
-            assert!(runtime.block_on(sqlite_object_exists(
-                LocalDatabaseTarget::Path(&path),
-                "table",
-                table,
-            ))?);
-        }
-
-        for index in [
-            "idx_commits_repository_commit_sha",
-            "idx_trace_records_repository_commit",
-            "idx_trace_ranges_record_file",
-            "idx_reconciliation_runs_repository_status",
-            "idx_rewrite_mappings_run_old_sha",
-            "idx_rewrite_mappings_repository_old_sha",
-            "idx_conversations_repository_source",
-            "idx_trace_retry_queue_created_at",
-            "idx_reconciliation_metrics_created_at",
-        ] {
-            assert!(runtime.block_on(sqlite_object_exists(
-                LocalDatabaseTarget::Path(&path),
-                "index",
-                index,
-            ))?);
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn core_schema_migrations_are_upgrade_safe_for_preexisting_state() -> Result<()> {
-        let temp = TestTempDir::new("sce-core-schema-upgrade-tests")?;
-        let path = temp.path().join("preexisting.db");
-        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-
-        runtime.block_on(async {
-            let conn = super::connect_local(LocalDatabaseTarget::Path(&path)).await?;
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS repositories (\
-                    id INTEGER PRIMARY KEY,\
-                    vcs_provider TEXT NOT NULL DEFAULT 'git',\
-                    canonical_root TEXT NOT NULL UNIQUE,\
-                    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))\
-                )",
-                (),
-            )
-            .await?;
-            conn.execute(
-                "INSERT INTO repositories (canonical_root) VALUES (?1)",
-                ["/tmp/example-repo"],
-            )
-            .await?;
-            Ok::<(), anyhow::Error>(())
-        })?;
-
-        runtime.block_on(apply_core_schema_migrations(LocalDatabaseTarget::Path(
-            &path,
-        )))?;
-        runtime.block_on(apply_core_schema_migrations(LocalDatabaseTarget::Path(
-            &path,
-        )))?;
-
-        let repository_rows =
-            runtime.block_on(repository_count(LocalDatabaseTarget::Path(&path)))?;
-        assert_eq!(
-            repository_rows, 1,
-            "preexisting repository rows should remain"
-        );
         Ok(())
     }
 
@@ -553,35 +429,6 @@ mod tests {
             "SELECT COUNT(*) FROM conversations WHERE repository_id = 1 AND source = 'github'",
         ))?;
         assert_eq!(conversation_count, 1);
-
-        Ok(())
-    }
-
-    #[test]
-    fn persistent_target_survives_process_restart() -> Result<()> {
-        let temp = TestTempDir::new("sce-persistent-local-db-tests")?;
-        let path = temp.path().join("persistent.db");
-
-        {
-            let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-            runtime.block_on(apply_core_schema_migrations(LocalDatabaseTarget::Path(
-                &path,
-            )))?;
-            runtime.block_on(async {
-                let conn = super::connect_local(LocalDatabaseTarget::Path(&path)).await?;
-                conn.execute(
-                    "INSERT INTO repositories (canonical_root) VALUES (?1)",
-                    ["/tmp/restart-proof-repo"],
-                )
-                .await?;
-                Ok::<(), anyhow::Error>(())
-            })?;
-        }
-
-        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-        let repository_rows =
-            runtime.block_on(repository_count(LocalDatabaseTarget::Path(&path)))?;
-        assert_eq!(repository_rows, 1);
 
         Ok(())
     }

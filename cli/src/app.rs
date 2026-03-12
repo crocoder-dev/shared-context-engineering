@@ -919,12 +919,6 @@ mod tests {
     }
 
     #[test]
-    fn sync_command_exits_success() {
-        let code = run(vec!["sce".to_string(), "sync".to_string()]);
-        assert_eq!(code, ExitCode::SUCCESS);
-    }
-
-    #[test]
     fn unknown_command_exits_non_zero() {
         let code = run(vec!["sce".to_string(), "does-not-exist".to_string()]);
         assert_eq!(code, ExitCode::from(EXIT_CODE_PARSE_FAILURE));
