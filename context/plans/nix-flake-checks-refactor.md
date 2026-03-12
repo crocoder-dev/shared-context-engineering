@@ -63,7 +63,7 @@ Refactor `cli/flake.nix` and root `flake.nix` to have a cleaner, more idiomatic 
     - `nix flake check` passed all 4 checks
     - All apps verified working
 
-- [ ] T03: Validation and cleanup (status:todo)
+- [x] T03: Validation and cleanup (status:done)
   - Task ID: T03
   - Goal: Verify full flake check passes and update context if needed
   - Boundaries (in/out of scope):
@@ -76,6 +76,40 @@ Refactor `cli/flake.nix` and root `flake.nix` to have a cleaner, more idiomatic 
     - `nix flake check ./cli`
     - `nix flake check`
     - Review context/ for any needed updates
+  - Completed: 2026-03-12
+  - Evidence:
+    - `nix flake check ./cli` passed 3 checks (cli-tests, cli-clippy, cli-fmt)
+    - `nix flake check` passed 4 checks (cli-tests, cli-clippy, cli-fmt, pkl-parity)
+    - Updated `context/glossary.md`: replaced outdated `cli-setup-command-surface` entry with current `cli flake checks` entry
+    - Updated `context/overview.md`: updated references to reflect new check names
 
 ## Open questions
 None - requirements clarified via user input.
+
+## Validation Report (2026-03-12)
+
+### Commands run
+| Command | Exit Code | Result |
+|---------|-----------|--------|
+| `nix flake check ./cli` | 0 | 3 checks passed (cli-tests, cli-clippy, cli-fmt) |
+| `nix flake check` | 0 | 4 checks passed (cli-tests, cli-clippy, cli-fmt, pkl-parity) |
+| `nix build ./cli#sce` | 0 | Build succeeded without running tests |
+| `nix run .#pkl-check-generated` | 0 | Generated outputs up to date |
+
+### Success criteria verification
+| Criterion | Status | Evidence |
+|-----------|--------|----------|
+| `nix build ./cli#sce` produces CLI binary without tests | ✓ | Build succeeded, no test output |
+| `nix flake check ./cli` runs: tests, clippy, fmt | ✓ | 3 checks evaluated and passed |
+| `nix flake check` (root) runs: all CLI checks + pkl-parity | ✓ | 4 checks evaluated and passed |
+| All existing functionality preserved | ✓ | Apps verified, dev shell unchanged |
+
+### Context updates
+- `context/glossary.md`: Replaced outdated `cli-setup-command-surface` entry with current `cli flake checks` entry
+- `context/overview.md`: Updated references to reflect new check names
+
+### Residual risks
+None - all checks pass and context is aligned.
+
+### Plan status
+**COMPLETE** - All tasks executed successfully.

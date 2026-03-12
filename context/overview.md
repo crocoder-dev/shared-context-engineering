@@ -24,7 +24,7 @@ The `sync` placeholder performs a local Turso smoke check through a lazily initi
 The nested CLI flake (`cli/flake.nix`) now applies a Rust overlay-backed stable toolchain (with `rustfmt`) and uses that toolchain contract for CLI check/build derivations.
 The nested CLI flake now also exposes release install/run outputs: `packages.sce` (with `packages.default = packages.sce`) and `apps.sce`, so `nix build ./cli#default` and `nix run ./cli#sce -- --help` execute against the packaged `sce` binary.
 The CLI Cargo package metadata now includes crates.io-facing fields while keeping `publish = false`; local install/release flows are documented as `cargo install --path cli --locked` and `cargo build --manifest-path cli/Cargo.toml --release`. The crate also keeps `cargo clippy --manifest-path cli/Cargo.toml` warnings-denied through `cli/Cargo.toml` lint configuration, so an extra `-- -D warnings` flag is redundant.
-The repository-root flake now keeps nested CLI flake input wiring coherent by passing through `nixpkgs`, `flake-utils`, and `rust-overlay`, so root-level `nix flake check` can evaluate CLI checks (including setup command-surface) without missing-input failures.
+The repository-root flake now keeps nested CLI flake input wiring coherent by passing through `nixpkgs`, `flake-utils`, and `rust-overlay`, so root-level `nix flake check` can evaluate CLI checks (`cli-tests`, `cli-clippy`, `cli-fmt`) without missing-input failures.
 Shared Context Plan and Shared Context Code remain separate agent roles by design; planning (`/change-to-plan`) and implementation (`/next-task`) stay split while shared baseline guidance is deduplicated via canonical skill-owned contracts.
 Their shared baseline doctrine (core principles, `context/` authority, and quality posture) is defined once as canonical snippets in `config/pkl/base/shared-content.pkl` and composed into both agent bodies during generation.
 The `/next-task` command body is intentionally thin orchestration: readiness gating + phase sequencing are command-owned, while detailed implementation/context-sync contracts are skill-owned (`sce-plan-review`, `sce-task-execution`, `sce-context-sync`).
@@ -69,7 +69,7 @@ The setup command parser/dispatch now also supports composable setup+hooks runs 
 - Verify generated outputs are current: `nix run .#pkl-check-generated`
 - Run staged destructive sync for `config/` and root `.opencode/`: `nix run .#sync-opencode-config`
 - Run workflow token counting from repo root: `nix run .#token-count-workflows`
-- Run repository flake checks (includes CLI setup command-surface checks): `nix flake check`
+- Run repository flake checks (CLI tests, clippy, fmt + pkl-parity): `nix flake check`
 
 Lightweight post-task verification baseline (required after each completed task): run `nix run .#pkl-check-generated` and `nix flake check`.
 
