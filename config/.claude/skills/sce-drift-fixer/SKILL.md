@@ -1,6 +1,6 @@
 ---
 name: sce-drift-fixer
-description: Use when user wants to audit and repair code-context drift in context/ using SCE rules.
+ description: Use when the user wants to fix stale or outdated context documentation that no longer matches the actual codebase — e.g. "update docs", "sync context files", "fix outdated documentation", "refresh context", or "context is out of date". Audits files in `context/`, identifies discrepancies between documentation and implemented code (treating code as the source of truth), then updates context files to remove outdated references, correct stale descriptions, and sync documentation with recent code changes.
 compatibility: claude
 ---
 
@@ -17,10 +17,27 @@ compatibility: claude
   - If no, stop and explain SCE workflows require `context/`.
 - Search `context/tmp/` for `drift-analysis-*.md`.
 - If one or more reports exist, use the latest report as the fix input.
-- If no report exists, explicitly tell the user no drift analysis report was found, then run `sce-drift-analyzer` to generate one before continuing.
+- If no report exists, explicitly tell the user no drift analysis report was found, then run `sce-drift-analyzer` by invoking the `sce-drift-analyzer` skill before continuing.
 - Ask whether to apply all fixes or apply selectively.
 - If any finding is ambiguous or lacks enough evidence, prompt the user before editing.
 - Keep context files concise, current-state oriented, and linked from `context/context-map.md` when relevant.
+
+## Example drift finding and fix
+
+**Finding from `context/tmp/drift-analysis-2024-11-01.md`:**
+> `context/architecture.md` line 12 states the auth module uses JWT tokens, but `src/auth/handler.ts` was refactored to use session cookies in commit `a3f92c1`.
+
+**Before (`context/architecture.md`):**
+```markdown
+## Auth
+The auth module issues JWT tokens on login and validates them on each request.
+```
+
+**After (`context/architecture.md`):**
+```markdown
+## Auth
+The auth module uses session cookies on login and validates the session on each request.
+```
 
 ## Expected output
 - A clear list of drift findings sourced from `context/tmp/drift-analysis-*.md`.

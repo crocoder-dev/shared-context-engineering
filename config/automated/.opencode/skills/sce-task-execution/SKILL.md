@@ -1,6 +1,6 @@
 ---
 name: sce-task-execution
-description: Use when user wants to Execute one approved task with explicit scope, evidence, and status updates.
+ description: Executes a single scoped coding task with structured implementation logging, test and lint evidence capture, and plan status updates. Use when the user wants to run, implement, or complete one approved task from a plan — such as writing code changes, applying fixes, or executing a defined unit of work — while enforcing strict single-task scope boundaries, logging intent to context/tmp/automated-session-log.md, and updating task status in context/plans/{plan_id}.md. Triggers on phrases like "execute task", "run this task", "implement task", "do the next task", or "apply this change".
 compatibility: opencode
 ---
 

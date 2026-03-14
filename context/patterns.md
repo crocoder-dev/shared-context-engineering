@@ -27,8 +27,8 @@
 - Keep `config/pkl/base/shared-content.pkl` synchronized with the canonical authored instruction bodies (currently mirrored from the OpenCode source tree under `config/{opencode_root}` for `agent`, `command`, and `skills`, with frontmatter removed) before regenerating targets.
 - When two or more generated agent bodies share baseline doctrine, extract that doctrine into reusable canonical constants in `config/pkl/base/shared-content.pkl` and compose via interpolation instead of duplicating prose per agent.
 - Implement target-specific formatting in dedicated renderer modules under `config/pkl/renderers/`.
-- Keep shared renderer contracts and shared description maps in `config/pkl/renderers/common.pkl`.
-- Keep per-target metadata tables in dedicated modules (`opencode-metadata.pkl`, `claude-metadata.pkl`) and import them into target renderer modules.
+- Keep shared renderer contracts and only truly shared description maps in `config/pkl/renderers/common.pkl`.
+- Keep per-target metadata tables in dedicated modules (`opencode-metadata.pkl`, `opencode-automated-metadata.pkl`, `claude-metadata.pkl`), including target-specific skill descriptions, and import them into target renderer modules.
 - Add and run `config/pkl/renderers/metadata-coverage-check.pkl` as a fail-fast metadata completeness guard whenever shared slugs or metadata tables change.
 - In renderer modules, produce per-item document objects with explicit `frontmatter`, `body`, and combined `rendered` fields to keep formatting deterministic and easy to map in a later output stage.
 - Keep the Markdown renderer contract in `config/pkl/renderers/common.pkl` limited to deterministic `frontmatter + body` assembly without injected generated-file marker text.

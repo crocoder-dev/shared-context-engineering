@@ -1,6 +1,6 @@
 ---
 name: sce-plan-review
-description: Use when user wants to review an existing plan and prepare the next task safely.
+ description: Use when the user wants to continue, resume, or pick up the next step from a markdown plan file stored in `context/plans/`. Reads the selected plan file, identifies the first unchecked checkbox as the next task, validates that acceptance criteria are clear and blockers are resolved, then issues an explicit readiness verdict before proceeding to implementation. Use when the user says "continue the plan", "what's the next task", "resume work", "pick up where we left off", or references a specific plan file.
 compatibility: opencode
 ---
 
@@ -33,7 +33,45 @@ compatibility: opencode
 - If plan context is stale or partial, continue with code truth and flag context updates.
 
 ## Expected output
-- Confirmed next task with clarified acceptance criteria.
-- Explicit readiness verdict: `ready_for_implementation: yes|no`.
-- If not ready, explicit issue categories: blockers, ambiguity, missing acceptance criteria.
-- Auto-proceed to implementation when readiness conditions are met.
+Emit a readiness verdict using this structure:
+
+```
+next_task: "Task title or description from plan"
+acceptance_criteria:
+  - Criterion A
+  - Criterion B
+ready_for_implementation: yes | no
+```
+
+If `ready_for_implementation: no`, include an issues block:
+
+```
+issues:
+  blockers:
+    - "Dependency on X is unresolved"
+  ambiguity:
+    - "It is unclear whether Y should be replaced or extended"
+  missing_acceptance_criteria:
+    - "No definition of done for the migration step"
+```
+
+- Auto-proceed to implementation when `ready_for_implementation: yes`.
+
+## Structured error examples
+
+**Multiple plans found (no path specified):**
+```
+ERROR: Multiple plans found. Specify an explicit plan path.
+Available plans:
+  - context/plans/migrate-auth.md
+  - context/plans/refactor-api.md
+```
+
+**Blockers or ambiguity detected:**
+```
+ERROR: Next task cannot proceed. Unresolved items:
+  [blocker] Auth service interface not yet defined - task depends on it.
+  [ambiguity] "Update schema" - unclear whether additive or destructive migration.
+  [missing_acceptance_criteria] No rollback criteria specified for the deployment step.
+Resolve all items above before re-running plan review.
+```

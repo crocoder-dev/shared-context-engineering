@@ -399,40 +399,78 @@ For every completed implementation task, run a sync pass over these shared files
 - `context/patterns.md`
 - `context/context-map.md`
 
-Do not default to editing root context files on every task. First classify whether the task is an important change; then edit or verify accordingly.
+Classify whether the task is an important change before deciding to edit or verify root context files.
 
 ## Root context significance gating
-- Treat root context edits as required when a task introduces or changes cross-cutting behavior, repository-wide policy/contracts, architecture boundaries, or canonical terminology.
-- Treat root context edits as verify-only when a task is localized to a single feature/domain and no root-level behavior, architecture, or terminology changed.
-- When verify-only applies, keep root files unchanged and capture details in focused domain/workflow files instead.
-- When root updates are not needed, still verify `context/overview.md`, `context/architecture.md`, and `context/glossary.md` against code truth before declaring done.
+- **Root edits required** - task introduces cross-cutting behavior, repository-wide policy/contracts, architecture boundaries, or canonical terminology changes.
+- **Verify-only** - task is localized to a single feature/domain with no root-level behavior, architecture, or terminology impact. Keep root files unchanged; capture details in domain files instead.
+- Even when verify-only, still verify `context/overview.md`, `context/architecture.md`, and `context/glossary.md` against code truth before declaring done.
 
-## Domain file creation policy
-- Use domain files under `context/{domain}/` for detailed feature behavior.
-- If a feature does not cleanly fit an existing domain file, create a new domain file instead of deferring documentation.
-- If the feature appears to be part of a larger future domain, still document the implemented slice now in a focused file and link it to related context.
-- Prefer creating a small, precise domain file over overloading `overview.md` with detail.
-- If updates for the current feature/domain become too detailed or large for shared files, migrate that detail into `context/{domain}/` files and keep only concise pointers in shared files.
-- Whenever detail is migrated, add discoverability links in `context/context-map.md` and cross-link relevant context files (`overview.md`, `architecture.md`, `glossary.md`, `patterns.md`) as needed.
+## Step-by-step sync pass workflow
 
-## Feature existence rule (required)
-- Every newly implemented feature must be discoverable from context.
-- Ensure at least one durable canonical description exists in either:
-  - a domain file under `context/{domain}/`, or
-  - `context/overview.md` (for cross-cutting/system features).
-- Ensure discoverability links are present from `context/context-map.md`.
-- Add glossary entries for any new domain language.
+1. **Classify the change** - Important change or verify-only (see [Classification Reference](#classification-reference) below).
+2. **Read the affected code** - Review modified files to understand what actually changed.
+3. **Verify root files** - Open `context/overview.md`, `context/architecture.md`, and `context/glossary.md`; confirm they match code truth.
+4. **Edit or skip root files** - Important change: update relevant root files. Verify-only: leave root files unchanged.
+5. **Create or update domain files** - Write or revise `context/{domain}/` files for feature-specific detail (see [Domain File Policy](#domain-file-creation-policy) below).
+6. **Ensure feature existence** - Every newly implemented feature must have at least one durable canonical description discoverable from context (domain file or `context/overview.md` for cross-cutting features).
+7. **Update `context/context-map.md`** - Add or refresh discoverability links to any new or changed context files.
+8. **Add glossary entries** - For any new domain language introduced by the task.
+9. **Final check** - Confirm all updated files are <= 250 lines, diagrams are present where needed, and links use relative paths.
+
+### Before/after example
+A task adds a new `PaymentGateway` abstraction used only in the payments domain (verify-only - domain-local).
+
+**`context/glossary.md`** - unchanged (no new root-level terminology).
+
+**New file: `context/payments/payment-gateway.md`:**
+```markdown
+# PaymentGateway
+
+Abstraction over external payment processors (Stripe, Adyen).
+Defined in `src/payments/gateway/`.
+
+## Contract
+- `charge(amount, token): Result`
+- `refund(chargeId): Result`
+
+See also: [overview.md](../overview.md), [context-map.md](../context-map.md)
+```
+
+**`context/context-map.md`** - updated with a link to `context/payments/payment-gateway.md`.
+
+---
+
+## Classification Reference
+
+| Important change (root edits required) | Verify-only (root files unchanged) |
+|---|---|
+| New auth strategy replacing existing one - architecture + terminology | New field on an existing API response - localized, no architecture impact |
+| Background job queue used across multiple domains - cross-cutting | Bug fix in a single service's retry logic - no new root-level behavior |
+| Renaming a core concept (e.g., `Order` -> `Purchase`) - canonical terminology | New UI component added to an existing feature - no cross-cutting impact |
+
+---
+
+## Domain File Creation Policy
+
+- Use `context/{domain}/` for detailed feature behavior.
+- If a feature does not cleanly fit an existing domain file, create a new one - do not defer documentation.
+- If the feature appears to be part of a larger future domain, document the implemented slice now in a focused file and link it to related context.
+- Prefer a small, precise domain file over overloading `overview.md` with detail.
+- If updates for the current feature/domain outgrow shared files, migrate detail into `context/{domain}/` files, keep concise pointers in shared files, and add discoverability links in `context/context-map.md`.
+
+---
 
 ## Final-task requirement
 - In the final plan task (validation/cleanup), confirm feature existence documentation is present and linked.
-- If a feature was implemented but not represented in context, add the missing context entry before declaring the task done.
+- If a feature was implemented but not represented in context, add the missing entry before declaring the task done.
 
 ## Quality constraints
-- Keep one topic per file.
+- One topic per file.
 - Prefer concise current-state documentation over narrative changelogs.
 - Link related context files with relative paths.
 - Include concrete code examples when needed to clarify non-trivial behavior.
-- Every context file you create or update must stay at or below 250 lines; if it would exceed 250, split into focused files and link them.
+- Every context file must stay at or below 250 lines; if it would exceed 250, split into focused files and link them.
 - Add a Mermaid diagram when structure, boundaries, or flows are complex.
 - Ensure major code areas have matching context coverage.
 """
@@ -444,14 +482,14 @@ Do not default to editing root context files on every task. First classify wheth
     title = "SCE Drift Analyzer"
     canonicalBody = """
 ## What I do
-- Collect context and code signals with pure JavaScript collectors.
-- Analyze semantic drift between documented state and implemented state.
+- Collect context and code signals with JavaScript collectors.
+- Detect mismatches between documented state (`context/`) and implemented state (source code).
 - Produce a clear drift report with actionable fixes.
 - Auto-apply drift fixes to `context/` files without confirmation.
 
 ## How to run this
 - If `context/` is missing, stop with error: "Automated profile requires existing context/. Run manual bootstrap first."
-- Collect data:
+- Collect data using the drift collectors module located at `lib/drift-collectors.js` (relative to the project root):
 
 ```javascript
 const collectors = require("../../lib/drift-collectors.js");
@@ -460,13 +498,79 @@ const data = await collectors.collectAll(process.cwd(), {
 });
 ```
 
-- Analyze for these drift classes:
-  - missing documentation (code capability not represented in `context/`)
-  - outdated context (context claim no longer matches code)
-  - structure drift (paths and boundaries changed)
-  - completion drift (checked tasks with no supporting implementation)
-- Write findings to `context/tmp/drift-analysis-YYYY-MM-DD.md`.
-- Auto-apply drift fixes to `context/` files without confirmation.
+- Analyze for these drift classes using the collected data. For each class, a pseudocode description is followed by a concrete implementation approach:
+
+```
+// PSEUDOCODE - translate to concrete file/AST operations for the target project
+
+// Missing documentation:
+//   Find all exported functions, classes, and modules in source code.
+//   Cross-reference each against mentions in context/ files.
+//   Flag any capability with no matching mention.
+missingDocs = code.exports.filter(cap => !context.mentions(cap.name))
+```
+
+Concrete example - grep-based check for a missing export mention:
+```bash
+# List all named exports from source files
+grep -rE "^export (function|class|const) (\\w+)" src/ --include="*.ts" -h \\
+  | sed -E 's/^export (function|class|const) ([A-Za-z_]+).*/\\2/' \\
+  | sort -u > /tmp/exported_names.txt
+
+# For each name, check whether it appears anywhere in context/
+while IFS= read -r name; do
+  grep -rl "$name" context/ > /dev/null 2>&1 || echo "MISSING: $name"
+done < /tmp/exported_names.txt
+```
+
+```
+// Outdated context:
+//   For each factual claim in context/ (e.g. "AuthService exposes refreshToken()"),
+//   verify the referenced identifier still exists at the stated path/signature.
+//   Flag claims where the identifier is absent or the signature has changed.
+outdatedContext = context.claims.filter(claim =>
+  !sourceFileContains(claim.referencedPath, claim.referencedIdentifier)
+)
+
+// Structure drift:
+//   Extract file paths and module boundaries named in context/ files.
+//   Check each against the current directory tree.
+//   Flag any path that no longer exists on disk.
+structureDrift = context.paths.filter(p => !existsOnDisk(p))
+
+// Completion drift:
+//   Extract tasks marked as done/completed in context/ files.
+//   For each, search source code for an implementation matching the task description.
+//   Flag tasks with no corresponding implementation found.
+completionDrift = context.completedTasks.filter(task =>
+  !grepSource(task.keywords)
+)
+```
+
+- Write findings to `context/tmp/drift-analysis-YYYY-MM-DD.md` using this format:
+
+```markdown
+## Drift Finding: <DriftClass>
+- **File:** `context/architecture.md` (line 12)
+- **Claim:** "AuthService exposes a `refreshToken()` method"
+- **Reality:** No `refreshToken` found in `src/auth/AuthService.ts`
+- **Severity:** High
+- **Fix:** Remove or update the claim to match current implementation.
+```
+
+- Auto-apply context-only fixes to `context/` files.
+- After applying fixes, re-run collectors to verify drift was resolved:
+
+```javascript
+const verification = await collectors.collectAll(process.cwd(), {
+  sources: ["context", "code"],
+});
+const remaining = verification.drift.length;
+if (remaining > 0) {
+  console.warn(`${remaining} drift item(s) could not be auto-resolved.`);
+}
+```
+
 - If code changes would be required, emit report-only with blocker: "Drift requires code changes. Manual intervention required."
 - Log all applied fixes to `context/tmp/automated-drift-fixes.md`.
 
@@ -477,9 +581,10 @@ const data = await collectors.collectAll(process.cwd(), {
 - Auto-apply context-only fixes without confirmation.
 
 ## Expected output
-- Drift report in `context/tmp/`.
+- Drift report in `context/tmp/drift-analysis-YYYY-MM-DD.md` with one section per finding.
 - Prioritized action list with exact context files to update.
 - Applied fixes logged to `context/tmp/automated-drift-fixes.md`.
+- Verification summary confirming how many drift items were resolved.
 """
   }
   ["sce-drift-fixer"] = new ContentUnit {
@@ -529,8 +634,35 @@ const data = await collectors.collectAll(process.cwd(), {
   - next recommended step
 
 ## How to run this
-- Prefer task-aligned naming: `context/handovers/{plan_name}-{task_id}.md`.
-- If key details are missing, infer from repo state and clearly label assumptions.
+
+1. **Gather context** - review the current task, recent changes, and repo state.
+2. **Create the file** - use task-aligned naming: `context/handovers/{plan_name}-{task_id}.md`.
+3. **Fill each section** - follow the template below, labelling any inferred details as assumptions.
+4. **Verify completeness** - confirm all four sections are populated before finishing.
+
+If key details are missing, infer from repo state and clearly label assumptions.
+
+## Handover document template
+
+```markdown
+# Handover: {plan_name} - {task_id}
+
+## Current Task State
+- What was being worked on and how far along it is.
+- e.g. "Implementing OAuth login flow; token generation complete, redirect handling in progress."
+
+## Decisions Made
+- Key choices and their rationale.
+- e.g. "Chose JWT over session cookies for statelessness. Rejected library X due to licence constraints."
+
+## Open Questions / Blockers
+- Unresolved issues or outstanding dependencies.
+- e.g. "Awaiting confirmation on token expiry policy from product team."
+
+## Next Recommended Step
+- The single most important action for whoever picks this up.
+- e.g. "Complete the redirect handler in `src/auth/callback.ts`, then run the auth integration tests."
+```
 
 ## Expected output
 - A complete handover document in `context/handovers/` using task-aligned naming when possible.
@@ -565,14 +697,24 @@ Turn a human change request into `context/plans/{plan_name}.md`.
 - If the user explicitly allows assumptions, record them in an `Assumptions` section.
 - Incorporate resolved details into the plan before handoff.
 
-## Documentation source rule
+**Example structured error (clarification gate triggered):**
+```
+PLANNING BLOCKED - unresolved critical details:
+
+[scope]       Is the auth middleware change limited to the API gateway, or does it also cover the admin panel?
+[dependency]  Should the new Redis client use the existing `ioredis` version (4.x) or upgrade to 5.x?
+[criteria]    What does "performance acceptable" mean? Specific p95 threshold required.
+
+Resolve all items above before planning can proceed.
+```
 
 ## Plan format
 1) Change summary
 2) Success criteria
 3) Constraints and non-goals
-4) Task stack (`T01..T0N`)
-5) Open questions (if any)
+4) Assumptions (if any)
+5) Task stack (`T01..T0N`)
+6) Open questions (if any)
 
 ## Task format (required)
 For each task include:
@@ -607,6 +749,55 @@ Use checkbox lines for machine-friendly progress tracking:
 ## Required final task
 - Final task is always validation and cleanup.
 - It must include full checks and context sync verification.
+
+## Worked example
+
+**Input change request:**
+> "Add rate limiting to the public API so that unauthenticated requests are capped at 60 req/min per IP. Use Redis for the counter store. No changes to authenticated routes."
+
+**Output plan (`context/plans/rate-limiting-public-api.md`):**
+
+```markdown
+# Plan: rate-limiting-public-api
+
+## Change summary
+Introduce per-IP rate limiting (60 req/min) for unauthenticated requests to the public API using a Redis-backed counter. Authenticated routes are out of scope.
+
+## Success criteria
+- Unauthenticated requests exceeding 60/min from a single IP receive HTTP 429.
+- Authenticated requests are unaffected.
+- Rate limit headers (`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`) are present on all public responses.
+
+## Constraints and non-goals
+- Out of scope: authenticated route limiting, user-level quotas, Redis cluster setup.
+- Must not increase p95 latency on public endpoints by more than 5 ms.
+
+## Task stack
+
+- [ ] T01: Add Redis rate-limit middleware for unauthenticated routes (status:todo)
+  - Task ID: T01
+  - Goal: Implement middleware that increments a Redis counter keyed by IP and returns 429 when the limit is exceeded.
+  - Boundaries in scope: middleware module, unauthenticated route registration.
+  - Boundaries out of scope: authenticated routes, Redis connection config (use existing client).
+  - Done when: Middleware rejects the 61st request in a 60 s window with HTTP 429; requests 1-60 pass through.
+  - Verification notes: `npm test src/middleware/rateLimiter.test.ts`; manual smoke test with `wrk -d 65s -c 1 http://localhost:3000/api/public`.
+
+- [ ] T02: Expose rate limit response headers (status:todo)
+  - Task ID: T02
+  - Goal: Attach `X-RateLimit-*` headers to every response from the rate-limited middleware.
+  - Boundaries in scope: header injection in the middleware added in T01.
+  - Boundaries out of scope: changing status codes, logging, or metrics.
+  - Done when: All public API responses include the three headers with correct values.
+  - Verification notes: `curl -I http://localhost:3000/api/public/health` shows all three headers.
+
+- [ ] T03: Validate, measure latency, and sync context (status:todo)
+  - Task ID: T03
+  - Goal: Run full test suite, confirm no regression on authenticated routes, verify latency budget, update context docs.
+  - Boundaries in scope: integration tests, latency benchmarks, context/plans status update.
+  - Boundaries out of scope: new feature work.
+  - Done when: All tests green; p95 latency delta < 5 ms; plan marked complete.
+  - Verification notes: `npm test`; `npm run bench:public`; review `context/plans/rate-limiting-public-api.md` checkboxes.
+```
 
 ## Output contract
 - Save plan under `context/plans/`.
@@ -645,7 +836,16 @@ Turn a human change request into `context/plans/{plan_name}.md`.
 - If the user explicitly allows assumptions, record them in an `Assumptions` section.
 - Incorporate user answers into the plan before handoff.
 
-## Documentation source rule
+### Clarification gate example
+
+**User request:** "Add rate limiting to the API."
+
+**Clarification questions asked before writing the plan:**
+1. Which endpoints should be rate-limited - all public routes, authenticated routes only, or specific ones?
+2. What are the limits (e.g., requests per minute per IP/token) and what should happen when a limit is exceeded (429 response, queue, or silent drop)?
+3. Should this use an existing library (e.g., `express-rate-limit`) or is a custom middleware preferred?
+
+*(Planning is blocked until the user answers all three.)*
 
 ## Plan format
 1) Change summary
@@ -694,6 +894,81 @@ Use checkbox lines for machine-friendly progress tracking:
 - Present the full ordered task list in chat.
 - Prompt the user to start a new session with Shared Context Code agent to implement `T01`.
 - Provide one canonical next command: `/next-task {plan_name} T01`.
+
+---
+
+## Complete plan example
+
+The following shows what a finished plan file looks like for a realistic request: *"Add per-user rate limiting to the REST API using `express-rate-limit`."*
+
+**File:** `context/plans/api-rate-limiting.md`
+
+```markdown
+# Plan: api-rate-limiting
+
+## Change summary
+Add per-user rate limiting to all authenticated REST API endpoints using the
+`express-rate-limit` library. Unauthenticated endpoints are out of scope.
+
+## Success criteria
+- Authenticated requests exceeding 100 req/min per token receive a 429 response
+  with a `Retry-After` header.
+- All existing authenticated-endpoint tests continue to pass.
+- A new integration test confirms the 429 path is exercised.
+
+## Constraints and non-goals
+- **In scope:** authenticated routes under `/api/v1/`
+- **Out of scope:** unauthenticated routes, IP-based limiting, admin bypass logic
+- **Constraint:** must use `express-rate-limit ^7`; no custom Redis store in this change
+- **Non-goal:** dashboarding or alerting on rate-limit events
+
+## Task stack
+
+- [ ] T01: Install and configure `express-rate-limit` middleware (status:todo)
+  - Task ID: T01
+  - Goal: Add `express-rate-limit` as a dependency and wire a per-token limiter
+    into the authenticated router.
+  - Boundaries (in/out of scope): `src/middleware/rateLimiter.ts` and
+    `src/router/authenticated.ts` only; no changes to unauthenticated routes.
+  - Done when: Middleware is applied to the authenticated router and the dev
+    server starts without errors.
+  - Verification notes: `npm install` succeeds; `npm run dev` starts; manual
+    `curl` with a valid token returns 200.
+
+- [ ] T02: Return correct 429 response with `Retry-After` header (status:todo)
+  - Task ID: T02
+  - Goal: Configure the limiter to respond with HTTP 429 and a `Retry-After`
+    header when the per-token limit is exceeded.
+  - Boundaries (in/out of scope): `src/middleware/rateLimiter.ts` handler only;
+    no route logic changes.
+  - Done when: Exceeding the limit returns `{ "error": "Too Many Requests" }`
+    with status 429 and a `Retry-After` value in seconds.
+  - Verification notes: `npm run test -- --grep "rate limit"` passes; manual
+    burst test with `artillery` confirms 429 after 100 req/min.
+
+- [ ] T03: Add integration test for the 429 path (status:todo)
+  - Task ID: T03
+  - Goal: Write one integration test that fires 101 requests and asserts the
+    101st receives 429 with `Retry-After`.
+  - Boundaries (in/out of scope): `tests/integration/rateLimiter.test.ts` only;
+    no changes to existing test files.
+  - Done when: New test file exists and `npm run test:integration` is green.
+  - Verification notes: `npm run test:integration` exits 0; coverage report
+    shows the 429 branch covered.
+
+- [ ] T04: Validation and cleanup (status:todo)
+  - Task ID: T04
+  - Goal: Confirm full test suite passes, no regressions, and context files are
+    in sync.
+  - Boundaries (in/out of scope): Read-only audit of test results and context
+    directory; no new code changes.
+  - Done when: `npm test` exits 0; `context/` reflects the completed plan state.
+  - Verification notes: `npm test && npm run lint`; verify
+    `context/plans/api-rate-limiting.md` task statuses are all `done`.
+
+## Open questions
+_(none - all clarifications resolved before planning)_
+```
 """
   }
   ["sce-plan-review"] = new ContentUnit {
@@ -731,10 +1006,48 @@ Use checkbox lines for machine-friendly progress tracking:
 - If plan context is stale or partial, continue with code truth and flag context updates.
 
 ## Expected output
-- Confirmed next task with clarified acceptance criteria.
-- Explicit readiness verdict: `ready_for_implementation: yes|no`.
-- If not ready, explicit issue categories: blockers, ambiguity, missing acceptance criteria.
-- Auto-proceed to implementation when readiness conditions are met.
+Emit a readiness verdict using this structure:
+
+```
+next_task: "Task title or description from plan"
+acceptance_criteria:
+  - Criterion A
+  - Criterion B
+ready_for_implementation: yes | no
+```
+
+If `ready_for_implementation: no`, include an issues block:
+
+```
+issues:
+  blockers:
+    - "Dependency on X is unresolved"
+  ambiguity:
+    - "It is unclear whether Y should be replaced or extended"
+  missing_acceptance_criteria:
+    - "No definition of done for the migration step"
+```
+
+- Auto-proceed to implementation when `ready_for_implementation: yes`.
+
+## Structured error examples
+
+**Multiple plans found (no path specified):**
+```
+ERROR: Multiple plans found. Specify an explicit plan path.
+Available plans:
+  - context/plans/migrate-auth.md
+  - context/plans/refactor-api.md
+```
+
+**Blockers or ambiguity detected:**
+```
+ERROR: Next task cannot proceed. Unresolved items:
+  [blocker] Auth service interface not yet defined - task depends on it.
+  [ambiguity] "Update schema" - unclear whether additive or destructive migration.
+  [missing_acceptance_criteria] No rollback criteria specified for the deployment step.
+Resolve all items above before re-running plan review.
+```
 """
   }
   ["sce-task-execution"] = new ContentUnit {
@@ -881,14 +1194,20 @@ Default split order:
     title = "SCE Validation"
     canonicalBody = """
 ## When to use
-- Use for the plan's final validation task.
+- Use for the plan's final validation task after implementation is complete.
+- Triggered by requests like "validate the plan", "run final checks", "confirm everything passes", "wrap up the task", or "sign off on this change".
 
 ## Validation checklist
-1) Run full test suite (or best available full-project checks).
-2) Run lint/format checks used by the repository.
-3) Remove temporary scaffolding related to the change.
-4) Verify context reflects final implemented behavior.
-5) Confirm each success criterion has evidence.
+1) **Run full test suite** - discover and run the project's primary test command (e.g., `pytest`, `npm test`, `go test ./...`, `cargo test`, `make test`). Check `package.json`, `Makefile`, `pyproject.toml`, or CI config files to find the right command.
+2) **Run lint/format checks** - discover and run the project's lint and format tools (e.g., `eslint`, `ruff`, `golangci-lint`, `cargo clippy`, `make lint`). Check project config files such as `.eslintrc`, `pyproject.toml`, or `.golangci.yml`.
+3) **Remove temporary scaffolding** - delete any debug code, temporary files, or intermediate artifacts introduced during the change.
+4) **Verify context reflects final implemented behavior** - confirm that plan context and notes match the actual final state of the implementation.
+5) **Confirm each success criterion has evidence** - for every success criterion defined in the plan, record concrete evidence (command output, exit code, screenshot reference, or file path).
+
+### If checks fail
+- **Fixable failures**: fix the issue, re-run the failing check, and update the report with the corrected output.
+- **Non-trivial failures**: document the failure, the attempted fix, and the blocker in the report under "Failed checks and follow-ups". Escalate to the user before closing out.
+- **Lint/format auto-fixes**: if the tool supports auto-fix (e.g., `ruff --fix`, `eslint --fix`), apply it, then re-run to confirm clean output.
 
 ## Validation report
 Write to `context/plans/{plan_name}.md` including:
@@ -897,6 +1216,23 @@ Write to `context/plans/{plan_name}.md` including:
 - Failed checks and follow-ups
 - Success-criteria verification summary
 - Residual risks, if any
+
+### Example report entry
+```
+## Validation Report
+
+### Commands run
+- `npm test` -> exit 0 (42 tests passed, 0 failed)
+- `eslint src/` -> exit 0 (no warnings)
+- Removed: `src/debug_patch.js` (temporary scaffolding)
+
+### Success-criteria verification
+- [x] All API endpoints return 200 for valid input -> confirmed via test output line 34
+- [x] Error responses include structured JSON -> confirmed via `test_error_format.js`
+
+### Residual risks
+- None identified.
+```
 """
   }
 }

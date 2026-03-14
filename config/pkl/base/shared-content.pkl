@@ -343,15 +343,35 @@ Create these paths:
 - `context/tmp/`
 - `context/tmp/.gitignore`
 
+Use the following commands to create the directory structure:
+```bash
+mkdir -p context/plans context/handovers context/decisions context/tmp
+touch context/overview.md context/architecture.md context/patterns.md context/glossary.md context/context-map.md
+```
+
 `context/tmp/.gitignore` content:
 ```
 *
 !.gitignore
 ```
 
+## Validation
+After running the commands, verify all expected paths exist before proceeding:
+```bash
+ls context/overview.md context/architecture.md context/patterns.md context/glossary.md context/context-map.md context/plans context/handovers context/decisions context/tmp context/tmp/.gitignore
+```
+If any path is missing, re-create it before moving on.
+
 ## No-code bootstrap rule
 - If the repository has no application code, keep `overview.md`, `architecture.md`, `patterns.md`, and `glossary.md` empty or placeholder-only.
 - Do not invent implementation details.
+
+Example placeholder content for empty files in a no-code repo:
+```markdown
+# Overview
+
+> This section has not been populated yet. Add a high-level description of the project here.
+```
 
 ## After bootstrapping
 - Add baseline links in `context/context-map.md`.
@@ -376,40 +396,78 @@ For every completed implementation task, run a sync pass over these shared files
 - `context/patterns.md`
 - `context/context-map.md`
 
-Do not default to editing root context files on every task. First classify whether the task is an important change; then edit or verify accordingly.
+Classify whether the task is an important change before deciding to edit or verify root context files.
 
 ## Root context significance gating
-- Treat root context edits as required when a task introduces or changes cross-cutting behavior, repository-wide policy/contracts, architecture boundaries, or canonical terminology.
-- Treat root context edits as verify-only when a task is localized to a single feature/domain and no root-level behavior, architecture, or terminology changed.
-- When verify-only applies, keep root files unchanged and capture details in focused domain/workflow files instead.
-- When root updates are not needed, still verify `context/overview.md`, `context/architecture.md`, and `context/glossary.md` against code truth before declaring done.
+- **Root edits required** - task introduces cross-cutting behavior, repository-wide policy/contracts, architecture boundaries, or canonical terminology changes.
+- **Verify-only** - task is localized to a single feature/domain with no root-level behavior, architecture, or terminology impact. Keep root files unchanged; capture details in domain files instead.
+- Even when verify-only, still verify `context/overview.md`, `context/architecture.md`, and `context/glossary.md` against code truth before declaring done.
 
-## Domain file creation policy
-- Use domain files under `context/{domain}/` for detailed feature behavior.
-- If a feature does not cleanly fit an existing domain file, create a new domain file instead of deferring documentation.
-- If the feature appears to be part of a larger future domain, still document the implemented slice now in a focused file and link it to related context.
-- Prefer creating a small, precise domain file over overloading `overview.md` with detail.
-- If updates for the current feature/domain become too detailed or large for shared files, migrate that detail into `context/{domain}/` files and keep only concise pointers in shared files.
-- Whenever detail is migrated, add discoverability links in `context/context-map.md` and cross-link relevant context files (`overview.md`, `architecture.md`, `glossary.md`, `patterns.md`) as needed.
+## Step-by-step sync pass workflow
 
-## Feature existence rule (required)
-- Every newly implemented feature must be discoverable from context.
-- Ensure at least one durable canonical description exists in either:
-  - a domain file under `context/{domain}/`, or
-  - `context/overview.md` (for cross-cutting/system features).
-- Ensure discoverability links are present from `context/context-map.md`.
-- Add glossary entries for any new domain language.
+1. **Classify the change** - Important change or verify-only (see [Classification Reference](#classification-reference) below).
+2. **Read the affected code** - Review modified files to understand what actually changed.
+3. **Verify root files** - Open `context/overview.md`, `context/architecture.md`, and `context/glossary.md`; confirm they match code truth.
+4. **Edit or skip root files** - Important change: update relevant root files. Verify-only: leave root files unchanged.
+5. **Create or update domain files** - Write or revise `context/{domain}/` files for feature-specific detail (see [Domain File Policy](#domain-file-creation-policy) below).
+6. **Ensure feature existence** - Every newly implemented feature must have at least one durable canonical description discoverable from context (domain file or `context/overview.md` for cross-cutting features).
+7. **Update `context/context-map.md`** - Add or refresh discoverability links to any new or changed context files.
+8. **Add glossary entries** - For any new domain language introduced by the task.
+9. **Final check** - Confirm all updated files are <= 250 lines, diagrams are present where needed, and links use relative paths.
+
+### Before/after example
+A task adds a new `PaymentGateway` abstraction used only in the payments domain (verify-only - domain-local).
+
+**`context/glossary.md`** - unchanged (no new root-level terminology).
+
+**New file: `context/payments/payment-gateway.md`:**
+```markdown
+# PaymentGateway
+
+Abstraction over external payment processors (Stripe, Adyen).
+Defined in `src/payments/gateway/`.
+
+## Contract
+- `charge(amount, token): Result`
+- `refund(chargeId): Result`
+
+See also: [overview.md](../overview.md), [context-map.md](../context-map.md)
+```
+
+**`context/context-map.md`** - updated with a link to `context/payments/payment-gateway.md`.
+
+---
+
+## Classification Reference
+
+| Important change (root edits required) | Verify-only (root files unchanged) |
+|---|---|
+| New auth strategy replacing existing one - architecture + terminology | New field on an existing API response - localized, no architecture impact |
+| Background job queue used across multiple domains - cross-cutting | Bug fix in a single service's retry logic - no new root-level behavior |
+| Renaming a core concept (e.g., `Order` -> `Purchase`) - canonical terminology | New UI component added to an existing feature - no cross-cutting impact |
+
+---
+
+## Domain File Creation Policy
+
+- Use `context/{domain}/` for detailed feature behavior.
+- If a feature does not cleanly fit an existing domain file, create a new one - do not defer documentation.
+- If the feature appears to be part of a larger future domain, document the implemented slice now in a focused file and link it to related context.
+- Prefer a small, precise domain file over overloading `overview.md` with detail.
+- If updates for the current feature/domain outgrow shared files, migrate detail into `context/{domain}/` files, keep concise pointers in shared files, and add discoverability links in `context/context-map.md`.
+
+---
 
 ## Final-task requirement
 - In the final plan task (validation/cleanup), confirm feature existence documentation is present and linked.
-- If a feature was implemented but not represented in context, add the missing context entry before declaring the task done.
+- If a feature was implemented but not represented in context, add the missing entry before declaring the task done.
 
 ## Quality constraints
-- Keep one topic per file.
+- One topic per file.
 - Prefer concise current-state documentation over narrative changelogs.
 - Link related context files with relative paths.
 - Include concrete code examples when needed to clarify non-trivial behavior.
-- Every context file you create or update must stay at or below 250 lines; if it would exceed 250, split into focused files and link them.
+- Every context file must stay at or below 250 lines; if it would exceed 250, split into focused files and link them.
 - Add a Mermaid diagram when structure, boundaries, or flows are complex.
 - Ensure major code areas have matching context coverage.
 """
@@ -422,7 +480,7 @@ Do not default to editing root context files on every task. First classify wheth
     canonicalBody = """
 ## What I do
 - Collect context and code signals with pure JavaScript collectors.
-- Analyze semantic drift between documented state and implemented state.
+- Compare documented state against implemented state to find mismatches.
 - Produce a clear drift report with actionable fixes.
 - Ask the user what to do next before making edits.
 
@@ -430,25 +488,126 @@ Do not default to editing root context files on every task. First classify wheth
 - If `context/` is missing, ask once whether to bootstrap SCE baseline.
   - If yes, create baseline and continue.
   - If no, stop and explain drift analysis requires `context/`.
-- Collect data:
+- Collect data using standard Node.js APIs:
 
 ```javascript
-const collectors = require("../../lib/drift-collectors.js");
-const data = await collectors.collectAll(process.cwd(), {
-  sources: ["context", "code"],
-});
+const fs = require("fs");
+const path = require("path");
+const { execSync } = require("child_process");
+
+const root = process.cwd();
+
+// --- Collect context/ claims, paths, topics, and completed tasks ---
+function readContextFiles(contextDir) {
+  const results = { claims: [], paths: [], topics: [], completedTasks: [] };
+  if (!fs.existsSync(contextDir)) return results;
+
+  const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).forEach(entry => {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) return walk(full);
+    if (!entry.name.endsWith(".md")) return;
+    const text = fs.readFileSync(full, "utf8");
+    const lines = text.split("\n");
+    lines.forEach((line, i) => {
+      // Collect quoted file/path claims (e.g. "handled by src/foo.ts")
+      const pathClaim = line.match(/"([^"]*\\.[a-z]{2,4})"/i);
+      if (pathClaim) results.claims.push({ file: full, line: i + 1, raw: line.trim(), ref: pathClaim[1] });
+      // Collect explicit path mentions (src/..., lib/..., etc.)
+      const pathRef = line.match(/\\b(src|lib|app|test|tests|dist)\\/[\\w\\/\\.\\-]+/);
+      if (pathRef) results.paths.push({ file: full, line: i + 1, ref: pathRef[0] });
+      // Collect completed task markers
+      if (/^\\s*-\\s*\\[x\\]/i.test(line)) results.completedTasks.push({ file: full, line: i + 1, raw: line.trim() });
+      // Collect section headings as documented topics
+      const heading = line.match(/^#{1,3}\\s+(.+)/);
+      if (heading) results.topics.push(heading[1].trim());
+    });
+  });
+  walk(contextDir);
+  return results;
+}
+
+// --- Collect exported symbols and module paths from source code ---
+function readCodeSymbols(srcDirs) {
+  const symbols = []; // { name, file }
+  const allPaths = new Set();
+  srcDirs.forEach(dir => {
+    if (!fs.existsSync(dir)) return;
+    const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).forEach(entry => {
+      const full = path.join(d, entry.name);
+      if (entry.isDirectory()) return walk(full);
+      const rel = path.relative(root, full);
+      allPaths.add(rel);
+      if (!/\\.(js|ts|mjs|cjs)$/.test(entry.name)) return;
+      const text = fs.readFileSync(full, "utf8");
+      // Named exports: export function foo, export const foo, export class Foo
+      const exportMatches = text.matchAll(/^export\\s+(?:async\\s+)?(?:function|const|class|let|var)\\s+(\\w+)/gm);
+      for (const m of exportMatches) symbols.push({ name: m[1], file: rel });
+      // module.exports.foo = ... or exports.foo = ...
+      const cjsMatches = text.matchAll(/(?:module\\.exports|exports)\\.(\\w+)\\s*=/g);
+      for (const m of cjsMatches) symbols.push({ name: m[1], file: rel });
+    });
+  });
+  return { symbols, allPaths };
+}
+
+const context = readContextFiles(path.join(root, "context"));
+const code = readCodeSymbols(["src", "lib", "app"].map(d => path.join(root, d)));
 ```
 
 - Analyze for these drift classes:
-  - missing documentation (code capability not represented in `context/`)
-  - outdated context (context claim no longer matches code)
-  - structure drift (paths and boundaries changed)
-  - completion drift (checked tasks with no supporting implementation)
+
+  - **Missing documentation** - a function or module exists in code but has no corresponding entry in `context/`
+    ```javascript
+    const undocumented = code.symbols.filter(
+      sym => !context.topics.some(t => t.toLowerCase().includes(sym.name.toLowerCase()))
+    );
+    ```
+
+  - **Outdated context** - a path or file referenced in `context/` no longer exists on disk
+    ```javascript
+    const stale = context.claims.filter(
+      claim => {
+        const abs = path.resolve(root, claim.ref);
+        return !fs.existsSync(abs) && !code.allPaths.has(claim.ref);
+      }
+    );
+    ```
+
+  - **Structure drift** - file paths mentioned in `context/` have changed or moved
+    ```javascript
+    const moved = context.paths.filter(
+      p => !fs.existsSync(path.resolve(root, p.ref)) && !code.allPaths.has(p.ref)
+    );
+    ```
+
+  - **Completion drift** - tasks marked `[x]` in `context/` reference paths or symbols with no evidence in code
+    ```javascript
+    const phantom = context.completedTasks.filter(task => {
+      const ref = task.raw.match(/\\b(src|lib|app)\\/[\\w\\/\\.\\-]+/);
+      if (!ref) return false;
+      return !fs.existsSync(path.resolve(root, ref[0])) && !code.allPaths.has(ref[0]);
+    });
+    ```
+
 - Write findings to `context/tmp/drift-analysis-YYYY-MM-DD.md`.
 - Ask user: "Apply these fixes?" with options:
   - Yes, apply all
   - Selectively
   - No, document only
+
+## Expected drift finding format
+
+Each finding in the report should follow this structure:
+
+```
+[outdated-context] ARCHITECTURE.md line 12 claims "auth handled by middleware/session.js"
+  -> File no longer exists. Auth now lives in src/auth/tokenGuard.ts.
+  -> Fix: update ARCHITECTURE.md line 12 to reference src/auth/tokenGuard.ts.
+
+[missing-documentation] src/payments/reconciler.ts exports `reconcileDaily()`
+  -> No entry found in context/ for this capability.
+  -> Fix: add reconciler capability to context/modules.md.
+```
 
 ## Rules
 - Treat code as source of truth when context and code disagree.
@@ -480,10 +639,27 @@ const data = await collectors.collectAll(process.cwd(), {
   - If no, stop and explain SCE workflows require `context/`.
 - Search `context/tmp/` for `drift-analysis-*.md`.
 - If one or more reports exist, use the latest report as the fix input.
-- If no report exists, explicitly tell the user no drift analysis report was found, then run `sce-drift-analyzer` to generate one before continuing.
+- If no report exists, explicitly tell the user no drift analysis report was found, then run `sce-drift-analyzer` by invoking the `sce-drift-analyzer` skill before continuing.
 - Ask whether to apply all fixes or apply selectively.
 - If any finding is ambiguous or lacks enough evidence, prompt the user before editing.
 - Keep context files concise, current-state oriented, and linked from `context/context-map.md` when relevant.
+
+## Example drift finding and fix
+
+**Finding from `context/tmp/drift-analysis-2024-11-01.md`:**
+> `context/architecture.md` line 12 states the auth module uses JWT tokens, but `src/auth/handler.ts` was refactored to use session cookies in commit `a3f92c1`.
+
+**Before (`context/architecture.md`):**
+```markdown
+## Auth
+The auth module issues JWT tokens on login and validates them on each request.
+```
+
+**After (`context/architecture.md`):**
+```markdown
+## Auth
+The auth module uses session cookies on login and validates the session on each request.
+```
 
 ## Expected output
 - A clear list of drift findings sourced from `context/tmp/drift-analysis-*.md`.
@@ -509,8 +685,35 @@ const data = await collectors.collectAll(process.cwd(), {
   - next recommended step
 
 ## How to run this
-- Prefer task-aligned naming: `context/handovers/{plan_name}-{task_id}.md`.
-- If key details are missing, infer from repo state and clearly label assumptions.
+
+1. **Gather context** - review the current task, recent changes, and repo state.
+2. **Create the file** - use task-aligned naming: `context/handovers/{plan_name}-{task_id}.md`.
+3. **Fill each section** - follow the template below, labelling any inferred details as assumptions.
+4. **Verify completeness** - confirm all four sections are populated before finishing.
+
+If key details are missing, infer from repo state and clearly label assumptions.
+
+## Handover document template
+
+```markdown
+# Handover: {plan_name} - {task_id}
+
+## Current Task State
+- What was being worked on and how far along it is.
+- e.g. "Implementing OAuth login flow; token generation complete, redirect handling in progress."
+
+## Decisions Made
+- Key choices and their rationale.
+- e.g. "Chose JWT over session cookies for statelessness. Rejected library X due to licence constraints."
+
+## Open Questions / Blockers
+- Unresolved issues or outstanding dependencies.
+- e.g. "Awaiting confirmation on token expiry policy from product team."
+
+## Next Recommended Step
+- The single most important action for whoever picks this up.
+- e.g. "Complete the redirect handler in `src/auth/callback.ts`, then run the auth integration tests."
+```
 
 ## Expected output
 - A complete handover document in `context/handovers/` using task-aligned naming when possible.
@@ -545,7 +748,10 @@ Turn a human change request into `context/plans/{plan_name}.md`.
 - If the user explicitly allows assumptions, record them in an `Assumptions` section.
 - Incorporate user answers into the plan before handoff.
 
-## Documentation source rule
+Example clarification questions (use this style - specific, blocking, targeted):
+> 1. Should the new endpoint authenticate via the existing JWT middleware, or is a separate auth flow in scope?
+> 2. Is database migration rollback a hard requirement, or is forward-only acceptable for this change?
+> 3. Which service owns the `UserProfile` type - should this task modify that definition or only consume it?
 
 ## Plan format
 1) Change summary
@@ -568,11 +774,6 @@ For each task include:
 - If a candidate task would require multiple independent commits (for example: refactor + behavior change + docs), split it into separate sequential tasks before finalizing the plan.
 - Keep broad wrappers (`polish`, `finalize`, `misc updates`) out of executable tasks; convert them into specific outcomes with concrete acceptance checks.
 
-Use this quick atomicity check before accepting each task:
-- `single_intent`: task delivers one primary outcome
-- `single_area`: task touch scope is narrow and related
-- `single_verification`: done checks validate one coherent change set
-
 Example compliant skeleton:
 - [ ] T0X: `[single intent title]` (status:todo)
   - Task ID: T0X
@@ -581,8 +782,20 @@ Example compliant skeleton:
   - Done when: `[clear acceptance for one coherent change]`
   - Verification notes (commands or checks): `[targeted checks for this change]`
 
+Example filled-in task entry:
+- [ ] T02: `Add /auth/refresh endpoint` (status:todo)
+  - Task ID: T02
+  - Goal: Implement a POST `/auth/refresh` endpoint that exchanges a valid refresh token for a new access token.
+  - Boundaries (in/out of scope): In - route handler, token validation logic, response schema. Out - refresh token rotation policy (covered in T03), client-side storage changes.
+  - Done when: `POST /auth/refresh` returns a signed JWT on valid input and 401 on expired/invalid token; unit tests pass; OpenAPI spec updated.
+  - Verification notes (commands or checks): `pnpm test src/auth/refresh.test.ts`; `curl -X POST localhost:3000/auth/refresh -d '{"token":"..."}' -w "%{http_code}"`.
+
 Use checkbox lines for machine-friendly progress tracking:
 - `- [ ] T01: ... (status:todo)`
+
+## Complete plan example
+
+See `context/plans/PLAN_EXAMPLE.md` for a full annotated reference plan (JWT auth walkthrough covering all required sections and four task entries).
 
 ## Required final task
 - Final task is always validation and cleanup.
@@ -623,6 +836,22 @@ Use checkbox lines for machine-friendly progress tracking:
 - Prompt user to resolve unclear points before implementation.
 - Confirm scope explicitly for this session: one task by default unless user requests multi-task execution.
 
+## Plan file format
+SCE plans are Markdown files stored in `context/plans/`. Tasks are tracked as checkboxes:
+
+```markdown
+# Plan: Add user authentication
+
+## Tasks
+- [x] Scaffold auth module
+- [x] Add password hashing utility
+- [ ] Implement login endpoint        <- next task (first unchecked)
+- [ ] Write integration tests
+- [ ] Update context/current-state.md
+```
+
+The first unchecked `- [ ]` item is the next task to review and prepare.
+
 ## Rules
 - Do not auto-mark tasks complete during review.
 - Keep continuation state in the plan markdown itself.
@@ -632,11 +861,44 @@ Use checkbox lines for machine-friendly progress tracking:
 - If plan context is stale or partial, continue with code truth and flag context updates.
 
 ## Expected output
-- Confirmed next task with clarified acceptance criteria.
+
+Produce a structured readiness summary after review:
+
+```
+## Plan Review - [plan filename]
+
+**Completed tasks:** 2 of 5
+**Next task:** Implement login endpoint
+
+**Acceptance criteria:**
+- POST /auth/login returns JWT on success
+- Returns 401 on invalid credentials
+
+**Issues found:**
+- Blocker: JWT secret source not specified (env var? config file?)
+- Ambiguity: Should failed attempts be rate-limited in this task or a later one?
+
+**ready_for_implementation: no**
+
+**Required decisions before proceeding:**
+1. Confirm JWT secret source
+2. Confirm rate-limiting scope
+```
+
+When all issues are resolved:
+
+```
+**ready_for_implementation: yes**
+Proceeding with: Implement login endpoint
+```
+
 - Explicit readiness verdict: `ready_for_implementation: yes|no`.
 - If not ready, explicit issue categories: blockers, ambiguity, missing acceptance criteria.
 - Explicit user-aligned decisions needed to proceed to implementation.
 - Explicit user confirmation request that the task is ready for implementation when unresolved issues remain.
+
+## Related skills
+- `sce-bootstrap-context` - creates the `context/` baseline required by this skill
 """
   }
   ["sce-task-execution"] = new ContentUnit {
@@ -660,6 +922,20 @@ Use checkbox lines for machine-friendly progress tracking:
 - Then ask explicitly whether to continue.
 - Do not edit files, generate code, or apply patches until the user confirms.
 
+**Example mandatory stop prompt:**
+```
+Task goal: Add input validation to the user registration endpoint.
+In scope: src/routes/register.ts, src/validators/user.ts
+Out of scope: Auth logic, database schema, frontend forms
+Done checks: All existing tests pass; new validation tests cover empty/invalid email and short passwords
+Expected changes: ~2 files modified, no new dependencies
+Approach: Use the existing `validateSchema` helper; add a Zod schema for registration payload
+Trade-offs: Zod adds minor overhead; keeps validation consistent with other routes
+Risks: Existing callers that omit optional fields may start failing validation
+
+Continue with implementation now? (yes/no)
+```
+
 ## Required sequence
 1) Restate task goal, boundaries, done checks, and expected file touch scope.
 2) Propose approach, trade-offs, and risks.
@@ -669,6 +945,16 @@ Use checkbox lines for machine-friendly progress tracking:
 6) Record whether the implementation is an important change for context sync (root-edit required) or verify-only (no root edits expected).
 7) Keep session-only scraps in `context/tmp/`.
 8) Update task status in `context/plans/{plan_id}.md`.
+
+**Example task status update (`context/plans/{plan_id}.md`):**
+```markdown
+## Task: Add input validation to registration endpoint
+- **Status:** done
+- **Completed:** 2025-06-10
+- **Files changed:** src/routes/register.ts, src/validators/user.ts
+- **Evidence:** 14/14 tests passed, lint clean, build succeeded (12s)
+- **Notes:** Zod schema added; no breaking changes to existing callers
+```
 
 ## Scope expansion rule
 - If out-of-scope edits are needed, stop and ask for approval.
@@ -770,14 +1056,20 @@ Default split order:
     title = "SCE Validation"
     canonicalBody = """
 ## When to use
-- Use for the plan's final validation task.
+- Use for the plan's final validation task after implementation is complete.
+- Triggered by requests like "validate the plan", "run final checks", "confirm everything passes", "wrap up the task", or "sign off on this change".
 
 ## Validation checklist
-1) Run full test suite (or best available full-project checks).
-2) Run lint/format checks used by the repository.
-3) Remove temporary scaffolding related to the change.
-4) Verify context reflects final implemented behavior.
-5) Confirm each success criterion has evidence.
+1) **Run full test suite** - discover and run the project's primary test command (e.g., `pytest`, `npm test`, `go test ./...`, `cargo test`, `make test`). Check `package.json`, `Makefile`, `pyproject.toml`, or CI config files to find the right command.
+2) **Run lint/format checks** - discover and run the project's lint and format tools (e.g., `eslint`, `ruff`, `golangci-lint`, `cargo clippy`, `make lint`). Check project config files such as `.eslintrc`, `pyproject.toml`, or `.golangci.yml`.
+3) **Remove temporary scaffolding** - delete any debug code, temporary files, or intermediate artifacts introduced during the change.
+4) **Verify context reflects final implemented behavior** - confirm that plan context and notes match the actual final state of the implementation.
+5) **Confirm each success criterion has evidence** - for every success criterion defined in the plan, record concrete evidence (command output, exit code, screenshot reference, or file path).
+
+### If checks fail
+- **Fixable failures**: fix the issue, re-run the failing check, and update the report with the corrected output.
+- **Non-trivial failures**: document the failure, the attempted fix, and the blocker in the report under "Failed checks and follow-ups". Escalate to the user before closing out.
+- **Lint/format auto-fixes**: if the tool supports auto-fix (e.g., `ruff --fix`, `eslint --fix`), apply it, then re-run to confirm clean output.
 
 ## Validation report
 Write to `context/plans/{plan_name}.md` including:
@@ -786,6 +1078,23 @@ Write to `context/plans/{plan_name}.md` including:
 - Failed checks and follow-ups
 - Success-criteria verification summary
 - Residual risks, if any
+
+### Example report entry
+```
+## Validation Report
+
+### Commands run
+- `npm test` -> exit 0 (42 tests passed, 0 failed)
+- `eslint src/` -> exit 0 (no warnings)
+- Removed: `src/debug_patch.js` (temporary scaffolding)
+
+### Success-criteria verification
+- [x] All API endpoints return 200 for valid input -> confirmed via test output line 34
+- [x] Error responses include structured JSON -> confirmed via `test_error_format.js`
+
+### Residual risks
+- None identified.
+```
 """
   }
 }
