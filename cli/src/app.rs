@@ -438,8 +438,13 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<Command, Classi
             hooks,
             repo,
         } => convert_setup_command(opencode, claude, both, non_interactive, hooks, repo),
-        cli_schema::Commands::Doctor { format } => {
+        cli_schema::Commands::Doctor { fix, format } => {
             Ok(Command::Doctor(services::doctor::DoctorRequest {
+                mode: if fix {
+                    services::doctor::DoctorMode::Fix
+                } else {
+                    services::doctor::DoctorMode::Diagnose
+                },
                 format: convert_output_format(format),
             }))
         }
@@ -1123,7 +1128,25 @@ mod tests {
         assert_eq!(
             command,
             Command::Doctor(crate::services::doctor::DoctorRequest {
+                mode: crate::services::doctor::DoctorMode::Diagnose,
                 format: crate::services::doctor::DoctorFormat::Json,
+            })
+        );
+    }
+
+    #[test]
+    fn parser_routes_doctor_fix_mode() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "doctor".to_string(),
+            "--fix".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(
+            command,
+            Command::Doctor(crate::services::doctor::DoctorRequest {
+                mode: crate::services::doctor::DoctorMode::Fix,
+                format: crate::services::doctor::DoctorFormat::Text,
             })
         );
     }

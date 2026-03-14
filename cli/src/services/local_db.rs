@@ -180,6 +180,20 @@ pub fn ensure_agent_trace_local_db_ready_blocking() -> Result<PathBuf> {
     Ok(db_path)
 }
 
+pub(crate) fn check_agent_trace_local_db_health_blocking(path: &Path) -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()?;
+    runtime.block_on(check_agent_trace_local_db_health(path))
+}
+
+async fn check_agent_trace_local_db_health(path: &Path) -> Result<()> {
+    let conn = connect_local(LocalDatabaseTarget::Path(path)).await?;
+    let mut rows = conn.query("PRAGMA schema_version", ()).await?;
+    let _ = rows.next().await?;
+    Ok(())
+}
+
 async fn connect_local(target: LocalDatabaseTarget<'_>) -> Result<turso::Connection> {
     let location = target_location(target)?;
     let db = Builder::new_local(location).build().await?;
