@@ -1,78 +1,213 @@
-# Agent Trace hook rollout doctor
+# SCE doctor operator environment contract
 
 ## Scope
 
-Task `agent-trace-attribution-no-git-wrapper` `T07` adds local rollout validation through `sce doctor` so operators can verify hook readiness before enabling attribution enforcement.
+Task `sce-doctor-operator-environment` `T01` defines the approved contract for broadening `sce doctor` from hook-readiness validation into the canonical installed-CLI operator health and repair entrypoint for SCE.
+This document is the implementation target for `T02` through `T07` in that plan.
 
-## Command contract
+In scope for this contract task:
 
-- Entrypoint: `sce doctor`
-- Service implementation: `cli/src/services/doctor.rs`
-- Command dispatch: `cli/src/app.rs` (`Command::Doctor(DoctorRequest)`)
-- Command surface status: implemented in `cli/src/command_surface.rs`
+- operator-environment readiness semantics for installed CLI, global SCE state, and repo-scoped rollout state
+- deterministic problem taxonomy, severity/fixability classes, and remediation metadata
+- stable text/JSON output additions for diagnosis and `--fix` reporting
+- the standing maintenance rule that every new SCE-managed setup/install surface must extend `sce doctor` coverage in the same change stream
 
-`sce doctor` supports deterministic dual output via `--format <text|json>`.
+Out of scope for this contract task:
 
-Text output includes:
+- Rust implementation changes
+- parser/help wiring beyond the contract needed for downstream tasks
+- broad machine diagnostics unrelated to SCE-owned operator readiness
 
-- readiness verdict (`ready` or `not ready`)
-- hook-path source (`default (.git/hooks)`, per-repo `core.hooksPath`, or global `core.hooksPath`)
-- detected repository root and effective hooks directory
-- default global/local config-file locations with `present` or `expected` state
-- Agent Trace local DB location with `present` or `expected` state
-- required hook checks for `pre-commit`, `commit-msg`, `post-commit`
-- actionable diagnostics for missing or misconfigured hooks
+## Current implementation baseline
 
-JSON output includes stable top-level fields:
+At the current T06 implementation point, the runtime in `cli/src/services/doctor.rs` exposes the approved doctor command surface and stable output-shape scaffolding, and now covers the first global-readiness slice plus the first repo-integrity and repair slices:
 
-- `status`, `command`
-- `readiness` (`ready` or `not_ready`)
-- `hook_path_source` (`default`, `local_config`, `global_config`)
-- `repository_root`, `hooks_directory`
-- `config_paths[]` with `label`, `path`, `exists`, `state`
-- `agent_trace_local_db` with `label`, `path`, `exists`, `state`
-- `hooks[]` with `name`, `path`, `exists`, `executable`, `state`
-- `diagnostics[]`
+- explicit mode selection through `sce doctor` (`diagnose`) and `sce doctor --fix` (`fix`)
+- command/help wiring for `--fix` plus stable text/JSON mode reporting
+- stable problem records with category, severity, fixability, and remediation metadata
+- deterministic fix-result records in fix mode with `fixed`, `skipped`, `manual`, and `failed` outcomes
+- state-root reporting as `present` or `expected`
+- default global/local config-file location reporting, plus validation of existing global config readability and schema compliance
+- Agent Trace local DB location reporting, DB parent-directory readiness checks, and existing-DB health validation
+- explicit git-unavailable, outside-repo, and bare-repo repository-targeting failures
+- effective hook-path source (`default`, local `core.hooksPath`, global `core.hooksPath`)
+- repository root and hooks directory resolution when a repository target is detected
+- required hook presence and executable permissions for `pre-commit`, `commit-msg`, and `post-commit` when repo-scoped checks apply
+- byte-for-byte stale-content detection for required hook payloads against canonical embedded SCE-managed hook assets
+- repair-mode reuse of `cli/src/services/setup.rs::install_required_git_hooks` for missing hooks directories plus missing, stale, or non-executable required hooks
+- doctor-owned bootstrap of the missing canonical SCE-owned Agent Trace DB parent directory, with deterministic refusal when the resolved path does not match the expected owned location
 
-## Health validation rules
+Downstream tasks must expand the runtime from this T06 baseline to the full contract below without changing the command entrypoint.
 
-`sce doctor` resolves git state using CLI git commands:
+## Command surface contract
 
-- `git rev-parse --show-toplevel`
-- `git rev-parse --git-path hooks`
-- `git config --local --get core.hooksPath`
-- `git config --global --get core.hooksPath`
+- Canonical operator command: `sce doctor`
+- Canonical explicit repair mode: `sce doctor --fix`
+- Stable output modes: text (default) and `--format json`
 
-Git command resolution is repository-root anchored for the inspected repo, and the effective hooks directory is normalized to an absolute path when git returns a relative hook path.
+Default `sce doctor` behavior remains diagnosis-only and read-only.
+`sce doctor --fix` is the only canonical repair path and may perform only safe, idempotent repairs bounded to SCE-owned paths/files or explicit permission normalization on those paths.
 
-Config and DB location reporting uses deterministic local path resolution only:
+`sce doctor --fix` must not:
 
-- global config path: `${state_root}/sce/config.json`
-- local config path: `<current working directory>/.sce/config.json`
-- Agent Trace local DB path: `${state_root}/sce/agent-trace/local.db`
+- delete unrelated files
+- overwrite unknown config without explicit SCE ownership rules
+- mutate git config unexpectedly
+- repair non-owned or ambiguous targets without deterministic refusal guidance
 
-`state_root` resolves through `cli/src/services/local_db.rs` platform rules (`XDG_STATE_HOME` or the platform-equivalent user state root fallback).
+## Readiness model
 
-Readiness is `not ready` when any required check fails:
+`sce doctor` reports one top-level readiness verdict for the inspected operator environment:
 
-- hooks directory cannot be resolved
-- hooks directory is missing
-- any required hook file is missing
-- any required hook exists but is not executable
+- `ready`: no blocking SCE operator issues were detected
+- `not_ready`: one or more blocking issues were detected
 
-If no diagnostics are present, readiness is `ready`.
+The readiness verdict covers three check domains:
 
-## Verification coverage
+1. installed CLI/runtime identity
+2. global SCE state/config/DB readiness
+3. repository and hook rollout readiness when repo-scoped checks are applicable
 
-`cli/src/services/doctor.rs` includes explicit doctor output tests for:
+Repo-scoped issues make readiness `not_ready` only when a repository target is required for the inspected surface. Non-repo global checks must still run and report deterministically when `sce doctor` is executed outside a git repository.
 
-- healthy state (all required hooks present and executable)
-- missing state (required hook absent)
-- misconfigured state (required hook present but non-executable)
-- post-setup ready state after required hooks are installed
-- post-setup ready state for per-repo custom `core.hooksPath`
-- config/local-DB location reporting for present and absent cases
-- request parsing defaults and `--format json` support
-- JSON report shape contract (`status`, `command`, `readiness`, `hook_path_source`, `config_paths`, `agent_trace_local_db`, `hooks`, `diagnostics`)
+## Problem taxonomy
 
-`cli/src/app.rs` includes command-level routing/exit success coverage for `sce doctor`, including `--format json` routing.
+Every detected issue must map to exactly one stable problem category:
+
+- `runtime_identity`: installed binary/runtime metadata or command-surface problems
+- `global_state`: global state-root, config-path, config-contents, or Agent Trace DB readiness problems
+- `repository_targeting`: repository resolution, git availability, bare-repo, or hooks-path discovery problems
+- `hook_rollout`: missing, partial, stale, non-executable, or otherwise unhealthy required SCE-managed hooks
+- `repo_assets`: missing or stale repo-local SCE-managed assets outside the hook files themselves
+- `filesystem_permissions`: missing parent directories, unwritable owned paths, rename/temp/backup barriers, or permission failures blocking safe repair
+- `remediation_coverage`: gaps where doctor can diagnose an issue but does not yet own a canonical repair path
+
+Each problem record must also include stable severity and fixability classes.
+
+### Severity classes
+
+- `error`: blocks readiness and requires repair or explicit manual action
+- `warning`: non-blocking but operator-visible risk, drift, or partial-state concern that must still surface in output
+- `info`: non-failure contextual guidance that helps explain status or next actions
+
+### Fixability classes
+
+- `auto_fixable`: safe for `sce doctor --fix` to repair idempotently
+- `manual_only`: not safe for automatic repair; output must include deterministic manual remediation
+- `not_yet_implemented`: intended to become auto-fixable, but current doctor repair coverage is incomplete and must report the gap explicitly
+
+## Required check inventory
+
+The broadened contract for `sce doctor` must cover the following problem inventory.
+
+### Installed CLI/runtime identity
+
+- binary/runtime metadata is incomplete or inconsistent
+- installed build does not expose the expected SCE command surface
+- required runtime directories cannot be resolved on the current platform
+
+### Global SCE state/config readiness
+
+- global SCE state root cannot be resolved
+- expected global config path cannot be resolved
+- global config file exists but is unreadable, invalid JSON, or fails schema validation
+- Agent Trace local DB path cannot be resolved
+- Agent Trace DB parent directories are missing or not writable
+- Agent Trace DB exists but bootstrap or migration health is broken
+
+### Repository targeting and git readiness
+
+- repo-scoped checks are required but `sce doctor` is run outside a git repository
+- `git` is unavailable or repository inspection commands fail
+- repository root resolution fails or resolves unexpectedly
+- repository is bare or unsupported for local hook rollout
+- effective hooks directory cannot be resolved
+- local or global `core.hooksPath` points to a missing or unexpected location
+
+### Hook rollout integrity
+
+- effective hooks directory is missing
+- required SCE hooks are missing
+- required hooks exist but are not executable
+- required hook payloads differ from the canonical embedded SCE-managed content
+- only some required hooks are current, producing a partial rollout
+- hook files have launcher, shebang, or path issues that prevent reliable execution
+- adjacent rewrite/runtime guidance required for healthy rollout is missing from operator output
+
+### Repo-installed SCE assets
+
+- expected repo-local `.sce/` state/config directories are missing when the repair path needs them
+- installed repo-facing SCE assets are missing or stale relative to canonical embedded assets
+- prior setup was only partially applied
+
+### Filesystem and permission barriers
+
+- effective hooks directory is not writable for repair
+- repo-local `.sce/` directory is not writable for repair
+- global state/config/DB parent directories are not writable
+- backup-and-replace safety cannot proceed because temp, rename, or write permissions fail
+
+### Remediation coverage gaps
+
+- doctor detects an issue but does not map it to one canonical SCE repair action
+- an issue is safely auto-fixable but no internal `doctor --fix` repair path exists yet
+- an issue is not auto-fixable and needs deterministic manual remediation guidance in text/JSON output
+
+## Remediation contract
+
+Every reported problem must include deterministic remediation metadata:
+
+- whether the issue is `auto_fixable`, `manual_only`, or `not_yet_implemented`
+- one canonical next action (`doctor_fix`, `setup_hooks`, `manual_steps`, or another stable action label introduced by downstream tasks)
+- concise human-readable remediation text in text mode
+- stable machine-readable remediation fields in JSON mode
+
+When an issue is `manual_only`, `sce doctor` must return explicit manual steps instead of vague diagnostics.
+When an issue is `not_yet_implemented`, output must say that doctor recognizes the issue but does not yet own an automatic repair path.
+
+## `--fix` execution contract
+
+`sce doctor --fix` must report deterministic per-problem repair results using this outcome vocabulary:
+
+- `fixed`: doctor repaired the issue successfully
+- `skipped`: doctor intentionally left the issue unchanged because it was already healthy or did not require action
+- `manual`: doctor identified the issue but it requires manual remediation
+- `failed`: doctor attempted an allowed repair but the repair did not complete successfully
+
+Repair behavior must:
+
+- reuse existing canonical SCE repair flows when ownership already exists, especially `sce setup --hooks` semantics and shared setup/security helpers
+- add new internal doctor-owned repair routines only for safe gaps with no existing canonical repair command
+- stay idempotent across repeated `--fix` runs
+- remain bounded to SCE-owned paths/files and explicit permission normalization on those paths
+
+## Output shape contract
+
+Text and JSON output must both expose:
+
+- command identity and inspection mode (`diagnose` or `fix`)
+- readiness verdict
+- inspected environment summary across runtime/global/repo domains
+- stable problem records with category, severity, fixability, and remediation guidance
+- `--fix` result reporting when repair mode is used
+
+The JSON contract must remain stable enough for downstream automation and include machine-readable problem and fix-result records rather than free-form diagnostics only.
+
+## Setup and doctor alignment rule
+
+Doctor/setup alignment is a standing repository contract, not a one-off for hook rollout.
+
+Every newly added SCE-managed setup/install surface must define, in the same change stream:
+
+- what `sce doctor` checks for that surface
+- how readiness changes when that surface is missing, stale, partial, or misconfigured
+- whether each new issue class is `auto_fixable`, `manual_only`, or `not_yet_implemented`
+- which canonical repair action owns remediation
+- which durable context files describe the resulting current-state contract
+
+No new SCE setup/install capability is considered complete until matching `sce doctor` readiness and remediation coverage is defined and synchronized in context.
+
+## Downstream verification targets
+
+`T02` through `T08` must verify this contract through parser/help tests, doctor-focused service tests, and final repo verification.
+At minimum, downstream work must prove deterministic coverage for output shape, readiness transitions, diagnosis-only safety, supported `--fix` repairs, refusal paths for unsafe repairs, and setup-to-doctor alignment for newly managed surfaces.
