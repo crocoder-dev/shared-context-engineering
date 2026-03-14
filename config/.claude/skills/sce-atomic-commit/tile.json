@@ -1,0 +1,11 @@
+{
+  "name": "crocoder-dev/sce-atomic-commit",
+  "version": "0.1.0",
+  "summary": "Write atomic, repo-style git commits from a change summary or diff.",
+  "private": false,
+  "skills": {
+    "sce-atomic-commit": {
+      "path": "SKILL.md"
+    }
+  }
+}

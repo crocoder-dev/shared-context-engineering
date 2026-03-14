@@ -1,0 +1,11 @@
+{
+  "name": "crocoder-dev/sce-drift-analyzer",
+  "version": "0.1.0",
+  "summary": "Analyze drift between project context documentation and actual code.",
+  "private": false,
+  "skills": {
+    "sce-drift-analyzer": {
+      "path": "SKILL.md"
+    }
+  }
+}

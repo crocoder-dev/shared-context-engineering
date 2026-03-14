@@ -42,7 +42,7 @@ local skillFrontmatterBySlug = new Mapping {
     [unitSlug] = """
 ---
 name: \(unitSlug)
-description: \(metadata.skillDescriptions[unitSlug])
+description: "\(metadata.skillDescriptions[unitSlug])"
 compatibility: \(metadata.skillCompatibility)
 ---
 """
@@ -78,6 +78,27 @@ skills {
       title = unit.title
       frontmatter = skillFrontmatterBySlug[unitSlug]
       body = unit.canonicalBody
+    }
+  }
+}
+
+skillTiles {
+  for (unitSlug, _ in shared.skills) {
+    [unitSlug] = new common.RenderedTextFile {
+      slug = unitSlug
+      rendered = """
+{
+  \"name\": \"\(common.tileWorkspace)/\(unitSlug)\",
+  \"version\": \"\(common.tileVersion)\",
+  \"summary\": \"\(common.skillTileSummaries[unitSlug])\",
+  \"private\": false,
+  \"skills\": {
+    \"\(unitSlug)\": {
+      \"path\": \"SKILL.md\"
+    }
+  }
+}
+"""
     }
   }
 }

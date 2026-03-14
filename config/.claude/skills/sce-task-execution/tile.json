@@ -1,0 +1,11 @@
+{
+  "name": "crocoder-dev/sce-task-execution",
+  "version": "0.1.0",
+  "summary": "Execute one approved Shared Context Engineering plan task with guardrails.",
+  "private": false,
+  "skills": {
+    "sce-task-execution": {
+      "path": "SKILL.md"
+    }
+  }
+}

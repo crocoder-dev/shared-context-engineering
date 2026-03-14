@@ -1,11 +1,16 @@
 import "renderers/opencode-content.pkl" as opencode
 import "renderers/opencode-automated-content.pkl" as opencode_automated
 import "renderers/claude-content.pkl" as claude
+import "renderers/common.pkl" as common
 
 local sharedLibrarySource = read("./lib/drift-collectors.js").text
 
 output {
   files {
+    ["./.github/workflows/publish-tiles.yml"] {
+      text = common.publishTilesWorkflow
+    }
+
     for (slug, document in opencode.agents) {
       ["config/.opencode/agent/\(document.title).md"] {
         text = document.rendered
@@ -43,6 +48,11 @@ output {
         text = document.rendered
       }
     }
+    for (slug, document in opencode.skillTiles) {
+      ["config/.opencode/skills/\(slug)/tile.json"] {
+        text = document.rendered
+      }
+    }
     for (slug, document in opencode_automated.skills) {
       ["config/automated/.opencode/skills/\(slug)/SKILL.md"] {
         text = document.rendered
@@ -50,6 +60,11 @@ output {
     }
     for (slug, document in claude.skills) {
       ["config/.claude/skills/\(slug)/SKILL.md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in claude.skillTiles) {
+      ["config/.claude/skills/\(slug)/tile.json"] {
         text = document.rendered
       }
     }

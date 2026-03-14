@@ -29,6 +29,7 @@ opencodeSkillCoverage {
   for (unitSlug, _ in shared.skills) {
     [unitSlug] = new {
       description = common.skillDescriptions[unitSlug]
+      tileSummary = common.skillTileSummaries[unitSlug]
       compatibility = opencode.skillCompatibility
     }
   }
@@ -57,6 +58,7 @@ claudeSkillCoverage {
   for (unitSlug, _ in shared.skills) {
     [unitSlug] = new {
       description = common.skillDescriptions[unitSlug]
+      tileSummary = common.skillTileSummaries[unitSlug]
       compatibility = claude.skillCompatibility
     }
   }
@@ -87,6 +89,7 @@ opencodeAutomatedSkillCoverage {
   for (unitSlug, _ in sharedAutomated.skills) {
     [unitSlug] = new {
       description = common.skillDescriptions[unitSlug]
+      tileSummary = common.skillTileSummaries[unitSlug]
       compatibility = opencodeAutomated.skillCompatibility
     }
   }

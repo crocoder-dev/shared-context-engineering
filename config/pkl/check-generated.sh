@@ -28,6 +28,7 @@ trap cleanup EXIT
 pkl eval -m "$tmp_dir" config/pkl/generate.pkl >/dev/null
 
 paths=(
+  ".github/workflows/publish-tiles.yml"
   "config/.opencode/agent"
   "config/.opencode/command"
   "config/.opencode/skills"

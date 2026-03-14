@@ -1,0 +1,11 @@
+{
+  "name": "crocoder-dev/sce-drift-fixer",
+  "version": "0.1.0",
+  "summary": "Repair stale Shared Context Engineering context files to match code truth.",
+  "private": false,
+  "skills": {
+    "sce-drift-fixer": {
+      "path": "SKILL.md"
+    }
+  }
+}

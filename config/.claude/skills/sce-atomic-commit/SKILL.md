@@ -1,6 +1,6 @@
 ---
 name: sce-atomic-commit
-description: Write atomic, repo-style git commits from a change summary or diff. Use when preparing commit messages, splitting work into coherent commits, or reviewing whether a commit is too broad.
+description: "Write atomic, repo-style git commits from a change summary or diff. Use when preparing commit messages, splitting work into coherent commits, or reviewing whether a commit is too broad."
 compatibility: claude
 ---
 

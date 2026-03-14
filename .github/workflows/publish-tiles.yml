@@ -1,0 +1,54 @@
+name: Publish Tessl tiles
+
+permissions:
+  id-token: write
+  contents: read
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "config/.opencode/skills/**"
+      - "config/.claude/skills/**"
+      - ".github/workflows/publish-tiles.yml"
+      - ".version"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        path:
+          - config/.opencode/skills/sce-atomic-commit
+          - config/.claude/skills/sce-atomic-commit
+          - config/.opencode/skills/sce-bootstrap-context
+          - config/.claude/skills/sce-bootstrap-context
+          - config/.opencode/skills/sce-context-sync
+          - config/.claude/skills/sce-context-sync
+          - config/.opencode/skills/sce-drift-analyzer
+          - config/.claude/skills/sce-drift-analyzer
+          - config/.opencode/skills/sce-drift-fixer
+          - config/.claude/skills/sce-drift-fixer
+          - config/.opencode/skills/sce-handover-writer
+          - config/.claude/skills/sce-handover-writer
+          - config/.opencode/skills/sce-plan-authoring
+          - config/.claude/skills/sce-plan-authoring
+          - config/.opencode/skills/sce-plan-review
+          - config/.claude/skills/sce-plan-review
+          - config/.opencode/skills/sce-task-execution
+          - config/.claude/skills/sce-task-execution
+          - config/.opencode/skills/sce-validation
+          - config/.claude/skills/sce-validation
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Publish tile
+        if: ${{ hashFiles(format('{0}/tile.json', matrix.path)) != '' }}
+        uses: tesslio/publish@main
+        with:
+          token: ${{ secrets.TESSL_API_TOKEN }}
+          path: ${{ matrix.path }}

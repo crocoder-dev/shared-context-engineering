@@ -1,6 +1,6 @@
 ---
 name: sce-plan-review
-description: Reviews an existing SCE plan file (a Markdown checklist in `context/plans/`) to identify the next unchecked task, surface blockers or ambiguous acceptance criteria, and produce an explicit readiness verdict before implementation begins. Use when the user wants to continue a plan, resume work, pick the next step, or check what remains in an active plan — e.g. "continue the plan", "what's next?", "resume work on the plan", "review my plan and prepare the next task".
+description: "Reviews an existing SCE plan file (a Markdown checklist in `context/plans/`) to identify the next unchecked task, surface blockers or ambiguous acceptance criteria, and produce an explicit readiness verdict before implementation begins. Use when the user wants to continue a plan, resume work, pick the next step, or check what remains in an active plan — e.g. "continue the plan", "what's next?", "resume work on the plan", "review my plan and prepare the next task"."
 compatibility: claude
 ---
 

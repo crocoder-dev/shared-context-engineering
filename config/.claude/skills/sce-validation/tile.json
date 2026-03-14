@@ -1,0 +1,11 @@
+{
+  "name": "crocoder-dev/sce-validation",
+  "version": "0.1.0",
+  "summary": "Run final validation for a Shared Context Engineering plan.",
+  "private": false,
+  "skills": {
+    "sce-validation": {
+      "path": "SKILL.md"
+    }
+  }
+}

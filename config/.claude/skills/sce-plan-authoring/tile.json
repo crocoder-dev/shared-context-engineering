@@ -1,0 +1,11 @@
+{
+  "name": "crocoder-dev/sce-plan-authoring",
+  "version": "0.1.0",
+  "summary": "Author structured Shared Context Engineering implementation plans.",
+  "private": false,
+  "skills": {
+    "sce-plan-authoring": {
+      "path": "SKILL.md"
+    }
+  }
+}
