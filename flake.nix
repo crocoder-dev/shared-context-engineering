@@ -108,30 +108,6 @@
           '';
         };
 
-        agnixLspShim = pkgs.writeShellScriptBin "agnix-lsp" ''
-          set -euo pipefail
-
-          if [ -n "''${AGNIX_LSP_BIN:-}" ] && [ -x "''${AGNIX_LSP_BIN}" ]; then
-            exec "''${AGNIX_LSP_BIN}" "$@"
-          fi
-
-          if [ -x "$HOME/.cargo/bin/agnix-lsp" ]; then
-            exec "$HOME/.cargo/bin/agnix-lsp" "$@"
-          fi
-
-          cat >&2 <<'EOF'
-          agnix-lsp is not bundled in nixpkgs for this dev shell yet.
-
-          Manual fallback (non-automatic):
-            cargo install --locked agnix-lsp
-
-          Then either:
-            - ensure ~/.cargo/bin is on PATH, or
-            - set AGNIX_LSP_BIN to the agnix-lsp binary path.
-          EOF
-          exit 1
-        '';
-
         pklParityCheck =
           pkgs.runCommand "pkl-parity-check"
             {
@@ -238,7 +214,6 @@
               pkl
               typescript
               nodePackages.typescript-language-server
-              agnixLspShim
             ]
             ++ [ rustToolchain ];
 
@@ -249,17 +224,11 @@
 
             export PATH="$HOME/.cargo/bin:$PATH"
 
-            if [ ! -x "$HOME/.cargo/bin/agnix" ]; then
-              echo "- agnix: installing agnix-cli via cargo"
-              cargo install --locked agnix-cli
-            fi
-
             echo "- bun: $(version_of bun)"
             echo "- pkl: $(version_of pkl)"
             echo "- tsc: $(version_of tsc)"
             echo "- tsserver-lsp: $(version_of typescript-language-server)"
             echo "- rust: $(version_of rustc)"
-            echo "- agnix: $(version_of agnix)"
             echo "- sync-opencode-config: nix run .#sync-opencode-config"
             echo "- sync-opencode-config help: nix run .#sync-opencode-config -- --help"
             echo "- pkl-check-generated: nix run .#pkl-check-generated"

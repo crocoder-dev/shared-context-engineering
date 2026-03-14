@@ -76,7 +76,6 @@ Lightweight post-task verification baseline (required after each completed task)
 ## CI contracts
 
 - `.github/workflows/pkl-generated-parity.yml` runs parity checks on pushes to `main` and pull requests targeting `main`.
-- `.github/workflows/agnix-config-validate-report.yml` runs `agnix validate` from `config/`, fails on non-info findings, and uploads a deterministic report artifact when findings are present.
 - `.github/workflows/workflow-token-count.yml` runs `nix run .#token-count-workflows` on pushes to `main` and pull requests targeting `main`, then uploads token-footprint artifacts from `context/tmp/token-footprint/`.
 
 ## Cross-target parity

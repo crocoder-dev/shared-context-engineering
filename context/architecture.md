@@ -27,7 +27,6 @@ Current target renderer helper modules:
 - `nix run .#token-count-workflows` (flake app entrypoint for static workflow token-count execution via `evals/token-count-workflows.ts`)
 - `nix flake check` / `checks.<system>.cli-setup-command-surface` (flake check derivations that run targeted CLI setup command-surface verification from `cli/`)
 - `.github/workflows/pkl-generated-parity.yml` (CI wrapper that runs the parity check for pushes to `main` and pull requests targeting `main`)
-- `.github/workflows/agnix-config-validate-report.yml` (CI wrapper that runs `agnix validate` from `config/`, writes `context/tmp/ci-reports/agnix-validate-report.txt`, uploads it when non-info findings are present, and fails on any non-info finding)
 - `.github/workflows/workflow-token-count.yml` (CI wrapper that runs `nix run .#token-count-workflows` for pushes/pull requests targeting `main` and uploads token-footprint artifacts from `context/tmp/token-footprint/`)
 
 The scaffold provides stable canonical content-unit identifiers and reusable target-agnostic text primitives for all planned authored generated classes (agents, commands, skills, shared library file).

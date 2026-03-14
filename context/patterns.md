@@ -19,9 +19,7 @@
 ## Dev-shell fallback shims for unavailable nixpkgs tools
 
 - When required CLI tools are not available as direct nixpkgs attrs, use the least-friction dev-shell fallback that keeps commands usable in `nix develop`.
-- Current repo behavior: include `cargo` and `rustc` in `devShells.default`, export `~/.cargo/bin` on `PATH`, and auto-run `cargo install --locked agnix-cli` in `shellHook` when `agnix` is missing.
-- `agnix-lsp` currently remains shim-based: use `AGNIX_LSP_BIN` when set and executable, otherwise use `~/.cargo/bin/agnix-lsp` when present, otherwise print manual install guidance and exit non-zero.
-- `shellHook` prints a version banner for `bun`, `pkl`, `tsc`, `typescript-language-server`, `rustc`, and `agnix` so shell state is visible on entry.
+- `shellHook` prints a version banner for `bun`, `pkl`, `tsc`, `typescript-language-server`, and `rustc` so shell state is visible on entry.
 
 ## Pkl renderer layering
 
@@ -53,8 +51,6 @@
 - Keep CI parity enforcement aligned with local workflow by running the same command in `.github/workflows/pkl-generated-parity.yml` for pushes to `main` and pull requests targeting `main`.
 - Keep token-count CI aligned with the flake app contract by running `nix run .#token-count-workflows` in `.github/workflows/workflow-token-count.yml` on pushes/pull requests targeting `main`, and upload artifacts from `context/tmp/token-footprint/`.
 - Treat `nix run .#pkl-check-generated` and `nix flake check` as the lightweight post-task verification baseline and run both after each completed task.
-- Keep agnix config validation on the same trigger contract (`push`/`pull_request` to `main`) in `.github/workflows/agnix-config-validate-report.yml` with job defaults pinned to `working-directory: config`.
-- In the agnix CI workflow, capture command output to `context/tmp/ci-reports/agnix-validate-report.txt`, treat `warning:`/`error:`/`fatal:` findings as non-info gate failures, and upload the captured report as a GitHub artifact (`agnix-validate-report`) only when non-info findings are present.
 - Do not run `evals/` test suites autonomously during plan-task execution; run them only when the user explicitly requests eval coverage.
 - For non-destructive verification during development, run `nix develop -c pkl eval -m context/tmp/t04-generated config/pkl/generate.pkl` and inspect emitted paths under `context/tmp/`.
 - Keep `output.files` limited to generated-owned paths only (`config/{opencode_root}/{agent,command,skills,lib}` and `config/{claude_root}/{agents,commands,skills,lib}` where roots map to `.opencode` and `.claude`).
