@@ -1,6 +1,6 @@
 ---
 name: sce-plan-authoring
- description: Creates or updates structured SCE (Shared Context Engine) implementation plans saved to `context/plans/{plan_name}.md`. Breaks a change request into scoped, atomic tasks with clear goals, boundaries, acceptance criteria, and verification steps. Use when a user wants to plan a new feature, refactor, or integration; needs a project plan, task breakdown, implementation roadmap, or work plan; or describes a change with success criteria that requires structured planning before execution.
+description: Creates or updates structured SCE (Shared Context Engine) implementation plans saved to `context/plans/{plan_name}.md`. Breaks a change request into scoped, atomic tasks with clear goals, boundaries, acceptance criteria, and verification steps. Use when a user wants to plan a new feature, refactor, or integration; needs a project plan, task breakdown, implementation roadmap, or work plan; or describes a change with success criteria that requires structured planning before execution.
 compatibility: claude
 ---
 
