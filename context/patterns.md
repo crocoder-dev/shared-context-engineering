@@ -91,7 +91,8 @@
 - Route local Turso access through a dedicated adapter module (`cli/src/services/local_db.rs`) so command handlers do not expose low-level `turso` API details.
 - For placeholder commands that need real infrastructure checks, use a lazily initialized shared tokio current-thread runtime wrapper in the service layer (`cli/src/services/sync.rs`) and keep user-facing output explicit about remaining placeholder scope.
 - For transient local IO/database hotspots, apply bounded resilience wrappers with explicit retry count, timeout, and capped backoff (`cli/src/services/resilience.rs`) and surface terminal failures with deterministic `Try:` remediation guidance.
-- For rollout health commands, prefer deterministic local diagnostics over implicit pass/fail behavior: report hook-path source, effective directories, required-hook checks, actionable remediation text, and resolved `present`/`expected` config + local-DB locations (`cli/src/services/doctor.rs`).
+- For SCE operator-health commands, prefer deterministic local diagnostics over implicit pass/fail behavior: report the inspected environment scope, stable problem categories, severity/fixability classes, actionable remediation text, and any path/location facts needed to repair the issue; when repair mode exists, keep outcome vocabulary deterministic and idempotent (`cli/src/services/doctor.rs`).
+- For repo-scoped hook-health diagnostics, resolve effective hooks location from git truth, distinguish git-unavailable vs outside-repo vs bare-repo failure modes explicitly, and compare required hook payload bytes against the canonical embedded hook assets so stale SCE-managed hook content is reported deterministically (`cli/src/services/doctor.rs`, `cli/src/services/setup.rs`).
 - For future CLI domains, define trait-first service contracts with request/plan models in `cli/src/services/*` and keep placeholder implementations explicitly non-runnable until production behavior is approved.
 - Model deferred integration boundaries with concrete event/capability data structures (for example MCP file-cache snapshots/policies and cloud-sync checkpoints) so later tasks can implement behavior without reshaping public seams.
 - For pre-commit attribution finalization seams, keep pending staged and unstaged ranges explicitly separated in input models and finalize from staged ranges only, while carrying index/tree anchors for deterministic commit-time attribution binding.
@@ -118,7 +119,7 @@
 
 - Unit tests must not depend on filesystem directories, temporary directories, or databases that could fail in Nix sandbox environments.
 - Tests that require filesystem I/O, git repository operations, or database connections belong in integration tests, not unit tests.
-- Use `#[ignore = "filesystem coverage moved to future integration tests"]` or `#[ignore = "database coverage moved to future integration tests"]` attributes on tests that need these resources, and plan to move them to a separate integration test suite.
+- When a unit test needs filesystem, git, or database behavior that is not safe for `nix flake check`, delete it from the unit-test suite and reintroduce that coverage later as an integration test instead of keeping ignored tests in-tree.
 - Pure unit tests should test in-memory logic, parsing, validation, and data transformations without external dependencies.
 - The `TestTempDir` helper and similar filesystem fixtures should only be used in integration tests, not unit tests.
 - In-memory database tests (e.g., `LocalDatabaseTarget::InMemory`) are acceptable for unit tests since they don't touch the filesystem.

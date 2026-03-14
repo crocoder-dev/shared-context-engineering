@@ -82,8 +82,11 @@ pub enum Commands {
         repo: Option<PathBuf>,
     },
 
-    #[command(about = "Validate local git-hook installation readiness")]
+    #[command(about = "Inspect and repair SCE operator environment health")]
     Doctor {
+        #[arg(long)]
+        fix: bool,
+
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
@@ -605,7 +608,8 @@ mod tests {
     fn parse_doctor() {
         let cli = Cli::try_parse_from(["sce", "doctor"]).expect("doctor should parse");
         match cli.command {
-            Some(Commands::Doctor { format }) => {
+            Some(Commands::Doctor { fix, format }) => {
+                assert!(!fix);
                 assert_eq!(format, OutputFormat::Text);
             }
             _ => panic!("Expected Doctor command"),
@@ -617,11 +621,34 @@ mod tests {
         let cli = Cli::try_parse_from(["sce", "doctor", "--format", "json"])
             .expect("doctor json should parse");
         match cli.command {
-            Some(Commands::Doctor { format }) => {
+            Some(Commands::Doctor { fix, format }) => {
+                assert!(!fix);
                 assert_eq!(format, OutputFormat::Json);
             }
             _ => panic!("Expected Doctor command"),
         }
+    }
+
+    #[test]
+    fn parse_doctor_fix() {
+        let cli =
+            Cli::try_parse_from(["sce", "doctor", "--fix"]).expect("doctor --fix should parse");
+        match cli.command {
+            Some(Commands::Doctor { fix, format }) => {
+                assert!(fix);
+                assert_eq!(format, OutputFormat::Text);
+            }
+            _ => panic!("Expected Doctor command"),
+        }
+    }
+
+    #[test]
+    fn render_help_for_doctor_mentions_fix_mode() {
+        let help = render_help_for_path(&["doctor"]).expect("doctor help should render");
+
+        assert!(help.contains("Inspect and repair SCE operator environment health"));
+        assert!(help.contains("--fix"));
+        assert!(help.contains("--format <FORMAT>"));
     }
 
     #[test]

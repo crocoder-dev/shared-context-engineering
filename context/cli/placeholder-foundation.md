@@ -50,7 +50,7 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 - `version`: implemented
 - `completion`: implemented
 
-Top-level help also includes copy-ready agent-oriented examples for interactive setup, non-interactive setup+hooks, repository-targeted hooks installs, and JSON output (`doctor --format json`, `version --format json`).
+Top-level help also includes copy-ready agent-oriented examples for interactive setup, non-interactive setup+hooks, repository-targeted hooks installs, and doctor/version machine-readable or repair-intent flows (`doctor --format json`, `doctor --fix`, `version --format json`).
 
 Placeholder commands currently acknowledge planned behavior and do not claim production implementation.
 `sync` routes through an explicit service-contract placeholder.
@@ -64,7 +64,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 `setup` now also exposes compile-time embedded config assets for OpenCode/Claude targets, sourced from `config/.opencode/**` and `config/.claude/**` via `cli/build.rs` with normalized forward-slash relative paths and target-scoped iteration APIs.
 `setup` additionally includes a repository-root install engine (`install_embedded_setup_assets`) that stages embedded files and applies backup-and-replace safety for `.opencode/`/`.claude/` with rollback restoration if staged swap fails.
 `setup` now executes end-to-end and prints deterministic completion details including selected target(s), per-target install count, and backup actions.
-`doctor` now executes end-to-end and reports hook rollout readiness by validating effective hook-path source plus required hook presence/executable permissions, while also surfacing default global/local config-file locations and the Agent Trace local DB path as `present` or `expected`.
+`doctor` now executes end-to-end with an explicit diagnosis-vs-fix command surface: `sce doctor` stays read-only, `sce doctor --fix` selects repair-intent mode, and both text/JSON output modes expose stable mode/problem/fix-result scaffolding. The current runtime now covers state-root resolution, global config readability/schema validation, Agent Trace local DB path/health, DB-parent readiness barriers, and the repo hook rollout slice when a repository target is detected; fix mode now reuses the canonical setup hook install flow to repair missing/stale/non-executable required hooks and missing hooks directories, and it can bootstrap the missing SCE-owned Agent Trace DB parent directory when the resolved path matches the canonical owned location.
 `sync` includes a local Turso smoke gate backed by a lazily initialized shared tokio current-thread runtime, bounded retry/timeout/backoff policy for the smoke operation, and a placeholder cloud-sync gateway plan; it now supports deterministic `text` output (default) and `--format json` output with stable placeholder fields.
 
 ## Command loop and error model
@@ -72,13 +72,13 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - Argument parsing is handled by `clap` derive macros in `cli/src/cli_schema.rs` and dispatched from `cli/src/app.rs`.
 - Runtime errors are normalized through `anyhow` and rendered as `Error: ...` with exit code `2`.
 - Unknown commands/options and extra positional arguments return deterministic, actionable guidance to run `sce --help`.
-- `sce setup --help` returns setup-specific usage output with target-flag contract details and deterministic examples, including one-run non-interactive setup+hooks and a composable follow-up validation flow (`sce doctor --format json`).
+- `sce setup --help` returns setup-specific usage output with target-flag contract details and deterministic examples, including one-run non-interactive setup+hooks and composable follow-up validation/repair-intent flows (`sce doctor --format json`, `sce doctor --fix`).
 - `sce auth` and `sce auth --help` return auth-specific usage output with available subcommands and deterministic examples, while `sce auth <subcommand> --help` stays scoped to the selected auth subcommand.
 - `sce doctor --help`, `sce mcp --help`, `sce hooks --help`, and `sce sync --help` return command-local usage output and deterministic copy-ready examples.
 - Interactive `sce setup` prompt cancellation/interrupt exits cleanly with: `Setup cancelled. No files were changed.`
 - Command handlers return deterministic status messaging:
   - `setup`: `Setup completed successfully.` plus selected targets, per-target install destinations/counts, and backup status lines.
-  - `doctor`: `SCE doctor: ready|not ready` plus hook-path source, config + local-DB locations, required hook checks, and actionable diagnostics.
+  - `doctor`: current runtime emits `SCE doctor: ready|not ready`, explicit `Mode: diagnose|fix`, state-root and config/local-DB locations, stable problem records (`category|severity|fixability`), and deterministic fix-result records in fix mode; it validates global config and Agent Trace DB health, diagnoses repo hook rollout integrity, and in fix mode reuses canonical setup hook installation for supported hook repairs plus bounded bootstrap of the canonical missing SCE-owned Agent Trace DB parent directory while preserving manual-only reporting for unsupported issues.
   - `mcp`: runs the stdio MCP server for Smart Cache Engine tools (`read_file`, `read_files`, `cache_status`, `cache_clear`).
   - `hooks`: deterministic hook subcommand status messaging for runtime entrypoint invocation and argument/STDIN contract validation.
   - `TODO: 'sync' cloud workflows are planned and not implemented yet. Local Turso smoke check succeeded (1) row inserted; cloud sync placeholder enumerates 3 phase(s) and plan holds 3 checkpoint(s). Next step: rerun with '--format json' for machine-readable placeholder checkpoints.`
@@ -87,7 +87,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 
 - `cli/src/services/setup.rs` defines setup parsing/selection contracts plus runtime install orchestration (`run_setup_for_mode`) over the embedded asset install engine.
 - `cli/src/services/config.rs` defines config parser/runtime contracts (`show`, `validate`, `--help`), strict config-file key/type validation, deterministic text/JSON rendering, and shared auth-key metadata that declares env key, config-file key, and optional baked-default eligibility for supported auth runtime values starting with `workos_client_id` (`WORKOS_CLIENT_ID` vs `workos_client_id`); auth-key output includes key-specific precedence metadata in both output modes and abbreviates credential-like values in text output.
-- `cli/src/services/doctor.rs` defines hook rollout health validation (`run_doctor`) with path-source detection (default/local/global), config/local-DB location reporting, and required-hook presence/executable checks.
+- `cli/src/services/doctor.rs` now defines the implemented doctor request/report contract (`DoctorRequest`, `DoctorMode`, `run_doctor`) with explicit fix-mode parsing, stable text/JSON problem records, deterministic fix-result reporting, state-root/config/local-DB reporting and validation, DB-parent readiness barriers, path-source detection plus required-hook presence/executable/content checks when a repository target is detected, repair-mode reuse of canonical setup hook installation for supported hook repairs, and a bounded doctor-owned Agent Trace directory bootstrap routine for the canonical missing DB parent path.
 - `cli/src/services/agent_trace.rs` defines the task-scoped schema adapter contract (`adapt_trace_payload`) from internal attribution input structs to Agent Trace-shaped record structs, including fixed git `vcs` mapping, contributor type mapping, and reserved `dev.crocoder.sce.*` metadata placement.
 - `cli/src/services/mcp.rs` implements the stdio MCP server (`run_mcp_server`, `run_mcp_server_blocking`) that exposes Smart Cache Engine tools over the Model Context Protocol using the `rmcp` crate: repository-relative file resolution, cache DB bootstrap/migration, session snapshot persistence, deterministic unchanged markers, unified diffs for changed rereads, partial `offset` / `limit` overlap handling, batch-read aggregation, repository cache status reporting, cache clear/reset behavior, and token-savings accounting.
 - `cli/src/services/version.rs` defines the version parser/output contract (`parse_version_request`, `render_version`) with deterministic text/JSON output modes.
@@ -123,6 +123,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - `cli/src/services/agent_trace.rs` includes adapter mapping tests for required field projection, contributor enum/model_id handling, and extension metadata placement under reserved reverse-domain keys.
 - `cli/src/services/setup.rs` tests also verify embedded-manifest completeness against runtime `config/` trees, deterministic sorted path normalization, target-scoped iterator behavior (`OpenCode`, `Claude`, `Both`), install backup creation/replacement, and rollback restoration after injected swap failures.
 - `cli/src/services/setup.rs` and `cli/src/services/local_db.rs` now share temporary path setup through `crate::test_support::TestTempDir` to keep filesystem test fixtures consistent and cleanup deterministic.
+- `cli/src/services/doctor.rs` unit coverage is intentionally limited to flake-safe output-shape assertions; filesystem, git, and real repair-flow coverage is deferred to future integration tests so `nix flake check` stays sandbox-safe.
 
 ## Dependency baseline
 
