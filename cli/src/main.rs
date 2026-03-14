@@ -2,8 +2,6 @@ mod app;
 mod cli_schema;
 mod command_surface;
 mod services;
-#[cfg(test)]
-mod test_support;
 
 use std::process::ExitCode;
 

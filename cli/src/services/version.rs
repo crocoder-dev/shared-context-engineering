@@ -7,6 +7,10 @@ pub const NAME: &str = "version";
 
 const BINARY_NAME: &str = env!("CARGO_PKG_NAME");
 const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
+const GIT_COMMIT: &str = match option_env!("SCE_GIT_COMMIT") {
+    Some(commit) => commit,
+    None => "unknown",
+};
 
 pub type VersionFormat = OutputFormat;
 
@@ -16,22 +20,16 @@ pub struct VersionRequest {
 }
 
 pub fn render_version(request: VersionRequest) -> Result<String> {
-    let build_profile = if cfg!(debug_assertions) {
-        "debug"
-    } else {
-        "release"
-    };
-
     let report = json!({
         "status": "ok",
         "command": NAME,
         "binary": BINARY_NAME,
         "version": PACKAGE_VERSION,
-        "build_profile": build_profile,
+        "git_commit": GIT_COMMIT,
     });
 
     match request.format {
-        VersionFormat::Text => Ok(format!("{BINARY_NAME} {PACKAGE_VERSION} ({build_profile})")),
+        VersionFormat::Text => Ok(format!("{BINARY_NAME} {PACKAGE_VERSION} ({GIT_COMMIT})")),
         VersionFormat::Json => serde_json::to_string_pretty(&report)
             .context("failed to serialize version report to JSON"),
     }
@@ -41,7 +39,7 @@ pub fn render_version(request: VersionRequest) -> Result<String> {
 mod tests {
     use serde_json::Value;
 
-    use super::{render_version, VersionFormat, VersionRequest, NAME};
+    use super::{render_version, VersionFormat, VersionRequest, GIT_COMMIT, NAME};
 
     #[test]
     fn render_json_includes_stable_fields() {
@@ -55,7 +53,7 @@ mod tests {
         assert_eq!(parsed["command"], NAME);
         assert!(parsed["binary"].as_str().is_some());
         assert!(parsed["version"].as_str().is_some());
-        assert!(parsed["build_profile"].as_str().is_some());
+        assert_eq!(parsed["git_commit"], GIT_COMMIT);
     }
 
     #[test]
@@ -73,12 +71,19 @@ mod tests {
     }
 
     #[test]
-    fn render_text_includes_binary_and_version() {
+    fn render_text_includes_binary_version_and_git_commit() {
         let output = render_version(VersionRequest {
             format: VersionFormat::Text,
         })
         .expect("text render should succeed");
-        assert!(output.contains(env!("CARGO_PKG_NAME")));
-        assert!(output.contains(env!("CARGO_PKG_VERSION")));
+        assert_eq!(
+            output,
+            format!(
+                "{} {} ({})",
+                env!("CARGO_PKG_NAME"),
+                env!("CARGO_PKG_VERSION"),
+                GIT_COMMIT
+            )
+        );
     }
 }

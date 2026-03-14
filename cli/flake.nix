@@ -29,6 +29,14 @@
         };
 
         version = pkgs.lib.strings.trim (builtins.readFile "${src}/.version");
+        gitCommit =
+          if self ? rev then
+            self.rev
+          else if self ? dirtyRev then
+            self.dirtyRev
+          else
+            "unknown";
+        shortGitCommit = builtins.substring 0 12 gitCommit;
 
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = [
@@ -47,6 +55,7 @@
           inherit version;
           inherit src;
           sourceRoot = "source/cli";
+          SCE_GIT_COMMIT = shortGitCommit;
 
           cargoLock = {
             lockFile = ./Cargo.lock;
@@ -80,6 +89,7 @@
             inherit version;
             inherit src;
             sourceRoot = "source/cli";
+            SCE_GIT_COMMIT = shortGitCommit;
 
             cargoLock = {
               lockFile = ./Cargo.lock;
@@ -111,6 +121,7 @@
             inherit version;
             inherit src;
             sourceRoot = "source/cli";
+            SCE_GIT_COMMIT = shortGitCommit;
 
             cargoLock = {
               lockFile = ./Cargo.lock;

@@ -4,6 +4,7 @@ use std::{
     fs,
     io::{self, Write as IoWrite},
     path::{Path, PathBuf},
+    process::Command,
 };
 
 const TARGETS: &[TargetSpec] = &[
@@ -33,6 +34,59 @@ struct TargetSpec {
 fn main() {
     if let Err(error) = generate_embedded_asset_manifest() {
         panic!("failed to generate setup embedded asset manifest: {error}");
+    }
+
+    emit_git_commit();
+}
+
+fn emit_git_commit() {
+    println!("cargo:rerun-if-env-changed=SCE_GIT_COMMIT");
+
+    if let Ok(commit) = env::var("SCE_GIT_COMMIT") {
+        let commit = commit.trim();
+        if !commit.is_empty() {
+            println!("cargo:rustc-env=SCE_GIT_COMMIT={commit}");
+            return;
+        }
+    }
+
+    let manifest_dir = match env::var("CARGO_MANIFEST_DIR") {
+        Ok(value) => PathBuf::from(value),
+        Err(_) => return,
+    };
+
+    let repository_root = match manifest_dir.parent() {
+        Some(path) => path.to_path_buf(),
+        None => return,
+    };
+
+    let git_dir = repository_root.join(".git");
+    println!("cargo:rerun-if-changed={}", git_dir.join("HEAD").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        git_dir.join("packed-refs").display()
+    );
+
+    let output = Command::new("git")
+        .args(["rev-parse", "--short=12", "HEAD"])
+        .current_dir(&repository_root)
+        .output();
+
+    let Ok(output) = output else {
+        return;
+    };
+
+    if !output.status.success() {
+        return;
+    }
+
+    let Ok(commit) = String::from_utf8(output.stdout) else {
+        return;
+    };
+
+    let commit = commit.trim();
+    if !commit.is_empty() {
+        println!("cargo:rustc-env=SCE_GIT_COMMIT={commit}");
     }
 }
 

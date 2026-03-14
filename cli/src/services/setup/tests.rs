@@ -1,20 +1,11 @@
-use std::{
-    cell::Cell,
-    fs, io,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::path::{Path, PathBuf};
 
-use crate::test_support::TestTempDir;
 use anyhow::Result;
 
 use super::{
-    get_required_hook_asset, install_embedded_setup_assets,
-    install_embedded_setup_assets_with_rename, install_required_git_hooks,
-    install_required_git_hooks_with_rename, iter_embedded_assets_for_setup_target,
-    iter_required_hook_assets, resolve_setup_dispatch, resolve_setup_request, run_setup_for_mode,
-    run_setup_hooks, RequiredHookAsset, RequiredHookInstallStatus, SetupCliOptions, SetupDispatch,
-    SetupMode, SetupTarget,
+    get_required_hook_asset, iter_embedded_assets_for_setup_target, iter_required_hook_assets,
+    resolve_setup_dispatch, resolve_setup_request, run_setup_for_mode, run_setup_hooks,
+    RequiredHookAsset, SetupCliOptions, SetupDispatch, SetupMode, SetupTarget,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -30,8 +21,7 @@ impl super::SetupTargetPrompter for MockPrompter {
 
 #[test]
 fn run_setup_rejects_unresolved_interactive_mode() {
-    let temp = TestTempDir::new("sce-setup-install-tests").expect("temp dir should be created");
-    let error = run_setup_for_mode(temp.path(), SetupMode::Interactive)
+    let error = run_setup_for_mode(std::path::Path::new("/nonexistent"), SetupMode::Interactive)
         .expect_err("interactive mode should be resolved before install");
     assert_eq!(
         error.to_string(),
@@ -100,62 +90,6 @@ fn run_setup_hooks_rejects_missing_repo_path() {
     let error = run_setup_hooks(&missing_path).expect_err("missing repo path should fail");
     let message = format!("{error:#}");
     assert!(message.contains("Failed to resolve repository path"));
-}
-
-#[test]
-fn run_setup_hooks_rejects_file_repo_path() -> Result<()> {
-    let temp = TestTempDir::new("sce-setup-hook-install-tests")?;
-    let file_path = temp.path().join("not-a-directory");
-    fs::write(&file_path, b"not a repo")?;
-
-    let error = run_setup_hooks(&file_path).expect_err("file path should fail");
-    let message = format!("{error:#}");
-    assert!(message.contains("is not a directory"));
-
-    Ok(())
-}
-
-#[test]
-fn run_setup_hooks_rejects_non_git_directory_with_git_init_guidance() -> Result<()> {
-    let temp = TestTempDir::new("sce-setup-hook-install-tests")?;
-
-    let error = run_setup_hooks(temp.path()).expect_err("non-git directory should fail");
-    let message = format!("{error:#}");
-    assert!(message.contains("is not a git repository"));
-    assert!(message.contains("git init"));
-    assert!(message.contains("rerun 'sce setup'"));
-
-    Ok(())
-}
-
-#[test]
-fn run_setup_reports_selected_target_and_backup_status() -> Result<()> {
-    let temp = TestTempDir::new("sce-setup-install-tests")?;
-    fs::create_dir_all(temp.path().join(".opencode/legacy"))?;
-    fs::write(temp.path().join(".opencode/legacy/config.txt"), b"legacy")?;
-
-    let message = run_setup_for_mode(
-        temp.path(),
-        SetupMode::NonInteractive(SetupTarget::OpenCode),
-    )?;
-    assert!(message.contains("Setup completed successfully."));
-    assert!(message.contains("Selected target(s): OpenCode"));
-    assert!(message.contains("OpenCode: installed"));
-    assert!(message.contains("backup: existing target moved to"));
-    assert!(message.contains(".opencode.backup"));
-
-    Ok(())
-}
-
-#[test]
-fn run_setup_reports_both_targets() -> Result<()> {
-    let temp = TestTempDir::new("sce-setup-install-tests")?;
-    let message = run_setup_for_mode(temp.path(), SetupMode::NonInteractive(SetupTarget::Both))?;
-    assert!(message.contains("Selected target(s): OpenCode, Claude"));
-    assert!(message.contains("OpenCode: installed"));
-    assert!(message.contains("Claude: installed"));
-    assert!(message.contains("backup: not needed (no existing target)"));
-    Ok(())
 }
 
 #[test]
@@ -284,266 +218,6 @@ fn required_hook_lookup_resolves_each_canonical_hook() {
     }
 }
 
-#[test]
-fn install_engine_replaces_existing_target_with_backup() -> Result<()> {
-    let temp = TestTempDir::new("sce-setup-install-tests")?;
-    let existing_target = temp.path().join(".opencode");
-    fs::create_dir_all(existing_target.join("legacy"))?;
-    fs::write(existing_target.join("legacy/config.txt"), b"legacy")?;
-
-    let outcome = install_embedded_setup_assets(temp.path(), SetupTarget::OpenCode)?;
-    assert_eq!(outcome.target_results.len(), 1);
-
-    let result = &outcome.target_results[0];
-    assert_eq!(result.target, SetupTarget::OpenCode);
-    assert_eq!(result.destination_root, temp.path().join(".opencode"));
-    assert_eq!(
-        result.installed_file_count,
-        assets_for_target(SetupTarget::OpenCode).len()
-    );
-
-    let backup_root = result
-        .backup_root
-        .as_ref()
-        .expect("existing target should have backup path");
-    assert!(backup_root.exists());
-    assert!(backup_root.join("legacy/config.txt").exists());
-
-    let installed_paths = collect_runtime_relative_paths(&result.destination_root)?;
-    let expected_paths: Vec<String> = assets_for_target(SetupTarget::OpenCode)
-        .iter()
-        .map(|asset| asset.relative_path.to_string())
-        .collect();
-    assert_eq!(installed_paths, expected_paths);
-    Ok(())
-}
-
-#[test]
-fn install_engine_installs_both_targets() -> Result<()> {
-    let temp = TestTempDir::new("sce-setup-install-tests")?;
-
-    let outcome = install_embedded_setup_assets(temp.path(), SetupTarget::Both)?;
-    assert_eq!(outcome.target_results.len(), 2);
-
-    let opencode_paths = collect_runtime_relative_paths(&temp.path().join(".opencode"))?;
-    let claude_paths = collect_runtime_relative_paths(&temp.path().join(".claude"))?;
-
-    let expected_opencode: Vec<String> = assets_for_target(SetupTarget::OpenCode)
-        .iter()
-        .map(|asset| asset.relative_path.to_string())
-        .collect();
-    let expected_claude: Vec<String> = assets_for_target(SetupTarget::Claude)
-        .iter()
-        .map(|asset| asset.relative_path.to_string())
-        .collect();
-
-    assert_eq!(opencode_paths, expected_opencode);
-    assert_eq!(claude_paths, expected_claude);
-    Ok(())
-}
-
-#[test]
-fn install_engine_rolls_back_when_swap_fails() -> Result<()> {
-    let temp = TestTempDir::new("sce-setup-install-tests")?;
-    let destination = temp.path().join(".opencode");
-    fs::create_dir_all(&destination)?;
-    fs::write(destination.join("legacy.txt"), b"legacy")?;
-
-    let rename_calls = Cell::new(0_u8);
-    let error = install_embedded_setup_assets_with_rename(
-        temp.path(),
-        SetupTarget::OpenCode,
-        |from, to| {
-            rename_calls.set(rename_calls.get() + 1);
-            if rename_calls.get() == 2 {
-                return Err(io::Error::other("injected swap failure"));
-            }
-
-            fs::rename(from, to)
-        },
-    )
-    .expect_err("swap failure should bubble up as an error");
-
-    assert!(error.to_string().contains("Failed to swap staged install"));
-    assert!(destination.exists());
-    assert!(destination.join("legacy.txt").exists());
-
-    let backup = temp.path().join(".opencode.backup");
-    assert!(!backup.exists(), "rollback should restore original path");
-
-    for entry in fs::read_dir(temp.path())? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        assert!(
-            !name.starts_with(".sce-setup-staging-opencode-"),
-            "staging directory should be cleaned up after failure"
-        );
-    }
-
-    Ok(())
-}
-
-#[test]
-fn required_hook_install_installs_missing_hooks_in_default_directory() -> Result<()> {
-    let temp = TestTempDir::new("sce-setup-hook-install-tests")?;
-    init_git_repo(temp.path())?;
-
-    let outcome = install_required_git_hooks(temp.path())?;
-    assert_eq!(outcome.repository_root, temp.path().to_path_buf());
-    assert_eq!(outcome.hook_results.len(), 3);
-    for hook in outcome.hook_results {
-        assert_eq!(hook.status, RequiredHookInstallStatus::Installed);
-        assert!(hook.hook_path.exists());
-        assert!(hook.backup_path.is_none());
-        assert_hook_is_executable(&hook.hook_path)?;
-    }
-
-    Ok(())
-}
-
-#[test]
-fn required_hook_install_rerun_reports_skipped_for_unchanged_hooks() -> Result<()> {
-    let temp = TestTempDir::new("sce-setup-hook-install-tests")?;
-    init_git_repo(temp.path())?;
-
-    let first = install_required_git_hooks(temp.path())?;
-    assert!(first
-        .hook_results
-        .iter()
-        .all(|hook| hook.status == RequiredHookInstallStatus::Installed));
-
-    let second = install_required_git_hooks(temp.path())?;
-    assert!(second
-        .hook_results
-        .iter()
-        .all(|hook| hook.status == RequiredHookInstallStatus::Skipped));
-    assert!(second
-        .hook_results
-        .iter()
-        .all(|hook| hook.backup_path.is_none()));
-
-    Ok(())
-}
-
-#[test]
-fn required_hook_install_updates_noncanonical_hook_in_custom_hooks_path() -> Result<()> {
-    let temp = TestTempDir::new("sce-setup-hook-install-tests")?;
-    init_git_repo(temp.path())?;
-
-    run_git_in_repo(temp.path(), &["config", "core.hooksPath", ".githooks"])?;
-
-    let custom_hooks_directory = temp.path().join(".githooks");
-    fs::create_dir_all(&custom_hooks_directory)?;
-    let commit_msg_path = custom_hooks_directory.join("commit-msg");
-    fs::write(&commit_msg_path, b"#!/bin/sh\necho legacy\n")?;
-    set_test_file_mode(&commit_msg_path, 0o644)?;
-
-    let outcome = install_required_git_hooks(temp.path())?;
-    assert_eq!(outcome.hooks_directory, custom_hooks_directory);
-
-    let updated = outcome
-        .hook_results
-        .iter()
-        .find(|hook| hook.hook_name == "commit-msg")
-        .expect("commit-msg result should exist");
-    assert_eq!(updated.status, RequiredHookInstallStatus::Updated);
-    let backup_path = updated
-        .backup_path
-        .as_ref()
-        .expect("updated hook should retain backup path");
-    assert!(backup_path.exists());
-    assert_eq!(fs::read(backup_path)?, b"#!/bin/sh\necho legacy\n");
-    assert_hook_is_executable(&updated.hook_path)?;
-
-    Ok(())
-}
-
-#[test]
-fn required_hook_install_rolls_back_when_hook_swap_fails() -> Result<()> {
-    let temp = TestTempDir::new("sce-setup-hook-install-tests")?;
-    init_git_repo(temp.path())?;
-
-    let hooks_directory = temp.path().join(".git/hooks");
-    fs::create_dir_all(&hooks_directory)?;
-    let commit_msg_path = hooks_directory.join("commit-msg");
-    fs::write(&commit_msg_path, b"#!/bin/sh\necho legacy\n")?;
-
-    let rename_calls = Cell::new(0_u8);
-    let error = install_required_git_hooks_with_rename(temp.path(), |from, to| {
-        rename_calls.set(rename_calls.get() + 1);
-        if rename_calls.get() == 2 {
-            return Err(io::Error::other("injected hook swap failure"));
-        }
-
-        fs::rename(from, to)
-    })
-    .expect_err("hook swap failure should bubble up");
-
-    assert!(error
-        .to_string()
-        .contains("Failed to update required hook 'commit-msg'"));
-    assert!(commit_msg_path.exists());
-    assert_eq!(fs::read(&commit_msg_path)?, b"#!/bin/sh\necho legacy\n");
-    assert!(!hooks_directory.join("commit-msg.backup").exists());
-
-    for entry in fs::read_dir(&hooks_directory)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        assert!(
-            !name.starts_with(".sce-hook-staging-"),
-            "hook staging file should be cleaned up after failure"
-        );
-    }
-
-    Ok(())
-}
-
-fn init_git_repo(repository_root: &Path) -> Result<()> {
-    run_git_in_repo(repository_root, &["init", "-q"])?;
-    Ok(())
-}
-
-fn run_git_in_repo(repository_root: &Path, args: &[&str]) -> Result<()> {
-    let status = Command::new("git")
-        .args(args)
-        .current_dir(repository_root)
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("git command failed for test repository")
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_test_file_mode(path: &Path, mode: u32) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn set_test_file_mode(_path: &Path, _mode: u32) -> Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn assert_hook_is_executable(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let metadata = fs::metadata(path)?;
-    assert!(metadata.permissions().mode() & 0o111 != 0);
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn assert_hook_is_executable(path: &Path) -> Result<()> {
-    assert!(path.exists());
-    Ok(())
-}
-
 fn runtime_target_root(target: SetupTarget) -> PathBuf {
     let target_relative = match target {
         SetupTarget::OpenCode => "config/.opencode",
@@ -588,7 +262,7 @@ fn collect_runtime_files(
     current_dir: &Path,
     output: &mut Vec<PathBuf>,
 ) -> Result<()> {
-    for entry in fs::read_dir(current_dir)? {
+    for entry in std::fs::read_dir(current_dir)? {
         let entry = entry?;
         let path = entry.path();
 

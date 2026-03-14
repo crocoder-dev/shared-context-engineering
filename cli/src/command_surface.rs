@@ -41,8 +41,8 @@ pub const COMMANDS: &[CommandContract] = &[
     },
     CommandContract {
         name: services::mcp::NAME,
-        status: ImplementationStatus::Placeholder,
-        purpose: "Host MCP file-cache tooling commands",
+        status: ImplementationStatus::Implemented,
+        purpose: "Host MCP Smart Cache Engine server for cache-aware file reads",
     },
     CommandContract {
         name: services::hooks::NAME,
@@ -91,12 +91,13 @@ Config usage:\n  sce config <show|validate> [--format <text|json>] [options]\n\n
 Setup usage:\n  sce setup [--opencode|--claude|--both] [--non-interactive] [--hooks] [--repo <path>]\n\n\
 Auth usage:\n  sce auth <login|logout|status> [--format <text|json>]\n\n\
 Completion usage:\n  sce completion --shell <bash|zsh|fish>\n\n\
+MCP usage:\n  sce mcp\n\n\
 Output format contract:\n  Supported commands accept --format <text|json>\n\n\
 Examples:\n  sce setup\n  sce setup --opencode --non-interactive --hooks\n  sce setup --hooks --repo ../demo-repo\n  sce auth status\n  sce auth login --format json\n  sce doctor --format json\n  sce version --format json\n\n\
 Commands:\n{command_rows}\n\n\
 Setup defaults to interactive target selection when no setup target flag is passed, and installs hooks in the same run.\n\
 Use '--hooks' to install required git hooks for the current repository or '--repo <path>' for a specific repository.\n\
-`setup`, `doctor`, `auth`, `hooks`, `version`, and `completion` are implemented; `mcp` and `sync` remain placeholder-oriented.\n"
+`setup`, `doctor`, `auth`, `hooks`, `mcp`, `version`, and `completion` are implemented; `sync` remains placeholder-oriented.\n"
     )
 }
 

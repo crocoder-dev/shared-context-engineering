@@ -117,3 +117,13 @@
 - For installable CLI release surfaces in nested flakes, expose an explicit named package plus default alias (`packages.sce` and `packages.default = packages.sce`) and pair it with a runnable app output (`apps.sce`) that points to the packaged binary path.
 - For nested CLI flake release metadata, source the package/check version from repo-root `.version` and trim it at eval time so packaged outputs stay aligned without hardcoded semver strings in `cli/flake.nix`.
 - For Cargo-based local CLI installation, document and verify `cargo install --path cli --locked` alongside a release build check (`cargo build --manifest-path cli/Cargo.toml --release`), and keep `publish = false` until explicit first-publish approval.
+
+## Unit testing in Nix sandbox
+
+- Unit tests must not depend on filesystem directories, temporary directories, or databases that could fail in Nix sandbox environments.
+- Tests that require filesystem I/O, git repository operations, or database connections belong in integration tests, not unit tests.
+- Use `#[ignore = "filesystem coverage moved to future integration tests"]` or `#[ignore = "database coverage moved to future integration tests"]` attributes on tests that need these resources, and plan to move them to a separate integration test suite.
+- Pure unit tests should test in-memory logic, parsing, validation, and data transformations without external dependencies.
+- The `TestTempDir` helper and similar filesystem fixtures should only be used in integration tests, not unit tests.
+- In-memory database tests (e.g., `LocalDatabaseTarget::InMemory`) are acceptable for unit tests since they don't touch the filesystem.
+- When adding new tests, prefer mocking/faking external dependencies over creating real filesystem or database state.

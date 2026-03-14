@@ -1,21 +1,14 @@
-//! Clap-based CLI schema for the Shared Context Engineering CLI.
-//!
-//! This module defines the complete command-line interface using clap derive macros.
-
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
-/// Shared Context Engineering CLI
 #[derive(Parser, Debug)]
 #[command(name = "sce", version, about, long_about = None)]
 pub struct Cli {
-    /// The subcommand to run
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
 
 impl Cli {
-    /// Parse arguments from an iterator of strings
     #[allow(dead_code)]
     pub fn parse_from<I, T>(args: I) -> Self
     where
@@ -25,7 +18,6 @@ impl Cli {
         <Self as Parser>::parse_from(args)
     }
 
-    /// Try to parse arguments, returning an error on failure
     pub fn try_parse_from<I, T>(args: I) -> Result<Self, clap::Error>
     where
         I: IntoIterator<Item = T>,
@@ -58,229 +50,167 @@ pub fn auth_help_text() -> String {
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum Commands {
-    /// Authenticate with `WorkOS` device authorization flow
+    #[command(about = "Authenticate with `WorkOS` device authorization flow")]
     Auth {
         #[command(subcommand)]
         subcommand: AuthSubcommand,
     },
 
-    /// Inspect and validate resolved CLI configuration
     Config {
         #[command(subcommand)]
         subcommand: ConfigSubcommand,
     },
 
-    /// Prepare local repository/workspace prerequisites
     #[command(about = "Prepare local repository/workspace prerequisites")]
     Setup {
-        /// Install `OpenCode` configuration
         #[arg(long, conflicts_with_all = ["claude", "both"])]
         opencode: bool,
 
-        /// Install Claude configuration
         #[arg(long, conflicts_with_all = ["opencode", "both"])]
         claude: bool,
 
-        /// Install both `OpenCode` and Claude configuration
         #[arg(long, conflicts_with_all = ["opencode", "claude"])]
         both: bool,
 
-        /// Run without interactive prompts (requires a target flag when not using --hooks)
         #[arg(long)]
         non_interactive: bool,
 
-        /// Install required git hooks
         #[arg(long)]
         hooks: bool,
 
-        /// Repository path for hook installation (requires --hooks)
         #[arg(long, requires = "hooks")]
         repo: Option<PathBuf>,
     },
 
-    /// Validate local git-hook installation readiness
     #[command(about = "Validate local git-hook installation readiness")]
     Doctor {
-        /// Output format
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
 
-    /// Host MCP file-cache tooling commands (placeholder)
-    #[command(about = "Host MCP file-cache tooling commands (placeholder)")]
-    Mcp {
-        /// Output format
-        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
-        format: OutputFormat,
-    },
+    #[command(about = "Host MCP Smart Cache Engine server for cache-aware file reads")]
+    Mcp,
 
-    /// Run git-hook runtime entrypoints for local Agent Trace flows
     #[command(about = "Run git-hook runtime entrypoints for local Agent Trace flows")]
     Hooks {
         #[command(subcommand)]
         subcommand: HooksSubcommand,
     },
 
-    /// Coordinate future cloud sync workflows (placeholder)
     #[command(about = "Coordinate future cloud sync workflows (placeholder)")]
     Sync {
-        /// Output format
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
 
-    /// Print deterministic runtime version metadata
     #[command(about = "Print deterministic runtime version metadata")]
     Version {
-        /// Output format
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
 
-    /// Generate deterministic shell completion scripts
     #[command(about = "Generate deterministic shell completion scripts")]
     Completion {
-        /// Shell type for completion script
         #[arg(long, value_enum)]
         shell: CompletionShell,
     },
 }
 
-/// Config subcommands
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum AuthSubcommand {
-    /// Start login flow and store credentials
+    #[command(about = "Start login flow and store credentials")]
     Login {
-        /// Output format
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
 
-    /// Renew stored credentials when needed
+    #[command(about = "Renew stored credentials when they are expired or near expiry")]
     Renew {
-        /// Output format
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
 
-        /// Renew even when stored credentials are still valid
         #[arg(long)]
         force: bool,
     },
 
-    /// Clear stored credentials
+    #[command(about = "Remove stored credentials from the local machine")]
     Logout {
-        /// Output format
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
 
-    /// Show current authentication status
+    #[command(about = "Show current authentication status from stored credentials")]
     Status {
-        /// Output format
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
 }
 
-/// Config subcommands
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum ConfigSubcommand {
-    /// Show resolved configuration
     Show {
-        /// Output format
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
 
-        /// Path to configuration file
         #[arg(long)]
         config: Option<PathBuf>,
 
-        /// Override log level
         #[arg(long, value_enum)]
         log_level: Option<LogLevel>,
 
-        /// Override timeout in milliseconds
         #[arg(long)]
         timeout_ms: Option<u64>,
     },
 
-    /// Validate configuration file
     Validate {
-        /// Output format
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
 
-        /// Path to configuration file
         #[arg(long)]
         config: Option<PathBuf>,
 
-        /// Override log level
         #[arg(long, value_enum)]
         log_level: Option<LogLevel>,
 
-        /// Override timeout in milliseconds
         #[arg(long)]
         timeout_ms: Option<u64>,
     },
 }
 
-/// Hooks subcommands
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum HooksSubcommand {
-    /// Run pre-commit hook
     #[command(about = "Run pre-commit hook")]
     PreCommit,
 
-    /// Run commit-msg hook
     #[command(about = "Run commit-msg hook")]
-    CommitMsg {
-        /// Path to the commit message file
-        message_file: PathBuf,
-    },
+    CommitMsg { message_file: PathBuf },
 
-    /// Run post-commit hook
     #[command(about = "Run post-commit hook")]
     PostCommit,
 
-    /// Run post-rewrite hook
     #[command(about = "Run post-rewrite hook (reads pairs from STDIN)")]
-    PostRewrite {
-        /// Rewrite method (amend, rebase, or other)
-        rewrite_method: String,
-    },
+    PostRewrite { rewrite_method: String },
 }
 
-/// Output format for commands that support multiple formats
 #[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OutputFormat {
-    /// Plain text output
     #[default]
     Text,
-    /// JSON output
     Json,
 }
 
-/// Shell types for completion generation
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompletionShell {
-    /// Bash shell completion
     Bash,
-    /// Zsh shell completion
     Zsh,
-    /// Fish shell completion
     Fish,
 }
 
-/// Log level configuration
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogLevel {
-    /// Error level only
     Error,
-    /// Warning and above
     Warn,
-    /// Info and above
     Info,
-    /// Debug and above
     Debug,
 }
 
@@ -627,8 +557,6 @@ mod tests {
 
     #[test]
     fn parse_setup_non_interactive_requires_target() {
-        // Note: This validation is now handled at runtime in resolve_setup_request,
-        // not at the clap parsing level. The parsing succeeds but runtime would fail.
         let cli = Cli::try_parse_from(["sce", "setup", "--non-interactive"])
             .expect("parsing should succeed (runtime validation handles this)");
         match cli.command {
@@ -660,7 +588,6 @@ mod tests {
 
     #[test]
     fn parse_setup_mutually_exclusive_targets() {
-        // opencode and claude are mutually exclusive
         let result = Cli::try_parse_from(["sce", "setup", "--opencode", "--claude"]);
         assert!(
             result.is_err(),
@@ -670,7 +597,6 @@ mod tests {
 
     #[test]
     fn parse_setup_repo_requires_hooks() {
-        // --repo requires --hooks
         let result = Cli::try_parse_from(["sce", "setup", "--repo", "../demo-repo"]);
         assert!(result.is_err(), "--repo without --hooks should fail");
     }
@@ -767,9 +693,7 @@ mod tests {
     fn parse_mcp() {
         let cli = Cli::try_parse_from(["sce", "mcp"]).expect("mcp should parse");
         match cli.command {
-            Some(Commands::Mcp { format }) => {
-                assert_eq!(format, OutputFormat::Text);
-            }
+            Some(Commands::Mcp) => {}
             _ => panic!("Expected Mcp command"),
         }
     }

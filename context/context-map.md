@@ -39,6 +39,10 @@ Feature/domain context:
 - `context/sce/agent-trace-local-hooks-mvp-contract-gap-matrix.md` (T01 Local Hooks MVP production contract freeze and deterministic gap matrix for `agent-trace-local-hooks-production-mvp`)
 - `context/sce/agent-trace-hooks-command-routing.md` (implemented `sce hooks` command routing plus current runtime entrypoint behavior, including commit-msg policy gating/file mutation and post-rewrite remap+rewrite finalization wiring)
 - `context/sce/automated-profile-contract.md` (deterministic gate policy for automated OpenCode profile, including 10 gate categories, permission mappings, and automated profile constraints)
+- `context/sce/mcp-smart-cache-storage-foundation.md` (implemented T01 storage-layer contract for `sce mcp`, including repo-root resolution, `<state_root>/sce/cache` path layout, per-repo cache config persistence, and cache DB schema bootstrap)
+- `context/sce/mcp-smart-cache-single-file-reads.md` (implemented T02-T03 single-file cache read contract for `sce mcp`, including first-read/full-read behavior, unchanged-session markers, whole-file unified diffs, partial-read overlap handling, `force=true` bypass, and token-savings accounting persisted in cache state)
+- `context/sce/mcp-smart-cache-batch-status-clear.md` (implemented T04 batch-read aggregation, repository cache status reporting, and current-repository cache clear/reset behavior for `sce mcp`)
+- `context/sce/mcp-stdio-server-contract.md` (implemented T05 stdio MCP server contract for `sce mcp`, including tool definitions for `read_file`, `read_files`, `cache_status`, `cache_clear`, `rmcp` integration, and JSON schema generation)
 
 Working areas:
 - `context/plans/` (active plan execution artifacts, not durable history)

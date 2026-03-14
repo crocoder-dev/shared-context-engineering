@@ -335,7 +335,7 @@ pub fn install_required_git_hooks(repository_root: &Path) -> Result<RequiredHook
     })
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 fn install_required_git_hooks_with_rename<F>(
     repository_root: &Path,
     mut rename_fn: F,

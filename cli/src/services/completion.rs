@@ -42,10 +42,8 @@ mod tests {
         let output = render_completion(CompletionRequest {
             shell: CompletionShell::Bash,
         });
-        // clap_complete generates bash completions with this pattern
         assert!(output.contains("_sce()"));
         assert!(output.contains("COMPREPLY"));
-        // Verify it includes our commands
         assert!(output.contains("config"));
         assert!(output.contains("setup"));
         assert!(output.contains("completion"));
@@ -56,9 +54,7 @@ mod tests {
         let output = render_completion(CompletionRequest {
             shell: CompletionShell::Zsh,
         });
-        // clap_complete generates zsh completions with #compdef
         assert!(output.contains("#compdef sce"));
-        // Verify it includes our commands
         assert!(output.contains("config"));
         assert!(output.contains("completion"));
     }
@@ -68,9 +64,7 @@ mod tests {
         let output = render_completion(CompletionRequest {
             shell: CompletionShell::Fish,
         });
-        // clap_complete generates fish completions with complete commands
         assert!(output.contains("complete -c sce"));
-        // Verify it includes our commands
         assert!(output.contains("config"));
         assert!(output.contains("completion"));
     }
@@ -80,7 +74,6 @@ mod tests {
         let output = render_completion(CompletionRequest {
             shell: CompletionShell::Bash,
         });
-        // Verify all top-level commands are present
         assert!(output.contains("config"));
         assert!(output.contains("setup"));
         assert!(output.contains("doctor"));

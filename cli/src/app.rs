@@ -101,7 +101,6 @@ impl std::fmt::Display for ClassifiedError {
 
 impl std::error::Error for ClassifiedError {}
 
-/// Internal command representation after clap parsing and adapter conversion.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Command {
     Help,
@@ -111,7 +110,7 @@ enum Command {
     Config(services::config::ConfigSubcommand),
     Setup(services::setup::SetupRequest),
     Doctor(services::doctor::DoctorRequest),
-    Mcp(services::mcp::McpRequest),
+    Mcp,
     Hooks(services::hooks::HookSubcommand),
     Sync(services::sync::SyncRequest),
     Version(services::version::VersionRequest),
@@ -127,7 +126,7 @@ impl Command {
             Self::Config(_) => services::config::NAME,
             Self::Setup(_) => services::setup::NAME,
             Self::Doctor(_) => services::doctor::NAME,
-            Self::Mcp(_) => services::mcp::NAME,
+            Self::Mcp => services::mcp::NAME,
             Self::Hooks(_) => services::hooks::NAME,
             Self::Sync(_) => services::sync::NAME,
             Self::Version(_) => services::version::NAME,
@@ -285,25 +284,20 @@ where
 {
     let args_vec: Vec<String> = args.into_iter().collect();
 
-    // Handle empty args (just program name) -> Help
     if args_vec.len() <= 1 {
         return Ok(Command::Help);
     }
 
-    // Use clap to parse
     let cli = match cli_schema::Cli::try_parse_from(&args_vec) {
         Ok(cli) => cli,
         Err(error) => {
-            // Handle --help specially - user explicitly requested help
             if error.kind() == clap::error::ErrorKind::DisplayHelp {
                 if let Some((name, text)) = render_subcommand_help_from_args(&args_vec) {
                     return Ok(Command::HelpText { name, text });
                 }
 
-                // Return Help command for successful output
                 return Ok(Command::Help);
             }
-            // Handle missing subcommand as validation error, not help display
             if error.kind() == clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand {
                 if args_vec.get(1).map(String::as_str) == Some(services::auth_command::NAME) {
                     return Ok(Command::HelpText {
@@ -312,13 +306,11 @@ where
                     });
                 }
 
-                // This means a required subcommand was not provided
                 return Err(ClassifiedError::parse(
                     "Missing required subcommand. Try: run 'sce --help' to see valid commands.",
                 ));
             }
             if error.kind() == clap::error::ErrorKind::DisplayVersion {
-                // Return version command for --version
                 return Ok(Command::Version(services::version::VersionRequest {
                     format: services::version::VersionFormat::Text,
                 }));
@@ -327,34 +319,26 @@ where
         }
     };
 
-    // No subcommand -> Help
     let Some(command) = cli.command else {
         return Ok(Command::Help);
     };
 
-    // Convert clap command to internal command
     convert_clap_command(command)
 }
 
-/// Classify a clap error into our `ClassifiedError` taxonomy.
 fn classify_clap_error(error: &clap::Error) -> ClassifiedError {
     use clap::error::ErrorKind;
 
     let message = error.to_string();
 
-    // Determine error class based on clap error kind
-    // Note: Many clap error kinds map to Parse failures
     let class = match error.kind() {
-        // Validation errors: missing required arguments, argument conflicts
         ErrorKind::MissingRequiredArgument | ErrorKind::ArgumentConflict | ErrorKind::NoEquals => {
             FailureClass::Validation
         }
 
-        // All other errors (parse errors, display errors, etc.) map to Parse
         _ => FailureClass::Parse,
     };
 
-    // Clean up clap's error message to match our style
     let cleaned_message = clean_clap_error_message(&message, error.kind());
 
     match class {
@@ -382,16 +366,13 @@ fn render_subcommand_help_from_args(args: &[String]) -> Option<(String, String)>
     cli_schema::render_help_for_path(&command_path).map(|text| (command_name, text))
 }
 
-/// Clean up clap error messages to match our error message style.
 fn clean_clap_error_message(message: &str, kind: clap::error::ErrorKind) -> String {
     use clap::error::ErrorKind;
 
-    // Remove the "error: " prefix that clap adds
     let message = message.strip_prefix("error: ").unwrap_or(message);
 
     match kind {
         ErrorKind::InvalidSubcommand => {
-            // Extract the invalid subcommand name and provide helpful guidance
             if let Some(subcommand) = extract_quoted_value(message) {
                 if command_surface::is_known_command(&subcommand) {
                     format!(
@@ -407,7 +388,6 @@ fn clean_clap_error_message(message: &str, kind: clap::error::ErrorKind) -> Stri
             }
         }
         ErrorKind::UnknownArgument => {
-            // Extract the unknown argument and provide helpful guidance
             if let Some(arg) = extract_quoted_value(message) {
                 format!(
                     "Unknown option '{arg}'. Try: run 'sce --help' to see top-level usage, or use 'sce <command> --help' for command-specific options."
@@ -417,7 +397,6 @@ fn clean_clap_error_message(message: &str, kind: clap::error::ErrorKind) -> Stri
             }
         }
         ErrorKind::MissingRequiredArgument => {
-            // Clean up clap's message for missing required arguments
             if message.contains("required") {
                 format!("{message}. Try: run 'sce --help' to see required arguments.")
             } else {
@@ -425,7 +404,6 @@ fn clean_clap_error_message(message: &str, kind: clap::error::ErrorKind) -> Stri
             }
         }
         ErrorKind::ArgumentConflict => {
-            // Handle mutually exclusive arguments
             if message.contains("cannot be used with") || message.contains("conflicts with") {
                 format!("{message}. Try: use only one of the conflicting options.")
             } else {
@@ -433,7 +411,6 @@ fn clean_clap_error_message(message: &str, kind: clap::error::ErrorKind) -> Stri
             }
         }
         _ => {
-            // Default cleanup: ensure message ends with guidance
             if message.contains("Try:") {
                 message.to_string()
             } else {
@@ -443,15 +420,12 @@ fn clean_clap_error_message(message: &str, kind: clap::error::ErrorKind) -> Stri
     }
 }
 
-/// Extract a single-quoted value from an error message.
 fn extract_quoted_value(message: &str) -> Option<String> {
-    // Clap uses single quotes for values in error messages
     let start = message.find('\'')?;
     let end = message[start + 1..].find('\'')?;
     Some(message[start + 1..start + 1 + end].to_string())
 }
 
-/// Convert a clap command to our internal command representation.
 fn convert_clap_command(command: cli_schema::Commands) -> Result<Command, ClassifiedError> {
     match command {
         cli_schema::Commands::Config { subcommand } => convert_config_subcommand(subcommand),
@@ -469,9 +443,7 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<Command, Classi
                 format: convert_output_format(format),
             }))
         }
-        cli_schema::Commands::Mcp { format } => Ok(Command::Mcp(services::mcp::McpRequest {
-            format: convert_output_format(format),
-        })),
+        cli_schema::Commands::Mcp => Ok(Command::Mcp),
         cli_schema::Commands::Hooks { subcommand } => convert_hooks_subcommand(subcommand),
         cli_schema::Commands::Sync { format } => Ok(Command::Sync(services::sync::SyncRequest {
             format: convert_output_format(format),
@@ -522,7 +494,6 @@ fn convert_auth_subcommand(
     }))
 }
 
-/// Convert clap output format to service output format.
 fn convert_output_format(
     format: cli_schema::OutputFormat,
 ) -> services::output_format::OutputFormat {
@@ -532,7 +503,6 @@ fn convert_output_format(
     }
 }
 
-/// Convert clap completion shell to service completion shell.
 fn convert_completion_shell(
     shell: cli_schema::CompletionShell,
 ) -> services::completion::CompletionShell {
@@ -543,7 +513,6 @@ fn convert_completion_shell(
     }
 }
 
-/// Convert clap config subcommand to service config subcommand.
 #[allow(clippy::unnecessary_wraps)]
 fn convert_config_subcommand(
     subcommand: cli_schema::ConfigSubcommand,
@@ -578,7 +547,6 @@ fn convert_config_subcommand(
     }
 }
 
-/// Convert clap log level to service log level.
 fn convert_log_level(level: cli_schema::LogLevel) -> services::config::LogLevel {
     match level {
         cli_schema::LogLevel::Error => services::config::LogLevel::Error,
@@ -588,7 +556,6 @@ fn convert_log_level(level: cli_schema::LogLevel) -> services::config::LogLevel 
     }
 }
 
-/// Convert setup command flags to `SetupRequest`.
 #[allow(clippy::fn_params_excessive_bools)]
 fn convert_setup_command(
     opencode: bool,
@@ -598,7 +565,6 @@ fn convert_setup_command(
     hooks: bool,
     repo: Option<std::path::PathBuf>,
 ) -> Result<Command, ClassifiedError> {
-    // Build SetupCliOptions and use the existing resolve_setup_request
     let options = services::setup::SetupCliOptions {
         help: false,
         non_interactive,
@@ -615,7 +581,6 @@ fn convert_setup_command(
     Ok(Command::Setup(request))
 }
 
-/// Convert clap hooks subcommand to service hooks subcommand.
 #[allow(clippy::unnecessary_wraps)]
 fn convert_hooks_subcommand(
     subcommand: cli_schema::HooksSubcommand,
@@ -700,7 +665,7 @@ fn dispatch(command: &Command) -> Result<String, ClassifiedError> {
         }
         Command::Doctor(request) => services::doctor::run_doctor(*request)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
-        Command::Mcp(request) => services::mcp::run_placeholder_mcp(*request)
+        Command::Mcp => services::mcp::run_mcp_server_blocking()
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::Hooks(subcommand) => services::hooks::run_hooks_subcommand(subcommand.clone())
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
@@ -1164,20 +1129,10 @@ mod tests {
     }
 
     #[test]
-    fn parser_routes_mcp_json_format() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "mcp".to_string(),
-            "--format".to_string(),
-            "json".to_string(),
-        ])
-        .expect("command should parse");
-        assert_eq!(
-            command,
-            Command::Mcp(crate::services::mcp::McpRequest {
-                format: crate::services::mcp::McpFormat::Json,
-            })
-        );
+    fn parser_routes_mcp() {
+        let command = parse_command(vec!["sce".to_string(), "mcp".to_string()])
+            .expect("command should parse");
+        assert_eq!(command, Command::Mcp);
     }
 
     #[test]

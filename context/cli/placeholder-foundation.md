@@ -44,7 +44,7 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 - `setup`: implemented
 - `doctor`: implemented
 - `auth`: implemented
-- `mcp`: placeholder
+- `mcp`: implemented
 - `hooks`: implemented
 - `sync`: placeholder
 - `version`: implemented
@@ -53,7 +53,7 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 Top-level help also includes copy-ready agent-oriented examples for interactive setup, non-interactive setup+hooks, repository-targeted hooks installs, and JSON output (`doctor --format json`, `version --format json`).
 
 Placeholder commands currently acknowledge planned behavior and do not claim production implementation.
-`mcp` and `sync` route through explicit service-contract placeholders.
+`sync` routes through an explicit service-contract placeholder.
 `hooks` routes through implemented subcommand parsing/dispatch for `pre-commit`, `commit-msg`, `post-commit`, and `post-rewrite`.
 `config` exposes deterministic inspect/validate entrypoints (`sce config show`, `sce config validate`) with explicit precedence (`flags > env > config file > defaults`), a shared auth-runtime resolver for supported keys that declare env/config/optional baked-default inputs starting with `workos_client_id`, and deterministic text/JSON output modes that report auth-key source metadata plus key-specific precedence details.
 `version` exposes deterministic runtime identification output in text mode by default and JSON mode via `--format json`.
@@ -79,7 +79,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - Command handlers return deterministic status messaging:
   - `setup`: `Setup completed successfully.` plus selected targets, per-target install destinations/counts, and backup status lines.
   - `doctor`: `SCE doctor: ready|not ready` plus hook-path source, config + local-DB locations, required hook checks, and actionable diagnostics.
-  - `TODO: 'mcp' is planned and not implemented yet. MCP file-cache surface defines 2 placeholder tool contract(s) with max 1024 entries. Next step: run 'sce mcp --help' for current placeholder usage while runtime execution remains disabled.`
+  - `mcp`: runs the stdio MCP server for Smart Cache Engine tools (`read_file`, `read_files`, `cache_status`, `cache_clear`).
   - `hooks`: deterministic hook subcommand status messaging for runtime entrypoint invocation and argument/STDIN contract validation.
   - `TODO: 'sync' cloud workflows are planned and not implemented yet. Local Turso smoke check succeeded (1) row inserted; cloud sync placeholder enumerates 3 phase(s) and plan holds 3 checkpoint(s). Next step: rerun with '--format json' for machine-readable placeholder checkpoints.`
 
@@ -89,7 +89,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - `cli/src/services/config.rs` defines config parser/runtime contracts (`show`, `validate`, `--help`), strict config-file key/type validation, deterministic text/JSON rendering, and shared auth-key metadata that declares env key, config-file key, and optional baked-default eligibility for supported auth runtime values starting with `workos_client_id` (`WORKOS_CLIENT_ID` vs `workos_client_id`); auth-key output includes key-specific precedence metadata in both output modes and abbreviates credential-like values in text output.
 - `cli/src/services/doctor.rs` defines hook rollout health validation (`run_doctor`) with path-source detection (default/local/global), config/local-DB location reporting, and required-hook presence/executable checks.
 - `cli/src/services/agent_trace.rs` defines the task-scoped schema adapter contract (`adapt_trace_payload`) from internal attribution input structs to Agent Trace-shaped record structs, including fixed git `vcs` mapping, contributor type mapping, and reserved `dev.crocoder.sce.*` metadata placement.
-- `cli/src/services/mcp.rs` defines `McpService`, a `McpCapabilitySnapshot` model (primary + supported transports), `CachePolicy` defaults for future file-cache workflows (`cache-put`/`cache-get`) with `runnable: false` placeholders, command-local usage text (`mcp_usage_text`), and `McpRequest` parsing/rendering for deterministic text or `--format json` placeholder output.
+- `cli/src/services/mcp.rs` implements the stdio MCP server (`run_mcp_server`, `run_mcp_server_blocking`) that exposes Smart Cache Engine tools over the Model Context Protocol using the `rmcp` crate: repository-relative file resolution, cache DB bootstrap/migration, session snapshot persistence, deterministic unchanged markers, unified diffs for changed rereads, partial `offset` / `limit` overlap handling, batch-read aggregation, repository cache status reporting, cache clear/reset behavior, and token-savings accounting.
 - `cli/src/services/version.rs` defines the version parser/output contract (`parse_version_request`, `render_version`) with deterministic text/JSON output modes.
 - `cli/src/services/completion.rs` defines the completion output contract (`render_completion`) using clap_complete to generate deterministic shell scripts for Bash, Zsh, and Fish.
 - `cli/src/services/hooks.rs` defines production local hook runtime parsing/dispatch (`HookSubcommand`, `parse_hooks_subcommand`, `run_hooks_subcommand`) for `pre-commit`, `commit-msg`, `post-commit`, and `post-rewrite`, plus checkpoint/persistence/retry finalization seams used by hook entrypoints.

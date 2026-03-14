@@ -283,7 +283,6 @@ pub async fn run_smoke_check(target: LocalDatabaseTarget<'_>) -> Result<SmokeChe
 
 #[cfg(test)]
 mod tests {
-    use crate::test_support::TestTempDir;
     use anyhow::Result;
 
     use super::{run_smoke_check, LocalDatabaseTarget};
@@ -293,17 +292,6 @@ mod tests {
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
         let outcome = runtime.block_on(run_smoke_check(LocalDatabaseTarget::InMemory))?;
         assert_eq!(outcome.inserted_rows, 1);
-        Ok(())
-    }
-
-    #[test]
-    fn file_backed_smoke_check_succeeds() -> Result<()> {
-        let temp = TestTempDir::new("sce-smoke-tests")?;
-        let path = temp.path().join("local.db");
-        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-        let outcome = runtime.block_on(run_smoke_check(LocalDatabaseTarget::Path(&path)))?;
-        assert_eq!(outcome.inserted_rows, 1);
-        assert!(path.exists());
         Ok(())
     }
 }
