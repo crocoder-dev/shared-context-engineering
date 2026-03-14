@@ -478,6 +478,13 @@ fn resolve_default_global_config_path() -> Result<PathBuf> {
     }
 }
 
+pub(crate) fn validate_config_file(path: &Path) -> Result<()> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read config file '{}'.", path.display()))?;
+    parse_file_config(&raw, path, ConfigPathSource::Flag)?;
+    Ok(())
+}
+
 fn parse_file_config(raw: &str, path: &Path, source: ConfigPathSource) -> Result<FileConfig> {
     let parsed: Value = serde_json::from_str(raw)
         .with_context(|| format!("Config file '{}' must contain valid JSON.", path.display()))?;

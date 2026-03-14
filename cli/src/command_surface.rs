@@ -32,7 +32,7 @@ pub const COMMANDS: &[CommandContract] = &[
     CommandContract {
         name: services::doctor::NAME,
         status: ImplementationStatus::Implemented,
-        purpose: "Validate local git-hook installation readiness",
+        purpose: "Inspect SCE operator health and explicit repair readiness",
     },
     CommandContract {
         name: services::auth_command::NAME,
@@ -89,11 +89,12 @@ pub fn help_text() -> String {
 Usage:\n  sce [command]\n\n\
 Config usage:\n  sce config <show|validate> [--format <text|json>] [options]\n\n\
 Setup usage:\n  sce setup [--opencode|--claude|--both] [--non-interactive] [--hooks] [--repo <path>]\n\n\
+Doctor usage:\n  sce doctor [--fix] [--format <text|json>]\n\n\
 Auth usage:\n  sce auth <login|logout|status> [--format <text|json>]\n\n\
 Completion usage:\n  sce completion --shell <bash|zsh|fish>\n\n\
 MCP usage:\n  sce mcp\n\n\
 Output format contract:\n  Supported commands accept --format <text|json>\n\n\
-Examples:\n  sce setup\n  sce setup --opencode --non-interactive --hooks\n  sce setup --hooks --repo ../demo-repo\n  sce auth status\n  sce auth login --format json\n  sce doctor --format json\n  sce version --format json\n\n\
+Examples:\n  sce setup\n  sce setup --opencode --non-interactive --hooks\n  sce setup --hooks --repo ../demo-repo\n  sce auth status\n  sce auth login --format json\n  sce doctor --format json\n  sce doctor --fix\n  sce version --format json\n\n\
 Commands:\n{command_rows}\n\n\
 Setup defaults to interactive target selection when no setup target flag is passed, and installs hooks in the same run.\n\
 Use '--hooks' to install required git hooks for the current repository or '--repo <path>' for a specific repository.\n\
@@ -164,6 +165,7 @@ mod tests {
         assert!(help.contains("Output format contract:"));
         assert!(help.contains("--format <text|json>"));
         assert!(help.contains("sce doctor --format json"));
+        assert!(help.contains("sce doctor --fix"));
         assert!(help.contains("sce version --format json"));
     }
 }

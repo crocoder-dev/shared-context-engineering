@@ -6,6 +6,10 @@ use anyhow::{Context, Result};
 use serde_json::json;
 
 use crate::services::output_format::OutputFormat;
+use crate::services::setup::{
+    install_required_git_hooks, iter_required_hook_assets, RequiredHookInstallStatus,
+    RequiredHooksInstallOutcome,
+};
 
 pub const NAME: &str = "doctor";
 
@@ -14,7 +18,14 @@ const REQUIRED_HOOKS: [&str; 3] = ["pre-commit", "commit-msg", "post-commit"];
 pub type DoctorFormat = OutputFormat;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DoctorMode {
+    Diagnose,
+    Fix,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DoctorRequest {
+    pub mode: DoctorMode,
     pub format: DoctorFormat,
 }
 
@@ -37,56 +48,203 @@ struct HookFileHealth {
     path: PathBuf,
     exists: bool,
     executable: bool,
+    content_state: HookContentState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HookContentState {
+    Current,
+    Stale,
+    Missing,
+    Unknown,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FileLocationHealth {
     label: &'static str,
     path: PathBuf,
-    exists: bool,
+    state: &'static str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct GlobalStateHealth {
+    state_root: Option<FileLocationHealth>,
+    config_locations: Vec<FileLocationHealth>,
+    agent_trace_local_db: Option<FileLocationHealth>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct HookDoctorReport {
+    mode: DoctorMode,
     readiness: Readiness,
+    state_root: Option<FileLocationHealth>,
     repository_root: Option<PathBuf>,
     hook_path_source: HookPathSource,
     hooks_directory: Option<PathBuf>,
     config_locations: Vec<FileLocationHealth>,
     agent_trace_local_db: Option<FileLocationHealth>,
     hooks: Vec<HookFileHealth>,
-    diagnostics: Vec<String>,
+    problems: Vec<DoctorProblem>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProblemCategory {
+    GlobalState,
+    RepositoryTargeting,
+    HookRollout,
+    FilesystemPermissions,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProblemSeverity {
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProblemFixability {
+    AutoFixable,
+    ManualOnly,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FixResult {
+    Fixed,
+    Skipped,
+    Manual,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DoctorProblem {
+    category: ProblemCategory,
+    severity: ProblemSeverity,
+    fixability: ProblemFixability,
+    summary: String,
+    remediation: String,
+    next_action: &'static str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DoctorFixResultRecord {
+    category: ProblemCategory,
+    outcome: FixResult,
+    detail: String,
+}
+
+struct DoctorDependencies<'a> {
+    run_git_command: &'a dyn Fn(&Path, &[&str]) -> Option<String>,
+    check_git_available: &'a dyn Fn() -> bool,
+    resolve_state_root: &'a dyn Fn() -> Result<PathBuf>,
+    resolve_agent_trace_local_db_path: &'a dyn Fn() -> Result<PathBuf>,
+    validate_config_file: &'a dyn Fn(&Path) -> Result<()>,
+    check_agent_trace_local_db_health: &'a dyn Fn(&Path) -> Result<()>,
+    install_required_git_hooks: &'a dyn Fn(&Path) -> Result<RequiredHooksInstallOutcome>,
+    create_directory_all: &'a dyn Fn(&Path) -> Result<()>,
+}
+
+struct DoctorExecution {
+    report: HookDoctorReport,
+    fix_results: Vec<DoctorFixResultRecord>,
+}
+
+enum DirectoryWriteReadiness {
+    Ready,
+    Missing,
+    NotDirectory,
+    ReadOnly,
+    Unknown(std::io::Error),
 }
 
 pub fn run_doctor(request: DoctorRequest) -> Result<String> {
     let repository_root =
         std::env::current_dir().context("Failed to determine current directory")?;
-    let report = build_report(&repository_root);
-    render_report(request, &report)
+    let execution = execute_doctor(request.mode, &repository_root);
+    render_report(request, &execution)
 }
 
-fn build_report(repository_root: &Path) -> HookDoctorReport {
-    let detected_repository_root =
-        run_git_command(repository_root, &["rev-parse", "--show-toplevel"]).map(PathBuf::from);
-    let hooks_directory = detected_repository_root.as_ref().and_then(|resolved_root| {
-        run_git_command(resolved_root, &["rev-parse", "--git-path", "hooks"]).map(|value| {
-            let path = PathBuf::from(value);
-            if path.is_absolute() {
-                path
-            } else {
-                resolved_root.join(path)
-            }
-        })
-    });
+fn execute_doctor(mode: DoctorMode, repository_root: &Path) -> DoctorExecution {
+    execute_doctor_with_dependencies(
+        mode,
+        repository_root,
+        &DoctorDependencies {
+            run_git_command: &run_git_command,
+            check_git_available: &is_git_available,
+            resolve_state_root: &crate::services::local_db::resolve_state_data_root,
+            resolve_agent_trace_local_db_path:
+                &crate::services::local_db::resolve_agent_trace_local_db_path,
+            validate_config_file: &crate::services::config::validate_config_file,
+            check_agent_trace_local_db_health:
+                &crate::services::local_db::check_agent_trace_local_db_health_blocking,
+            install_required_git_hooks: &install_required_git_hooks,
+            create_directory_all: &create_directory_all,
+        },
+    )
+}
 
-    let local_hooks_path = run_git_command(
-        repository_root,
-        &["config", "--local", "--get", "core.hooksPath"],
-    );
-    let global_hooks_path = run_git_command(
-        repository_root,
-        &["config", "--global", "--get", "core.hooksPath"],
-    );
+fn execute_doctor_with_dependencies(
+    mode: DoctorMode,
+    repository_root: &Path,
+    dependencies: &DoctorDependencies<'_>,
+) -> DoctorExecution {
+    let initial_report = build_report_with_dependencies(mode, repository_root, dependencies);
+
+    if mode != DoctorMode::Fix {
+        return DoctorExecution {
+            report: initial_report,
+            fix_results: Vec::new(),
+        };
+    }
+
+    let mut fix_results = run_auto_fixes(&initial_report, dependencies);
+    let final_report = build_report_with_dependencies(mode, repository_root, dependencies);
+    fix_results.extend(build_manual_fix_results(&final_report));
+
+    DoctorExecution {
+        report: final_report,
+        fix_results,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn build_report_with_dependencies(
+    mode: DoctorMode,
+    repository_root: &Path,
+    dependencies: &DoctorDependencies<'_>,
+) -> HookDoctorReport {
+    let mut problems = Vec::new();
+    let global_state = collect_global_state_health(repository_root, &mut problems, dependencies);
+    let git_available = (dependencies.check_git_available)();
+
+    let detected_repository_root = if git_available {
+        (dependencies.run_git_command)(repository_root, &["rev-parse", "--show-toplevel"])
+            .map(PathBuf::from)
+    } else {
+        None
+    };
+
+    let bare_repository = if git_available {
+        (dependencies.run_git_command)(repository_root, &["rev-parse", "--is-bare-repository"])
+            .is_some_and(|value| value == "true")
+    } else {
+        false
+    };
+
+    let local_hooks_path = if git_available {
+        (dependencies.run_git_command)(
+            repository_root,
+            &["config", "--local", "--get", "core.hooksPath"],
+        )
+    } else {
+        None
+    };
+    let global_hooks_path = if git_available {
+        (dependencies.run_git_command)(
+            repository_root,
+            &["config", "--global", "--get", "core.hooksPath"],
+        )
+    } else {
+        None
+    };
 
     let hook_path_source = if local_hooks_path.is_some() {
         HookPathSource::LocalConfig
@@ -96,91 +254,300 @@ fn build_report(repository_root: &Path) -> HookDoctorReport {
         HookPathSource::Default
     };
 
-    let mut diagnostics = Vec::new();
-    let config_locations = collect_config_locations(repository_root, &mut diagnostics);
-    let agent_trace_local_db = collect_agent_trace_local_db_location(&mut diagnostics);
-    let hooks = if let Some(directory) = hooks_directory.as_deref() {
-        collect_hook_health(directory, &mut diagnostics)
+    let hooks_directory = detected_repository_root.as_ref().and_then(|resolved_root| {
+        (dependencies.run_git_command)(resolved_root, &["rev-parse", "--git-path", "hooks"]).map(
+            |value| {
+                let path = PathBuf::from(value);
+                if path.is_absolute() {
+                    path
+                } else {
+                    resolved_root.join(path)
+                }
+            },
+        )
+    });
+
+    let hooks = if !git_available {
+        problems.push(DoctorProblem {
+            category: ProblemCategory::RepositoryTargeting,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: "Git is not available on this machine.".to_string(),
+            remediation: "Install an accessible 'git' binary and ensure it is on PATH before rerunning 'sce doctor'.".to_string(),
+            next_action: "manual_steps",
+        });
+        Vec::new()
+    } else if bare_repository {
+        problems.push(DoctorProblem {
+            category: ProblemCategory::RepositoryTargeting,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: "The current repository is bare and does not support local SCE hook rollout.".to_string(),
+            remediation: "Run 'sce doctor' from a non-bare working tree clone to inspect repo-scoped SCE hook health.".to_string(),
+            next_action: "manual_steps",
+        });
+        Vec::new()
+    } else if detected_repository_root.is_none() {
+        problems.push(DoctorProblem {
+            category: ProblemCategory::RepositoryTargeting,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: "The current directory is not inside a git repository.".to_string(),
+            remediation: "Run 'sce doctor' from inside the target repository working tree to inspect repo-scoped SCE hook health.".to_string(),
+            next_action: "manual_steps",
+        });
+        Vec::new()
+    } else if let Some(directory) = hooks_directory.as_deref() {
+        collect_hook_health(directory, &mut problems)
     } else {
-        diagnostics.push(
-            "Unable to resolve git hooks directory. Run this command inside a git repository."
-                .to_string(),
-        );
+        problems.push(DoctorProblem {
+            category: ProblemCategory::RepositoryTargeting,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: "Unable to resolve git hooks directory.".to_string(),
+            remediation: "Verify that git repository inspection succeeds and rerun 'sce doctor' inside a non-bare git repository.".to_string(),
+            next_action: "manual_steps",
+        });
         Vec::new()
     };
 
-    let readiness = if diagnostics.is_empty() {
+    let readiness = if problems.is_empty() {
         Readiness::Ready
     } else {
         Readiness::NotReady
     };
 
     HookDoctorReport {
+        mode,
         readiness,
+        state_root: global_state.state_root,
         repository_root: detected_repository_root,
         hook_path_source,
         hooks_directory,
-        config_locations,
-        agent_trace_local_db,
+        config_locations: global_state.config_locations,
+        agent_trace_local_db: global_state.agent_trace_local_db,
         hooks,
-        diagnostics,
+        problems,
     }
 }
 
-fn collect_config_locations(
+fn collect_global_state_health(
     repository_root: &Path,
-    diagnostics: &mut Vec<String>,
-) -> Vec<FileLocationHealth> {
-    let mut locations = Vec::new();
+    problems: &mut Vec<DoctorProblem>,
+    dependencies: &DoctorDependencies<'_>,
+) -> GlobalStateHealth {
+    let mut state_root_health = None;
+    let mut config_locations = Vec::new();
 
-    match crate::services::local_db::resolve_state_data_root() {
+    match (dependencies.resolve_state_root)() {
         Ok(state_root) => {
+            state_root_health = Some(FileLocationHealth {
+                label: "State root",
+                state: if state_root.exists() { "present" } else { "expected" },
+                path: state_root.clone(),
+            });
+
             let global_path = state_root.join("sce").join("config.json");
-            locations.push(FileLocationHealth {
+            if global_path.exists() {
+                if let Err(error) = (dependencies.validate_config_file)(&global_path) {
+                    problems.push(DoctorProblem {
+                        category: ProblemCategory::GlobalState,
+                        severity: ProblemSeverity::Error,
+                        fixability: ProblemFixability::ManualOnly,
+                        summary: format!(
+                            "Global config file '{}' failed validation: {error}",
+                            global_path.display()
+                        ),
+                        remediation: format!(
+                            "Repair or remove the invalid global config file at '{}' and rerun 'sce doctor'.",
+                            global_path.display()
+                        ),
+                        next_action: "manual_steps",
+                    });
+                }
+            }
+            config_locations.push(FileLocationHealth {
                 label: "Global config",
-                exists: global_path.exists(),
+                state: if global_path.exists() { "present" } else { "expected" },
                 path: global_path,
             });
         }
-        Err(error) => diagnostics.push(format!(
-            "Unable to resolve expected global config path: {error}"
-        )),
+        Err(error) => problems.push(DoctorProblem {
+            category: ProblemCategory::GlobalState,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!("Unable to resolve expected global config path: {error}"),
+            remediation: "Verify that the current platform exposes a writable SCE state directory before rerunning 'sce doctor'.".to_string(),
+            next_action: "manual_steps",
+        }),
     }
 
     let local_path = repository_root.join(".sce").join("config.json");
-    locations.push(FileLocationHealth {
+    config_locations.push(FileLocationHealth {
         label: "Local config",
-        exists: local_path.exists(),
+        state: if local_path.exists() {
+            "present"
+        } else {
+            "expected"
+        },
         path: local_path,
     });
 
-    locations
+    let agent_trace_local_db = match (dependencies.resolve_agent_trace_local_db_path)() {
+        Ok(path) => {
+            let health = FileLocationHealth {
+                label: "Agent Trace local DB",
+                state: if path.exists() { "present" } else { "expected" },
+                path,
+            };
+            inspect_agent_trace_db_health(&health, problems, dependencies);
+            Some(health)
+        }
+        Err(error) => {
+            problems.push(DoctorProblem {
+                category: ProblemCategory::GlobalState,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!("Unable to resolve expected Agent Trace local DB path: {error}"),
+                remediation: "Verify that the SCE state root can be resolved on this machine before rerunning 'sce doctor'.".to_string(),
+                next_action: "manual_steps",
+            });
+            None
+        }
+    };
+
+    GlobalStateHealth {
+        state_root: state_root_health,
+        config_locations,
+        agent_trace_local_db,
+    }
 }
 
-fn collect_agent_trace_local_db_location(
-    diagnostics: &mut Vec<String>,
-) -> Option<FileLocationHealth> {
-    match crate::services::local_db::resolve_agent_trace_local_db_path() {
-        Ok(path) => Some(FileLocationHealth {
-            label: "Agent Trace local DB",
-            exists: path.exists(),
-            path,
+fn inspect_agent_trace_db_health(
+    db_health: &FileLocationHealth,
+    problems: &mut Vec<DoctorProblem>,
+    dependencies: &DoctorDependencies<'_>,
+) {
+    let Some(parent) = db_health.path.parent() else {
+        problems.push(DoctorProblem {
+            category: ProblemCategory::GlobalState,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "Agent Trace local DB path '{}' has no parent directory.",
+                db_health.path.display()
+            ),
+            remediation: "Verify that the SCE state root resolves to a normal filesystem path before rerunning 'sce doctor'.".to_string(),
+            next_action: "manual_steps",
+        });
+        return;
+    };
+
+    match inspect_directory_write_readiness(parent) {
+        DirectoryWriteReadiness::Ready => {}
+        DirectoryWriteReadiness::Missing => problems.push(DoctorProblem {
+            category: ProblemCategory::FilesystemPermissions,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::AutoFixable,
+            summary: format!(
+                "Agent Trace local DB parent directory '{}' does not exist.",
+                parent.display()
+            ),
+            remediation: format!(
+                "Run 'sce doctor --fix' to create the SCE-owned Agent Trace state directory '{}', or create it manually with write access and rerun 'sce doctor'.",
+                parent.display()
+            ),
+            next_action: "doctor_fix",
         }),
-        Err(error) => {
-            diagnostics.push(format!(
-                "Unable to resolve expected Agent Trace local DB path: {error}"
-            ));
-            None
+        DirectoryWriteReadiness::NotDirectory => problems.push(DoctorProblem {
+            category: ProblemCategory::FilesystemPermissions,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "Agent Trace local DB parent path '{}' is not a directory.",
+                parent.display()
+            ),
+            remediation: format!(
+                "Replace '{}' with a writable directory before rerunning 'sce doctor'.",
+                parent.display()
+            ),
+            next_action: "manual_steps",
+        }),
+        DirectoryWriteReadiness::ReadOnly => problems.push(DoctorProblem {
+            category: ProblemCategory::FilesystemPermissions,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "Agent Trace local DB parent directory '{}' is not writable.",
+                parent.display()
+            ),
+            remediation: format!(
+                "Grant write access to '{}' before rerunning 'sce doctor'.",
+                parent.display()
+            ),
+            next_action: "manual_steps",
+        }),
+        DirectoryWriteReadiness::Unknown(error) => problems.push(DoctorProblem {
+            category: ProblemCategory::FilesystemPermissions,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "Unable to inspect Agent Trace local DB parent directory '{}': {error}",
+                parent.display()
+            ),
+            remediation: format!(
+                "Verify that '{}' is accessible and writable before rerunning 'sce doctor'.",
+                parent.display()
+            ),
+            next_action: "manual_steps",
+        }),
+    }
+
+    if db_health.path.exists() {
+        if let Err(error) = (dependencies.check_agent_trace_local_db_health)(&db_health.path) {
+            problems.push(DoctorProblem {
+                category: ProblemCategory::GlobalState,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "Agent Trace local DB '{}' failed health checks: {error}",
+                    db_health.path.display()
+                ),
+                remediation: format!(
+                    "Repair or replace the Agent Trace local DB at '{}' and rerun 'sce doctor'.",
+                    db_health.path.display()
+                ),
+                next_action: "manual_steps",
+            });
         }
     }
 }
 
-fn collect_hook_health(directory: &Path, diagnostics: &mut Vec<String>) -> Vec<HookFileHealth> {
+fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> Vec<HookFileHealth> {
     if !directory.exists() {
-        diagnostics.push(format!(
-            "Hooks directory '{}' does not exist.",
-            directory.display()
-        ));
+        problems.push(DoctorProblem {
+            category: ProblemCategory::HookRollout,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::AutoFixable,
+            summary: format!("Hooks directory '{}' does not exist.", directory.display()),
+            remediation: format!(
+                "Run 'sce doctor --fix' to install the canonical SCE-managed hooks into '{}', or run 'sce setup --hooks' directly.",
+                directory.display()
+            ),
+            next_action: "doctor_fix",
+        });
+    } else if !directory.is_dir() {
+        problems.push(DoctorProblem {
+            category: ProblemCategory::HookRollout,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!("Hooks path '{}' is not a directory.", directory.display()),
+            remediation: format!(
+                "Replace '{}' with a writable hooks directory, then rerun 'sce doctor' or 'sce setup --hooks'.",
+                directory.display()
+            ),
+            next_action: "manual_steps",
+        });
     }
 
     REQUIRED_HOOKS
@@ -192,19 +559,52 @@ fn collect_hook_health(directory: &Path, diagnostics: &mut Vec<String>) -> Vec<H
             let executable = metadata
                 .as_ref()
                 .is_some_and(|entry| entry.is_file() && is_executable(entry));
+            let content_state = inspect_hook_content_state(hook_name, &hook_path, exists, problems);
 
             if !exists {
-                diagnostics.push(format!(
-                    "Missing required hook '{}' at '{}'.",
-                    hook_name,
-                    hook_path.display()
-                ));
+                problems.push(DoctorProblem {
+                    category: ProblemCategory::HookRollout,
+                    severity: ProblemSeverity::Error,
+                    fixability: ProblemFixability::AutoFixable,
+                    summary: format!(
+                        "Missing required hook '{}' at '{}'.",
+                        hook_name,
+                        hook_path.display()
+                    ),
+                    remediation: format!(
+                        "Run 'sce doctor --fix' to install the canonical '{hook_name}' hook, or run 'sce setup --hooks' directly."
+                    ),
+                    next_action: "doctor_fix",
+                });
             } else if !executable {
-                diagnostics.push(format!(
-                    "Hook '{}' exists but is not executable. Run 'chmod +x {}' to fix it.",
-                    hook_name,
-                    hook_path.display()
-                ));
+                problems.push(DoctorProblem {
+                    category: ProblemCategory::HookRollout,
+                    severity: ProblemSeverity::Error,
+                    fixability: ProblemFixability::AutoFixable,
+                    summary: format!("Hook '{hook_name}' exists but is not executable."),
+                    remediation: format!(
+                        "Run 'sce doctor --fix' to restore the canonical executable hook, or run 'sce setup --hooks' / 'chmod +x {}' manually.",
+                        hook_path.display()
+                    ),
+                    next_action: "doctor_fix",
+                });
+            }
+
+            if content_state == HookContentState::Stale {
+                problems.push(DoctorProblem {
+                    category: ProblemCategory::HookRollout,
+                    severity: ProblemSeverity::Error,
+                    fixability: ProblemFixability::AutoFixable,
+                    summary: format!(
+                        "Hook '{}' at '{}' differs from the canonical SCE-managed content.",
+                        hook_name,
+                        hook_path.display()
+                    ),
+                    remediation: format!(
+                        "Run 'sce doctor --fix' to reinstall the canonical '{hook_name}' hook content, or run 'sce setup --hooks' directly."
+                    ),
+                    next_action: "doctor_fix",
+                });
             }
 
             HookFileHealth {
@@ -212,9 +612,62 @@ fn collect_hook_health(directory: &Path, diagnostics: &mut Vec<String>) -> Vec<H
                 path: hook_path,
                 exists,
                 executable,
+                content_state,
             }
         })
         .collect()
+}
+
+fn inspect_hook_content_state(
+    hook_name: &str,
+    hook_path: &Path,
+    exists: bool,
+    problems: &mut Vec<DoctorProblem>,
+) -> HookContentState {
+    if !exists {
+        return HookContentState::Missing;
+    }
+
+    let Some(expected_hook) =
+        iter_required_hook_assets().find(|asset| asset.relative_path == hook_name)
+    else {
+        return HookContentState::Unknown;
+    };
+
+    match fs::read(hook_path) {
+        Ok(bytes) => {
+            if bytes == expected_hook.bytes {
+                HookContentState::Current
+            } else {
+                HookContentState::Stale
+            }
+        }
+        Err(error) => {
+            problems.push(DoctorProblem {
+                category: ProblemCategory::FilesystemPermissions,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "Unable to read hook '{}' at '{}': {error}",
+                    hook_name,
+                    hook_path.display()
+                ),
+                remediation: format!(
+                    "Verify that '{}' is readable before rerunning 'sce doctor'.",
+                    hook_path.display()
+                ),
+                next_action: "manual_steps",
+            });
+            HookContentState::Unknown
+        }
+    }
+}
+
+fn is_git_available() -> bool {
+    Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 #[cfg(unix)]
@@ -227,6 +680,24 @@ fn is_executable(metadata: &fs::Metadata) -> bool {
 #[cfg(not(unix))]
 fn is_executable(metadata: &fs::Metadata) -> bool {
     metadata.is_file()
+}
+
+fn inspect_directory_write_readiness(path: &Path) -> DirectoryWriteReadiness {
+    match fs::metadata(path) {
+        Ok(metadata) => {
+            if !metadata.is_dir() {
+                DirectoryWriteReadiness::NotDirectory
+            } else if metadata.permissions().readonly() {
+                DirectoryWriteReadiness::ReadOnly
+            } else {
+                DirectoryWriteReadiness::Ready
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            DirectoryWriteReadiness::Missing
+        }
+        Err(error) => DirectoryWriteReadiness::Unknown(error),
+    }
 }
 
 fn run_git_command(repository_root: &Path, args: &[&str]) -> Option<String> {
@@ -248,6 +719,7 @@ fn run_git_command(repository_root: &Path, args: &[&str]) -> Option<String> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn format_report(report: &HookDoctorReport) -> String {
     let mut lines = Vec::new();
     lines.push(format!(
@@ -255,6 +727,13 @@ fn format_report(report: &HookDoctorReport) -> String {
         match report.readiness {
             Readiness::Ready => "ready",
             Readiness::NotReady => "not ready",
+        }
+    ));
+    lines.push(format!(
+        "Mode: {}",
+        match report.mode {
+            DoctorMode::Diagnose => "diagnose",
+            DoctorMode::Fix => "fix",
         }
     ));
 
@@ -265,6 +744,14 @@ fn format_report(report: &HookDoctorReport) -> String {
             HookPathSource::LocalConfig => "per-repo core.hooksPath",
             HookPathSource::GlobalConfig => "global core.hooksPath",
         }
+    ));
+
+    lines.push(format!(
+        "State root: {}",
+        report.state_root.as_ref().map_or_else(
+            || "(not detected)".to_string(),
+            |location| format!("{} ({})", location.state, location.path.display())
+        )
     ));
 
     lines.push(format!(
@@ -288,11 +775,7 @@ fn format_report(report: &HookDoctorReport) -> String {
         lines.push(format!(
             "- {}: {} ({})",
             location.label,
-            if location.exists {
-                "present"
-            } else {
-                "expected"
-            },
+            location.state,
             location.path.display()
         ));
     }
@@ -301,55 +784,75 @@ fn format_report(report: &HookDoctorReport) -> String {
         "Agent Trace local DB: {}",
         report.agent_trace_local_db.as_ref().map_or_else(
             || "(not detected)".to_string(),
-            |location| format!(
-                "{} ({})",
-                if location.exists {
-                    "present"
-                } else {
-                    "expected"
-                },
-                location.path.display()
-            )
+            |location| format!("{} ({})", location.state, location.path.display())
         )
     ));
 
     lines.push("Required hooks:".to_string());
     for hook in &report.hooks {
-        let state = if hook.exists && hook.executable {
-            "ok"
-        } else if !hook.exists {
-            "missing"
-        } else {
-            "misconfigured"
-        };
         lines.push(format!(
-            "- {}: {} ({})",
+            "- {}: {} (content={}, executable={}) ({})",
             hook.name,
-            state,
+            hook_state(hook),
+            hook_content_state(hook.content_state),
+            if hook.executable { "yes" } else { "no" },
             hook.path.display()
         ));
     }
 
-    if report.diagnostics.is_empty() {
-        lines.push("Diagnostics: none".to_string());
+    if report.problems.is_empty() {
+        lines.push("Problems: none".to_string());
     } else {
-        lines.push("Diagnostics:".to_string());
-        for diagnostic in &report.diagnostics {
-            lines.push(format!("- {diagnostic}"));
+        lines.push("Problems:".to_string());
+        for problem in &report.problems {
+            lines.push(format!(
+                "- [{}|{}|{}] {} Try: {}",
+                problem_category(problem.category),
+                problem_severity(problem.severity),
+                problem_fixability(problem.fixability),
+                problem.summary,
+                problem.remediation
+            ));
         }
     }
 
     lines.join("\n")
 }
 
-fn render_report(request: DoctorRequest, report: &HookDoctorReport) -> Result<String> {
+fn format_execution(execution: &DoctorExecution) -> String {
+    let report = &execution.report;
+    let mut lines = format_report(report)
+        .lines()
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+
+    if report.mode == DoctorMode::Fix {
+        if execution.fix_results.is_empty() {
+            lines.push("Fix results: none".to_string());
+        } else {
+            lines.push("Fix results:".to_string());
+            for fix_result in &execution.fix_results {
+                lines.push(format!(
+                    "- [{}] {}",
+                    fix_result_outcome(fix_result.outcome),
+                    fix_result.detail
+                ));
+            }
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn render_report(request: DoctorRequest, execution: &DoctorExecution) -> Result<String> {
     match request.format {
-        DoctorFormat::Text => Ok(format_report(report)),
-        DoctorFormat::Json => render_report_json(report),
+        DoctorFormat::Text => Ok(format_execution(execution)),
+        DoctorFormat::Json => render_report_json(execution),
     }
 }
 
-fn render_report_json(report: &HookDoctorReport) -> Result<String> {
+fn render_report_json(execution: &DoctorExecution) -> Result<String> {
+    let report = &execution.report;
     let hooks = report
         .hooks
         .iter()
@@ -360,6 +863,7 @@ fn render_report_json(report: &HookDoctorReport) -> Result<String> {
                 "exists": hook.exists,
                 "executable": hook.executable,
                 "state": hook_state(hook),
+                "content_state": hook_content_state(hook.content_state),
             })
         })
         .collect::<Vec<_>>();
@@ -371,8 +875,7 @@ fn render_report_json(report: &HookDoctorReport) -> Result<String> {
             json!({
                 "label": location.label,
                 "path": location.path.display().to_string(),
-                "exists": location.exists,
-                "state": if location.exists { "present" } else { "expected" },
+                "state": location.state,
             })
         })
         .collect::<Vec<_>>();
@@ -380,10 +883,19 @@ fn render_report_json(report: &HookDoctorReport) -> Result<String> {
     let payload = json!({
         "status": "ok",
         "command": NAME,
+        "mode": match report.mode {
+            DoctorMode::Diagnose => "diagnose",
+            DoctorMode::Fix => "fix",
+        },
         "readiness": match report.readiness {
             Readiness::Ready => "ready",
             Readiness::NotReady => "not_ready",
         },
+        "state_root": report.state_root.as_ref().map(|location| json!({
+            "label": location.label,
+            "path": location.path.display().to_string(),
+            "state": location.state,
+        })),
         "hook_path_source": match report.hook_path_source {
             HookPathSource::Default => "default",
             HookPathSource::LocalConfig => "local_config",
@@ -401,50 +913,501 @@ fn render_report_json(report: &HookDoctorReport) -> Result<String> {
         "agent_trace_local_db": report.agent_trace_local_db.as_ref().map(|location| json!({
             "label": location.label,
             "path": location.path.display().to_string(),
-            "exists": location.exists,
-            "state": if location.exists { "present" } else { "expected" },
+            "state": location.state,
         })),
         "hooks": hooks,
-        "diagnostics": report.diagnostics,
+        "problems": report.problems.iter().map(|problem| json!({
+            "category": problem_category(problem.category),
+            "severity": problem_severity(problem.severity),
+            "fixability": problem_fixability(problem.fixability),
+            "summary": problem.summary,
+            "remediation": {
+                "next_action": problem.next_action,
+                "text": problem.remediation,
+            },
+        })).collect::<Vec<_>>(),
+        "fix_results": if report.mode == DoctorMode::Fix {
+            execution.fix_results.iter()
+                .map(|result| json!({
+                    "category": problem_category(result.category),
+                    "outcome": fix_result_outcome(result.outcome),
+                    "detail": result.detail,
+                }))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        },
     });
 
     serde_json::to_string_pretty(&payload).context("failed to serialize doctor report to JSON")
 }
 
 fn hook_state(hook: &HookFileHealth) -> &'static str {
-    if hook.exists && hook.executable {
-        "ok"
-    } else if !hook.exists {
+    if !hook.exists {
         "missing"
+    } else if hook.content_state == HookContentState::Stale {
+        "stale"
+    } else if !hook.executable {
+        "not_executable"
     } else {
-        "misconfigured"
+        "ok"
+    }
+}
+
+fn hook_content_state(state: HookContentState) -> &'static str {
+    match state {
+        HookContentState::Current => "current",
+        HookContentState::Stale => "stale",
+        HookContentState::Missing => "missing",
+        HookContentState::Unknown => "unknown",
+    }
+}
+
+fn run_auto_fixes(
+    report: &HookDoctorReport,
+    dependencies: &DoctorDependencies<'_>,
+) -> Vec<DoctorFixResultRecord> {
+    let auto_fixable_problems = report
+        .problems
+        .iter()
+        .filter(|problem| problem.fixability == ProblemFixability::AutoFixable)
+        .collect::<Vec<_>>();
+
+    if auto_fixable_problems.is_empty() {
+        return Vec::new();
+    }
+
+    let mut fix_results = Vec::new();
+
+    if auto_fixable_problems
+        .iter()
+        .any(|problem| problem.category == ProblemCategory::FilesystemPermissions)
+    {
+        fix_results.extend(run_filesystem_auto_fixes(report, dependencies));
+    }
+
+    if auto_fixable_problems
+        .iter()
+        .any(|problem| problem.category == ProblemCategory::HookRollout)
+    {
+        let Some(repository_root) = report.repository_root.as_deref() else {
+            fix_results.push(DoctorFixResultRecord {
+                category: ProblemCategory::HookRollout,
+                outcome: FixResult::Failed,
+                detail: "Automatic hook repair could not start because the repository root was not resolved during diagnosis.".to_string(),
+            });
+            return fix_results;
+        };
+
+        match (dependencies.install_required_git_hooks)(repository_root) {
+            Ok(outcome) => fix_results.extend(build_hook_fix_results(&outcome)),
+            Err(error) => fix_results.push(DoctorFixResultRecord {
+                category: ProblemCategory::HookRollout,
+                outcome: FixResult::Failed,
+                detail: format!(
+                    "Automatic hook repair failed while reusing the canonical setup flow: {error}"
+                ),
+            }),
+        }
+    }
+
+    fix_results
+}
+
+fn run_filesystem_auto_fixes(
+    report: &HookDoctorReport,
+    dependencies: &DoctorDependencies<'_>,
+) -> Vec<DoctorFixResultRecord> {
+    let Some(db_path) = report
+        .agent_trace_local_db
+        .as_ref()
+        .map(|location| &location.path)
+    else {
+        return vec![DoctorFixResultRecord {
+            category: ProblemCategory::FilesystemPermissions,
+            outcome: FixResult::Failed,
+            detail: "Automatic Agent Trace directory repair could not start because the expected local DB path was not resolved during diagnosis.".to_string(),
+        }];
+    };
+
+    let Some(parent) = db_path.parent() else {
+        return vec![DoctorFixResultRecord {
+            category: ProblemCategory::FilesystemPermissions,
+            outcome: FixResult::Failed,
+            detail: format!(
+                "Automatic Agent Trace directory repair could not start because '{}' has no parent directory.",
+                db_path.display()
+            ),
+        }];
+    };
+
+    let expected_parent = match (dependencies.resolve_agent_trace_local_db_path)() {
+        Ok(path) => path.parent().map(Path::to_path_buf),
+        Err(error) => {
+            return vec![DoctorFixResultRecord {
+                category: ProblemCategory::FilesystemPermissions,
+                outcome: FixResult::Failed,
+                detail: format!(
+                    "Automatic Agent Trace directory repair could not confirm the canonical SCE-owned path: {error}"
+                ),
+            }];
+        }
+    };
+
+    if expected_parent.as_deref() != Some(parent) {
+        return vec![DoctorFixResultRecord {
+            category: ProblemCategory::FilesystemPermissions,
+            outcome: FixResult::Failed,
+            detail: format!(
+                "Automatic Agent Trace directory repair refused to modify '{}' because it does not match the canonical SCE-owned path.",
+                parent.display()
+            ),
+        }];
+    }
+
+    if parent.exists() {
+        return vec![DoctorFixResultRecord {
+            category: ProblemCategory::FilesystemPermissions,
+            outcome: FixResult::Skipped,
+            detail: format!(
+                "Agent Trace directory '{}' already exists; no directory bootstrap was needed.",
+                parent.display()
+            ),
+        }];
+    }
+
+    match (dependencies.create_directory_all)(parent) {
+        Ok(()) => vec![DoctorFixResultRecord {
+            category: ProblemCategory::FilesystemPermissions,
+            outcome: FixResult::Fixed,
+            detail: format!(
+                "Created the SCE-owned Agent Trace directory '{}'.",
+                parent.display()
+            ),
+        }],
+        Err(error) => vec![DoctorFixResultRecord {
+            category: ProblemCategory::FilesystemPermissions,
+            outcome: FixResult::Failed,
+            detail: format!(
+                "Automatic Agent Trace directory repair failed for '{}': {error}",
+                parent.display()
+            ),
+        }],
+    }
+}
+
+fn create_directory_all(path: &Path) -> Result<()> {
+    fs::create_dir_all(path)
+        .with_context(|| format!("Failed to create directory '{}'.", path.display()))
+}
+
+fn build_hook_fix_results(outcome: &RequiredHooksInstallOutcome) -> Vec<DoctorFixResultRecord> {
+    outcome
+        .hook_results
+        .iter()
+        .map(|hook_result| DoctorFixResultRecord {
+            category: ProblemCategory::HookRollout,
+            outcome: match hook_result.status {
+                RequiredHookInstallStatus::Installed | RequiredHookInstallStatus::Updated => {
+                    FixResult::Fixed
+                }
+                RequiredHookInstallStatus::Skipped => FixResult::Skipped,
+            },
+            detail: format!(
+                "Hook '{}' {} at '{}'.",
+                hook_result.hook_name,
+                match hook_result.status {
+                    RequiredHookInstallStatus::Installed => "installed",
+                    RequiredHookInstallStatus::Updated => "updated",
+                    RequiredHookInstallStatus::Skipped => "already matched canonical content",
+                },
+                hook_result.hook_path.display()
+            ),
+        })
+        .collect()
+}
+
+fn build_manual_fix_results(report: &HookDoctorReport) -> Vec<DoctorFixResultRecord> {
+    report
+        .problems
+        .iter()
+        .filter(|problem| problem.fixability != ProblemFixability::AutoFixable)
+        .map(|problem| DoctorFixResultRecord {
+            category: problem.category,
+            outcome: FixResult::Manual,
+            detail: match problem.fixability {
+                ProblemFixability::AutoFixable => {
+                    unreachable!("auto-fixable problems should not be rendered as manual results")
+                }
+                ProblemFixability::ManualOnly => {
+                    format!("{} Manual remediation is still required.", problem.summary)
+                }
+            },
+        })
+        .collect()
+}
+
+fn problem_category(category: ProblemCategory) -> &'static str {
+    match category {
+        ProblemCategory::GlobalState => "global_state",
+        ProblemCategory::RepositoryTargeting => "repository_targeting",
+        ProblemCategory::HookRollout => "hook_rollout",
+        ProblemCategory::FilesystemPermissions => "filesystem_permissions",
+    }
+}
+
+fn problem_severity(severity: ProblemSeverity) -> &'static str {
+    match severity {
+        ProblemSeverity::Error => "error",
+    }
+}
+
+fn problem_fixability(fixability: ProblemFixability) -> &'static str {
+    match fixability {
+        ProblemFixability::AutoFixable => "auto_fixable",
+        ProblemFixability::ManualOnly => "manual_only",
+    }
+}
+
+fn fix_result_outcome(outcome: FixResult) -> &'static str {
+    match outcome {
+        FixResult::Fixed => "fixed",
+        FixResult::Skipped => "skipped",
+        FixResult::Manual => "manual",
+        FixResult::Failed => "failed",
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use anyhow::Result;
     use serde_json::Value;
 
-    use super::{render_report, DoctorFormat, DoctorRequest, NAME};
+    use super::{
+        execute_doctor_with_dependencies, render_report, run_filesystem_auto_fixes,
+        DoctorDependencies, DoctorFormat, DoctorMode, DoctorProblem, DoctorRequest,
+        FileLocationHealth, FixResult, HookDoctorReport, HookPathSource, ProblemCategory,
+        ProblemFixability, ProblemSeverity, Readiness, NAME,
+    };
+    use crate::services::setup::RequiredHooksInstallOutcome;
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(label: &str) -> Result<Self> {
+            let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+            let path = std::env::temp_dir().join(format!("sce-doctor-{label}-{unique}"));
+            fs::create_dir_all(&path)?;
+            Ok(Self { path })
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn install_canonical_hooks(hooks_dir: &Path) -> Result<()> {
+        fs::create_dir_all(hooks_dir)?;
+        for asset in super::iter_required_hook_assets() {
+            let path = hooks_dir.join(asset.relative_path);
+            fs::write(&path, asset.bytes)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn filesystem_problem(summary: &str) -> DoctorProblem {
+        DoctorProblem {
+            category: ProblemCategory::FilesystemPermissions,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::AutoFixable,
+            summary: summary.to_string(),
+            remediation: "Run 'sce doctor --fix'.".to_string(),
+            next_action: "doctor_fix",
+        }
+    }
 
     #[test]
     fn render_json_includes_stable_fields_without_filesystem() -> Result<()> {
         let output = render_report(
             DoctorRequest {
+                mode: DoctorMode::Diagnose,
                 format: DoctorFormat::Json,
             },
-            &super::build_report(std::path::Path::new("/nonexistent")),
+            &super::execute_doctor(DoctorMode::Diagnose, std::path::Path::new("/nonexistent")),
         )?;
 
         let parsed: Value = serde_json::from_str(&output)?;
         assert_eq!(parsed["status"], "ok");
         assert_eq!(parsed["command"], NAME);
+        assert_eq!(parsed["mode"], "diagnose");
         assert!(parsed["readiness"].as_str().is_some());
+        assert!(parsed["state_root"].is_null() || parsed["state_root"].is_object());
         assert!(parsed["hook_path_source"].as_str().is_some());
         assert!(parsed["config_paths"].is_array());
         assert!(parsed["hooks"].is_array());
-        assert!(parsed["diagnostics"].is_array());
+        assert!(parsed["problems"].is_array());
+        assert!(parsed["fix_results"].is_array());
         Ok(())
+    }
+
+    #[test]
+    fn render_fix_mode_json_includes_fix_results() -> Result<()> {
+        let output = render_report(
+            DoctorRequest {
+                mode: DoctorMode::Fix,
+                format: DoctorFormat::Json,
+            },
+            &super::execute_doctor(DoctorMode::Fix, std::path::Path::new("/nonexistent")),
+        )?;
+
+        let parsed: Value = serde_json::from_str(&output)?;
+        assert_eq!(parsed["mode"], "fix");
+        assert!(parsed["fix_results"].is_array());
+        Ok(())
+    }
+
+    #[test]
+    fn fix_mode_creates_missing_agent_trace_directory() -> Result<()> {
+        let test_dir = TestDir::new("agent-trace-fix")?;
+        let repository_root = test_dir.path().join("repo");
+        let hooks_dir = repository_root.join(".git").join("hooks");
+        install_canonical_hooks(&hooks_dir)?;
+
+        let db_path = test_dir
+            .path()
+            .join("state-root")
+            .join("sce")
+            .join("agent-trace")
+            .join("local.db");
+        let created_paths = Arc::new(Mutex::new(Vec::new()));
+        let repo_root = repository_root.clone();
+        let hooks_dir = hooks_dir.clone();
+        let db_path_for_state_root = db_path.clone();
+        let db_path_for_resolution = db_path.clone();
+        let created_paths_for_fix = Arc::clone(&created_paths);
+        let run_git_command = move |_cwd: &Path, args: &[&str]| match args {
+            ["rev-parse", "--show-toplevel"] => Some(repo_root.display().to_string()),
+            ["rev-parse", "--is-bare-repository"] => Some("false".to_string()),
+            ["rev-parse", "--git-path", "hooks"] => Some(hooks_dir.display().to_string()),
+            _ => None,
+        };
+        let check_git_available = || true;
+        let resolve_state_root = move || {
+            Ok(db_path_for_state_root
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+                .expect("db path should include state_root/sce/agent-trace/local.db"))
+        };
+        let resolve_agent_trace_local_db_path = move || Ok(db_path_for_resolution.clone());
+        let validate_config_file = |_path: &Path| Ok(());
+        let check_agent_trace_local_db_health = |_path: &Path| Ok(());
+        let install_required_git_hooks = |_repo: &Path| {
+            Ok(RequiredHooksInstallOutcome {
+                repository_root: PathBuf::new(),
+                hooks_directory: PathBuf::new(),
+                hook_results: Vec::new(),
+            })
+        };
+        let create_directory_all = move |path: &Path| {
+            created_paths_for_fix
+                .lock()
+                .expect("lock poisoned")
+                .push(path.to_path_buf());
+            fs::create_dir_all(path).map_err(anyhow::Error::from)
+        };
+        let dependencies = DoctorDependencies {
+            run_git_command: &run_git_command,
+            check_git_available: &check_git_available,
+            resolve_state_root: &resolve_state_root,
+            resolve_agent_trace_local_db_path: &resolve_agent_trace_local_db_path,
+            validate_config_file: &validate_config_file,
+            check_agent_trace_local_db_health: &check_agent_trace_local_db_health,
+            install_required_git_hooks: &install_required_git_hooks,
+            create_directory_all: &create_directory_all,
+        };
+
+        let execution =
+            execute_doctor_with_dependencies(DoctorMode::Fix, &repository_root, &dependencies);
+
+        assert_eq!(execution.report.readiness, Readiness::Ready);
+        assert!(db_path.parent().is_some_and(Path::exists));
+        assert!(execution.report.problems.is_empty());
+        assert!(execution.fix_results.iter().any(|result| {
+            result.category == ProblemCategory::FilesystemPermissions
+                && result.outcome == FixResult::Fixed
+                && result
+                    .detail
+                    .contains("Created the SCE-owned Agent Trace directory")
+        }));
+        assert_eq!(created_paths.lock().expect("lock poisoned").len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn filesystem_auto_fix_refuses_non_canonical_directory() {
+        let report = HookDoctorReport {
+            mode: DoctorMode::Fix,
+            readiness: Readiness::NotReady,
+            state_root: None,
+            repository_root: None,
+            hook_path_source: HookPathSource::Default,
+            hooks_directory: None,
+            config_locations: Vec::new(),
+            agent_trace_local_db: Some(FileLocationHealth {
+                label: "Agent Trace local DB",
+                path: PathBuf::from("/tmp/unexpected/local.db"),
+                state: "expected",
+            }),
+            hooks: Vec::new(),
+            problems: vec![filesystem_problem(
+                "Agent Trace local DB parent directory is missing.",
+            )],
+        };
+
+        let dependencies = DoctorDependencies {
+            run_git_command: &|_, _| None,
+            check_git_available: &|| false,
+            resolve_state_root: &|| Ok(PathBuf::from("/tmp/state-root")),
+            resolve_agent_trace_local_db_path: &|| {
+                Ok(PathBuf::from("/tmp/canonical/sce/agent-trace/local.db"))
+            },
+            validate_config_file: &|_| Ok(()),
+            check_agent_trace_local_db_health: &|_| Ok(()),
+            install_required_git_hooks: &|_| unreachable!("hook install should not run"),
+            create_directory_all: &|_| unreachable!("directory creation should be refused"),
+        };
+
+        let fix_results = run_filesystem_auto_fixes(&report, &dependencies);
+
+        assert_eq!(fix_results.len(), 1);
+        assert_eq!(
+            fix_results[0].category,
+            ProblemCategory::FilesystemPermissions
+        );
+        assert_eq!(fix_results[0].outcome, FixResult::Failed);
+        assert!(fix_results[0]
+            .detail
+            .contains("does not match the canonical SCE-owned path"));
     }
 }
