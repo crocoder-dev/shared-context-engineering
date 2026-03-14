@@ -1,5 +1,5 @@
 ---
-description: "Resolve code-context drift using SCE rules"
+description: "Run `sce-drift-fixer` to repair context files from current code truth"
 agent: "Shared Context Drift"
 ---
 

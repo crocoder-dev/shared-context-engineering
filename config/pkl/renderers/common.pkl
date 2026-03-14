@@ -7,14 +7,14 @@ class RenderedTargetDocument {
 }
 
 commandDescriptions = new Mapping {
-  ["next-task"] = "Review a plan and execute one SCE task from an approved plan"
-  ["change-to-plan"] = "Create or update an SCE plan from a change request"
+  ["next-task"] = "Run `sce-plan-review` -> `sce-task-execution` -> `sce-context-sync` for one approved SCE task"
+  ["change-to-plan"] = "Use `sce-plan-authoring` to turn a change request into a scoped SCE plan"
   ["change-to-plan-interactive"] = "Create or update an SCE plan from a change request with interactive clarification"
-  ["drift-detect"] = "Analyze and report drift between context and code"
-  ["fix-drift"] = "Resolve code-context drift using SCE rules"
-  ["handover"] = "Create a structured SCE handover of the current task"
-  ["commit"] = "Propose atomic commit message(s) from staged changes"
-  ["validate"] = "Run final validation and cleanup for an SCE plan"
+  ["drift-detect"] = "Run `sce-drift-analyzer` to report context-code drift before edits"
+  ["fix-drift"] = "Run `sce-drift-fixer` to repair context files from current code truth"
+  ["handover"] = "Run `sce-handover-writer` to capture the current task for handoff"
+  ["commit"] = "Use `sce-atomic-commit` to propose atomic commit message(s) from staged changes"
+  ["validate"] = "Run `sce-validation` to finish an SCE plan with validation and cleanup"
 }
 
 skillDescriptions = new Mapping {

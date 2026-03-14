@@ -16,12 +16,59 @@ color: "\(metadata.agentColors[unitSlug])"\(metadata.agentBehaviorBlocks[unitSlu
   }
 }
 
+local commandSkillMetadataBlocks = new Mapping {
+  ["next-task"] = """
+entry-skill: "sce-plan-review"
+skills:
+  - "sce-plan-review"
+  - "sce-task-execution"
+  - "sce-context-sync"
+  - "sce-validation"
+"""
+  ["change-to-plan"] = """
+entry-skill: "sce-plan-authoring"
+skills:
+  - "sce-plan-authoring"
+"""
+  ["drift-detect"] = """
+entry-skill: "sce-drift-analyzer"
+skills:
+  - "sce-drift-analyzer"
+"""
+  ["fix-drift"] = """
+entry-skill: "sce-drift-fixer"
+skills:
+  - "sce-drift-fixer"
+"""
+  ["handover"] = """
+entry-skill: "sce-handover-writer"
+skills:
+  - "sce-handover-writer"
+"""
+  ["commit"] = """
+entry-skill: "sce-atomic-commit"
+skills:
+  - "sce-atomic-commit"
+"""
+  ["validate"] = """
+entry-skill: "sce-validation"
+skills:
+  - "sce-validation"
+"""
+}
+
 local commandFrontmatterBySlug = new Mapping {
   for (unitSlug, _ in shared.commands) {
-    [unitSlug] = """
+    [unitSlug] = if (commandSkillMetadataBlocks[unitSlug] == null) """
 ---
 description: "\(common.commandDescriptions[unitSlug])"
 agent: "\(metadata.commandAgents[unitSlug])"
+---
+""" else """
+---
+description: "\(common.commandDescriptions[unitSlug])"
+agent: "\(metadata.commandAgents[unitSlug])"
+\(commandSkillMetadataBlocks[unitSlug])
 ---
 """
   }

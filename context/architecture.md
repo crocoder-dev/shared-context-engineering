@@ -35,7 +35,7 @@ The scaffold provides stable canonical content-unit identifiers and reusable tar
 
 Renderer modules apply target-specific metadata/frontmatter rules while reusing canonical content bodies:
 
-- OpenCode renderer emits frontmatter with `agent`/`permission`/`compatibility: opencode` conventions.
+- OpenCode renderer emits frontmatter with `agent`/`permission`/`compatibility: opencode` conventions; targeted SCE commands also emit machine-readable `entry-skill` and ordered `skills` metadata when the renderer explicitly defines that mapping.
 - Claude renderer emits frontmatter with `allowed-tools`/`model`/`compatibility: claude` conventions.
 - Shared renderer contracts (`RenderedTargetDocument`, command descriptions) live in `config/pkl/renderers/common.pkl`.
 - Target-specific metadata tables, including skill frontmatter descriptions, are isolated in `config/pkl/renderers/opencode-metadata.pkl`, `config/pkl/renderers/opencode-automated-metadata.pkl`, and `config/pkl/renderers/claude-metadata.pkl`.

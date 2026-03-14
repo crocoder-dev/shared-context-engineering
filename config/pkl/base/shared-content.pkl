@@ -186,15 +186,15 @@ Expected arguments:
 - task ID (`T0X`) (optional)
 
 Behavior:
-- Run `sce-plan-review` first to resolve plan target/task and readiness.
-- Apply readiness confirmation gate from `sce-plan-review`:
-  - auto-pass only when both plan + task ID are provided and review reports no blockers/ambiguity/missing acceptance criteria
-  - otherwise resolve open points and ask user confirmation before execution
-- Run `sce-task-execution`; keep mandatory implementation stop, scoped implementation, checks/lints/build, and plan status updates skill-owned.
-- Run `sce-context-sync` as the required done gate.
-- Wait for user feedback; if in-scope fixes are requested, apply fixes, rerun light checks (and a light/fast build when applicable), then run `sce-context-sync` again.
-- If this is the final plan task, run `sce-validation`.
-- If more tasks remain, prompt a new session with `/next-task {plan_name} T0X`.
+- Keep this command as thin orchestration; skill-owned review, implementation, validation, and context-sync details stay in the referenced skills.
+- Run `sce-plan-review` first to resolve the plan target, choose the task, and report readiness.
+- Apply the readiness confirmation gate from `sce-plan-review` before implementation:
+  - auto-pass only when both plan + task ID are provided and review reports no blockers, ambiguity, or missing acceptance criteria
+  - otherwise resolve the open points and ask the user to confirm the task is ready before continuing
+- Run `sce-task-execution` next; keep the mandatory implementation stop, scoped edits, light checks/lints/build, and plan status updates skill-owned.
+- After implementation, run `sce-context-sync` as the required done gate and wait for user feedback.
+- If feedback requires in-scope fixes, apply the fixes, rerun light checks (and a light/fast build when applicable), then run `sce-context-sync` again.
+- If this was the final plan task, run `sce-validation`; otherwise stop after prompting a new session with `/next-task {plan_name} T0X`.
 """
   }
   ["change-to-plan"] = new ContentUnit {
@@ -209,12 +209,12 @@ Input change request:
 `$ARGUMENTS`
 
 Behavior:
-- Keep this command as thin orchestration; delegate clarification/ambiguity handling and plan-shape contracts to `sce-plan-authoring`.
-- Ensure plan output follows one-task/one-atomic-commit slicing through `sce-plan-authoring` task-shape rules.
-- Write/update `context/plans/{plan_name}.md`.
-- Confirm plan creation with `{plan_name}` and exact path.
-- Return the full ordered task list.
-- Prompt user to start a new session to implement `T01` and provide `/next-task {plan_name} T01`.
+- Keep this command as thin orchestration; detailed clarification handling, plan-shape rules, and task-writing behavior stay owned by `sce-plan-authoring`.
+- Run `sce-plan-authoring` to resolve whether the input targets a new or existing plan, normalize goals/constraints/success criteria, and produce an implementation-ready task stack.
+- Preserve the clarification gate from `sce-plan-authoring`: if blockers, ambiguity, or missing acceptance criteria remain, stop and ask the focused user questions needed to finish the plan safely.
+- Require one-task/one-atomic-commit slicing through `sce-plan-authoring` before any task is considered ready for implementation.
+- When the plan is ready, write or update `context/plans/{plan_name}.md`, confirm the resolved `{plan_name}` and exact path, and return the ordered task list.
+- Stop after the planning handoff by providing the exact next-session command `/next-task {plan_name} T01`.
 """
   }
   ["drift-detect"] = new ContentUnit {
@@ -226,10 +226,10 @@ Behavior:
 Load and follow the `sce-drift-analyzer` skill.
 
 Behavior:
-- Collect structured signals from `context/` and code.
-- Analyze mismatches between documented and implemented state.
-- Save findings to `context/tmp/drift-analysis-YYYY-MM-DD.md`.
-- Ask user whether to apply fixes or keep report-only output.
+- Keep this command as thin orchestration; drift detection logic, evidence gathering, and report structure stay owned by `sce-drift-analyzer`.
+- Run `sce-drift-analyzer` to compare `context/` against code truth, summarize mismatches, and write the drift report to `context/tmp/drift-analysis-YYYY-MM-DD.md`.
+- Stop after the analyzer reports findings; do not apply fixes from this command.
+- If the user wants repairs after reviewing the report, direct the next step to `/fix-drift` so update behavior stays owned by `sce-drift-fixer`.
 """
   }
   ["fix-drift"] = new ContentUnit {
@@ -240,14 +240,11 @@ Behavior:
     canonicalBody = """
 Load and follow the `sce-drift-fixer` skill.
 
-Audit the `context/` and ensure it correctly describes the system as implemented
-
-- treat code as authoritative
-- summarize each discrepancy clearly
-- propose exact context updates
-- apply updates once the user confirms (or immediately if already authorized)
-
-Make updates directly in `context/` and keep files concise, current-state oriented, and linked from `context/context-map.md` when relevant.
+Behavior:
+- Keep this command as thin orchestration; drift analysis, proposed repairs, and context edits stay owned by `sce-drift-fixer`.
+- Run `sce-drift-fixer` to audit `context/` against implemented code, treat code as authoritative, and summarize the exact context updates needed.
+- Preserve the fixer confirmation gate: apply updates only after explicit user confirmation unless the user already authorized fixes in the current session.
+- After approved fixes are applied, stop with the updated context state and any follow-up verification notes from `sce-drift-fixer`.
 """
   }
   ["handover"] = new ContentUnit {
@@ -261,15 +258,11 @@ Load and follow the `sce-handover-writer` skill.
 Input:
 `$ARGUMENTS`
 
-Create a new handover file in `context/handovers/` that captures:
-
-- current task state
-- decisions made and rationale
-- open questions or blockers
-- next recommended step
-
-Default naming should align with task execution handovers: `context/handovers/{plan_name}-{task_id}-{timestamp}.md`.
-If key details are missing, infer what you can from the current repo state and clearly label assumptions.
+Behavior:
+- Keep this command as thin orchestration; handover structure, naming, and content decisions stay owned by `sce-handover-writer`.
+- Run `sce-handover-writer` to gather current task state, decisions made and rationale, open questions or blockers, and the next recommended step.
+- Let `sce-handover-writer` create the handover in `context/handovers/`, using task-aligned naming such as `context/handovers/{plan_name}-{task_id}-{timestamp}.md` when the inputs support it.
+- If required details are missing, infer only from current repo state, label assumptions clearly, then stop after reporting the exact handover path.
 """
   }
   ["commit"] = new ContentUnit {
@@ -286,7 +279,8 @@ Input:
 Behavior:
 - If arguments are empty, treat input as unstated and infer commit intent from staged changes only.
 - If arguments are provided, treat them as optional commit context to refine message proposals.
-- Before invoking `sce-atomic-commit`, explicitly prompt the user:
+- Keep this command as thin orchestration; staged-diff analysis, atomic split decisions, and message wording stay owned by `sce-atomic-commit`.
+- Before running `sce-atomic-commit`, explicitly stop and prompt the user:
 
   "Please run `git add <files>` for all changes you want included in this commit.
   Atomic commits should only include intentionally staged changes.
@@ -294,10 +288,8 @@ Behavior:
 
 - After confirmation:
   - Classify staged diff scope (`context/`-only vs mixed `context/` + non-`context/`) and apply the context-guidance gate from `sce-atomic-commit`.
-  - Delegate commit-message grammar, atomic split decisions, and split guidance to `sce-atomic-commit`.
-
-- Do not create commits automatically.
-- Output only proposed commit message(s) and split guidance when needed.
+  - Run `sce-atomic-commit` to produce commit-message proposals and any needed split guidance.
+- Do not create commits automatically; stop after returning proposed commit message(s) and split guidance when needed.
 """
   }
   ["validate"] = new ContentUnit {
@@ -312,9 +304,10 @@ Input:
 `$ARGUMENTS`
 
 Behavior:
-- Run full validation checks.
-- Capture evidence.
-- Report pass/fail and any residual risks.
+- Keep this command as thin orchestration; validation scope, command selection, cleanup, and evidence formatting stay owned by `sce-validation`.
+- Run `sce-validation` to execute the full validation phase for the targeted plan or change, including required checks, evidence capture, and cleanup expected by the skill.
+- Let `sce-validation` decide pass/fail status and record any residual risks or unmet criteria.
+- Stop after reporting the validation outcome and the location of any written validation evidence.
 """
   }
 }

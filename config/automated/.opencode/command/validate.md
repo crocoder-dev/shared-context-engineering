@@ -1,5 +1,5 @@
 ---
-description: "Run final validation and cleanup for an SCE plan"
+description: "Run `sce-validation` to finish an SCE plan with validation and cleanup"
 agent: "Shared Context Code"
 ---
 

@@ -1,5 +1,5 @@
 ---
-description: "Review a plan and execute one SCE task from an approved plan"
+description: "Run `sce-plan-review` -> `sce-task-execution` -> `sce-context-sync` for one approved SCE task"
 agent: "Shared Context Code"
 ---
 

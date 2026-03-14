@@ -1,5 +1,5 @@
 ---
-description: "Create or update an SCE plan from a change request"
+description: "Use `sce-plan-authoring` to turn a change request into a scoped SCE plan"
 agent: "Shared Context Plan"
 ---
 

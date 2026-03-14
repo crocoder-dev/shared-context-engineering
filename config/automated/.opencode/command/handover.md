@@ -1,5 +1,5 @@
 ---
-description: "Create a structured SCE handover of the current task"
+description: "Run `sce-handover-writer` to capture the current task for handoff"
 agent: "Shared Context Code"
 ---
 

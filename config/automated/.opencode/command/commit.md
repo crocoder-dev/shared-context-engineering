@@ -1,5 +1,5 @@
 ---
-description: "Propose atomic commit message(s) from staged changes"
+description: "Use `sce-atomic-commit` to propose atomic commit message(s) from staged changes"
 agent: "Shared Context Code"
 ---
 

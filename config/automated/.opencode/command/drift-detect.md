@@ -1,5 +1,5 @@
 ---
-description: "Analyze and report drift between context and code"
+description: "Run `sce-drift-analyzer` to report context-code drift before edits"
 agent: "Shared Context Drift"
 ---
 
