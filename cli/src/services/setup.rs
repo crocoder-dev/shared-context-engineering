@@ -65,9 +65,15 @@ impl Iterator for EmbeddedAssetSelectionIter {
     type Item = &'static EmbeddedAsset;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::One(iter) => iter.next(),
-            Self::Both(iter) => iter.next(),
+        loop {
+            let next_asset = match self {
+                Self::One(iter) => iter.next(),
+                Self::Both(iter) => iter.next(),
+            }?;
+
+            if is_installable_setup_asset(next_asset) {
+                return Some(next_asset);
+            }
         }
     }
 }
@@ -82,6 +88,17 @@ pub fn iter_embedded_assets_for_setup_target(target: SetupTarget) -> EmbeddedAss
                 .chain(CLAUDE_EMBEDDED_ASSETS.iter()),
         ),
     }
+}
+
+fn is_installable_setup_asset(asset: &EmbeddedAsset) -> bool {
+    !matches!(
+        asset
+            .relative_path
+            .split('/')
+            .collect::<Vec<_>>()
+            .as_slice(),
+        ["skills", _, "tile.json"]
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

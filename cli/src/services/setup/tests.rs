@@ -174,8 +174,8 @@ fn embedded_manifest_matches_runtime_config_tree() -> Result<()> {
 
 #[test]
 fn embedded_setup_target_iterator_scopes_assets_per_target() {
-    let opencode_count = assets_for_target(SetupTarget::OpenCode).len();
-    let claude_count = assets_for_target(SetupTarget::Claude).len();
+    let opencode_count = expected_installable_paths(SetupTarget::OpenCode).len();
+    let claude_count = expected_installable_paths(SetupTarget::Claude).len();
 
     let iter_opencode_count = iter_embedded_assets_for_setup_target(SetupTarget::OpenCode).count();
     let iter_claude_count = iter_embedded_assets_for_setup_target(SetupTarget::Claude).count();
@@ -184,6 +184,28 @@ fn embedded_setup_target_iterator_scopes_assets_per_target() {
     assert_eq!(iter_opencode_count, opencode_count);
     assert_eq!(iter_claude_count, claude_count);
     assert_eq!(iter_both_count, opencode_count + claude_count);
+}
+
+#[test]
+fn embedded_setup_target_iterator_excludes_skill_tile_manifests() {
+    for target in [SetupTarget::OpenCode, SetupTarget::Claude] {
+        let installed_paths: Vec<&str> = iter_embedded_assets_for_setup_target(target)
+            .map(|asset| asset.relative_path)
+            .collect();
+
+        assert!(
+            installed_paths
+                .iter()
+                .all(|path| !is_skill_tile_manifest(path)),
+            "setup install iterator should omit skill tile manifests"
+        );
+        assert!(
+            installed_paths
+                .iter()
+                .any(|path| matches!(*path, "skills/sce-plan-review/SKILL.md")),
+            "setup install iterator should keep skill markdown payloads"
+        );
+    }
 }
 
 #[test]
@@ -239,6 +261,15 @@ fn assets_for_target(target: SetupTarget) -> &'static [super::EmbeddedAsset] {
     }
 }
 
+fn expected_installable_paths(target: SetupTarget) -> Vec<String> {
+    assets_for_target(target)
+        .iter()
+        .map(|asset| asset.relative_path)
+        .filter(|path| !is_skill_tile_manifest(path))
+        .map(ToString::to_string)
+        .collect()
+}
+
 fn collect_runtime_relative_paths(root: &Path) -> Result<Vec<String>> {
     let mut files = Vec::new();
     collect_runtime_files(root, root, &mut files)?;
@@ -287,4 +318,11 @@ fn hook_filename(hook: RequiredHookAsset) -> &'static str {
         RequiredHookAsset::CommitMsg => "commit-msg",
         RequiredHookAsset::PostCommit => "post-commit",
     }
+}
+
+fn is_skill_tile_manifest(path: &str) -> bool {
+    matches!(
+        path.split('/').collect::<Vec<_>>().as_slice(),
+        ["skills", _, "tile.json"]
+    )
 }
