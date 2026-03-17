@@ -263,6 +263,7 @@ fn collect_pending_checkpoint(repository_root: &Path) -> Result<PendingCheckpoin
         .iter()
         .map(|path| PendingFileCheckpoint {
             path: path.clone(),
+            has_sce_attribution: false,
             staged_ranges: staged_ranges.get(path).cloned().unwrap_or_default(),
             unstaged_ranges: unstaged_ranges.get(path).cloned().unwrap_or_default(),
         })
@@ -380,6 +381,7 @@ fn write_finalized_checkpoint(
         }
         files.push(serde_json::json!({
             "path": file.path,
+            "has_sce_attribution": file.has_sce_attribution,
             "ranges": ranges,
         }));
     }
@@ -477,10 +479,23 @@ fn staged_sce_attribution_present(repository_root: &Path) -> bool {
         return false;
     };
 
+    checkpoint_has_explicit_sce_attribution(&json)
+}
+
+fn checkpoint_has_explicit_sce_attribution(json: &serde_json::Value) -> bool {
     json.get("files")
         .and_then(serde_json::Value::as_array)
         .is_some_and(|files| {
             files.iter().any(|file| {
+                let has_sce_attribution = file
+                    .get("has_sce_attribution")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+
+                if !has_sce_attribution {
+                    return false;
+                }
+
                 file.get("ranges")
                     .and_then(serde_json::Value::as_array)
                     .is_some_and(|ranges| !ranges.is_empty())
@@ -1196,6 +1211,7 @@ pub struct PendingLineRange {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PendingFileCheckpoint {
     pub path: String,
+    pub has_sce_attribution: bool,
     pub staged_ranges: Vec<PendingLineRange>,
     pub unstaged_ranges: Vec<PendingLineRange>,
 }
@@ -1208,6 +1224,7 @@ pub struct PendingCheckpoint {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FinalizedFileCheckpoint {
     pub path: String,
+    pub has_sce_attribution: bool,
     pub ranges: Vec<PendingLineRange>,
 }
 
@@ -2611,6 +2628,7 @@ pub fn finalize_pre_commit_checkpoint(
 
             Some(FinalizedFileCheckpoint {
                 path: file.path,
+                has_sce_attribution: file.has_sce_attribution,
                 ranges: file.staged_ranges,
             })
         })

@@ -7,24 +7,25 @@ use crate::services::agent_trace::{
 };
 
 use super::{
-    apply_commit_msg_coauthor_policy, finalize_post_commit_trace, finalize_post_rewrite_remap,
-    finalize_pre_commit_checkpoint, finalize_rewrite_trace, process_trace_retry_queue,
-    run_hooks_subcommand, CommitMsgRuntimeState, HookSubcommand, PendingCheckpoint,
-    PendingFileCheckpoint, PendingLineRange, PersistenceErrorClass, PersistenceFailure,
-    PersistenceTarget, PersistenceWriteResult, PostCommitFinalization, PostCommitInput,
-    PostCommitNoOpReason, PostCommitRuntimeState, PostRewriteFinalization, PostRewriteNoOpReason,
-    PostRewriteRuntimeState, PreCommitFinalization, PreCommitNoOpReason, PreCommitRuntimeState,
-    PreCommitTreeAnchors, RetryMetricsSink, RetryProcessingMetric, RewriteMethod,
-    RewriteRemapIngestion, RewriteRemapRequest, RewriteTraceFinalization, RewriteTraceInput,
-    RewriteTraceNoOpReason, TraceEmissionLedger, TraceNote, TraceNotesWriter, TraceRecordStore,
-    TraceRetryQueue, TraceRetryQueueEntry, CANONICAL_SCE_COAUTHOR_TRAILER,
-    POST_COMMIT_PARENT_SHA_METADATA_KEY,
+    apply_commit_msg_coauthor_policy, checkpoint_has_explicit_sce_attribution,
+    finalize_post_commit_trace, finalize_post_rewrite_remap, finalize_pre_commit_checkpoint,
+    finalize_rewrite_trace, process_trace_retry_queue, run_hooks_subcommand, CommitMsgRuntimeState,
+    HookSubcommand, PendingCheckpoint, PendingFileCheckpoint, PendingLineRange,
+    PersistenceErrorClass, PersistenceFailure, PersistenceTarget, PersistenceWriteResult,
+    PostCommitFinalization, PostCommitInput, PostCommitNoOpReason, PostCommitRuntimeState,
+    PostRewriteFinalization, PostRewriteNoOpReason, PostRewriteRuntimeState, PreCommitFinalization,
+    PreCommitNoOpReason, PreCommitRuntimeState, PreCommitTreeAnchors, RetryMetricsSink,
+    RetryProcessingMetric, RewriteMethod, RewriteRemapIngestion, RewriteRemapRequest,
+    RewriteTraceFinalization, RewriteTraceInput, RewriteTraceNoOpReason, TraceEmissionLedger,
+    TraceNote, TraceNotesWriter, TraceRecordStore, TraceRetryQueue, TraceRetryQueueEntry,
+    CANONICAL_SCE_COAUTHOR_TRAILER, POST_COMMIT_PARENT_SHA_METADATA_KEY,
 };
 
 fn sample_pending_checkpoint() -> PendingCheckpoint {
     PendingCheckpoint {
         files: vec![PendingFileCheckpoint {
             path: "src/lib.rs".to_string(),
+            has_sce_attribution: false,
             staged_ranges: vec![PendingLineRange {
                 start_line: 1,
                 end_line: 3,
@@ -712,6 +713,7 @@ fn pre_commit_finalization_uses_only_staged_ranges_and_captures_anchors() {
         files: vec![
             PendingFileCheckpoint {
                 path: "src/keep.rs".to_string(),
+                has_sce_attribution: false,
                 staged_ranges: vec![PendingLineRange {
                     start_line: 10,
                     end_line: 20,
@@ -723,6 +725,7 @@ fn pre_commit_finalization_uses_only_staged_ranges_and_captures_anchors() {
             },
             PendingFileCheckpoint {
                 path: "src/drop.rs".to_string(),
+                has_sce_attribution: true,
                 staged_ranges: vec![],
                 unstaged_ranges: vec![PendingLineRange {
                     start_line: 1,
@@ -742,6 +745,7 @@ fn pre_commit_finalization_uses_only_staged_ranges_and_captures_anchors() {
     assert_eq!(finalized.anchors, anchors);
     assert_eq!(finalized.files.len(), 1);
     assert_eq!(finalized.files[0].path, "src/keep.rs");
+    assert!(!finalized.files[0].has_sce_attribution);
     assert_eq!(finalized.files[0].ranges.len(), 1);
     assert_eq!(
         finalized.files[0].ranges[0],
@@ -750,6 +754,56 @@ fn pre_commit_finalization_uses_only_staged_ranges_and_captures_anchors() {
             end_line: 20
         }
     );
+}
+
+#[test]
+fn checkpoint_has_explicit_sce_attribution_requires_marker() {
+    let payload = serde_json::json!({
+        "version": 1,
+        "anchors": {
+            "index_tree": "index-tree-sha",
+            "head_tree": "head-tree-sha",
+        },
+        "files": [
+            {
+                "path": "src/lib.rs",
+                "has_sce_attribution": false,
+                "ranges": [
+                    {
+                        "start_line": 10,
+                        "end_line": 20,
+                    }
+                ],
+            }
+        ],
+    });
+
+    assert!(!checkpoint_has_explicit_sce_attribution(&payload));
+}
+
+#[test]
+fn checkpoint_has_explicit_sce_attribution_accepts_marked_staged_ranges() {
+    let payload = serde_json::json!({
+        "version": 1,
+        "anchors": {
+            "index_tree": "index-tree-sha",
+            "head_tree": "head-tree-sha",
+        },
+        "files": [
+            {
+                "path": "src/lib.rs",
+                "has_sce_attribution": true,
+                "ranges": [
+                    {
+                        "start_line": 10,
+                        "end_line": 20,
+                    }
+                ],
+            }
+        ],
+    });
+
+    assert!(checkpoint_has_explicit_sce_attribution(&payload));
 }
 
 fn sample_commit_msg_runtime() -> CommitMsgRuntimeState {

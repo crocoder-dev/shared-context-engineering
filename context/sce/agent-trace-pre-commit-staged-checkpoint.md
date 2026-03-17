@@ -33,7 +33,9 @@ Task `agent-trace-attribution-no-git-wrapper` `T04` adds a pre-commit finalizati
   - `head_tree` from `git rev-parse --verify HEAD^{tree}` (optional for repos without `HEAD`).
 - Finalized checkpoint handoff artifact:
   - Persisted as JSON at Git-resolved path `$(git rev-parse --git-path sce/pre-commit-checkpoint.json)`.
-  - Payload shape: `version`, `anchors`, and staged-only `files[].ranges[]`.
+  - Payload shape: `version`, `anchors`, and staged-only `files[]` entries with `path`, `has_sce_attribution`, and `ranges[]`.
+  - Downstream `commit-msg` gating only treats a file as SCE-attributed when `has_sce_attribution = true` and `ranges[]` is non-empty.
+  - Current generic git-diff collection still defaults `has_sce_attribution` to `false`; a separate attribution-aware producer must set the marker when staged ranges are proven to come from SCE contribution.
   - Runtime remains fail-open: checkpoint collection/persist failures return deterministic diagnostics without blocking commit flow.
 
 ## Verification coverage

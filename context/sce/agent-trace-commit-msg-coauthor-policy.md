@@ -17,7 +17,7 @@
 - Runtime gate source mapping:
   - `sce_disabled` resolves from `SCE_DISABLED` truthy evaluation.
   - `sce_coauthor_enabled` resolves from `SCE_COAUTHOR_ENABLED` with enabled-by-default semantics.
-  - `has_staged_sce_attribution` resolves from staged pre-commit checkpoint artifact content (`files[].ranges[]` non-empty).
+  - `has_staged_sce_attribution` resolves from staged pre-commit checkpoint artifact content only when at least one file has both non-empty `ranges[]` and `has_sce_attribution = true`.
 - When all gate conditions pass, output commit message MUST contain exactly one canonical SCE trailer.
 - When any gate condition fails, commit message is returned unchanged.
 
@@ -28,6 +28,8 @@
 - Existing trailing newline is preserved when present.
 - Commit-msg runtime writes the file only when policy gates pass and transformed content differs from original content.
 - Human author/committer identity is not rewritten; only commit message trailer content is affected.
+- Missing or `false` `has_sce_attribution` markers fail the gate even when staged ranges are present, so generic human-only staged diffs do not trigger trailer insertion.
+- The positive path remains explicit-marker driven: commit-msg appends the canonical trailer only when an attribution-aware checkpoint producer marks staged ranges as SCE-attributed.
 
 ## Verification evidence
 - `cargo fmt --manifest-path cli/Cargo.toml -- --check`
