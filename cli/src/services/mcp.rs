@@ -6,8 +6,8 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
+use rmcp::schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::services::local_db;
@@ -194,6 +194,70 @@ pub enum SmartCacheReadResponse {
         offset: usize,
         limit: usize,
     },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+struct ReadFileToolResponse {
+    repository_root: String,
+    path: String,
+    response_type: String,
+    content_hash: String,
+    line_count: usize,
+    byte_count: usize,
+    estimated_tokens: u64,
+    saved_tokens: u64,
+    session_saved_tokens: u64,
+    cumulative_saved_tokens: u64,
+    cache_hit: bool,
+    first_read_in_session: bool,
+    force: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unified_diff: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    changed_line_numbers: Option<Vec<usize>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    marker: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    offset: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_lines: Option<usize>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+struct ReadFilesToolResponse {
+    repository_root: String,
+    outputs: Vec<ReadFileToolResponse>,
+    rendered_response: String,
+    session_saved_tokens: u64,
+    cumulative_saved_tokens: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+struct CacheStatusToolResponse {
+    repository_root: String,
+    repository_db_path: String,
+    tracked_file_count: u64,
+    session_saved_tokens: u64,
+    cumulative_saved_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_cleared_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+struct CacheClearToolResponse {
+    repository_root: String,
+    repository_db_path: String,
+    cleared_file_versions: u64,
+    cleared_session_reads: u64,
+    tracked_file_count: u64,
+    session_saved_tokens: u64,
+    cumulative_saved_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_cleared_at: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -1496,7 +1560,6 @@ pub async fn run_mcp_server() -> Result<()> {
     use rmcp::{
         handler::server::{tool::ToolRouter, wrapper::Parameters},
         model::ServerInfo,
-        schemars::JsonSchema,
         service::ServiceExt,
         tool, tool_router,
         transport::io::stdio,
@@ -1561,7 +1624,7 @@ pub async fn run_mcp_server() -> Result<()> {
         async fn read_file(
             &self,
             params: Parameters<ReadFileParams>,
-        ) -> Result<Json<serde_json::Value>, rmcp::ErrorData> {
+        ) -> Result<Json<ReadFileToolResponse>, rmcp::ErrorData> {
             let params = params.0;
             let cwd = std::env::current_dir().map_err(|e| {
                 rmcp::ErrorData::internal_error("current_dir_error", Some(e.to_string().into()))
@@ -1594,7 +1657,7 @@ pub async fn run_mcp_server() -> Result<()> {
         async fn read_files(
             &self,
             params: Parameters<ReadFilesParams>,
-        ) -> Result<Json<serde_json::Value>, rmcp::ErrorData> {
+        ) -> Result<Json<ReadFilesToolResponse>, rmcp::ErrorData> {
             let params = params.0;
             if params.paths.is_empty() {
                 return Err(rmcp::ErrorData::invalid_params(
@@ -1634,7 +1697,7 @@ pub async fn run_mcp_server() -> Result<()> {
         async fn cache_status(
             &self,
             params: Parameters<CacheStatusParams>,
-        ) -> Result<Json<serde_json::Value>, rmcp::ErrorData> {
+        ) -> Result<Json<CacheStatusToolResponse>, rmcp::ErrorData> {
             let params = params.0;
             let cwd = std::env::current_dir().map_err(|e| {
                 rmcp::ErrorData::internal_error("current_dir_error", Some(e.to_string().into()))
@@ -1663,7 +1726,7 @@ pub async fn run_mcp_server() -> Result<()> {
         async fn cache_clear(
             &self,
             _params: Parameters<CacheClearParams>,
-        ) -> Result<Json<serde_json::Value>, rmcp::ErrorData> {
+        ) -> Result<Json<CacheClearToolResponse>, rmcp::ErrorData> {
             let cwd = std::env::current_dir().map_err(|e| {
                 rmcp::ErrorData::internal_error("current_dir_error", Some(e.to_string().into()))
             })?;
@@ -1706,7 +1769,7 @@ pub async fn run_mcp_server() -> Result<()> {
     Ok(())
 }
 
-fn render_read_file_response(outcome: &SmartCacheReadOutcome) -> serde_json::Value {
+fn render_read_file_response(outcome: &SmartCacheReadOutcome) -> ReadFileToolResponse {
     let response_type = match &outcome.response {
         SmartCacheReadResponse::Full { .. } => "full",
         SmartCacheReadResponse::Diff { .. } => "diff",
@@ -1715,32 +1778,39 @@ fn render_read_file_response(outcome: &SmartCacheReadOutcome) -> serde_json::Val
         SmartCacheReadResponse::PartialUnchanged { .. } => "partial_unchanged",
     };
 
-    let mut result = json!({
-        "repository_root": outcome.repository_root.display().to_string(),
-        "path": outcome.relative_path.display().to_string(),
-        "response_type": response_type,
-        "content_hash": outcome.content_hash,
-        "line_count": outcome.line_count,
-        "byte_count": outcome.byte_count,
-        "estimated_tokens": outcome.estimated_tokens,
-        "saved_tokens": outcome.saved_tokens,
-        "session_saved_tokens": outcome.session_saved_tokens,
-        "cumulative_saved_tokens": outcome.cumulative_saved_tokens,
-        "cache_hit": outcome.cache_hit,
-        "first_read_in_session": outcome.first_read_in_session,
-        "force": outcome.force,
-    });
+    let mut result = ReadFileToolResponse {
+        repository_root: outcome.repository_root.display().to_string(),
+        path: outcome.relative_path.display().to_string(),
+        response_type: response_type.to_string(),
+        content_hash: outcome.content_hash.clone(),
+        line_count: outcome.line_count,
+        byte_count: outcome.byte_count,
+        estimated_tokens: outcome.estimated_tokens,
+        saved_tokens: outcome.saved_tokens,
+        session_saved_tokens: outcome.session_saved_tokens,
+        cumulative_saved_tokens: outcome.cumulative_saved_tokens,
+        cache_hit: outcome.cache_hit,
+        first_read_in_session: outcome.first_read_in_session,
+        force: outcome.force,
+        content: None,
+        unified_diff: None,
+        changed_line_numbers: None,
+        marker: None,
+        offset: None,
+        limit: None,
+        total_lines: None,
+    };
 
     match &outcome.response {
         SmartCacheReadResponse::Full { content } => {
-            result["content"] = json!(content);
+            result.content = Some(content.clone());
         }
         SmartCacheReadResponse::Diff {
             unified_diff,
             changed_line_numbers,
         } => {
-            result["unified_diff"] = json!(unified_diff);
-            result["changed_line_numbers"] = json!(changed_line_numbers);
+            result.unified_diff = Some(unified_diff.clone());
+            result.changed_line_numbers = Some(changed_line_numbers.clone());
         }
         SmartCacheReadResponse::Partial {
             content,
@@ -1748,73 +1818,77 @@ fn render_read_file_response(outcome: &SmartCacheReadOutcome) -> serde_json::Val
             limit,
             total_lines,
         } => {
-            result["content"] = json!(content);
-            result["offset"] = json!(offset);
-            result["limit"] = json!(limit);
-            result["total_lines"] = json!(total_lines);
+            result.content = Some(content.clone());
+            result.offset = Some(*offset);
+            result.limit = Some(*limit);
+            result.total_lines = Some(*total_lines);
         }
         SmartCacheReadResponse::Unchanged { marker } => {
-            result["marker"] = json!(marker);
+            result.marker = Some(marker.clone());
         }
         SmartCacheReadResponse::PartialUnchanged {
             marker,
             offset,
             limit,
         } => {
-            result["marker"] = json!(marker);
-            result["offset"] = json!(offset);
-            result["limit"] = json!(limit);
+            result.marker = Some(marker.clone());
+            result.offset = Some(*offset);
+            result.limit = Some(*limit);
         }
     }
 
     result
 }
 
-fn render_read_files_response(outcome: &SmartCacheBatchReadOutcome) -> serde_json::Value {
-    let outputs: Vec<serde_json::Value> = outcome
+fn render_read_files_response(outcome: &SmartCacheBatchReadOutcome) -> ReadFilesToolResponse {
+    let outputs = outcome
         .outputs
         .iter()
         .map(render_read_file_response)
         .collect();
 
-    json!({
-        "repository_root": outcome.repository_root.display().to_string(),
-        "outputs": outputs,
-        "rendered_response": outcome.rendered_response,
-        "session_saved_tokens": outcome.session_saved_tokens,
-        "cumulative_saved_tokens": outcome.cumulative_saved_tokens,
-    })
+    ReadFilesToolResponse {
+        repository_root: outcome.repository_root.display().to_string(),
+        outputs,
+        rendered_response: outcome.rendered_response.clone(),
+        session_saved_tokens: outcome.session_saved_tokens,
+        cumulative_saved_tokens: outcome.cumulative_saved_tokens,
+    }
 }
 
-fn render_cache_status_response(outcome: &SmartCacheStatusOutcome) -> serde_json::Value {
-    json!({
-        "repository_root": outcome.repository_root.display().to_string(),
-        "repository_db_path": outcome.repository_db_path.display().to_string(),
-        "tracked_file_count": outcome.tracked_file_count,
-        "session_saved_tokens": outcome.session_saved_tokens,
-        "cumulative_saved_tokens": outcome.cumulative_saved_tokens,
-        "last_cleared_at": outcome.last_cleared_at,
-    })
+fn render_cache_status_response(outcome: &SmartCacheStatusOutcome) -> CacheStatusToolResponse {
+    CacheStatusToolResponse {
+        repository_root: outcome.repository_root.display().to_string(),
+        repository_db_path: outcome.repository_db_path.display().to_string(),
+        tracked_file_count: outcome.tracked_file_count,
+        session_saved_tokens: outcome.session_saved_tokens,
+        cumulative_saved_tokens: outcome.cumulative_saved_tokens,
+        last_cleared_at: outcome.last_cleared_at.clone(),
+    }
 }
 
-fn render_cache_clear_response(outcome: &SmartCacheClearOutcome) -> serde_json::Value {
-    json!({
-        "repository_root": outcome.repository_root.display().to_string(),
-        "repository_db_path": outcome.repository_db_path.display().to_string(),
-        "cleared_file_versions": outcome.cleared_file_versions,
-        "cleared_session_reads": outcome.cleared_session_reads,
-        "tracked_file_count": outcome.tracked_file_count,
-        "session_saved_tokens": outcome.session_saved_tokens,
-        "cumulative_saved_tokens": outcome.cumulative_saved_tokens,
-        "last_cleared_at": outcome.last_cleared_at,
-    })
+fn render_cache_clear_response(outcome: &SmartCacheClearOutcome) -> CacheClearToolResponse {
+    CacheClearToolResponse {
+        repository_root: outcome.repository_root.display().to_string(),
+        repository_db_path: outcome.repository_db_path.display().to_string(),
+        cleared_file_versions: outcome.cleared_file_versions,
+        cleared_session_reads: outcome.cleared_session_reads,
+        tracked_file_count: outcome.tracked_file_count,
+        session_saved_tokens: outcome.session_saved_tokens,
+        cumulative_saved_tokens: outcome.cumulative_saved_tokens,
+        last_cleared_at: outcome.last_cleared_at.clone(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
+    use rmcp::schemars::schema_for;
 
-    use super::NAME;
+    use super::{
+        CacheClearToolResponse, CacheStatusToolResponse, ReadFileToolResponse,
+        ReadFilesToolResponse, NAME,
+    };
 
     #[test]
     fn mcp_server_name_is_mcp() {
@@ -1861,5 +1935,18 @@ mod tests {
         assert_eq!(paths1.repository_hash, paths2.repository_hash);
         assert_eq!(paths1.repository_db_path, paths2.repository_db_path);
         Ok(())
+    }
+
+    #[test]
+    fn mcp_tool_output_schemas_are_root_objects() {
+        for schema in [
+            schema_for!(ReadFileToolResponse),
+            schema_for!(ReadFilesToolResponse),
+            schema_for!(CacheStatusToolResponse),
+            schema_for!(CacheClearToolResponse),
+        ] {
+            let schema_json = serde_json::to_value(&schema).expect("schema serializes to JSON");
+            assert_eq!(schema_json["type"].as_str(), Some("object"));
+        }
     }
 }
