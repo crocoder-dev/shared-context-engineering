@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "presets": [
+    {
+      "id": "forbid-git-all",
+      "match": {
+        "argv_prefixes": [["git"]]
+      },
+      "message": "This repository blocks `git` via SCE bash-tool policy. Use `jj` or the repo-approved alternative instead."
+    },
+    {
+      "id": "forbid-git-commit",
+      "match": {
+        "argv_prefixes": [["git", "add"], ["git", "commit"], ["git", "push"]]
+      },
+      "message": "This repository blocks direct `git add`, `git commit`, and `git push`. Use `jj` instead."
+    },
+    {
+      "id": "use-pnpm-over-npm",
+      "match": {
+        "argv_prefixes": [["npm"]]
+      },
+      "message": "This repository prefers `pnpm` over `npm`. Use `pnpm` instead."
+    },
+    {
+      "id": "use-bun-over-npm",
+      "match": {
+        "argv_prefixes": [["npm"]]
+      },
+      "message": "This repository prefers `bun` over `npm`. Use `bun` instead."
+    },
+    {
+      "id": "use-nix-flake-over-cargo",
+      "match": {
+        "argv_prefixes": [["cargo"]]
+      },
+      "message": "This repository prefers Nix flake entrypoints over direct `cargo` commands. Run Cargo through the documented `nix develop` / flake workflows instead."
+    }
+  ],
+  "mutually_exclusive": [["use-pnpm-over-npm", "use-bun-over-npm"]],
+  "redundancy_warnings": [
+    {
+      "if_enabled": ["forbid-git-all", "forbid-git-commit"],
+      "warning": "Preset 'forbid-git-commit' is redundant when 'forbid-git-all' is also enabled."
+    }
+  ]
+}

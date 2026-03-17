@@ -54,8 +54,10 @@
 - Treat `nix run .#pkl-check-generated` and `nix flake check` as the lightweight post-task verification baseline and run both after each completed task.
 - Do not run `evals/` test suites autonomously during plan-task execution; run them only when the user explicitly requests eval coverage.
 - For non-destructive verification during development, run `nix develop -c pkl eval -m context/tmp/t04-generated config/pkl/generate.pkl` and inspect emitted paths under `context/tmp/`.
-- Keep `output.files` limited to generated-owned paths only (`config/{opencode_root}/{agent,command,skills,lib}` and `config/{claude_root}/{agents,commands,skills,lib}` where roots map to `.opencode` and `.claude`).
+- Keep `output.files` limited to generated-owned paths only (`config/{opencode_root}/{agent,command,skills,lib,plugins}`, generated `config/{opencode_root}/package.json`, and `config/{claude_root}/{agents,commands,skills,lib}` where roots map to `.opencode` and `.claude`).
 - Keep the shared drift library source marker-free in `config/.opencode/lib/drift-collectors.js` so generated `lib/drift-collectors.js` outputs stay behavior-only and deterministic across both targets.
+- For OpenCode pre-execution tool policy hooks, keep the plugin entrypoint thin (`plugins/*.js`) and move normalization, config loading, and policy matching logic into `lib/*.js` so manual and automated profiles regenerate identical enforcement behavior from one canonical source.
+- For Claude pre-execution bash-policy enforcement, keep `.claude/settings.json` limited to hook registration and path wiring, keep the command hook thin under `.claude/hooks/`, and reuse the same shared `lib/bash-policy-runtime.js` + `lib/bash-policy-presets.json` logic so allow/block decisions and denial text stay parity-aligned with OpenCode.
 
 ## Internal subagent parity mapping
 

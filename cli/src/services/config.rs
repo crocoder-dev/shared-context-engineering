@@ -1,6 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
 
 use anyhow::{anyhow, bail, Context, Result};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::services::output_format::OutputFormat;
@@ -8,6 +12,7 @@ use crate::services::output_format::OutputFormat;
 pub const NAME: &str = "config";
 
 const DEFAULT_TIMEOUT_MS: u64 = 30000;
+const PRECEDENCE_DESCRIPTION: &str = "flags > env > config file > defaults";
 const WORKOS_CLIENT_ID_ENV: &str = "WORKOS_CLIENT_ID";
 const WORKOS_CLIENT_ID_BAKED_DEFAULT: &str = "client_sce_default";
 const WORKOS_CLIENT_ID_KEY: AuthConfigKeySpec = AuthConfigKeySpec {
@@ -148,6 +153,8 @@ struct RuntimeConfig {
     log_level: ResolvedValue<LogLevel>,
     timeout_ms: ResolvedValue<u64>,
     workos_client_id: ResolvedOptionalValue<String>,
+    bash_policies: ResolvedOptionalValue<BashPolicyConfig>,
+    validation_warnings: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -166,12 +173,111 @@ struct FileConfig {
     log_level: Option<FileConfigValue<LogLevel>>,
     timeout_ms: Option<FileConfigValue<u64>>,
     workos_client_id: Option<FileConfigValue<String>>,
+    bash_policy_presets: Option<FileConfigValue<Vec<String>>>,
+    bash_policy_custom: Option<FileConfigValue<Vec<CustomBashPolicyEntry>>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FileConfigValue<T> {
     value: T,
     source: ConfigPathSource,
+}
+
+type ParsedBashPolicyConfig = (
+    Option<FileConfigValue<Vec<String>>>,
+    Option<FileConfigValue<Vec<CustomBashPolicyEntry>>>,
+);
+
+static BUILTIN_BASH_POLICY_CATALOG: OnceLock<BuiltinBashPolicyCatalog> = OnceLock::new();
+
+const BASH_POLICY_PRESET_CATALOG_JSON: &str =
+    include_str!("../../../config/pkl/data/bash-policy-presets.json");
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BashPolicyConfig {
+    presets: Vec<String>,
+    custom: Vec<CustomBashPolicyEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BuiltinBashPolicyCatalog {
+    presets: Vec<BuiltinBashPolicyPreset>,
+    mutually_exclusive: Vec<Vec<String>>,
+    redundancy_warnings: Vec<BuiltinBashPolicyRedundancyWarning>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BuiltinBashPolicyPreset {
+    id: String,
+    #[serde(rename = "match")]
+    matcher: BuiltinBashPolicyMatcher,
+    message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BuiltinBashPolicyMatcher {
+    argv_prefixes: Vec<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BuiltinBashPolicyRedundancyWarning {
+    if_enabled: Vec<String>,
+    warning: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CustomBashPolicyEntry {
+    id: String,
+    argv_prefix: Vec<String>,
+    message: String,
+}
+
+impl CustomBashPolicyEntry {
+    fn json_value(&self) -> Value {
+        json!({
+            "id": self.id,
+            "match": {
+                "argv_prefix": self.argv_prefix,
+            },
+            "message": self.message,
+        })
+    }
+
+    fn text_summary(&self) -> String {
+        format!(
+            "{} => [{}] :: {}",
+            self.id,
+            self.argv_prefix.join(" "),
+            self.message
+        )
+    }
+}
+
+fn builtin_bash_policy_catalog() -> &'static BuiltinBashPolicyCatalog {
+    BUILTIN_BASH_POLICY_CATALOG.get_or_init(|| {
+        let catalog: BuiltinBashPolicyCatalog =
+            serde_json::from_str(BASH_POLICY_PRESET_CATALOG_JSON)
+                .expect("bash policy preset catalog JSON must remain valid");
+        debug_assert!(catalog.presets.iter().all(|preset| !preset.id.is_empty()
+            && !preset.message.is_empty()
+            && !preset.matcher.argv_prefixes.is_empty()));
+        catalog
+    })
+}
+
+fn builtin_bash_policy_preset_ids() -> Vec<&'static str> {
+    builtin_bash_policy_catalog()
+        .presets
+        .iter()
+        .map(|preset| preset.id.as_str())
+        .collect()
+}
+
+fn is_builtin_bash_policy_preset_id(id: &str) -> bool {
+    builtin_bash_policy_catalog()
+        .presets
+        .iter()
+        .any(|preset| preset.id == id)
 }
 
 pub fn run_config_subcommand(subcommand: ConfigSubcommand) -> Result<String> {
@@ -272,6 +378,8 @@ where
         log_level: None,
         timeout_ms: None,
         workos_client_id: None,
+        bash_policy_presets: None,
+        bash_policy_custom: None,
     };
     for loaded_path in &loaded_config_paths {
         let raw = read_file(&loaded_path.path)?;
@@ -284,6 +392,12 @@ where
         }
         if let Some(workos_client_id) = layer.workos_client_id {
             file_config.workos_client_id = Some(workos_client_id);
+        }
+        if let Some(bash_policy_presets) = layer.bash_policy_presets {
+            file_config.bash_policy_presets = Some(bash_policy_presets);
+        }
+        if let Some(bash_policy_custom) = layer.bash_policy_custom {
+            file_config.bash_policy_custom = Some(bash_policy_custom);
         }
     }
 
@@ -342,12 +456,66 @@ where
         &env_lookup,
     );
 
+    let resolved_bash_policies = resolve_bash_policy_config(
+        file_config.bash_policy_presets.as_ref(),
+        file_config.bash_policy_custom.as_ref(),
+    );
+    let validation_warnings = build_validation_warnings(&resolved_bash_policies);
+
     Ok(RuntimeConfig {
         loaded_config_paths,
         log_level: resolved_log_level,
         timeout_ms: resolved_timeout_ms,
         workos_client_id: resolved_workos_client_id,
+        bash_policies: resolved_bash_policies,
+        validation_warnings,
     })
+}
+
+fn resolve_bash_policy_config(
+    presets: Option<&FileConfigValue<Vec<String>>>,
+    custom: Option<&FileConfigValue<Vec<CustomBashPolicyEntry>>>,
+) -> ResolvedOptionalValue<BashPolicyConfig> {
+    let resolved_presets = presets.map(|value| value.value.clone());
+    let resolved_custom = custom.map(|value| value.value.clone());
+    let source = custom
+        .map(|value| value.source)
+        .or_else(|| presets.map(|value| value.source));
+
+    if resolved_presets.as_ref().is_none_or(Vec::is_empty)
+        && resolved_custom.as_ref().is_none_or(Vec::is_empty)
+    {
+        return ResolvedOptionalValue {
+            value: None,
+            source: None,
+        };
+    }
+
+    ResolvedOptionalValue {
+        value: Some(BashPolicyConfig {
+            presets: resolved_presets.unwrap_or_default(),
+            custom: resolved_custom.unwrap_or_default(),
+        }),
+        source: source.map(ValueSource::ConfigFile),
+    }
+}
+
+fn build_validation_warnings(value: &ResolvedOptionalValue<BashPolicyConfig>) -> Vec<String> {
+    let Some(config) = value.value.as_ref() else {
+        return Vec::new();
+    };
+
+    builtin_bash_policy_catalog()
+        .redundancy_warnings
+        .iter()
+        .filter(|warning| {
+            warning
+                .if_enabled
+                .iter()
+                .all(|preset| config.presets.iter().any(|enabled| enabled == preset))
+        })
+        .map(|warning| warning.warning.clone())
+        .collect()
 }
 
 fn resolve_optional_auth_config_value<FEnv>(
@@ -497,9 +665,13 @@ fn parse_file_config(raw: &str, path: &Path, source: ConfigPathSource) -> Result
     })?;
 
     for key in object.keys() {
-        if key != "log_level" && key != "timeout_ms" && key != WORKOS_CLIENT_ID_KEY.config_key {
+        if key != "log_level"
+            && key != "timeout_ms"
+            && key != WORKOS_CLIENT_ID_KEY.config_key
+            && key != "policies"
+        {
             bail!(
-                "Config file '{}' contains unknown key '{}'. Allowed keys: log_level, timeout_ms, {}.",
+                "Config file '{}' contains unknown key '{}'. Allowed keys: log_level, timeout_ms, {}, policies.",
                 path.display(),
                 key,
                 WORKOS_CLIENT_ID_KEY.config_key
@@ -540,12 +712,323 @@ fn parse_file_config(raw: &str, path: &Path, source: ConfigPathSource) -> Result
     };
 
     let workos_client_id = parse_optional_string_key(object, path, source, WORKOS_CLIENT_ID_KEY)?;
+    let (bash_policy_presets, bash_policy_custom) = parse_bash_policy_config(object, path, source)?;
 
     Ok(FileConfig {
         log_level,
         timeout_ms,
         workos_client_id,
+        bash_policy_presets,
+        bash_policy_custom,
     })
+}
+
+fn parse_bash_policy_config(
+    object: &serde_json::Map<String, Value>,
+    path: &Path,
+    source: ConfigPathSource,
+) -> Result<ParsedBashPolicyConfig> {
+    let Some(policies_value) = object.get("policies") else {
+        return Ok((None, None));
+    };
+
+    let policies_object = policies_value.as_object().with_context(|| {
+        format!(
+            "Config key 'policies' in '{}' must be an object.",
+            path.display()
+        )
+    })?;
+
+    for key in policies_object.keys() {
+        if key != "bash" {
+            bail!(
+                "Config key 'policies' in '{}' contains unknown key '{}'. Allowed keys: bash.",
+                path.display(),
+                key
+            );
+        }
+    }
+
+    let Some(bash_value) = policies_object.get("bash") else {
+        return Ok((None, None));
+    };
+
+    let bash_object = bash_value.as_object().with_context(|| {
+        format!(
+            "Config key 'policies.bash' in '{}' must be an object.",
+            path.display()
+        )
+    })?;
+
+    for key in bash_object.keys() {
+        if key != "presets" && key != "custom" {
+            bail!(
+                "Config key 'policies.bash' in '{}' contains unknown key '{}'. Allowed keys: presets, custom.",
+                path.display(),
+                key
+            );
+        }
+    }
+
+    let presets = match bash_object.get("presets") {
+        Some(value) => Some(FileConfigValue {
+            value: parse_bash_policy_presets(value, path)?,
+            source,
+        }),
+        None => None,
+    };
+
+    let custom = match bash_object.get("custom") {
+        Some(value) => Some(FileConfigValue {
+            value: parse_custom_bash_policies(value, path)?,
+            source,
+        }),
+        None => None,
+    };
+
+    Ok((presets, custom))
+}
+
+fn parse_bash_policy_presets(value: &Value, path: &Path) -> Result<Vec<String>> {
+    let items = value.as_array().with_context(|| {
+        format!(
+            "Config key 'policies.bash.presets' in '{}' must be an array.",
+            path.display()
+        )
+    })?;
+
+    let mut presets = Vec::with_capacity(items.len());
+    let builtin_preset_ids = builtin_bash_policy_preset_ids();
+    for item in items {
+        let preset = item.as_str().with_context(|| {
+            format!(
+                "Config key 'policies.bash.presets' in '{}' must contain only strings.",
+                path.display()
+            )
+        })?;
+        if !builtin_preset_ids.contains(&preset) {
+            bail!(
+                "Config key 'policies.bash.presets' in '{}' contains unknown preset '{}'. Allowed presets: {}.",
+                path.display(),
+                preset,
+                builtin_preset_ids.join(", ")
+            );
+        }
+        if presets.iter().any(|existing| existing == preset) {
+            bail!(
+                "Config key 'policies.bash.presets' in '{}' contains duplicate preset '{}'.",
+                path.display(),
+                preset
+            );
+        }
+        presets.push(preset.to_string());
+    }
+
+    for conflict_group in &builtin_bash_policy_catalog().mutually_exclusive {
+        if conflict_group
+            .iter()
+            .all(|preset| presets.iter().any(|enabled| enabled == preset))
+        {
+            let joined = conflict_group
+                .iter()
+                .map(|preset| format!("'{preset}'"))
+                .collect::<Vec<_>>()
+                .join(" and ");
+            bail!(
+                "Config key 'policies.bash.presets' in '{}' cannot enable both {}.",
+                path.display(),
+                joined
+            );
+        }
+    }
+
+    Ok(presets)
+}
+
+fn parse_custom_bash_policies(value: &Value, path: &Path) -> Result<Vec<CustomBashPolicyEntry>> {
+    let items = value.as_array().with_context(|| {
+        format!(
+            "Config key 'policies.bash.custom' in '{}' must be an array.",
+            path.display()
+        )
+    })?;
+
+    let mut policies = Vec::with_capacity(items.len());
+    let mut argv_prefixes: Vec<Vec<String>> = Vec::new();
+    for item in items {
+        let policy = parse_custom_bash_policy_entry(item, path)?;
+        if policies
+            .iter()
+            .any(|existing: &CustomBashPolicyEntry| existing.id == policy.id)
+        {
+            bail!(
+                "Config key 'policies.bash.custom' in '{}' contains duplicate id '{}'.",
+                path.display(),
+                policy.id
+            );
+        }
+
+        if argv_prefixes
+            .iter()
+            .any(|existing| existing == &policy.argv_prefix)
+        {
+            bail!(
+                "Config key 'policies.bash.custom' in '{}' contains duplicate argv_prefix [{}].",
+                path.display(),
+                policy.argv_prefix.join(" ")
+            );
+        }
+        argv_prefixes.push(policy.argv_prefix.clone());
+        policies.push(policy);
+    }
+
+    Ok(policies)
+}
+
+fn parse_custom_bash_policy_entry(item: &Value, path: &Path) -> Result<CustomBashPolicyEntry> {
+    let object = item.as_object().with_context(|| {
+        format!(
+            "Config key 'policies.bash.custom' in '{}' must contain only objects.",
+            path.display()
+        )
+    })?;
+
+    validate_custom_bash_policy_fields(object, path)?;
+
+    let id = object
+        .get("id")
+        .and_then(Value::as_str)
+        .with_context(|| {
+            format!(
+                "Each 'policies.bash.custom' entry in '{}' must include string field 'id'.",
+                path.display()
+            )
+        })?
+        .to_string();
+    if is_builtin_bash_policy_preset_id(&id) {
+        bail!(
+            "Custom bash policy id '{}' in '{}' collides with a built-in preset id.",
+            id,
+            path.display()
+        );
+    }
+
+    let message = object
+        .get("message")
+        .and_then(Value::as_str)
+        .with_context(|| {
+            format!(
+                "Custom bash policy '{}' in '{}' must include string field 'message'.",
+                id,
+                path.display()
+            )
+        })?;
+    if message.is_empty() {
+        bail!(
+            "Custom bash policy '{}' in '{}' must use a non-empty 'message'.",
+            id,
+            path.display()
+        );
+    }
+
+    let argv_prefix = parse_custom_bash_policy_match(&id, object, path)?;
+
+    Ok(CustomBashPolicyEntry {
+        id,
+        argv_prefix,
+        message: message.to_string(),
+    })
+}
+
+fn validate_custom_bash_policy_fields(
+    object: &serde_json::Map<String, Value>,
+    path: &Path,
+) -> Result<()> {
+    for key in object.keys() {
+        if key != "id" && key != "match" && key != "message" {
+            bail!(
+                "Config key 'policies.bash.custom' in '{}' contains unknown field '{}'. Allowed fields: id, match, message.",
+                path.display(),
+                key
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_custom_bash_policy_match(
+    id: &str,
+    object: &serde_json::Map<String, Value>,
+    path: &Path,
+) -> Result<Vec<String>> {
+    let match_object = object
+        .get("match")
+        .and_then(Value::as_object)
+        .with_context(|| {
+            format!(
+                "Custom bash policy '{}' in '{}' must include object field 'match'.",
+                id,
+                path.display()
+            )
+        })?;
+    for key in match_object.keys() {
+        if key != "argv_prefix" {
+            bail!(
+                "Custom bash policy '{}' in '{}' contains unknown 'match' field '{}'. Allowed fields: argv_prefix.",
+                id,
+                path.display(),
+                key
+            );
+        }
+    }
+
+    let argv_prefix_values = match_object
+        .get("argv_prefix")
+        .and_then(Value::as_array)
+        .with_context(|| {
+            format!(
+                "Custom bash policy '{}' in '{}' must include array field 'match.argv_prefix'.",
+                id,
+                path.display()
+            )
+        })?;
+    if argv_prefix_values.is_empty() {
+        bail!(
+            "Custom bash policy '{}' in '{}' must use a non-empty 'match.argv_prefix'.",
+            id,
+            path.display()
+        );
+    }
+
+    parse_custom_bash_policy_argv_prefix(id, argv_prefix_values, path)
+}
+
+fn parse_custom_bash_policy_argv_prefix(
+    id: &str,
+    argv_prefix_values: &[Value],
+    path: &Path,
+) -> Result<Vec<String>> {
+    let mut argv_prefix = Vec::with_capacity(argv_prefix_values.len());
+    for token in argv_prefix_values {
+        let token = token.as_str().with_context(|| {
+            format!(
+                "Custom bash policy '{}' in '{}' must use only string argv_prefix tokens.",
+                id,
+                path.display()
+            )
+        })?;
+        if token.is_empty() {
+            bail!(
+                "Custom bash policy '{}' in '{}' cannot use empty argv_prefix tokens.",
+                id,
+                path.display()
+            );
+        }
+        argv_prefix.push(token.to_string());
+    }
+
+    Ok(argv_prefix)
 }
 
 fn parse_optional_string_key(
@@ -577,7 +1060,7 @@ fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> S
         ReportFormat::Text => {
             let lines = [
                 "SCE config: resolved".to_string(),
-                "Precedence: flags > env > config file > defaults".to_string(),
+                format!("Precedence: {PRECEDENCE_DESCRIPTION}"),
                 format_config_paths_text(runtime),
                 format_resolved_value_text(
                     "log_level",
@@ -593,6 +1076,8 @@ fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> S
                     WORKOS_CLIENT_ID_KEY,
                     &runtime.workos_client_id,
                 ),
+                format_bash_policies_text(&runtime.bash_policies),
+                format_validation_warnings_text(&runtime.validation_warnings),
             ];
             lines.join("\n")
         }
@@ -601,7 +1086,7 @@ fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> S
                 "status": "ok",
                 "result": {
                     "command": "config_show",
-                    "precedence": "flags > env > config file > defaults",
+                    "precedence": PRECEDENCE_DESCRIPTION,
                     "config_paths": format_config_paths_json(runtime),
                     "resolved": {
                         "log_level": {
@@ -614,8 +1099,12 @@ fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> S
                             "source": runtime.timeout_ms.source.as_str(),
                             "config_source": runtime.timeout_ms.source.config_source().map(ConfigPathSource::as_str),
                         },
-                        "workos_client_id": format_optional_auth_resolved_value_json(WORKOS_CLIENT_ID_KEY, &runtime.workos_client_id)
-                    }
+                        "workos_client_id": format_optional_auth_resolved_value_json(WORKOS_CLIENT_ID_KEY, &runtime.workos_client_id),
+                        "policies": {
+                            "bash": format_bash_policies_json(&runtime.bash_policies),
+                        }
+                    },
+                    "warnings": runtime.validation_warnings,
                 }
             });
             serde_json::to_string_pretty(&payload).expect("config show payload should serialize")
@@ -628,9 +1117,10 @@ fn format_validate_output(runtime: &RuntimeConfig, report_format: ReportFormat) 
         ReportFormat::Text => {
             let lines = [
                 "SCE config validation: valid".to_string(),
-                "Precedence: flags > env > config file > defaults".to_string(),
+                format!("Precedence: {PRECEDENCE_DESCRIPTION}"),
                 format_config_paths_text(runtime),
                 "Validation issues: none".to_string(),
+                format_validation_warnings_text(&runtime.validation_warnings),
                 format!(
                     "Resolved auth precedence: {}",
                     WORKOS_CLIENT_ID_KEY.precedence_description()
@@ -639,6 +1129,7 @@ fn format_validate_output(runtime: &RuntimeConfig, report_format: ReportFormat) 
                     WORKOS_CLIENT_ID_KEY,
                     &runtime.workos_client_id,
                 ),
+                format_bash_policies_text(&runtime.bash_policies),
             ];
             lines.join("\n")
         }
@@ -648,11 +1139,15 @@ fn format_validate_output(runtime: &RuntimeConfig, report_format: ReportFormat) 
                 "result": {
                     "command": "config_validate",
                     "valid": true,
-                    "precedence": "flags > env > config file > defaults",
+                    "precedence": PRECEDENCE_DESCRIPTION,
                     "config_paths": format_config_paths_json(runtime),
                     "issues": [],
+                    "warnings": runtime.validation_warnings,
                     "resolved_auth": {
                         "workos_client_id": format_optional_auth_resolved_value_json(WORKOS_CLIENT_ID_KEY, &runtime.workos_client_id)
+                    },
+                    "resolved_policies": {
+                        "bash": format_bash_policies_json(&runtime.bash_policies),
                     }
                 }
             });
@@ -691,6 +1186,62 @@ fn format_config_paths_json(runtime: &RuntimeConfig) -> Value {
             })
             .collect(),
     )
+}
+
+fn format_bash_policies_text(value: &ResolvedOptionalValue<BashPolicyConfig>) -> String {
+    match (value.value.as_ref(), value.source) {
+        (Some(config), Some(source)) => {
+            let presets = if config.presets.is_empty() {
+                "(none)".to_string()
+            } else {
+                config.presets.join(", ")
+            };
+            let custom = if config.custom.is_empty() {
+                "(none)".to_string()
+            } else {
+                config
+                    .custom
+                    .iter()
+                    .map(CustomBashPolicyEntry::text_summary)
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            };
+            match source.config_source() {
+                Some(config_source) => format!(
+                    "- policies.bash: presets=[{}]; custom=[{}] (source: {}, config_source: {})",
+                    presets,
+                    custom,
+                    source.as_str(),
+                    config_source.as_str()
+                ),
+                None => format!(
+                    "- policies.bash: presets=[{}]; custom=[{}] (source: {})",
+                    presets,
+                    custom,
+                    source.as_str()
+                ),
+            }
+        }
+        _ => "- policies.bash: (unset) (source: none)".to_string(),
+    }
+}
+
+fn format_bash_policies_json(value: &ResolvedOptionalValue<BashPolicyConfig>) -> Value {
+    let config = value.value.as_ref();
+    json!({
+        "presets": config.map(|bash| bash.presets.clone()),
+        "custom": config.map(|bash| bash.custom.iter().map(CustomBashPolicyEntry::json_value).collect::<Vec<_>>()),
+        "source": value.source.map(ValueSource::as_str),
+        "config_source": value.source.and_then(ValueSource::config_source).map(ConfigPathSource::as_str),
+    })
+}
+
+fn format_validation_warnings_text(warnings: &[String]) -> String {
+    if warnings.is_empty() {
+        return "Validation warnings: none".to_string();
+    }
+
+    format!("Validation warnings: {}", warnings.join(" | "))
 }
 
 fn format_resolved_value_text(key: &str, value: &str, source: ValueSource) -> String {
@@ -801,10 +1352,10 @@ fn abbreviate_text_value(value: &str) -> String {
 mod tests {
     use super::{
         format_show_output, format_validate_output, resolve_optional_auth_config_value,
-        resolve_runtime_config_with, AuthConfigKeySpec, ConfigPathSource, ConfigRequest,
-        FileConfigValue, LoadedConfigPath, LogLevel, ReportFormat, ResolvedOptionalValue,
-        ResolvedValue, RuntimeConfig, ValueSource, WORKOS_CLIENT_ID_BAKED_DEFAULT,
-        WORKOS_CLIENT_ID_KEY,
+        resolve_runtime_config_with, AuthConfigKeySpec, BashPolicyConfig, ConfigPathSource,
+        ConfigRequest, CustomBashPolicyEntry, FileConfigValue, LoadedConfigPath, LogLevel,
+        ReportFormat, ResolvedOptionalValue, ResolvedValue, RuntimeConfig, ValueSource,
+        WORKOS_CLIENT_ID_BAKED_DEFAULT, WORKOS_CLIENT_ID_KEY,
     };
     use anyhow::Result;
     use serde_json::Value;
@@ -1157,6 +1708,20 @@ mod tests {
                 value: None,
                 source: None,
             },
+            bash_policies: ResolvedOptionalValue {
+                value: Some(BashPolicyConfig {
+                    presets: vec!["forbid-git-commit".to_string()],
+                    custom: vec![CustomBashPolicyEntry {
+                        id: "prefer-jj-status".to_string(),
+                        argv_prefix: vec!["git".to_string(), "status".to_string()],
+                        message: "Use `jj status` instead.".to_string(),
+                    }],
+                }),
+                source: Some(ValueSource::ConfigFile(
+                    ConfigPathSource::DefaultDiscoveredLocal,
+                )),
+            },
+            validation_warnings: Vec::new(),
         }
     }
 
@@ -1184,6 +1749,10 @@ mod tests {
             parsed["result"]["resolved"]["workos_client_id"]["source"],
             Value::Null
         );
+        assert_eq!(
+            parsed["result"]["resolved"]["policies"]["bash"]["source"],
+            "config_file"
+        );
         Ok(())
     }
 
@@ -1208,6 +1777,11 @@ mod tests {
                     ConfigPathSource::DefaultDiscoveredLocal,
                 )),
             },
+            bash_policies: ResolvedOptionalValue {
+                value: None,
+                source: None,
+            },
+            validation_warnings: Vec::new(),
         };
 
         let parsed: Value =
@@ -1247,6 +1821,11 @@ mod tests {
                 value: Some("client_1234567890abcdef".to_string()),
                 source: Some(ValueSource::Env),
             },
+            bash_policies: ResolvedOptionalValue {
+                value: None,
+                source: None,
+            },
+            validation_warnings: Vec::new(),
         };
 
         let output = format_show_output(&runtime, ReportFormat::Text);
@@ -1266,7 +1845,9 @@ mod tests {
         assert_eq!(parsed["result"]["command"], "config_validate");
         assert_eq!(parsed["result"]["valid"], true);
         assert!(parsed["result"]["issues"].as_array().is_some());
+        assert!(parsed["result"]["warnings"].as_array().is_some());
         assert!(parsed["result"]["resolved_auth"]["workos_client_id"].is_object());
+        assert!(parsed["result"]["resolved_policies"]["bash"].is_object());
         Ok(())
     }
 
@@ -1291,10 +1872,154 @@ mod tests {
                     ConfigPathSource::DefaultDiscoveredLocal,
                 )),
             },
+            bash_policies: ResolvedOptionalValue {
+                value: None,
+                source: None,
+            },
+            validation_warnings: Vec::new(),
         };
 
         let output = format_validate_output(&runtime, ReportFormat::Text);
         assert!(output.contains("Resolved auth precedence: env (WORKOS_CLIENT_ID) > config file (workos_client_id) > baked default (client_sce_default)"));
         assert!(output.contains("workos_client_id: local-client (source: config_file, config_source: default_discovered_local"));
+        assert!(output.contains("policies.bash: (unset) (source: none)"));
+    }
+
+    #[test]
+    fn resolver_parses_bash_policy_config_and_reports_local_override() -> Result<()> {
+        let req = request();
+        let resolved = resolve_runtime_config_with(
+            &req,
+            Path::new("/workspace"),
+            |_| None,
+            |path| {
+                if path == Path::new("/state/sce/config.json") {
+                    return Ok(
+                        "{\"policies\":{\"bash\":{\"presets\":[\"forbid-git-all\"]}}}".to_string(),
+                    );
+                }
+                if path == Path::new("/workspace/.sce/config.json") {
+                    return Ok("{\"policies\":{\"bash\":{\"presets\":[\"forbid-git-commit\"],\"custom\":[{\"id\":\"prefer-jj-status\",\"match\":{\"argv_prefix\":[\"git\",\"status\"]},\"message\":\"Use jj.\"}]}}}".to_string());
+                }
+                Err(anyhow::anyhow!(
+                    "unexpected config path: {}",
+                    path.display()
+                ))
+            },
+            |path| {
+                path == Path::new("/state/sce/config.json")
+                    || path == Path::new("/workspace/.sce/config.json")
+            },
+            || Ok(PathBuf::from("/state")),
+        )?;
+
+        let policies = resolved
+            .bash_policies
+            .value
+            .expect("bash policies should resolve");
+        assert_eq!(policies.presets, vec!["forbid-git-commit".to_string()]);
+        assert_eq!(policies.custom[0].id, "prefer-jj-status");
+        assert_eq!(
+            resolved
+                .bash_policies
+                .source
+                .and_then(super::ValueSource::config_source)
+                .map(super::ConfigPathSource::as_str),
+            Some("default_discovered_local")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resolver_rejects_unknown_bash_policy_preset() {
+        let req = ConfigRequest {
+            report_format: ReportFormat::Text,
+            config_path: Some(PathBuf::from("/tmp/config.json")),
+            log_level: None,
+            timeout_ms: None,
+        };
+        let error = resolve_runtime_config_with(
+            &req,
+            Path::new("/workspace"),
+            |_| None,
+            |_| Ok("{\"policies\":{\"bash\":{\"presets\":[\"forbid-hg\"]}}}".to_string()),
+            |_| true,
+            || Ok(PathBuf::from("/state")),
+        )
+        .expect_err("unknown preset should fail");
+
+        assert!(error
+            .to_string()
+            .contains("contains unknown preset 'forbid-hg'"));
+    }
+
+    #[test]
+    fn resolver_rejects_conflicting_npm_presets() {
+        let req = ConfigRequest {
+            report_format: ReportFormat::Text,
+            config_path: Some(PathBuf::from("/tmp/config.json")),
+            log_level: None,
+            timeout_ms: None,
+        };
+        let error = resolve_runtime_config_with(
+            &req,
+            Path::new("/workspace"),
+            |_| None,
+            |_| Ok("{\"policies\":{\"bash\":{\"presets\":[\"use-pnpm-over-npm\",\"use-bun-over-npm\"]}}}".to_string()),
+            |_| true,
+            || Ok(PathBuf::from("/state")),
+        )
+        .expect_err("conflicting presets should fail");
+
+        assert!(error
+            .to_string()
+            .contains("cannot enable both 'use-pnpm-over-npm' and 'use-bun-over-npm'"));
+    }
+
+    #[test]
+    fn resolver_rejects_duplicate_custom_bash_prefixes() {
+        let req = ConfigRequest {
+            report_format: ReportFormat::Text,
+            config_path: Some(PathBuf::from("/tmp/config.json")),
+            log_level: None,
+            timeout_ms: None,
+        };
+        let error = resolve_runtime_config_with(
+            &req,
+            Path::new("/workspace"),
+            |_| None,
+            |_| Ok("{\"policies\":{\"bash\":{\"custom\":[{\"id\":\"one\",\"match\":{\"argv_prefix\":[\"git\",\"status\"]},\"message\":\"one\"},{\"id\":\"two\",\"match\":{\"argv_prefix\":[\"git\",\"status\"]},\"message\":\"two\"}]}}}".to_string()),
+            |_| true,
+            || Ok(PathBuf::from("/state")),
+        )
+        .expect_err("duplicate custom prefix should fail");
+
+        assert!(error
+            .to_string()
+            .contains("duplicate argv_prefix [git status]"));
+    }
+
+    #[test]
+    fn validate_reports_redundant_git_presets_as_warning() -> Result<()> {
+        let req = ConfigRequest {
+            report_format: ReportFormat::Text,
+            config_path: Some(PathBuf::from("/tmp/config.json")),
+            log_level: None,
+            timeout_ms: None,
+        };
+        let resolved = resolve_runtime_config_with(
+            &req,
+            Path::new("/workspace"),
+            |_| None,
+            |_| {
+                Ok("{\"policies\":{\"bash\":{\"presets\":[\"forbid-git-all\",\"forbid-git-commit\"]}}}".to_string())
+            },
+            |_| true,
+            || Ok(PathBuf::from("/state")),
+        )?;
+
+        let output = format_validate_output(&resolved, ReportFormat::Text);
+        assert!(output.contains("Validation warnings: Preset 'forbid-git-commit' is redundant when 'forbid-git-all' is also enabled."));
+        Ok(())
     }
 }

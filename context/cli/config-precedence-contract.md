@@ -19,6 +19,8 @@ Resolved runtime values follow this deterministic order:
 3. config file values (`log_level`, `timeout_ms`)
 4. defaults (`log_level=error`, `timeout_ms=30000`)
 
+Repo-configured bash-tool policy values are config-file only in this task slice: they load from `policies.bash` in the selected config files, merge `global -> local` alongside the rest of the config object, and currently have no flag or environment override layer.
+
 Supported auth-adjacent runtime keys can participate in one shared key-declared precedence path without defining CLI flags. Each key declares its config-file name, environment variable name, and whether a baked default is allowed. The shared resolver supports keys that allow a baked default and keys that intentionally omit one. The first implemented migrated key is `workos_client_id`, which resolves as:
 
 1. environment value (`WORKOS_CLIENT_ID`)
@@ -40,11 +42,19 @@ When both discovered defaults exist, they are merged in memory in deterministic 
 ## Validation contract
 
 - Config file content must be valid JSON with a top-level object.
-- Allowed keys: `log_level`, `timeout_ms`, `workos_client_id`.
+- Allowed keys: `log_level`, `timeout_ms`, `workos_client_id`, `policies`.
 - Unknown keys fail validation.
 - `log_level` must be one of `error|warn|info|debug`.
 - `timeout_ms` must be an unsigned integer.
 - `workos_client_id` must be a string when present.
+- `policies` must be an object when present and currently allows only `bash`.
+- `policies.bash` must be an object when present and currently allows only `presets` and `custom`.
+- `policies.bash.presets` must be an array of unique built-in preset IDs: `forbid-git-all`, `forbid-git-commit`, `use-pnpm-over-npm`, `use-bun-over-npm`, `use-nix-flake-over-cargo`.
+- `use-pnpm-over-npm` and `use-bun-over-npm` are mutually exclusive and fail validation when both are present.
+- `policies.bash.custom` must be an array of objects containing exactly `id`, `match`, and `message`.
+- `match` currently allows only `argv_prefix`, which must be a non-empty array of non-empty strings.
+- Custom policy IDs must be unique, must not collide with built-in preset IDs, and exact duplicate custom `argv_prefix` values fail validation.
+- `forbid-git-all` plus `forbid-git-commit` remains valid but is reported as a deterministic redundancy warning.
 
 ## Output contract
 
@@ -54,6 +64,10 @@ When both discovered defaults exist, they are merged in memory in deterministic 
 - Output reports discovered config files as `config_paths` (JSON) / `Config files:` (text).
 - Resolved values continue to report `source`; when source is `config_file`, output also reports a deterministic `config_source` value (`flag`, `env`, `default_discovered_global`, `default_discovered_local`).
 - `show` includes migrated supported auth keys in `result.resolved`; `validate` includes them in `result.resolved_auth`.
+- `show` includes resolved bash-tool policies under `result.resolved.policies.bash`; `validate` includes them under `result.resolved_policies.bash`.
+- Bash-policy output includes resolved preset IDs, expanded custom entries (`id`, `match.argv_prefix`, `message`), and config-file source metadata when present.
+- Text output renders `policies.bash` as a single deterministic line and reports `(unset)` when no policy config resolves.
+- `show` and `validate` both include `warnings`; this list is empty for normal valid config and carries deterministic redundancy messaging for valid-but-overlapping preset combinations such as `forbid-git-all` plus `forbid-git-commit`.
 - Auth-key JSON output includes `value`, text-oriented `display_value`, `source`, optional `config_source`, and a key-specific `precedence` string describing the allowed resolution chain.
 - Auth-key text output includes `auth_precedence` and abbreviates full values when they look credential-like; fully secret-bearing key classes remain redacted.
 - For the currently migrated key `workos_client_id`, `show` reports the baked default with `source: default` when env/config inputs are absent.

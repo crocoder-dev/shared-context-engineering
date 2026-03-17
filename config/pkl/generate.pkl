@@ -4,6 +4,18 @@ import "renderers/claude-content.pkl" as claude
 import "renderers/common.pkl" as common
 
 local sharedLibrarySource = read("./lib/drift-collectors.js").text
+local bashPolicyPresetCatalogSource = read("./data/bash-policy-presets.json").text
+local bashPolicyRuntimeSource = read("./lib/bash-policy-runtime.js").text
+local opencodeBashPolicyPluginSource = read("./lib/opencode-bash-policy-plugin.js").text
+local claudeBashPolicyHookSource = read("./lib/claude-bash-policy-hook.js").text
+local claudeSettingsSource = read("./lib/claude-settings.json").text
+local opencodePackageJsonSource = """
+{
+  \"dependencies\": {
+    \"@opencode-ai/plugin\": \"1.2.27\"
+  }
+}
+"""
 
 output {
   files {
@@ -72,11 +84,47 @@ output {
     ["config/.opencode/lib/drift-collectors.js"] {
       text = sharedLibrarySource
     }
+    ["config/.opencode/lib/bash-policy-presets.json"] {
+      text = bashPolicyPresetCatalogSource
+    }
+    ["config/.opencode/lib/bash-policy-runtime.js"] {
+      text = bashPolicyRuntimeSource
+    }
+    ["config/.opencode/plugins/sce-bash-policy.js"] {
+      text = opencodeBashPolicyPluginSource
+    }
+    ["config/.opencode/package.json"] {
+      text = opencodePackageJsonSource
+    }
     ["config/automated/.opencode/lib/drift-collectors.js"] {
       text = sharedLibrarySource
     }
+    ["config/automated/.opencode/lib/bash-policy-presets.json"] {
+      text = bashPolicyPresetCatalogSource
+    }
+    ["config/automated/.opencode/lib/bash-policy-runtime.js"] {
+      text = bashPolicyRuntimeSource
+    }
+    ["config/automated/.opencode/plugins/sce-bash-policy.js"] {
+      text = opencodeBashPolicyPluginSource
+    }
+    ["config/automated/.opencode/package.json"] {
+      text = opencodePackageJsonSource
+    }
     ["config/.claude/lib/drift-collectors.js"] {
       text = sharedLibrarySource
+    }
+    ["config/.claude/lib/bash-policy-presets.json"] {
+      text = bashPolicyPresetCatalogSource
+    }
+    ["config/.claude/lib/bash-policy-runtime.js"] {
+      text = bashPolicyRuntimeSource
+    }
+    ["config/.claude/hooks/sce-bash-policy-hook.js"] {
+      text = claudeBashPolicyHookSource
+    }
+    ["config/.claude/settings.json"] {
+      text = claudeSettingsSource
     }
   }
 }
