@@ -31,7 +31,7 @@ Current target renderer helper modules:
 - `.github/workflows/pkl-generated-parity.yml` (CI wrapper that runs the parity check for pushes to `main` and pull requests targeting `main`)
 - `.github/workflows/workflow-token-count.yml` (CI wrapper that runs `nix run .#token-count-workflows` for pushes/pull requests targeting `main` and uploads token-footprint artifacts from `context/tmp/token-footprint/`)
 
-The scaffold provides stable canonical content-unit identifiers and reusable target-agnostic text primitives for all planned authored generated classes (agents, commands, skills, shared library file).
+The scaffold provides stable canonical content-unit identifiers and reusable target-agnostic text primitives for all planned authored generated classes (agents, commands, skills, shared runtime assets, OpenCode plugin entrypoints, and generated OpenCode package manifests).
 
 Renderer modules apply target-specific metadata/frontmatter rules while reusing canonical content bodies:
 
@@ -41,7 +41,7 @@ Renderer modules apply target-specific metadata/frontmatter rules while reusing 
 - Target-specific metadata tables, including skill frontmatter descriptions, are isolated in `config/pkl/renderers/opencode-metadata.pkl`, `config/pkl/renderers/opencode-automated-metadata.pkl`, and `config/pkl/renderers/claude-metadata.pkl`.
 - Metadata key coverage is enforced by `config/pkl/renderers/metadata-coverage-check.pkl`, which resolves all required lookup keys for both targets and fails evaluation on missing entries.
 - Both renderers expose per-class rendered document objects (`agents`, `commands`, `skills`) consumed by `config/pkl/generate.pkl`.
-- `config/pkl/generate.pkl` emits deterministic `output.files` mappings for all authored generated targets: OpenCode/Claude agents, commands, skills, and `lib/drift-collectors.js` in both trees.
+- `config/pkl/generate.pkl` emits deterministic `output.files` mappings for all authored generated targets: OpenCode/Claude agents, commands, skills, shared bash-policy runtime and preset assets under `lib/`, the OpenCode bash-policy plugin entrypoint under `plugins/`, the Claude bash-policy hook/settings pair under `.claude/hooks/` + `.claude/settings.json`, and generated OpenCode `package.json` manifests for manual and automated profiles.
 - Generated-file warning markers are not injected by the generator: Markdown outputs render deterministic frontmatter + body, and shared library outputs are emitted without a leading generated warning header.
 - `config/pkl/check-generated.sh` is intentionally dev-shell scoped (`nix develop -c ...`): it requires `IN_NIX_SHELL`, runs `pkl eval -m <tmp> config/pkl/generate.pkl`, and fails when generated-owned paths drift.
 
@@ -57,13 +57,14 @@ Generated authored classes:
 - agent definitions
 - command definitions
 - skill definitions
-- shared drift collector library file
+- shared runtime library files
+- OpenCode plugin entrypoints
+- generated OpenCode package manifests
 
 Explicitly excluded from generation ownership:
 
 - runtime dependency artifacts (for example `node_modules`)
 - lockfiles and install outputs
-- package/tool manifests not listed in generated authored scope
 
 See `context/decisions/2026-02-28-pkl-generation-architecture.md` for the full matrix and ownership table used by the plan task implementation.
 
@@ -76,7 +77,7 @@ The repository includes a new placeholder Rust binary crate at `cli/`.
 - `cli/src/app.rs` provides the clap-based argument dispatch loop with deterministic help/setup execution, auth-specific bare-command help routing for `sce auth`, centralized stream routing (`stdout` success payloads, `stderr` redacted diagnostics), stable class-based exit-code mapping (`2` parse, `3` validation, `4` runtime, `5` dependency), and stable class-based stderr diagnostic codes (`SCE-ERR-PARSE`, `SCE-ERR-VALIDATION`, `SCE-ERR-RUNTIME`, `SCE-ERR-DEPENDENCY`) with default `Try:` remediation injection when missing.
 - `cli/src/services/observability.rs` provides deterministic runtime observability controls and rendering for app lifecycle logs, including env-configured threshold/format (`SCE_LOG_LEVEL`, `SCE_LOG_FORMAT`), optional file sink controls (`SCE_LOG_FILE`, `SCE_LOG_FILE_MODE` with deterministic truncate-or-append policy), optional OTEL export bootstrap (`SCE_OTEL_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`), stable event identifiers, severity filtering, stderr-only primary emission with optional mirrored file writes, and redaction-safe emission through the shared security helper.
 - `cli/src/command_surface.rs` is the source of truth for top-level command contract metadata (`help`, `config`, `setup`, `doctor`, `auth`, `mcp`, `hooks`, `sync`, `version`, `completion`) and explicit implemented-vs-placeholder status.
-- `cli/src/services/config.rs` defines `sce config` parser/runtime contracts (`show`, `validate`, `--help`), deterministic config-file selection, explicit value precedence (`flags > env > config file > defaults`), strict config-file validation (`log_level`, `timeout_ms`, `workos_client_id`), shared auth-key resolution with optional baked defaults starting at `workos_client_id`, and deterministic text/JSON output rendering.
+- `cli/src/services/config.rs` defines `sce config` parser/runtime contracts (`show`, `validate`, `--help`), deterministic config-file selection, explicit value precedence (`flags > env > config file > defaults`), strict config-file validation (`log_level`, `timeout_ms`, `workos_client_id`, `policies.bash`), shared auth-key resolution with optional baked defaults starting at `workos_client_id`, repo-configured bash-policy preset/custom validation and merged reporting from discovered config files, and deterministic text/JSON output rendering including policy warnings for valid-but-redundant preset combinations.
 - `cli/src/services/output_format.rs` defines the canonical shared CLI output-format contract (`OutputFormat`) for supporting commands, with deterministic `text|json` parsing and command-scoped actionable invalid-value guidance.
 - `cli/src/services/local_db.rs` provides the local Turso data adapter, including `Builder::new_local(...)` initialization, deterministic persistent runtime DB target resolution/bootstrap (`ensure_agent_trace_local_db_ready_blocking`), async execute/query smoke checks for in-memory and file-backed targets, and idempotent migration application for Agent Trace persistence foundations (`repositories`, `commits`, `trace_records`, `trace_ranges`), reconciliation ingestion entities (`reconciliation_runs`, `rewrite_mappings`, `conversations`), and T14 retry/observability storage (`trace_retry_queue`, `reconciliation_metrics`) with replay/query indexes.
 - `cli/src/test_support.rs` provides a shared test-only temp-directory helper (`TestTempDir`) used by service tests that need filesystem fixtures.

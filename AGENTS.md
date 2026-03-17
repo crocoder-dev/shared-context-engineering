@@ -27,6 +27,7 @@ This repository uses the Shared Context Engineering (SCE) approach for AI-assist
 - Root `flake.nix` provides Bun, TypeScript, Pkl, jq, and the Rust toolchain.
 - `cli/flake.nix` defines Rust packaging and CI checks for the CLI.
 - Run Cargo via Nix, not directly from the host shell. Prefer `nix develop -c sh -c 'cd cli && <cargo command>'`.
+- For validation, prefer `nix flake check` and avoid running `cargo test` directly unless a user explicitly requests it.
 - Bun is used for the eval harness, not npm or pnpm scripts.
 - Rust edition is `2021`.
 - TypeScript runs in strict mode in `evals/tsconfig.json`.
@@ -65,7 +66,7 @@ Run these from `evals/`.
 
 ### Useful combined validation flows
 
-- CLI validation from repo root: `nix develop -c sh -c 'cd cli && cargo fmt --check && cargo clippy --all-targets --all-features && cargo test'`
+- Preferred repo validation from repo root: `nix flake check`
 - Evals validation from repo root: `nix develop -c sh -c 'cd evals && bun test ./evals.test.ts'`
 - Generated-config validation from repo root: `nix run .#pkl-check-generated`
 
@@ -73,6 +74,7 @@ Run these from `evals/`.
 
 - Rust tests live inline in source files and in module test files such as `cli/src/services/setup/tests.rs`.
 - Rust/Cargo commands should be executed through `nix develop`, even for one-off builds, tests, fmt, and clippy runs.
+- Prefer `nix flake check` for routine verification and avoid `cargo test` unless the user explicitly asks for it.
 - Rust single-test selection uses standard Cargo substring matching; add `-- --exact` for deterministic one-test runs.
 - Bun tests use `bun:test` and support `-t` name filtering.
 - Evals create runtime artifacts under `evals/.results` and model-run directories; do not treat those as source files.
@@ -174,13 +176,12 @@ Run these from `evals/`.
 - Check for unrelated worktree changes before broad edits.
 - Avoid destructive git commands unless the user explicitly asks for them.
 - When touching both `config/` and `.opencode/`, verify whether sync/regeneration is expected.
-- When changing CLI behavior, run at least the most relevant Rust test(s).
+- When verifying changes, prefer `nix flake check` instead of running `cargo test` directly.
 - When changing eval harness code, run the narrowest Bun test or script that covers the change.
 
 ## Recommended minimum verification by change type
 
-- Rust-only logic change: `nix develop -c sh -c 'cd cli && cargo test <targeted-test> && cargo clippy --all-targets --all-features'`
-- Rust output/help/error change: `nix develop -c sh -c 'cd cli && cargo test <exact-test-name> -- --exact'`
+- Default verification for code changes: `nix flake check`
 - TypeScript eval change: `cd evals && bun test ./evals.test.ts -t "<test name>"`
 - Generated config or Pkl change: `nix run .#pkl-check-generated`
 - Cross-cutting repo change: `nix flake check`

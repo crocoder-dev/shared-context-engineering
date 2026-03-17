@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/sce-bash-policy-hook.js",
+            "timeout": 10,
+            "statusMessage": "Checking SCE bash policy"
+          }
+        ]
+      }
+    ]
+  }
+}
