@@ -71,7 +71,6 @@ The setup command parser/dispatch now also supports composable setup+hooks runs 
 - Regenerate outputs in place: `nix develop -c pkl eval -m . config/pkl/generate.pkl`
 - Verify generated outputs are current: `nix run .#pkl-check-generated`
 - Run staged destructive sync for `config/`, root `.opencode/`, and root `.mcp.json`: `nix run .#sync-opencode-config`
-- Run workflow token counting from repo root: `nix run .#token-count-workflows`
 - Run repository flake checks (CLI tests, clippy, fmt + pkl-parity): `nix flake check`
 
 Lightweight post-task verification baseline (required after each completed task): run `nix run .#pkl-check-generated` and `nix flake check`.
@@ -79,7 +78,6 @@ Lightweight post-task verification baseline (required after each completed task)
 ## CI contracts
 
 - `.github/workflows/pkl-generated-parity.yml` runs parity checks on pushes to `main` and pull requests targeting `main`.
-- `.github/workflows/workflow-token-count.yml` runs `nix run .#token-count-workflows` on pushes to `main` and pull requests targeting `main`, then uploads token-footprint artifacts from `context/tmp/token-footprint/`.
 
 ## Cross-target parity
 
@@ -96,10 +94,6 @@ Lightweight post-task verification baseline (required after each completed task)
 - Use `context/sce/shared-context-plan-workflow.md` for the canonical planning-session workflow (`/change-to-plan`) including clarification gating and `/next-task` handoff contract.
 - Use `context/sce/plan-code-overlap-map.md` for the current overlap/dedup inventory across Shared Context Plan/Code agents, related commands, and core skills.
 - Use `context/sce/dedup-ownership-table.md` for canonical owner-vs-consumer boundaries and keep-vs-dedup labels used by the dedup implementation plan.
-- Use `context/sce/workflow-token-footprint-inventory.md` for the canonical participant inventory of `/change-to-plan` and `/next-task` workflows, T02 ranked token-hotspot classification, and the T03 static token-accounting method/report template used by token-footprint analysis tasks.
-- Use `context/sce/workflow-token-footprint-manifest.json` for the canonical machine-readable T05 manifest consumed by workflow token-count tooling (`surface_id`, workflow class, extraction scope rules, and conditional flags).
-- Use `context/sce/workflow-token-count-workflow.md` for the root flake app contract (`nix run .#token-count-workflows`) and runtime wiring to the evals token-count script.
-- Use `evals/token-count-workflows.ts` (run via `nix run .#token-count-workflows` from repo root, or `bun run token-count-workflows` from `evals/`) for T06 static workflow token counting that emits deterministic reports to `context/tmp/token-footprint/`.
 - Use `context/sce/atomic-commit-workflow.md` for canonical `/commit` behavior, `sce-atomic-commit` naming, and proposal-only commit planning constraints.
 - Use `context/sce/agent-trace-implementation-contract.md` for canonical Agent Trace implementation invariants and field-level mapping guidance (`agent-trace-attribution-no-git-wrapper` T01 baseline).
 - Use `context/sce/agent-trace-schema-adapter.md` for the implemented T02 adapter contract and canonical mapping surface in `cli/src/services/agent_trace.rs`.

@@ -6,7 +6,6 @@
       "name": "shared-context-engineering",
       "dependencies": {
         "@opencode-ai/sdk": "^1.2.6",
-        "js-tiktoken": "^1.0.21",
         "opencode-ai": "^1.2.6",
       },
       "devDependencies": {
@@ -24,11 +23,7 @@
 
     "@types/node": ["@types/node@25.2.3", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-m0jEgYlYz+mDJZ2+F4v8D1AyQb+QzsNqRuI7xg1VQX/KlKS0qT9r1Mo16yo5F/MtifXFgaofIFsdFMox2SxIbQ=="],
 
-    "base64-js": ["base64-js@1.5.1", "", {}, "sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA=="],
-
     "bun-types": ["bun-types@1.3.9", "", { "dependencies": { "@types/node": "*" } }, "sha512-+UBWWOakIP4Tswh0Bt0QD0alpTY8cb5hvgiYeWCMet9YukHbzuruIEeXC2D7nMJPB12kbh8C7XJykSexEqGKJg=="],
-
-    "js-tiktoken": ["js-tiktoken@1.0.21", "", { "dependencies": { "base64-js": "^1.5.1" } }, "sha512-biOj/6M5qdgx5TKjDnFT1ymSpM5tbd3ylwDtrQvFQSu0Z7bBYko2dF+W/aUkXUPuk6IVpRxk/3Q2sHOzGlS36g=="],
 
     "opencode-ai": ["opencode-ai@1.2.6", "", { "optionalDependencies": { "opencode-darwin-arm64": "1.2.6", "opencode-darwin-x64": "1.2.6", "opencode-darwin-x64-baseline": "1.2.6", "opencode-linux-arm64": "1.2.6", "opencode-linux-arm64-musl": "1.2.6", "opencode-linux-x64": "1.2.6", "opencode-linux-x64-baseline": "1.2.6", "opencode-linux-x64-baseline-musl": "1.2.6", "opencode-linux-x64-musl": "1.2.6", "opencode-windows-x64": "1.2.6", "opencode-windows-x64-baseline": "1.2.6" }, "bin": { "opencode": "bin/opencode" } }, "sha512-50leGrfFGrL8hr/iCs/nDr9kHNtNV7X3NMi3EedTj4R6l8yLvB2KZUQHQFOvR0tjfEBm6OqkLu5rw5JSAt8YZg=="],
 
