@@ -112,6 +112,7 @@ enum Command {
     Doctor(services::doctor::DoctorRequest),
     Mcp,
     Hooks(services::hooks::HookSubcommand),
+    Trace(services::trace::TraceRequest),
     Sync(services::sync::SyncRequest),
     Version(services::version::VersionRequest),
 }
@@ -128,6 +129,7 @@ impl Command {
             Self::Doctor(_) => services::doctor::NAME,
             Self::Mcp => services::mcp::NAME,
             Self::Hooks(_) => services::hooks::NAME,
+            Self::Trace(_) => services::trace::NAME,
             Self::Sync(_) => services::sync::NAME,
             Self::Version(_) => services::version::NAME,
         }
@@ -450,6 +452,7 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<Command, Classi
         }
         cli_schema::Commands::Mcp => Ok(Command::Mcp),
         cli_schema::Commands::Hooks { subcommand } => convert_hooks_subcommand(subcommand),
+        cli_schema::Commands::Trace { subcommand } => convert_trace_subcommand(subcommand),
         cli_schema::Commands::Sync { format } => Ok(Command::Sync(services::sync::SyncRequest {
             format: convert_output_format(format),
         })),
@@ -608,6 +611,30 @@ fn convert_hooks_subcommand(
     }
 }
 
+#[allow(clippy::unnecessary_wraps)]
+fn convert_trace_subcommand(
+    subcommand: cli_schema::TraceSubcommand,
+) -> Result<Command, ClassifiedError> {
+    match subcommand {
+        cli_schema::TraceSubcommand::Prompts {
+            commit_sha,
+            format,
+            json,
+        } => Ok(Command::Trace(services::trace::TraceRequest {
+            subcommand: services::trace::TraceSubcommand::Prompts(
+                services::trace::TracePromptsRequest {
+                    commit_sha,
+                    format: if json {
+                        services::trace::TraceFormat::Json
+                    } else {
+                        convert_output_format(format)
+                    },
+                },
+            ),
+        })),
+    }
+}
+
 fn dispatch(command: &Command) -> Result<String, ClassifiedError> {
     match command {
         Command::Help => Ok(command_surface::help_text()),
@@ -673,6 +700,8 @@ fn dispatch(command: &Command) -> Result<String, ClassifiedError> {
         Command::Mcp => services::mcp::run_mcp_server_blocking()
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::Hooks(subcommand) => services::hooks::run_hooks_subcommand(subcommand.clone())
+            .map_err(|error| ClassifiedError::runtime(error.to_string())),
+        Command::Trace(request) => services::trace::run_trace_subcommand(request.clone())
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::Sync(request) => services::sync::run_placeholder_sync(*request)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
@@ -957,6 +986,51 @@ mod tests {
             command,
             Command::Hooks(crate::services::hooks::HookSubcommand::CommitMsg {
                 message_file: std::path::PathBuf::from(".git/COMMIT_EDITMSG"),
+            })
+        );
+    }
+
+    #[test]
+    fn parser_routes_trace_prompts_subcommand() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "trace".to_string(),
+            "prompts".to_string(),
+            "abc1234".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(
+            command,
+            Command::Trace(crate::services::trace::TraceRequest {
+                subcommand: crate::services::trace::TraceSubcommand::Prompts(
+                    crate::services::trace::TracePromptsRequest {
+                        commit_sha: "abc1234".to_string(),
+                        format: crate::services::trace::TraceFormat::Text,
+                    }
+                ),
+            })
+        );
+    }
+
+    #[test]
+    fn parser_routes_trace_prompts_json_flag() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "trace".to_string(),
+            "prompts".to_string(),
+            "abc1234".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(
+            command,
+            Command::Trace(crate::services::trace::TraceRequest {
+                subcommand: crate::services::trace::TraceSubcommand::Prompts(
+                    crate::services::trace::TracePromptsRequest {
+                        commit_sha: "abc1234".to_string(),
+                        format: crate::services::trace::TraceFormat::Json,
+                    }
+                ),
             })
         );
     }

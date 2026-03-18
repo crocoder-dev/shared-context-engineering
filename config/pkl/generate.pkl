@@ -8,6 +8,8 @@ local bashPolicyPresetCatalogSource = read("./data/bash-policy-presets.json").te
 local bashPolicyRuntimeSource = read("./lib/bash-policy-runtime.js").text
 local opencodeBashPolicyPluginSource = read("./lib/opencode-bash-policy-plugin.js").text
 local claudeBashPolicyHookSource = read("./lib/claude-bash-policy-hook.js").text
+local claudeCapturePromptHookSource = read("./lib/claude-capture-prompt.js").text
+local claudePromptCaptureHookConfigSource = read("./lib/claude-prompt-capture-hook.json").text
 local claudeSettingsSource = read("./lib/claude-settings.json").text
 local opencodePackageJsonSource = """
 {
@@ -128,6 +130,12 @@ output {
     }
     ["config/.claude/hooks/sce-bash-policy-hook.js"] {
       text = claudeBashPolicyHookSource
+    }
+    ["config/.claude/hooks/sce-capture-prompt.js"] {
+      text = claudeCapturePromptHookSource
+    }
+    ["config/.claude/hooks/sce-capture-prompt.json"] {
+      text = claudePromptCaptureHookConfigSource
     }
     ["config/.claude/settings.json"] {
       text = claudeSettingsSource

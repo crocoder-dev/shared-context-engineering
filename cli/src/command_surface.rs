@@ -50,6 +50,11 @@ pub const COMMANDS: &[CommandContract] = &[
         purpose: "Run git-hook runtime entrypoints for local Agent Trace flows",
     },
     CommandContract {
+        name: services::trace::NAME,
+        status: ImplementationStatus::Implemented,
+        purpose: "Inspect persisted Agent Trace records and captured prompts",
+    },
+    CommandContract {
         name: services::sync::NAME,
         status: ImplementationStatus::Placeholder,
         purpose: "Coordinate future cloud sync workflows",
@@ -93,12 +98,13 @@ Doctor usage:\n  sce doctor [--fix] [--format <text|json>]\n\n\
 Auth usage:\n  sce auth <login|logout|status> [--format <text|json>]\n\n\
 Completion usage:\n  sce completion --shell <bash|zsh|fish>\n\n\
 MCP usage:\n  sce mcp\n\n\
+Trace usage:\n  sce trace prompts <commit-sha> [--format <text|json>|--json]\n\n\
 Output format contract:\n  Supported commands accept --format <text|json>\n\n\
-Examples:\n  sce setup\n  sce setup --opencode --non-interactive --hooks\n  sce setup --hooks --repo ../demo-repo\n  sce auth status\n  sce auth login --format json\n  sce doctor --format json\n  sce doctor --fix\n  sce version --format json\n\n\
+Examples:\n  sce setup\n  sce setup --opencode --non-interactive --hooks\n  sce setup --hooks --repo ../demo-repo\n  sce auth status\n  sce auth login --format json\n  sce trace prompts abc1234\n  sce trace prompts abc1234 --json\n  sce doctor --format json\n  sce doctor --fix\n  sce version --format json\n\n\
 Commands:\n{command_rows}\n\n\
 Setup defaults to interactive target selection when no setup target flag is passed, and installs hooks in the same run.\n\
 Use '--hooks' to install required git hooks for the current repository or '--repo <path>' for a specific repository.\n\
-`setup`, `doctor`, `auth`, `hooks`, `mcp`, `version`, and `completion` are implemented; `sync` remains placeholder-oriented.\n"
+`setup`, `doctor`, `auth`, `hooks`, `trace`, `mcp`, `version`, and `completion` are implemented; `sync` remains placeholder-oriented.\n"
     )
 }
 
@@ -157,6 +163,14 @@ mod tests {
         let help = help_text();
         assert!(help.contains("completion"));
         assert!(help.contains("sce completion --shell <bash|zsh|fish>"));
+    }
+
+    #[test]
+    fn help_text_mentions_trace_command() {
+        let help = help_text();
+        assert!(help.contains("trace"));
+        assert!(help.contains("sce trace prompts <commit-sha>"));
+        assert!(help.contains("sce trace prompts abc1234 --json"));
     }
 
     #[test]

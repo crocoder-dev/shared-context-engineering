@@ -117,6 +117,22 @@ const CORE_SCHEMA_STATEMENTS: &[&str] = &[
         error_class TEXT,\
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))\
     )",
+    "CREATE TABLE IF NOT EXISTS prompts (\
+        id INTEGER PRIMARY KEY AUTOINCREMENT,\
+        commit_id INTEGER NOT NULL,\
+        prompt_text TEXT NOT NULL,\
+        prompt_length INTEGER,\
+        is_truncated BOOLEAN DEFAULT 0,\
+        turn_number INTEGER,\
+        harness_type TEXT NOT NULL,\
+        model_id TEXT,\
+        cwd TEXT,\
+        git_branch TEXT,\
+        tool_call_count INTEGER,\
+        duration_ms INTEGER,\
+        captured_at TEXT NOT NULL,\
+        FOREIGN KEY(commit_id) REFERENCES commits(id) ON DELETE CASCADE\
+    )",
     "CREATE INDEX IF NOT EXISTS idx_commits_repository_commit_sha ON commits(repository_id, commit_sha)",
     "CREATE INDEX IF NOT EXISTS idx_trace_records_repository_commit ON trace_records(repository_id, commit_id)",
     "CREATE INDEX IF NOT EXISTS idx_trace_ranges_record_file ON trace_ranges(trace_record_id, file_path)",
@@ -126,6 +142,10 @@ const CORE_SCHEMA_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_conversations_repository_source ON conversations(repository_id, source)",
     "CREATE INDEX IF NOT EXISTS idx_trace_retry_queue_created_at ON trace_retry_queue(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_reconciliation_metrics_created_at ON reconciliation_metrics(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_prompts_commit ON prompts(commit_id)",
+    "CREATE INDEX IF NOT EXISTS idx_prompts_harness ON prompts(harness_type)",
+    "CREATE INDEX IF NOT EXISTS idx_prompts_captured ON prompts(captured_at)",
+    "CREATE INDEX IF NOT EXISTS idx_prompts_commit_turn ON prompts(commit_id, turn_number)",
 ];
 
 const CORE_SCHEMA_RETRY_POLICY: RetryPolicy = RetryPolicy {
