@@ -40,7 +40,6 @@ This repository uses the Shared Context Engineering (SCE) approach for AI-assist
 - Run all flake checks visible at root: `nix flake check`
 - Run generated-output parity check: `nix run .#pkl-check-generated`
 - Regenerate and sync `.opencode` config: `nix run .#sync-opencode-config`
-- Run workflow token counter: `nix run .#token-count-workflows`
 
 ### Rust CLI commands
 
@@ -62,7 +61,6 @@ Run these from `evals/`.
 
 - Run eval test suite: `bun test ./evals.test.ts`
 - Run a single Bun test by name: `bun test ./evals.test.ts -t "runs context bootstrap flow with Shared Context"`
-- Run token workflow script: `bun run token-count-workflows`
 
 ### Useful combined validation flows
 

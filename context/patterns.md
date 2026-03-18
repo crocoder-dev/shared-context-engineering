@@ -10,7 +10,6 @@
 - Expose operational workflows as flake apps so commands are stable and system-mapped across supported `flake-utils` default systems.
 - Current repo command contracts:
 - `nix run .#sync-opencode-config` is the canonical entrypoint for staged regeneration/replacement of `config/` and replacement of repository-root `.opencode/` and `.mcp.json` from regenerated `config/.opencode/` and `config/.mcp.json`.
-  - `nix run .#token-count-workflows` is the canonical root entrypoint for static workflow token counting (wrapping `bun run token-count-workflows` from `evals/` through `nix develop`).
 - For flake app outputs, include `meta.description` so `nix flake check` app validation stays warning-free.
 - For destructive config replacement flows, regenerate into a temporary staged `config/` first, validate required generated directories exist, and only then swap live `config/`.
 - For destructive root `.opencode/` replacement flows, keep exclusions explicit (for example `node_modules`), use backup-and-restore around swap, and run a source/target tree parity check with the same exclusions.
@@ -52,7 +51,6 @@
 - Run multi-file generation with `nix develop -c pkl eval -m . config/pkl/generate.pkl` to emit to repository-root mapped paths.
 - Run stale-output detection through the flake app entrypoint `nix run .#pkl-check-generated`; it wraps `nix develop -c ./config/pkl/check-generated.sh`, regenerates into a temporary directory, and fails if generated-owned paths differ from committed outputs.
 - Keep CI parity enforcement aligned with local workflow by running the same command in `.github/workflows/pkl-generated-parity.yml` for pushes to `main` and pull requests targeting `main`.
-- Keep token-count CI aligned with the flake app contract by running `nix run .#token-count-workflows` in `.github/workflows/workflow-token-count.yml` on pushes/pull requests targeting `main`, and upload artifacts from `context/tmp/token-footprint/`.
 - Treat `nix run .#pkl-check-generated` and `nix flake check` as the lightweight post-task verification baseline and run both after each completed task.
 - Do not run `evals/` test suites autonomously during plan-task execution; run them only when the user explicitly requests eval coverage.
 - For non-destructive verification during development, run `nix develop -c pkl eval -m context/tmp/t04-generated config/pkl/generate.pkl` and inspect emitted paths under `context/tmp/`.
