@@ -100,6 +100,12 @@ pub enum Commands {
         subcommand: HooksSubcommand,
     },
 
+    #[command(about = "Inspect persisted Agent Trace records and prompt captures")]
+    Trace {
+        #[command(subcommand)]
+        subcommand: TraceSubcommand,
+    },
+
     #[command(about = "Coordinate future cloud sync workflows (placeholder)")]
     Sync {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
@@ -193,6 +199,20 @@ pub enum HooksSubcommand {
 
     #[command(about = "Run post-rewrite hook (reads pairs from STDIN)")]
     PostRewrite { rewrite_method: String },
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum TraceSubcommand {
+    #[command(about = "Show captured prompts for a persisted commit trace")]
+    Prompts {
+        commit_sha: String,
+
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text, conflicts_with = "json")]
+        format: OutputFormat,
+
+        #[arg(long, conflicts_with = "format")]
+        json: bool,
+    },
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -702,6 +722,40 @@ mod tests {
                 _ => panic!("Expected PostRewrite subcommand"),
             },
             _ => panic!("Expected Hooks command"),
+        }
+    }
+
+    #[test]
+    fn parse_trace_prompts() {
+        let cli = Cli::try_parse_from(["sce", "trace", "prompts", "abc1234"])
+            .expect("trace prompts should parse");
+        match cli.command {
+            Some(Commands::Trace { subcommand }) => match subcommand {
+                TraceSubcommand::Prompts {
+                    commit_sha,
+                    format,
+                    json,
+                } => {
+                    assert_eq!(commit_sha, "abc1234");
+                    assert_eq!(format, OutputFormat::Text);
+                    assert!(!json);
+                }
+            },
+            _ => panic!("Expected Trace command"),
+        }
+    }
+
+    #[test]
+    fn parse_trace_prompts_json_flag() {
+        let cli = Cli::try_parse_from(["sce", "trace", "prompts", "abc1234", "--json"])
+            .expect("trace prompts --json should parse");
+        match cli.command {
+            Some(Commands::Trace { subcommand }) => match subcommand {
+                TraceSubcommand::Prompts { json, .. } => {
+                    assert!(json);
+                }
+            },
+            _ => panic!("Expected Trace command"),
         }
     }
 

@@ -18,7 +18,17 @@ use crate::services::local_db::ensure_agent_trace_local_db_ready_blocking;
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
 pub const POST_COMMIT_PARENT_SHA_METADATA_KEY: &str = "dev.crocoder.sce.parent_revision";
+const CLAUDE_CODE_HARNESS_TYPE: &str = "claude_code";
+const MAX_PROMPT_BYTES: usize = 10 * 1024;
+const MODEL_ID_ENV_KEYS: [&str; 5] = [
+    "SCE_MODEL_ID",
+    "CLAUDE_MODEL",
+    "CLAUDE_CODE_MODEL",
+    "ANTHROPIC_MODEL",
+    "MODEL_ID",
+];
 const PRE_COMMIT_CHECKPOINT_GIT_PATH: &str = "sce/pre-commit-checkpoint.json";
+const PROMPT_CAPTURE_GIT_PATH: &str = "sce/prompts.jsonl";
 const RETRY_QUEUE_MAX_ITEMS_PER_RUN: usize = 16;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -269,7 +279,115 @@ fn collect_pending_checkpoint(repository_root: &Path) -> Result<PendingCheckpoin
         })
         .collect();
 
-    Ok(PendingCheckpoint { files })
+    let git_branch = resolve_pre_commit_git_branch(repository_root)?;
+    let model_id = resolve_pre_commit_model_id();
+    let prompts = load_pending_prompts(repository_root)?;
+
+    Ok(PendingCheckpoint {
+        files,
+        harness_type: CLAUDE_CODE_HARNESS_TYPE.to_string(),
+        git_branch,
+        model_id,
+        prompts,
+    })
+}
+
+fn resolve_pre_commit_git_branch(repository_root: &Path) -> Result<Option<String>> {
+    let branch = run_git_command_allow_empty(
+        repository_root,
+        &["branch", "--show-current"],
+        "Failed to resolve git branch for pre-commit checkpoint.",
+    )?;
+
+    let trimmed = branch.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(trimmed.to_string()))
+}
+
+fn resolve_pre_commit_model_id() -> Option<String> {
+    MODEL_ID_ENV_KEYS
+        .iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
+}
+
+fn load_pending_prompts(repository_root: &Path) -> Result<Vec<PendingPromptCheckpoint>> {
+    let prompt_capture_path = resolve_git_path(repository_root, PROMPT_CAPTURE_GIT_PATH)?;
+    let payload = match fs::read_to_string(&prompt_capture_path) {
+        Ok(payload) => payload,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            bail!(
+                "Failed to read prompt capture file '{}': {}",
+                prompt_capture_path.display(),
+                error
+            )
+        }
+    };
+
+    let mut prompts = Vec::new();
+    let mut seen_entries = HashSet::new();
+    let mut last_known_cwd: Option<String> = None;
+
+    for line in payload.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+
+        let Some(prompt_text) = json.get("prompt").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(captured_at) = json.get("timestamp").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+
+        let dedupe_key = format!("{prompt_text}\u{001f}{captured_at}");
+        if !seen_entries.insert(dedupe_key) {
+            continue;
+        }
+
+        let Ok(turn_number) = u32::try_from(prompts.len() + 1) else {
+            break;
+        };
+
+        let cwd = json
+            .get("cwd")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| last_known_cwd.clone());
+
+        if let Some(cwd_value) = &cwd {
+            last_known_cwd = Some(cwd_value.clone());
+        }
+
+        prompts.push(PendingPromptCheckpoint {
+            turn_number,
+            prompt_text: prompt_text.to_string(),
+            prompt_length: prompt_text.len(),
+            is_truncated: false,
+            cwd,
+            transcript_path: json
+                .get("transcript_path")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned),
+            captured_at: captured_at.to_string(),
+        });
+    }
+
+    Ok(prompts)
 }
 
 fn parse_unified_zero_diff_ranges(
@@ -386,13 +504,30 @@ fn write_finalized_checkpoint(
         }));
     }
 
+    let mut prompts = Vec::new();
+    for prompt in &checkpoint.prompts {
+        prompts.push(serde_json::json!({
+            "turn_number": prompt.turn_number,
+            "prompt_text": prompt.prompt_text,
+            "prompt_length": prompt.prompt_length,
+            "is_truncated": prompt.is_truncated,
+            "cwd": prompt.cwd,
+            "transcript_path": prompt.transcript_path,
+            "captured_at": prompt.captured_at,
+        }));
+    }
+
     let payload = serde_json::json!({
         "version": 1,
         "anchors": {
             "index_tree": checkpoint.anchors.index_tree.clone(),
             "head_tree": checkpoint.anchors.head_tree.clone(),
         },
+        "harness_type": checkpoint.harness_type,
+        "git_branch": checkpoint.git_branch,
+        "model_id": checkpoint.model_id,
         "files": files,
+        "prompts": prompts,
     });
 
     let serialized = serde_json::to_vec_pretty(&payload)
@@ -660,17 +795,29 @@ fn build_post_commit_input(repository_root: &Path) -> Result<PostCommitInput> {
         &["show", "-s", "--format=%cI", "HEAD"],
         "Failed to resolve post-commit timestamp.",
     )?;
+    let committed_at_unix_ms = run_git_command(
+        repository_root,
+        &["show", "-s", "--format=%ct", "HEAD"],
+        "Failed to resolve post-commit timestamp seconds.",
+    )?
+    .parse::<i64>()
+    .context("Failed to parse post-commit timestamp seconds as integer")?
+        * 1_000;
     let files = collect_post_commit_file_attribution(repository_root)?;
+    let prompts =
+        load_post_commit_prompt_records(repository_root, committed_at_unix_ms, &timestamp_rfc3339)?;
     let idempotency_key = format!("post-commit:{commit_sha}");
     let record_id = deterministic_uuid_v4_from_seed(&format!("{commit_sha}:{timestamp_rfc3339}"));
 
     Ok(PostCommitInput {
         record_id,
         timestamp_rfc3339,
+        committed_at_unix_ms,
         commit_sha,
         parent_sha,
         idempotency_key,
         files,
+        prompts,
     })
 }
 
@@ -805,6 +952,329 @@ fn load_post_commit_checkpoint_files(repository_root: &Path) -> Result<Vec<FileA
     }
 
     Ok(files)
+}
+
+fn load_post_commit_prompt_records(
+    repository_root: &Path,
+    committed_at_unix_ms: i64,
+    committed_at_rfc3339: &str,
+) -> Result<Vec<PersistedPromptRecord>> {
+    let checkpoint_path = resolve_pre_commit_checkpoint_path(repository_root)?;
+    let payload = match fs::read_to_string(&checkpoint_path) {
+        Ok(payload) => payload,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            bail!(
+                "Failed to read pre-commit checkpoint '{}' for post-commit prompts: {}",
+                checkpoint_path.display(),
+                error
+            )
+        }
+    };
+
+    let checkpoint = serde_json::from_str::<serde_json::Value>(&payload).with_context(|| {
+        format!(
+            "Failed to parse pre-commit checkpoint '{}' as JSON for prompt persistence.",
+            checkpoint_path.display()
+        )
+    })?;
+
+    let harness_type = checkpoint
+        .get("harness_type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(CLAUDE_CODE_HARNESS_TYPE)
+        .to_string();
+    let git_branch = checkpoint
+        .get("git_branch")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned);
+    let model_id = checkpoint
+        .get("model_id")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned);
+    let Some(prompts_json) = checkpoint
+        .get("prompts")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(Vec::new());
+    };
+
+    let mut prompt_windows = Vec::new();
+    for (index, prompt_json) in prompts_json.iter().enumerate() {
+        let turn_number = prompt_json
+            .get("turn_number")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or_else(|| u32::try_from(index + 1).unwrap_or(u32::MAX));
+        let Some(prompt_text) = prompt_json
+            .get("prompt_text")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+        else {
+            continue;
+        };
+        let captured_at = prompt_json
+            .get("captured_at")
+            .and_then(serde_json::Value::as_str)
+            .map_or_else(|| committed_at_rfc3339.to_string(), ToOwned::to_owned);
+        let Some(captured_at_unix_ms) = parse_utc_rfc3339_to_unix_ms(&captured_at) else {
+            continue;
+        };
+        let next_captured_at_unix_ms = prompts_json
+            .get(index + 1)
+            .and_then(|next| next.get("captured_at"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(parse_utc_rfc3339_to_unix_ms)
+            .unwrap_or(committed_at_unix_ms);
+        let duration_ms = (next_captured_at_unix_ms - captured_at_unix_ms).max(0);
+        let transcript_path = prompt_json
+            .get("transcript_path")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty());
+        let tool_call_count = transcript_path
+            .map(|path| {
+                count_tool_uses_in_transcript(path, captured_at_unix_ms, next_captured_at_unix_ms)
+            })
+            .transpose()?
+            .unwrap_or(0);
+        let cwd = prompt_json
+            .get("cwd")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned);
+        let (prompt_text, is_truncated, prompt_length) = truncate_prompt(&prompt_text);
+
+        prompt_windows.push(PersistedPromptRecord {
+            turn_number,
+            prompt_text,
+            prompt_length,
+            is_truncated,
+            harness_type: harness_type.clone(),
+            model_id: model_id.clone(),
+            cwd,
+            git_branch: git_branch.clone(),
+            tool_call_count,
+            duration_ms,
+            captured_at,
+        });
+    }
+
+    Ok(prompt_windows)
+}
+
+fn count_tool_uses_in_transcript(
+    transcript_path: &str,
+    captured_at_unix_ms: i64,
+    next_captured_at_unix_ms: i64,
+) -> Result<u32> {
+    let payload = fs::read_to_string(transcript_path).with_context(|| {
+        format!("Failed to read Claude transcript '{transcript_path}' for prompt metrics.")
+    })?;
+    let mut count = 0_u32;
+
+    for line in payload.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+            continue;
+        };
+
+        if json.get("type").and_then(serde_json::Value::as_str) != Some("assistant") {
+            continue;
+        }
+
+        let Some(timestamp) = json.get("timestamp").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let Some(event_unix_ms) = parse_utc_rfc3339_to_unix_ms(timestamp) else {
+            continue;
+        };
+        if event_unix_ms < captured_at_unix_ms || event_unix_ms >= next_captured_at_unix_ms {
+            continue;
+        }
+
+        let Some(contents) = json
+            .get("message")
+            .and_then(|message| message.get("content"))
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+
+        for content in contents {
+            if content.get("type").and_then(serde_json::Value::as_str) == Some("tool_use") {
+                count = count.saturating_add(1);
+            }
+        }
+    }
+
+    Ok(count)
+}
+
+fn truncate_prompt(text: &str) -> (String, bool, usize) {
+    let original_length = text.len();
+    if original_length <= MAX_PROMPT_BYTES {
+        return (text.to_string(), false, original_length);
+    }
+
+    let mut end = 0;
+    for (index, _) in text.char_indices() {
+        if index > MAX_PROMPT_BYTES {
+            break;
+        }
+        end = index;
+    }
+    if end == 0 {
+        end = text
+            .char_indices()
+            .find(|(index, _)| *index >= MAX_PROMPT_BYTES)
+            .map_or(text.len(), |(index, _)| index);
+    }
+
+    (text[..end].to_string(), true, original_length)
+}
+
+fn parse_utc_rfc3339_to_unix_ms(value: &str) -> Option<i64> {
+    let value = value.trim();
+    let core = value.strip_suffix('Z')?;
+    let (date_part, time_part) = core.split_once('T')?;
+    let mut date_fields = date_part.split('-');
+    let year = date_fields.next()?.parse::<i32>().ok()?;
+    let month = date_fields.next()?.parse::<u32>().ok()?;
+    let day = date_fields.next()?.parse::<u32>().ok()?;
+    if date_fields.next().is_some() {
+        return None;
+    }
+
+    let (time_main, fractional) = match time_part.split_once('.') {
+        Some((time_main, fractional)) => (time_main, fractional),
+        None => (time_part, ""),
+    };
+    let mut time_fields = time_main.split(':');
+    let hour = time_fields.next()?.parse::<u32>().ok()?;
+    let minute = time_fields.next()?.parse::<u32>().ok()?;
+    let second = time_fields.next()?.parse::<u32>().ok()?;
+    if time_fields.next().is_some() {
+        return None;
+    }
+
+    let millis = parse_fractional_millis(fractional)?;
+    let days = days_from_civil(year, month, day)?;
+    let seconds = days
+        .checked_mul(86_400)?
+        .checked_add(i64::from(hour) * 3_600)?
+        .checked_add(i64::from(minute) * 60)?
+        .checked_add(i64::from(second))?;
+    seconds.checked_mul(1_000)?.checked_add(i64::from(millis))
+}
+
+fn parse_fractional_millis(value: &str) -> Option<u32> {
+    if value.is_empty() {
+        return Some(0);
+    }
+
+    let digits = value
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>();
+    if digits.is_empty() {
+        return Some(0);
+    }
+
+    let mut normalized = digits;
+    while normalized.len() < 3 {
+        normalized.push('0');
+    }
+    normalized.truncate(3);
+    normalized.parse::<u32>().ok()
+}
+
+fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
+    if !(1..=12).contains(&month) || day == 0 || day > 31 {
+        return None;
+    }
+
+    let year = i64::from(year) - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month = i64::from(month);
+    let day = i64::from(day);
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some(era * 146_097 + day_of_era - 719_468)
+}
+
+fn prompt_to_json(prompt: &PersistedPromptRecord) -> serde_json::Value {
+    serde_json::json!({
+        "turn_number": prompt.turn_number,
+        "prompt_text": prompt.prompt_text,
+        "prompt_length": prompt.prompt_length,
+        "is_truncated": prompt.is_truncated,
+        "harness_type": prompt.harness_type,
+        "model_id": prompt.model_id,
+        "cwd": prompt.cwd,
+        "git_branch": prompt.git_branch,
+        "tool_call_count": prompt.tool_call_count,
+        "duration_ms": prompt.duration_ms,
+        "captured_at": prompt.captured_at,
+    })
+}
+
+fn prompt_from_json(value: &serde_json::Value) -> Result<PersistedPromptRecord> {
+    Ok(PersistedPromptRecord {
+        turn_number: value
+            .get("turn_number")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|raw| u32::try_from(raw).ok())
+            .context("Prompt payload missing 'turn_number' integer")?,
+        prompt_text: value
+            .get("prompt_text")
+            .and_then(serde_json::Value::as_str)
+            .context("Prompt payload missing 'prompt_text' string")?
+            .to_string(),
+        prompt_length: value
+            .get("prompt_length")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|raw| usize::try_from(raw).ok())
+            .context("Prompt payload missing 'prompt_length' integer")?,
+        is_truncated: value
+            .get("is_truncated")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        harness_type: value
+            .get("harness_type")
+            .and_then(serde_json::Value::as_str)
+            .context("Prompt payload missing 'harness_type' string")?
+            .to_string(),
+        model_id: value
+            .get("model_id")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        cwd: value
+            .get("cwd")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        git_branch: value
+            .get("git_branch")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        tool_call_count: value
+            .get("tool_call_count")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|raw| u32::try_from(raw).ok())
+            .unwrap_or(0),
+        duration_ms: value
+            .get("duration_ms")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0),
+        captured_at: value
+            .get("captured_at")
+            .and_then(serde_json::Value::as_str)
+            .context("Prompt payload missing 'captured_at' string")?
+            .to_string(),
+    })
 }
 
 fn deterministic_uuid_v4_from_seed(seed: &str) -> String {
@@ -1219,6 +1689,10 @@ pub struct PendingFileCheckpoint {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PendingCheckpoint {
     pub files: Vec<PendingFileCheckpoint>,
+    pub harness_type: String,
+    pub git_branch: Option<String>,
+    pub model_id: Option<String>,
+    pub prompts: Vec<PendingPromptCheckpoint>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1229,9 +1703,35 @@ pub struct FinalizedFileCheckpoint {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingPromptCheckpoint {
+    pub turn_number: u32,
+    pub prompt_text: String,
+    pub prompt_length: usize,
+    pub is_truncated: bool,
+    pub cwd: Option<String>,
+    pub transcript_path: Option<String>,
+    pub captured_at: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FinalizedPromptCheckpoint {
+    pub turn_number: u32,
+    pub prompt_text: String,
+    pub prompt_length: usize,
+    pub is_truncated: bool,
+    pub cwd: Option<String>,
+    pub transcript_path: Option<String>,
+    pub captured_at: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FinalizedCheckpoint {
     pub anchors: PreCommitTreeAnchors,
+    pub harness_type: String,
+    pub git_branch: Option<String>,
+    pub model_id: Option<String>,
     pub files: Vec<FinalizedFileCheckpoint>,
+    pub prompts: Vec<FinalizedPromptCheckpoint>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1265,10 +1765,27 @@ pub struct PostCommitRuntimeState {
 pub struct PostCommitInput {
     pub record_id: String,
     pub timestamp_rfc3339: String,
+    pub committed_at_unix_ms: i64,
     pub commit_sha: String,
     pub parent_sha: Option<String>,
     pub idempotency_key: String,
     pub files: Vec<FileAttributionInput>,
+    pub prompts: Vec<PersistedPromptRecord>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PersistedPromptRecord {
+    pub turn_number: u32,
+    pub prompt_text: String,
+    pub prompt_length: usize,
+    pub is_truncated: bool,
+    pub harness_type: String,
+    pub model_id: Option<String>,
+    pub cwd: Option<String>,
+    pub git_branch: Option<String>,
+    pub tool_call_count: u32,
+    pub duration_ms: i64,
+    pub captured_at: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1286,6 +1803,7 @@ pub struct PersistedTraceRecord {
     pub content_type: String,
     pub notes_ref: String,
     pub record: AgentTraceRecord,
+    pub prompts: Vec<PersistedPromptRecord>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1320,6 +1838,7 @@ pub struct TraceRetryQueueEntry {
     pub content_type: String,
     pub notes_ref: String,
     pub record: AgentTraceRecord,
+    pub prompts: Vec<PersistedPromptRecord>,
 }
 
 pub trait TraceNotesWriter {
@@ -1627,6 +2146,28 @@ async fn write_trace_record_to_local_db(
         }
     }
 
+    for prompt in &record.prompts {
+        conn.execute(
+            "INSERT INTO prompts (commit_id, prompt_text, prompt_length, is_truncated, turn_number, harness_type, model_id, cwd, git_branch, tool_call_count, duration_ms, captured_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            (
+                commit_id,
+                prompt.prompt_text.as_str(),
+                i64::try_from(prompt.prompt_length)
+                    .context("Prompt length exceeded supported SQLite integer range")?,
+                prompt.is_truncated,
+                i64::from(prompt.turn_number),
+                prompt.harness_type.as_str(),
+                prompt.model_id.as_deref(),
+                prompt.cwd.as_deref(),
+                prompt.git_branch.as_deref(),
+                i64::from(prompt.tool_call_count),
+                prompt.duration_ms,
+                prompt.captured_at.as_str(),
+            ),
+        )
+        .await?;
+    }
+
     Ok(true)
 }
 
@@ -1656,6 +2197,7 @@ impl TraceRetryQueue for JsonFileTraceRetryQueue {
             "content_type": entry.content_type,
             "notes_ref": entry.notes_ref,
             "record": trace_record_to_json(&entry.record),
+            "prompts": entry.prompts.iter().map(prompt_to_json).collect::<Vec<_>>(),
         })
         .to_string();
         append_jsonl_line(&self.path, &line)?;
@@ -1723,6 +2265,13 @@ impl TraceRetryQueue for JsonFileTraceRetryQueue {
             .filter_map(|value| value.as_str())
             .filter_map(persistence_target_from_label)
             .collect::<Vec<_>>();
+        let prompts = parsed
+            .get("prompts")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(prompt_from_json)
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(Some(TraceRetryQueueEntry {
             commit_sha,
@@ -1730,6 +2279,7 @@ impl TraceRetryQueue for JsonFileTraceRetryQueue {
             content_type,
             notes_ref,
             record,
+            prompts,
         }))
     }
 }
@@ -2264,6 +2814,7 @@ pub fn finalize_rewrite_trace(
         content_type: TRACE_CONTENT_TYPE.to_string(),
         notes_ref: crate::services::agent_trace::NOTES_REF.to_string(),
         record: record.clone(),
+        prompts: Vec::new(),
     };
 
     let notes_result = notes_writer.write_note(note);
@@ -2287,6 +2838,7 @@ pub fn finalize_rewrite_trace(
         content_type: TRACE_CONTENT_TYPE.to_string(),
         notes_ref: crate::services::agent_trace::NOTES_REF.to_string(),
         record: record.clone(),
+        prompts: Vec::new(),
     })?;
 
     Ok(RewriteTraceFinalization::QueuedFallback(
@@ -2401,17 +2953,28 @@ pub fn finalize_post_commit_trace(
         ));
     }
 
+    let PostCommitInput {
+        record_id,
+        timestamp_rfc3339,
+        committed_at_unix_ms: _,
+        commit_sha,
+        parent_sha,
+        idempotency_key,
+        files,
+        prompts,
+    } = input;
+
     let mut record = build_trace_payload(TraceAdapterInput {
-        record_id: input.record_id,
-        timestamp_rfc3339: input.timestamp_rfc3339,
-        commit_sha: input.commit_sha.clone(),
-        files: input.files,
+        record_id,
+        timestamp_rfc3339,
+        commit_sha: commit_sha.clone(),
+        files,
         quality_status: QualityStatus::Final,
         rewrite: None,
-        idempotency_key: Some(input.idempotency_key.clone()),
+        idempotency_key: Some(idempotency_key.clone()),
     });
 
-    if let Some(parent_sha) = input.parent_sha {
+    if let Some(parent_sha) = parent_sha {
         record
             .metadata
             .insert(POST_COMMIT_PARENT_SHA_METADATA_KEY.to_string(), parent_sha);
@@ -2419,16 +2982,17 @@ pub fn finalize_post_commit_trace(
 
     let note = TraceNote {
         notes_ref: crate::services::agent_trace::NOTES_REF.to_string(),
-        commit_sha: input.commit_sha.clone(),
+        commit_sha: commit_sha.clone(),
         content_type: TRACE_CONTENT_TYPE.to_string(),
         record: record.clone(),
     };
     let persisted = PersistedTraceRecord {
-        commit_sha: input.commit_sha.clone(),
-        idempotency_key: input.idempotency_key,
+        commit_sha: commit_sha.clone(),
+        idempotency_key,
         content_type: TRACE_CONTENT_TYPE.to_string(),
         notes_ref: crate::services::agent_trace::NOTES_REF.to_string(),
         record: record.clone(),
+        prompts: prompts.clone(),
     };
 
     let notes_result = notes_writer.write_note(note);
@@ -2436,9 +3000,9 @@ pub fn finalize_post_commit_trace(
 
     let failed_targets = collect_failed_targets(&notes_result, &database_result);
     if failed_targets.is_empty() {
-        emission_ledger.mark_emitted(&input.commit_sha);
+        emission_ledger.mark_emitted(&commit_sha);
         return Ok(PostCommitFinalization::Persisted(PostCommitPersisted {
-            commit_sha: input.commit_sha,
+            commit_sha,
             notes: notes_result,
             database: database_result,
             trace_id: record.id,
@@ -2446,16 +3010,17 @@ pub fn finalize_post_commit_trace(
     }
 
     retry_queue.enqueue(TraceRetryQueueEntry {
-        commit_sha: input.commit_sha.clone(),
+        commit_sha: commit_sha.clone(),
         failed_targets: failed_targets.clone(),
         content_type: TRACE_CONTENT_TYPE.to_string(),
         notes_ref: crate::services::agent_trace::NOTES_REF.to_string(),
         record: record.clone(),
+        prompts,
     })?;
 
     Ok(PostCommitFinalization::QueuedFallback(
         PostCommitQueuedFallback {
-            commit_sha: input.commit_sha,
+            commit_sha,
             failed_targets,
             trace_id: record.id,
         },
@@ -2527,6 +3092,7 @@ pub fn process_trace_retry_queue(
                 content_type: entry.content_type.clone(),
                 notes_ref: entry.notes_ref.clone(),
                 record: entry.record.clone(),
+                prompts: entry.prompts.clone(),
             })
         } else {
             PersistenceWriteResult::AlreadyExists
@@ -2555,6 +3121,7 @@ pub fn process_trace_retry_queue(
             content_type: entry.content_type,
             notes_ref: entry.notes_ref,
             record: entry.record,
+            prompts: entry.prompts,
         })?;
     }
 
@@ -2618,8 +3185,15 @@ pub fn finalize_pre_commit_checkpoint(
         return PreCommitFinalization::NoOp(PreCommitNoOpReason::BareRepository);
     }
 
-    let files = pending
-        .files
+    let PendingCheckpoint {
+        files: pending_files,
+        harness_type,
+        git_branch,
+        model_id,
+        prompts: pending_prompts,
+    } = pending;
+
+    let files = pending_files
         .into_iter()
         .filter_map(|file| {
             if file.staged_ranges.is_empty() {
@@ -2634,7 +3208,27 @@ pub fn finalize_pre_commit_checkpoint(
         })
         .collect();
 
-    PreCommitFinalization::Finalized(FinalizedCheckpoint { anchors, files })
+    let prompts = pending_prompts
+        .into_iter()
+        .map(|prompt| FinalizedPromptCheckpoint {
+            turn_number: prompt.turn_number,
+            prompt_text: prompt.prompt_text,
+            prompt_length: prompt.prompt_length,
+            is_truncated: prompt.is_truncated,
+            cwd: prompt.cwd,
+            transcript_path: prompt.transcript_path,
+            captured_at: prompt.captured_at,
+        })
+        .collect();
+
+    PreCommitFinalization::Finalized(FinalizedCheckpoint {
+        anchors,
+        harness_type,
+        git_branch,
+        model_id,
+        files,
+        prompts,
+    })
 }
 
 #[cfg(test)]

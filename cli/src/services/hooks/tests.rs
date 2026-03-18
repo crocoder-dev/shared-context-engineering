@@ -1,16 +1,26 @@
-use anyhow::Result;
+use std::path::Path;
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use anyhow::{Context, Result};
+use serde_json::Value;
 
 use crate::services::agent_trace::{
     build_trace_payload, ContributorInput, ContributorType, ConversationInput,
     FileAttributionInput, QualityStatus, RangeInput, TraceAdapterInput, METADATA_QUALITY_STATUS,
     METADATA_REWRITE_CONFIDENCE, METADATA_REWRITE_FROM, METADATA_REWRITE_METHOD,
 };
+use crate::services::local_db::{apply_core_schema_migrations, LocalDatabaseTarget};
+use crate::services::trace::{render_prompt_trace_for_test, TraceFormat};
 
 use super::{
-    apply_commit_msg_coauthor_policy, checkpoint_has_explicit_sce_attribution,
+    apply_commit_msg_coauthor_policy, build_post_commit_input,
+    checkpoint_has_explicit_sce_attribution, collect_pending_checkpoint,
     finalize_post_commit_trace, finalize_post_rewrite_remap, finalize_pre_commit_checkpoint,
-    finalize_rewrite_trace, process_trace_retry_queue, run_hooks_subcommand, CommitMsgRuntimeState,
-    HookSubcommand, PendingCheckpoint, PendingFileCheckpoint, PendingLineRange,
+    finalize_rewrite_trace, load_pending_prompts, load_post_commit_prompt_records,
+    process_trace_retry_queue, resolve_pre_commit_git_branch, run_hooks_subcommand,
+    write_finalized_checkpoint, CommitMsgRuntimeState, HookSubcommand, LocalDbTraceRecordStore,
+    PendingCheckpoint, PendingFileCheckpoint, PendingLineRange, PendingPromptCheckpoint,
     PersistenceErrorClass, PersistenceFailure, PersistenceTarget, PersistenceWriteResult,
     PostCommitFinalization, PostCommitInput, PostCommitNoOpReason, PostCommitRuntimeState,
     PostRewriteFinalization, PostRewriteNoOpReason, PostRewriteRuntimeState, PreCommitFinalization,
@@ -34,6 +44,18 @@ fn sample_pending_checkpoint() -> PendingCheckpoint {
                 start_line: 4,
                 end_line: 6,
             }],
+        }],
+        harness_type: "claude_code".to_string(),
+        git_branch: Some("feature/prompt-capture".to_string()),
+        model_id: Some("claude-sonnet-4-20250514".to_string()),
+        prompts: vec![PendingPromptCheckpoint {
+            turn_number: 1,
+            prompt_text: "add attribution".to_string(),
+            prompt_length: 15,
+            is_truncated: false,
+            cwd: Some("/repo".to_string()),
+            transcript_path: Some("/tmp/claude-session.jsonl".to_string()),
+            captured_at: "2026-03-18T10:00:00Z".to_string(),
         }],
     }
 }
@@ -91,19 +113,24 @@ impl TraceNotesWriter for FakeNotesWriter {
 
 struct FakeRecordStore {
     result: PersistenceWriteResult,
+    writes: Vec<super::PersistedTraceRecord>,
 }
 
 impl FakeRecordStore {
     fn new(result: PersistenceWriteResult) -> Self {
-        Self { result }
+        Self {
+            result,
+            writes: Vec::new(),
+        }
     }
 }
 
 impl TraceRecordStore for FakeRecordStore {
     fn write_trace_record(
         &mut self,
-        _record: super::PersistedTraceRecord,
+        record: super::PersistedTraceRecord,
     ) -> PersistenceWriteResult {
+        self.writes.push(record);
         self.result.clone()
     }
 }
@@ -188,6 +215,7 @@ fn sample_retry_entry_with_target(target: PersistenceTarget) -> TraceRetryQueueE
         content_type: "application/vnd.agent-trace.record+json".to_string(),
         notes_ref: "refs/notes/agent-trace".to_string(),
         record,
+        prompts: Vec::new(),
     }
 }
 
@@ -238,6 +266,7 @@ fn sample_post_commit_input() -> PostCommitInput {
     PostCommitInput {
         record_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
         timestamp_rfc3339: "2026-03-04T10:11:12Z".to_string(),
+        committed_at_unix_ms: 1_772_586_672_000,
         commit_sha: "abc123def456".to_string(),
         parent_sha: Some("def789ghi000".to_string()),
         idempotency_key: "repo:abc123def456".to_string(),
@@ -255,6 +284,19 @@ fn sample_post_commit_input() -> PostCommitInput {
                     },
                 }],
             }],
+        }],
+        prompts: vec![super::PersistedPromptRecord {
+            turn_number: 1,
+            prompt_text: "capture prompt metrics".to_string(),
+            prompt_length: 22,
+            is_truncated: false,
+            harness_type: "claude_code".to_string(),
+            model_id: Some("claude-sonnet-4-20250514".to_string()),
+            cwd: Some("/repo".to_string()),
+            git_branch: Some("feature/prompt-capture".to_string()),
+            tool_call_count: 3,
+            duration_ms: 45_000,
+            captured_at: "2026-03-04T10:10:27Z".to_string(),
         }],
     }
 }
@@ -313,6 +355,10 @@ fn post_commit_finalization_dual_writes_with_parent_metadata_and_mime() -> Resul
     assert_eq!(persisted.trace_id, "550e8400-e29b-41d4-a716-446655440000");
 
     assert_eq!(notes.writes.len(), 1);
+    assert_eq!(store.writes.len(), 1);
+    assert_eq!(store.writes[0].prompts.len(), 1);
+    assert_eq!(store.writes[0].prompts[0].tool_call_count, 3);
+    assert_eq!(store.writes[0].prompts[0].duration_ms, 45_000);
     assert_eq!(
         notes.writes[0].content_type,
         "application/vnd.agent-trace.record+json"
@@ -363,6 +409,7 @@ fn post_commit_finalization_queues_when_db_write_is_transient_failure() -> Resul
         queue.entries[0].failed_targets,
         vec![PersistenceTarget::Database]
     );
+    assert_eq!(queue.entries[0].prompts.len(), 1);
     assert!(!ledger.has_emitted("abc123def456"));
     Ok(())
 }
@@ -733,6 +780,18 @@ fn pre_commit_finalization_uses_only_staged_ranges_and_captures_anchors() {
                 }],
             },
         ],
+        harness_type: "claude_code".to_string(),
+        git_branch: Some("feature/prompt-capture".to_string()),
+        model_id: Some("claude-sonnet-4-20250514".to_string()),
+        prompts: vec![PendingPromptCheckpoint {
+            turn_number: 1,
+            prompt_text: "fix edge case".to_string(),
+            prompt_length: 13,
+            is_truncated: false,
+            cwd: Some("/repo/src".to_string()),
+            transcript_path: Some("/tmp/claude-session.jsonl".to_string()),
+            captured_at: "2026-03-18T10:00:00Z".to_string(),
+        }],
     };
     let anchors = sample_anchors();
 
@@ -743,6 +802,15 @@ fn pre_commit_finalization_uses_only_staged_ranges_and_captures_anchors() {
     };
 
     assert_eq!(finalized.anchors, anchors);
+    assert_eq!(finalized.harness_type, "claude_code");
+    assert_eq!(
+        finalized.git_branch.as_deref(),
+        Some("feature/prompt-capture")
+    );
+    assert_eq!(
+        finalized.model_id.as_deref(),
+        Some("claude-sonnet-4-20250514")
+    );
     assert_eq!(finalized.files.len(), 1);
     assert_eq!(finalized.files[0].path, "src/keep.rs");
     assert!(!finalized.files[0].has_sce_attribution);
@@ -754,6 +822,340 @@ fn pre_commit_finalization_uses_only_staged_ranges_and_captures_anchors() {
             end_line: 20
         }
     );
+    assert_eq!(finalized.prompts.len(), 1);
+    assert_eq!(finalized.prompts[0].turn_number, 1);
+    assert_eq!(finalized.prompts[0].prompt_text, "fix edge case");
+    assert_eq!(
+        finalized.prompts[0].transcript_path.as_deref(),
+        Some("/tmp/claude-session.jsonl")
+    );
+    assert_eq!(finalized.prompts[0].captured_at, "2026-03-18T10:00:00Z");
+}
+
+#[test]
+fn load_pending_prompts_dedupes_entries_and_skips_invalid_rows() -> Result<()> {
+    let repository_root = std::env::temp_dir().join(format!(
+        "sce-hooks-prompts-{}-{}",
+        std::process::id(),
+        "dedupe"
+    ));
+    if repository_root.exists() {
+        std::fs::remove_dir_all(&repository_root)?;
+    }
+    std::fs::create_dir_all(&repository_root)?;
+
+    let init = std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&repository_root)
+        .output()?;
+    assert!(init.status.success());
+
+    let prompt_dir = repository_root.join(".git").join("sce");
+    std::fs::create_dir_all(&prompt_dir)?;
+    std::fs::write(
+        prompt_dir.join("prompts.jsonl"),
+        concat!(
+            "{\"prompt\":\"first prompt\",\"cwd\":\"/repo\",\"transcript_path\":\"/tmp/claude-a.jsonl\",\"timestamp\":\"2026-03-18T10:00:00Z\"}\n",
+            "not-json\n",
+            "{\"prompt\":\"first prompt\",\"cwd\":\"/repo\",\"transcript_path\":\"/tmp/claude-a.jsonl\",\"timestamp\":\"2026-03-18T10:00:00Z\"}\n",
+            "{\"prompt\":\"second prompt\",\"cwd\":\"/repo/tests\",\"transcript_path\":\"/tmp/claude-b.jsonl\",\"timestamp\":\"2026-03-18T10:01:00Z\"}\n"
+        ),
+    )?;
+
+    let prompts = load_pending_prompts(&repository_root)?;
+
+    assert_eq!(prompts.len(), 2);
+    assert_eq!(prompts[0].turn_number, 1);
+    assert_eq!(prompts[0].prompt_text, "first prompt");
+    assert_eq!(
+        prompts[0].transcript_path.as_deref(),
+        Some("/tmp/claude-a.jsonl")
+    );
+    assert_eq!(prompts[1].turn_number, 2);
+    assert_eq!(prompts[1].prompt_text, "second prompt");
+    assert_eq!(prompts[1].cwd.as_deref(), Some("/repo/tests"));
+
+    std::fs::remove_dir_all(&repository_root)?;
+    Ok(())
+}
+
+#[test]
+fn load_pending_prompts_inherits_last_known_cwd() -> Result<()> {
+    let repository_root = std::env::temp_dir().join(format!(
+        "sce-hooks-prompts-{}-{}",
+        std::process::id(),
+        "cwd-inherit"
+    ));
+    if repository_root.exists() {
+        std::fs::remove_dir_all(&repository_root)?;
+    }
+    std::fs::create_dir_all(&repository_root)?;
+
+    let init = std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&repository_root)
+        .output()?;
+    assert!(init.status.success());
+
+    let prompt_dir = repository_root.join(".git").join("sce");
+    std::fs::create_dir_all(&prompt_dir)?;
+    std::fs::write(
+        prompt_dir.join("prompts.jsonl"),
+        concat!(
+            "{\"prompt\":\"first prompt\",\"cwd\":\"/repo/src\",\"timestamp\":\"2026-03-18T10:00:00Z\"}\n",
+            "{\"prompt\":\"second prompt\",\"timestamp\":\"2026-03-18T10:01:00Z\"}\n"
+        ),
+    )?;
+
+    let prompts = load_pending_prompts(&repository_root)?;
+
+    assert_eq!(prompts.len(), 2);
+    assert_eq!(prompts[1].cwd.as_deref(), Some("/repo/src"));
+
+    std::fs::remove_dir_all(&repository_root)?;
+    Ok(())
+}
+
+#[test]
+fn load_post_commit_prompt_records_computes_tool_counts_durations_and_truncation() -> Result<()> {
+    let repository_root = std::env::temp_dir().join(format!(
+        "sce-hooks-post-commit-prompts-{}-{}",
+        std::process::id(),
+        "metrics"
+    ));
+    if repository_root.exists() {
+        std::fs::remove_dir_all(&repository_root)?;
+    }
+    std::fs::create_dir_all(&repository_root)?;
+
+    let init = std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&repository_root)
+        .output()?;
+    assert!(init.status.success());
+
+    let transcript_path = repository_root.join("claude-session.jsonl");
+    std::fs::write(
+        &transcript_path,
+        concat!(
+            "{\"type\":\"assistant\",\"timestamp\":\"2026-03-18T10:00:05.000Z\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\"},{\"type\":\"tool_use\",\"name\":\"Edit\"}]}}\n",
+            "{\"type\":\"assistant\",\"timestamp\":\"2026-03-18T10:01:05.000Z\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\"}]}}\n"
+        ),
+    )?;
+
+    let checkpoint_dir = repository_root.join(".git").join("sce");
+    std::fs::create_dir_all(&checkpoint_dir)?;
+    let long_prompt = "x".repeat(10_500);
+    let checkpoint_json = serde_json::json!({
+        "harness_type": "claude_code",
+        "git_branch": "feature/prompt-capture",
+        "model_id": "claude-sonnet-4-20250514",
+        "prompts": [
+            {
+                "turn_number": 1,
+                "prompt_text": "first prompt",
+                "prompt_length": 12,
+                "is_truncated": false,
+                "cwd": "/repo",
+                "transcript_path": transcript_path,
+                "captured_at": "2026-03-18T10:00:00.000Z"
+            },
+            {
+                "turn_number": 2,
+                "prompt_text": long_prompt,
+                "prompt_length": 10500,
+                "is_truncated": false,
+                "cwd": "/repo/tests",
+                "transcript_path": transcript_path,
+                "captured_at": "2026-03-18T10:01:00.000Z"
+            }
+        ]
+    });
+    std::fs::write(
+        checkpoint_dir.join("pre-commit-checkpoint.json"),
+        serde_json::to_vec_pretty(&checkpoint_json)?,
+    )?;
+
+    let prompts = load_post_commit_prompt_records(
+        &repository_root,
+        1_773_828_090_000,
+        "2026-03-18T10:01:30+00:00",
+    )?;
+
+    assert_eq!(prompts.len(), 2);
+    assert_eq!(prompts[0].tool_call_count, 2);
+    assert_eq!(prompts[0].duration_ms, 60_000);
+    assert_eq!(prompts[1].tool_call_count, 1);
+    assert_eq!(prompts[1].duration_ms, 30_000);
+    assert!(prompts[1].is_truncated);
+    assert_eq!(prompts[1].prompt_length, 10_500);
+    assert_eq!(prompts[1].prompt_text.len(), 10_240);
+
+    std::fs::remove_dir_all(&repository_root)?;
+    Ok(())
+}
+
+#[test]
+fn resolve_pre_commit_git_branch_returns_current_branch() -> Result<()> {
+    let repository_root = std::env::temp_dir().join(format!(
+        "sce-hooks-branch-{}-{}",
+        std::process::id(),
+        "current"
+    ));
+    if repository_root.exists() {
+        std::fs::remove_dir_all(&repository_root)?;
+    }
+    std::fs::create_dir_all(&repository_root)?;
+
+    let init = std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&repository_root)
+        .output()?;
+    assert!(init.status.success());
+
+    let checkout = std::process::Command::new("git")
+        .args(["checkout", "-b", "feature/prompt-capture"])
+        .current_dir(&repository_root)
+        .output()?;
+    assert!(checkout.status.success());
+
+    let branch = resolve_pre_commit_git_branch(&repository_root)?;
+
+    assert_eq!(branch.as_deref(), Some("feature/prompt-capture"));
+
+    std::fs::remove_dir_all(&repository_root)?;
+    Ok(())
+}
+
+#[test]
+fn prompt_capture_flow_persists_and_queries_end_to_end() -> Result<()> {
+    let suffix = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let temp_root = std::env::temp_dir().join(format!("sce-prompt-flow-{suffix}"));
+    let repository_root = temp_root.join("repo");
+    std::fs::create_dir_all(repository_root.join("src"))?;
+
+    git_ok(&repository_root, &["init"])?;
+    git_ok(&repository_root, &["config", "user.name", "SCE Test"])?;
+    git_ok(
+        &repository_root,
+        &["config", "user.email", "sce-test@example.com"],
+    )?;
+    git_ok(
+        &repository_root,
+        &["checkout", "-b", "feature/prompt-capture"],
+    )?;
+
+    std::fs::write(repository_root.join("src/lib.rs"), "fn main() {}\n")?;
+    git_ok(&repository_root, &["add", "src/lib.rs"])?;
+    git_ok(&repository_root, &["commit", "-m", "initial"])?;
+
+    std::fs::write(
+        repository_root.join("src/lib.rs"),
+        "fn main() {\n    println!(\"prompt capture\");\n}\n",
+    )?;
+    git_ok(&repository_root, &["add", "src/lib.rs"])?;
+
+    let prompt_dir = repository_root.join(".git").join("sce");
+    std::fs::create_dir_all(&prompt_dir)?;
+    let transcript_path = repository_root.join("claude-session.jsonl");
+    std::fs::write(
+        &transcript_path,
+        concat!(
+            "{\"type\":\"assistant\",\"timestamp\":\"2026-03-18T10:00:05.000Z\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\"}]}}\n",
+            "{\"type\":\"assistant\",\"timestamp\":\"2026-03-18T10:00:45.000Z\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Edit\"},{\"type\":\"tool_use\",\"name\":\"Bash\"}]}}\n"
+        ),
+    )?;
+    std::fs::write(
+        prompt_dir.join("prompts.jsonl"),
+        format!(
+            concat!(
+                "{{\"prompt\":\"add prompt persistence\",\"cwd\":\"/repo/src\",\"transcript_path\":\"{}\",\"timestamp\":\"2026-03-18T10:00:00.000Z\"}}\n",
+                "{{\"prompt\":\"verify trace query output\",\"cwd\":\"/repo/src\",\"transcript_path\":\"{}\",\"timestamp\":\"2026-03-18T10:00:30.000Z\"}}\n"
+            ),
+            transcript_path.display(),
+            transcript_path.display(),
+        ),
+    )?;
+
+    let pending = collect_pending_checkpoint(&repository_root)?;
+    assert_eq!(pending.prompts.len(), 2);
+    let PreCommitFinalization::Finalized(checkpoint) =
+        finalize_pre_commit_checkpoint(&sample_runtime(), sample_anchors(), pending)
+    else {
+        panic!("expected finalized checkpoint");
+    };
+    write_finalized_checkpoint(&repository_root, &checkpoint)?;
+
+    git_ok(
+        &repository_root,
+        &["commit", "-m", "persist prompt-capture trace"],
+    )?;
+
+    let input = build_post_commit_input(&repository_root)?;
+    let commit_sha = input.commit_sha.clone();
+    let db_path = temp_root.join("agent-trace.db");
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    runtime.block_on(apply_core_schema_migrations(LocalDatabaseTarget::Path(
+        &db_path,
+    )))?;
+
+    let mut notes_writer = FakeNotesWriter::new(PersistenceWriteResult::Written);
+    let mut record_store = LocalDbTraceRecordStore {
+        repository_root: repository_root.clone(),
+        db_path: db_path.clone(),
+    };
+    let mut retry_queue = FakeRetryQueue::default();
+    let mut emission_ledger = FakeEmissionLedger::default();
+
+    let finalization = finalize_post_commit_trace(
+        &sample_post_commit_runtime(),
+        input,
+        &mut notes_writer,
+        &mut record_store,
+        &mut retry_queue,
+        &mut emission_ledger,
+    )?;
+    assert!(matches!(finalization, PostCommitFinalization::Persisted(_)));
+    assert!(retry_queue.entries.is_empty());
+
+    let short_sha = &commit_sha[..7];
+    let text_output =
+        render_prompt_trace_for_test(&db_path, &repository_root, short_sha, TraceFormat::Text)?;
+    assert!(text_output.contains("Commit:"));
+    assert!(text_output.contains("Harness: claude_code"));
+    assert!(text_output.contains("Branch: feature/prompt-capture"));
+    assert!(text_output.contains("Total prompts: 2"));
+    assert!(text_output.contains("add prompt persistence"));
+    assert!(text_output.contains("verify trace query output"));
+
+    let json_output =
+        render_prompt_trace_for_test(&db_path, &repository_root, &commit_sha, TraceFormat::Json)?;
+    let parsed: Value = serde_json::from_str(&json_output)?;
+    assert_eq!(parsed["commit"], commit_sha);
+    assert_eq!(parsed["prompt_count"], 2);
+    assert_eq!(parsed["prompts"][0]["tool_call_count"], 1);
+    assert_eq!(parsed["prompts"][0]["duration_ms"], 30_000);
+    assert_eq!(parsed["prompts"][1]["tool_call_count"], 2);
+
+    std::fs::remove_dir_all(&temp_root)?;
+    Ok(())
+}
+
+fn git_ok(repository_root: &Path, args: &[&str]) -> Result<()> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repository_root)
+        .output()
+        .with_context(|| format!("failed to run git {}", args.join(" ")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr).trim()
+    )
 }
 
 #[test]
