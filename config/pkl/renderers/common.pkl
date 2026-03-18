@@ -1,3 +1,4 @@
+import "../base/mcp.pkl" as mcp
 import "../base/shared-content.pkl" as shared
 
 class RenderedTargetDocument {
@@ -15,6 +16,8 @@ class RenderedTextFile {
 
 tileWorkspace = "crocoder-dev"
 tileVersion = read("../../../.version").text.trim()
+
+sceMcpServer = mcp.sce_local_stdio_server
 
 sharedSkillSlugs = shared.skills.toMap().keys.toList().sort()
 

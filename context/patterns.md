@@ -9,11 +9,12 @@
 
 - Expose operational workflows as flake apps so commands are stable and system-mapped across supported `flake-utils` default systems.
 - Current repo command contracts:
-  - `nix run .#sync-opencode-config` is the canonical entrypoint for staged regeneration/replacement of `config/` and replacement of repository-root `.opencode/` from regenerated `config/.opencode/`.
+- `nix run .#sync-opencode-config` is the canonical entrypoint for staged regeneration/replacement of `config/` and replacement of repository-root `.opencode/` and `.mcp.json` from regenerated `config/.opencode/` and `config/.mcp.json`.
   - `nix run .#token-count-workflows` is the canonical root entrypoint for static workflow token counting (wrapping `bun run token-count-workflows` from `evals/` through `nix develop`).
 - For flake app outputs, include `meta.description` so `nix flake check` app validation stays warning-free.
 - For destructive config replacement flows, regenerate into a temporary staged `config/` first, validate required generated directories exist, and only then swap live `config/`.
 - For destructive root `.opencode/` replacement flows, keep exclusions explicit (for example `node_modules`), use backup-and-restore around swap, and run a source/target tree parity check with the same exclusions.
+- For generated root manifest files like `.mcp.json`, copy from the staged generated source only after `config/` swap succeeds, and verify byte-for-byte parity after copy.
 - Keep command help available via `nix run .#sync-opencode-config -- --help` to provide deterministic usage checks during incremental implementation.
 
 ## Dev-shell fallback shims for unavailable nixpkgs tools
@@ -24,6 +25,7 @@
 ## Pkl renderer layering
 
 - Keep target-agnostic canonical content in `config/pkl/base/shared-content.pkl`.
+- Keep cross-target generated-config primitives (for example shared MCP server definitions) in focused base modules under `config/pkl/base/` and re-export them through `config/pkl/renderers/common.pkl` when multiple renderers need the same contract.
 - Keep `config/pkl/base/shared-content.pkl` synchronized with the canonical authored instruction bodies (currently mirrored from the OpenCode source tree under `config/{opencode_root}` for `agent`, `command`, and `skills`, with frontmatter removed) before regenerating targets.
 - When two or more generated agent bodies share baseline doctrine, extract that doctrine into reusable canonical constants in `config/pkl/base/shared-content.pkl` and compose via interpolation instead of duplicating prose per agent.
 - Implement target-specific formatting in dedicated renderer modules under `config/pkl/renderers/`.
@@ -54,7 +56,7 @@
 - Treat `nix run .#pkl-check-generated` and `nix flake check` as the lightweight post-task verification baseline and run both after each completed task.
 - Do not run `evals/` test suites autonomously during plan-task execution; run them only when the user explicitly requests eval coverage.
 - For non-destructive verification during development, run `nix develop -c pkl eval -m context/tmp/t04-generated config/pkl/generate.pkl` and inspect emitted paths under `context/tmp/`.
-- Keep `output.files` limited to generated-owned paths only (`config/{opencode_root}/{agent,command,skills,lib,plugins}`, generated `config/{opencode_root}/package.json`, and `config/{claude_root}/{agents,commands,skills,lib}` where roots map to `.opencode` and `.claude`).
+- Keep `output.files` limited to generated-owned paths only (`config/{opencode_root}/{agent,command,skills,lib,plugins}`, generated `config/{opencode_root}/package.json`, `config/{claude_root}/{agents,commands,skills,lib}`, and generated root-scoped manifests such as `config/.mcp.json`, where roots map to `.opencode` and `.claude`).
 - Keep the shared drift library source marker-free in `config/.opencode/lib/drift-collectors.js` so generated `lib/drift-collectors.js` outputs stay behavior-only and deterministic across both targets.
 - For OpenCode pre-execution tool policy hooks, keep the plugin entrypoint thin (`plugins/*.js`) and move normalization, config loading, and policy matching logic into `lib/*.js` so manual and automated profiles regenerate identical enforcement behavior from one canonical source.
 - For Claude pre-execution bash-policy enforcement, keep `.claude/settings.json` limited to hook registration and path wiring, keep the command hook thin under `.claude/hooks/`, and reuse the same shared `lib/bash-policy-runtime.js` + `lib/bash-policy-presets.json` logic so allow/block decisions and denial text stay parity-aligned with OpenCode.

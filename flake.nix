@@ -145,6 +145,7 @@
                 "config/.claude/commands"
                 "config/.claude/skills"
                 "config/.claude/lib/drift-collectors.js"
+                "config/.mcp.json"
               )
 
               stale=0

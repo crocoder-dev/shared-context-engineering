@@ -11,6 +11,7 @@ Current scope:
 - Regenerate generated config outputs in a staging workspace.
 - Replace repository config/ only after successful staged regeneration.
 - Replace repository-root .opencode/ from staged config/.opencode/.
+- Replace repository-root .mcp.json from staged config/.mcp.json when present.
 - Exclude runtime artifacts during root sync (for example node_modules/).
 EOF
 }
@@ -29,6 +30,7 @@ fi
 
 live_config="${repo_root}/config"
 live_opencode="${repo_root}/.opencode"
+live_project_mcp="${repo_root}/.mcp.json"
 generator_path="${live_config}/pkl/generate.pkl"
 
 if [ ! -d "${live_config}" ]; then
@@ -51,17 +53,29 @@ fi
 stage_root="$(mktemp -d "${TMPDIR:-/tmp}/sync-opencode-config.XXXXXX")"
 stage_config="${stage_root}/config"
 stage_opencode="${stage_config}/.opencode"
+stage_project_mcp="${stage_config}/.mcp.json"
 stage_generator_path="${stage_config}/pkl/generate.pkl"
 backup_config="${repo_root}/.config-pre-sync-backup"
 backup_opencode="${repo_root}/.opencode-pre-sync-backup"
+backup_project_mcp="${repo_root}/.mcp.json-pre-sync-backup"
 config_swap_complete=0
 opencode_swap_complete=0
+project_mcp_swap_complete=0
+project_mcp_preexisting=0
 
 exclude_runtime_artifacts=(
   node_modules
 )
 
 cleanup() {
+  if [ "${project_mcp_swap_complete}" -ne 1 ]; then
+    if [ -f "${backup_project_mcp}" ]; then
+      rm -f "${live_project_mcp}"
+      mv "${backup_project_mcp}" "${live_project_mcp}"
+    elif [ "${project_mcp_preexisting}" -ne 1 ]; then
+      rm -f "${live_project_mcp}"
+    fi
+  fi
   if [ "${opencode_swap_complete}" -ne 1 ] && [ -d "${backup_opencode}" ]; then
     rm -rf "${live_opencode}"
     mv "${backup_opencode}" "${live_opencode}"
@@ -71,6 +85,7 @@ cleanup() {
     mv "${backup_config}" "${live_config}"
   fi
   rm -rf "${stage_root}" "${backup_config}" "${backup_opencode}"
+  rm -f "${backup_project_mcp}"
 }
 trap cleanup EXIT
 
@@ -98,6 +113,15 @@ EOF
   exit 1
 fi
 
+if [ ! -f "${stage_project_mcp}" ]; then
+  cat >&2 <<EOF
+Staged regeneration is missing config/.mcp.json; refusing to replace root .mcp.json.
+Missing file:
+  ${stage_project_mcp}
+EOF
+  exit 1
+fi
+
 if [ -e "${backup_config}" ]; then
   rm -rf "${backup_config}"
 fi
@@ -110,6 +134,10 @@ config_swap_complete=1
 
 if [ -e "${backup_opencode}" ]; then
   rm -rf "${backup_opencode}"
+fi
+
+if [ -e "${backup_project_mcp}" ]; then
+  rm -f "${backup_project_mcp}"
 fi
 
 if [ -e "${live_opencode}" ]; then
@@ -142,7 +170,29 @@ fi
 rm -rf "${backup_opencode}"
 opencode_swap_complete=1
 
+if [ -f "${live_project_mcp}" ]; then
+  echo "==> Replacing repository-root .mcp.json from staged config/.mcp.json"
+  project_mcp_preexisting=1
+  mv "${live_project_mcp}" "${backup_project_mcp}"
+else
+  echo "==> Creating repository-root .mcp.json from staged config/.mcp.json"
+fi
+
+cp "${stage_project_mcp}" "${live_project_mcp}"
+
+if ! diff -q "${stage_project_mcp}" "${live_project_mcp}" >/dev/null; then
+  cat >&2 <<EOF
+Root .mcp.json replacement verification failed.
+Source and target files differ after copy.
+EOF
+  exit 1
+fi
+
+rm -f "${backup_project_mcp}"
+project_mcp_swap_complete=1
+
 cat <<'EOF'
 Done: repository config/ has been regenerated in staging and replaced.
 Done: repository-root .opencode/ has been replaced from staged config/.opencode/.
+Done: repository-root .mcp.json has been replaced from staged config/.mcp.json.
 EOF

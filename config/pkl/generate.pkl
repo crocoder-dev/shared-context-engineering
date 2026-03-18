@@ -96,6 +96,9 @@ output {
     ["config/.opencode/package.json"] {
       text = opencodePackageJsonSource
     }
+    ["config/.opencode/opencode.json"] {
+      text = opencode.opencodeConfig.rendered
+    }
     ["config/automated/.opencode/lib/drift-collectors.js"] {
       text = sharedLibrarySource
     }
@@ -111,6 +114,9 @@ output {
     ["config/automated/.opencode/package.json"] {
       text = opencodePackageJsonSource
     }
+    ["config/automated/.opencode/opencode.json"] {
+      text = opencode_automated.opencodeConfig.rendered
+    }
     ["config/.claude/lib/drift-collectors.js"] {
       text = sharedLibrarySource
     }
@@ -125,6 +131,9 @@ output {
     }
     ["config/.claude/settings.json"] {
       text = claudeSettingsSource
+    }
+    ["config/.mcp.json"] {
+      text = claude.mcpProjectConfig.rendered
     }
   }
 }

@@ -71,3 +71,19 @@ skills {
     }
   }
 }
+
+opencodeConfig = new common.RenderedTextFile {
+  slug = "opencode"
+  rendered = """
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "\(common.sceMcpServer.name)": {
+      "type": "local",
+      "command": \(common.sceMcpServer.command_argv_json),
+      "enabled": true
+    }
+  }
+}
+"""
+}

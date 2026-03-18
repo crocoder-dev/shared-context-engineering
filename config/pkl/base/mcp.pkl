@@ -1,0 +1,17 @@
+class CanonicalMcpServer {
+  name: String
+  transport: String
+  command: String
+  subcommand: String
+
+  command_line: String = "\(command) \(subcommand)"
+  command_argv_json: String = "[\"\(command)\", \"\(subcommand)\"]"
+  stdio_args_json: String = "[\"\(subcommand)\"]"
+}
+
+sce_local_stdio_server = new CanonicalMcpServer {
+  name = "sce"
+  transport = "stdio"
+  command = "sce"
+  subcommand = "mcp"
+}

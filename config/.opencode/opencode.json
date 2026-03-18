@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "sce": {
+      "type": "local",
+      "command": ["sce", "mcp"],
+      "enabled": true
+    }
+  }
+}
