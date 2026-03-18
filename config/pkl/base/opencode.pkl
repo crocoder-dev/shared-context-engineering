@@ -1,0 +1,11 @@
+class CanonicalOpenCodePluginRegistration {
+  id: String
+  path: String
+
+  path_json: String = "\"\(path)\""
+}
+
+sce_bash_policy_plugin = new CanonicalOpenCodePluginRegistration {
+  id = "sce-bash-policy"
+  path = "./plugins/sce-bash-policy.js"
+}

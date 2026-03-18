@@ -2,6 +2,8 @@ import "../base/shared-content-automated.pkl" as shared
 import "common.pkl" as common
 import "opencode-automated-metadata.pkl" as metadata
 
+local generatedOpenCodePluginPathsJson = common.sceGeneratedOpenCodePluginPathsJson
+
 local agentFrontmatterBySlug = new Mapping {
   for (unitSlug, _ in shared.agents) {
     [unitSlug] = """
@@ -77,6 +79,9 @@ opencodeConfig = new common.RenderedTextFile {
   rendered = """
 {
   "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    \(generatedOpenCodePluginPathsJson)
+  ],
   "mcp": {
     "\(common.sceMcpServer.name)": {
       "type": "local",

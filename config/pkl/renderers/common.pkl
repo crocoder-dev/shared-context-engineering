@@ -1,4 +1,5 @@
 import "../base/mcp.pkl" as mcp
+import "../base/opencode.pkl" as opencode
 import "../base/shared-content.pkl" as shared
 
 class RenderedTargetDocument {
@@ -18,6 +19,11 @@ tileWorkspace = "crocoder-dev"
 tileVersion = read("../../../.version").text.trim()
 
 sceMcpServer = mcp.sce_local_stdio_server
+
+sceGeneratedOpenCodePlugins = List(opencode.sce_bash_policy_plugin)
+sceGeneratedOpenCodePluginPathsJson = sceGeneratedOpenCodePlugins
+  .map((plugin) -> plugin.path_json)
+  .join(", ")
 
 sharedSkillSlugs = shared.skills.toMap().keys.toList().sort()
 
