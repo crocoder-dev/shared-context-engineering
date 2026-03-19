@@ -224,12 +224,24 @@ where
         ClassifiedError::dependency(format!("Failed to initialize dependency checks: {error}"))
     })?;
 
-    let logger = services::observability::Logger::from_env().map_err(|error| {
-        ClassifiedError::validation(format!("Invalid observability configuration: {error}"))
+    let cwd = std::env::current_dir().map_err(|error| {
+        ClassifiedError::runtime(format!(
+            "Failed to determine current directory for observability config resolution: {error}"
+        ))
     })?;
-    let telemetry = services::observability::TelemetryRuntime::from_env().map_err(|error| {
-        ClassifiedError::validation(format!("Invalid observability configuration: {error}"))
-    })?;
+    let observability_config = services::config::resolve_observability_runtime_config(&cwd)
+        .map_err(|error| {
+            ClassifiedError::validation(format!("Invalid observability configuration: {error}"))
+        })?;
+    let logger = services::observability::Logger::from_resolved_config(&observability_config)
+        .map_err(|error| {
+            ClassifiedError::validation(format!("Invalid observability configuration: {error}"))
+        })?;
+    let telemetry =
+        services::observability::TelemetryRuntime::from_resolved_config(&observability_config)
+            .map_err(|error| {
+                ClassifiedError::validation(format!("Invalid observability configuration: {error}"))
+            })?;
 
     telemetry.with_default_subscriber(|| {
         logger.info(
