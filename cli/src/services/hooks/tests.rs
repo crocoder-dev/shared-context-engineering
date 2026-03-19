@@ -844,11 +844,7 @@ fn load_pending_prompts_dedupes_entries_and_skips_invalid_rows() -> Result<()> {
     }
     std::fs::create_dir_all(&repository_root)?;
 
-    let init = std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(&repository_root)
-        .output()?;
-    assert!(init.status.success());
+    git_ok(&repository_root, &["init"])?;
 
     let prompt_dir = repository_root.join(".git").join("sce");
     std::fs::create_dir_all(&prompt_dir)?;
@@ -891,11 +887,7 @@ fn load_pending_prompts_inherits_last_known_cwd() -> Result<()> {
     }
     std::fs::create_dir_all(&repository_root)?;
 
-    let init = std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(&repository_root)
-        .output()?;
-    assert!(init.status.success());
+    git_ok(&repository_root, &["init"])?;
 
     let prompt_dir = repository_root.join(".git").join("sce");
     std::fs::create_dir_all(&prompt_dir)?;
@@ -928,11 +920,7 @@ fn load_post_commit_prompt_records_computes_tool_counts_durations_and_truncation
     }
     std::fs::create_dir_all(&repository_root)?;
 
-    let init = std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(&repository_root)
-        .output()?;
-    assert!(init.status.success());
+    git_ok(&repository_root, &["init"])?;
 
     let transcript_path = repository_root.join("claude-session.jsonl");
     std::fs::write(
@@ -1007,17 +995,11 @@ fn resolve_pre_commit_git_branch_returns_current_branch() -> Result<()> {
     }
     std::fs::create_dir_all(&repository_root)?;
 
-    let init = std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(&repository_root)
-        .output()?;
-    assert!(init.status.success());
-
-    let checkout = std::process::Command::new("git")
-        .args(["checkout", "-b", "feature/prompt-capture"])
-        .current_dir(&repository_root)
-        .output()?;
-    assert!(checkout.status.success());
+    git_ok(&repository_root, &["init"])?;
+    git_ok(
+        &repository_root,
+        &["checkout", "-b", "feature/prompt-capture"],
+    )?;
 
     let branch = resolve_pre_commit_git_branch(&repository_root)?;
 
@@ -1142,9 +1124,22 @@ fn prompt_capture_flow_persists_and_queries_end_to_end() -> Result<()> {
 }
 
 fn git_ok(repository_root: &Path, args: &[&str]) -> Result<()> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(repository_root)
+    let mut command = Command::new("git");
+    command.arg("-C").arg(repository_root).args(args);
+    command.env_remove("PWD");
+    for variable in [
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_PREFIX",
+        "GIT_WORK_TREE",
+    ] {
+        command.env_remove(variable);
+    }
+    let output = command
         .output()
         .with_context(|| format!("failed to run git {}", args.join(" ")))?;
     if output.status.success() {

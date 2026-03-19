@@ -8,7 +8,7 @@ Primary context files:
 
 Feature/domain context:
 - `context/cli/placeholder-foundation.md` (CLI command surface, setup install flow, WorkOS device authorization flow + token storage behavior, bounded resilience-wrapped sync/local-DB smoke and bootstrap behavior, nested flake release package/app installability, and Cargo local install + crates.io readiness policy)
-- `context/cli/config-precedence-contract.md` (implemented `sce config` show/validate command contract, deterministic `flags > env > config file > defaults` resolution order, shared auth-key env/config/optional baked-default support starting with `workos_client_id`, config-file selection order, text/JSON output schema, and opt-in compiled-binary config-precedence E2E coverage contract)
+- `context/cli/config-precedence-contract.md` (implemented `sce config` show/validate command contract, deterministic `flags > env > config file > defaults` resolution order, shared auth-key env/config/optional baked-default support starting with `workos_client_id`, canonical Pkl-generated `sce/config.json` schema ownership plus CLI embedding/reuse contract, config-file selection order, text/JSON output schema, and opt-in compiled-binary config-precedence E2E coverage contract)
 - `context/sce/shared-context-code-workflow.md`
 - `context/sce/shared-context-plan-workflow.md` (canonical `/change-to-plan` workflow, clarification/readiness gate contract, and one-task/one-atomic-commit task-slicing policy)
 - `context/sce/plan-code-overlap-map.md` (T01 overlap matrix for Shared Context Plan/Code, related commands, and core skill ownership/dedup targets)
@@ -27,6 +27,7 @@ Feature/domain context:
 - `context/sce/agent-trace-commit-msg-coauthor-policy.md` (T05 commit-msg canonical co-author trailer policy with env-gated injection and idempotent dedupe)
 - `context/sce/agent-trace-post-commit-dual-write.md` (T06 post-commit trace finalization contract, persistent local DB bootstrap/path policy, notes+DB dual-write behavior, idempotency ledger guard, and retry-queue fallback semantics)
 - `context/sce/agent-trace-hook-doctor.md` (approved operator-environment contract for broadening `sce doctor` into the canonical health-and-repair entrypoint, including stable problem taxonomy, `--fix` semantics, and setup-to-doctor alignment rules; current implementation baseline is captured inside the file)
+- `context/sce/doctor-database-inventory-contract.md` (current-state contract for `sce doctor` repo-scoped versus all-SCE database inventory, ownership-based database inclusion rules, output-shape expectations, implemented explicit `--all-databases` discovery surface, and future database-family registration requirements)
 - `context/sce/setup-githooks-install-contract.md` (T01 canonical `sce setup --hooks` install contract for target-path resolution, idempotent outcomes, backup/rollback, and doctor-readiness alignment)
 - `context/sce/setup-githooks-hook-asset-packaging.md` (T02 compile-time `sce setup --hooks` required-hook template packaging contract and setup-service accessor surface)
 - `context/sce/setup-githooks-install-flow.md` (T03 setup-service required-hook install orchestration with git-truth hooks-path resolution, per-hook installed/updated/skipped outcomes, and backup/rollback semantics)

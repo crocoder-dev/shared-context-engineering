@@ -1,0 +1,111 @@
+local sceConfigSchemaJson = """
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sce.crocoder.dev/schemas/sce-config.schema.json",
+  "title": "SCE Config",
+  "description": "Canonical JSON Schema for global and repo-local sce/config.json files.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "log_level": {
+      "type": "string",
+      "enum": ["error", "warn", "info", "debug"]
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "workos_client_id": {
+      "type": "string"
+    },
+    "policies": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bash": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "presets": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "forbid-git-all",
+                  "forbid-git-commit",
+                  "use-pnpm-over-npm",
+                  "use-bun-over-npm",
+                  "use-nix-flake-over-cargo"
+                ]
+              },
+              "allOf": [
+                {
+                  "not": {
+                    "allOf": [
+                      {
+                        "contains": {
+                          "const": "use-pnpm-over-npm"
+                        }
+                      },
+                      {
+                        "contains": {
+                          "const": "use-bun-over-npm"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "custom": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "match", "message"],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "not": {
+                      "enum": [
+                        "forbid-git-all",
+                        "forbid-git-commit",
+                        "use-pnpm-over-npm",
+                        "use-bun-over-npm",
+                        "use-nix-flake-over-cargo"
+                      ]
+                    }
+                  },
+                  "match": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["argv_prefix"],
+                    "properties": {
+                      "argv_prefix": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    }
+                  },
+                  "message": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+rendered = sceConfigSchemaJson

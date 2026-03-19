@@ -2,7 +2,7 @@
 
 ## Scope
 
-This contract documents the implemented `sce config` command behavior in `cli/src/services/config.rs` and parser/dispatch wiring in `cli/src/app.rs`.
+This contract documents the implemented `sce config` command behavior in `cli/src/services/config.rs`, the canonical Pkl-authored `sce/config.json` schema artifact generated to `config/schema/sce-config.schema.json` and embedded there as `SCE_CONFIG_SCHEMA_JSON`, and parser/dispatch wiring in `cli/src/app.rs`.
 
 ## Command surface
 
@@ -40,6 +40,10 @@ Config file selection follows this deterministic order:
 When both discovered defaults exist, they are merged in memory in deterministic order `global -> local`, and local values override global values per key.
 
 ## Validation contract
+
+- The canonical JSON Schema artifact for both global and repo-local `sce/config.json` files is authored in `config/pkl/base/sce-config-schema.pkl` and generated to `config/schema/sce-config.schema.json`.
+- `cli/src/services/config.rs` embeds that generated artifact at compile time as `SCE_CONFIG_SCHEMA_JSON` and uses it for runtime schema validation.
+- `sce config validate` and `sce doctor` both validate config-file structure against that shared generated schema before applying Rust-owned semantic checks such as duplicate custom `argv_prefix` detection and redundancy warnings.
 
 - Config file content must be valid JSON with a top-level object.
 - Allowed keys: `log_level`, `timeout_ms`, `workos_client_id`, `policies`.
@@ -80,6 +84,8 @@ When both discovered defaults exist, they are merged in memory in deterministic 
 
 ## Related files
 
+- `config/pkl/base/sce-config-schema.pkl`
+- `config/schema/sce-config.schema.json`
 - `cli/src/app.rs`
 - `cli/src/command_surface.rs`
 - `cli/src/services/config.rs`
