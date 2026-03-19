@@ -1,7 +1,7 @@
 local sceConfigSchemaJson = """
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://sce.crocoder.dev/schemas/sce-config.schema.json",
+  "$id": "https://sce.crocoder.dev/config.json",
   "title": "SCE Config",
   "description": "Canonical JSON Schema for global and repo-local sce/config.json files.",
   "type": "object",
