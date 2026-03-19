@@ -1,0 +1,5 @@
+{
+  "log_level": "debug",
+  "log_file": "context/tmp/sce.log",
+  "log_file_mode": "append"
+}

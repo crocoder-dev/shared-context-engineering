@@ -23,6 +23,12 @@ Runtime observability now consumes the shared resolved observability config from
   - `OTEL_EXPORTER_OTLP_PROTOCOL` (`grpc` or `http/protobuf`, default `grpc`)
 - Invalid OTEL env values fail invocation validation with explicit remediation guidance.
 
+## Repository-local default in this repo
+
+- This repository now ships a repo-local config at `.sce/config.json`.
+- The local config sets `log_level=debug`, `log_file=context/tmp/sce.log`, and `log_file_mode=append`.
+- Running `sce` commands from this repository therefore mirrors lifecycle logs into `context/tmp/sce.log` unless higher-precedence flag or env inputs override those values.
+
 ## Emission contract
 
 - Log output is emitted to `stderr` only; command result payloads remain on `stdout`.
