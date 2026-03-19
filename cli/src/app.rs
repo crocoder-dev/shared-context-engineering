@@ -440,16 +440,23 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<Command, Classi
             hooks,
             repo,
         } => convert_setup_command(opencode, claude, both, non_interactive, hooks, repo),
-        cli_schema::Commands::Doctor { fix, format } => {
-            Ok(Command::Doctor(services::doctor::DoctorRequest {
-                mode: if fix {
-                    services::doctor::DoctorMode::Fix
-                } else {
-                    services::doctor::DoctorMode::Diagnose
-                },
-                format: convert_output_format(format),
-            }))
-        }
+        cli_schema::Commands::Doctor {
+            fix,
+            all_databases,
+            format,
+        } => Ok(Command::Doctor(services::doctor::DoctorRequest {
+            mode: if fix {
+                services::doctor::DoctorMode::Fix
+            } else {
+                services::doctor::DoctorMode::Diagnose
+            },
+            database_inventory: if all_databases {
+                services::doctor::DoctorDatabaseInventory::All
+            } else {
+                services::doctor::DoctorDatabaseInventory::Repo
+            },
+            format: convert_output_format(format),
+        })),
         cli_schema::Commands::Mcp => Ok(Command::Mcp),
         cli_schema::Commands::Hooks { subcommand } => convert_hooks_subcommand(subcommand),
         cli_schema::Commands::Trace { subcommand } => convert_trace_subcommand(subcommand),
@@ -1203,6 +1210,7 @@ mod tests {
             command,
             Command::Doctor(crate::services::doctor::DoctorRequest {
                 mode: crate::services::doctor::DoctorMode::Diagnose,
+                database_inventory: crate::services::doctor::DoctorDatabaseInventory::Repo,
                 format: crate::services::doctor::DoctorFormat::Json,
             })
         );
@@ -1220,6 +1228,25 @@ mod tests {
             command,
             Command::Doctor(crate::services::doctor::DoctorRequest {
                 mode: crate::services::doctor::DoctorMode::Fix,
+                database_inventory: crate::services::doctor::DoctorDatabaseInventory::Repo,
+                format: crate::services::doctor::DoctorFormat::Text,
+            })
+        );
+    }
+
+    #[test]
+    fn parser_routes_doctor_all_databases_mode() {
+        let command = parse_command(vec![
+            "sce".to_string(),
+            "doctor".to_string(),
+            "--all-databases".to_string(),
+        ])
+        .expect("command should parse");
+        assert_eq!(
+            command,
+            Command::Doctor(crate::services::doctor::DoctorRequest {
+                mode: crate::services::doctor::DoctorMode::Diagnose,
+                database_inventory: crate::services::doctor::DoctorDatabaseInventory::All,
                 format: crate::services::doctor::DoctorFormat::Text,
             })
         );

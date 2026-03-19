@@ -41,6 +41,7 @@ paths=(
   "config/.claude/commands"
   "config/.claude/skills"
   "config/.claude/lib/drift-collectors.js"
+  "config/schema/sce-config.schema.json"
 )
 
 stale=0

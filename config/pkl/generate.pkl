@@ -2,6 +2,7 @@ import "renderers/opencode-content.pkl" as opencode
 import "renderers/opencode-automated-content.pkl" as opencode_automated
 import "renderers/claude-content.pkl" as claude
 import "renderers/common.pkl" as common
+import "base/sce-config-schema.pkl" as sce_config_schema
 
 local sharedLibrarySource = read("./lib/drift-collectors.js").text
 local bashPolicyPresetCatalogSource = read("./data/bash-policy-presets.json").text
@@ -139,6 +140,9 @@ output {
     }
     ["config/.claude/settings.json"] {
       text = claudeSettingsSource
+    }
+    ["config/schema/sce-config.schema.json"] {
+      text = sce_config_schema.rendered
     }
     ["config/.mcp.json"] {
       text = claude.mcpProjectConfig.rendered

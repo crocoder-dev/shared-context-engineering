@@ -18,6 +18,12 @@ const REQUIRED_HOOKS: [&str; 3] = ["pre-commit", "commit-msg", "post-commit"];
 pub type DoctorFormat = OutputFormat;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DoctorDatabaseInventory {
+    Repo,
+    All,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DoctorMode {
     Diagnose,
     Fix,
@@ -26,7 +32,46 @@ pub enum DoctorMode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DoctorRequest {
     pub mode: DoctorMode,
+    pub database_inventory: DoctorDatabaseInventory,
     pub format: DoctorFormat,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DatabaseFamily {
+    AgentTraceLocal,
+    SmartCache,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DatabaseScope {
+    Global,
+    Repo,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DatabaseOwnershipStatus {
+    Canonical,
+    ActiveRepository,
+    Registered,
+    DiscoveredWithoutMetadata,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DatabaseStatus {
+    Present,
+    Missing,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DatabaseHealth {
+    family: DatabaseFamily,
+    scope: DatabaseScope,
+    canonical_path: PathBuf,
+    ownership_status: DatabaseOwnershipStatus,
+    status: DatabaseStatus,
+    repository_root: Option<PathBuf>,
+    repository_hash: Option<String>,
+    belongs_to_active_repository: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -76,6 +121,7 @@ struct GlobalStateHealth {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct HookDoctorReport {
     mode: DoctorMode,
+    database_inventory: DoctorDatabaseInventory,
     readiness: Readiness,
     state_root: Option<FileLocationHealth>,
     repository_root: Option<PathBuf>,
@@ -83,6 +129,8 @@ struct HookDoctorReport {
     hooks_directory: Option<PathBuf>,
     config_locations: Vec<FileLocationHealth>,
     agent_trace_local_db: Option<FileLocationHealth>,
+    repo_databases: Vec<DatabaseHealth>,
+    all_databases: Vec<DatabaseHealth>,
     hooks: Vec<HookFileHealth>,
     problems: Vec<DoctorProblem>,
 }
@@ -136,6 +184,9 @@ struct DoctorDependencies<'a> {
     check_git_available: &'a dyn Fn() -> bool,
     resolve_state_root: &'a dyn Fn() -> Result<PathBuf>,
     resolve_agent_trace_local_db_path: &'a dyn Fn() -> Result<PathBuf>,
+    resolve_smart_cache_paths: &'a dyn Fn(&Path) -> Result<crate::services::mcp::SmartCachePaths>,
+    list_smart_cache_databases:
+        &'a dyn Fn() -> Result<crate::services::mcp::SmartCacheDatabaseInventory>,
     validate_config_file: &'a dyn Fn(&Path) -> Result<()>,
     check_agent_trace_local_db_health: &'a dyn Fn(&Path) -> Result<()>,
     install_required_git_hooks: &'a dyn Fn(&Path) -> Result<RequiredHooksInstallOutcome>,
@@ -158,13 +209,13 @@ enum DirectoryWriteReadiness {
 pub fn run_doctor(request: DoctorRequest) -> Result<String> {
     let repository_root =
         std::env::current_dir().context("Failed to determine current directory")?;
-    let execution = execute_doctor(request.mode, &repository_root);
+    let execution = execute_doctor(request, &repository_root);
     render_report(request, &execution)
 }
 
-fn execute_doctor(mode: DoctorMode, repository_root: &Path) -> DoctorExecution {
+fn execute_doctor(request: DoctorRequest, repository_root: &Path) -> DoctorExecution {
     execute_doctor_with_dependencies(
-        mode,
+        request,
         repository_root,
         &DoctorDependencies {
             run_git_command: &run_git_command,
@@ -172,6 +223,8 @@ fn execute_doctor(mode: DoctorMode, repository_root: &Path) -> DoctorExecution {
             resolve_state_root: &crate::services::local_db::resolve_state_data_root,
             resolve_agent_trace_local_db_path:
                 &crate::services::local_db::resolve_agent_trace_local_db_path,
+            resolve_smart_cache_paths: &crate::services::mcp::resolve_smart_cache_paths,
+            list_smart_cache_databases: &crate::services::mcp::list_smart_cache_databases,
             validate_config_file: &crate::services::config::validate_config_file,
             check_agent_trace_local_db_health:
                 &crate::services::local_db::check_agent_trace_local_db_health_blocking,
@@ -182,13 +235,18 @@ fn execute_doctor(mode: DoctorMode, repository_root: &Path) -> DoctorExecution {
 }
 
 fn execute_doctor_with_dependencies(
-    mode: DoctorMode,
+    request: DoctorRequest,
     repository_root: &Path,
     dependencies: &DoctorDependencies<'_>,
 ) -> DoctorExecution {
-    let initial_report = build_report_with_dependencies(mode, repository_root, dependencies);
+    let initial_report = build_report_with_dependencies(
+        request.mode,
+        request.database_inventory,
+        repository_root,
+        dependencies,
+    );
 
-    if mode != DoctorMode::Fix {
+    if request.mode != DoctorMode::Fix {
         return DoctorExecution {
             report: initial_report,
             fix_results: Vec::new(),
@@ -196,7 +254,12 @@ fn execute_doctor_with_dependencies(
     }
 
     let mut fix_results = run_auto_fixes(&initial_report, dependencies);
-    let final_report = build_report_with_dependencies(mode, repository_root, dependencies);
+    let final_report = build_report_with_dependencies(
+        request.mode,
+        request.database_inventory,
+        repository_root,
+        dependencies,
+    );
     fix_results.extend(build_manual_fix_results(&final_report));
 
     DoctorExecution {
@@ -208,6 +271,7 @@ fn execute_doctor_with_dependencies(
 #[allow(clippy::too_many_lines)]
 fn build_report_with_dependencies(
     mode: DoctorMode,
+    database_inventory: DoctorDatabaseInventory,
     repository_root: &Path,
     dependencies: &DoctorDependencies<'_>,
 ) -> HookDoctorReport {
@@ -311,6 +375,27 @@ fn build_report_with_dependencies(
         Vec::new()
     };
 
+    let repo_databases = detected_repository_root
+        .as_deref()
+        .map(|resolved_root| {
+            collect_repo_database_health(resolved_root, &mut problems, dependencies)
+        })
+        .unwrap_or_default();
+    let active_repository_root = repo_databases
+        .iter()
+        .find_map(|database| database.repository_root.clone())
+        .or_else(|| detected_repository_root.clone());
+    let all_databases = if database_inventory == DoctorDatabaseInventory::All {
+        collect_all_database_health(
+            global_state.agent_trace_local_db.as_ref(),
+            active_repository_root.as_deref(),
+            &mut problems,
+            dependencies,
+        )
+    } else {
+        Vec::new()
+    };
+
     let readiness = if problems.is_empty() {
         Readiness::Ready
     } else {
@@ -319,6 +404,7 @@ fn build_report_with_dependencies(
 
     HookDoctorReport {
         mode,
+        database_inventory,
         readiness,
         state_root: global_state.state_root,
         repository_root: detected_repository_root,
@@ -326,6 +412,8 @@ fn build_report_with_dependencies(
         hooks_directory,
         config_locations: global_state.config_locations,
         agent_trace_local_db: global_state.agent_trace_local_db,
+        repo_databases,
+        all_databases,
         hooks,
         problems,
     }
@@ -383,6 +471,24 @@ fn collect_global_state_health(
     }
 
     let local_path = repository_root.join(".sce").join("config.json");
+    if local_path.exists() {
+        if let Err(error) = (dependencies.validate_config_file)(&local_path) {
+            problems.push(DoctorProblem {
+                category: ProblemCategory::GlobalState,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "Local config file '{}' failed validation: {error}",
+                    local_path.display()
+                ),
+                remediation: format!(
+                    "Repair or remove the invalid local config file at '{}' and rerun 'sce doctor'.",
+                    local_path.display()
+                ),
+                next_action: "manual_steps",
+            });
+        }
+    }
     config_locations.push(FileLocationHealth {
         label: "Local config",
         state: if local_path.exists() {
@@ -421,6 +527,128 @@ fn collect_global_state_health(
         config_locations,
         agent_trace_local_db,
     }
+}
+
+fn collect_repo_database_health(
+    repository_root: &Path,
+    problems: &mut Vec<DoctorProblem>,
+    dependencies: &DoctorDependencies<'_>,
+) -> Vec<DatabaseHealth> {
+    match (dependencies.resolve_smart_cache_paths)(repository_root) {
+        Ok(paths) => {
+            let database_status = if paths.repository_db_path.exists() {
+                DatabaseStatus::Present
+            } else {
+                DatabaseStatus::Missing
+            };
+            vec![DatabaseHealth {
+                family: DatabaseFamily::SmartCache,
+                scope: DatabaseScope::Repo,
+                canonical_path: paths.repository_db_path,
+                ownership_status: DatabaseOwnershipStatus::ActiveRepository,
+                status: database_status,
+                repository_root: Some(paths.repository_root),
+                repository_hash: Some(paths.repository_hash),
+                belongs_to_active_repository: true,
+            }]
+        }
+        Err(error) => {
+            problems.push(DoctorProblem {
+                category: ProblemCategory::GlobalState,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "Unable to resolve Smart Cache database path for repository '{}': {error}",
+                    repository_root.display()
+                ),
+                remediation: "Verify that the active repository path and SCE state root can be resolved, then rerun 'sce doctor'.".to_string(),
+                next_action: "manual_steps",
+            });
+            Vec::new()
+        }
+    }
+}
+
+fn collect_all_database_health(
+    agent_trace_local_db: Option<&FileLocationHealth>,
+    active_repository_root: Option<&Path>,
+    problems: &mut Vec<DoctorProblem>,
+    dependencies: &DoctorDependencies<'_>,
+) -> Vec<DatabaseHealth> {
+    let mut databases = Vec::new();
+
+    if let Some(agent_trace_local_db) = agent_trace_local_db {
+        databases.push(DatabaseHealth {
+            family: DatabaseFamily::AgentTraceLocal,
+            scope: DatabaseScope::Global,
+            canonical_path: agent_trace_local_db.path.clone(),
+            ownership_status: DatabaseOwnershipStatus::Canonical,
+            status: if agent_trace_local_db.path.exists() {
+                DatabaseStatus::Present
+            } else {
+                DatabaseStatus::Missing
+            },
+            repository_root: None,
+            repository_hash: None,
+            belongs_to_active_repository: false,
+        });
+    }
+
+    match (dependencies.list_smart_cache_databases)() {
+        Ok(inventory) => {
+            for warning in inventory.warnings {
+                problems.push(DoctorProblem {
+                    category: ProblemCategory::GlobalState,
+                    severity: ProblemSeverity::Error,
+                    fixability: ProblemFixability::ManualOnly,
+                    summary: warning,
+                    remediation: "Repair the Smart Cache inventory metadata or state-root permissions, then rerun 'sce doctor'.".to_string(),
+                    next_action: "manual_steps",
+                });
+            }
+
+            databases.extend(inventory.databases.into_iter().map(|database| DatabaseHealth {
+                family: DatabaseFamily::SmartCache,
+                scope: DatabaseScope::Repo,
+                canonical_path: database.database_path,
+                ownership_status: match database.ownership {
+                    crate::services::mcp::SmartCacheDatabaseOwnership::Registered => {
+                        DatabaseOwnershipStatus::Registered
+                    }
+                    crate::services::mcp::SmartCacheDatabaseOwnership::DiscoveredWithoutMetadata => {
+                        DatabaseOwnershipStatus::DiscoveredWithoutMetadata
+                    }
+                },
+                status: if database.exists {
+                    DatabaseStatus::Present
+                } else {
+                    DatabaseStatus::Missing
+                },
+                belongs_to_active_repository: database.repository_root.as_deref()
+                    == active_repository_root,
+                repository_root: database.repository_root,
+                repository_hash: Some(database.repository_hash),
+            }));
+        }
+        Err(error) => problems.push(DoctorProblem {
+            category: ProblemCategory::GlobalState,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!("Unable to inventory Smart Cache databases: {error}"),
+            remediation:
+                "Verify that the SCE cache state root is accessible, then rerun 'sce doctor'."
+                    .to_string(),
+            next_action: "manual_steps",
+        }),
+    }
+
+    databases.sort_by(|left, right| {
+        database_scope(left.scope)
+            .cmp(database_scope(right.scope))
+            .then_with(|| database_family(left.family).cmp(database_family(right.family)))
+            .then_with(|| left.canonical_path.cmp(&right.canonical_path))
+    });
+    databases
 }
 
 fn inspect_agent_trace_db_health(
@@ -736,6 +964,13 @@ fn format_report(report: &HookDoctorReport) -> String {
             DoctorMode::Fix => "fix",
         }
     ));
+    lines.push(format!(
+        "Database inventory: {}",
+        match report.database_inventory {
+            DoctorDatabaseInventory::Repo => "repo",
+            DoctorDatabaseInventory::All => "all",
+        }
+    ));
 
     lines.push(format!(
         "Hooks path source: {}",
@@ -787,6 +1022,26 @@ fn format_report(report: &HookDoctorReport) -> String {
             |location| format!("{} ({})", location.state, location.path.display())
         )
     ));
+
+    lines.push("Repo-scoped databases:".to_string());
+    if report.repo_databases.is_empty() {
+        lines.push("- none".to_string());
+    } else {
+        for database in &report.repo_databases {
+            lines.push(format!("- {}", format_database_record(database)));
+        }
+    }
+
+    if report.database_inventory == DoctorDatabaseInventory::All {
+        lines.push("All SCE databases:".to_string());
+        if report.all_databases.is_empty() {
+            lines.push("- none".to_string());
+        } else {
+            for database in &report.all_databases {
+                lines.push(format!("- {}", format_database_record(database)));
+            }
+        }
+    }
 
     lines.push("Required hooks:".to_string());
     for hook in &report.hooks {
@@ -887,6 +1142,10 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
             DoctorMode::Diagnose => "diagnose",
             DoctorMode::Fix => "fix",
         },
+        "database_inventory": match report.database_inventory {
+            DoctorDatabaseInventory::Repo => "repo",
+            DoctorDatabaseInventory::All => "all",
+        },
         "readiness": match report.readiness {
             Readiness::Ready => "ready",
             Readiness::NotReady => "not_ready",
@@ -915,6 +1174,8 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
             "path": location.path.display().to_string(),
             "state": location.state,
         })),
+        "repo_databases": report.repo_databases.iter().map(render_database_record_json).collect::<Vec<_>>(),
+        "all_databases": report.all_databases.iter().map(render_database_record_json).collect::<Vec<_>>(),
         "hooks": hooks,
         "problems": report.problems.iter().map(|problem| json!({
             "category": problem_category(problem.category),
@@ -961,6 +1222,49 @@ fn hook_content_state(state: HookContentState) -> &'static str {
         HookContentState::Missing => "missing",
         HookContentState::Unknown => "unknown",
     }
+}
+
+fn format_database_record(database: &DatabaseHealth) -> String {
+    let mut details = vec![
+        format!("family={}", database_family(database.family)),
+        format!("scope={}", database_scope(database.scope)),
+        format!("status={}", database_status(database.status)),
+        format!(
+            "ownership={}",
+            database_ownership_status(database.ownership_status)
+        ),
+        format!("path={}", database.canonical_path.display()),
+    ];
+
+    if let Some(repository_root) = &database.repository_root {
+        details.push(format!("repository_root={}", repository_root.display()));
+    }
+    if let Some(repository_hash) = &database.repository_hash {
+        details.push(format!("repository_hash={repository_hash}"));
+    }
+    details.push(format!(
+        "active_repository={}",
+        if database.belongs_to_active_repository {
+            "yes"
+        } else {
+            "no"
+        }
+    ));
+
+    details.join(", ")
+}
+
+fn render_database_record_json(database: &DatabaseHealth) -> serde_json::Value {
+    json!({
+        "family": database_family(database.family),
+        "scope": database_scope(database.scope),
+        "canonical_path": database.canonical_path.display().to_string(),
+        "ownership_status": database_ownership_status(database.ownership_status),
+        "status": database_status(database.status),
+        "repository_root": database.repository_root.as_ref().map(|path| path.display().to_string()),
+        "repository_hash": database.repository_hash,
+        "belongs_to_active_repository": database.belongs_to_active_repository,
+    })
 }
 
 fn run_auto_fixes(
@@ -1178,6 +1482,36 @@ fn fix_result_outcome(outcome: FixResult) -> &'static str {
     }
 }
 
+fn database_family(family: DatabaseFamily) -> &'static str {
+    match family {
+        DatabaseFamily::AgentTraceLocal => "agent_trace_local",
+        DatabaseFamily::SmartCache => "smart_cache",
+    }
+}
+
+fn database_scope(scope: DatabaseScope) -> &'static str {
+    match scope {
+        DatabaseScope::Global => "global",
+        DatabaseScope::Repo => "repo",
+    }
+}
+
+fn database_ownership_status(status: DatabaseOwnershipStatus) -> &'static str {
+    match status {
+        DatabaseOwnershipStatus::Canonical => "canonical",
+        DatabaseOwnershipStatus::ActiveRepository => "active_repository",
+        DatabaseOwnershipStatus::Registered => "registered",
+        DatabaseOwnershipStatus::DiscoveredWithoutMetadata => "discovered_without_metadata",
+    }
+}
+
+fn database_status(status: DatabaseStatus) -> &'static str {
+    match status {
+        DatabaseStatus::Present => "present",
+        DatabaseStatus::Missing => "missing",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -1190,9 +1524,9 @@ mod tests {
 
     use super::{
         execute_doctor_with_dependencies, render_report, run_filesystem_auto_fixes,
-        DoctorDependencies, DoctorFormat, DoctorMode, DoctorProblem, DoctorRequest,
-        FileLocationHealth, FixResult, HookDoctorReport, HookPathSource, ProblemCategory,
-        ProblemFixability, ProblemSeverity, Readiness, NAME,
+        DoctorDatabaseInventory, DoctorDependencies, DoctorFormat, DoctorMode, DoctorProblem,
+        DoctorRequest, FileLocationHealth, FixResult, HookDoctorReport, HookPathSource,
+        ProblemCategory, ProblemFixability, ProblemSeverity, Readiness, NAME,
     };
     use crate::services::setup::RequiredHooksInstallOutcome;
 
@@ -1250,19 +1584,30 @@ mod tests {
         let output = render_report(
             DoctorRequest {
                 mode: DoctorMode::Diagnose,
+                database_inventory: DoctorDatabaseInventory::Repo,
                 format: DoctorFormat::Json,
             },
-            &super::execute_doctor(DoctorMode::Diagnose, std::path::Path::new("/nonexistent")),
+            &super::execute_doctor(
+                DoctorRequest {
+                    mode: DoctorMode::Diagnose,
+                    database_inventory: DoctorDatabaseInventory::Repo,
+                    format: DoctorFormat::Text,
+                },
+                std::path::Path::new("/nonexistent"),
+            ),
         )?;
 
         let parsed: Value = serde_json::from_str(&output)?;
         assert_eq!(parsed["status"], "ok");
         assert_eq!(parsed["command"], NAME);
         assert_eq!(parsed["mode"], "diagnose");
+        assert_eq!(parsed["database_inventory"], "repo");
         assert!(parsed["readiness"].as_str().is_some());
         assert!(parsed["state_root"].is_null() || parsed["state_root"].is_object());
         assert!(parsed["hook_path_source"].as_str().is_some());
         assert!(parsed["config_paths"].is_array());
+        assert!(parsed["repo_databases"].is_array());
+        assert!(parsed["all_databases"].is_array());
         assert!(parsed["hooks"].is_array());
         assert!(parsed["problems"].is_array());
         assert!(parsed["fix_results"].is_array());
@@ -1274,14 +1619,216 @@ mod tests {
         let output = render_report(
             DoctorRequest {
                 mode: DoctorMode::Fix,
+                database_inventory: DoctorDatabaseInventory::Repo,
                 format: DoctorFormat::Json,
             },
-            &super::execute_doctor(DoctorMode::Fix, std::path::Path::new("/nonexistent")),
+            &super::execute_doctor(
+                DoctorRequest {
+                    mode: DoctorMode::Fix,
+                    database_inventory: DoctorDatabaseInventory::Repo,
+                    format: DoctorFormat::Text,
+                },
+                std::path::Path::new("/nonexistent"),
+            ),
         )?;
 
         let parsed: Value = serde_json::from_str(&output)?;
         assert_eq!(parsed["mode"], "fix");
         assert!(parsed["fix_results"].is_array());
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_reports_local_config_validation_failures() -> Result<()> {
+        let test_dir = TestDir::new("doctor-local-config")?;
+        let repository_root = test_dir.path().join("repo");
+        let hooks_dir = repository_root.join(".git").join("hooks");
+        let local_config_path = repository_root.join(".sce").join("config.json");
+        install_canonical_hooks(&hooks_dir)?;
+        fs::create_dir_all(
+            local_config_path
+                .parent()
+                .expect("local config path should have parent"),
+        )?;
+        fs::write(&local_config_path, "{}")?;
+
+        let repo_root = repository_root.clone();
+        let hooks_dir = hooks_dir.clone();
+        let run_git_command = move |_cwd: &Path, args: &[&str]| match args {
+            ["rev-parse", "--show-toplevel"] => Some(repo_root.display().to_string()),
+            ["rev-parse", "--is-bare-repository"] => Some("false".to_string()),
+            ["rev-parse", "--git-path", "hooks"] => Some(hooks_dir.display().to_string()),
+            _ => None,
+        };
+        let dependencies = DoctorDependencies {
+            run_git_command: &run_git_command,
+            check_git_available: &|| true,
+            resolve_state_root: &|| Ok(test_dir.path().join("state-root")),
+            resolve_agent_trace_local_db_path: &|| {
+                Ok(test_dir.path().join("state-root/sce/agent-trace/local.db"))
+            },
+            resolve_smart_cache_paths: &|repository_root: &Path| {
+                Ok(crate::services::mcp::SmartCachePaths {
+                    repository_root: repository_root.to_path_buf(),
+                    state_root: test_dir.path().join("state-root"),
+                    cache_root: test_dir.path().join("state-root/sce/cache"),
+                    global_config_path: test_dir.path().join("state-root/sce/cache/config.json"),
+                    repository_cache_root: test_dir.path().join("state-root/sce/cache/repos/hash"),
+                    repository_db_path: test_dir
+                        .path()
+                        .join("state-root/sce/cache/repos/hash/cache.db"),
+                    repository_hash: "hash".to_string(),
+                })
+            },
+            list_smart_cache_databases: &|| {
+                Ok(crate::services::mcp::SmartCacheDatabaseInventory {
+                    global_config_path: test_dir.path().join("state-root/sce/cache/config.json"),
+                    databases: Vec::new(),
+                    warnings: Vec::new(),
+                })
+            },
+            validate_config_file: &|path: &Path| {
+                if path.ends_with(Path::new(".sce/config.json")) {
+                    anyhow::bail!("schema mismatch")
+                }
+                Ok(())
+            },
+            check_agent_trace_local_db_health: &|_| Ok(()),
+            install_required_git_hooks: &|_| unreachable!("hook install should not run"),
+            create_directory_all: &|_| unreachable!("directory creation should not run"),
+        };
+
+        let execution = execute_doctor_with_dependencies(
+            DoctorRequest {
+                mode: DoctorMode::Diagnose,
+                database_inventory: DoctorDatabaseInventory::Repo,
+                format: DoctorFormat::Text,
+            },
+            &repository_root,
+            &dependencies,
+        );
+
+        assert_eq!(execution.report.readiness, Readiness::NotReady);
+        assert!(execution.report.problems.iter().any(|problem| {
+            problem.summary.contains("Local config file")
+                && problem.summary.contains("schema mismatch")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn render_all_database_inventory_json_includes_global_and_repo_records() -> Result<()> {
+        let test_dir = TestDir::new("doctor-all-databases")?;
+        let repository_root = test_dir.path().join("repo");
+        let hooks_dir = repository_root.join(".git").join("hooks");
+        install_canonical_hooks(&hooks_dir)?;
+
+        let agent_trace_db = test_dir
+            .path()
+            .join("state-root")
+            .join("sce")
+            .join("agent-trace")
+            .join("local.db");
+        let smart_cache_db = test_dir
+            .path()
+            .join("state-root")
+            .join("sce")
+            .join("cache")
+            .join("repos")
+            .join("repo-hash")
+            .join("cache.db");
+        fs::create_dir_all(
+            agent_trace_db
+                .parent()
+                .expect("agent trace path should have parent"),
+        )?;
+        fs::create_dir_all(
+            smart_cache_db
+                .parent()
+                .expect("smart cache path should have parent"),
+        )?;
+        fs::write(&agent_trace_db, [])?;
+        fs::write(&smart_cache_db, [])?;
+
+        let state_root = test_dir.path().join("state-root");
+        let cache_root = state_root.join("sce").join("cache");
+        let global_config_path = cache_root.join("config.json");
+
+        let repo_root = repository_root.clone();
+        let hooks_dir = hooks_dir.clone();
+        let run_git_command = move |_cwd: &Path, args: &[&str]| match args {
+            ["rev-parse", "--show-toplevel"] => Some(repo_root.display().to_string()),
+            ["rev-parse", "--is-bare-repository"] => Some("false".to_string()),
+            ["rev-parse", "--git-path", "hooks"] => Some(hooks_dir.display().to_string()),
+            _ => None,
+        };
+        let repository_root_for_paths = repository_root.clone();
+        let smart_cache_db_for_paths = smart_cache_db.clone();
+        let state_root_for_paths = state_root.clone();
+        let cache_root_for_paths = cache_root.clone();
+        let global_config_path_for_paths = global_config_path.clone();
+        let resolve_smart_cache_paths = move |_repository_root: &Path| {
+            Ok(crate::services::mcp::SmartCachePaths {
+                repository_root: repository_root_for_paths.clone(),
+                state_root: state_root_for_paths.clone(),
+                cache_root: cache_root_for_paths.clone(),
+                global_config_path: global_config_path_for_paths.clone(),
+                repository_cache_root: smart_cache_db_for_paths
+                    .parent()
+                    .expect("smart cache db path should have parent")
+                    .to_path_buf(),
+                repository_db_path: smart_cache_db_for_paths.clone(),
+                repository_hash: "repo-hash".to_string(),
+            })
+        };
+        let repository_root_for_inventory = repository_root.clone();
+        let smart_cache_db_for_inventory = smart_cache_db.clone();
+        let global_config_path_for_inventory = global_config_path.clone();
+        let list_smart_cache_databases = move || {
+            Ok(crate::services::mcp::SmartCacheDatabaseInventory {
+                global_config_path: global_config_path_for_inventory.clone(),
+                databases: vec![crate::services::mcp::SmartCacheDatabaseRecord {
+                    repository_root: Some(repository_root_for_inventory.clone()),
+                    repository_hash: "repo-hash".to_string(),
+                    database_path: smart_cache_db_for_inventory.clone(),
+                    exists: true,
+                    ownership: crate::services::mcp::SmartCacheDatabaseOwnership::Registered,
+                }],
+                warnings: Vec::new(),
+            })
+        };
+        let dependencies = DoctorDependencies {
+            run_git_command: &run_git_command,
+            check_git_available: &|| true,
+            resolve_state_root: &|| Ok(state_root.clone()),
+            resolve_agent_trace_local_db_path: &|| Ok(agent_trace_db.clone()),
+            resolve_smart_cache_paths: &resolve_smart_cache_paths,
+            list_smart_cache_databases: &list_smart_cache_databases,
+            validate_config_file: &|_| Ok(()),
+            check_agent_trace_local_db_health: &|_| Ok(()),
+            install_required_git_hooks: &|_| unreachable!("hook install should not run"),
+            create_directory_all: &|_| unreachable!("directory creation should not run"),
+        };
+
+        let request = DoctorRequest {
+            mode: DoctorMode::Diagnose,
+            database_inventory: DoctorDatabaseInventory::All,
+            format: DoctorFormat::Json,
+        };
+        let execution = execute_doctor_with_dependencies(request, &repository_root, &dependencies);
+        let output = render_report(request, &execution)?;
+
+        let parsed: Value = serde_json::from_str(&output)?;
+        assert_eq!(parsed["database_inventory"], "all");
+        assert_eq!(parsed["repo_databases"][0]["family"], "smart_cache");
+        assert_eq!(parsed["repo_databases"][0]["status"], "present");
+        assert_eq!(parsed["all_databases"][0]["family"], "agent_trace_local");
+        assert_eq!(parsed["all_databases"][1]["family"], "smart_cache");
+        assert_eq!(
+            parsed["all_databases"][1]["belongs_to_active_repository"],
+            true
+        );
         Ok(())
     }
 
@@ -1320,6 +1867,24 @@ mod tests {
                 .expect("db path should include state_root/sce/agent-trace/local.db"))
         };
         let resolve_agent_trace_local_db_path = move || Ok(db_path_for_resolution.clone());
+        let resolve_smart_cache_paths = |_repository_root: &Path| {
+            Ok(crate::services::mcp::SmartCachePaths {
+                repository_root: PathBuf::from("/tmp/repo"),
+                state_root: PathBuf::from("/tmp/state-root"),
+                cache_root: PathBuf::from("/tmp/state-root/sce/cache"),
+                global_config_path: PathBuf::from("/tmp/state-root/sce/cache/config.json"),
+                repository_cache_root: PathBuf::from("/tmp/state-root/sce/cache/repos/hash"),
+                repository_db_path: PathBuf::from("/tmp/state-root/sce/cache/repos/hash/cache.db"),
+                repository_hash: "hash".to_string(),
+            })
+        };
+        let list_smart_cache_databases = || {
+            Ok(crate::services::mcp::SmartCacheDatabaseInventory {
+                global_config_path: PathBuf::from("/tmp/state-root/sce/cache/config.json"),
+                databases: Vec::new(),
+                warnings: Vec::new(),
+            })
+        };
         let validate_config_file = |_path: &Path| Ok(());
         let check_agent_trace_local_db_health = |_path: &Path| Ok(());
         let install_required_git_hooks = |_repo: &Path| {
@@ -1341,14 +1906,23 @@ mod tests {
             check_git_available: &check_git_available,
             resolve_state_root: &resolve_state_root,
             resolve_agent_trace_local_db_path: &resolve_agent_trace_local_db_path,
+            resolve_smart_cache_paths: &resolve_smart_cache_paths,
+            list_smart_cache_databases: &list_smart_cache_databases,
             validate_config_file: &validate_config_file,
             check_agent_trace_local_db_health: &check_agent_trace_local_db_health,
             install_required_git_hooks: &install_required_git_hooks,
             create_directory_all: &create_directory_all,
         };
 
-        let execution =
-            execute_doctor_with_dependencies(DoctorMode::Fix, &repository_root, &dependencies);
+        let execution = execute_doctor_with_dependencies(
+            DoctorRequest {
+                mode: DoctorMode::Fix,
+                database_inventory: DoctorDatabaseInventory::Repo,
+                format: DoctorFormat::Text,
+            },
+            &repository_root,
+            &dependencies,
+        );
 
         assert_eq!(execution.report.readiness, Readiness::Ready);
         assert!(db_path.parent().is_some_and(Path::exists));
@@ -1368,6 +1942,7 @@ mod tests {
     fn filesystem_auto_fix_refuses_non_canonical_directory() {
         let report = HookDoctorReport {
             mode: DoctorMode::Fix,
+            database_inventory: DoctorDatabaseInventory::Repo,
             readiness: Readiness::NotReady,
             state_root: None,
             repository_root: None,
@@ -1379,6 +1954,8 @@ mod tests {
                 path: PathBuf::from("/tmp/unexpected/local.db"),
                 state: "expected",
             }),
+            repo_databases: Vec::new(),
+            all_databases: Vec::new(),
             hooks: Vec::new(),
             problems: vec![filesystem_problem(
                 "Agent Trace local DB parent directory is missing.",
@@ -1391,6 +1968,10 @@ mod tests {
             resolve_state_root: &|| Ok(PathBuf::from("/tmp/state-root")),
             resolve_agent_trace_local_db_path: &|| {
                 Ok(PathBuf::from("/tmp/canonical/sce/agent-trace/local.db"))
+            },
+            resolve_smart_cache_paths: &|_| unreachable!("smart cache paths should not resolve"),
+            list_smart_cache_databases: &|| {
+                unreachable!("smart cache inventory should not resolve")
             },
             validate_config_file: &|_| Ok(()),
             check_agent_trace_local_db_health: &|_| Ok(()),

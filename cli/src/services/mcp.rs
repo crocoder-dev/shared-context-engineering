@@ -325,6 +325,112 @@ struct SmartCacheRepositoryConfig {
     cache_db_path: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SmartCacheDatabaseInventory {
+    pub global_config_path: PathBuf,
+    pub databases: Vec<SmartCacheDatabaseRecord>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SmartCacheDatabaseOwnership {
+    Registered,
+    DiscoveredWithoutMetadata,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SmartCacheDatabaseRecord {
+    pub repository_root: Option<PathBuf>,
+    pub repository_hash: String,
+    pub database_path: PathBuf,
+    pub exists: bool,
+    pub ownership: SmartCacheDatabaseOwnership,
+}
+
+pub fn list_smart_cache_databases() -> Result<SmartCacheDatabaseInventory> {
+    let state_root = local_db::resolve_state_data_root()?;
+    let cache_root = state_root.join("sce").join("cache");
+    let global_config_path = cache_root.join("config.json");
+    let repositories_root = cache_root.join("repos");
+    let mut databases = Vec::new();
+    let mut warnings = Vec::new();
+
+    if global_config_path.exists() {
+        match load_global_config(&global_config_path) {
+            Ok(config) => {
+                for (repository_root, repository_config) in config.repositories {
+                    let database_path = PathBuf::from(&repository_config.cache_db_path);
+                    databases.push(SmartCacheDatabaseRecord {
+                        repository_root: Some(PathBuf::from(repository_root)),
+                        repository_hash: repository_config.repository_hash,
+                        exists: database_path.exists(),
+                        database_path,
+                        ownership: SmartCacheDatabaseOwnership::Registered,
+                    });
+                }
+            }
+            Err(error) => warnings.push(format!(
+                "Failed to load smart cache global config '{}': {error}",
+                global_config_path.display()
+            )),
+        }
+    }
+
+    if repositories_root.exists() {
+        match fs::read_dir(&repositories_root) {
+            Ok(entries) => {
+                let mut directories = entries
+                    .filter_map(Result::ok)
+                    .map(|entry| entry.path())
+                    .filter(|path| path.is_dir())
+                    .collect::<Vec<_>>();
+                directories.sort();
+
+                for directory in directories {
+                    let database_path = directory.join("cache.db");
+                    if !database_path.exists() {
+                        continue;
+                    }
+                    if databases
+                        .iter()
+                        .any(|record| record.database_path == database_path)
+                    {
+                        continue;
+                    }
+
+                    databases.push(SmartCacheDatabaseRecord {
+                        repository_root: None,
+                        repository_hash: directory
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                        exists: true,
+                        database_path,
+                        ownership: SmartCacheDatabaseOwnership::DiscoveredWithoutMetadata,
+                    });
+                }
+            }
+            Err(error) => warnings.push(format!(
+                "Failed to read smart cache repository inventory '{}': {error}",
+                repositories_root.display()
+            )),
+        }
+    }
+
+    databases.sort_by(|left, right| {
+        left.database_path
+            .cmp(&right.database_path)
+            .then_with(|| left.repository_root.cmp(&right.repository_root))
+            .then_with(|| left.repository_hash.cmp(&right.repository_hash))
+    });
+
+    Ok(SmartCacheDatabaseInventory {
+        global_config_path,
+        databases,
+        warnings,
+    })
+}
+
 #[allow(dead_code)]
 pub fn resolve_repository_root(cwd: &Path) -> Result<PathBuf> {
     let output = Command::new("git")

@@ -4,12 +4,17 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
+use jsonschema::{validator_for, Validator};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::services::output_format::OutputFormat;
 
 pub const NAME: &str = "config";
+#[cfg_attr(not(test), allow(dead_code))]
+const GENERATED_CONFIG_SCHEMA_PATH: &str = "config/schema/sce-config.schema.json";
+pub(crate) const SCE_CONFIG_SCHEMA_JSON: &str =
+    include_str!("../../../config/schema/sce-config.schema.json");
 
 const DEFAULT_TIMEOUT_MS: u64 = 30000;
 const PRECEDENCE_DESCRIPTION: &str = "flags > env > config file > defaults";
@@ -189,6 +194,7 @@ type ParsedBashPolicyConfig = (
 );
 
 static BUILTIN_BASH_POLICY_CATALOG: OnceLock<BuiltinBashPolicyCatalog> = OnceLock::new();
+static CONFIG_SCHEMA_VALIDATOR: OnceLock<Validator> = OnceLock::new();
 
 const BASH_POLICY_PRESET_CATALOG_JSON: &str =
     include_str!("../../../config/pkl/data/bash-policy-presets.json");
@@ -653,6 +659,33 @@ pub(crate) fn validate_config_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn config_schema_validator() -> &'static Validator {
+    CONFIG_SCHEMA_VALIDATOR.get_or_init(|| {
+        let schema: Value =
+            serde_json::from_str(SCE_CONFIG_SCHEMA_JSON).expect("config schema JSON should parse");
+        validator_for(&schema).expect("config schema JSON should compile")
+    })
+}
+
+fn validate_config_value_against_schema(value: &Value, path: &Path) -> Result<()> {
+    let mut errors = config_schema_validator()
+        .iter_errors(value)
+        .map(|error| error.to_string())
+        .collect::<Vec<_>>();
+
+    if errors.is_empty() {
+        return Ok(());
+    }
+
+    errors.sort();
+    bail!(
+        "Config file '{}' failed schema validation against generated schema '{}': {}",
+        path.display(),
+        GENERATED_CONFIG_SCHEMA_PATH,
+        errors.join(" | ")
+    );
+}
+
 fn parse_file_config(raw: &str, path: &Path, source: ConfigPathSource) -> Result<FileConfig> {
     let parsed: Value = serde_json::from_str(raw)
         .with_context(|| format!("Config file '{}' must contain valid JSON.", path.display()))?;
@@ -663,6 +696,8 @@ fn parse_file_config(raw: &str, path: &Path, source: ConfigPathSource) -> Result
             path.display()
         )
     })?;
+
+    validate_config_value_against_schema(&parsed, path)?;
 
     for key in object.keys() {
         if key != "log_level"
@@ -1355,11 +1390,23 @@ mod tests {
         resolve_runtime_config_with, AuthConfigKeySpec, BashPolicyConfig, ConfigPathSource,
         ConfigRequest, CustomBashPolicyEntry, FileConfigValue, LoadedConfigPath, LogLevel,
         ReportFormat, ResolvedOptionalValue, ResolvedValue, RuntimeConfig, ValueSource,
-        WORKOS_CLIENT_ID_BAKED_DEFAULT, WORKOS_CLIENT_ID_KEY,
+        GENERATED_CONFIG_SCHEMA_PATH, SCE_CONFIG_SCHEMA_JSON, WORKOS_CLIENT_ID_BAKED_DEFAULT,
+        WORKOS_CLIENT_ID_KEY,
     };
     use anyhow::Result;
-    use serde_json::Value;
+    use serde_json::{json, Value};
     use std::path::{Path, PathBuf};
+
+    fn schema() -> Value {
+        serde_json::from_str(SCE_CONFIG_SCHEMA_JSON).expect("config schema JSON should parse")
+    }
+
+    fn schema_error_strings(instance: &Value) -> Vec<String> {
+        super::config_schema_validator()
+            .iter_errors(instance)
+            .map(|error| error.to_string())
+            .collect()
+    }
 
     fn request() -> ConfigRequest {
         ConfigRequest {
@@ -1558,8 +1605,11 @@ mod tests {
             || Ok(PathBuf::from("/state")),
         )
         .expect_err("unknown config keys should fail");
-        assert!(error.to_string().contains("contains unknown key 'unknown'"));
-        assert!(error.to_string().contains("workos_client_id"));
+        assert!(error
+            .to_string()
+            .contains("failed schema validation against generated schema"));
+        assert!(error.to_string().contains(GENERATED_CONFIG_SCHEMA_PATH));
+        assert!(error.to_string().contains("unknown"));
     }
 
     #[test]
@@ -1950,7 +2000,8 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("contains unknown preset 'forbid-hg'"));
+            .contains("failed schema validation against generated schema"));
+        assert!(error.to_string().contains("forbid-hg"));
     }
 
     #[test]
@@ -1973,7 +2024,25 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("cannot enable both 'use-pnpm-over-npm' and 'use-bun-over-npm'"));
+            .contains("failed schema validation against generated schema"));
+    }
+
+    #[test]
+    fn validate_config_file_reports_generated_schema_path_for_invalid_shape() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("sce-config-schema-test-{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir).expect("temp dir should be creatable");
+        let path = temp_dir.join("config.json");
+        std::fs::write(&path, "{\"unknown\":true}").expect("config fixture should write");
+
+        let error = super::validate_config_file(&path).expect_err("invalid config should fail");
+        assert!(error
+            .to_string()
+            .contains("failed schema validation against generated schema"));
+        assert!(error.to_string().contains(GENERATED_CONFIG_SCHEMA_PATH));
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir(&temp_dir).ok();
     }
 
     #[test]
@@ -2021,5 +2090,121 @@ mod tests {
         let output = format_validate_output(&resolved, ReportFormat::Text);
         assert!(output.contains("Validation warnings: Preset 'forbid-git-commit' is redundant when 'forbid-git-all' is also enabled."));
         Ok(())
+    }
+
+    #[test]
+    fn config_schema_keeps_builtin_preset_enum_in_sync_with_catalog() {
+        let schema = schema();
+        let preset_enum = schema["properties"]["policies"]["properties"]["bash"]["properties"]
+            ["presets"]["items"]["enum"]
+            .as_array()
+            .expect("schema should expose preset enum");
+        let preset_ids = super::builtin_bash_policy_preset_ids();
+
+        assert_eq!(preset_enum.len(), preset_ids.len());
+        for preset in preset_ids {
+            assert!(preset_enum
+                .iter()
+                .any(|value| value.as_str() == Some(preset)));
+        }
+    }
+
+    #[test]
+    fn config_schema_accepts_supported_config_shape() {
+        let instance = json!({
+            "log_level": "warn",
+            "timeout_ms": 1200,
+            "workos_client_id": "client_local",
+            "policies": {
+                "bash": {
+                    "presets": ["forbid-git-commit"],
+                    "custom": [
+                        {
+                            "id": "prefer-jj-status",
+                            "match": {
+                                "argv_prefix": ["git", "status"]
+                            },
+                            "message": "Use jj status instead."
+                        }
+                    ]
+                }
+            }
+        });
+
+        assert!(schema_error_strings(&instance).is_empty());
+    }
+
+    #[test]
+    fn config_schema_rejects_unknown_top_level_key() {
+        let errors = schema_error_strings(&json!({
+            "log_level": "error",
+            "unknown": true
+        }));
+
+        assert!(!errors.is_empty());
+    }
+
+    #[test]
+    fn config_schema_rejects_invalid_log_level() {
+        let errors = schema_error_strings(&json!({
+            "log_level": "trace"
+        }));
+
+        assert!(!errors.is_empty());
+    }
+
+    #[test]
+    fn config_schema_rejects_conflicting_npm_presets() {
+        let errors = schema_error_strings(&json!({
+            "policies": {
+                "bash": {
+                    "presets": ["use-pnpm-over-npm", "use-bun-over-npm"]
+                }
+            }
+        }));
+
+        assert!(!errors.is_empty());
+    }
+
+    #[test]
+    fn config_schema_rejects_builtin_custom_policy_ids() {
+        let errors = schema_error_strings(&json!({
+            "policies": {
+                "bash": {
+                    "custom": [
+                        {
+                            "id": "forbid-git-all",
+                            "match": {
+                                "argv_prefix": ["git"]
+                            },
+                            "message": "blocked"
+                        }
+                    ]
+                }
+            }
+        }));
+
+        assert!(!errors.is_empty());
+    }
+
+    #[test]
+    fn config_schema_rejects_empty_argv_prefix_tokens() {
+        let errors = schema_error_strings(&json!({
+            "policies": {
+                "bash": {
+                    "custom": [
+                        {
+                            "id": "prefer-jj-status",
+                            "match": {
+                                "argv_prefix": [""]
+                            },
+                            "message": "blocked"
+                        }
+                    ]
+                }
+            }
+        }));
+
+        assert!(!errors.is_empty());
     }
 }
