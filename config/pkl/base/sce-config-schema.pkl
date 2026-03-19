@@ -7,6 +7,10 @@ local sceConfigSchemaJson = """
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "$schema": {
+      "type": "string",
+      "const": "https://sce.crocoder.dev/config.json"
+    },
     "log_level": {
       "type": "string",
       "enum": ["error", "warn", "info", "debug"]
