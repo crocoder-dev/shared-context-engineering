@@ -56,6 +56,7 @@ pub enum Commands {
         subcommand: AuthSubcommand,
     },
 
+    #[command(about = "Inspect or validate runtime config and observability resolution")]
     Config {
         #[command(subcommand)]
         subcommand: ConfigSubcommand,
@@ -160,6 +161,7 @@ pub enum AuthSubcommand {
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum ConfigSubcommand {
+    #[command(about = "Show resolved runtime config, including observability sources")]
     Show {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
@@ -174,6 +176,7 @@ pub enum ConfigSubcommand {
         timeout_ms: Option<u64>,
     },
 
+    #[command(about = "Validate config files and report resolved observability values")]
     Validate {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
@@ -481,6 +484,26 @@ mod tests {
             },
             _ => panic!("Expected Config command"),
         }
+    }
+
+    #[test]
+    fn render_help_for_config_show_mentions_observability() {
+        let help =
+            render_help_for_path(&["config", "show"]).expect("config show help should render");
+
+        assert!(help.contains("Show resolved runtime config, including observability sources"));
+        assert!(help.contains("--config <CONFIG>"));
+        assert!(help.contains("--format <FORMAT>"));
+    }
+
+    #[test]
+    fn render_help_for_config_validate_mentions_observability() {
+        let help = render_help_for_path(&["config", "validate"])
+            .expect("config validate help should render");
+
+        assert!(help.contains("Validate config files and report resolved observability values"));
+        assert!(help.contains("--config <CONFIG>"));
+        assert!(help.contains("--format <FORMAT>"));
     }
 
     #[test]

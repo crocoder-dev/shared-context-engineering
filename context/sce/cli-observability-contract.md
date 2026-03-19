@@ -3,7 +3,9 @@
 ## Scope
 
 This document defines the implemented structured observability baseline for `sce` runtime execution.
-It covers deterministic stderr logger controls, optional OpenTelemetry export bootstrap, and event emission boundaries in `cli/src/services/observability.rs` and `cli/src/app.rs`.
+It covers deterministic stderr logger controls, optional OpenTelemetry export bootstrap, config-backed runtime resolution, and event emission boundaries in `cli/src/services/observability.rs`, `cli/src/services/config.rs`, and `cli/src/app.rs`.
+
+Runtime observability now consumes the shared resolved observability config from `cli/src/services/config.rs`: env values still win, config-file values act as fallback, and defaults apply when both are absent. The same resolved values are now surfaced to operators through `sce config show|validate`, with deterministic text output plus text/JSON `source` and `config_source` provenance for the flat logging keys and nested `otel` keys.
 
 ## Runtime controls
 
@@ -12,11 +14,11 @@ It covers deterministic stderr logger controls, optional OpenTelemetry export bo
 - `SCE_LOG_FILE` optionally enables a file log sink at the provided file path.
 - `SCE_LOG_FILE_MODE` controls file-write policy with allowed values `truncate` and `append`.
 - `SCE_LOG_FILE_MODE` requires `SCE_LOG_FILE`.
-- Defaults are deterministic: `SCE_LOG_LEVEL=error` and `SCE_LOG_FORMAT=text` when env keys are unset.
+- Defaults are deterministic: `log_level=error` and `log_format=text` when higher-precedence env/config inputs are unset.
 - When file logging is enabled and `SCE_LOG_FILE_MODE` is unset, default policy is `truncate`.
-- Invalid observability env values fail invocation validation with actionable error text.
-- OpenTelemetry bootstrap is opt-in via `SCE_OTEL_ENABLED` (`true|false|1|0`, default `false`).
-- When OpenTelemetry is enabled, exporter config is env-addressable:
+- Invalid observability env or config-backed values fail invocation validation with actionable error text.
+- OpenTelemetry bootstrap is opt-in via resolved `otel.enabled` / `SCE_OTEL_ENABLED` (`true|false|1|0`, default `false`).
+- When OpenTelemetry is enabled, exporter config resolves from env first and config-file fallback second:
   - `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://127.0.0.1:4317`, must be absolute `http(s)` URL)
   - `OTEL_EXPORTER_OTLP_PROTOCOL` (`grpc` or `http/protobuf`, default `grpc`)
 - Invalid OTEL env values fail invocation validation with explicit remediation guidance.
@@ -52,7 +54,7 @@ It covers deterministic stderr logger controls, optional OpenTelemetry export bo
 
 ## Ownership and verification
 
-- `cli/src/services/observability.rs` owns env parsing, level filtering, record rendering, and optional file sink lifecycle/permission enforcement.
-- `cli/src/services/observability.rs` also owns OTEL runtime setup (`TelemetryRuntime`) and deterministic endpoint/protocol validation.
-- `cli/src/app.rs` owns lifecycle event emission around parse/dispatch success and failure paths and wraps dispatch inside the observability subscriber context.
+- `cli/src/services/config.rs` owns shared observability value resolution, config-file discovery/merge, and env-over-config precedence for runtime inputs.
+- `cli/src/services/observability.rs` owns runtime logger construction from resolved values, level filtering, record rendering, optional file sink lifecycle/permission enforcement, and OTEL runtime setup (`TelemetryRuntime`).
+- `cli/src/app.rs` owns lifecycle event emission around parse/dispatch success and failure paths, resolves observability config before command dispatch, and wraps dispatch inside the observability subscriber context.
 - Contract behavior is covered by `services::observability::tests` and exercised in end-to-end app command tests.

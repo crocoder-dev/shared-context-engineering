@@ -14,6 +14,7 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use serde_json::json;
 use tracing_subscriber::prelude::*;
 
+use crate::services::config;
 use crate::services::security::redact_sensitive_text;
 
 pub const NAME: &str = "observability";
@@ -95,8 +96,22 @@ pub struct TelemetryRuntime {
 }
 
 impl TelemetryRuntime {
+    #[allow(dead_code)]
     pub fn from_env() -> Result<Self> {
         Self::from_env_lookup(|key| std::env::var(key).ok())
+    }
+
+    pub fn from_resolved_config(
+        config: &config::ResolvedObservabilityRuntimeConfig,
+    ) -> Result<Self> {
+        Self::from_config(&TelemetryConfig {
+            enabled: config.otel_enabled,
+            endpoint: config.otel_endpoint.clone(),
+            protocol: match config.otel_protocol {
+                config::OtlpProtocol::Grpc => OtlpProtocol::Grpc,
+                config::OtlpProtocol::HttpProtobuf => OtlpProtocol::HttpProtobuf,
+            },
+        })
     }
 
     fn from_env_lookup<F>(lookup: F) -> Result<Self>
@@ -353,8 +368,40 @@ impl LogFileSink {
 }
 
 impl Logger {
+    #[allow(dead_code)]
     pub fn from_env() -> Result<Self> {
         Self::from_env_lookup(|key| std::env::var(key).ok())
+    }
+
+    pub fn from_resolved_config(
+        config: &config::ResolvedObservabilityRuntimeConfig,
+    ) -> Result<Self> {
+        let file_sink = match config.log_file.as_deref() {
+            Some(path) => Some(LogFileSink::open(
+                PathBuf::from(path),
+                match config.log_file_mode {
+                    config::LogFileMode::Truncate => LogFileMode::Truncate,
+                    config::LogFileMode::Append => LogFileMode::Append,
+                },
+            )?),
+            None => None,
+        };
+
+        Ok(Self {
+            config: ObservabilityConfig {
+                level: match config.log_level {
+                    config::LogLevel::Error => LogLevel::Error,
+                    config::LogLevel::Warn => LogLevel::Warn,
+                    config::LogLevel::Info => LogLevel::Info,
+                    config::LogLevel::Debug => LogLevel::Debug,
+                },
+                format: match config.log_format {
+                    config::LogFormat::Text => LogFormat::Text,
+                    config::LogFormat::Json => LogFormat::Json,
+                },
+            },
+            file_sink,
+        })
     }
 
     fn from_env_lookup<F>(lookup: F) -> Result<Self>
@@ -560,6 +607,11 @@ mod tests {
 
     use super::{
         validate_otlp_endpoint, LogFormat, LogLevel, Logger, TelemetryConfig, TelemetryRuntime,
+        DEFAULT_OTEL_ENDPOINT,
+    };
+    use crate::services::config::{
+        LogFileMode as ConfigLogFileMode, LogFormat as ConfigLogFormat, LogLevel as ConfigLogLevel,
+        OtlpProtocol as ConfigOtlpProtocol, ResolvedObservabilityRuntimeConfig,
     };
 
     fn unique_temp_log_path(label: &str) -> PathBuf {
@@ -736,6 +788,31 @@ mod tests {
     }
 
     #[test]
+    fn logger_uses_config_backed_file_sink() {
+        let log_path = unique_temp_log_path("config-backed");
+        std::fs::write(&log_path, "old-data\n").expect("should write prior content");
+
+        let logger = Logger::from_resolved_config(&ResolvedObservabilityRuntimeConfig {
+            log_level: ConfigLogLevel::Error,
+            log_format: ConfigLogFormat::Text,
+            log_file: Some(log_path.display().to_string()),
+            log_file_mode: ConfigLogFileMode::Append,
+            otel_enabled: false,
+            otel_endpoint: DEFAULT_OTEL_ENDPOINT.to_string(),
+            otel_protocol: ConfigOtlpProtocol::Grpc,
+        })
+        .expect("logger should initialize from resolved config");
+
+        logger.error("sce.test.event", "hello", &[]);
+
+        let content = std::fs::read_to_string(&log_path).expect("should read log file");
+        assert!(content.starts_with("old-data\n"));
+        assert!(content.contains("event_id=sce.test.event"));
+
+        let _ = std::fs::remove_file(log_path);
+    }
+
+    #[test]
     fn log_format_parser_accepts_documented_values() {
         assert_eq!(
             LogFormat::parse("text").expect("text should parse"),
@@ -793,5 +870,28 @@ mod tests {
             error.to_string(),
             "Invalid OTEL_EXPORTER_OTLP_ENDPOINT 'collector:4317'. Try: set it to an absolute http(s) URL, for example http://127.0.0.1:4317."
         );
+    }
+
+    #[test]
+    fn telemetry_uses_config_backed_enablement() {
+        let tokio_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime should build");
+        let runtime = tokio_runtime
+            .block_on(async {
+                TelemetryRuntime::from_resolved_config(&ResolvedObservabilityRuntimeConfig {
+                    log_level: ConfigLogLevel::Error,
+                    log_format: ConfigLogFormat::Text,
+                    log_file: None,
+                    log_file_mode: ConfigLogFileMode::Truncate,
+                    otel_enabled: true,
+                    otel_endpoint: "http://127.0.0.1:4317".to_string(),
+                    otel_protocol: ConfigOtlpProtocol::Grpc,
+                })
+            })
+            .expect("telemetry runtime should initialize from resolved config");
+
+        assert!(runtime.provider.is_some());
     }
 }

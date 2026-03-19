@@ -10,12 +10,42 @@
       "type": "string",
       "enum": ["error", "warn", "info", "debug"]
     },
+    "log_format": {
+      "type": "string",
+      "enum": ["text", "json"]
+    },
+    "log_file": {
+      "type": "string",
+      "minLength": 1
+    },
+    "log_file_mode": {
+      "type": "string",
+      "enum": ["truncate", "append"]
+    },
     "timeout_ms": {
       "type": "integer",
       "minimum": 0
     },
     "workos_client_id": {
       "type": "string"
+    },
+    "otel": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "exporter_otlp_endpoint": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://"
+        },
+        "exporter_otlp_protocol": {
+          "type": "string",
+          "enum": ["grpc", "http/protobuf"]
+        }
+      }
     },
     "policies": {
       "type": "object",
@@ -103,5 +133,8 @@
         }
       }
     }
+  },
+  "dependentRequired": {
+    "log_file_mode": ["log_file"]
   }
 }
