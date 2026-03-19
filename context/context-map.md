@@ -56,6 +56,9 @@ Working areas:
 - `context/decisions/`
 - `context/tmp/`
 
+Supporting repo docs:
+- `AGENTS.md` (repo-specific agent workflow guidance, including optional local Nix tuning recommendations for user-level `~/.config/nix/nix.conf` and the explicit system-level-only boundary for `auto-optimise-store`)
+
 Recent decision records:
 - `context/decisions/2026-02-28-pkl-generation-architecture.md`
 - `context/decisions/2026-03-03-plan-code-agent-separation.md`

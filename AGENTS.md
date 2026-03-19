@@ -7,7 +7,7 @@ This repository uses the Shared Context Engineering (SCE) approach for AI-assist
 
 ## Repository shape
 
-- Root repo contains three main working areas:
+- Root repo contains four main working areas:
 - `cli/` - Rust CLI (`sce`)
 - `evals/` - Bun + TypeScript eval harness
 - `config/` - generated agent config, skills, and Pkl sources
@@ -25,9 +25,11 @@ This repository uses the Shared Context Engineering (SCE) approach for AI-assist
 
 - Nix is the primary reproducible entrypoint at repo root.
 - Root `flake.nix` provides Bun, TypeScript, Pkl, jq, and the Rust toolchain.
-- `cli/flake.nix` defines Rust packaging and CI checks for the CLI.
+- Root `flake.nix` defines Crane-based Rust packaging and check derivations for the CLI.
 - Run Cargo via Nix, not directly from the host shell. Prefer `nix develop -c sh -c 'cd cli && <cargo command>'`.
 - For validation, prefer `nix flake check` and avoid running `cargo test` directly unless a user explicitly requests it.
+- Optional local Nix tuning can live in user-level `~/.config/nix/nix.conf`; recommended values are `max-jobs = auto` and `cores = 0`.
+- `auto-optimise-store = true` is intentionally treated as a system-level `/etc/nix/nix.conf` setting, not a repo-managed user setting.
 - Bun is used for the eval harness, not npm or pnpm scripts.
 - Rust edition is `2021`.
 - TypeScript runs in strict mode in `evals/tsconfig.json`.
@@ -47,6 +49,8 @@ Run these through Nix from repo root unless noted otherwise.
 
 - Build CLI: `nix develop -c sh -c 'cd cli && cargo build'`
 - Run CLI: `nix develop -c sh -c 'cd cli && cargo run -- --help'`
+- Build packaged CLI output: `nix build .#default`
+- Run packaged CLI app: `nix run .#sce -- --help`
 - Run all CLI tests: `nix develop -c sh -c 'cd cli && cargo test'`
 - Run a single test by exact name: `nix develop -c sh -c 'cd cli && cargo test parser_routes_mcp -- --exact'`
 - Run tests in one module/file pattern: `nix develop -c sh -c 'cd cli && cargo test setup'`
@@ -82,6 +86,7 @@ Run these from `evals/`.
 
 - GitHub Actions publish Tessl tiles from `config/.opencode/skills/**` and `config/.claude/skills/**`.
 - Release workflow packages agent files from `config/.opencode/agent/Shared Context.md` and `config/.claude/agents/shared-context.md`.
+- Root `flake.nix` packages `sce` through Crane's `buildDepsOnly` + `buildPackage` pipeline and runs `cli-tests`, `cli-clippy`, and `cli-fmt` through Crane-backed checks.
 - Changes under generated config trees may need a Pkl regeneration or parity check.
 
 ## Code style: general
@@ -190,7 +195,6 @@ Run these from `evals/`.
 - `flake.nix`
 - `context/context-map.md`
 - `context/overview.md`
-- `cli/flake.nix`
 - `cli/Cargo.toml`
 - `cli/src/app.rs`
 - `cli/src/services/setup/tests.rs`

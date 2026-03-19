@@ -21,12 +21,12 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 
 ## Nix release installability surface
 
-- `cli/flake.nix` exposes `packages.sce` and `packages.default = packages.sce` for packaged release builds.
-- `cli/flake.nix` exposes `apps.sce` pointing to `${packages.sce}/bin/sce` for runnable packaged CLI execution.
-- Root `flake.nix` forwards nested CLI flake inputs (`nixpkgs`, `flake-utils`, `rust-overlay`) so repository-level `nix flake check` can evaluate CLI checks without nested-input resolution failures.
+- Root `flake.nix` exposes `packages.sce` and `packages.default = packages.sce` for packaged release builds.
+- Root `flake.nix` exposes `apps.sce` pointing to `${packages.sce}/bin/sce` for runnable packaged CLI execution.
+- Root `flake.nix` is the single repository-level Nix entrypoint for CLI checks and packaging.
 - Current verification commands for this surface are:
-  - `nix build ./cli#default`
-  - `nix run ./cli#sce -- --help`
+  - `nix build .#default`
+  - `nix run .#sce -- --help`
 
 ## Cargo release and future crates.io posture
 

@@ -31,6 +31,7 @@ fi
 live_config="${repo_root}/config"
 live_opencode="${repo_root}/.opencode"
 live_project_mcp="${repo_root}/.mcp.json"
+live_version="${repo_root}/.version"
 generator_path="${live_config}/pkl/generate.pkl"
 
 if [ ! -d "${live_config}" ]; then
@@ -50,10 +51,20 @@ EOF
   exit 1
 fi
 
+if [ ! -f "${live_version}" ]; then
+  cat >&2 <<EOF
+Could not locate repository version file at:
+  ${live_version}
+Run this command from the repository root containing .version.
+EOF
+  exit 1
+fi
+
 stage_root="$(mktemp -d "${TMPDIR:-/tmp}/sync-opencode-config.XXXXXX")"
 stage_config="${stage_root}/config"
 stage_opencode="${stage_config}/.opencode"
 stage_project_mcp="${stage_config}/.mcp.json"
+stage_version="${stage_root}/.version"
 stage_generator_path="${stage_config}/pkl/generate.pkl"
 backup_config="${repo_root}/.config-pre-sync-backup"
 backup_opencode="${repo_root}/.opencode-pre-sync-backup"
@@ -91,6 +102,7 @@ trap cleanup EXIT
 
 echo "==> Preparing staged config workspace"
 cp -R "${live_config}" "${stage_config}"
+cp "${live_version}" "${stage_version}"
 
 echo "==> Regenerating generated-owned config outputs in staging"
 pkl eval -m "${stage_root}" "${stage_generator_path}"

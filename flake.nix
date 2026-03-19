@@ -5,10 +5,8 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
     rust-overlay.url = "github:oxalica/rust-overlay";
-    cli.url = "path:./cli";
-    cli.inputs.nixpkgs.follows = "nixpkgs";
-    cli.inputs.flake-utils.follows = "flake-utils";
-    cli.inputs.rust-overlay.follows = "rust-overlay";
+    rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
+    crane.url = "github:ipetkov/crane";
   };
 
   outputs =
@@ -17,7 +15,7 @@
       nixpkgs,
       flake-utils,
       rust-overlay,
-      cli,
+      crane,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -27,12 +25,73 @@
           overlays = [ rust-overlay.overlays.default ];
         };
 
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+        rustVersion = "1.93.1";
+
+        rustToolchain = pkgs.rust-bin.stable.${rustVersion}.default.override {
           extensions = [
             "rustfmt"
             "clippy"
           ];
         };
+
+        craneLib = (crane.mkLib pkgs).overrideToolchain (_: rustToolchain);
+
+        workspaceRoot = ./.;
+        workspaceSrc = pkgs.lib.fileset.toSource {
+          root = workspaceRoot;
+          fileset = pkgs.lib.fileset.unions [
+            (craneLib.fileset.commonCargoSources workspaceRoot)
+            (pkgs.lib.fileset.maybeMissing ./config/.opencode)
+            (pkgs.lib.fileset.maybeMissing ./config/.claude)
+            (pkgs.lib.fileset.maybeMissing ./config/pkl/data/bash-policy-presets.json)
+            (pkgs.lib.fileset.maybeMissing ./config/schema/sce-config.schema.json)
+            (pkgs.lib.fileset.maybeMissing ./cli/assets/hooks)
+          ];
+        };
+
+        version = pkgs.lib.strings.trim (builtins.readFile ./.version);
+        gitCommit =
+          if self ? rev then
+            self.rev
+          else if self ? dirtyRev then
+            self.dirtyRev
+          else
+            "unknown";
+        shortGitCommit = builtins.substring 0 12 gitCommit;
+
+        commonCargoArgs = {
+          pname = "sce";
+          inherit version;
+          src = workspaceSrc;
+          cargoToml = ./cli/Cargo.toml;
+          cargoLock = ./cli/Cargo.lock;
+          strictDeps = true;
+          doCheck = false;
+          SCE_GIT_COMMIT = shortGitCommit;
+
+          nativeBuildInputs = [
+            rustToolchain
+          ];
+
+          postUnpack = ''
+            cd "$sourceRoot/cli"
+            sourceRoot="."
+          '';
+        };
+
+        cargoArtifacts = craneLib.buildDepsOnly (
+          commonCargoArgs
+          // {
+            pname = "sce-deps";
+          }
+        );
+
+        scePackage = craneLib.buildPackage (
+          commonCargoArgs
+          // {
+            inherit cargoArtifacts;
+          }
+        );
 
         syncOpencodeConfigApp = pkgs.writeShellApplication {
           name = "sync-opencode-config";
@@ -107,7 +166,7 @@
 
               stale=0
               for path in "''${paths[@]}"; do
-                if [ -d "$tmp_dir/$path" ] && [ -d "$path" ]; then
+                if [ -e "$tmp_dir/$path" ] || [ -e "$path" ]; then
                   if ! git diff --no-index --exit-code -- "$tmp_dir/$path" "$path" >/dev/null 2>&1; then
                     stale=1
                     printf 'Generated output drift detected at %s\n' "$path"
@@ -132,11 +191,46 @@
 
       in
       {
+        packages = {
+          sce = scePackage;
+          default = scePackage;
+        };
+
         checks = {
-          cli-tests = cli.checks.${system}.cli-tests;
-          cli-clippy = cli.checks.${system}.cli-clippy;
-          cli-fmt = cli.checks.${system}.cli-fmt;
+          cli-tests = craneLib.cargoTest (
+            commonCargoArgs
+            // {
+              pname = "sce-cli-tests";
+              inherit cargoArtifacts;
+              nativeCheckInputs = [ pkgs.git ];
+            }
+          );
+
+          cli-clippy = craneLib.cargoClippy (
+            commonCargoArgs
+            // {
+              pname = "sce-cli-clippy";
+              inherit cargoArtifacts;
+              cargoClippyExtraArgs = "--all-targets --all-features";
+            }
+          );
+
+          cli-fmt = craneLib.cargoFmt (
+            commonCargoArgs
+            // {
+              pname = "sce-cli-fmt";
+            }
+          );
+
           pkl-parity = pklParityCheck;
+        };
+
+        apps.sce = {
+          type = "app";
+          program = "${scePackage}/bin/sce";
+          meta = {
+            description = "Run the packaged sce CLI";
+          };
         };
 
         apps.sync-opencode-config = {
@@ -171,8 +265,6 @@
             version_of() {
               "$1" --version 2>/dev/null | awk 'match($0, /[0-9]+(\.[0-9]+)+/) { print substr($0, RSTART, RLENGTH); exit }'
             }
-
-            export PATH="$HOME/.cargo/bin:$PATH"
 
             echo "- bun: $(version_of bun)"
             echo "- pkl: $(version_of pkl)"

@@ -22,4 +22,4 @@
 
 - Unit tests cover nested-directory repo-root detection, stable repository hash generation, platform-state-root cache path resolution, config persistence, and DB schema bootstrap.
 - Prefer repository-level verification/build entrypoints over direct `cargo` commands for this feature work.
-- Verification/build commands for this task slice: `nix flake check` and `nix build ./cli#default`
+- Verification/build commands for this task slice: `nix flake check` and `nix build .#default`

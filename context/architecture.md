@@ -29,7 +29,7 @@ Current target renderer helper modules:
 - `config/pkl/generate.pkl` (single multi-file generation entrypoint)
 - `config/pkl/check-generated.sh` (dev-shell integration stale-output detection against committed generated files)
 - `nix run .#sync-opencode-config` (flake app entrypoint for config regeneration and sync workflow)
-- `nix flake check` / `checks.<system>.cli-setup-command-surface` (flake check derivations that run targeted CLI setup command-surface verification from `cli/`)
+- `nix flake check` / `checks.<system>.{cli-tests,cli-clippy,cli-fmt}` (root-flake Crane check derivations for the CLI)
 - `.github/workflows/pkl-generated-parity.yml` (CI wrapper that runs the parity check for pushes to `main` and pull requests targeting `main`)
 
 The scaffold provides stable canonical content-unit identifiers and reusable target-agnostic text primitives for all planned authored generated classes (agents, commands, skills, shared runtime assets, OpenCode plugin entrypoints, and generated OpenCode package manifests).
@@ -52,6 +52,7 @@ Current sync-command state:
 
 - `sync-opencode-config` is exported as a flake app from `flake.nix` and is runnable through `nix run .#sync-opencode-config`.
 - The app regenerates generated-owned `config/` outputs in a staging workspace, validates expected generated directories, and only then replaces live `config/`.
+- The staging workspace also mirrors repo-root `.version` before `pkl eval -m`, so version-aware Pkl reads resolve the same way they do in the live repository root.
 - After `config/` replacement, the app replaces repository-root `.opencode/` from staged `config/.opencode/` using explicit runtime exclusions and replaces repository-root `.mcp.json` from staged `config/.mcp.json`.
 - Root replacement uses backup-and-restore safety semantics plus post-copy parity verification (`diff -rq` for `.opencode/` with exclusion filters and `diff -q` for `.mcp.json`) before finalizing.
 
@@ -98,9 +99,8 @@ The repository includes a new placeholder Rust binary crate at `cli/`.
 - `cli/src/services/sync.rs` runs the local adapter through a lazily initialized shared tokio current-thread runtime, applies bounded resilience policy to the local smoke operation, and composes a placeholder cloud-sync abstraction (`CloudSyncGateway`) so local Turso validation and deferred cloud planning remain separated.
 - `cli/src/services/` contains module boundaries for config, setup, doctor, MCP, hooks, sync, version, completion, and local DB adapters with explicit trait seams for future implementations.
 - `cli/README.md` is the crate-local onboarding and usage source of truth for placeholder behavior, safety limitations, and roadmap mapping back to service contracts.
-- `cli/flake.nix` applies `rust-overlay` (`oxalica/rust-overlay`) to nixpkgs, selects `rust-bin.stable.latest.default` with `rustfmt`, reads the package/check version from repo-root `.version`, and routes CLI check/build derivations through `makeRustPlatform` so toolchain selection is explicit and deterministic.
-- `cli/flake.nix` exposes release install/run surfaces as `packages.sce` (`packages.default = packages.sce`) and `apps.sce` targeting `${packages.sce}/bin/sce`, enabling packaged CLI build/run via `nix build ./cli#default` and `nix run ./cli#sce -- ...`.
-- `flake.nix` (root) keeps nested CLI input wiring aligned by forwarding `nixpkgs`, `flake-utils`, and `rust-overlay` into the `cli` path input so repository-level `nix flake check` can evaluate nested CLI checks deterministically.
+- `flake.nix` applies `rust-overlay` (`oxalica/rust-overlay`) to nixpkgs, pins `rust-bin.stable.1.93.1.default` with `rustfmt` + `clippy`, reads the package/check version from repo-root `.version`, builds `packages.sce` through Crane (`buildDepsOnly` -> `buildPackage`) with a filtered repo-root source that preserves the Cargo tree plus the embedded config/assets required by `cli/build.rs`, and runs `cli-tests`, `cli-clippy`, and `cli-fmt` through Crane-backed derivations so package and check surfaces share the same toolchain, source-root handling, and dependency-artifact cache path where applicable.
+- `flake.nix` exposes release install/run surfaces as `packages.sce` (`packages.default = packages.sce`) and `apps.sce` targeting `${packages.sce}/bin/sce`, enabling packaged CLI build/run via `nix build .#default` and `nix run .#sce -- ...`.
 - `cli/Cargo.toml` keeps crates.io-ready package metadata populated while `publish = false` remains the current policy; local Cargo release/install verification targets `cargo build --manifest-path cli/Cargo.toml --release` and `cargo install --path cli --locked`. Tokio remains intentionally constrained (`default-features = false`) with current-thread runtime usage plus timer-backed bounded resilience wrappers for retry/timeout behavior.
 
 This phase establishes compile-safe extension seams with a dependency baseline (`anyhow`, `clap`, `clap_complete`, `dirs`, `hmac`, `inquire`, `opentelemetry`, `opentelemetry-otlp`, `opentelemetry_sdk`, `reqwest`, `serde`, `serde_json`, `sha2`, `tokio`, `tracing`, `tracing-opentelemetry`, `tracing-subscriber`, `turso`); local Turso connectivity smoke checks now exist, while broader runtime integrations remain deferred.

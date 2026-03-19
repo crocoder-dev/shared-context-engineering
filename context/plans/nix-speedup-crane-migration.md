@@ -36,13 +36,13 @@ Migrate from `buildRustPackage` to Crane for better incremental Rust build cachi
 
 ## Task stack
 
-- [ ] T01: `Add Crane flake input to root flake.nix` (status:todo)
-- [ ] T02: `Create Crane-based package definition in cli/flake.nix` (status:todo)
-- [ ] T03: `Migrate CLI checks to Crane-based derivations` (status:todo)
-- [ ] T04: `Add user-level nix.conf tuning recommendations` (status:todo)
-- [ ] T05: `Optimize .envrc with targeted watches` (status:todo)
-- [ ] T06: `Verify all checks pass and measure speedup` (status:todo)
-- [ ] T07: `Update context documentation and AGENTS.md` (status:todo)
+- [x] T01: `Add Crane flake input to root flake.nix` (status:done)
+- [x] T02: `Create Crane-based package definition in cli/flake.nix` (status:done)
+- [x] T03: `Migrate CLI checks to Crane-based derivations` (status:done)
+- [x] T04: `Add user-level nix.conf tuning recommendations` (status:done)
+- [x] T05: `Optimize .envrc with targeted watches` (status:done)
+- [x] T06: `Verify all checks pass and measure speedup` (status:done)
+- [x] T07: `Update context documentation and AGENTS.md` (status:done)
 
 ---
 
@@ -66,6 +66,11 @@ Migrate from `buildRustPackage` to Crane for better incremental Rust build cachi
 nix flake update
 nix flake check
 ```
+
+- Completed: 2026-03-19
+- Files changed: `flake.nix`, `cli/flake.nix`, `flake.lock`, `context/plans/nix-speedup-crane-migration.md`
+- Evidence: `nix flake metadata` shows `cli/crane` follows root `crane`; `nix run .#pkl-check-generated` passed; `nix flake check` failed in existing test `services::setup::tests::setup_install_copies_bash_policy_assets_for_opencode_and_claude` while all flake outputs and derivations still evaluated successfully
+- Notes: `cli/flake.nix` was minimally updated to declare the forwarded `crane` input so the root-level `cli.inputs.crane.follows = "crane"` override resolves cleanly; no Crane build migration was performed in this task
 
 ---
 
@@ -94,6 +99,11 @@ nix build ./cli#default
 nix run ./cli#sce -- --help
 ```
 
+- Completed: 2026-03-19
+- Files changed: `cli/flake.nix`, `cli/flake.lock`, `context/plans/nix-speedup-crane-migration.md`
+- Evidence: `nix build ./cli#default` succeeded; `./result/bin/sce --help` succeeded (59 lines); `nix run ./cli#sce -- --help` succeeded (59 lines)
+- Notes: `cli/flake.nix` now builds `packages.sce` through Crane with a shared `cargoArtifacts = craneLib.buildDepsOnly ...` derivation, keeps the existing rust-overlay toolchain plus `SCE_GIT_COMMIT`, and filters package sources to the Cargo tree plus required embedded config/assets; `cli/flake.lock` now records the nested flake's direct `crane` input so `nix build ./cli#default` works reproducibly from `cli/`
+
 ---
 
 ### T03: Migrate CLI checks to Crane-based derivations
@@ -117,6 +127,11 @@ nix run ./cli#sce -- --help
 ```bash
 nix flake check
 ```
+
+- Completed: 2026-03-19
+- Files changed: `cli/flake.nix`, `context/plans/nix-speedup-crane-migration.md`
+- Evidence: `nix flake check ./cli` passed with Crane-backed `cli-tests`, `cli-clippy`, and `cli-fmt`; `nix run .#pkl-check-generated` passed; `nix flake check` passed from repo root
+- Notes: `cli/flake.nix` now defines `cli-tests` via `craneLib.cargoTest`, `cli-clippy` via `craneLib.cargoClippy`, and `cli-fmt` via `craneLib.cargoFmt`, all sharing the existing Crane toolchain/common source setup; `cli-tests` keeps `git` available during check execution for repository-aware tests
 
 ---
 
@@ -155,6 +170,11 @@ cores = 0
 # auto-optimise-store = true
 ```
 
+- Completed: 2026-03-19
+- Files changed: `docs/nix-performance.md`, `context/plans/nix-speedup-crane-migration.md`
+- Evidence: `docs/nix-performance.md` created with user-level `nix.conf` snippet, explanations for `max-jobs` and `cores`, and explicit system-level/root-only guidance for `auto-optimise-store`
+- Notes: Kept this task documentation-only and separated local user guidance from system-managed Nix configuration
+
 ---
 
 ### T05: Optimize .envrc with targeted watches
@@ -190,6 +210,11 @@ watch_file cli/flake.nix
 watch_file cli/Cargo.lock
 ```
 
+- Completed: 2026-03-19
+- Files changed: `.envrc`, `context/plans/nix-speedup-crane-migration.md`
+- Evidence: `.envrc` now watches `flake.nix`, `flake.lock`, `cli/flake.nix`, and `cli/Cargo.lock`; `direnv reload` completed successfully; `nix develop -c sh -c 'echo "shell works"'` succeeded
+- Notes: Kept the shell activation contract unchanged by preserving `use flake` and only adding targeted invalidation watches
+
 ---
 
 ### T06: Verify all checks pass and measure speedup
@@ -217,6 +242,20 @@ nix develop -c sh -c 'cd cli && cargo test'
 nix run .#pkl-check-generated
 ```
 
+- Completed: 2026-03-19
+- Files changed: `scripts/sync-opencode-config.sh`, `context/plans/nix-speedup-crane-migration.md`
+- Evidence:
+  - `nix develop -c sh -c 'echo "shell works"'` succeeded in `0.95s`
+  - `nix run .#pkl-check-generated` succeeded in `3.60s`, then again after the sync fix in `5.25s`
+  - `nix flake check` succeeded in `4.88s`, then again after the sync fix in `5.61s`
+  - Fresh temp-copy `nix build ./cli#default --no-link` completed in `2.29s`
+  - Immediate repeat `nix build ./cli#default --no-link` completed in `0.22s`, showing dependency/build cache reuse
+  - Source-only rebuild after a no-op `cli/src/main.rs` newline change in a temp copy completed in `17.82s`
+- `nix run .#sync-opencode-config` initially failed in `2.76s` because the staged workspace omitted repo-root `.version`; after copying `.version` into the staging root, the command succeeded in `4.87s`
+- Notes:
+  - The sync fix keeps staged generation self-contained by mirroring repo-root `.version` into the temporary workspace before `pkl eval -m`
+  - Success criteria for T06 are now satisfied; T07 remains the next task
+
 ---
 
 ### T07: Update context documentation and AGENTS.md
@@ -240,6 +279,11 @@ nix run .#pkl-check-generated
 ```bash
 nix flake check
 ```
+
+- Completed: 2026-03-19
+- Files changed: `AGENTS.md`, `context/overview.md`, `context/context-map.md`, `context/glossary.md`, `context/plans/nix-speedup-crane-migration.md`
+- Evidence: `nix run .#pkl-check-generated` passed; `nix flake check` passed
+- Notes: Kept Nix tuning guidance in `AGENTS.md` instead of a new `docs/` tree, and updated current-state context references to point at that canonical repo guidance while reflecting the current Crane-based CLI package/check workflow and packaged CLI entrypoints
 
 ---
 

@@ -12,6 +12,7 @@
 - `nix run .#sync-opencode-config` is the canonical entrypoint for staged regeneration/replacement of `config/` and replacement of repository-root `.opencode/` and `.mcp.json` from regenerated `config/.opencode/` and `config/.mcp.json`.
 - For flake app outputs, include `meta.description` so `nix flake check` app validation stays warning-free.
 - For destructive config replacement flows, regenerate into a temporary staged `config/` first, validate required generated directories exist, and only then swap live `config/`.
+- When staged Pkl generation depends on repo-root metadata such as `.version`, mirror those required root inputs into the temporary staging root before `pkl eval -m` so relative `read(...)` calls stay valid.
 - For destructive root `.opencode/` replacement flows, keep exclusions explicit (for example `node_modules`), use backup-and-restore around swap, and run a source/target tree parity check with the same exclusions.
 - For generated root manifest files like `.mcp.json`, copy from the staged generated source only after `config/` swap succeeds, and verify byte-for-byte parity after copy.
 - Keep command help available via `nix run .#sync-opencode-config -- --help` to provide deterministic usage checks during incremental implementation.
@@ -20,6 +21,7 @@
 
 - When required CLI tools are not available as direct nixpkgs attrs, use the least-friction dev-shell fallback that keeps commands usable in `nix develop`.
 - `shellHook` prints a version banner for `bun`, `pkl`, `tsc`, `typescript-language-server`, and `rustc` so shell state is visible on entry.
+- Keep repository-root `.envrc` invalidation targeted to flake- and Cargo-lock inputs (`flake.nix`, `flake.lock`, `cli/Cargo.lock`) so unrelated file edits do not trigger unnecessary direnv/Nix shell reevaluation.
 
 ## Pkl renderer layering
 
@@ -111,11 +113,10 @@
 - For hosted rewrite mapping seams, resolve candidates deterministically in strict precedence order (patch-id exact, then range-diff score, then fuzzy score), classify top-score ties as `ambiguous`, enforce low-confidence unresolved behavior below `0.60`, and preserve stable outcome ordering via canonical candidate SHA sorting.
 - For hosted reconciliation observability, publish run-level mapped/unmapped counts, confidence histogram buckets, runtime timing, and normalized error-class labels so retry/quality drift can be monitored without requiring a full dashboard surface.
 - Keep crate-local onboarding docs in `cli/README.md` and sanity-check command examples against actual `sce` output whenever command messaging changes.
-- Keep targeted CLI command-surface verification in flake checks: `checks.<system>.cli-setup-command-surface` runs from `cli/` and executes `cargo fmt --check` plus focused setup-related tests (`help_text_mentions_setup_target_flags`, `parser_routes_setup`, `run_setup_reports`).
-- In `cli/flake.nix`, select the Rust toolchain via an explicit Rust overlay (`rust-overlay`) and thread that toolchain through `makeRustPlatform` so CLI check/build derivations do not rely on implicit nixpkgs Rust defaults.
-- When the root flake imports a nested path flake that requires additional inputs (for example `rust-overlay` in `cli/flake.nix`), mirror those inputs in the root `inputs` block and wire `cli.inputs.<name>.follows` so root-level checks do not fail from missing nested flake arguments.
-- For installable CLI release surfaces in nested flakes, expose an explicit named package plus default alias (`packages.sce` and `packages.default = packages.sce`) and pair it with a runnable app output (`apps.sce`) that points to the packaged binary path.
-- For nested CLI flake release metadata, source the package/check version from repo-root `.version` and trim it at eval time so packaged outputs stay aligned without hardcoded semver strings in `cli/flake.nix`.
+- Keep CLI Rust verification in flake checks under stable named derivations re-exported by the root flake: `checks.<system>.cli-tests`, `checks.<system>.cli-clippy`, and `checks.<system>.cli-fmt`.
+- In `flake.nix`, select the Rust toolchain via an explicit Rust overlay (`rust-overlay`) and thread that toolchain through Crane package/check derivations so CLI builds and checks do not rely on implicit nixpkgs Rust defaults.
+- For installable CLI release surfaces in the root flake, expose an explicit named package plus default alias (`packages.sce` and `packages.default = packages.sce`) and pair it with a runnable app output (`apps.sce`) that points to the packaged binary path.
+- For root-flake CLI release metadata, source the package/check version from repo-root `.version` and trim it at eval time so packaged outputs stay aligned without hardcoded semver strings in `flake.nix`.
 - For Cargo-based local CLI installation, document and verify `cargo install --path cli --locked` alongside a release build check (`cargo build --manifest-path cli/Cargo.toml --release`), and keep `publish = false` until explicit first-publish approval.
 
 ## Unit testing in Nix sandbox

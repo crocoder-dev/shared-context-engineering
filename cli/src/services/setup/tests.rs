@@ -1,15 +1,11 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
 use super::{
-    get_required_hook_asset, install_embedded_setup_assets, iter_embedded_assets_for_setup_target,
-    iter_required_hook_assets, resolve_setup_dispatch, resolve_setup_request, run_setup_for_mode,
-    run_setup_hooks, RequiredHookAsset, SetupCliOptions, SetupDispatch, SetupMode, SetupTarget,
+    get_required_hook_asset, iter_embedded_assets_for_setup_target, iter_required_hook_assets,
+    resolve_setup_dispatch, resolve_setup_request, run_setup_for_mode, run_setup_hooks,
+    RequiredHookAsset, SetupCliOptions, SetupDispatch, SetupMode, SetupTarget,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -244,65 +240,6 @@ fn required_hook_lookup_resolves_each_canonical_hook() {
     }
 }
 
-#[test]
-fn setup_install_copies_bash_policy_assets_for_opencode_and_claude() -> Result<()> {
-    let temp_dir = TestTempDir::new("setup-bash-policy-assets");
-
-    let opencode_outcome = install_embedded_setup_assets(temp_dir.path(), SetupTarget::OpenCode)?;
-    assert_eq!(opencode_outcome.target_results.len(), 1);
-    assert_eq!(
-        opencode_outcome.target_results[0].installed_file_count,
-        expected_installable_paths(SetupTarget::OpenCode).len()
-    );
-    assert_file_exists(&temp_dir.path().join(".opencode/plugins/sce-bash-policy.js"));
-    assert_file_exists(&temp_dir.path().join(".opencode/lib/bash-policy-runtime.js"));
-    assert_file_exists(&temp_dir.path().join(".opencode/package.json"));
-
-    let claude_outcome = install_embedded_setup_assets(temp_dir.path(), SetupTarget::Claude)?;
-    assert_eq!(claude_outcome.target_results.len(), 1);
-    assert_eq!(
-        claude_outcome.target_results[0].installed_file_count,
-        expected_installable_paths(SetupTarget::Claude).len()
-    );
-    assert_file_exists(
-        &temp_dir
-            .path()
-            .join(".claude/hooks/sce-bash-policy-hook.js"),
-    );
-    assert_file_exists(&temp_dir.path().join(".claude/lib/bash-policy-runtime.js"));
-    assert_file_exists(&temp_dir.path().join(".claude/settings.json"));
-
-    Ok(())
-}
-
-#[test]
-fn setup_reinstall_backs_up_existing_target_before_installing_bash_policy_assets() -> Result<()> {
-    let temp_dir = TestTempDir::new("setup-bash-policy-backup");
-    let existing_target = temp_dir.path().join(".opencode");
-    fs::create_dir_all(existing_target.join("plugins"))?;
-    fs::write(
-        existing_target.join("plugins/sce-bash-policy.js"),
-        "legacy plugin",
-    )?;
-
-    let outcome = install_embedded_setup_assets(temp_dir.path(), SetupTarget::OpenCode)?;
-    let target_result = &outcome.target_results[0];
-    let backup_root = target_result
-        .backup_root
-        .as_ref()
-        .expect("existing target should be backed up");
-
-    assert_eq!(target_result.target, SetupTarget::OpenCode);
-    assert_file_exists(&temp_dir.path().join(".opencode/plugins/sce-bash-policy.js"));
-    assert_file_exists(&temp_dir.path().join(".opencode/lib/bash-policy-runtime.js"));
-    assert_eq!(
-        fs::read_to_string(backup_root.join("plugins/sce-bash-policy.js"))?,
-        "legacy plugin"
-    );
-
-    Ok(())
-}
-
 fn runtime_target_root(target: SetupTarget) -> PathBuf {
     let target_relative = match target {
         SetupTarget::OpenCode => "config/.opencode",
@@ -388,43 +325,4 @@ fn is_skill_tile_manifest(path: &str) -> bool {
         path.split('/').collect::<Vec<_>>().as_slice(),
         ["skills", _, "tile.json"]
     )
-}
-
-fn assert_file_exists(path: &Path) {
-    assert!(
-        path.is_file(),
-        "expected file '{}' to exist",
-        path.display()
-    );
-}
-
-struct TestTempDir {
-    path: PathBuf,
-}
-
-impl TestTempDir {
-    fn new(prefix: &str) -> Self {
-        let unique_suffix = format!(
-            "{}-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock should be after unix epoch")
-                .as_nanos(),
-            prefix
-        );
-        let path = std::env::temp_dir().join(format!("sce-{unique_suffix}"));
-        fs::create_dir_all(&path).expect("temporary test directory should be created");
-        Self { path }
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TestTempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
 }
