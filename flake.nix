@@ -258,6 +258,7 @@
               pkl
               typescript
               nodePackages.typescript-language-server
+              scePackage
             ]
             ++ [ rustToolchain ];
 
@@ -271,6 +272,7 @@
             echo "- tsc: $(version_of tsc)"
             echo "- tsserver-lsp: $(version_of typescript-language-server)"
             echo "- rust: $(version_of rustc)"
+            echo "- sce: $(version_of sce)"
             echo "- sync-opencode-config: nix run .#sync-opencode-config"
             echo "- sync-opencode-config help: nix run .#sync-opencode-config -- --help"
             echo "- pkl-check-generated: nix run .#pkl-check-generated"
