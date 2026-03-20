@@ -1,6 +1,7 @@
 ---
 name: sce-plan-review
-description: "Use when the user wants to continue, resume, or pick up the next step from a markdown plan file stored in `context/plans/`. Reads the selected plan file, identifies the first unchecked checkbox as the next task, validates that acceptance criteria are clear and blockers are resolved, then issues an explicit readiness verdict before proceeding to implementation. Use when the user says "continue the plan", "what's the next task", "resume work", "pick up where we left off", or references a specific plan file."
+description: |
+  Use when the user wants to continue, resume, or pick up the next step from a markdown plan file stored in `context/plans/`. Reads the selected plan file, identifies the first unchecked checkbox as the next task, validates that acceptance criteria are clear and blockers are resolved, then issues an explicit readiness verdict before proceeding to implementation. Use when the user says "continue the plan", "what's the next task", "resume work", "pick up where we left off", or references a specific plan file.
 compatibility: opencode
 ---
 

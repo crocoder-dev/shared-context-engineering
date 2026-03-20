@@ -3,103 +3,16 @@ use std::process::ExitCode;
 
 use crate::{cli_schema, command_surface, services};
 use anyhow::Context;
+use services::error::{ClassifiedError, FailureClass};
 
+#[allow(dead_code)]
 const EXIT_CODE_PARSE_FAILURE: u8 = 2;
+#[allow(dead_code)]
 const EXIT_CODE_VALIDATION_FAILURE: u8 = 3;
+#[allow(dead_code)]
 const EXIT_CODE_RUNTIME_FAILURE: u8 = 4;
+#[allow(dead_code)]
 const EXIT_CODE_DEPENDENCY_FAILURE: u8 = 5;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FailureClass {
-    Parse,
-    Validation,
-    Runtime,
-    Dependency,
-}
-
-impl FailureClass {
-    fn exit_code(self) -> u8 {
-        match self {
-            Self::Parse => EXIT_CODE_PARSE_FAILURE,
-            Self::Validation => EXIT_CODE_VALIDATION_FAILURE,
-            Self::Runtime => EXIT_CODE_RUNTIME_FAILURE,
-            Self::Dependency => EXIT_CODE_DEPENDENCY_FAILURE,
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Parse => "parse",
-            Self::Validation => "validation",
-            Self::Runtime => "runtime",
-            Self::Dependency => "dependency",
-        }
-    }
-}
-
-#[derive(Debug)]
-struct ClassifiedError {
-    class: FailureClass,
-    code: &'static str,
-    message: String,
-}
-
-impl ClassifiedError {
-    fn parse(message: impl Into<String>) -> Self {
-        Self {
-            class: FailureClass::Parse,
-            code: "SCE-ERR-PARSE",
-            message: message.into(),
-        }
-    }
-
-    fn validation(message: impl Into<String>) -> Self {
-        Self {
-            class: FailureClass::Validation,
-            code: "SCE-ERR-VALIDATION",
-            message: message.into(),
-        }
-    }
-
-    fn runtime(message: impl Into<String>) -> Self {
-        Self {
-            class: FailureClass::Runtime,
-            code: "SCE-ERR-RUNTIME",
-            message: message.into(),
-        }
-    }
-
-    fn dependency(message: impl Into<String>) -> Self {
-        Self {
-            class: FailureClass::Dependency,
-            code: "SCE-ERR-DEPENDENCY",
-            message: message.into(),
-        }
-    }
-}
-
-impl FailureClass {
-    fn default_try_guidance(self) -> &'static str {
-        match self {
-            Self::Parse => "run 'sce --help' to see valid usage.",
-            Self::Validation => {
-                "run the command-specific '--help' usage shown in the error and retry."
-            }
-            Self::Runtime => "inspect the runtime diagnostic details, then retry.",
-            Self::Dependency => {
-                "verify required runtime dependencies and environment setup, then retry."
-            }
-        }
-    }
-}
-
-impl std::fmt::Display for ClassifiedError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-impl std::error::Error for ClassifiedError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Command {
@@ -163,18 +76,25 @@ where
     StdoutW: Write,
     StderrW: Write,
 {
-    match try_run_with_dependency_check(args, dependency_check) {
+    let (result, logger) = try_run_with_dependency_check(args, dependency_check);
+    match result {
         Ok(payload) => {
             if let Err(error) = write_stdout_payload(stdout, &payload) {
+                if let Some(ref log) = logger {
+                    log.log_classified_error(&error);
+                }
                 write_error_diagnostic(stderr, &error);
-                ExitCode::from(error.class.exit_code())
+                ExitCode::from(error.class().exit_code())
             } else {
                 ExitCode::SUCCESS
             }
         }
         Err(error) => {
+            if let Some(ref log) = logger {
+                log.log_classified_error(&error);
+            }
             write_error_diagnostic(stderr, &error);
-            ExitCode::from(error.class.exit_code())
+            ExitCode::from(error.class().exit_code())
         }
     }
 }
@@ -196,70 +116,118 @@ fn write_error_diagnostic<W>(writer: &mut W, error: &ClassifiedError)
 where
     W: Write,
 {
-    let rendered = if error.message.contains("Try:") {
-        error.message.clone()
+    let rendered = if error.message().contains("Try:") {
+        error.message().to_string()
     } else {
         format!(
             "{} Try: {}",
-            error.message,
-            error.class.default_try_guidance()
+            error.message(),
+            error.class().default_try_guidance()
         )
     };
 
     let _ = writeln!(
         writer,
         "Error [{}]: {}",
-        error.code,
+        error.code(),
         services::security::redact_sensitive_text(&rendered)
     );
 }
 
+#[allow(clippy::too_many_lines)]
 fn try_run_with_dependency_check<I, F>(
     args: I,
     dependency_check: F,
-) -> Result<String, ClassifiedError>
+) -> (
+    Result<String, ClassifiedError>,
+    Option<services::observability::Logger>,
+)
 where
     I: IntoIterator<Item = String>,
     F: FnOnce() -> anyhow::Result<()>,
 {
-    dependency_check().map_err(|error| {
-        ClassifiedError::dependency(format!("Failed to initialize dependency checks: {error}"))
-    })?;
+    if let Err(error) = dependency_check() {
+        return (
+            Err(ClassifiedError::dependency(format!(
+                "Failed to initialize dependency checks: {error}"
+            ))),
+            None,
+        );
+    }
 
-    let cwd = std::env::current_dir().map_err(|error| {
-        ClassifiedError::runtime(format!(
-            "Failed to determine current directory for observability config resolution: {error}"
-        ))
-    })?;
-    let observability_config = services::config::resolve_observability_runtime_config(&cwd)
-        .map_err(|error| {
-            ClassifiedError::validation(format!("Invalid observability configuration: {error}"))
-        })?;
-    let logger = services::observability::Logger::from_resolved_config(&observability_config)
-        .map_err(|error| {
-            ClassifiedError::validation(format!("Invalid observability configuration: {error}"))
-        })?;
-    let telemetry =
-        services::observability::TelemetryRuntime::from_resolved_config(&observability_config)
-            .map_err(|error| {
-                ClassifiedError::validation(format!("Invalid observability configuration: {error}"))
-            })?;
+    let cwd = match std::env::current_dir() {
+        Ok(dir) => dir,
+        Err(error) => {
+            return (
+                Err(ClassifiedError::runtime(format!(
+                    "Failed to determine current directory for observability config resolution: {error}"
+                ))),
+                None,
+            );
+        }
+    };
 
-    telemetry.with_default_subscriber(|| {
+    let observability_config = match services::config::resolve_observability_runtime_config(&cwd) {
+        Ok(config) => config,
+        Err(error) => {
+            return (
+                Err(ClassifiedError::validation(format!(
+                    "Invalid observability configuration: {error}"
+                ))),
+                None,
+            );
+        }
+    };
+
+    let logger = match services::observability::Logger::from_resolved_config(&observability_config)
+    {
+        Ok(log) => log,
+        Err(error) => {
+            return (
+                Err(ClassifiedError::validation(format!(
+                    "Invalid observability configuration: {error}"
+                ))),
+                None,
+            );
+        }
+    };
+
+    // Log discovered config files at debug level
+    for loaded_path in &observability_config.loaded_config_paths {
+        logger.debug(
+            "sce.config.file_discovered",
+            "Config file discovered",
+            &[
+                ("path", loaded_path.path.to_string_lossy().as_ref()),
+                ("source", loaded_path.source.as_str()),
+            ],
+        );
+    }
+
+    let telemetry = match services::observability::TelemetryRuntime::from_resolved_config(
+        &observability_config,
+    ) {
+        Ok(tel) => tel,
+        Err(error) => {
+            return (
+                Err(ClassifiedError::validation(format!(
+                    "Invalid observability configuration: {error}"
+                ))),
+                None,
+            );
+        }
+    };
+
+    let result = telemetry.with_default_subscriber(|| {
         logger.info(
             "sce.app.start",
             "Starting command dispatch",
             &[("component", services::observability::NAME)],
         );
 
-        let command = match parse_command(args) {
+        let command = match parse_command(args, Some(&logger)) {
             Ok(command) => command,
             Err(error) => {
-                logger.error(
-                    "sce.command.parse_failed",
-                    "Command parse failed",
-                    &[("failure_class", error.class.as_str())],
-                );
                 return Err(error);
             }
         };
@@ -270,7 +238,23 @@ where
             &[("command", command.name())],
         );
 
-        match dispatch(&command, &logger) {
+        logger.debug(
+            "sce.command.dispatch_start",
+            "Dispatching command",
+            &[("command", command.name())],
+        );
+
+        let dispatch_result = dispatch(&command, &logger);
+
+        if dispatch_result.is_ok() {
+            logger.debug(
+                "sce.command.dispatch_end",
+                "Command dispatch completed",
+                &[("command", command.name())],
+            );
+        }
+
+        match dispatch_result {
             Ok(payload) => {
                 logger.info(
                     "sce.command.completed",
@@ -279,26 +263,35 @@ where
                 );
                 Ok(payload)
             }
-            Err(error) => {
-                logger.error(
-                    "sce.command.failed",
-                    "Command failed",
-                    &[
-                        ("command", command.name()),
-                        ("failure_class", error.class.as_str()),
-                    ],
-                );
-                Err(error)
-            }
+            Err(error) => Err(error),
         }
-    })
+    });
+
+    (result, Some(logger))
 }
 
-fn parse_command<I>(args: I) -> Result<Command, ClassifiedError>
+fn parse_command<I>(
+    args: I,
+    logger: Option<&services::observability::Logger>,
+) -> Result<Command, ClassifiedError>
 where
     I: IntoIterator<Item = String>,
 {
     let args_vec: Vec<String> = args.into_iter().collect();
+
+    // Log raw args at debug level (redacted for security)
+    if let Some(log) = logger {
+        let args_summary = if args_vec.len() <= 1 {
+            args_vec.join(" ")
+        } else {
+            format!("{} ...", args_vec[0])
+        };
+        log.debug(
+            "sce.command.raw_args",
+            "Parsing command arguments",
+            &[("args_summary", &args_summary)],
+        );
+    }
 
     if args_vec.len() <= 1 {
         return Ok(Command::Help);
@@ -985,17 +978,20 @@ mod tests {
 
     #[test]
     fn parser_defaults_to_help_without_command() {
-        let command = parse_command(vec!["sce".to_string()]).expect("command should parse");
+        let command = parse_command(vec!["sce".to_string()], None).expect("command should parse");
         assert_eq!(command, Command::Help);
     }
 
     #[test]
     fn parser_routes_hooks_pre_commit_subcommand() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "hooks".to_string(),
-            "pre-commit".to_string(),
-        ])
+        let command = parse_command(
+            vec![
+                "sce".to_string(),
+                "hooks".to_string(),
+                "pre-commit".to_string(),
+            ],
+            None,
+        )
         .expect("command should parse");
         assert_eq!(
             command,
@@ -1005,12 +1001,15 @@ mod tests {
 
     #[test]
     fn parser_routes_hooks_commit_msg_subcommand_with_path() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "hooks".to_string(),
-            "commit-msg".to_string(),
-            ".git/COMMIT_EDITMSG".to_string(),
-        ])
+        let command = parse_command(
+            vec![
+                "sce".to_string(),
+                "hooks".to_string(),
+                "commit-msg".to_string(),
+                ".git/COMMIT_EDITMSG".to_string(),
+            ],
+            None,
+        )
         .expect("command should parse");
         assert_eq!(
             command,
@@ -1022,12 +1021,15 @@ mod tests {
 
     #[test]
     fn parser_routes_trace_prompts_subcommand() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "trace".to_string(),
-            "prompts".to_string(),
-            "abc1234".to_string(),
-        ])
+        let command = parse_command(
+            vec![
+                "sce".to_string(),
+                "trace".to_string(),
+                "prompts".to_string(),
+                "abc1234".to_string(),
+            ],
+            None,
+        )
         .expect("command should parse");
         assert_eq!(
             command,
@@ -1044,13 +1046,16 @@ mod tests {
 
     #[test]
     fn parser_routes_trace_prompts_json_flag() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "trace".to_string(),
-            "prompts".to_string(),
-            "abc1234".to_string(),
-            "--json".to_string(),
-        ])
+        let command = parse_command(
+            vec![
+                "sce".to_string(),
+                "trace".to_string(),
+                "prompts".to_string(),
+                "abc1234".to_string(),
+                "--json".to_string(),
+            ],
+            None,
+        )
         .expect("command should parse");
         assert_eq!(
             command,
@@ -1067,22 +1072,28 @@ mod tests {
 
     #[test]
     fn parser_rejects_hooks_unknown_subcommand() {
-        let error = parse_command(vec![
-            "sce".to_string(),
-            "hooks".to_string(),
-            "unknown".to_string(),
-        ])
+        let error = parse_command(
+            vec![
+                "sce".to_string(),
+                "hooks".to_string(),
+                "unknown".to_string(),
+            ],
+            None,
+        )
         .expect_err("unknown hook subcommand should fail");
         assert!(error.to_string().contains("unknown"));
     }
 
     #[test]
     fn parser_routes_setup_opencode_flag_to_non_interactive_mode() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "setup".to_string(),
-            "--opencode".to_string(),
-        ])
+        let command = parse_command(
+            vec![
+                "sce".to_string(),
+                "setup".to_string(),
+                "--opencode".to_string(),
+            ],
+            None,
+        )
         .expect("command should parse");
         assert_eq!(
             command,
@@ -1096,11 +1107,14 @@ mod tests {
 
     #[test]
     fn parser_routes_setup_claude_flag_to_non_interactive_mode() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "setup".to_string(),
-            "--claude".to_string(),
-        ])
+        let command = parse_command(
+            vec![
+                "sce".to_string(),
+                "setup".to_string(),
+                "--claude".to_string(),
+            ],
+            None,
+        )
         .expect("command should parse");
         assert_eq!(
             command,
@@ -1114,11 +1128,10 @@ mod tests {
 
     #[test]
     fn parser_routes_setup_both_flag_to_non_interactive_mode() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "setup".to_string(),
-            "--both".to_string(),
-        ])
+        let command = parse_command(
+            vec!["sce".to_string(), "setup".to_string(), "--both".to_string()],
+            None,
+        )
         .expect("command should parse");
         assert_eq!(
             command,
@@ -1132,7 +1145,7 @@ mod tests {
 
     #[test]
     fn parser_routes_setup_without_flags_to_interactive_mode() {
-        let command = parse_command(vec!["sce".to_string(), "setup".to_string()])
+        let command = parse_command(vec!["sce".to_string(), "setup".to_string()], None)
             .expect("command should parse");
         assert_eq!(
             command,
@@ -1146,12 +1159,15 @@ mod tests {
 
     #[test]
     fn parser_routes_setup_target_with_non_interactive_flag() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "setup".to_string(),
-            "--opencode".to_string(),
-            "--non-interactive".to_string(),
-        ])
+        let command = parse_command(
+            vec![
+                "sce".to_string(),
+                "setup".to_string(),
+                "--opencode".to_string(),
+                "--non-interactive".to_string(),
+            ],
+            None,
+        )
         .expect("command should parse");
         assert_eq!(
             command,
@@ -1165,11 +1181,14 @@ mod tests {
 
     #[test]
     fn parser_routes_setup_hooks_without_repo() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "setup".to_string(),
-            "--hooks".to_string(),
-        ])
+        let command = parse_command(
+            vec![
+                "sce".to_string(),
+                "setup".to_string(),
+                "--hooks".to_string(),
+            ],
+            None,
+        )
         .expect("command should parse");
         assert_eq!(
             command,
@@ -1183,13 +1202,16 @@ mod tests {
 
     #[test]
     fn parser_routes_setup_hooks_with_repo() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "setup".to_string(),
-            "--hooks".to_string(),
-            "--repo".to_string(),
-            "../demo-repo".to_string(),
-        ])
+        let command = parse_command(
+            vec![
+                "sce".to_string(),
+                "setup".to_string(),
+                "--hooks".to_string(),
+                "--repo".to_string(),
+                "../demo-repo".to_string(),
+            ],
+            None,
+        )
         .expect("command should parse");
         assert_eq!(
             command,
@@ -1203,12 +1225,15 @@ mod tests {
 
     #[test]
     fn parser_routes_setup_target_plus_hooks_in_single_request() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "setup".to_string(),
-            "--opencode".to_string(),
-            "--hooks".to_string(),
-        ])
+        let command = parse_command(
+            vec![
+                "sce".to_string(),
+                "setup".to_string(),
+                "--opencode".to_string(),
+                "--hooks".to_string(),
+            ],
+            None,
+        )
         .expect("command should parse");
         assert_eq!(
             command,
@@ -1222,12 +1247,15 @@ mod tests {
 
     #[test]
     fn parser_routes_doctor_json_format() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "doctor".to_string(),
-            "--format".to_string(),
-            "json".to_string(),
-        ])
+        let command = parse_command(
+            vec![
+                "sce".to_string(),
+                "doctor".to_string(),
+                "--format".to_string(),
+                "json".to_string(),
+            ],
+            None,
+        )
         .expect("command should parse");
         assert_eq!(
             command,
@@ -1241,11 +1269,10 @@ mod tests {
 
     #[test]
     fn parser_routes_doctor_fix_mode() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "doctor".to_string(),
-            "--fix".to_string(),
-        ])
+        let command = parse_command(
+            vec!["sce".to_string(), "doctor".to_string(), "--fix".to_string()],
+            None,
+        )
         .expect("command should parse");
         assert_eq!(
             command,
@@ -1259,11 +1286,14 @@ mod tests {
 
     #[test]
     fn parser_routes_doctor_all_databases_mode() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "doctor".to_string(),
-            "--all-databases".to_string(),
-        ])
+        let command = parse_command(
+            vec![
+                "sce".to_string(),
+                "doctor".to_string(),
+                "--all-databases".to_string(),
+            ],
+            None,
+        )
         .expect("command should parse");
         assert_eq!(
             command,
@@ -1277,18 +1307,17 @@ mod tests {
 
     #[test]
     fn parser_rejects_mcp() {
-        let error = parse_command(vec!["sce".to_string(), "mcp".to_string()])
+        let error = parse_command(vec!["sce".to_string(), "mcp".to_string()], None)
             .expect_err("mcp should be rejected");
         assert!(error.to_string().contains("Unknown command 'mcp'"));
     }
 
     #[test]
     fn parser_routes_auth_login_subcommand() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "auth".to_string(),
-            "login".to_string(),
-        ])
+        let command = parse_command(
+            vec!["sce".to_string(), "auth".to_string(), "login".to_string()],
+            None,
+        )
         .expect("auth login should parse");
         assert_eq!(
             command,
@@ -1302,13 +1331,16 @@ mod tests {
 
     #[test]
     fn parser_routes_auth_status_json_subcommand() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "auth".to_string(),
-            "status".to_string(),
-            "--format".to_string(),
-            "json".to_string(),
-        ])
+        let command = parse_command(
+            vec![
+                "sce".to_string(),
+                "auth".to_string(),
+                "status".to_string(),
+                "--format".to_string(),
+                "json".to_string(),
+            ],
+            None,
+        )
         .expect("auth status json should parse");
         assert_eq!(
             command,
@@ -1322,11 +1354,10 @@ mod tests {
 
     #[test]
     fn parser_routes_auth_renew_subcommand() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "auth".to_string(),
-            "renew".to_string(),
-        ])
+        let command = parse_command(
+            vec!["sce".to_string(), "auth".to_string(), "renew".to_string()],
+            None,
+        )
         .expect("auth renew should parse");
         assert_eq!(
             command,
@@ -1341,12 +1372,15 @@ mod tests {
 
     #[test]
     fn parser_routes_auth_renew_force_subcommand() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "auth".to_string(),
-            "renew".to_string(),
-            "--force".to_string(),
-        ])
+        let command = parse_command(
+            vec![
+                "sce".to_string(),
+                "auth".to_string(),
+                "renew".to_string(),
+                "--force".to_string(),
+            ],
+            None,
+        )
         .expect("auth renew --force should parse");
         assert_eq!(
             command,
@@ -1361,7 +1395,7 @@ mod tests {
 
     #[test]
     fn parser_routes_bare_auth_to_auth_help_text() {
-        let command = parse_command(vec!["sce".to_string(), "auth".to_string()])
+        let command = parse_command(vec!["sce".to_string(), "auth".to_string()], None)
             .expect("bare auth should parse to help text");
 
         match command {
@@ -1375,12 +1409,15 @@ mod tests {
 
     #[test]
     fn parser_routes_sync_json_format() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "sync".to_string(),
-            "--format".to_string(),
-            "json".to_string(),
-        ])
+        let command = parse_command(
+            vec![
+                "sce".to_string(),
+                "sync".to_string(),
+                "--format".to_string(),
+                "json".to_string(),
+            ],
+            None,
+        )
         .expect("command should parse");
         assert_eq!(
             command,
@@ -1392,7 +1429,7 @@ mod tests {
 
     #[test]
     fn parser_routes_version_text_by_default() {
-        let command = parse_command(vec!["sce".to_string(), "version".to_string()])
+        let command = parse_command(vec!["sce".to_string(), "version".to_string()], None)
             .expect("command should parse");
         assert_eq!(
             command,
@@ -1404,12 +1441,15 @@ mod tests {
 
     #[test]
     fn parser_routes_version_json_format() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "version".to_string(),
-            "--format".to_string(),
-            "json".to_string(),
-        ])
+        let command = parse_command(
+            vec![
+                "sce".to_string(),
+                "version".to_string(),
+                "--format".to_string(),
+                "json".to_string(),
+            ],
+            None,
+        )
         .expect("command should parse");
         assert_eq!(
             command,
@@ -1421,12 +1461,15 @@ mod tests {
 
     #[test]
     fn parser_rejects_setup_mutually_exclusive_flags() {
-        let error = parse_command(vec![
-            "sce".to_string(),
-            "setup".to_string(),
-            "--opencode".to_string(),
-            "--claude".to_string(),
-        ])
+        let error = parse_command(
+            vec![
+                "sce".to_string(),
+                "setup".to_string(),
+                "--opencode".to_string(),
+                "--claude".to_string(),
+            ],
+            None,
+        )
         .expect_err("mutually exclusive flags should fail");
         assert!(
             error.to_string().contains("cannot be used with")
@@ -1436,12 +1479,15 @@ mod tests {
 
     #[test]
     fn parser_rejects_setup_repo_without_hooks() {
-        let error = parse_command(vec![
-            "sce".to_string(),
-            "setup".to_string(),
-            "--repo".to_string(),
-            "../demo-repo".to_string(),
-        ])
+        let error = parse_command(
+            vec![
+                "sce".to_string(),
+                "setup".to_string(),
+                "--repo".to_string(),
+                "../demo-repo".to_string(),
+            ],
+            None,
+        )
         .expect_err("--repo without --hooks should fail");
         // clap enforces this via the requires attribute
         assert!(error.to_string().contains("--repo") || error.to_string().contains("--hooks"));
@@ -1449,36 +1495,38 @@ mod tests {
 
     #[test]
     fn parser_rejects_setup_non_interactive_without_target() {
-        let error = parse_command(vec![
-            "sce".to_string(),
-            "setup".to_string(),
-            "--non-interactive".to_string(),
-        ])
+        let error = parse_command(
+            vec![
+                "sce".to_string(),
+                "setup".to_string(),
+                "--non-interactive".to_string(),
+            ],
+            None,
+        )
         .expect_err("--non-interactive without a target should fail");
         assert!(error.to_string().contains("--non-interactive"));
     }
 
     #[test]
     fn parser_rejects_unknown_command() {
-        let error = parse_command(vec!["sce".to_string(), "nope".to_string()])
+        let error = parse_command(vec!["sce".to_string(), "nope".to_string()], None)
             .expect_err("unknown command should fail");
         assert!(error.to_string().contains("Unknown command 'nope'"));
     }
 
     #[test]
     fn parser_rejects_unknown_option() {
-        let error = parse_command(vec!["sce".to_string(), "--verbose".to_string()])
+        let error = parse_command(vec!["sce".to_string(), "--verbose".to_string()], None)
             .expect_err("unknown option should fail");
         assert!(error.to_string().contains("Unknown option"));
     }
 
     #[test]
     fn parser_routes_config_show_subcommand() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "config".to_string(),
-            "show".to_string(),
-        ])
+        let command = parse_command(
+            vec!["sce".to_string(), "config".to_string(), "show".to_string()],
+            None,
+        )
         .expect("command should parse");
         assert_eq!(
             command,
@@ -1495,12 +1543,15 @@ mod tests {
 
     #[test]
     fn parser_routes_completion_bash_shell() {
-        let command = parse_command(vec![
-            "sce".to_string(),
-            "completion".to_string(),
-            "--shell".to_string(),
-            "bash".to_string(),
-        ])
+        let command = parse_command(
+            vec![
+                "sce".to_string(),
+                "completion".to_string(),
+                "--shell".to_string(),
+                "bash".to_string(),
+            ],
+            None,
+        )
         .expect("command should parse");
         assert_eq!(
             command,

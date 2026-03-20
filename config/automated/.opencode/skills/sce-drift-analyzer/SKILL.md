@@ -1,6 +1,7 @@
 ---
 name: sce-drift-analyzer
-description: "Compares documentation in `context/` files against the actual codebase to detect and fix mismatches. Use when the user notices docs are out of date, code comments are stale, spec no longer matches implementation, or wants to sync documentation with code — e.g. \"my docs are outdated\", \"check if context files match the code\", \"find undocumented capabilities\", \"docs out of date\", \"documentation sync\". Scans for missing documentation, outdated claims, changed paths, and completed tasks with no supporting code. Produces a structured drift report and auto-applies context-only fixes without confirmation."
+description: |
+  Compares documentation in `context/` files against the actual codebase to detect and fix mismatches. Use when the user notices docs are out of date, code comments are stale, spec no longer matches implementation, or wants to sync documentation with code — e.g. \"my docs are outdated\", \"check if context files match the code\", \"find undocumented capabilities\", \"docs out of date\", \"documentation sync\". Scans for missing documentation, outdated claims, changed paths, and completed tasks with no supporting code. Produces a structured drift report and auto-applies context-only fixes without confirmation.
 compatibility: opencode
 ---
 

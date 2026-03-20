@@ -1,6 +1,7 @@
 ---
 name: sce-handover-writer
-description: "Creates a structured handover document summarizing task context, decisions made, open questions, and recommended next steps — saved to `context/handovers/`. Use when a user wants to hand off, transition, or pass a task to someone else, create handover notes, write a task transition document, or capture current progress for a future session. Trigger phrases include "create a handover", "hand this off", "write handover notes", "pass this task on", or "document where I'm up to"."
+description: |
+  Creates a structured handover document summarizing task context, decisions made, open questions, and recommended next steps — saved to `context/handovers/`. Use when a user wants to hand off, transition, or pass a task to someone else, create handover notes, write a task transition document, or capture current progress for a future session. Trigger phrases include "create a handover", "hand this off", "write handover notes", "pass this task on", or "document where I'm up to".
 compatibility: opencode
 ---
 

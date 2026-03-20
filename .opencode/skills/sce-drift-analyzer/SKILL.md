@@ -1,6 +1,7 @@
 ---
 name: sce-drift-analyzer
-description: "Compares project documentation against actual code implementation to identify outdated, missing, or mismatched content — then produces a prioritized report with actionable fixes. Use when the user says docs are out of date, wants to sync documentation with code, suspects the spec no longer matches implementation, notices code comments or context files are stale, or asks whether documentation reflects the current codebase. Third-person: analyzes documentation-vs-implementation alignment using JavaScript collectors, writes a structured drift report, and asks the user before applying any changes."
+description: |
+  Compares project documentation against actual code implementation to identify outdated, missing, or mismatched content — then produces a prioritized report with actionable fixes. Use when the user says docs are out of date, wants to sync documentation with code, suspects the spec no longer matches implementation, notices code comments or context files are stale, or asks whether documentation reflects the current codebase. Third-person: analyzes documentation-vs-implementation alignment using JavaScript collectors, writes a structured drift report, and asks the user before applying any changes.
 compatibility: opencode
 ---
 

@@ -36,18 +36,24 @@ Runtime observability now consumes the shared resolved observability config from
 - Each emitted record includes a stable `event_id`.
 - Current app-level event identifiers:
   - `sce.app.start`
+  - `sce.config.file_discovered` (debug level - logged for each discovered config file)
+  - `sce.command.raw_args` (debug level - logged at command parsing entry)
   - `sce.command.parsed`
+  - `sce.command.dispatch_start` (debug level - logged before dispatch)
+  - `sce.command.dispatch_end` (debug level - logged after successful dispatch)
   - `sce.command.completed`
-  - `sce.command.parse_failed`
-  - `sce.command.failed`
+- Error logging uses the pattern `sce.error.{code}` where `{code}` is the classified error code (e.g., `sce.error.SCE-ERR-RUNTIME`).
+- All `ClassifiedError` instances are logged via `Logger::log_classified_error()` before user-facing stderr diagnostics are written.
 - Event records include deterministic metadata keys used by automation (`command`, `failure_class`, `component` when applicable).
+- Error log records include `error_code` and `error_class` fields for structured observability.
 - Logger events are mirrored into tracing events so OTEL export can observe the same lifecycle signal set when enabled.
 - App runtime initializes tracing subscriber context before parse/dispatch and shuts down tracer provider on process exit.
 
 ## Format contract
 
-- `text` format emits single-line key/value records with fixed key ordering: `log_format`, `level`, `event_id`, `message`, then optional fields.
-- `json` format emits a single-line object with fixed top-level keys: `log_format`, `level`, `event_id`, `message`, `fields`.
+- `text` format emits single-line key/value records with fixed key ordering: `timestamp`, `log_format`, `level`, `event_id`, `message`, then optional fields.
+- `json` format emits a single-line object with fixed top-level keys: `timestamp`, `log_format`, `level`, `event_id`, `message`, `fields`.
+- Timestamps are UTC ISO8601 with millisecond precision (e.g., `2026-03-20T14:30:00.123Z`) generated via `chrono::Utc::now()`.
 - Logger threshold behavior is deterministic and severity-based (`error < warn < info < debug`).
 - File sink writes are deterministic line-based writes with immediate flush after each record.
 

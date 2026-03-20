@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Result};
+use chrono::Utc;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::trace::SdkTracerProvider;
@@ -15,6 +16,7 @@ use serde_json::json;
 use tracing_subscriber::prelude::*;
 
 use crate::services::config;
+use crate::services::error::ClassifiedError;
 use crate::services::security::redact_sensitive_text;
 
 pub const NAME: &str = "observability";
@@ -448,8 +450,27 @@ impl Logger {
         self.log(LogLevel::Info, event_id, message, fields);
     }
 
+    pub fn debug(&self, event_id: &str, message: &str, fields: &[(&str, &str)]) {
+        self.log(LogLevel::Debug, event_id, message, fields);
+    }
+
+    #[allow(dead_code)]
     pub fn error(&self, event_id: &str, message: &str, fields: &[(&str, &str)]) {
         self.log(LogLevel::Error, event_id, message, fields);
+    }
+
+    #[allow(dead_code)]
+    pub fn log_classified_error(&self, error: &ClassifiedError) {
+        let event_id = format!("sce.error.{}", error.code());
+        self.log(
+            LogLevel::Error,
+            &event_id,
+            error.message(),
+            &[
+                ("error_code", error.code()),
+                ("error_class", error.class().as_str()),
+            ],
+        );
     }
 
     fn log(&self, level: LogLevel, event_id: &str, message: &str, fields: &[(&str, &str)]) {
@@ -489,10 +510,13 @@ impl Logger {
         message: &str,
         fields: &[(&str, &str)],
     ) -> String {
+        let timestamp = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+
         match self.config.format {
             LogFormat::Text => {
                 let mut line = format!(
-                    "log_format={} level={} event_id={} message={}",
+                    "timestamp={} log_format={} level={} event_id={} message={}",
+                    timestamp,
                     self.config.format.as_str(),
                     level.as_str(),
                     event_id,
@@ -519,6 +543,7 @@ impl Logger {
                     })
                     .collect::<serde_json::Map<String, serde_json::Value>>();
                 json!({
+                    "timestamp": timestamp,
                     "log_format": self.config.format.as_str(),
                     "level": level.as_str(),
                     "event_id": event_id,
@@ -613,6 +638,7 @@ mod tests {
         LogFileMode as ConfigLogFileMode, LogFormat as ConfigLogFormat, LogLevel as ConfigLogLevel,
         OtlpProtocol as ConfigOtlpProtocol, ResolvedObservabilityRuntimeConfig,
     };
+    use crate::services::error::ClassifiedError;
 
     fn unique_temp_log_path(label: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
@@ -626,10 +652,11 @@ mod tests {
     fn logger_defaults_to_error_text() {
         let logger = Logger::from_env_lookup(|_| None).expect("logger should parse defaults");
         let line = logger.render_line(LogLevel::Error, "sce.test.event", "hello", &[]);
-        assert_eq!(
-            line,
-            "log_format=text level=error event_id=sce.test.event message=hello"
+        assert!(
+            line.starts_with("timestamp="),
+            "line should start with timestamp"
         );
+        assert!(line.contains(" log_format=text level=error event_id=sce.test.event message=hello"));
     }
 
     #[test]
@@ -647,10 +674,18 @@ mod tests {
             "hello",
             &[("command", "setup")],
         );
-        assert_eq!(
-            line,
-            "{\"event_id\":\"sce.test.event\",\"fields\":{\"command\":\"setup\"},\"level\":\"info\",\"log_format\":\"json\",\"message\":\"hello\"}"
+        // Parse as JSON to verify structure
+        let parsed: serde_json::Value =
+            serde_json::from_str(&line).expect("line should be valid JSON");
+        assert!(
+            parsed.get("timestamp").is_some(),
+            "JSON should contain timestamp field"
         );
+        assert_eq!(parsed["log_format"], "json");
+        assert_eq!(parsed["level"], "info");
+        assert_eq!(parsed["event_id"], "sce.test.event");
+        assert_eq!(parsed["message"], "hello");
+        assert_eq!(parsed["fields"]["command"], "setup");
     }
 
     #[test]
@@ -800,6 +835,7 @@ mod tests {
             otel_enabled: false,
             otel_endpoint: DEFAULT_OTEL_ENDPOINT.to_string(),
             otel_protocol: ConfigOtlpProtocol::Grpc,
+            loaded_config_paths: vec![],
         })
         .expect("logger should initialize from resolved config");
 
@@ -888,10 +924,108 @@ mod tests {
                     otel_enabled: true,
                     otel_endpoint: "http://127.0.0.1:4317".to_string(),
                     otel_protocol: ConfigOtlpProtocol::Grpc,
+                    loaded_config_paths: vec![],
                 })
             })
             .expect("telemetry runtime should initialize from resolved config");
 
         assert!(runtime.provider.is_some());
+    }
+
+    #[test]
+    fn log_classified_error_includes_error_code_in_event_id() {
+        let logger = Logger::from_env_lookup(|_| None).expect("logger should parse defaults");
+        let error = ClassifiedError::runtime("Test runtime error");
+        let line = logger.render_line(
+            LogLevel::Error,
+            &format!("sce.error.{}", error.code()),
+            error.message(),
+            &[
+                ("error_code", error.code()),
+                ("error_class", error.class().as_str()),
+            ],
+        );
+
+        assert!(line.starts_with("timestamp="));
+        assert!(line.contains("level=error"));
+        assert!(line.contains("event_id=sce.error.SCE-ERR-RUNTIME"));
+        assert!(line.contains("error_code=SCE-ERR-RUNTIME"));
+        assert!(line.contains("error_class=runtime"));
+    }
+
+    #[test]
+    fn log_classified_error_json_format_includes_all_fields() {
+        let logger = Logger::from_env_lookup(|key| {
+            if key == "SCE_LOG_FORMAT" {
+                return Some("json".to_string());
+            }
+            None
+        })
+        .expect("logger should parse json format");
+
+        let error = ClassifiedError::validation("Validation failed");
+        let line = logger.render_line(
+            LogLevel::Error,
+            &format!("sce.error.{}", error.code()),
+            error.message(),
+            &[
+                ("error_code", error.code()),
+                ("error_class", error.class().as_str()),
+            ],
+        );
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&line).expect("line should be valid JSON");
+        assert!(
+            parsed.get("timestamp").is_some(),
+            "JSON should contain timestamp field"
+        );
+        assert_eq!(parsed["level"], "error");
+        assert_eq!(parsed["event_id"], "sce.error.SCE-ERR-VALIDATION");
+        assert_eq!(parsed["fields"]["error_code"], "SCE-ERR-VALIDATION");
+        assert_eq!(parsed["fields"]["error_class"], "validation");
+    }
+
+    #[test]
+    fn log_classified_error_supports_all_error_classes() {
+        let logger = Logger::from_env_lookup(|_| None).expect("logger should parse defaults");
+
+        // Test all error classes
+        let parse_error = ClassifiedError::parse("Parse error");
+        let validation_error = ClassifiedError::validation("Validation error");
+        let runtime_error = ClassifiedError::runtime("Runtime error");
+        let dependency_error = ClassifiedError::dependency("Dependency error");
+
+        // Verify each has correct code and class
+        assert_eq!(parse_error.code(), "SCE-ERR-PARSE");
+        assert_eq!(parse_error.class().as_str(), "parse");
+
+        assert_eq!(validation_error.code(), "SCE-ERR-VALIDATION");
+        assert_eq!(validation_error.class().as_str(), "validation");
+
+        assert_eq!(runtime_error.code(), "SCE-ERR-RUNTIME");
+        assert_eq!(runtime_error.class().as_str(), "runtime");
+
+        assert_eq!(dependency_error.code(), "SCE-ERR-DEPENDENCY");
+        assert_eq!(dependency_error.class().as_str(), "dependency");
+
+        // Verify log lines can be rendered for each
+        for (error, expected_code) in [
+            (&parse_error, "SCE-ERR-PARSE"),
+            (&validation_error, "SCE-ERR-VALIDATION"),
+            (&runtime_error, "SCE-ERR-RUNTIME"),
+            (&dependency_error, "SCE-ERR-DEPENDENCY"),
+        ] {
+            let line = logger.render_line(
+                LogLevel::Error,
+                &format!("sce.error.{}", error.code()),
+                error.message(),
+                &[
+                    ("error_code", error.code()),
+                    ("error_class", error.class().as_str()),
+                ],
+            );
+            assert!(line.contains(&format!("error_code={expected_code}")));
+        }
     }
 }

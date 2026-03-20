@@ -1,6 +1,7 @@
 ---
 name: sce-drift-fixer
-description: "Use when user wants to audit and repair code-context drift in context/ using SCE rules."
+description: |
+  Use when user wants to audit and repair code-context drift in context/ using SCE rules.
 compatibility: opencode
 ---
 

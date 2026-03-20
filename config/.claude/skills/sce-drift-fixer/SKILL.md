@@ -1,6 +1,7 @@
 ---
 name: sce-drift-fixer
-description: "Use when the user wants to fix stale or outdated context documentation that no longer matches the actual codebase — e.g. "update docs", "sync context files", "fix outdated documentation", "refresh context", or "context is out of date". Audits files in `context/`, identifies discrepancies between documentation and implemented code (treating code as the source of truth), then updates context files to remove outdated references, correct stale descriptions, and sync documentation with recent code changes."
+description: |
+  Use when the user wants to fix stale or outdated context documentation that no longer matches the actual codebase — e.g. "update docs", "sync context files", "fix outdated documentation", "refresh context", or "context is out of date". Audits files in `context/`, identifies discrepancies between documentation and implemented code (treating code as the source of truth), then updates context files to remove outdated references, correct stale descriptions, and sync documentation with recent code changes.
 compatibility: claude
 ---
 

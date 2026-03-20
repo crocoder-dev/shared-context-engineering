@@ -1,6 +1,7 @@
 ---
 name: sce-plan-authoring-interactive
-description: "Use when a user wants to create or update a Shared Context Engineering (SCE) implementation plan with interactive clarification. Triggers on requests like "write a plan", "create an implementation roadmap", "draft a rollout plan", "plan this change", or "break this into tasks" for a software change. Interactively resolves ambiguity by asking targeted clarifying questions, then produces a structured markdown plan under `context/plans/` with a change summary, success criteria, constraints, atomic task stack, and verification steps — ready to hand off to the Shared Context Code agent for execution."
+description: |
+  Use when a user wants to create or update a Shared Context Engineering (SCE) implementation plan with interactive clarification. Triggers on requests like "write a plan", "create an implementation roadmap", "draft a rollout plan", "plan this change", or "break this into tasks" for a software change. Interactively resolves ambiguity by asking targeted clarifying questions, then produces a structured markdown plan under `context/plans/` with a change summary, success criteria, constraints, atomic task stack, and verification steps — ready to hand off to the Shared Context Code agent for execution.
 compatibility: opencode
 ---
 

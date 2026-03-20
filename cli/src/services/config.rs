@@ -195,7 +195,7 @@ pub struct ConfigRequest {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ConfigPathSource {
+pub(crate) enum ConfigPathSource {
     Flag,
     Env,
     DefaultDiscoveredGlobal,
@@ -203,7 +203,7 @@ enum ConfigPathSource {
 }
 
 impl ConfigPathSource {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Flag => "flag",
             Self::Env => "env",
@@ -220,9 +220,9 @@ struct ResolvedValue<T> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct LoadedConfigPath {
-    path: PathBuf,
-    source: ConfigPathSource,
+pub(crate) struct LoadedConfigPath {
+    pub(crate) path: PathBuf,
+    pub(crate) source: ConfigPathSource,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -283,6 +283,7 @@ pub(crate) struct ResolvedObservabilityRuntimeConfig {
     pub(crate) otel_enabled: bool,
     pub(crate) otel_endpoint: String,
     pub(crate) otel_protocol: OtlpProtocol,
+    pub(crate) loaded_config_paths: Vec<LoadedConfigPath>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -517,6 +518,7 @@ where
         otel_enabled: runtime.otel_enabled.value,
         otel_endpoint: runtime.otel_endpoint.value,
         otel_protocol: runtime.otel_protocol.value,
+        loaded_config_paths: runtime.loaded_config_paths,
     })
 }
 
@@ -2230,6 +2232,16 @@ mod tests {
                 otel_enabled: true,
                 otel_endpoint: "https://config.example/v1/traces".to_string(),
                 otel_protocol: OtlpProtocol::HttpProtobuf,
+                loaded_config_paths: vec![
+                    LoadedConfigPath {
+                        path: PathBuf::from("/state/sce/config.json"),
+                        source: ConfigPathSource::DefaultDiscoveredGlobal,
+                    },
+                    LoadedConfigPath {
+                        path: PathBuf::from("/workspace/.sce/config.json"),
+                        source: ConfigPathSource::DefaultDiscoveredLocal,
+                    },
+                ],
             }
         );
         Ok(())

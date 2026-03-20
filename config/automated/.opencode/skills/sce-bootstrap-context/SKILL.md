@@ -1,6 +1,7 @@
 ---
 name: sce-bootstrap-context
-description: "Use when user wants to Bootstrap SCE baseline context directory when missing."
+description: |
+  Use when user wants to Bootstrap SCE baseline context directory when missing.
 compatibility: opencode
 ---
 

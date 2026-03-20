@@ -1,6 +1,7 @@
 ---
 name: sce-plan-authoring
-description: "Transforms a change request into a structured implementation plan saved under context/plans/, breaking work down into atomic, commit-sized tasks with clear goals, scope boundaries, acceptance criteria, and verification steps. Use when a user wants to create or update a project plan, task breakdown, implementation roadmap, or work plan — including requests like "plan this feature", "break this into tasks", "write an implementation plan", or "scope out this change". Handles ambiguity resolution through a blocking clarification gate before writing any plan, and produces a machine-friendly task list ready for handoff to the Shared Context Engineering (SCE) implementation agent."
+description: |
+  Transforms a change request into a structured implementation plan saved under context/plans/, breaking work down into atomic, commit-sized tasks with clear goals, scope boundaries, acceptance criteria, and verification steps. Use when a user wants to create or update a project plan, task breakdown, implementation roadmap, or work plan — including requests like "plan this feature", "break this into tasks", "write an implementation plan", or "scope out this change". Handles ambiguity resolution through a blocking clarification gate before writing any plan, and produces a machine-friendly task list ready for handoff to the Shared Context Engineering (SCE) implementation agent.
 compatibility: opencode
 ---
 

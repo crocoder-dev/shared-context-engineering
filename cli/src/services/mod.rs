@@ -4,6 +4,7 @@ pub mod auth_command;
 pub mod completion;
 pub mod config;
 pub mod doctor;
+pub mod error;
 pub mod hooks;
 pub mod hosted_reconciliation;
 pub mod local_db;
