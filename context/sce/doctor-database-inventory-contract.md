@@ -23,10 +23,7 @@
 
 - `sce doctor` is the canonical operator-facing inventory surface for SCE-managed databases.
 - Database inventory remains ownership-based, not filesystem-pattern-based.
-- The current canonical SCE-managed database families are:
-  - Agent Trace local persistence at `<state_root>/sce/agent-trace/local.db`
-  - per-repository MCP Smart Cache databases at `<state_root>/sce/cache/repos/<sha256(repo_root)>/cache.db`
-- Related non-database state, including `<state_root>/sce/cache/config.json`, is out of scope for database inventory unless future work explicitly adds supporting-context fields around it.
+- The current canonical SCE-managed database family is Agent Trace local persistence at `<state_root>/sce/agent-trace/local.db`.
 - Doctor must not scan arbitrary SQLite files, arbitrary `*.db` files, or non-SCE state to infer inventory.
 
 ## Command surface contract
@@ -42,30 +39,20 @@
 
 ## Repo-scoped inventory contract
 
-- When `sce doctor` resolves an active non-bare repository target, the default readiness output must include a repo-scoped SCE database inventory section.
-- Repo-scoped inventory includes only SCE-managed databases that are attributable to the active repository.
-- At current scope, the active repository inventory includes:
-  - the MCP Smart Cache database path for the resolved repository root
+- When `sce doctor` resolves an active non-bare repository target, the default readiness output still includes a repo-scoped SCE database inventory section.
+- At current scope, that repo-scoped section is intentionally empty because no repo-owned SCE database currently exists.
 - The global Agent Trace database does not become repo-scoped inventory merely because doctor is running inside a repository; it remains part of global SCE state.
-- Repo-scoped inventory must report deterministic ownership and readiness metadata for each listed database family, including enough information for operators to distinguish:
-  - expected location
-  - presence vs absence
-  - whether the path belongs to the active repository
-  - whether doctor considers the surface healthy, missing, or otherwise not ready
-- Repo-scoped database findings contribute to doctor readiness only when the current doctor check domain requires repository-scoped inspection.
+- Repo-scoped database findings therefore do not currently contribute additional readiness failures beyond the other doctor check domains.
 
 ## All-SCE-databases inventory contract
 
 - Doctor must support an explicit all-SCE-databases listing separate from the default readiness view.
 - The all-databases inventory enumerates every database currently created by SCE on the local machine according to canonical ownership rules.
-- At current scope, the all-databases inventory includes:
-  - the canonical Agent Trace local database
-  - every discovered MCP Smart Cache database registered under the SCE cache state root
+- At current scope, the all-databases inventory includes only the canonical Agent Trace local database.
 - The listing must remain deterministic in both inclusion rules and ordering.
 - The listing must distinguish database family, scope, and canonical path, so operators can tell:
-  - `global` SCE databases from `repo`-scoped databases
-  - which repository a repo-scoped cache database belongs to when that identity is available from SCE-owned metadata
-  - expected-but-missing canonical databases from existing databases when the contract requires both to surface
+-  - `global` SCE databases from any future `repo`-scoped databases
+-  - expected-but-missing canonical databases from existing databases when the contract requires both to surface
 - The all-databases inventory is read-only and must not imply repair unless a separately reported doctor problem already has an approved fix path.
 
 ## Output-shape expectations
@@ -80,7 +67,7 @@
   - readiness or inventory status
 - Repo-scoped JSON output must attach database records to the repository-targeted portion of doctor output.
 - All-databases JSON output must render as a stable collection whose ordering is deterministic across identical state.
-- Missing or unreadable SCE-owned metadata needed to identify repo ownership must produce explicit doctor findings or explicit fallback fields rather than silently dropping a database from inventory.
+- If future repo-scoped database families require SCE-owned metadata for ownership attribution, missing or unreadable metadata must produce explicit doctor findings or explicit fallback fields rather than silently dropping a database from inventory.
 
 ## Ownership and readiness rules
 

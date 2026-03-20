@@ -77,7 +77,6 @@ mod tests {
         assert!(output.contains("config"));
         assert!(output.contains("setup"));
         assert!(output.contains("doctor"));
-        assert!(output.contains("mcp"));
         assert!(output.contains("hooks"));
         assert!(output.contains("sync"));
         assert!(output.contains("version"));

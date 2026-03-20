@@ -1,4 +1,3 @@
-import "../base/mcp.pkl" as mcp
 import "../base/opencode.pkl" as opencode
 import "../base/shared-content.pkl" as shared
 
@@ -17,8 +16,6 @@ class RenderedTextFile {
 
 tileWorkspace = "crocoder-dev"
 tileVersion = read("../../../.version").text.trim()
-
-sceMcpServer = mcp.sce_local_stdio_server
 
 sceGeneratedOpenCodePlugins = List(opencode.sce_bash_policy_plugin)
 sceGeneratedOpenCodePluginPathsJson = sceGeneratedOpenCodePlugins

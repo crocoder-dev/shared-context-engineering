@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "sce": {
-      "command": "sce",
-      "args": ["mcp"],
-      "env": {}
-    }
-  }
-}

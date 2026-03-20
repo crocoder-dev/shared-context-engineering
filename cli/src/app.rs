@@ -110,7 +110,6 @@ enum Command {
     Config(services::config::ConfigSubcommand),
     Setup(services::setup::SetupRequest),
     Doctor(services::doctor::DoctorRequest),
-    Mcp,
     Hooks(services::hooks::HookSubcommand),
     Trace(services::trace::TraceRequest),
     Sync(services::sync::SyncRequest),
@@ -127,7 +126,6 @@ impl Command {
             Self::Config(_) => services::config::NAME,
             Self::Setup(_) => services::setup::NAME,
             Self::Doctor(_) => services::doctor::NAME,
-            Self::Mcp => services::mcp::NAME,
             Self::Hooks(_) => services::hooks::NAME,
             Self::Trace(_) => services::trace::NAME,
             Self::Sync(_) => services::sync::NAME,
@@ -185,6 +183,10 @@ fn write_stdout_payload<W>(writer: &mut W, payload: &str) -> Result<(), Classifi
 where
     W: Write,
 {
+    if payload.is_empty() {
+        return Ok(());
+    }
+
     writeln!(writer, "{payload}").map_err(|error| {
         ClassifiedError::runtime(format!("Failed to write command output to stdout: {error}"))
     })
@@ -268,7 +270,7 @@ where
             &[("command", command.name())],
         );
 
-        match dispatch(&command) {
+        match dispatch(&command, &logger) {
             Ok(payload) => {
                 logger.info(
                     "sce.command.completed",
@@ -469,7 +471,6 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<Command, Classi
             },
             format: convert_output_format(format),
         })),
-        cli_schema::Commands::Mcp => Ok(Command::Mcp),
         cli_schema::Commands::Hooks { subcommand } => convert_hooks_subcommand(subcommand),
         cli_schema::Commands::Trace { subcommand } => convert_trace_subcommand(subcommand),
         cli_schema::Commands::Sync { format } => Ok(Command::Sync(services::sync::SyncRequest {
@@ -654,7 +655,10 @@ fn convert_trace_subcommand(
     }
 }
 
-fn dispatch(command: &Command) -> Result<String, ClassifiedError> {
+fn dispatch(
+    command: &Command,
+    _logger: &services::observability::Logger,
+) -> Result<String, ClassifiedError> {
     match command {
         Command::Help => Ok(command_surface::help_text()),
         Command::HelpText { text, .. } => Ok(text.clone()),
@@ -715,8 +719,6 @@ fn dispatch(command: &Command) -> Result<String, ClassifiedError> {
             Ok(sections.join("\n\n"))
         }
         Command::Doctor(request) => services::doctor::run_doctor(*request)
-            .map_err(|error| ClassifiedError::runtime(error.to_string())),
-        Command::Mcp => services::mcp::run_mcp_server_blocking()
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::Hooks(subcommand) => services::hooks::run_hooks_subcommand(subcommand.clone())
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
@@ -837,6 +839,15 @@ mod tests {
         let stderr = String::from_utf8(stderr).expect("stderr should be utf-8");
         assert!(stderr.contains("Error [SCE-ERR-PARSE]:"));
         assert!(stderr.contains("Try:"));
+    }
+
+    #[test]
+    fn empty_payload_does_not_write_stdout() {
+        let mut stdout = Vec::new();
+
+        super::write_stdout_payload(&mut stdout, "").expect("empty payload should be skipped");
+
+        assert!(stdout.is_empty());
     }
 
     #[test]
@@ -1265,10 +1276,10 @@ mod tests {
     }
 
     #[test]
-    fn parser_routes_mcp() {
-        let command = parse_command(vec!["sce".to_string(), "mcp".to_string()])
-            .expect("command should parse");
-        assert_eq!(command, Command::Mcp);
+    fn parser_rejects_mcp() {
+        let error = parse_command(vec!["sce".to_string(), "mcp".to_string()])
+            .expect_err("mcp should be rejected");
+        assert!(error.to_string().contains("Unknown command 'mcp'"));
     }
 
     #[test]

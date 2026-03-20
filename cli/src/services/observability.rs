@@ -272,7 +272,7 @@ impl Default for ObservabilityConfig {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Logger {
     config: ObservabilityConfig,
     file_sink: Option<LogFileSink>,
@@ -294,7 +294,7 @@ impl LogFileMode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct LogFileSink {
     path: PathBuf,
     writer: Arc<Mutex<File>>,

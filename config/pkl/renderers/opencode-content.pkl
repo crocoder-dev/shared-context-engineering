@@ -128,14 +128,7 @@ opencodeConfig = new common.RenderedTextFile {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
     \(generatedOpenCodePluginPathsJson)
-  ],
-  "mcp": {
-    "\(common.sceMcpServer.name)": {
-      "type": "local",
-      "command": \(common.sceMcpServer.command_argv_json),
-      "enabled": true
-    }
-  }
+  ]
 }
 """
 }

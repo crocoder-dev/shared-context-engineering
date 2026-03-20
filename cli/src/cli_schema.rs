@@ -95,9 +95,6 @@ pub enum Commands {
         format: OutputFormat,
     },
 
-    #[command(about = "Host MCP Smart Cache Engine server for cache-aware file reads")]
-    Mcp,
-
     #[command(about = "Run git-hook runtime entrypoints for local Agent Trace flows")]
     Hooks {
         #[command(subcommand)]
@@ -827,15 +824,6 @@ mod tests {
                 assert_eq!(format, OutputFormat::Text);
             }
             _ => panic!("Expected Sync command"),
-        }
-    }
-
-    #[test]
-    fn parse_mcp() {
-        let cli = Cli::try_parse_from(["sce", "mcp"]).expect("mcp should parse");
-        match cli.command {
-            Some(Commands::Mcp) => {}
-            _ => panic!("Expected Mcp command"),
         }
     }
 

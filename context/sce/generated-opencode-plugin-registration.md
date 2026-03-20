@@ -18,7 +18,7 @@ The generated-config pipeline now has one canonical Pkl-authored source for Open
 
 - `config/pkl/renderers/opencode-content.pkl` and `config/pkl/renderers/opencode-automated-content.pkl` render `opencodeConfig` artifacts that include the shared plugin registration.
 - `config/pkl/generate.pkl` writes those artifacts to `config/.opencode/opencode.json` and `config/automated/.opencode/opencode.json`.
-- Both generated OpenCode profiles currently serialize `plugin: ["./plugins/sce-bash-policy.js"]` while preserving the generated `mcp` registration for `sce mcp`.
+- Both generated OpenCode profiles currently serialize `plugin: ["./plugins/sce-bash-policy.js"]`.
 - The registered plugin file itself is generated-owned at `config/.opencode/plugins/sce-bash-policy.js` and `config/automated/.opencode/plugins/sce-bash-policy.js`.
 
 ## Claude boundary
@@ -36,7 +36,7 @@ The generated-config pipeline now has one canonical Pkl-authored source for Open
 
 ## Verification
 
-- Inspect `config/.opencode/opencode.json` and `config/automated/.opencode/opencode.json` for the generated `plugin` field and preserved `mcp` block.
+- Inspect `config/.opencode/opencode.json` and `config/automated/.opencode/opencode.json` for the generated `plugin` field.
 - Inspect `config/.claude/settings.json` for the generated `PreToolUse` hook registration that keeps Claude on the hook-based path.
 
 See also: [../overview.md](../overview.md), [../architecture.md](../architecture.md), [../glossary.md](../glossary.md)

@@ -82,21 +82,6 @@ skills {
   }
 }
 
-mcpProjectConfig = new common.RenderedTextFile {
-  slug = "claude-project-mcp"
-  rendered = """
-{
-  "mcpServers": {
-    "\(common.sceMcpServer.name)": {
-      "command": "\(common.sceMcpServer.command)",
-      "args": \(common.sceMcpServer.stdio_args_json),
-      "env": {}
-    }
-  }
-}
-"""
-}
-
 skillTiles {
   for (unitSlug, _ in shared.skills) {
     [unitSlug] = new common.RenderedTextFile {

@@ -144,8 +144,5 @@ output {
     ["config/schema/sce-config.schema.json"] {
       text = sce_config_schema.rendered
     }
-    ["config/.mcp.json"] {
-      text = claude.mcpProjectConfig.rendered
-    }
   }
 }

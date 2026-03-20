@@ -31,8 +31,8 @@ At the current implementation point, the runtime in `cli/src/services/doctor.rs`
 - state-root reporting as `present` or `expected`
 - default global/local config-file location reporting, plus validation of existing global and repo-local `sce/config.json` readability and schema compliance
 - Agent Trace local DB location reporting, DB parent-directory readiness checks, and existing-DB health validation
-- repo-scoped Smart Cache database readiness reporting for the active repository
-- explicit all-SCE database inventory rendering for the canonical Agent Trace DB plus registered/discovered Smart Cache databases
+- an empty repo-scoped database section in the default readiness view because no repo-owned SCE database currently exists
+- explicit all-SCE database inventory rendering for the canonical Agent Trace DB only
 - explicit git-unavailable, outside-repo, and bare-repo repository-targeting failures
 - effective hook-path source (`default`, local `core.hooksPath`, global `core.hooksPath`)
 - repository root and hooks directory resolution when a repository target is detected

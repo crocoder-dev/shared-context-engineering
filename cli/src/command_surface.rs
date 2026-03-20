@@ -40,11 +40,6 @@ pub const COMMANDS: &[CommandContract] = &[
         purpose: "Authenticate with WorkOS and inspect local auth state",
     },
     CommandContract {
-        name: services::mcp::NAME,
-        status: ImplementationStatus::Implemented,
-        purpose: "Host MCP Smart Cache Engine server for cache-aware file reads",
-    },
-    CommandContract {
         name: services::hooks::NAME,
         status: ImplementationStatus::Implemented,
         purpose: "Run git-hook runtime entrypoints for local Agent Trace flows",
@@ -97,14 +92,13 @@ Setup usage:\n  sce setup [--opencode|--claude|--both] [--non-interactive] [--ho
 Doctor usage:\n  sce doctor [--fix] [--all-databases] [--format <text|json>]\n\n\
 Auth usage:\n  sce auth <login|logout|status> [--format <text|json>]\n\n\
 Completion usage:\n  sce completion --shell <bash|zsh|fish>\n\n\
-MCP usage:\n  sce mcp\n\n\
 Trace usage:\n  sce trace prompts <commit-sha> [--format <text|json>|--json]\n\n\
 Output format contract:\n  Supported commands accept --format <text|json>\n\n\
 Examples:\n  sce setup\n  sce setup --opencode --non-interactive --hooks\n  sce setup --hooks --repo ../demo-repo\n  sce auth status\n  sce auth login --format json\n  sce trace prompts abc1234\n  sce trace prompts abc1234 --json\n  sce doctor --format json\n  sce doctor --all-databases --format json\n  sce doctor --fix\n  sce version --format json\n\n\
 Commands:\n{command_rows}\n\n\
 Setup defaults to interactive target selection when no setup target flag is passed, and installs hooks in the same run.\n\
 Use '--hooks' to install required git hooks for the current repository or '--repo <path>' for a specific repository.\n\
-`setup`, `doctor`, `auth`, `hooks`, `trace`, `mcp`, `version`, and `completion` are implemented; `sync` remains placeholder-oriented.\n"
+`setup`, `doctor`, `auth`, `hooks`, `trace`, `version`, and `completion` are implemented; `sync` remains placeholder-oriented.\n"
     )
 }
 

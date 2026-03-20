@@ -53,7 +53,7 @@ When both discovered defaults exist, they are merged in memory in deterministic 
 - The canonical JSON Schema artifact for both global and repo-local `sce/config.json` files is authored in `config/pkl/base/sce-config-schema.pkl` and generated to `config/schema/sce-config.schema.json`.
 - `cli/src/services/config.rs` embeds that generated artifact at compile time as `SCE_CONFIG_SCHEMA_JSON` and uses it for runtime schema validation.
 - `sce config validate` and `sce doctor` both validate config-file structure against that shared generated schema before applying Rust-owned semantic checks such as duplicate custom `argv_prefix` detection and redundancy warnings.
-- The canonical top-level schema declaration `"$schema": "https://sce.crocoder.dev/config.json"` is a supported config key for both explicit and discovered `sce/config.json` files, including command-startup paths like `sce version` and `sce mcp` that load config before normal command dispatch.
+- The canonical top-level schema declaration `"$schema": "https://sce.crocoder.dev/config.json"` is a supported config key for both explicit and discovered `sce/config.json` files, including command-startup paths like `sce version` and other config-loading commands that parse config before normal command dispatch.
 
 - Config file content must be valid JSON with a top-level object.
 - Allowed keys: `$schema`, `log_level`, `log_format`, `log_file`, `log_file_mode`, `timeout_ms`, `workos_client_id`, `otel`, `policies`.

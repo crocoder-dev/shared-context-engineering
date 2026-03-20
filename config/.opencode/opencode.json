@@ -2,12 +2,5 @@
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
     "./plugins/sce-bash-policy.js"
-  ],
-  "mcp": {
-    "sce": {
-      "type": "local",
-      "command": ["sce", "mcp"],
-      "enabled": true
-    }
-  }
+  ]
 }
