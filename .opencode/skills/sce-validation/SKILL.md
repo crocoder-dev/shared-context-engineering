@@ -1,6 +1,6 @@
 ---
 name: sce-validation
-description: Runs the final validation phase of a project plan by executing the full test suite, lint and format checks, removing temporary scaffolding, and writing a structured validation report with command outputs and success-criteria evidence to `context/plans/{plan_name}.md`. Use when the user wants to verify a completed implementation, confirm all success criteria are met, wrap up a plan, finalize a feature or fix, or sign off on a change before closing it out.
+description: "Runs the final validation phase of a project plan by executing the full test suite, lint and format checks, removing temporary scaffolding, and writing a structured validation report with command outputs and success-criteria evidence to `context/plans/{plan_name}.md`. Use when the user wants to verify a completed implementation, confirm all success criteria are met, wrap up a plan, finalize a feature or fix, or sign off on a change before closing it out."
 compatibility: opencode
 ---
 

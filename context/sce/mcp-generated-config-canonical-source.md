@@ -23,13 +23,12 @@ The generated-config pipeline now has one canonical Pkl-authored source for the 
 
 - `config/pkl/renderers/claude-content.pkl` renders a `mcpProjectConfig` text artifact from `sceMcpServer`.
 - `config/pkl/generate.pkl` writes that artifact to `config/.mcp.json` using Claude Code's project-scoped `mcpServers` schema.
-- `scripts/sync-opencode-config.sh` treats `config/.mcp.json` as generated-owned input and replaces repository-root `.mcp.json` from staged output after regenerating `config/`.
 - The current generated Claude project manifest registers `sce` with `command: "sce"`, `args: ["mcp"]`, and an empty `env` object.
 
 ## Ownership and edit policy
 
 - Treat `config/.opencode/opencode.json`, `config/automated/.opencode/opencode.json`, and `config/.mcp.json` as generated-owned artifacts.
-- Treat repository-root `.mcp.json` as a synced install target derived from generated `config/.mcp.json`, not as a hand-authored source file.
+- The staged sync workflow does not mirror `config/.mcp.json` into a repository-root `.mcp.json` compatibility copy.
 - When the MCP registration contract changes, edit canonical sources under `config/pkl/` (`config/pkl/base/mcp.pkl`, relevant renderer modules, and `config/pkl/generate.pkl`) instead of patching generated manifests directly.
 - `config/pkl/README.md` is the contributor-facing runbook for regeneration, ownership, and sync behavior; keep it aligned with this contract.
 

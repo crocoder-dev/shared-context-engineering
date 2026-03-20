@@ -1,0 +1,11 @@
+{
+  "name": "crocoder-dev/opencode-sce-handover-writer",
+  "version": "0.1.0",
+  "summary": "Create structured handover notes for Shared Context Engineering tasks.",
+  "private": false,
+  "skills": {
+    "sce-handover-writer": {
+      "path": "SKILL.md"
+    }
+  }
+}

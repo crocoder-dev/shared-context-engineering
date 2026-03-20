@@ -18,6 +18,20 @@ pub(crate) const SCE_CONFIG_SCHEMA_JSON: &str =
 
 const DEFAULT_TIMEOUT_MS: u64 = 30000;
 const PRECEDENCE_DESCRIPTION: &str = "flags > env > config file > defaults";
+const CONFIG_SCHEMA_DECLARATION_KEY: &str = "$schema";
+const TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
+    CONFIG_SCHEMA_DECLARATION_KEY,
+    "log_level",
+    "log_format",
+    "log_file",
+    "log_file_mode",
+    "otel",
+    "timeout_ms",
+    WORKOS_CLIENT_ID_KEY.config_key,
+    "policies",
+];
+const TOP_LEVEL_CONFIG_KEYS_DESCRIPTION: &str =
+    "$schema, log_level, log_format, log_file, log_file_mode, otel, timeout_ms, workos_client_id, policies";
 const DEFAULT_OTEL_ENDPOINT: &str = "http://127.0.0.1:4317";
 const ENV_LOG_LEVEL: &str = "SCE_LOG_LEVEL";
 const ENV_LOG_FORMAT: &str = "SCE_LOG_FORMAT";
@@ -1027,20 +1041,11 @@ fn parse_file_config(raw: &str, path: &Path, source: ConfigPathSource) -> Result
     validate_config_value_against_schema(&parsed, path)?;
 
     for key in object.keys() {
-        if key != "log_level"
-            && key != "log_format"
-            && key != "log_file"
-            && key != "log_file_mode"
-            && key != "otel"
-            && key != "timeout_ms"
-            && key != WORKOS_CLIENT_ID_KEY.config_key
-            && key != "policies"
-        {
+        if !TOP_LEVEL_CONFIG_KEYS.contains(&key.as_str()) {
             bail!(
-                "Config file '{}' contains unknown key '{}'. Allowed keys: log_level, log_format, log_file, log_file_mode, otel, timeout_ms, {}, policies.",
+                "Config file '{}' contains unknown key '{}'. Allowed keys: {TOP_LEVEL_CONFIG_KEYS_DESCRIPTION}.",
                 path.display(),
-                key,
-                WORKOS_CLIENT_ID_KEY.config_key
+                key
             );
         }
     }
@@ -2335,6 +2340,34 @@ mod tests {
             .contains("failed schema validation against generated schema"));
         assert!(error.to_string().contains(GENERATED_CONFIG_SCHEMA_PATH));
         assert!(error.to_string().contains("unknown"));
+    }
+
+    #[test]
+    fn resolver_accepts_canonical_schema_key_in_config_file() -> Result<()> {
+        let req = ConfigRequest {
+            report_format: ReportFormat::Text,
+            config_path: Some(PathBuf::from("/tmp/config.json")),
+            log_level: None,
+            timeout_ms: None,
+        };
+        let resolved = resolve_runtime_config_with(
+            &req,
+            Path::new("/workspace"),
+            |_| None,
+            |_| {
+                Ok(
+                    "{\"$schema\":\"https://sce.crocoder.dev/config.json\",\"log_level\":\"warn\",\"timeout_ms\":500}".to_string()
+                )
+            },
+            |_| true,
+            || Ok(PathBuf::from("/state")),
+        )?;
+
+        assert_eq!(resolved.log_level.value, LogLevel::Warn);
+        assert_eq!(resolved.log_level.source.as_str(), "config_file");
+        assert_eq!(resolved.timeout_ms.value, 500);
+        assert_eq!(resolved.timeout_ms.source.as_str(), "config_file");
+        Ok(())
     }
 
     #[test]

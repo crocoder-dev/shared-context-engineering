@@ -9,12 +9,11 @@
 
 - Expose operational workflows as flake apps so commands are stable and system-mapped across supported `flake-utils` default systems.
 - Current repo command contracts:
-- `nix run .#sync-opencode-config` is the canonical entrypoint for staged regeneration/replacement of `config/` and replacement of repository-root `.opencode/` and `.mcp.json` from regenerated `config/.opencode/` and `config/.mcp.json`.
+- `nix run .#sync-opencode-config` is the canonical entrypoint for staged regeneration/replacement of `config/` and replacement of repository-root `.opencode/` from regenerated `config/.opencode/`.
 - For flake app outputs, include `meta.description` so `nix flake check` app validation stays warning-free.
 - For destructive config replacement flows, regenerate into a temporary staged `config/` first, validate required generated directories exist, and only then swap live `config/`.
 - When staged Pkl generation depends on repo-root metadata such as `.version`, mirror those required root inputs into the temporary staging root before `pkl eval -m` so relative `read(...)` calls stay valid.
 - For destructive root `.opencode/` replacement flows, keep exclusions explicit (for example `node_modules`), use backup-and-restore around swap, and run a source/target tree parity check with the same exclusions.
-- For generated root manifest files like `.mcp.json`, copy from the staged generated source only after `config/` swap succeeds, and verify byte-for-byte parity after copy.
 - Keep command help available via `nix run .#sync-opencode-config -- --help` to provide deterministic usage checks during incremental implementation.
 
 ## Dev-shell fallback shims for unavailable nixpkgs tools

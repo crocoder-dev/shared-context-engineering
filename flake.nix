@@ -237,7 +237,7 @@
           type = "app";
           program = "${syncOpencodeConfigApp}/bin/sync-opencode-config";
           meta = {
-            description = "Regenerate and sync config/.opencode outputs";
+            description = "Regenerate config and sync root .opencode";
           };
         };
 
