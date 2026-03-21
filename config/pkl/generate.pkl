@@ -21,7 +21,7 @@ local opencodePackageJsonSource = """
 
 output {
   files {
-    ["./.github/workflows/publish-tiles.yml"] {
+    [".github/workflows/publish-tiles.yml"] {
       text = common.publishTilesWorkflow
     }
 
