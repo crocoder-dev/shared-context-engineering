@@ -269,11 +269,16 @@ fn collect_pending_checkpoint(repository_root: &Path) -> Result<PendingCheckpoin
         all_paths.insert(path.clone());
     }
 
+    // TODO(0.3.0): Replace with attribution-aware producer.
+    // Currently defaults to true for all staged files, which means all commits
+    // will receive the SCE co-author trailer when the policy gate passes.
+    // Future versions will require explicit attribution marking from a
+    // separate producer that validates staged ranges came from SCE contributions.
     let files = all_paths
         .iter()
         .map(|path| PendingFileCheckpoint {
             path: path.clone(),
-            has_sce_attribution: false,
+            has_sce_attribution: true,
             staged_ranges: staged_ranges.get(path).cloned().unwrap_or_default(),
             unstaged_ranges: unstaged_ranges.get(path).cloned().unwrap_or_default(),
         })

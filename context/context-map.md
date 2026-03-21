@@ -17,9 +17,6 @@ Feature/domain context:
 
 - `context/sce/atomic-commit-workflow.md` (canonical `/commit` command + `sce-atomic-commit` skill contract and naming decision)
 - `context/sce/agent-trace-implementation-contract.md` (normative T01 implementation contract for no-git-wrapper Agent Trace attribution invariants, compliance matrix, and internal-to-Agent-Trace mapping)
-- `context/sce/agent-trace-prompt-capture-hook.md` (implemented T02 Claude `UserPromptSubmit` prompt-capture hook contract, generated Claude hook/settings wiring, JSONL append target, and current captured-field boundary)
-- `context/sce/agent-trace-prompt-persistence-metrics.md` (implemented T05 post-commit prompt persistence contract, including transcript-backed tool-call counting, prompt-window duration calculation, truncation-at-write semantics, and retry-queue prompt replay behavior)
-- `context/sce/agent-trace-prompt-query-command.md` (implemented T06 `sce trace prompts <commit-sha>` query contract, including repository-scoped persisted-commit lookup, deterministic text/JSON output shape, and missing/ambiguous commit diagnostics)
 - `context/sce/agent-trace-schema-adapter.md` (T02 schema adapter contract and code-level mapping surface in `cli/src/services/agent_trace.rs`)
 - `context/sce/agent-trace-payload-builder-validation.md` (T03 deterministic payload-builder path, model-id normalization behavior, and Agent Trace schema validation suite)
 - `context/sce/agent-trace-pre-commit-staged-checkpoint.md` (T04 pre-commit staged-only finalization contract with no-op guards and index/tree anchor capture)

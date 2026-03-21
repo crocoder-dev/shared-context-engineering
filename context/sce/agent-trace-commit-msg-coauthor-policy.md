@@ -29,7 +29,9 @@
 - Commit-msg runtime writes the file only when policy gates pass and transformed content differs from original content.
 - Human author/committer identity is not rewritten; only commit message trailer content is affected.
 - Missing or `false` `has_sce_attribution` markers fail the gate even when staged ranges are present, so generic human-only staged diffs do not trigger trailer insertion.
-- The positive path remains explicit-marker driven: commit-msg appends the canonical trailer only when an attribution-aware checkpoint producer marks staged ranges as SCE-attributed.
+  - **TEMPORARY (v0.1.x)**: Currently defaults to `true` for all staged files (see TODO(0.3.0) in `cli/src/services/hooks.rs:collect_pending_checkpoint`).
+  - **PLANNED (v0.3.0)**: Will default to `false` and require explicit attribution marking.
+- The positive path remains explicit-marker driven: commit-msg appends the canonical trailer when an attribution-aware checkpoint producer marks staged ranges as SCE-attributed.
 
 ## Verification evidence
 - `cargo fmt --manifest-path cli/Cargo.toml -- --check`

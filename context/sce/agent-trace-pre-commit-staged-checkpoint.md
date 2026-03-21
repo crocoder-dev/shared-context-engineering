@@ -3,7 +3,6 @@
 ## Scope
 
 Task `agent-trace-attribution-no-git-wrapper` `T04` adds a pre-commit finalization contract that filters pending attribution to staged content only and preserves index/tree anchors for deterministic commit-time binding.
-Task `agent-trace-prompt-capture` `T03` extends the same checkpoint with prompt-capture handoff data from the Claude JSONL append target.
 
 ## Implemented contract
 
@@ -34,23 +33,15 @@ Task `agent-trace-prompt-capture` `T03` extends the same checkpoint with prompt-
   - `head_tree` from `git rev-parse --verify HEAD^{tree}` (optional for repos without `HEAD`).
 - Finalized checkpoint handoff artifact:
   - Persisted as JSON at Git-resolved path `$(git rev-parse --git-path sce/pre-commit-checkpoint.json)`.
-  - Payload shape: `version`, `anchors`, checkpoint-level `harness_type`, optional `git_branch`, optional `model_id`, staged-only `files[]`, and `prompts[]`.
+  - Payload shape: `version`, `anchors`, checkpoint-level `harness_type`, optional `git_branch`, optional `model_id`, and staged-only `files[]`.
   - Downstream `commit-msg` gating only treats a file as SCE-attributed when `has_sce_attribution = true` and `ranges[]` is non-empty.
-  - Current generic git-diff collection still defaults `has_sce_attribution` to `false`; a separate attribution-aware producer must set the marker when staged ranges are proven to come from SCE contribution.
+  - **TEMPORARY(v0.1.x)**: Generic git-diff collection currently defaults `has_sce_attribution` to `true` for all staged files, which means all commits receive the SCE co-author trailer when the policy gate passes.
+  - **PLANNED (v0.3.0)**: Will default to `false` and require a separate attribution-aware producer to set the marker when staged ranges are proven to come from SCE contribution.
+  - See `cli/src/services/hooks.rs:collect_pending_checkpoint` for the TODO(0.3.0) marker.
   - Runtime remains fail-open: checkpoint collection/persist failures return deterministic diagnostics without blocking commit flow.
-- Prompt handoff ingestion:
-  - Prompt source path is Git-resolved `sce/prompts.jsonl`.
-  - Current harness marker is fixed to `claude_code`.
-  - Commit-time metadata enrichment resolves `git_branch` from `git branch --show-current` and `model_id` from deterministic env precedence (`SCE_MODEL_ID`, `CLAUDE_MODEL`, `CLAUDE_CODE_MODEL`, `ANTHROPIC_MODEL`, `MODEL_ID`).
-  - Each prompt entry carried into the checkpoint includes `turn_number`, `prompt_text`, `prompt_length`, `is_truncated`, optional `cwd`, and `captured_at`.
-  - Pre-commit prompt ingestion dedupes by `(prompt_text, captured_at)` so recommits do not duplicate identical prompt rows in the checkpoint.
-  - When a prompt row omits `cwd`, the loader inherits the last known non-empty prompt cwd so commit-time checkpoint context remains populated without session tracking.
-  - Missing prompt-capture files yield an empty `prompts[]` array; malformed JSONL rows are skipped without failing the hook.
 
 ## Verification coverage
 
 - Mixed staged/unstaged fixture test confirms unstaged ranges are excluded and anchor values are preserved.
 - Guard-path tests cover disabled, missing CLI, and bare-repository no-op behavior.
 - Runtime fixture test validates persisted pre-commit checkpoint artifact contains staged-only ranges when both staged and unstaged edits exist for the same file.
-- Prompt-loading unit coverage confirms invalid JSONL rows are ignored and duplicate prompt rows collapse to one checkpoint prompt entry.
-- Prompt-loading/unit coverage also confirms cwd inheritance from the last known prompt and current-branch resolution for commit-time metadata enrichment.
