@@ -321,7 +321,7 @@ static BUILTIN_BASH_POLICY_CATALOG: OnceLock<BuiltinBashPolicyCatalog> = OnceLoc
 static CONFIG_SCHEMA_VALIDATOR: OnceLock<Validator> = OnceLock::new();
 
 const BASH_POLICY_PRESET_CATALOG_JSON: &str =
-    include_str!("../../../config/pkl/data/bash-policy-presets.json");
+    include_str!("../../../config/.opencode/lib/bash-policy-presets.json");
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct BashPolicyConfig {

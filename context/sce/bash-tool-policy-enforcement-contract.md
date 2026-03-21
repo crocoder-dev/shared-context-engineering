@@ -152,7 +152,7 @@ This allows a repository to add a narrower custom rule without redefining or mut
 
 The initial preset catalog is fixed to these IDs and behaviors.
 
-The canonical authored preset source lives at `config/pkl/data/bash-policy-presets.json` and is copied into generated target runtime assets as `lib/bash-policy-presets.json` so CLI validation and future OpenCode/Claude enforcement wiring can consume the same preset IDs, argv-prefix matchers, fixed messages, and conflict metadata.
+The canonical authored preset source lives at `config/pkl/base/bash-policy-presets.pkl` and is rendered to JSON by `config/pkl/generate.pkl` into generated target runtime assets at `lib/bash-policy-presets.json` so CLI validation and OpenCode/Claude enforcement share the same preset IDs, argv-prefix matchers, fixed messages, and conflict metadata.
 
 ### `forbid-git-all`
 
@@ -220,7 +220,7 @@ Transport-specific envelopes may differ, but the operator-visible decision and m
 
 - `context/plans/bash-tool-policy-enforcement.md`
 - `context/cli/config-precedence-contract.md`
-- `config/pkl/data/bash-policy-presets.json`
+- `config/pkl/base/bash-policy-presets.pkl`
 - `config/pkl/generate.pkl`
 - `config/pkl/lib/claude-bash-policy-hook.js`
 - `config/pkl/lib/claude-settings.json`

@@ -43,7 +43,6 @@
             (craneLib.fileset.commonCargoSources workspaceRoot)
             (pkgs.lib.fileset.maybeMissing ./config/.opencode)
             (pkgs.lib.fileset.maybeMissing ./config/.claude)
-            (pkgs.lib.fileset.maybeMissing ./config/pkl/data/bash-policy-presets.json)
             (pkgs.lib.fileset.maybeMissing ./config/schema/sce-config.schema.json)
             (pkgs.lib.fileset.maybeMissing ./cli/assets/hooks)
           ];

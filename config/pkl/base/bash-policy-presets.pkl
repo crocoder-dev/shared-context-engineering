@@ -1,0 +1,86 @@
+class PresetMatch {
+  argv_prefixes: Listing<Listing<String>>
+}
+
+class BashPolicyPreset {
+  id: String
+
+  match: PresetMatch
+
+  message: String
+}
+
+class RedundancyWarning {
+  if_enabled: Listing<String>
+
+  warning: String
+}
+
+class PresetCatalog {
+  schema_version: Int
+
+  presets: Listing<BashPolicyPreset>
+
+  mutually_exclusive: Listing<Listing<String>>
+
+  redundancy_warnings: Listing<RedundancyWarning>
+}
+
+schema_version: Int = 1
+
+presets: Listing<BashPolicyPreset> = new {
+  new {
+    id = "forbid-git-all"
+    match = new PresetMatch {
+      argv_prefixes = new { new { "git" } }
+    }
+    message = "This repository blocks `git` via SCE bash-tool policy. Explain to user that they should run `git` commands themselves."
+  }
+  new {
+    id = "forbid-git-commit"
+    match = new PresetMatch {
+      argv_prefixes = new {
+        new { "git"; "add" }
+        new { "git"; "commit" }
+        new { "git"; "push" }
+      }
+    }
+    message = "This repository blocks direct `git add`, `git commit`, and `git push`. Explain to user that they should run `git` commands themselves."
+  }
+  new {
+    id = "use-pnpm-over-npm"
+    match = new PresetMatch {
+      argv_prefixes = new { new { "npm" } }
+    }
+    message = "This repository prefers `pnpm` over `npm`. Use `pnpm` instead."
+  }
+  new {
+    id = "use-bun-over-npm"
+    match = new PresetMatch {
+      argv_prefixes = new { new { "npm" } }
+    }
+    message = "This repository prefers `bun` over `npm`. Use `bun` instead."
+  }
+  new {
+    id = "use-nix-flake-over-cargo"
+    match = new PresetMatch {
+      argv_prefixes = new { new { "cargo" } }
+    }
+    message = "This repository prefers Nix flake entrypoints over direct `cargo` commands. Run Cargo through the documented `nix develop` / flake workflows instead."
+  }
+}
+
+mutually_exclusive: Listing<Listing<String>> = new {
+  new { "use-pnpm-over-npm"; "use-bun-over-npm" }
+}
+
+redundancy_warnings: Listing<RedundancyWarning> = new {
+  new {
+    if_enabled = new { "forbid-git-all"; "forbid-git-commit" }
+    warning = "Preset 'forbid-git-commit' is redundant when 'forbid-git-all' is also enabled."
+  }
+}
+
+output {
+  renderer = new JsonRenderer {}
+}

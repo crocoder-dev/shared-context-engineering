@@ -3,9 +3,10 @@ import "renderers/opencode-automated-content.pkl" as opencode_automated
 import "renderers/claude-content.pkl" as claude
 import "renderers/common.pkl" as common
 import "base/sce-config-schema.pkl" as sce_config_schema
+import "base/bash-policy-presets.pkl" as bash_policy_presets
 
 local sharedLibrarySource = read("./lib/drift-collectors.js").text
-local bashPolicyPresetCatalogSource = read("./data/bash-policy-presets.json").text
+local bashPolicyPresetCatalogSource = bash_policy_presets.output.text
 local bashPolicyRuntimeSource = read("./lib/bash-policy-runtime.js").text
 local opencodeBashPolicyPluginSource = read("./lib/opencode-bash-policy-plugin.js").text
 local claudeBashPolicyHookSource = read("./lib/claude-bash-policy-hook.js").text
