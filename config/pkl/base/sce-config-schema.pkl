@@ -1,123 +1,124 @@
 import "bash-policy-presets.pkl" as bash_policy_presets
+import "../deps/org.json_schema/JsonSchema.pkl"
 
-local presetIds = bash_policy_presets.presets.toList().map((preset) -> preset.id)
+local presetIds = bash_policy_presets.presets.toList().map((preset) -> preset.id).toListing()
 
 local mutuallyExclusiveConstraints = bash_policy_presets.mutually_exclusive.toList().map((pair) ->
-  new Dynamic {
-    ["not"] = new Dynamic {
-      ["allOf"] = pair.toList().map((id) ->
-        new Dynamic {
-          ["contains"] = new Dynamic {
-            ["const"] = id
+  new JsonSchema {
+    not = new JsonSchema {
+      allOf = pair.toList().map((id) ->
+        new JsonSchema {
+          contains = new JsonSchema {
+            `const` = id
           }
         }
-      )
+      ).toListing()
     }
   }
-)
+).toListing()
 
-local sceConfigSchema = new Dynamic {
-  ["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-  ["$id"] = "https://sce.crocoder.dev/config.json"
-  ["title"] = "SCE Config"
-  ["description"] = "Canonical JSON Schema for global and repo-local sce/config.json files."
-  ["type"] = "object"
-  ["additionalProperties"] = false
-  ["properties"] = new Dynamic {
-    ["$schema"] = new Dynamic {
-      ["type"] = "string"
-      ["const"] = "https://sce.crocoder.dev/config.json"
+local sceConfigSchema = new JsonSchema {
+  $schema = "https://json-schema.org/draft/2020-12/schema"
+  $id = "https://sce.crocoder.dev/config.json"
+  title = "SCE Config"
+  description = "Canonical JSON Schema for global and repo-local sce/config.json files."
+  type = "object"
+  additionalProperties = false
+  properties {
+    ["$schema"] = new JsonSchema {
+      type = "string"
+      `const` = "https://sce.crocoder.dev/config.json"
     }
-    ["log_level"] = new Dynamic {
-      ["type"] = "string"
-      ["enum"] = new { "error"; "warn"; "info"; "debug" }
+    ["log_level"] = new JsonSchema {
+      type = "string"
+      enum = new { "error"; "warn"; "info"; "debug" }
     }
-    ["log_format"] = new Dynamic {
-      ["type"] = "string"
-      ["enum"] = new { "text"; "json" }
+    ["log_format"] = new JsonSchema {
+      type = "string"
+      enum = new { "text"; "json" }
     }
-    ["log_file"] = new Dynamic {
-      ["type"] = "string"
-      ["minLength"] = 1
+    ["log_file"] = new JsonSchema {
+      type = "string"
+      minLength = 1
     }
-    ["log_file_mode"] = new Dynamic {
-      ["type"] = "string"
-      ["enum"] = new { "truncate"; "append" }
+    ["log_file_mode"] = new JsonSchema {
+      type = "string"
+      enum = new { "truncate"; "append" }
     }
-    ["timeout_ms"] = new Dynamic {
-      ["type"] = "integer"
-      ["minimum"] = 0
+    ["timeout_ms"] = new JsonSchema {
+      type = "integer"
+      minimum = 0
     }
-    ["workos_client_id"] = new Dynamic {
-      ["type"] = "string"
+    ["workos_client_id"] = new JsonSchema {
+      type = "string"
     }
-    ["otel"] = new Dynamic {
-      ["type"] = "object"
-      ["additionalProperties"] = false
-      ["properties"] = new Dynamic {
-        ["enabled"] = new Dynamic {
-          ["type"] = "boolean"
+    ["otel"] = new JsonSchema {
+      type = "object"
+      additionalProperties = false
+      properties {
+        ["enabled"] = new JsonSchema {
+          type = "boolean"
         }
-        ["exporter_otlp_endpoint"] = new Dynamic {
-          ["type"] = "string"
-          ["format"] = "uri"
-          ["pattern"] = "^https?://"
+        ["exporter_otlp_endpoint"] = new JsonSchema {
+          type = "string"
+          format = "uri"
+          pattern = "^https?://"
         }
-        ["exporter_otlp_protocol"] = new Dynamic {
-          ["type"] = "string"
-          ["enum"] = new { "grpc"; "http/protobuf" }
+        ["exporter_otlp_protocol"] = new JsonSchema {
+          type = "string"
+          enum = new { "grpc"; "http/protobuf" }
         }
       }
     }
-    ["policies"] = new Dynamic {
-      ["type"] = "object"
-      ["additionalProperties"] = false
-      ["properties"] = new Dynamic {
-        ["bash"] = new Dynamic {
-          ["type"] = "object"
-          ["additionalProperties"] = false
-          ["properties"] = new Dynamic {
-            ["presets"] = new Dynamic {
-              ["type"] = "array"
-              ["uniqueItems"] = true
-              ["items"] = new Dynamic {
-                ["type"] = "string"
-                ["enum"] = presetIds
+    ["policies"] = new JsonSchema {
+      type = "object"
+      additionalProperties = false
+      properties {
+        ["bash"] = new JsonSchema {
+          type = "object"
+          additionalProperties = false
+          properties {
+            ["presets"] = new JsonSchema {
+              type = "array"
+              uniqueItems = true
+              items = new JsonSchema {
+                type = "string"
+                enum = presetIds
               }
-              ["allOf"] = mutuallyExclusiveConstraints
+              allOf = mutuallyExclusiveConstraints
             }
-            ["custom"] = new Dynamic {
-              ["type"] = "array"
-              ["items"] = new Dynamic {
-                ["type"] = "object"
-                ["additionalProperties"] = false
-                ["required"] = new { "id"; "match"; "message" }
-                ["properties"] = new Dynamic {
-                  ["id"] = new Dynamic {
-                    ["type"] = "string"
-                    ["minLength"] = 1
-                    ["not"] = new Dynamic {
-                      ["enum"] = presetIds
+            ["custom"] = new JsonSchema {
+              type = "array"
+              items = new JsonSchema {
+                type = "object"
+                additionalProperties = false
+                required = new { "id"; "match"; "message" }
+                properties {
+                  ["id"] = new JsonSchema {
+                    type = "string"
+                    minLength = 1
+                    not = new JsonSchema {
+                      enum = presetIds
                     }
                   }
-                  ["match"] = new Dynamic {
-                    ["type"] = "object"
-                    ["additionalProperties"] = false
-                    ["required"] = new { "argv_prefix" }
-                    ["properties"] = new Dynamic {
-                      ["argv_prefix"] = new Dynamic {
-                        ["type"] = "array"
-                        ["minItems"] = 1
-                        ["items"] = new Dynamic {
-                          ["type"] = "string"
-                          ["minLength"] = 1
+                  ["match"] = new JsonSchema {
+                    type = "object"
+                    additionalProperties = false
+                    required = new { "argv_prefix" }
+                    properties {
+                      ["argv_prefix"] = new JsonSchema {
+                        type = "array"
+                        minItems = 1
+                        items = new JsonSchema {
+                          type = "string"
+                          minLength = 1
                         }
                       }
                     }
                   }
-                  ["message"] = new Dynamic {
-                    ["type"] = "string"
-                    ["minLength"] = 1
+                  ["message"] = new JsonSchema {
+                    type = "string"
+                    minLength = 1
                   }
                 }
               }
@@ -127,7 +128,7 @@ local sceConfigSchema = new Dynamic {
       }
     }
   }
-  ["dependentRequired"] = new Dynamic {
+  dependentRequired {
     ["log_file_mode"] = new { "log_file" }
   }
 }

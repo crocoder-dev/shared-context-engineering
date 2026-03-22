@@ -98,6 +98,19 @@ If you need to discard post-run changes and return to committed state, use Git r
 
 ---
 
+## Vendored dependencies
+
+This repository vendors Pkl dependencies in `config/pkl/deps/` for Nix sandbox compatibility:
+
+- `org.json_schema/JsonSchema.pkl` - Apple's pkl-pantry JSON Schema module (version 1.1.0)
+- `pkl.experimental.uri/URI.pkl` - Transitive dependency for URI handling (version 1.0.3)
+
+These are used by `config/pkl/base/sce-config-schema.pkl` to author typed JSON Schema definitions instead of `Dynamic` objects. The vendored approach ensures deterministic builds in Nix sandboxes where network access is restricted.
+
+To update these dependencies, download newer versions from the pkl-pantry repository and replace the vendored files.
+
+---
+
 ## Troubleshoot issues
 
 **pkl: command not found**: Run commands via nix develop -c ... exactly as shown.

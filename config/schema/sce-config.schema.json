@@ -1,10 +1,9 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sce.crocoder.dev/config.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "SCE Config",
   "description": "Canonical JSON Schema for global and repo-local sce/config.json files.",
   "type": "object",
-  "additionalProperties": false,
   "properties": {
     "$schema": {
       "type": "string",
@@ -46,15 +45,14 @@
     },
     "otel": {
       "type": "object",
-      "additionalProperties": false,
       "properties": {
         "enabled": {
           "type": "boolean"
         },
         "exporter_otlp_endpoint": {
           "type": "string",
-          "format": "uri",
-          "pattern": "^https?://"
+          "pattern": "^https?://",
+          "format": "uri"
         },
         "exporter_otlp_protocol": {
           "type": "string",
@@ -63,19 +61,17 @@
             "http/protobuf"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "policies": {
       "type": "object",
-      "additionalProperties": false,
       "properties": {
         "bash": {
           "type": "object",
-          "additionalProperties": false,
           "properties": {
             "presets": {
               "type": "array",
-              "uniqueItems": true,
               "items": {
                 "type": "string",
                 "enum": [
@@ -86,6 +82,7 @@
                   "use-nix-flake-over-cargo"
                 ]
               },
+              "uniqueItems": true,
               "allOf": [
                 {
                   "not": {
@@ -109,12 +106,6 @@
               "type": "array",
               "items": {
                 "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "id",
-                  "match",
-                  "message"
-                ],
                 "properties": {
                   "id": {
                     "type": "string",
@@ -131,33 +122,42 @@
                   },
                   "match": {
                     "type": "object",
-                    "additionalProperties": false,
-                    "required": [
-                      "argv_prefix"
-                    ],
                     "properties": {
                       "argv_prefix": {
                         "type": "array",
-                        "minItems": 1,
                         "items": {
                           "type": "string",
                           "minLength": 1
-                        }
+                        },
+                        "minItems": 1
                       }
-                    }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                      "argv_prefix"
+                    ]
                   },
                   "message": {
                     "type": "string",
                     "minLength": 1
                   }
-                }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "match",
+                  "message"
+                ]
               }
             }
-          }
+          },
+          "additionalProperties": false
         }
-      }
+      },
+      "additionalProperties": false
     }
   },
+  "additionalProperties": false,
   "dependentRequired": {
     "log_file_mode": [
       "log_file"
