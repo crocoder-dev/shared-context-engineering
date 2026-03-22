@@ -7,6 +7,7 @@ use crate::services::config;
 use crate::services::local_db::{run_smoke_check, LocalDatabaseTarget};
 use crate::services::output_format::OutputFormat;
 use crate::services::resilience::{run_with_retry, RetryPolicy};
+use crate::services::style::{self};
 use crate::services::token_storage;
 
 pub const NAME: &str = "sync";
@@ -157,10 +158,14 @@ pub fn run_placeholder_sync(request: SyncRequest) -> Result<String> {
 
     match request.format {
         SyncFormat::Text => Ok(format!(
-            "TODO: '{NAME}' cloud workflows are planned and not implemented yet. Local Turso smoke check succeeded ({}) row inserted; cloud sync placeholder enumerates {} phase(s) and plan holds {} checkpoint(s). Next step: rerun with '--format json' for machine-readable placeholder checkpoints.",
-            report.inserted_rows,
-            SUPPORTED_PHASES.len(),
-            report.checkpoints.len()
+            "{}: '{}' cloud workflows are planned and not implemented yet. {} {} row inserted; cloud sync placeholder enumerates {} phase(s) and plan holds {} checkpoint(s). {}: rerun with '--format json' for machine-readable placeholder checkpoints.",
+            style::label("TODO"),
+            style::command_name(NAME),
+            style::label("Local Turso smoke check succeeded"),
+            style::value(&report.inserted_rows.to_string()),
+            style::value(&SUPPORTED_PHASES.len().to_string()),
+            style::value(&report.checkpoints.len().to_string()),
+            style::label("Next step")
         )),
         SyncFormat::Json => {
             let payload = json!({

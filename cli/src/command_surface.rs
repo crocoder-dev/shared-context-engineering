@@ -1,4 +1,5 @@
 use crate::services;
+use services::style::{command_name, heading, status_implemented, status_placeholder};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImplementationStatus {
@@ -71,34 +72,57 @@ pub fn is_known_command(name: &str) -> bool {
 }
 
 pub fn help_text() -> String {
-    let command_rows = COMMANDS
-        .iter()
-        .map(|command| {
-            let status = match command.status {
-                ImplementationStatus::Implemented => "implemented",
-                ImplementationStatus::Placeholder => "placeholder",
-            };
+    let mut command_rows = String::new();
+    for command in COMMANDS {
+        let status_text = match command.status {
+            ImplementationStatus::Implemented => "implemented",
+            ImplementationStatus::Placeholder => "placeholder",
+        };
+        let styled_status = match command.status {
+            ImplementationStatus::Implemented => status_implemented(status_text),
+            ImplementationStatus::Placeholder => status_placeholder(status_text),
+        };
 
-            format!("  {:<8} {:<12} {}", command.name, status, command.purpose)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+        command_rows.push_str(&format!(
+            "  {:<10} {:<12} {}\n",
+            command_name(command.name),
+            styled_status,
+            command.purpose
+        ));
+    }
 
     format!(
-        "sce - Shared Context Engineering CLI (placeholder foundation)\n\n\
-Usage:\n  sce [command]\n\n\
-Config usage:\n  sce config <show|validate> [--format <text|json>] [options]\n\n\
-Setup usage:\n  sce setup [--opencode|--claude|--both] [--non-interactive] [--hooks] [--repo <path>]\n\n\
-Doctor usage:\n  sce doctor [--fix] [--all-databases] [--format <text|json>]\n\n\
-Auth usage:\n  sce auth <login|logout|status> [--format <text|json>]\n\n\
-Completion usage:\n  sce completion --shell <bash|zsh|fish>\n\n\
-Trace usage:\n  sce trace prompts <commit-sha> [--format <text|json>|--json]\n\n\
-Output format contract:\n  Supported commands accept --format <text|json>\n\n\
-Examples:\n  sce setup\n  sce setup --opencode --non-interactive --hooks\n  sce setup --hooks --repo ../demo-repo\n  sce auth status\n  sce auth login --format json\n  sce trace prompts abc1234\n  sce trace prompts abc1234 --json\n  sce doctor --format json\n  sce doctor --all-databases --format json\n  sce doctor --fix\n  sce version --format json\n\n\
-Commands:\n{command_rows}\n\n\
+        "{}\n\n\
+{}:\n  sce [command]\n\n\
+{}:\n  {} <show|validate> [--format <text|json>] [options]\n\n\
+{}:\n  {} [--opencode|--claude|--both] [--non-interactive] [--hooks] [--repo <path>]\n\n\
+{}:\n  {} [--fix] [--all-databases] [--format <text|json>]\n\n\
+{}:\n  {} <login|logout|status> [--format <text|json>]\n\n\
+{}:\n  {} --shell <bash|zsh|fish>\n\n\
+{}:\n  {} prompts <commit-sha> [--format <text|json>|--json]\n\n\
+{}:\n  Supported commands accept --format <text|json>\n\n\
+{}:\n  sce setup\n  sce setup --opencode --non-interactive --hooks\n  sce setup --hooks --repo ../demo-repo\n  sce auth status\n  sce auth login --format json\n  sce trace prompts abc1234\n  sce trace prompts abc1234 --json\n  sce doctor --format json\n  sce doctor --all-databases --format json\n  sce doctor --fix\n  sce version --format json\n\n\
+{}:\n{command_rows}\n\
 Setup defaults to interactive target selection when no setup target flag is passed, and installs hooks in the same run.\n\
 Use '--hooks' to install required git hooks for the current repository or '--repo <path>' for a specific repository.\n\
-`setup`, `doctor`, `auth`, `hooks`, `trace`, `version`, and `completion` are implemented; `sync` remains placeholder-oriented.\n"
+`setup`, `doctor`, `auth`, `hooks`, `trace`, `version`, and `completion` are implemented; `sync` remains placeholder-oriented.\n",
+        heading("sce - Shared Context Engineering CLI (placeholder foundation)"),
+        heading("Usage"),
+        heading("Config usage"),
+        command_name("sce config"),
+        heading("Setup usage"),
+        command_name("sce setup"),
+        heading("Doctor usage"),
+        command_name("sce doctor"),
+        heading("Auth usage"),
+        command_name("sce auth"),
+        heading("Completion usage"),
+        command_name("sce completion"),
+        heading("Trace usage"),
+        command_name("sce trace"),
+        heading("Output format contract"),
+        heading("Examples"),
+        heading("Commands"),
     )
 }
 

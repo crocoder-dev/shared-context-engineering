@@ -126,10 +126,12 @@ where
         )
     };
 
+    let styled_code = services::style::error_code(error.code());
+
     let _ = writeln!(
         writer,
         "Error [{}]: {}",
-        error.code(),
+        styled_code,
         services::security::redact_sensitive_text(&rendered)
     );
 }
@@ -695,7 +697,7 @@ fn dispatch(
                         sections.push(setup_message);
                     }
                     services::setup::SetupDispatch::Cancelled => {
-                        return Ok(services::setup::setup_cancelled_text().to_string());
+                        return Ok(services::setup::setup_cancelled_text());
                     }
                 }
             }

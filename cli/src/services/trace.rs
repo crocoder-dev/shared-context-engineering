@@ -7,6 +7,7 @@ use turso::Builder;
 
 use crate::services::local_db::ensure_agent_trace_local_db_ready_blocking;
 use crate::services::output_format::OutputFormat;
+use crate::services::style::{self};
 
 pub const NAME: &str = "trace";
 
@@ -231,28 +232,47 @@ async fn resolve_commit_reference(
 
 fn render_prompt_trace_text(report: &PromptTraceReport) -> String {
     let mut lines = vec![
-        format!("Commit: {}", report.commit_sha),
-        format!("Harness: {}", report.harness_type),
-        format!("Model: {}", report.model_id.as_deref().unwrap_or("unknown")),
         format!(
-            "Branch: {}",
-            report.git_branch.as_deref().unwrap_or("unknown")
+            "{}: {}",
+            style::label("Commit"),
+            style::value(&report.commit_sha)
         ),
-        format!("Total prompts: {}", report.prompts.len()),
+        format!(
+            "{}: {}",
+            style::label("Harness"),
+            style::value(&report.harness_type)
+        ),
+        format!(
+            "{}: {}",
+            style::label("Model"),
+            style::value(report.model_id.as_deref().unwrap_or("unknown"))
+        ),
+        format!(
+            "{}: {}",
+            style::label("Branch"),
+            style::value(report.git_branch.as_deref().unwrap_or("unknown"))
+        ),
+        format!(
+            "{}: {}",
+            style::label("Total prompts"),
+            style::value(&report.prompts.len().to_string())
+        ),
         String::new(),
     ];
 
     for (index, prompt) in report.prompts.iter().enumerate() {
         let mut header = format!(
-            "Turn {}  {}  cwd: {}  duration: {}  tools: {}",
-            prompt.turn_number,
-            prompt.captured_at,
-            prompt.cwd.as_deref().unwrap_or("unknown"),
-            format_duration_ms(prompt.duration_ms),
-            prompt.tool_call_count
+            "{} {}  {}  cwd: {}  duration: {}  tools: {}",
+            style::label(&format!("Turn {}", prompt.turn_number)),
+            style::value(&prompt.captured_at),
+            style::label("cwd:"),
+            style::value(prompt.cwd.as_deref().unwrap_or("unknown")),
+            style::value(&format_duration_ms(prompt.duration_ms)),
+            style::value(&prompt.tool_call_count.to_string())
         );
         if prompt.is_truncated {
-            header.push_str("  [truncated]");
+            use std::fmt::Write;
+            let _ = write!(&mut header, "  {}", style::value("[truncated]"));
         }
         lines.push(header);
         lines.push(format!("  {}", prompt.prompt_text.replace('\n', "\n  ")));
@@ -365,14 +385,20 @@ mod tests {
 
     #[test]
     fn render_prompt_trace_text_includes_metadata_and_prompt_rows() {
+        // Test with NO_COLOR to ensure deterministic output assertions
+        std::env::set_var("NO_COLOR", "1");
         let output = render_prompt_trace_text(&sample_report());
+        std::env::remove_var("NO_COLOR");
 
         assert!(output.contains("Commit: abc1234def5678"));
         assert!(output.contains("Harness: claude_code"));
         assert!(output.contains("Branch: feature/prompts"));
-        assert!(output.contains(
-            "Turn 2  2026-03-18T10:02:00Z  cwd: src  duration: 1m 30s  tools: 1  [truncated]"
-        ));
+        assert!(output.contains("Turn 2"));
+        assert!(output.contains("2026-03-18T10:02:00Z"));
+        assert!(output.contains("cwd: src"));
+        assert!(output.contains("duration: 1m 30s"));
+        assert!(output.contains("tools: 1"));
+        assert!(output.contains("[truncated]"));
         assert!(output.contains("second prompt"));
     }
 

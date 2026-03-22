@@ -43,9 +43,19 @@ pub fn render_help_for_path(path: &[&str]) -> Option<String> {
 }
 
 pub fn auth_help_text() -> String {
+    use crate::services::style::{command_name, heading};
+
     let base = render_help_for_path(&["auth"]).expect("auth help should be renderable");
 
-    format!("{base}\nExamples:\n  sce auth login\n  sce auth renew\n  sce auth status\n  sce auth logout\n")
+    format!(
+        "{}\n{}:\n  {}\n  {}\n  {}\n  {}\n",
+        base,
+        heading("Examples"),
+        command_name("sce auth login"),
+        command_name("sce auth renew"),
+        command_name("sce auth status"),
+        command_name("sce auth logout")
+    )
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]

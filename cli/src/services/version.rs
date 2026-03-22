@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde_json::json;
 
 use crate::services::output_format::OutputFormat;
+use crate::services::style::{self};
 
 pub const NAME: &str = "version";
 
@@ -29,7 +30,12 @@ pub fn render_version(request: VersionRequest) -> Result<String> {
     });
 
     match request.format {
-        VersionFormat::Text => Ok(format!("{BINARY_NAME} {PACKAGE_VERSION} ({GIT_COMMIT})")),
+        VersionFormat::Text => Ok(format!(
+            "{} {} ({})",
+            style::command_name(BINARY_NAME),
+            style::value(PACKAGE_VERSION),
+            style::value(GIT_COMMIT)
+        )),
         VersionFormat::Json => serde_json::to_string_pretty(&report)
             .context("failed to serialize version report to JSON"),
     }

@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::services::output_format::OutputFormat;
+use crate::services::style::{self};
 
 pub const NAME: &str = "config";
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1562,8 +1563,16 @@ fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> S
     match report_format {
         ReportFormat::Text => {
             let mut lines = vec![
-                "SCE config: resolved".to_string(),
-                format!("Precedence: {PRECEDENCE_DESCRIPTION}"),
+                format!(
+                    "{}: {}",
+                    style::success("SCE config"),
+                    style::value("resolved")
+                ),
+                format!(
+                    "{}: {}",
+                    style::label("Precedence"),
+                    style::value(PRECEDENCE_DESCRIPTION)
+                ),
                 format_config_paths_text(runtime),
                 format_resolved_value_text(
                     "timeout_ms",
@@ -1623,15 +1632,29 @@ fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> S
 fn format_validate_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> String {
     match report_format {
         ReportFormat::Text => {
+            let auth_precedence = WORKOS_CLIENT_ID_KEY.precedence_description();
             let mut lines = vec![
-                "SCE config validation: valid".to_string(),
-                format!("Precedence: {PRECEDENCE_DESCRIPTION}"),
+                format!(
+                    "{}: {}",
+                    style::success("SCE config validation"),
+                    style::value("valid")
+                ),
+                format!(
+                    "{}: {}",
+                    style::label("Precedence"),
+                    style::value(PRECEDENCE_DESCRIPTION)
+                ),
                 format_config_paths_text(runtime),
-                "Validation issues: none".to_string(),
+                format!(
+                    "{}: {}",
+                    style::label("Validation issues"),
+                    style::value("none")
+                ),
                 format_validation_warnings_text(&runtime.validation_warnings),
                 format!(
-                    "Resolved auth precedence: {}",
-                    WORKOS_CLIENT_ID_KEY.precedence_description()
+                    "{}: {}",
+                    style::label("Resolved auth precedence"),
+                    style::value(&auth_precedence)
                 ),
                 format_optional_auth_resolved_value_text(
                     WORKOS_CLIENT_ID_KEY,
@@ -1669,15 +1692,19 @@ fn format_validate_output(runtime: &RuntimeConfig, report_format: ReportFormat) 
 
 fn format_config_paths_text(runtime: &RuntimeConfig) -> String {
     if runtime.loaded_config_paths.is_empty() {
-        return "Config files: (none discovered)".to_string();
+        return format!(
+            "{}: {}",
+            style::label("Config files"),
+            style::value("(none discovered)")
+        );
     }
 
-    let mut lines = vec!["Config files:".to_string()];
+    let mut lines = vec![format!("{}:", style::label("Config files"))];
     for path in &runtime.loaded_config_paths {
         lines.push(format!(
-            "- {} (source: {})",
-            path.path.display(),
-            path.source.as_str()
+            "  - {} (source: {})",
+            style::value(&path.path.display().to_string()),
+            style::label(path.source.as_str())
         ));
     }
     lines.join("\n")
@@ -1718,21 +1745,28 @@ fn format_bash_policies_text(value: &ResolvedOptionalValue<BashPolicyConfig>) ->
             };
             match source.config_source() {
                 Some(config_source) => format!(
-                    "- policies.bash: presets=[{}]; custom=[{}] (source: {}, config_source: {})",
-                    presets,
-                    custom,
-                    source.as_str(),
-                    config_source.as_str()
+                    "- {}: presets=[{}]; custom=[{}] (source: {}, config_source: {})",
+                    style::label("policies.bash"),
+                    style::value(&presets),
+                    style::value(&custom),
+                    style::label(source.as_str()),
+                    style::label(config_source.as_str())
                 ),
                 None => format!(
-                    "- policies.bash: presets=[{}]; custom=[{}] (source: {})",
-                    presets,
-                    custom,
-                    source.as_str()
+                    "- {}: presets=[{}]; custom=[{}] (source: {})",
+                    style::label("policies.bash"),
+                    style::value(&presets),
+                    style::value(&custom),
+                    style::label(source.as_str())
                 ),
             }
         }
-        _ => "- policies.bash: (unset) (source: none)".to_string(),
+        _ => format!(
+            "- {}: {} (source: {})",
+            style::label("policies.bash"),
+            style::value("(unset)"),
+            style::label("none")
+        ),
     }
 }
 
@@ -1748,10 +1782,18 @@ fn format_bash_policies_json(value: &ResolvedOptionalValue<BashPolicyConfig>) ->
 
 fn format_validation_warnings_text(warnings: &[String]) -> String {
     if warnings.is_empty() {
-        return "Validation warnings: none".to_string();
+        return format!(
+            "{}: {}",
+            style::label("Validation warnings"),
+            style::value("none")
+        );
     }
 
-    format!("Validation warnings: {}", warnings.join(" | "))
+    format!(
+        "{}: {}",
+        style::label("Validation warnings"),
+        style::value(&warnings.join(" | "))
+    )
 }
 
 fn format_observability_text_lines(runtime: &RuntimeConfig) -> Vec<String> {
@@ -1845,16 +1887,21 @@ where
     })
 }
 
-fn format_resolved_value_text(key: &str, value: &str, source: ValueSource) -> String {
+fn format_resolved_value_text(key: &str, value_text: &str, source: ValueSource) -> String {
     match source.config_source() {
         Some(config_source) => format!(
             "- {}: {} (source: {}, config_source: {})",
-            key,
-            value,
-            source.as_str(),
-            config_source.as_str()
+            style::label(key),
+            style::value(value_text),
+            style::label(source.as_str()),
+            style::label(config_source.as_str())
         ),
-        None => format!("- {}: {} (source: {})", key, value, source.as_str()),
+        None => format!(
+            "- {}: {} (source: {})",
+            style::label(key),
+            style::value(value_text),
+            style::label(source.as_str())
+        ),
     }
 }
 
@@ -1863,14 +1910,24 @@ fn format_optional_resolved_value_text(key: &str, value: &ResolvedOptionalValue<
         (Some(raw_value), Some(source)) => match source.config_source() {
             Some(config_source) => format!(
                 "- {}: {} (source: {}, config_source: {})",
-                key,
-                raw_value,
-                source.as_str(),
-                config_source.as_str()
+                style::label(key),
+                style::value(raw_value),
+                style::label(source.as_str()),
+                style::label(config_source.as_str())
             ),
-            None => format!("- {}: {} (source: {})", key, raw_value, source.as_str()),
+            None => format!(
+                "- {}: {} (source: {})",
+                style::label(key),
+                style::value(raw_value),
+                style::label(source.as_str())
+            ),
         },
-        _ => format!("- {key}: (unset) (source: none)"),
+        _ => format!(
+            "- {}: {} (source: {})",
+            style::label(key),
+            style::value("(unset)"),
+            style::label("none")
+        ),
     }
 }
 
@@ -1892,25 +1949,27 @@ fn format_optional_auth_resolved_value_text(
             match source.config_source() {
                 Some(config_source) => format!(
                     "- {}: {} (source: {}, config_source: {}, auth_precedence: {})",
-                    key.config_key,
-                    display_value,
-                    source.as_str(),
-                    config_source.as_str(),
-                    key.precedence_description()
+                    style::label(key.config_key),
+                    style::value(&display_value),
+                    style::label(source.as_str()),
+                    style::label(config_source.as_str()),
+                    style::value(&key.precedence_description())
                 ),
                 None => format!(
                     "- {}: {} (source: {}, auth_precedence: {})",
-                    key.config_key,
-                    display_value,
-                    source.as_str(),
-                    key.precedence_description()
+                    style::label(key.config_key),
+                    style::value(&display_value),
+                    style::label(source.as_str()),
+                    style::value(&key.precedence_description())
                 ),
             }
         }
         _ => format!(
-            "- {}: (unset) (source: none, auth_precedence: {})",
-            key.config_key,
-            key.precedence_description()
+            "- {}: {} (source: {}, auth_precedence: {})",
+            style::label(key.config_key),
+            style::value("(unset)"),
+            style::label("none"),
+            style::value(&key.precedence_description())
         ),
     }
 }

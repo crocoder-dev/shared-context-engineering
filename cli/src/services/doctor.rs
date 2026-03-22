@@ -10,6 +10,7 @@ use crate::services::setup::{
     install_required_git_hooks, iter_required_hook_assets, RequiredHookInstallStatus,
     RequiredHooksInstallOutcome,
 };
+use crate::services::style::{heading, label, success, value};
 
 pub const NAME: &str = "doctor";
 
@@ -836,122 +837,147 @@ fn run_git_command(repository_root: &Path, args: &[&str]) -> Option<String> {
 fn format_report(report: &HookDoctorReport) -> String {
     let mut lines = Vec::new();
     lines.push(format!(
-        "SCE doctor: {}",
+        "{}: {}",
+        label("SCE doctor"),
         match report.readiness {
-            Readiness::Ready => "ready",
-            Readiness::NotReady => "not ready",
+            Readiness::Ready => success("ready"),
+            Readiness::NotReady => value("not ready"),
         }
     ));
     lines.push(format!(
-        "Mode: {}",
+        "{}: {}",
+        label("Mode"),
         match report.mode {
-            DoctorMode::Diagnose => "diagnose",
-            DoctorMode::Fix => "fix",
+            DoctorMode::Diagnose => value("diagnose"),
+            DoctorMode::Fix => value("fix"),
         }
     ));
     lines.push(format!(
-        "Database inventory: {}",
+        "{}: {}",
+        label("Database inventory"),
         match report.database_inventory {
-            DoctorDatabaseInventory::Repo => "repo",
-            DoctorDatabaseInventory::All => "all",
+            DoctorDatabaseInventory::Repo => value("repo"),
+            DoctorDatabaseInventory::All => value("all"),
         }
     ));
 
     lines.push(format!(
-        "Hooks path source: {}",
-        match report.hook_path_source {
+        "{}: {}",
+        label("Hooks path source"),
+        value(match report.hook_path_source {
             HookPathSource::Default => "default (.git/hooks)",
             HookPathSource::LocalConfig => "per-repo core.hooksPath",
             HookPathSource::GlobalConfig => "global core.hooksPath",
-        }
+        })
     ));
 
     lines.push(format!(
-        "State root: {}",
+        "{}: {}",
+        label("State root"),
         report.state_root.as_ref().map_or_else(
-            || "(not detected)".to_string(),
-            |location| format!("{} ({})", location.state, location.path.display())
+            || value("(not detected)"),
+            |location| format!(
+                "{} ({})",
+                value(location.state),
+                value(&location.path.display().to_string())
+            )
         )
     ));
 
     lines.push(format!(
-        "Repository root: {}",
+        "{}: {}",
+        label("Repository root"),
         report.repository_root.as_ref().map_or_else(
-            || "(not detected)".to_string(),
-            |path| path.display().to_string()
+            || value("(not detected)"),
+            |path| value(&path.display().to_string())
         )
     ));
 
     lines.push(format!(
-        "Effective hooks directory: {}",
+        "{}: {}",
+        label("Effective hooks directory"),
         report.hooks_directory.as_ref().map_or_else(
-            || "(not detected)".to_string(),
-            |path| path.display().to_string()
+            || value("(not detected)"),
+            |path| value(&path.display().to_string())
         )
     ));
 
-    lines.push("Config files:".to_string());
+    lines.push(format!("\n{}:", heading("Config files")));
     for location in &report.config_locations {
         lines.push(format!(
-            "- {}: {} ({})",
-            location.label,
-            location.state,
-            location.path.display()
+            "  {}: {} ({})",
+            label(location.label),
+            value(location.state),
+            value(&location.path.display().to_string())
         ));
     }
 
     lines.push(format!(
-        "Agent Trace local DB: {}",
+        "\n{}: {}",
+        label("Agent Trace local DB"),
         report.agent_trace_local_db.as_ref().map_or_else(
-            || "(not detected)".to_string(),
-            |location| format!("{} ({})", location.state, location.path.display())
+            || value("(not detected)"),
+            |location| format!(
+                "{} ({})",
+                value(location.state),
+                value(&location.path.display().to_string())
+            )
         )
     ));
 
-    lines.push("Repo-scoped databases:".to_string());
+    // Repo-scoped databases (empty by design)
+    lines.push(format!("\n{}:", heading("Repo-scoped databases")));
     if report.repo_databases.is_empty() {
-        lines.push("- none".to_string());
+        lines.push(value("  none").clone());
     } else {
         for database in &report.repo_databases {
             lines.push(format!("- {}", format_database_record(database)));
         }
     }
 
+    // All SCE databases (when --all-databases)
     if report.database_inventory == DoctorDatabaseInventory::All {
-        lines.push("All SCE databases:".to_string());
+        lines.push(format!("\n{}:", heading("All SCE databases")));
         if report.all_databases.is_empty() {
-            lines.push("- none".to_string());
+            lines.push(value("  none").clone());
         } else {
             for database in &report.all_databases {
-                lines.push(format!("- {}", format_database_record(database)));
+                lines.push(format!(
+                    "  {}: {} ({}) {}",
+                    value(database_family(database.family)),
+                    value(database_scope(database.scope)),
+                    value(database_status(database.status)),
+                    value(&database.canonical_path.display().to_string())
+                ));
             }
         }
     }
 
-    lines.push("Required hooks:".to_string());
+    // Required hooks
+    lines.push(format!("\n{}:", heading("Required hooks")));
     for hook in &report.hooks {
         lines.push(format!(
-            "- {}: {} (content={}, executable={}) ({})",
-            hook.name,
-            hook_state(hook),
-            hook_content_state(hook.content_state),
-            if hook.executable { "yes" } else { "no" },
-            hook.path.display()
+            "  {}: {} (content={}, executable={}) {}",
+            value(hook.name),
+            value(hook_state(hook)),
+            value(hook_content_state(hook.content_state)),
+            value(if hook.executable { "yes" } else { "no" }),
+            value(&hook.path.display().to_string())
         ));
     }
 
+    // Problems
     if report.problems.is_empty() {
-        lines.push("Problems: none".to_string());
+        lines.push(format!("\n{}: {}", label("Problems"), success("none")));
     } else {
-        lines.push("Problems:".to_string());
+        lines.push(format!("\n{}:", heading("Problems")));
         for problem in &report.problems {
             lines.push(format!(
-                "- [{}|{}|{}] {} Try: {}",
-                problem_category(problem.category),
-                problem_severity(problem.severity),
-                problem_fixability(problem.fixability),
-                problem.summary,
-                problem.remediation
+                "  [{}|{}|{}] {}",
+                value(problem_category(problem.category)),
+                value(problem_severity(problem.severity)),
+                value(problem_fixability(problem.fixability)),
+                value(&problem.summary)
             ));
         }
     }
@@ -961,21 +987,22 @@ fn format_report(report: &HookDoctorReport) -> String {
 
 fn format_execution(execution: &DoctorExecution) -> String {
     let report = &execution.report;
-    let mut lines = format_report(report)
+    let base_report = format_report(report);
+    let mut lines = base_report
         .lines()
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
 
     if report.mode == DoctorMode::Fix {
         if execution.fix_results.is_empty() {
-            lines.push("Fix results: none".to_string());
+            lines.push(format!("\n{}: {}", label("Fix results"), value("none")));
         } else {
-            lines.push("Fix results:".to_string());
+            lines.push(format!("\n{}:", heading("Fix results")));
             for fix_result in &execution.fix_results {
                 lines.push(format!(
-                    "- [{}] {}",
-                    fix_result_outcome(fix_result.outcome),
-                    fix_result.detail
+                    "  [{}] {}",
+                    value(fix_result_outcome(fix_result.outcome)),
+                    value(&fix_result.detail)
                 ));
             }
         }

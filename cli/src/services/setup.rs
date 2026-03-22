@@ -8,6 +8,7 @@ use std::{
 };
 
 use crate::services::security::{ensure_directory_is_writable, redact_sensitive_text};
+use crate::services::style::{label, success, value};
 
 pub const NAME: &str = "setup";
 
@@ -246,24 +247,38 @@ fn format_setup_install_success_message(outcome: &SetupInstallOutcome) -> String
         .join(", ");
 
     let mut lines = vec![
-        "Setup completed successfully.".to_string(),
-        format!("Selected target(s): {selected_targets}"),
+        format!("{}", success("Setup completed successfully.")),
+        format!(
+            "{} {}",
+            label("Selected target(s):"),
+            value(&selected_targets)
+        ),
     ];
 
     for result in &outcome.target_results {
         lines.push(format!(
-            "- {}: installed {} file(s) to '{}'",
-            setup_target_label(result.target),
-            result.installed_file_count,
-            result.destination_root.display()
+            "- {}: {} {} {} '{}'",
+            label(&format!("{}:", setup_target_label(result.target))),
+            success("installed"),
+            value(&format!("{} file(s) to", result.installed_file_count)),
+            value("'"),
+            value(&format!("{}'", result.destination_root.display()))
         ));
 
         match result.backup_root.as_ref() {
             Some(backup_root) => lines.push(format!(
-                "  backup: existing target moved to '{}'",
-                backup_root.display()
+                "  {}: {}",
+                label("backup:"),
+                value(&format!(
+                    "existing target moved to '{}'",
+                    backup_root.display()
+                ))
             )),
-            None => lines.push("  backup: not needed (no existing target)".to_string()),
+            None => lines.push(format!(
+                "  {}: {}",
+                label("backup:"),
+                value("not needed (no existing target)")
+            )),
         }
     }
 
@@ -272,22 +287,42 @@ fn format_setup_install_success_message(outcome: &SetupInstallOutcome) -> String
 
 fn format_required_hook_install_success_message(outcome: &RequiredHooksInstallOutcome) -> String {
     let mut lines = vec![
-        "Hook setup completed successfully.".to_string(),
-        format!("Repository root: '{}'", outcome.repository_root.display()),
-        format!("Hooks directory: '{}'", outcome.hooks_directory.display()),
+        format!("{}", success("Hook setup completed successfully.")),
+        format!(
+            "{} {}",
+            label("Repository root:"),
+            value(&format!("'{}'", outcome.repository_root.display()))
+        ),
+        format!(
+            "{} {}",
+            label("Hooks directory:"),
+            value(&format!("'{}'", outcome.hooks_directory.display()))
+        ),
     ];
 
     for result in &outcome.hook_results {
+        let status_text = required_hook_status_label(result.status);
+        let styled_status = match result.status {
+            RequiredHookInstallStatus::Installed | RequiredHookInstallStatus::Updated => {
+                success(status_text)
+            }
+            RequiredHookInstallStatus::Skipped => value(status_text),
+        };
         lines.push(format!(
-            "- {}: {} at '{}'",
-            result.hook_name,
-            required_hook_status_label(result.status),
-            result.hook_path.display()
+            "- {}: {} {} '{}'",
+            label(&format!("{}:", result.hook_name)),
+            styled_status,
+            value("at"),
+            value(&format!("'{}'", result.hook_path.display()))
         ));
 
         match result.backup_path.as_ref() {
-            Some(backup_path) => lines.push(format!("  backup: '{}'", backup_path.display())),
-            None => lines.push("  backup: not needed".to_string()),
+            Some(backup_path) => lines.push(format!(
+                "  {}: {}",
+                label("backup:"),
+                value(&format!("'{}'", backup_path.display()))
+            )),
+            None => lines.push(format!("  {}: {}", label("backup:"), value("not needed"))),
         }
     }
 
@@ -952,8 +987,8 @@ where
     }
 }
 
-pub fn setup_cancelled_text() -> &'static str {
-    "Setup cancelled. No files were changed."
+pub fn setup_cancelled_text() -> String {
+    value("Setup cancelled. No files were changed.")
 }
 
 #[cfg(test)]

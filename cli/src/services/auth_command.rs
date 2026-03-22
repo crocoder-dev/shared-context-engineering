@@ -8,6 +8,7 @@ use serde_json::json;
 use crate::services::auth::{self, AuthError, DeviceAuthFlowResult};
 use crate::services::config;
 use crate::services::output_format::OutputFormat;
+use crate::services::style::{label, prompt_label, prompt_value, success, value};
 use crate::services::token_storage::{self, StoredTokens};
 
 pub const NAME: &str = "auth";
@@ -298,11 +299,21 @@ fn write_login_prompt(authorization: &auth::DeviceAuthorizationResponse) -> Resu
         .verification_uri_complete
         .as_deref()
         .unwrap_or(&authorization.verification_uri);
-    writeln!(stdout, "Open in browser: {browser_url}")
-        .context("failed to write auth verification URL to stdout")?;
-    writeln!(stdout, "Code: {}", authorization.user_code)
-        .context("failed to write auth user code to stdout")?;
-    writeln!(stdout, "Waiting for browser confirmation...")
+    writeln!(
+        stdout,
+        "{} {}",
+        prompt_label("Open in browser:"),
+        prompt_value(browser_url)
+    )
+    .context("failed to write auth verification URL to stdout")?;
+    writeln!(
+        stdout,
+        "{} {}",
+        prompt_label("Code:"),
+        prompt_value(&authorization.user_code)
+    )
+    .context("failed to write auth user code to stdout")?;
+    writeln!(stdout, "{}", value("Waiting for browser confirmation..."))
         .context("failed to write auth progress message to stdout")?;
     stdout
         .flush()
@@ -350,11 +361,16 @@ fn render_login_result(result: &DeviceAuthFlowResult, format: AuthFormat) -> Res
 
     match format {
         AuthFormat::Text => Ok(format!(
-            "Authentication succeeded.\nOpen in browser: {}\nCode: {}\nToken type: {}\nExpires at (unix): {}",
-            browser_url,
-            result.authorization.user_code,
-            result.stored_tokens.token_type,
-            expires_at_unix_seconds,
+            "{}\n{} {}\n{} {}\n{} {}\n{} {}",
+            success("Authentication succeeded."),
+            prompt_label("Open in browser:"),
+            prompt_value(browser_url),
+            prompt_label("Code:"),
+            prompt_value(&result.authorization.user_code),
+            label("Token type:"),
+            value(&result.stored_tokens.token_type),
+            label("Expires at (unix):"),
+            value(&expires_at_unix_seconds.to_string()),
         )),
         AuthFormat::Json => serde_json::to_string_pretty(&json!({
             "status": "ok",
@@ -381,8 +397,12 @@ fn render_login_refresh_result(tokens: &StoredTokens, format: AuthFormat) -> Res
 
     match format {
         AuthFormat::Text => Ok(format!(
-            "Authentication renewed.\nToken type: {}\nExpires at (unix): {}",
-            tokens.token_type, expires_at_unix_seconds,
+            "{}\n{} {}\n{} {}",
+            success("Authentication renewed."),
+            label("Token type:"),
+            value(&tokens.token_type),
+            label("Expires at (unix):"),
+            value(&expires_at_unix_seconds.to_string()),
         )),
         AuthFormat::Json => serde_json::to_string_pretty(&json!({
             "status": "ok",
@@ -405,12 +425,20 @@ fn render_renew_result(tokens: &StoredTokens, renewed: bool, format: AuthFormat)
         .stored_at_unix_seconds
         .saturating_add(tokens.expires_in);
 
+    let status_text = if renewed {
+        "renewed"
+    } else {
+        "is already valid"
+    };
+
     match format {
         AuthFormat::Text => Ok(format!(
-            "Authentication {}.\nToken type: {}\nExpires at (unix): {}",
-            if renewed { "renewed" } else { "is already valid" },
-            tokens.token_type,
-            expires_at_unix_seconds,
+            "{}\n{} {}\n{} {}",
+            success(&format!("Authentication {status_text}.")),
+            label("Token type:"),
+            value(&tokens.token_type),
+            label("Expires at (unix):"),
+            value(&expires_at_unix_seconds.to_string()),
         )),
         AuthFormat::Json => serde_json::to_string_pretty(&json!({
             "status": "ok",
@@ -431,9 +459,9 @@ fn render_renew_result(tokens: &StoredTokens, renewed: bool, format: AuthFormat)
 fn render_logout_result(deleted: bool, format: AuthFormat) -> Result<String> {
     match format {
         AuthFormat::Text => Ok(if deleted {
-            "Removed stored WorkOS credentials.".to_string()
+            success("Removed stored WorkOS credentials.")
         } else {
-            "No stored WorkOS credentials were found.".to_string()
+            value("No stored WorkOS credentials were found.")
         }),
         AuthFormat::Json => serde_json::to_string_pretty(&json!({
             "status": "ok",
@@ -450,17 +478,29 @@ fn render_status_result(report: &AuthStatusReport, format: AuthFormat) -> Result
     match format {
         AuthFormat::Text => {
             if !report.has_stored_credentials {
-                return Ok("Authentication status: unauthenticated\nStored credentials: none".to_string());
+                return Ok(format!(
+                    "{} {}",
+                    label("Authentication status:"),
+                    value("unauthenticated")
+                ) + &format!("\n{} {}", label("Stored credentials:"), value("none")));
             }
 
             Ok(format!(
-                "Authentication status: {}\nStored credentials: present\nToken expired: {}\nSeconds until expiry: {}\nExpires at (unix): {}\nToken type: {}\nScope: {}",
-                report.authentication_state,
-                report.token_expired.unwrap_or(false),
-                report.seconds_until_expiry.unwrap_or_default(),
-                report.expires_at_unix_seconds.unwrap_or_default(),
-                report.token_type.as_deref().unwrap_or("(unknown)"),
-                report.scope.as_deref().unwrap_or("(none)"),
+                "{} {}\n{} {}\n{} {}\n{} {}\n{} {}\n{} {}\n{} {}",
+                label("Authentication status:"),
+                value(report.authentication_state),
+                label("Stored credentials:"),
+                value("present"),
+                label("Token expired:"),
+                value(&report.token_expired.unwrap_or(false).to_string()),
+                label("Seconds until expiry:"),
+                value(&report.seconds_until_expiry.unwrap_or_default().to_string()),
+                label("Expires at (unix):"),
+                value(&report.expires_at_unix_seconds.unwrap_or_default().to_string()),
+                label("Token type:"),
+                value(report.token_type.as_deref().unwrap_or("(unknown)")),
+                label("Scope:"),
+                value(report.scope.as_deref().unwrap_or("(none)")),
             ))
         }
         AuthFormat::Json => serde_json::to_string_pretty(&json!({
