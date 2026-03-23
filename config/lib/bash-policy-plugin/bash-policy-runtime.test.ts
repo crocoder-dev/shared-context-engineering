@@ -6,7 +6,7 @@ import {
   evaluateBashCommandPolicy,
   clearPresetCatalogCache,
   formatPolicyBlockMessage,
-} from "./bash-policy-runtime.js";
+} from "./bash-policy/runtime.ts";
 
 const TEST_PRESETS = {
   schema_version: 1,

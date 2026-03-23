@@ -5,7 +5,7 @@ import type { Plugin } from "@opencode-ai/plugin";
 import {
   evaluateBashCommandPolicy,
   formatPolicyBlockMessage,
-} from "./bash-policy-runtime.js";
+} from "./bash-policy/runtime.ts";
 
 export const SceBashPolicyPlugin: Plugin = async ({ directory, worktree }) => {
   const pluginDirectory = path.dirname(fileURLToPath(import.meta.url));
