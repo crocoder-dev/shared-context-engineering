@@ -49,13 +49,13 @@
         };
 
         configLibBashPolicySrc = pkgs.lib.fileset.toSource {
-          root = ./config/lib/bash-policy;
+          root = ./config/lib/bash-policy-plugin;
           fileset = pkgs.lib.fileset.unions [
-            ./config/lib/bash-policy/package.json
-            ./config/lib/bash-policy/bun.lock
-            ./config/lib/bash-policy/bash-policy-runtime.ts
-            ./config/lib/bash-policy/bash-policy-runtime.test.ts
-            ./config/lib/bash-policy/opencode-bash-policy-plugin.ts
+            ./config/lib/bash-policy-plugin/package.json
+            ./config/lib/bash-policy-plugin/bun.lock
+            ./config/lib/bash-policy-plugin/bash-policy/runtime.ts
+            ./config/lib/bash-policy-plugin/bash-policy-runtime.test.ts
+            ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
           ];
         };
 
@@ -65,10 +65,10 @@
           pname = "config-lib-bash-policy-deps";
           version = "0.1.0";
           src = pkgs.lib.fileset.toSource {
-            root = ./config/lib/bash-policy;
+            root = ./config/lib/bash-policy-plugin;
             fileset = pkgs.lib.fileset.unions [
-              ./config/lib/bash-policy/package.json
-              ./config/lib/bash-policy/bun.lock
+              ./config/lib/bash-policy-plugin/package.json
+              ./config/lib/bash-policy-plugin/bun.lock
             ];
           };
           nativeBuildInputs = [ pkgs.bun ];
