@@ -1,14 +1,15 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Plugin } from "@opencode-ai/plugin";
 
 import {
   evaluateBashCommandPolicy,
   formatPolicyBlockMessage,
-} from "../lib/bash-policy-runtime.js";
+} from "./bash-policy-runtime.js";
 
-export const SceBashPolicyPlugin = async ({ directory, worktree }) => {
+export const SceBashPolicyPlugin: Plugin = async ({ directory, worktree }) => {
   const pluginDirectory = path.dirname(fileURLToPath(import.meta.url));
-  const repoRoot = worktree || directory || process.cwd();
+  const repoRoot = worktree ?? directory ?? process.cwd();
 
   return {
     "tool.execute.before": async (input, output) => {
@@ -16,7 +17,12 @@ export const SceBashPolicyPlugin = async ({ directory, worktree }) => {
         return;
       }
 
-      const command = output?.args?.command;
+      const args = output?.args;
+      if (args === undefined || args === null) {
+        return;
+      }
+
+      const command = (args as { command?: unknown }).command;
       if (typeof command !== "string" || command.length === 0) {
         return;
       }

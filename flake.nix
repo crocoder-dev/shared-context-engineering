@@ -48,6 +48,43 @@
           ];
         };
 
+        configLibBashPolicySrc = pkgs.lib.fileset.toSource {
+          root = ./config/lib/bash-policy;
+          fileset = pkgs.lib.fileset.unions [
+            ./config/lib/bash-policy/package.json
+            ./config/lib/bash-policy/bun.lock
+            ./config/lib/bash-policy/bash-policy-runtime.ts
+            ./config/lib/bash-policy/bash-policy-runtime.test.ts
+            ./config/lib/bash-policy/opencode-bash-policy-plugin.ts
+          ];
+        };
+
+        # Fixed-output derivation to fetch Bun dependencies
+        # The output hash must be updated when package.json or bun.lock changes
+        configLibBashPolicyDeps = pkgs.stdenv.mkDerivation {
+          pname = "config-lib-bash-policy-deps";
+          version = "0.1.0";
+          src = pkgs.lib.fileset.toSource {
+            root = ./config/lib/bash-policy;
+            fileset = pkgs.lib.fileset.unions [
+              ./config/lib/bash-policy/package.json
+              ./config/lib/bash-policy/bun.lock
+            ];
+          };
+          nativeBuildInputs = [ pkgs.bun ];
+          dontBuild = true;
+          installPhase = ''
+            bun install --frozen-lockfile --no-progress
+            # Remove Bun's cache symlinks that point to build directory
+            rm -rf node_modules/.cache
+            mkdir -p $out
+            cp -r node_modules $out/
+          '';
+          outputHashMode = "recursive";
+          outputHashAlgo = "sha256";
+          outputHash = "sha256-4OPHPfR0vHIRsAflr/EFddsMkR5ZnRaN9MLrdJDqTJY=";
+        };
+
         version = pkgs.lib.strings.trim (builtins.readFile ./.version);
         gitCommit =
           if self ? rev then
@@ -187,6 +224,28 @@
               mkdir -p "$out"
             '';
 
+        configLibTests =
+          pkgs.runCommand "config-lib-tests"
+            {
+              nativeBuildInputs = [ pkgs.bun ];
+            }
+            ''
+              set -euo pipefail
+
+              # Copy source files
+              cp -r "${configLibBashPolicySrc}" ./bash-policy
+              chmod -R u+w ./bash-policy
+              cd ./bash-policy
+
+              # Use pre-fetched dependencies from FOD
+              cp -r "${configLibBashPolicyDeps}/node_modules" ./
+
+              # Run tests
+              bun test
+
+              mkdir -p "$out"
+            '';
+
       in
       {
         packages = {
@@ -221,6 +280,8 @@
           );
 
           pkl-parity = pklParityCheck;
+
+          config-lib-tests = configLibTests;
         };
 
         apps.sce = {

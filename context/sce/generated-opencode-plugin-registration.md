@@ -5,7 +5,7 @@ The generated-config pipeline now has one canonical Pkl-authored source for Open
 ## Source of truth
 
 - `config/pkl/base/opencode.pkl` defines canonical `CanonicalOpenCodePluginRegistration` entries.
-- The current implemented entry is `sce_bash_policy_plugin` with path `./plugins/sce-bash-policy.js`.
+- The current implemented entry is `sce_bash_policy_plugin` with path `./plugins/sce-bash-policy.ts`.
 - The current registration scope is intentionally limited to SCE-generated OpenCode plugins emitted by this repository.
 
 ## Renderer handoff
@@ -18,15 +18,14 @@ The generated-config pipeline now has one canonical Pkl-authored source for Open
 
 - `config/pkl/renderers/opencode-content.pkl` and `config/pkl/renderers/opencode-automated-content.pkl` render `opencodeConfig` artifacts that include the shared plugin registration.
 - `config/pkl/generate.pkl` writes those artifacts to `config/.opencode/opencode.json` and `config/automated/.opencode/opencode.json`.
-- Both generated OpenCode profiles currently serialize `plugin: ["./plugins/sce-bash-policy.js"]`.
-- The registered plugin file itself is generated-owned at `config/.opencode/plugins/sce-bash-policy.js` and `config/automated/.opencode/plugins/sce-bash-policy.js`.
+- Both generated OpenCode profiles currently serialize `plugin: ["./plugins/sce-bash-policy.ts"]`.
+- The registered plugin file itself is generated-owned at `config/.opencode/plugins/sce-bash-policy.ts` and `config/automated/.opencode/plugins/sce-bash-policy.ts`.
 
 ## Claude boundary
 
 - Claude does not consume this OpenCode `plugin` manifest surface.
-- Claude's current generated integration for this behavior remains hook-based through `config/.claude/settings.json`.
-- The current generated hook wiring registers `config/.claude/hooks/sce-bash-policy-hook.js` under `PreToolUse` for the `Bash` tool.
-- No parallel Claude plugin-registration contract is introduced unless Claude's documented configuration model changes and code truth is updated accordingly.
+- Claude bash-policy enforcement has been removed from generated outputs.
+- OpenCode is now the sole target for SCE-managed bash-policy enforcement via the plugin registration contract.
 
 ## Ownership and edit policy
 
@@ -37,6 +36,7 @@ The generated-config pipeline now has one canonical Pkl-authored source for Open
 ## Verification
 
 - Inspect `config/.opencode/opencode.json` and `config/automated/.opencode/opencode.json` for the generated `plugin` field.
-- Inspect `config/.claude/settings.json` for the generated `PreToolUse` hook registration that keeps Claude on the hook-based path.
+- Inspect `config/.opencode/plugins/sce-bash-policy.ts` and `config/automated/.opencode/plugins/sce-bash-policy.ts` for the generated plugin implementation.
+- Verify `config/.claude/` contains no bash-policy files (no `lib/bash-policy-*`, no `hooks/sce-bash-policy-hook.js`, no bash-policy hooks in `settings.json`).
 
 See also: [../overview.md](../overview.md), [../architecture.md](../architecture.md), [../glossary.md](../glossary.md)

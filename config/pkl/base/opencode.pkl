@@ -7,5 +7,5 @@ class CanonicalOpenCodePluginRegistration {
 
 sce_bash_policy_plugin = new CanonicalOpenCodePluginRegistration {
   id = "sce-bash-policy"
-  path = "./plugins/sce-bash-policy.js"
+  path = "./plugins/sce-bash-policy.ts"
 }

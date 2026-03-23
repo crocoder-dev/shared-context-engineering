@@ -152,7 +152,7 @@ This allows a repository to add a narrower custom rule without redefining or mut
 
 The initial preset catalog is fixed to these IDs and behaviors.
 
-The canonical authored preset source lives at `config/pkl/base/bash-policy-presets.pkl` and is rendered to JSON by `config/pkl/generate.pkl` into generated target runtime assets at `lib/bash-policy-presets.json` so CLI validation and OpenCode/Claude enforcement share the same preset IDs, argv-prefix matchers, fixed messages, and conflict metadata.
+The canonical authored preset source lives at `config/pkl/base/bash-policy-presets.pkl` and is rendered to JSON by `config/pkl/generate.pkl` into generated target runtime assets at `lib/bash-policy-presets.json` so CLI validation and OpenCode enforcement share the same preset IDs, argv-prefix matchers, fixed messages, and conflict metadata.
 
 ### `forbid-git-all`
 
@@ -195,17 +195,6 @@ For a blocked command, the enforcement layer must:
 
 For a non-matching command, enforcement must allow the bash tool to continue normally and must not inject unrelated warning text.
 
-## Cross-target parity contract
-
-OpenCode plugin behavior and Claude hook behavior are equivalent when the following are true for the same resolved config and same bash-tool command string:
-
-- both sides produce the same normalized argv
-- both sides make the same allow-vs-block decision
-- when blocked, both sides choose the same policy ID under the same precedence rules
-- when blocked, both sides surface the same policy message text
-
-Transport-specific envelopes may differ, but the operator-visible decision and message content must remain equivalent.
-
 ## Config reporting contract for downstream tasks
 
 `T02` must treat `policies.bash` as a first-class validated config domain.
@@ -222,6 +211,6 @@ Transport-specific envelopes may differ, but the operator-visible decision and m
 - `context/cli/config-precedence-contract.md`
 - `config/pkl/base/bash-policy-presets.pkl`
 - `config/pkl/generate.pkl`
-- `config/pkl/lib/claude-bash-policy-hook.js`
-- `config/pkl/lib/claude-settings.json`
+- `config/lib/bash-policy/bash-policy-runtime.ts`
+- `config/lib/bash-policy/opencode-bash-policy-plugin.ts`
 - `cli/src/services/config.rs`

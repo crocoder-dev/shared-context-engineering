@@ -7,17 +7,8 @@ import "base/bash-policy-presets.pkl" as bash_policy_presets
 
 local sharedLibrarySource = read("./lib/drift-collectors.js").text
 local bashPolicyPresetCatalogSource = bash_policy_presets.output.text
-local bashPolicyRuntimeSource = read("./lib/bash-policy-runtime.js").text
-local opencodeBashPolicyPluginSource = read("./lib/opencode-bash-policy-plugin.js").text
-local claudeBashPolicyHookSource = read("./lib/claude-bash-policy-hook.js").text
-local claudeSettingsSource = read("./lib/claude-settings.json").text
-local opencodePackageJsonSource = """
-{
-  \"dependencies\": {
-    \"@opencode-ai/plugin\": \"1.2.27\"
-  }
-}
-"""
+local bashPolicyRuntimeSource = read("../lib/bash-policy/bash-policy-runtime.ts").text
+local opencodeBashPolicyPluginSource = read("../lib/bash-policy/opencode-bash-policy-plugin.ts").text
 
 output {
   files {
@@ -89,14 +80,11 @@ output {
     ["config/.opencode/lib/bash-policy-presets.json"] {
       text = bashPolicyPresetCatalogSource
     }
-    ["config/.opencode/lib/bash-policy-runtime.js"] {
+    ["config/.opencode/lib/bash-policy-runtime.ts"] {
       text = bashPolicyRuntimeSource
     }
-    ["config/.opencode/plugins/sce-bash-policy.js"] {
+    ["config/.opencode/plugins/sce-bash-policy.ts"] {
       text = opencodeBashPolicyPluginSource
-    }
-    ["config/.opencode/package.json"] {
-      text = opencodePackageJsonSource
     }
     ["config/.opencode/opencode.json"] {
       text = opencode.opencodeConfig.rendered
@@ -107,32 +95,17 @@ output {
     ["config/automated/.opencode/lib/bash-policy-presets.json"] {
       text = bashPolicyPresetCatalogSource
     }
-    ["config/automated/.opencode/lib/bash-policy-runtime.js"] {
+    ["config/automated/.opencode/lib/bash-policy-runtime.ts"] {
       text = bashPolicyRuntimeSource
     }
-    ["config/automated/.opencode/plugins/sce-bash-policy.js"] {
+    ["config/automated/.opencode/plugins/sce-bash-policy.ts"] {
       text = opencodeBashPolicyPluginSource
-    }
-    ["config/automated/.opencode/package.json"] {
-      text = opencodePackageJsonSource
     }
     ["config/automated/.opencode/opencode.json"] {
       text = opencode_automated.opencodeConfig.rendered
     }
     ["config/.claude/lib/drift-collectors.js"] {
       text = sharedLibrarySource
-    }
-    ["config/.claude/lib/bash-policy-presets.json"] {
-      text = bashPolicyPresetCatalogSource
-    }
-    ["config/.claude/lib/bash-policy-runtime.js"] {
-      text = bashPolicyRuntimeSource
-    }
-    ["config/.claude/hooks/sce-bash-policy-hook.js"] {
-      text = claudeBashPolicyHookSource
-    }
-    ["config/.claude/settings.json"] {
-      text = claudeSettingsSource
     }
     ["config/schema/sce-config.schema.json"] {
       text = sce_config_schema.rendered

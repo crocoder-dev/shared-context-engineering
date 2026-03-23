@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use crate::services;
 use services::style::{command_name, heading, status_implemented, status_placeholder};
 
@@ -83,12 +85,14 @@ pub fn help_text() -> String {
             ImplementationStatus::Placeholder => status_placeholder(status_text),
         };
 
-        command_rows.push_str(&format!(
-            "  {:<10} {:<12} {}\n",
+        writeln!(
+            command_rows,
+            "  {:<10} {:<12} {}",
             command_name(command.name),
             styled_status,
             command.purpose
-        ));
+        )
+        .unwrap();
     }
 
     format!(

@@ -4,17 +4,60 @@ import { promises as fs } from "node:fs";
 
 const ENV_ASSIGNMENT_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*=.*/;
 const WRAPPER_BINARIES = new Set(["env", "/usr/bin/env", "command", "nohup", "sudo"]);
-const NO_MATCH = {
+
+interface PolicyMatch {
+  id: string;
+  message: string;
+  argvPrefix: string[];
+  source: "preset" | "custom";
+  order: number;
+}
+
+interface PolicyConfig {
+  presets: string[];
+  custom: PolicyMatch[];
+}
+
+interface PresetCatalog {
+  presets: Array<{
+    id: string;
+    message: string;
+    match: {
+      argv_prefixes: string[][];
+    };
+  }>;
+}
+
+interface PolicyResultAllowed {
+  allowed: true;
+  normalizedArgv?: string[];
+}
+
+interface PolicyResultBlocked {
+  allowed: false;
+  normalizedArgv: string[];
+  policy: PolicyMatch;
+}
+
+type PolicyResult = PolicyResultAllowed | PolicyResultBlocked;
+
+const NO_MATCH: PolicyResultAllowed = {
   allowed: true,
 };
 
-let cachedPresetCatalogPromise;
+let cachedPresetCatalogPromise: Promise<PresetCatalog> | undefined;
 
 export async function evaluateBashCommandPolicy({
   command,
   worktree,
   pluginDirectory,
-}) {
+  presetCatalogPath,
+}: {
+  command: string;
+  worktree: string;
+  pluginDirectory: string;
+  presetCatalogPath?: string;
+}): Promise<PolicyResult> {
   const normalizedArgv = tokenizeAndNormalizeCommand(command);
   if (!normalizedArgv) {
     return NO_MATCH;
@@ -25,7 +68,7 @@ export async function evaluateBashCommandPolicy({
     return NO_MATCH;
   }
 
-  const presetCatalog = await loadPresetCatalog(pluginDirectory);
+  const presetCatalog = await loadPresetCatalog(pluginDirectory, presetCatalogPath);
   const activePolicies = buildActivePolicies(policyConfig, presetCatalog);
   const match = selectMatchingPolicy(activePolicies, normalizedArgv);
   if (!match) {
@@ -42,13 +85,17 @@ export async function evaluateBashCommandPolicy({
   };
 }
 
-export function formatPolicyBlockMessage(match) {
+export function formatPolicyBlockMessage(match: PolicyMatch): string {
   return `Blocked by SCE bash-tool policy '${match.id}': ${match.message}`;
 }
 
-async function loadResolvedBashPolicyConfig({ worktree }) {
+async function loadResolvedBashPolicyConfig({
+  worktree,
+}: {
+  worktree: string;
+}): Promise<PolicyConfig | null> {
   const configPaths = getConfigSearchPaths(worktree);
-  let resolved = null;
+  let resolved: { presets?: string[]; custom?: PolicyMatch[] } | null = null;
 
   for (const configPath of configPaths) {
     const parsed = await readBashPolicyConfig(configPath);
@@ -79,8 +126,8 @@ async function loadResolvedBashPolicyConfig({ worktree }) {
   return { presets, custom };
 }
 
-function getConfigSearchPaths(worktree) {
-  const searchPaths = [];
+function getConfigSearchPaths(worktree: string): string[] {
+  const searchPaths: string[] = [];
   const globalConfigRoot = resolveGlobalConfigRoot();
   if (globalConfigRoot) {
     searchPaths.push(path.join(globalConfigRoot, "sce", "config.json"));
@@ -89,7 +136,7 @@ function getConfigSearchPaths(worktree) {
   return searchPaths;
 }
 
-function resolveGlobalConfigRoot() {
+function resolveGlobalConfigRoot(): string | null {
   const platform = process.platform;
   if (platform === "linux") {
     const xdgStateHome = process.env.XDG_STATE_HOME;
@@ -123,18 +170,20 @@ function resolveGlobalConfigRoot() {
   return home ? path.join(home, ".local", "state") : null;
 }
 
-async function readBashPolicyConfig(configPath) {
-  let raw;
+async function readBashPolicyConfig(
+  configPath: string
+): Promise<{ presets?: string[]; custom?: PolicyMatch[] } | null> {
+  let raw: string;
   try {
     raw = await fs.readFile(configPath, "utf8");
-  } catch (error) {
-    if (error && error.code === "ENOENT") {
+  } catch (error: unknown) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
       return null;
     }
     return null;
   }
 
-  let parsed;
+  let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
@@ -144,28 +193,29 @@ async function readBashPolicyConfig(configPath) {
   return extractBashPolicyConfig(parsed);
 }
 
-function extractBashPolicyConfig(parsed) {
+function extractBashPolicyConfig(parsed: unknown): { presets?: string[]; custom?: PolicyMatch[] } | null {
   if (!isPlainObject(parsed)) {
     return null;
   }
 
-  const policies = parsed.policies;
+  const policies = (parsed as Record<string, unknown>).policies;
   if (!isPlainObject(policies)) {
     return null;
   }
 
-  const bash = policies.bash;
+  const bash = (policies as Record<string, unknown>).bash;
   if (!isPlainObject(bash)) {
     return null;
   }
 
-  const presets = Array.isArray(bash.presets)
-    ? bash.presets.filter((value) => typeof value === "string")
+  const bashObj = bash as Record<string, unknown>;
+  const presets = Array.isArray(bashObj.presets)
+    ? bashObj.presets.filter((value: unknown): value is string => typeof value === "string")
     : undefined;
-  const custom = Array.isArray(bash.custom)
-    ? bash.custom
+  const custom = Array.isArray(bashObj.custom)
+    ? bashObj.custom
         .map(parseCustomPolicy)
-        .filter((value) => value !== null)
+        .filter((value: PolicyMatch | null): value is PolicyMatch => value !== null)
     : undefined;
 
   return {
@@ -174,47 +224,72 @@ function extractBashPolicyConfig(parsed) {
   };
 }
 
-function parseCustomPolicy(value) {
-  if (!isPlainObject(value) || !isPlainObject(value.match)) {
+function parseCustomPolicy(value: unknown): PolicyMatch | null {
+  if (!isPlainObject(value)) {
+    return null;
+  }
+  const obj = value as Record<string, unknown>;
+  if (!isPlainObject(obj.match)) {
     return null;
   }
 
-  const argvPrefix = value.match.argv_prefix;
+  const argvPrefix = (obj.match as Record<string, unknown>).argv_prefix;
   if (
-    typeof value.id !== "string" ||
-    value.id.length === 0 ||
-    typeof value.message !== "string" ||
-    value.message.length === 0 ||
+    typeof obj.id !== "string" ||
+    obj.id.length === 0 ||
+    typeof obj.message !== "string" ||
+    obj.message.length === 0 ||
     !Array.isArray(argvPrefix) ||
-    argvPrefix.some((token) => typeof token !== "string" || token.length === 0)
+    argvPrefix.length === 0 ||
+    argvPrefix.some((token: unknown) => typeof token !== "string" || (token as string).length === 0)
   ) {
     return null;
   }
 
   return {
-    id: value.id,
-    message: value.message,
-    argvPrefix,
+    id: obj.id,
+    message: obj.message,
+    argvPrefix: argvPrefix as string[],
     source: "custom",
     order: 0,
   };
 }
 
-async function loadPresetCatalog(pluginDirectory) {
+async function loadPresetCatalog(
+  pluginDirectory: string,
+  presetCatalogPathOverride?: string
+): Promise<PresetCatalog> {
+  if (presetCatalogPathOverride) {
+    return fs
+      .readFile(presetCatalogPathOverride, "utf8")
+      .then((raw) => {
+        const parsed: unknown = JSON.parse(raw);
+        if (!isPlainObject(parsed) || !Array.isArray((parsed as Record<string, unknown>).presets)) {
+          return { presets: [] };
+        }
+        return parsed as unknown as PresetCatalog;
+      })
+      .catch((): PresetCatalog => ({ presets: [] }));
+  }
+
   if (!cachedPresetCatalogPromise) {
     const presetCatalogPath = path.resolve(pluginDirectory, "../lib/bash-policy-presets.json");
     cachedPresetCatalogPromise = fs
       .readFile(presetCatalogPath, "utf8")
-      .then((raw) => JSON.parse(raw))
-      .catch(() => ({ presets: [] }));
+      .then((raw) => JSON.parse(raw) as PresetCatalog)
+      .catch((): PresetCatalog => ({ presets: [] }));
   }
 
   return cachedPresetCatalogPromise;
 }
 
-function buildActivePolicies(policyConfig, presetCatalog) {
-  const presetOrder = new Map();
-  const presetPolicies = [];
+export function clearPresetCatalogCache(): void {
+  cachedPresetCatalogPromise = undefined;
+}
+
+function buildActivePolicies(policyConfig: PolicyConfig, presetCatalog: PresetCatalog): PolicyMatch[] {
+  const presetOrder = new Map<string, number>();
+  const presetPolicies: PolicyMatch[] = [];
 
   for (const [index, preset] of presetCatalog.presets.entries()) {
     presetOrder.set(preset.id, index);
@@ -238,17 +313,17 @@ function buildActivePolicies(policyConfig, presetCatalog) {
     }
   }
 
-  const customPolicies = policyConfig.custom.map((policy, index) => ({
+  const customPolicies = policyConfig.custom.map((policy: PolicyMatch, index: number) => ({
     ...policy,
-    source: "custom",
+    source: "custom" as const,
     order: index,
   }));
 
   return [...presetPolicies, ...customPolicies];
 }
 
-function selectMatchingPolicy(activePolicies, normalizedArgv) {
-  let bestMatch = null;
+function selectMatchingPolicy(activePolicies: PolicyMatch[], normalizedArgv: string[]): PolicyMatch | null {
+  let bestMatch: PolicyMatch | null = null;
 
   for (const policy of activePolicies) {
     if (!argvStartsWith(normalizedArgv, policy.argvPrefix)) {
@@ -263,7 +338,7 @@ function selectMatchingPolicy(activePolicies, normalizedArgv) {
   return bestMatch;
 }
 
-function comparePolicyPriority(left, right) {
+function comparePolicyPriority(left: PolicyMatch, right: PolicyMatch): number {
   if (left.argvPrefix.length !== right.argvPrefix.length) {
     return right.argvPrefix.length - left.argvPrefix.length;
   }
@@ -275,15 +350,15 @@ function comparePolicyPriority(left, right) {
   return left.order - right.order;
 }
 
-function argvStartsWith(argv, prefix) {
+function argvStartsWith(argv: string[], prefix: string[]): boolean {
   if (prefix.length > argv.length) {
     return false;
   }
 
-  return prefix.every((token, index) => argv[index] === token);
+  return prefix.every((token: string, index: number) => argv[index] === token);
 }
 
-function tokenizeAndNormalizeCommand(command) {
+function tokenizeAndNormalizeCommand(command: string): string[] | null {
   const tokenized = tokenizeShellCommand(command);
   if (!tokenized || tokenized.length === 0) {
     return null;
@@ -294,7 +369,7 @@ function tokenizeAndNormalizeCommand(command) {
 
   while (normalized.length > 0) {
     const executable = normalized[0];
-    if (!WRAPPER_BINARIES.has(executable)) {
+    if (executable === undefined || !WRAPPER_BINARIES.has(executable)) {
       break;
     }
 
@@ -306,20 +381,20 @@ function tokenizeAndNormalizeCommand(command) {
     return null;
   }
 
-  normalized[0] = path.basename(normalized[0]);
+  normalized[0] = path.basename(normalized[0] ?? "");
   return normalized;
 }
 
-function dropLeadingEnvAssignments(argv) {
-  while (argv.length > 0 && ENV_ASSIGNMENT_PATTERN.test(argv[0])) {
+function dropLeadingEnvAssignments(argv: string[]): void {
+  while (argv.length > 0 && ENV_ASSIGNMENT_PATTERN.test(argv[0] ?? "")) {
     argv.shift();
   }
 }
 
-function tokenizeShellCommand(command) {
-  const tokens = [];
+function tokenizeShellCommand(command: string): string[] | null {
+  const tokens: string[] = [];
   let current = "";
-  let quote = null;
+  let quote: string | null = null;
   let escaping = false;
 
   for (const character of command) {
@@ -370,6 +445,6 @@ function tokenizeShellCommand(command) {
   return tokens;
 }
 
-function isPlainObject(value) {
+function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
