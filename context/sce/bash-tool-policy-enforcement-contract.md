@@ -111,17 +111,37 @@ Example normalized argv results:
 - `FOO=bar /usr/bin/git push` -> `["git", "push"]`
 - `sudo npm install` -> `["npm", "install"]`
 
-### Intentional limitations
+### Intentional limitations (original scope)
 
 This contract does not require full shell parsing.
 The enforcement layer only needs to reason about the single normalized argv produced by the rules above.
 
 The following are intentionally out of scope for matching guarantees in this plan:
 
-- shell control operators like `&&`, `||`, `;`, and pipelines
 - nested shell payloads like `bash -lc "git commit -m x"`
 - alias expansion, functions, subshells, and process substitution
 - parsing command intent from comments, heredocs, or multi-line scripts
+
+## Shell Operator Parsing Extension (2026-03)
+
+The original contract intentionally excluded shell control operators (`|`, `&&`, `||`, `;`, `&`) from the matching model. A subsequent plan (`shell-operator-parsing`) extended the implementation to handle these operators:
+
+**Extended behavior:**
+- Commands are split into segments at shell control operators (`|`, `&&`, `||`, `;`, `&`)
+- Each segment is normalized independently using the same normalization rules
+- If ANY segment matches a blocking policy, the entire command is blocked
+- This applies to both preset policies (e.g., `forbid-git-all`) and custom policies
+
+**Implementation:**
+- `parseCommandSegments()` function in `config/lib/bash-policy-plugin/bash-policy/runtime.ts`
+- Integrates with existing `evaluateBashCommandPolicy()` function
+- Preserves original single-command behavior for commands without operators
+
+**Examples:**
+- `cat abc | git diff` with `forbid-git-all` -> blocked (segment "git diff" matches)
+- `git status && npm install` with `forbid-git-all` -> blocked (segment "git status" matches)
+- `ls; git push` with `forbid-git-commit` -> blocked (segment "git push" matches)
+- `cat file | ls` with no git policies -> allowed (no segment matches git policies)
 
 ## Policy entry semantics
 

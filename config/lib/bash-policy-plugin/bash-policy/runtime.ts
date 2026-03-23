@@ -58,8 +58,8 @@ export async function evaluateBashCommandPolicy({
   pluginDirectory: string;
   presetCatalogPath?: string;
 }): Promise<PolicyResult> {
-  const normalizedArgv = tokenizeAndNormalizeCommand(command);
-  if (!normalizedArgv) {
+  const segments = parseCommandSegments(command);
+  if (!segments || segments.length === 0) {
     return NO_MATCH;
   }
 
@@ -70,19 +70,52 @@ export async function evaluateBashCommandPolicy({
 
   const presetCatalog = await loadPresetCatalog(pluginDirectory, presetCatalogPath);
   const activePolicies = buildActivePolicies(policyConfig, presetCatalog);
-  const match = selectMatchingPolicy(activePolicies, normalizedArgv);
-  if (!match) {
-    return {
-      allowed: true,
-      normalizedArgv,
-    };
+
+  for (const segment of segments) {
+    const normalizedArgv = normalizeSegment(segment);
+    if (!normalizedArgv || normalizedArgv.length === 0) {
+      continue;
+    }
+
+    const match = selectMatchingPolicy(activePolicies, normalizedArgv);
+    if (match) {
+      return {
+        allowed: false,
+        normalizedArgv,
+        policy: match,
+      };
+    }
   }
 
   return {
-    allowed: false,
-    normalizedArgv,
-    policy: match,
+    allowed: true,
   };
+}
+
+function normalizeSegment(segment: string[]): string[] | null {
+  if (segment.length === 0) {
+    return null;
+  }
+
+  const normalized = [...segment];
+  dropLeadingEnvAssignments(normalized);
+
+  while (normalized.length > 0) {
+    const executable = normalized[0];
+    if (executable === undefined || !WRAPPER_BINARIES.has(executable)) {
+      break;
+    }
+
+    normalized.shift();
+    dropLeadingEnvAssignments(normalized);
+  }
+
+  if (normalized.length === 0) {
+    return null;
+  }
+
+  normalized[0] = path.basename(normalized[0] ?? "");
+  return normalized;
 }
 
 export function formatPolicyBlockMessage(match: PolicyMatch): string {
@@ -447,4 +480,113 @@ function tokenizeShellCommand(command: string): string[] | null {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Shell operators that split command segments.
+ * These operators terminate a segment and start a new one.
+ */
+const SHELL_OPERATORS = new Set(["|", "&&", "||", ";", "&"]);
+
+/**
+ * Checks if a string is a shell control operator.
+ */
+function isShellOperator(token: string): boolean {
+  return SHELL_OPERATORS.has(token);
+}
+
+/**
+ * Splits a token that may contain embedded operators (e.g., "ls;" -> ["ls", ";"])
+ */
+function splitTokenWithEmbeddedOperators(token: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let i = 0;
+
+  while (i < token.length) {
+    // Check for multi-character operators first (&&, ||)
+    if (i + 1 < token.length) {
+      const twoChar = token.slice(i, i + 2);
+      if (twoChar === "&&" || twoChar === "||") {
+        if (current.length > 0) {
+          result.push(current);
+          current = "";
+        }
+        result.push(twoChar);
+        i += 2;
+        continue;
+      }
+    }
+
+    // Check for single-character operators
+    const char = token[i];
+    if (SHELL_OPERATORS.has(char)) {
+      if (current.length > 0) {
+        result.push(current);
+        current = "";
+      }
+      result.push(char);
+      i++;
+      continue;
+    }
+
+    current += char;
+    i++;
+  }
+
+  if (current.length > 0) {
+    result.push(current);
+  }
+
+  return result;
+}
+
+/**
+ * Parses a command string into segments separated by shell control operators.
+ *
+ * @param command - The command string to parse (e.g., "cat abc | git diff")
+ * @returns An array of segments, where each segment is an array of tokens
+ *          (e.g., [["cat", "abc"], ["git", "diff"]])
+ *          Returns null if the command cannot be tokenized (e.g., unclosed quotes)
+ *
+ * Examples:
+ *   "cat abc | git diff"  -> [["cat", "abc"], ["git", "diff"]]
+ *   "git status && npm install" -> [["git", "status"], ["npm", "install"]]
+ *   "ls; git push" -> [["ls"], ["git", "push"]]
+ *   "ls &" -> [["ls"]]
+ */
+export function parseCommandSegments(command: string): string[][] | null {
+  const tokens = tokenizeShellCommand(command);
+  if (!tokens || tokens.length === 0) {
+    return null;
+  }
+
+  // Flatten tokens that may contain embedded operators (e.g., "ls;" -> ["ls", ";"])
+  const flattenedTokens: string[] = [];
+  for (const token of tokens) {
+    const splitTokens = splitTokenWithEmbeddedOperators(token);
+    flattenedTokens.push(...splitTokens);
+  }
+
+  const segments: string[][] = [];
+  let currentSegment: string[] = [];
+
+  for (const token of flattenedTokens) {
+    if (isShellOperator(token)) {
+      // Start a new segment, skipping empty segments (consecutive operators)
+      if (currentSegment.length > 0) {
+        segments.push(currentSegment);
+        currentSegment = [];
+      }
+    } else {
+      currentSegment.push(token);
+    }
+  }
+
+  // Don't add empty trailing segment after an operator
+  if (currentSegment.length > 0) {
+    segments.push(currentSegment);
+  }
+
+  return segments;
 }
