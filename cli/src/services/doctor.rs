@@ -7,14 +7,18 @@ use serde_json::json;
 
 use crate::services::output_format::OutputFormat;
 use crate::services::setup::{
-    install_required_git_hooks, iter_required_hook_assets, RequiredHookInstallStatus,
-    RequiredHooksInstallOutcome,
+    install_required_git_hooks, iter_embedded_assets_for_setup_target, iter_required_hook_assets,
+    RequiredHookInstallStatus, RequiredHooksInstallOutcome, SetupTarget,
 };
 use crate::services::style::{heading, label, success, value};
 
 pub const NAME: &str = "doctor";
 
 const REQUIRED_HOOKS: [&str; 3] = ["pre-commit", "commit-msg", "post-commit"];
+const OPENCODE_ROOT_DIR: &str = ".opencode";
+const OPENCODE_MANIFEST_FILE: &str = "opencode.json";
+const OPENCODE_PLUGIN_RELATIVE_PATH: &str = "plugins/sce-bash-policy.ts";
+const OPENCODE_PLUGIN_MANIFEST_ENTRY: &str = "./plugins/sce-bash-policy.ts";
 
 pub type DoctorFormat = OutputFormat;
 
@@ -136,12 +140,14 @@ enum ProblemCategory {
     GlobalState,
     RepositoryTargeting,
     HookRollout,
+    RepoAssets,
     FilesystemPermissions,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProblemSeverity {
     Error,
+    Warning,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -366,6 +372,12 @@ fn build_report_with_dependencies(
         Vec::new()
     };
 
+    if git_available && !bare_repository {
+        if let Some(resolved_root) = detected_repository_root.as_deref() {
+            inspect_opencode_plugin_health(resolved_root, &mut problems);
+        }
+    }
+
     let repo_databases = Vec::new();
     let all_databases = if database_inventory == DoctorDatabaseInventory::All {
         collect_all_database_health(global_state.agent_trace_local_db.as_ref())
@@ -373,10 +385,13 @@ fn build_report_with_dependencies(
         Vec::new()
     };
 
-    let readiness = if problems.is_empty() {
-        Readiness::Ready
-    } else {
+    let readiness = if problems
+        .iter()
+        .any(|problem| problem.severity == ProblemSeverity::Error)
+    {
         Readiness::NotReady
+    } else {
+        Readiness::Ready
     };
 
     HookDoctorReport {
@@ -730,6 +745,161 @@ fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> V
             }
         })
         .collect()
+}
+
+fn inspect_opencode_plugin_health(repository_root: &Path, problems: &mut Vec<DoctorProblem>) {
+    let opencode_root = repository_root.join(OPENCODE_ROOT_DIR);
+    if !opencode_root.exists() {
+        return;
+    }
+
+    let manifest_path = opencode_root.join(OPENCODE_MANIFEST_FILE);
+    if let Some(summary) = opencode_plugin_registry_issue(&manifest_path) {
+        problems.push(DoctorProblem {
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary,
+            remediation: format!(
+                "Reinstall OpenCode assets so '{}' registers '{}', then rerun 'sce doctor'.",
+                manifest_path.display(),
+                OPENCODE_PLUGIN_MANIFEST_ENTRY
+            ),
+            next_action: "manual_steps",
+        });
+    }
+
+    let plugin_path = opencode_root.join(OPENCODE_PLUGIN_RELATIVE_PATH);
+    let plugin_metadata = fs::metadata(&plugin_path).ok();
+    let plugin_is_file = plugin_metadata
+        .as_ref()
+        .is_some_and(std::fs::Metadata::is_file);
+
+    if !plugin_is_file {
+        let summary = if plugin_metadata.is_some() {
+            format!(
+                "OpenCode plugin path '{}' is not a file.",
+                plugin_path.display()
+            )
+        } else {
+            format!(
+                "OpenCode plugin file '{}' is missing.",
+                plugin_path.display()
+            )
+        };
+        problems.push(DoctorProblem {
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Warning,
+            fixability: ProblemFixability::ManualOnly,
+            summary,
+            remediation: format!(
+                "Reinstall OpenCode assets to restore the canonical plugin at '{}', then rerun 'sce doctor'.",
+                plugin_path.display()
+            ),
+            next_action: "manual_steps",
+        });
+        return;
+    }
+
+    let Ok(plugin_bytes) = fs::read(&plugin_path) else {
+        problems.push(DoctorProblem {
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Warning,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "OpenCode plugin file '{}' is not readable.",
+                plugin_path.display()
+            ),
+            remediation: format!(
+                "Restore read access to '{}' and rerun 'sce doctor'.",
+                plugin_path.display()
+            ),
+            next_action: "manual_steps",
+        });
+        return;
+    };
+
+    let Some(canonical_asset) = opencode_plugin_asset() else {
+        problems.push(DoctorProblem {
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Warning,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "Unable to locate the canonical OpenCode plugin asset for '{OPENCODE_PLUGIN_RELATIVE_PATH}'."
+            ),
+            remediation: "Verify the CLI build includes the embedded OpenCode plugin assets and rerun 'sce doctor'.".to_string(),
+            next_action: "manual_steps",
+        });
+        return;
+    };
+
+    if plugin_bytes != canonical_asset.bytes {
+        problems.push(DoctorProblem {
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Warning,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "OpenCode plugin file '{}' differs from the canonical SCE-managed content.",
+                plugin_path.display()
+            ),
+            remediation: format!(
+                "Replace '{}' with the canonical plugin content (for example, rerun 'sce setup --opencode'), then rerun 'sce doctor'.",
+                plugin_path.display()
+            ),
+            next_action: "manual_steps",
+        });
+    }
+}
+
+fn opencode_plugin_registry_issue(manifest_path: &Path) -> Option<String> {
+    if !manifest_path.exists() {
+        return Some(format!(
+            "OpenCode plugin registry file '{}' is missing.",
+            manifest_path.display()
+        ));
+    }
+
+    let Ok(bytes) = fs::read(manifest_path) else {
+        return Some(format!(
+            "OpenCode plugin registry file '{}' is not readable.",
+            manifest_path.display()
+        ));
+    };
+
+    let payload: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(_) => {
+            return Some(format!(
+                "OpenCode plugin registry file '{}' is not valid JSON.",
+                manifest_path.display()
+            ));
+        }
+    };
+
+    let Some(plugins) = payload.get("plugin").and_then(|value| value.as_array()) else {
+        return Some(format!(
+            "OpenCode plugin registry file '{}' does not define a 'plugin' array.",
+            manifest_path.display()
+        ));
+    };
+
+    if plugins
+        .iter()
+        .any(|entry| entry.as_str() == Some(OPENCODE_PLUGIN_MANIFEST_ENTRY))
+    {
+        None
+    } else {
+        Some(format!(
+            "OpenCode plugin registry file '{}' does not register '{}'.",
+            manifest_path.display(),
+            OPENCODE_PLUGIN_MANIFEST_ENTRY
+        ))
+    }
+}
+
+fn opencode_plugin_asset() -> Option<&'static crate::services::setup::EmbeddedAsset> {
+    iter_embedded_assets_for_setup_target(SetupTarget::OpenCode)
+        .find(|asset| asset.relative_path == OPENCODE_PLUGIN_RELATIVE_PATH)
 }
 
 fn inspect_hook_content_state(
@@ -1368,6 +1538,7 @@ fn problem_category(category: ProblemCategory) -> &'static str {
         ProblemCategory::GlobalState => "global_state",
         ProblemCategory::RepositoryTargeting => "repository_targeting",
         ProblemCategory::HookRollout => "hook_rollout",
+        ProblemCategory::RepoAssets => "repo_assets",
         ProblemCategory::FilesystemPermissions => "filesystem_permissions",
     }
 }
@@ -1375,6 +1546,7 @@ fn problem_category(category: ProblemCategory) -> &'static str {
 fn problem_severity(severity: ProblemSeverity) -> &'static str {
     match severity {
         ProblemSeverity::Error => "error",
+        ProblemSeverity::Warning => "warning",
     }
 }
 
@@ -1484,6 +1656,31 @@ mod tests {
             remediation: "Run 'sce doctor --fix'.".to_string(),
             next_action: "doctor_fix",
         }
+    }
+
+    fn problem_matches(
+        problem: &Value,
+        category: &str,
+        severity: &str,
+        fixability: &str,
+        summary_fragment: &str,
+    ) -> bool {
+        problem
+            .get("category")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value == category)
+            && problem
+                .get("severity")
+                .and_then(Value::as_str)
+                .is_some_and(|value| value == severity)
+            && problem
+                .get("fixability")
+                .and_then(Value::as_str)
+                .is_some_and(|value| value == fixability)
+            && problem
+                .get("summary")
+                .and_then(Value::as_str)
+                .is_some_and(|value| value.contains(summary_fragment))
     }
 
     #[test]
@@ -1599,6 +1796,337 @@ mod tests {
         assert!(execution.report.problems.iter().any(|problem| {
             problem.summary.contains("Local config file")
                 && problem.summary.contains("schema mismatch")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_reports_opencode_plugin_registry_missing() -> Result<()> {
+        let test_dir = TestDir::new("doctor-opencode-registry-missing")?;
+        let repository_root = test_dir.path().join("repo");
+        let hooks_dir = repository_root.join(".git").join("hooks");
+        install_canonical_hooks(&hooks_dir)?;
+
+        let opencode_root = repository_root.join(".opencode");
+        fs::create_dir_all(&opencode_root)?;
+        fs::write(
+            opencode_root.join("opencode.json"),
+            "{\"plugin\":[\"./plugins/other.ts\"]}",
+        )?;
+
+        let canonical_plugin = super::opencode_plugin_asset()
+            .expect("canonical OpenCode plugin asset should be embedded");
+        let plugin_path = opencode_root.join("plugins").join("sce-bash-policy.ts");
+        fs::create_dir_all(
+            plugin_path
+                .parent()
+                .expect("plugin path should have parent"),
+        )?;
+        fs::write(&plugin_path, canonical_plugin.bytes)?;
+
+        let agent_trace_db = test_dir
+            .path()
+            .join("state-root")
+            .join("sce")
+            .join("agent-trace")
+            .join("local.db");
+        fs::create_dir_all(
+            agent_trace_db
+                .parent()
+                .expect("agent trace path should have parent"),
+        )?;
+
+        let repo_root = repository_root.clone();
+        let hooks_dir = hooks_dir.clone();
+        let run_git_command = move |_cwd: &Path, args: &[&str]| match args {
+            ["rev-parse", "--show-toplevel"] => Some(repo_root.display().to_string()),
+            ["rev-parse", "--is-bare-repository"] => Some("false".to_string()),
+            ["rev-parse", "--git-path", "hooks"] => Some(hooks_dir.display().to_string()),
+            _ => None,
+        };
+
+        let state_root = test_dir.path().join("state-root");
+        let resolve_state_root = move || Ok(state_root.clone());
+        let resolve_agent_trace_local_db_path = move || Ok(agent_trace_db.clone());
+
+        let dependencies = DoctorDependencies {
+            run_git_command: &run_git_command,
+            check_git_available: &|| true,
+            resolve_state_root: &resolve_state_root,
+            resolve_agent_trace_local_db_path: &resolve_agent_trace_local_db_path,
+            validate_config_file: &|_| Ok(()),
+            check_agent_trace_local_db_health: &|_| Ok(()),
+            install_required_git_hooks: &|_| unreachable!("hook install should not run"),
+            create_directory_all: &|_| unreachable!("directory creation should not run"),
+        };
+
+        let json_request = DoctorRequest {
+            mode: DoctorMode::Diagnose,
+            database_inventory: DoctorDatabaseInventory::Repo,
+            format: DoctorFormat::Json,
+        };
+        let execution = execute_doctor_with_dependencies(
+            DoctorRequest {
+                mode: DoctorMode::Diagnose,
+                database_inventory: DoctorDatabaseInventory::Repo,
+                format: DoctorFormat::Text,
+            },
+            &repository_root,
+            &dependencies,
+        );
+        let output = render_report(json_request, &execution)?;
+        let parsed: Value = serde_json::from_str(&output)?;
+
+        assert_eq!(parsed["readiness"], "not_ready");
+        let problems = parsed["problems"].as_array().expect("problems array");
+        assert!(problems.iter().any(|problem| {
+            problem_matches(
+                problem,
+                "repo_assets",
+                "error",
+                "manual_only",
+                "does not register",
+            )
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_reports_opencode_plugin_missing_file_warning() -> Result<()> {
+        let test_dir = TestDir::new("doctor-opencode-file-missing")?;
+        let repository_root = test_dir.path().join("repo");
+        let hooks_dir = repository_root.join(".git").join("hooks");
+        install_canonical_hooks(&hooks_dir)?;
+
+        let opencode_root = repository_root.join(".opencode");
+        fs::create_dir_all(&opencode_root)?;
+        fs::write(
+            opencode_root.join("opencode.json"),
+            "{\"plugin\":[\"./plugins/sce-bash-policy.ts\"]}",
+        )?;
+
+        let agent_trace_db = test_dir
+            .path()
+            .join("state-root")
+            .join("sce")
+            .join("agent-trace")
+            .join("local.db");
+        fs::create_dir_all(
+            agent_trace_db
+                .parent()
+                .expect("agent trace path should have parent"),
+        )?;
+
+        let repo_root = repository_root.clone();
+        let hooks_dir = hooks_dir.clone();
+        let run_git_command = move |_cwd: &Path, args: &[&str]| match args {
+            ["rev-parse", "--show-toplevel"] => Some(repo_root.display().to_string()),
+            ["rev-parse", "--is-bare-repository"] => Some("false".to_string()),
+            ["rev-parse", "--git-path", "hooks"] => Some(hooks_dir.display().to_string()),
+            _ => None,
+        };
+
+        let state_root = test_dir.path().join("state-root");
+        let resolve_state_root = move || Ok(state_root.clone());
+        let resolve_agent_trace_local_db_path = move || Ok(agent_trace_db.clone());
+
+        let dependencies = DoctorDependencies {
+            run_git_command: &run_git_command,
+            check_git_available: &|| true,
+            resolve_state_root: &resolve_state_root,
+            resolve_agent_trace_local_db_path: &resolve_agent_trace_local_db_path,
+            validate_config_file: &|_| Ok(()),
+            check_agent_trace_local_db_health: &|_| Ok(()),
+            install_required_git_hooks: &|_| unreachable!("hook install should not run"),
+            create_directory_all: &|_| unreachable!("directory creation should not run"),
+        };
+
+        let json_request = DoctorRequest {
+            mode: DoctorMode::Diagnose,
+            database_inventory: DoctorDatabaseInventory::Repo,
+            format: DoctorFormat::Json,
+        };
+        let execution = execute_doctor_with_dependencies(
+            DoctorRequest {
+                mode: DoctorMode::Diagnose,
+                database_inventory: DoctorDatabaseInventory::Repo,
+                format: DoctorFormat::Text,
+            },
+            &repository_root,
+            &dependencies,
+        );
+        let output = render_report(json_request, &execution)?;
+        let parsed: Value = serde_json::from_str(&output)?;
+
+        assert_eq!(parsed["readiness"], "ready");
+        let problems = parsed["problems"].as_array().expect("problems array");
+        assert!(problems.iter().any(|problem| {
+            problem_matches(
+                problem,
+                "repo_assets",
+                "warning",
+                "manual_only",
+                "is missing",
+            )
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_reports_opencode_plugin_drift_warning() -> Result<()> {
+        let test_dir = TestDir::new("doctor-opencode-drift")?;
+        let repository_root = test_dir.path().join("repo");
+        let hooks_dir = repository_root.join(".git").join("hooks");
+        install_canonical_hooks(&hooks_dir)?;
+
+        let opencode_root = repository_root.join(".opencode");
+        fs::create_dir_all(&opencode_root)?;
+        fs::write(
+            opencode_root.join("opencode.json"),
+            "{\"plugin\":[\"./plugins/sce-bash-policy.ts\"]}",
+        )?;
+
+        let plugin_path = opencode_root.join("plugins").join("sce-bash-policy.ts");
+        fs::create_dir_all(
+            plugin_path
+                .parent()
+                .expect("plugin path should have parent"),
+        )?;
+        fs::write(&plugin_path, b"drifted-plugin")?;
+
+        let agent_trace_db = test_dir
+            .path()
+            .join("state-root")
+            .join("sce")
+            .join("agent-trace")
+            .join("local.db");
+        fs::create_dir_all(
+            agent_trace_db
+                .parent()
+                .expect("agent trace path should have parent"),
+        )?;
+
+        let repo_root = repository_root.clone();
+        let hooks_dir = hooks_dir.clone();
+        let run_git_command = move |_cwd: &Path, args: &[&str]| match args {
+            ["rev-parse", "--show-toplevel"] => Some(repo_root.display().to_string()),
+            ["rev-parse", "--is-bare-repository"] => Some("false".to_string()),
+            ["rev-parse", "--git-path", "hooks"] => Some(hooks_dir.display().to_string()),
+            _ => None,
+        };
+
+        let state_root = test_dir.path().join("state-root");
+        let resolve_state_root = move || Ok(state_root.clone());
+        let resolve_agent_trace_local_db_path = move || Ok(agent_trace_db.clone());
+
+        let dependencies = DoctorDependencies {
+            run_git_command: &run_git_command,
+            check_git_available: &|| true,
+            resolve_state_root: &resolve_state_root,
+            resolve_agent_trace_local_db_path: &resolve_agent_trace_local_db_path,
+            validate_config_file: &|_| Ok(()),
+            check_agent_trace_local_db_health: &|_| Ok(()),
+            install_required_git_hooks: &|_| unreachable!("hook install should not run"),
+            create_directory_all: &|_| unreachable!("directory creation should not run"),
+        };
+
+        let json_request = DoctorRequest {
+            mode: DoctorMode::Diagnose,
+            database_inventory: DoctorDatabaseInventory::Repo,
+            format: DoctorFormat::Json,
+        };
+        let execution = execute_doctor_with_dependencies(
+            DoctorRequest {
+                mode: DoctorMode::Diagnose,
+                database_inventory: DoctorDatabaseInventory::Repo,
+                format: DoctorFormat::Text,
+            },
+            &repository_root,
+            &dependencies,
+        );
+        let output = render_report(json_request, &execution)?;
+        let parsed: Value = serde_json::from_str(&output)?;
+
+        assert_eq!(parsed["readiness"], "ready");
+        let problems = parsed["problems"].as_array().expect("problems array");
+        assert!(problems.iter().any(|problem| {
+            problem_matches(
+                problem,
+                "repo_assets",
+                "warning",
+                "manual_only",
+                "differs from the canonical",
+            )
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_skips_opencode_plugin_checks_without_opencode_root() -> Result<()> {
+        let test_dir = TestDir::new("doctor-opencode-skip")?;
+        let repository_root = test_dir.path().join("repo");
+        let hooks_dir = repository_root.join(".git").join("hooks");
+        install_canonical_hooks(&hooks_dir)?;
+
+        let agent_trace_db = test_dir
+            .path()
+            .join("state-root")
+            .join("sce")
+            .join("agent-trace")
+            .join("local.db");
+        fs::create_dir_all(
+            agent_trace_db
+                .parent()
+                .expect("agent trace path should have parent"),
+        )?;
+
+        let repo_root = repository_root.clone();
+        let hooks_dir = hooks_dir.clone();
+        let run_git_command = move |_cwd: &Path, args: &[&str]| match args {
+            ["rev-parse", "--show-toplevel"] => Some(repo_root.display().to_string()),
+            ["rev-parse", "--is-bare-repository"] => Some("false".to_string()),
+            ["rev-parse", "--git-path", "hooks"] => Some(hooks_dir.display().to_string()),
+            _ => None,
+        };
+
+        let state_root = test_dir.path().join("state-root");
+        let resolve_state_root = move || Ok(state_root.clone());
+        let resolve_agent_trace_local_db_path = move || Ok(agent_trace_db.clone());
+
+        let dependencies = DoctorDependencies {
+            run_git_command: &run_git_command,
+            check_git_available: &|| true,
+            resolve_state_root: &resolve_state_root,
+            resolve_agent_trace_local_db_path: &resolve_agent_trace_local_db_path,
+            validate_config_file: &|_| Ok(()),
+            check_agent_trace_local_db_health: &|_| Ok(()),
+            install_required_git_hooks: &|_| unreachable!("hook install should not run"),
+            create_directory_all: &|_| unreachable!("directory creation should not run"),
+        };
+
+        let json_request = DoctorRequest {
+            mode: DoctorMode::Diagnose,
+            database_inventory: DoctorDatabaseInventory::Repo,
+            format: DoctorFormat::Json,
+        };
+        let execution = execute_doctor_with_dependencies(
+            DoctorRequest {
+                mode: DoctorMode::Diagnose,
+                database_inventory: DoctorDatabaseInventory::Repo,
+                format: DoctorFormat::Text,
+            },
+            &repository_root,
+            &dependencies,
+        );
+        let output = render_report(json_request, &execution)?;
+        let parsed: Value = serde_json::from_str(&output)?;
+
+        let problems = parsed["problems"].as_array().expect("problems array");
+        assert!(!problems.iter().any(|problem| {
+            problem
+                .get("category")
+                .and_then(Value::as_str)
+                .is_some_and(|value| value == "repo_assets")
         }));
         Ok(())
     }
