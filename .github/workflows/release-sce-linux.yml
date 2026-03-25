@@ -1,0 +1,34 @@
+name: Release sce CLI (Linux)
+
+on:
+  workflow_call:
+    inputs:
+      release_version:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v19
+
+      - name: Build canonical Linux CLI release artifacts
+        run: |
+          nix run .#release-artifacts -- \
+            --version "${{ inputs.release_version }}" \
+            --out-dir dist
+
+      - name: Upload Linux CLI release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sce-release-x86_64-unknown-linux-gnu
+          path: dist/
+          if-no-files-found: error

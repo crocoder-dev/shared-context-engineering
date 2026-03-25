@@ -42,6 +42,10 @@ Feature/domain context:
 - `context/sce/automated-profile-contract.md` (deterministic gate policy for automated OpenCode profile, including 10 gate categories, permission mappings, and automated profile constraints)
 - `context/sce/bash-tool-policy-enforcement-contract.md` (approved bash-tool blocking contract plus the implementation target for generated OpenCode enforcement, including config schema, argv-prefix matching, fixed preset catalog/messages, and precedence rules)
 - `context/sce/generated-opencode-plugin-registration.md` (current generated OpenCode plugin-registration contract, canonical Pkl ownership, generated manifest/plugin paths, and TypeScript source ownership; Claude bash-policy enforcement has been removed from generated outputs)
+- `context/sce/cli-first-install-channels-contract.md` (current first-wave `sce` install/distribution contract covering supported channels for the active implementation stage, canonical naming, and Nix-owned build policy)
+- `context/sce/cli-release-artifact-contract.md` (implemented shared `sce` release artifact naming, checksum/manifest outputs, Nix app entrypoints, and split per-platform CLI release workflow topology)
+- `context/sce/cli-npm-distribution-contract.md` (implemented `sce` npm launcher package, release-manifest/checksum-verified native binary install flow, supported npm platform matrix, and Nix-owned npm package release asset publishing)
+- `context/sce/cli-cargo-distribution-contract.md` (implemented `sce` Cargo publication posture plus supported crates.io, git, and local checkout install guidance)
 
 Working areas:
 - `context/plans/` (active plan execution artifacts, not durable history)
@@ -56,3 +60,4 @@ Recent decision records:
 - `context/decisions/2026-02-28-pkl-generation-architecture.md`
 - `context/decisions/2026-03-03-plan-code-agent-separation.md`
 - `context/decisions/2026-03-09-migrate-lexopt-to-clap.md` (CLI argument parsing migration from lexopt to clap derive macros)
+- `context/decisions/2026-03-25-first-install-channels.md` (approved first-wave install/distribution scope for `sce`, canonical naming, and Nix-owned build policy)

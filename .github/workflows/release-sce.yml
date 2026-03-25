@@ -1,0 +1,193 @@
+name: Release sce CLI
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options:
+          - major
+          - minor
+          - patch
+        default: patch
+      target:
+        description: "Branch or commit SHA to tag"
+        required: false
+        default: main
+
+permissions:
+  contents: write
+
+jobs:
+  create-tag:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Calculate next version tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest="$(git tag --list 'v*' --sort=-version:refname | head -n 1)"
+          bump="${{ inputs.bump }}"
+
+          if [ -z "$latest" ]; then
+            next="v$(tr -d '\n' < .version)"
+          else
+            version="${latest#v}"
+            IFS='.' read -r major minor patch <<< "$version"
+
+            case "$bump" in
+              major)
+                major=$((major + 1))
+                minor=0
+                patch=0
+                ;;
+              minor)
+                minor=$((minor + 1))
+                patch=0
+                ;;
+              patch)
+                patch=$((patch + 1))
+                ;;
+            esac
+
+            next="v${major}.${minor}.${patch}"
+          fi
+
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+          echo "Selected version: $next"
+
+      - name: Create and push tag
+        run: |
+          git tag "${{ steps.version.outputs.tag }}" "${{ inputs.target }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+
+  resolve-release:
+    needs: create-tag
+    if: always() && (github.event_name == 'push' || needs.create-tag.result == 'success')
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: Resolve release version
+        id: resolve
+        shell: bash
+        env:
+          DISPATCH_TAG: ${{ needs.create-tag.outputs.tag }}
+          PUSH_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "$DISPATCH_TAG" ]; then
+            tag="$DISPATCH_TAG"
+          else
+            tag="$PUSH_TAG"
+          fi
+
+          version="${tag#v}"
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build-linux:
+    needs: resolve-release
+    if: needs.resolve-release.result == 'success'
+    uses: ./.github/workflows/release-sce-linux.yml
+    with:
+      release_version: ${{ needs.resolve-release.outputs.version }}
+
+  build-macos-intel:
+    needs: resolve-release
+    if: needs.resolve-release.result == 'success'
+    uses: ./.github/workflows/release-sce-macos-intel.yml
+    with:
+      release_version: ${{ needs.resolve-release.outputs.version }}
+
+  build-macos-arm:
+    needs: resolve-release
+    if: needs.resolve-release.result == 'success'
+    uses: ./.github/workflows/release-sce-macos-arm.yml
+    with:
+      release_version: ${{ needs.resolve-release.outputs.version }}
+
+  release:
+    needs:
+      - resolve-release
+      - build-linux
+      - build-macos-intel
+      - build-macos-arm
+    if: needs.resolve-release.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v19
+
+      - name: Download CLI release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sce-release-*
+          path: dist/cli
+          merge-multiple: true
+
+      - name: Assemble CLI release manifest
+        run: |
+          nix run .#release-manifest -- \
+            --version "${{ needs.resolve-release.outputs.version }}" \
+            --artifacts-dir dist/cli \
+            --out-dir dist/cli
+
+      - name: Build npm release package
+        run: |
+          nix run .#release-npm-package -- \
+            --version "${{ needs.resolve-release.outputs.version }}" \
+            --out-dir dist/npm
+
+      - name: Prepare CLI release notes
+        run: |
+          mkdir -p dist
+          cat > dist/release-notes.md <<'EOF'
+          ## CLI release assets
+
+          - Canonical `sce` archives are published as `sce-v<version>-<target-triple>.tar.gz`
+          - Per-archive SHA-256 checksum files are published as `sce-v<version>-<target-triple>.tar.gz.sha256`
+          - Combined artifact metadata is published as `sce-v<version>-release-manifest.json`
+          - Combined checksums are published as `sce-v<version>-SHA256SUMS`
+          - The npm package tarball is published as `sce-v<version>-npm.tgz`
+          EOF
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.resolve-release.outputs.tag }}
+          name: sce ${{ needs.resolve-release.outputs.tag }}
+          generate_release_notes: true
+          body_path: dist/release-notes.md
+          files: |
+            dist/cli/*.tar.gz
+            dist/cli/*.sha256
+            dist/cli/*release-manifest.json
+            dist/cli/*SHA256SUMS
+            dist/npm/*.tgz
+            dist/npm/*.json

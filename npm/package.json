@@ -1,0 +1,39 @@
+{
+  "name": "sce",
+  "version": "0.1.0",
+  "description": "npm launcher package for the Shared Context Engineering CLI",
+  "type": "module",
+  "private": false,
+  "bin": {
+    "sce": "./bin/sce.js"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node ./lib/install.js",
+    "test": "bun test ./test/*.test.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/crocoder-dev/sce.git"
+  },
+  "homepage": "https://github.com/crocoder-dev/sce",
+  "bugs": {
+    "url": "https://github.com/crocoder-dev/sce/issues"
+  },
+  "keywords": [
+    "sce",
+    "cli",
+    "shared-context-engineering"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

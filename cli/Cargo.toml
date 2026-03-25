@@ -2,8 +2,7 @@
 name = "sce"
 version = "0.1.0"
 edition = "2021"
-publish = false
-description = "Shared Context Engineering CLI scaffold"
+description = "Shared Context Engineering CLI"
 license = "Apache-2.0"
 repository = "https://github.com/crocoder-dev/shared-context-engineering"
 homepage = "https://sce.crocoder.dev"

@@ -1,5 +1,5 @@
 {
-  description = "Shared Context Engineering CLI and config workflows";
+  description = "Shared Context Engineering repository and sce CLI flake";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -126,6 +126,10 @@
           commonCargoArgs
           // {
             inherit cargoArtifacts;
+            meta = {
+              mainProgram = "sce";
+              description = "Shared Context Engineering CLI";
+            };
           }
         );
 
@@ -156,6 +160,359 @@
             fi
 
             exec nix develop "''${repo_root}" -c "''${repo_root}/config/pkl/check-generated.sh"
+          '';
+        };
+
+        releaseArtifactsApp = pkgs.writeShellApplication {
+          name = "release-artifacts";
+          runtimeInputs = [
+            pkgs.coreutils
+            pkgs.gnutar
+            pkgs.gzip
+            pkgs.jq
+            pkgs.nix
+          ];
+          text = ''
+            set -euo pipefail
+
+            usage() {
+              cat <<'EOF'
+            Usage: release-artifacts --version <semver> --out-dir <path>
+
+            Builds the canonical current-platform `sce` release archive via Nix and writes
+            the archive, checksum, and metadata manifest fragment into the output directory.
+            EOF
+            }
+
+            version=""
+            out_dir=""
+
+            while [[ $# -gt 0 ]]; do
+              case "$1" in
+                --version)
+                  version="''${2:-}"
+                  shift 2
+                  ;;
+                --out-dir)
+                  out_dir="''${2:-}"
+                  shift 2
+                  ;;
+                --help|-h)
+                  usage
+                  exit 0
+                  ;;
+                *)
+                  printf 'Unknown argument: %s\n\n' "$1" >&2
+                  usage >&2
+                  exit 1
+                  ;;
+              esac
+            done
+
+            if [[ -z "$version" || -z "$out_dir" ]]; then
+              usage >&2
+              exit 1
+            fi
+
+            if [[ ! -f "flake.nix" ]]; then
+              printf 'release-artifacts must be run from the repository root that contains flake.nix\n' >&2
+              exit 1
+            fi
+
+            normalize_arch() {
+              case "$1" in
+                x86_64|amd64)
+                  printf 'x86_64'
+                  ;;
+                arm64|aarch64)
+                  printf 'aarch64'
+                  ;;
+                *)
+                  printf '%s' "$1"
+                  ;;
+              esac
+            }
+
+            detect_target_triple() {
+              local os="$1"
+              local arch="$2"
+
+              case "$os:$arch" in
+                Linux:x86_64)
+                  printf 'x86_64-unknown-linux-gnu'
+                  ;;
+                Linux:aarch64)
+                  printf 'aarch64-unknown-linux-gnu'
+                  ;;
+                Darwin:x86_64)
+                  printf 'x86_64-apple-darwin'
+                  ;;
+                Darwin:aarch64)
+                  printf 'aarch64-apple-darwin'
+                  ;;
+                *)
+                  printf 'Unsupported release target for os=%s arch=%s\n' "$os" "$arch" >&2
+                  exit 1
+                  ;;
+              esac
+            }
+
+            os_name="$(uname -s)"
+            arch_name="$(normalize_arch "$(uname -m)")"
+            target_triple="$(detect_target_triple "$os_name" "$arch_name")"
+            archive_name="sce-v''${version}-''${target_triple}.tar.gz"
+            checksum_name="''${archive_name}.sha256"
+            manifest_name="sce-v''${version}-''${target_triple}.json"
+            archive_root="sce-v''${version}-''${target_triple}"
+
+            mkdir -p "$out_dir"
+
+            nix build .#default
+
+            binary_path="result/bin/sce"
+            if [[ ! -x "$binary_path" ]]; then
+              printf 'Expected built CLI binary at %s\n' "$binary_path" >&2
+              exit 1
+            fi
+
+            tmp_dir="$(mktemp -d)"
+            cleanup() {
+              rm -rf "$tmp_dir"
+            }
+            trap cleanup EXIT
+
+            mkdir -p "$tmp_dir/$archive_root/bin"
+            cp "$binary_path" "$tmp_dir/$archive_root/bin/sce"
+            cp "LICENSE" "$tmp_dir/$archive_root/LICENSE"
+            cp "README.md" "$tmp_dir/$archive_root/README.md"
+
+            archive_path="$out_dir/$archive_name"
+            checksum_path="$out_dir/$checksum_name"
+            manifest_path="$out_dir/$manifest_name"
+
+            tar \
+              --sort=name \
+              --mtime='UTC 1970-01-01' \
+              --owner=0 \
+              --group=0 \
+              --numeric-owner \
+              -C "$tmp_dir" \
+              -cf - "$archive_root" | gzip -n > "$archive_path"
+
+            checksum="$(sha256sum "$archive_path" | cut -d ' ' -f 1)"
+            printf '%s  %s\n' "$checksum" "$archive_name" > "$checksum_path"
+
+            jq \
+              --null-input \
+              --arg version "$version" \
+              --arg archive "$archive_name" \
+              --arg checksum_file "$checksum_name" \
+              --arg checksum "$checksum" \
+              --arg target_triple "$target_triple" \
+              --arg os "''${os_name,,}" \
+              --arg arch "$arch_name" \
+              '{
+                version: $version,
+                binary: "sce",
+                archive: $archive,
+                checksum_file: $checksum_file,
+                checksum_sha256: $checksum,
+                target_triple: $target_triple,
+                os: $os,
+                arch: $arch
+              }' > "$manifest_path"
+
+            printf 'Built release artifacts:\n'
+            printf '  %s\n' "$archive_path"
+            printf '  %s\n' "$checksum_path"
+            printf '  %s\n' "$manifest_path"
+          '';
+        };
+
+        releaseManifestApp = pkgs.writeShellApplication {
+          name = "release-manifest";
+          runtimeInputs = [
+            pkgs.coreutils
+            pkgs.jq
+          ];
+          text = ''
+            set -euo pipefail
+
+            usage() {
+              cat <<'EOF'
+            Usage: release-manifest --version <semver> --artifacts-dir <path> --out-dir <path>
+
+            Merges per-platform `sce` release metadata fragments into a stable release
+            manifest and combined SHA256SUMS file.
+            EOF
+            }
+
+            version=""
+            artifacts_dir=""
+            out_dir=""
+
+            while [[ $# -gt 0 ]]; do
+              case "$1" in
+                --version)
+                  version="''${2:-}"
+                  shift 2
+                  ;;
+                --artifacts-dir)
+                  artifacts_dir="''${2:-}"
+                  shift 2
+                  ;;
+                --out-dir)
+                  out_dir="''${2:-}"
+                  shift 2
+                  ;;
+                --help|-h)
+                  usage
+                  exit 0
+                  ;;
+                *)
+                  printf 'Unknown argument: %s\n\n' "$1" >&2
+                  usage >&2
+                  exit 1
+                  ;;
+              esac
+            done
+
+            if [[ -z "$version" || -z "$artifacts_dir" || -z "$out_dir" ]]; then
+              usage >&2
+              exit 1
+            fi
+
+            mkdir -p "$out_dir"
+
+            shopt -s nullglob
+            manifest_inputs=("$artifacts_dir"/sce-v"$version"-*.json)
+            checksum_inputs=("$artifacts_dir"/sce-v"$version"-*.tar.gz.sha256)
+            shopt -u nullglob
+
+            if [[ ''${#manifest_inputs[@]} -eq 0 ]]; then
+              printf 'No release manifest fragments found in %s\n' "$artifacts_dir" >&2
+              exit 1
+            fi
+
+            manifest_path="$out_dir/sce-v''${version}-release-manifest.json"
+            checksums_path="$out_dir/sce-v''${version}-SHA256SUMS"
+
+            : > "$checksums_path"
+            mapfile -t checksum_inputs_sorted < <(printf '%s\n' "''${checksum_inputs[@]}" | sort)
+            for checksum_file in "''${checksum_inputs_sorted[@]}"; do
+              while IFS= read -r line; do
+                printf '%s\n' "$line" >> "$checksums_path"
+              done < "$checksum_file"
+            done
+
+            mapfile -t manifest_inputs_sorted < <(printf '%s\n' "''${manifest_inputs[@]}" | sort)
+
+            jq \
+              --slurp \
+              --arg version "$version" \
+              '{
+                version: $version,
+                binary: "sce",
+                artifacts: (sort_by(.target_triple))
+              }' "''${manifest_inputs_sorted[@]}" > "$manifest_path"
+
+            printf 'Assembled release metadata:\n'
+            printf '  %s\n' "$manifest_path"
+            printf '  %s\n' "$checksums_path"
+          '';
+        };
+
+        releaseNpmPackageApp = pkgs.writeShellApplication {
+          name = "release-npm-package";
+          runtimeInputs = [
+            pkgs.coreutils
+            pkgs.jq
+            pkgs.nodejs
+          ];
+          text = ''
+            set -euo pipefail
+
+            usage() {
+              cat <<'EOF'
+            Usage: release-npm-package --version <semver> --out-dir <path>
+
+            Builds the canonical npm package tarball for `sce` using the checked-in npm
+            launcher package and writes the packed tarball plus package metadata into the
+            output directory.
+            EOF
+            }
+
+            version=""
+            out_dir=""
+
+            while [[ $# -gt 0 ]]; do
+              case "$1" in
+                --version)
+                  version="''${2:-}"
+                  shift 2
+                  ;;
+                --out-dir)
+                  out_dir="''${2:-}"
+                  shift 2
+                  ;;
+                --help|-h)
+                  usage
+                  exit 0
+                  ;;
+                *)
+                  printf 'Unknown argument: %s\n\n' "$1" >&2
+                  usage >&2
+                  exit 1
+                  ;;
+              esac
+            done
+
+            if [[ -z "$version" || -z "$out_dir" ]]; then
+              usage >&2
+              exit 1
+            fi
+
+            if [[ ! -f "flake.nix" ]]; then
+              printf 'release-npm-package must be run from the repository root that contains flake.nix\n' >&2
+              exit 1
+            fi
+
+            mkdir -p "$out_dir"
+
+            tmp_dir="$(mktemp -d)"
+            cleanup() {
+              rm -rf "$tmp_dir"
+            }
+            trap cleanup EXIT
+
+            stage_dir="$tmp_dir/npm-package"
+            mkdir -p "$stage_dir"
+            cp -R npm/. "$stage_dir/"
+
+            jq --arg version "$version" '.version = $version' \
+              "$stage_dir/package.json" > "$tmp_dir/package.json"
+            mv "$tmp_dir/package.json" "$stage_dir/package.json"
+
+            packed_name="$(npm pack --silent "$stage_dir")"
+            package_name="sce-v''${version}-npm.tgz"
+            metadata_name="sce-v''${version}-npm.json"
+
+            mv "$packed_name" "$out_dir/$package_name"
+
+            jq \
+              --null-input \
+              --arg version "$version" \
+              --arg package "$package_name" \
+              '{
+                version: $version,
+                package_name: "sce",
+                package_file: $package,
+                install_command: "npm install -g sce"
+              }' > "$out_dir/$metadata_name"
+
+            printf 'Built npm release assets:\n'
+            printf '  %s\n' "$out_dir/$package_name"
+            printf '  %s\n' "$out_dir/$metadata_name"
           '';
         };
 
@@ -246,6 +603,13 @@
               mkdir -p "$out"
             '';
 
+        sceApp = {
+          type = "app";
+          program = "${scePackage}/bin/sce";
+          meta = {
+            description = "Run the packaged sce CLI";
+          };
+        };
       in
       {
         packages = {
@@ -284,27 +648,48 @@
           config-lib-tests = configLibTests;
         };
 
-        apps.sce = {
-          type = "app";
-          program = "${scePackage}/bin/sce";
-          meta = {
-            description = "Run the packaged sce CLI";
-          };
-        };
+        apps = {
+          sce = sceApp;
+          default = sceApp;
 
-        apps.sync-opencode-config = {
-          type = "app";
-          program = "${syncOpencodeConfigApp}/bin/sync-opencode-config";
-          meta = {
-            description = "Regenerate config and sync root .opencode";
+          sync-opencode-config = {
+            type = "app";
+            program = "${syncOpencodeConfigApp}/bin/sync-opencode-config";
+            meta = {
+              description = "Regenerate config and sync root .opencode";
+            };
           };
-        };
 
-        apps.pkl-check-generated = {
-          type = "app";
-          program = "${pklCheckGeneratedApp}/bin/pkl-check-generated";
-          meta = {
-            description = "Run generated-output drift check in dev shell";
+          pkl-check-generated = {
+            type = "app";
+            program = "${pklCheckGeneratedApp}/bin/pkl-check-generated";
+            meta = {
+              description = "Run generated-output drift check in dev shell";
+            };
+          };
+
+          release-artifacts = {
+            type = "app";
+            program = "${releaseArtifactsApp}/bin/release-artifacts";
+            meta = {
+              description = "Build current-platform sce release artifacts";
+            };
+          };
+
+          release-manifest = {
+            type = "app";
+            program = "${releaseManifestApp}/bin/release-manifest";
+            meta = {
+              description = "Assemble sce release manifest";
+            };
+          };
+
+          release-npm-package = {
+            type = "app";
+            program = "${releaseNpmPackageApp}/bin/release-npm-package";
+            meta = {
+              description = "Build sce npm package tarball";
+            };
           };
         };
 
@@ -335,6 +720,9 @@
             echo "- sync-opencode-config: nix run .#sync-opencode-config"
             echo "- sync-opencode-config help: nix run .#sync-opencode-config -- --help"
             echo "- pkl-check-generated: nix run .#pkl-check-generated"
+            echo "- release-artifacts: nix run .#release-artifacts -- --help"
+            echo "- release-manifest: nix run .#release-manifest -- --help"
+            echo "- release-npm-package: nix run .#release-npm-package -- --help"
           '';
         };
       }

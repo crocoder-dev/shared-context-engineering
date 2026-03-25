@@ -16,6 +16,15 @@
 - For destructive root `.opencode/` replacement flows, keep exclusions explicit (for example `node_modules`), use backup-and-restore around swap, and run a source/target tree parity check with the same exclusions.
 - Keep command help available via `nix run .#sync-opencode-config -- --help` to provide deterministic usage checks during incremental implementation.
 
+## First-wave install/distribution rollout
+
+- Treat the approved first-wave channel set for the current implementation stage as closed: repo-flake Nix, Cargo, and npm only; `Homebrew` remains deferred until a later plan stage restores it explicitly.
+- Standardize new install-facing surfaces on the canonical `sce` name; remove or explicitly map legacy `sce-editor` references when they are touched.
+- Keep Nix-managed build/release entrypoints as the source of truth for downstream install channels.
+- Expose shared CLI release packaging through root-flake apps so local verification and GitHub release automation consume the same commands (`nix run .#release-artifacts`, `nix run .#release-manifest`, `nix run .#release-npm-package`).
+- Keep CLI release workflows split by platform in separate workflow files, with one thin orchestrator workflow calling those reusable per-platform jobs rather than mixing `sce` release logic into unrelated release pipelines.
+- For the npm channel, keep the package thin: download the already-built native release archive for the matching supported target, verify the published SHA-256 from the merged release manifest, and avoid adding a second build pipeline inside npm packaging.
+
 ## Dev-shell fallback shims for unavailable nixpkgs tools
 
 - When required CLI tools are not available as direct nixpkgs attrs, use the least-friction dev-shell fallback that keeps commands usable in `nix develop`.
@@ -114,7 +123,7 @@
 - In `flake.nix`, select the Rust toolchain via an explicit Rust overlay (`rust-overlay`) and thread that toolchain through Crane package/check derivations so CLI builds and checks do not rely on implicit nixpkgs Rust defaults.
 - For installable CLI release surfaces in the root flake, expose an explicit named package plus default alias (`packages.sce` and `packages.default = packages.sce`) and pair it with a runnable app output (`apps.sce`) that points to the packaged binary path.
 - For root-flake CLI release metadata, source the package/check version from repo-root `.version` and trim it at eval time so packaged outputs stay aligned without hardcoded semver strings in `flake.nix`.
-- For Cargo-based local CLI installation, document and verify `cargo install --path cli --locked` alongside a release build check (`cargo build --manifest-path cli/Cargo.toml --release`), and keep `publish = false` until explicit first-publish approval.
+- For Cargo CLI distribution, keep crate metadata publication-ready, document the supported Cargo install paths in `cli/README.md` (`cargo install sce`, git install with `--locked`, and local `cargo install --path cli --locked`), and verify at least the repo-local build/check path through the Nix-managed validation baseline.
 
 ## Unit testing in Nix sandbox
 
