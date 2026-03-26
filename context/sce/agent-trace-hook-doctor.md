@@ -38,7 +38,7 @@ At the current implementation point, the runtime in `cli/src/services/doctor.rs`
 - repository root and hooks directory resolution when a repository target is detected
 - required hook presence and executable permissions for `pre-commit`, `commit-msg`, and `post-commit` when repo-scoped checks apply
 - byte-for-byte stale-content detection for required hook payloads against canonical embedded SCE-managed hook assets
-- repo-scoped OpenCode plugin registry/file/content-drift checks for the `sce-bash-policy` plugin when `.opencode/` exists, with registry-missing reported as an error and file/drift reported as warnings (manual-only remediation)
+- repo-scoped OpenCode plugin registry/file presence checks for the `sce-bash-policy` plugin when `.opencode/` exists, plus runtime dependency and preset catalog presence checks; registry-missing is an error while file/runtime/preset findings are warnings (manual-only remediation)
 - repair-mode reuse of `cli/src/services/setup.rs::install_required_git_hooks` for missing hooks directories plus missing, stale, or non-executable required hooks
 - doctor-owned bootstrap of the missing canonical SCE-owned Agent Trace DB parent directory, with deterministic refusal when the resolved path does not match the expected owned location
 
