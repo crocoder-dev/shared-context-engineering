@@ -114,6 +114,7 @@ jobs:
     if: needs.resolve-release.result == 'success'
     uses: ./.github/workflows/release-sce-linux.yml
     with:
+      release_ref: ${{ needs.resolve-release.outputs.tag }}
       release_version: ${{ needs.resolve-release.outputs.version }}
 
   build-macos-intel:
@@ -121,6 +122,7 @@ jobs:
     if: needs.resolve-release.result == 'success'
     uses: ./.github/workflows/release-sce-macos-intel.yml
     with:
+      release_ref: ${{ needs.resolve-release.outputs.tag }}
       release_version: ${{ needs.resolve-release.outputs.version }}
 
   build-macos-arm:
@@ -128,6 +130,7 @@ jobs:
     if: needs.resolve-release.result == 'success'
     uses: ./.github/workflows/release-sce-macos-arm.yml
     with:
+      release_ref: ${{ needs.resolve-release.outputs.tag }}
       release_version: ${{ needs.resolve-release.outputs.version }}
 
   release:
@@ -141,6 +144,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve-release.outputs.tag }}
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19

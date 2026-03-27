@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createWriteStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import {
   chmodSync,
   copyFileSync,
@@ -107,7 +107,6 @@ async function downloadToFile(url, destinationPath, redirectsRemaining = 5) {
 
     timeoutId = setTimeout(() => {
       const error = new Error(`Request timed out after ${DOWNLOAD_TIMEOUT_MS}ms while downloading ${url}.`);
-      finish(reject, error);
       request.destroy(error);
     }, DOWNLOAD_TIMEOUT_MS);
 
@@ -128,9 +127,22 @@ async function downloadJson(url) {
 }
 
 function sha256File(filePath) {
-  const hash = createHash("sha256");
-  hash.update(readFileSync(filePath));
-  return hash.digest("hex");
+  return new Promise((resolve, reject) => {
+    const hash = createHash("sha256");
+    const input = createReadStream(filePath);
+
+    input.on("data", (chunk) => {
+      hash.update(chunk);
+    });
+
+    input.on("end", () => {
+      resolve(hash.digest("hex"));
+    });
+
+    input.on("error", (error) => {
+      reject(error);
+    });
+  });
 }
 
 function extractArchive(archivePath, destinationDir) {
@@ -175,7 +187,7 @@ export async function installBinary() {
 
     await downloadToFile(archiveUrl, archivePath);
 
-    const actualChecksum = sha256File(archivePath);
+    const actualChecksum = await sha256File(archivePath);
     if (actualChecksum !== expectedChecksum) {
       throw new Error(
         `Downloaded sce archive checksum mismatch for ${archiveName}: expected ${expectedChecksum}, received ${actualChecksum}.`,
