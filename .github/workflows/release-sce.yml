@@ -158,6 +158,8 @@ jobs:
           merge-multiple: true
 
       - name: Assemble CLI release manifest
+        env:
+          SCE_RELEASE_MANIFEST_SIGNING_KEY: ${{ secrets.SCE_RELEASE_MANIFEST_SIGNING_KEY }}
         run: |
           nix run .#release-manifest -- \
             --version "${{ needs.resolve-release.outputs.version }}" \
@@ -182,12 +184,14 @@ jobs:
             - Canonical `sce` archives are published as `sce-v<version>-<target-triple>.tar.gz`
             - Per-archive SHA-256 checksum files are published as `sce-v<version>-<target-triple>.tar.gz.sha256`
             - Combined artifact metadata is published as `sce-v<version>-release-manifest.json`
+            - Combined artifact manifest signatures are published as `sce-v<version>-release-manifest.json.sig`
             - Combined checksums are published as `sce-v<version>-SHA256SUMS`
             - The npm package tarball is published as `sce-v<version>-npm.tgz`
           files: |
             dist/cli/*.tar.gz
             dist/cli/*.sha256
             dist/cli/*release-manifest.json
+            dist/cli/*release-manifest.json.sig
             dist/cli/*SHA256SUMS
             dist/npm/*.tgz
             dist/npm/*.json

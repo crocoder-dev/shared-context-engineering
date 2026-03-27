@@ -12,23 +12,28 @@ This file captures the implemented npm distribution slice from `context/plans/sc
 ## Install/runtime behavior
 
 - `npm/bin/sce.js` launches a package-local native `sce` binary from `npm/runtime/sce`.
-- `npm/lib/install.js` runs during `postinstall` and downloads the matching GitHub release asset for the package version.
-- The installer reads `sce-v<version>-release-manifest.json`, selects the artifact whose `target_triple` matches the current supported platform, downloads `sce-v<version>-<target-triple>.tar.gz`, verifies `checksum_sha256`, extracts `bin/sce`, and stores it in package-local runtime storage.
+- `npm/lib/install.js` runs during `postinstall` and downloads the release manifest plus detached signature for the package version.
+- The npm package ships a built-in manifest-signing public key at `npm/lib/release-manifest-public-key.pem`; `npm/lib/install.js` uses Node built-in crypto to verify manifest signatures without relying on network-fetched trust anchors.
+- The installer downloads `sce-v<version>-release-manifest.json` and detached signature `sce-v<version>-release-manifest.json.sig`, verifies the manifest before parsing/selecting artifacts, then selects the artifact whose `target_triple` matches the current supported platform, downloads `sce-v<version>-<target-triple>.tar.gz`, verifies `checksum_sha256`, extracts `bin/sce`, and stores it in package-local runtime storage.
+- Missing or invalid manifest signatures abort installation before archive download or extraction with an authenticity failure.
 - Supported npm launcher platforms currently match the implemented release automation targets: `x86_64-unknown-linux-gnu`, `x86_64-apple-darwin`, and `aarch64-apple-darwin`.
 - Unsupported platforms fail with explicit guidance instead of attempting alternate channels inside the npm package.
 
 ## Release integration
 
 - `flake.nix` exposes `nix run .#release-npm-package -- --version <semver> --out-dir <path>`.
+- `flake.nix` also exposes `nix run .#release-manifest -- --version <semver> --artifacts-dir <path> --out-dir <path> [--signing-key-file <path>]`, which emits the merged release manifest, detached signature, and combined `SHA256SUMS`.
+- `release-manifest` signing uses a non-repo private key from `SCE_RELEASE_MANIFEST_SIGNING_KEY` or `--signing-key-file`; the npm package ships only the matching public key.
 - That app stages the checked-in `npm/` package, rewrites the package version for the requested release, runs `npm pack`, and emits:
   - `sce-v<version>-npm.tgz`
   - `sce-v<version>-npm.json`
-- `.github/workflows/release-sce.yml` publishes those npm assets alongside the canonical CLI archives and release manifest outputs.
+- `.github/workflows/release-sce.yml` publishes those npm assets alongside the canonical CLI archives, `sce-v<version>-release-manifest.json`, and `sce-v<version>-release-manifest.json.sig`.
 
 ## Verification baseline
 
 - `nix develop -c sh -c 'cd npm && bun test ./test/*.test.js'`
 - `nix develop -c sh -c 'cd npm && SCE_NPM_SKIP_DOWNLOAD=1 bun ./lib/install.js'`
+- `nix run .#release-manifest -- --version <semver> --artifacts-dir <path> --out-dir <path> --signing-key-file <path>`
 - `nix run .#release-npm-package -- --version <semver> --out-dir <path>`
 
 See also: [cli-first-install-channels-contract.md](./cli-first-install-channels-contract.md), [cli-release-artifact-contract.md](./cli-release-artifact-contract.md), [../overview.md](../overview.md)

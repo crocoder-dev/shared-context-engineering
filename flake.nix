@@ -334,22 +334,25 @@
           runtimeInputs = [
             pkgs.coreutils
             pkgs.jq
+            pkgs.nodejs
           ];
           text = ''
             set -euo pipefail
 
             usage() {
               cat <<'EOF'
-            Usage: release-manifest --version <semver> --artifacts-dir <path> --out-dir <path>
+            Usage: release-manifest --version <semver> --artifacts-dir <path> --out-dir <path> [--signing-key-file <path>]
 
             Merges per-platform `sce` release metadata fragments into a stable release
-            manifest and combined SHA256SUMS file.
+            manifest and combined SHA256SUMS file, then signs the manifest using
+            `SCE_RELEASE_MANIFEST_SIGNING_KEY` or an explicit private key file.
             EOF
             }
 
             version=""
             artifacts_dir=""
             out_dir=""
+            signing_key_file=""
 
             while [[ $# -gt 0 ]]; do
               case "$1" in
@@ -363,6 +366,10 @@
                   ;;
                 --out-dir)
                   out_dir="''${2:-}"
+                  shift 2
+                  ;;
+                --signing-key-file)
+                  signing_key_file="''${2:-}"
                   shift 2
                   ;;
                 --help|-h)
@@ -395,6 +402,7 @@
             fi
 
             manifest_path="$out_dir/sce-v''${version}-release-manifest.json"
+            signature_path="$manifest_path.sig"
             checksums_path="$out_dir/sce-v''${version}-SHA256SUMS"
 
             : > "$checksums_path"
@@ -414,10 +422,23 @@
                 version: $version,
                 binary: "sce",
                 artifacts: (sort_by(.target_triple))
-              }' "''${manifest_inputs_sorted[@]}" > "$manifest_path"
+               }' "''${manifest_inputs_sorted[@]}" > "$manifest_path"
+
+            sign_args=(
+              ./scripts/sign-release-manifest.mjs
+              --manifest "$manifest_path"
+              --signature-output "$signature_path"
+            )
+
+            if [[ -n "$signing_key_file" ]]; then
+              sign_args+=(--private-key-file "$signing_key_file")
+            fi
+
+            node "''${sign_args[@]}"
 
             printf 'Assembled release metadata:\n'
             printf '  %s\n' "$manifest_path"
+            printf '  %s\n' "$signature_path"
             printf '  %s\n' "$checksums_path"
           '';
         };
