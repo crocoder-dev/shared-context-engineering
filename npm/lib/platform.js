@@ -6,6 +6,10 @@ const SUPPORTED_TARGETS = new Map([
 		{ targetTriple: "aarch64-apple-darwin", os: "darwin", arch: "arm64" },
 	],
 	[
+		"linux:arm64",
+		{ targetTriple: "aarch64-unknown-linux-gnu", os: "linux", arch: "arm64" },
+	],
+	[
 		"darwin:x64",
 		{ targetTriple: "x86_64-apple-darwin", os: "darwin", arch: "x64" },
 	],
