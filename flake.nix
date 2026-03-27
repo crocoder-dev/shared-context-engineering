@@ -48,6 +48,21 @@
           ];
         };
 
+        npmSrc = pkgs.lib.fileset.toSource {
+          root = workspaceRoot;
+          fileset = pkgs.lib.fileset.unions [
+            ./npm/README.md
+            ./npm/package.json
+            ./npm/bin/sce.js
+            ./npm/lib/install.js
+            ./npm/lib/platform.js
+            ./npm/lib/release-manifest-public-key.pem
+            ./npm/test/install.test.js
+            ./npm/test/platform.test.js
+            ./scripts/lib/release-manifest-signing.mjs
+          ];
+        };
+
         configLibBashPolicySrc = pkgs.lib.fileset.toSource {
           root = ./config/lib/bash-policy-plugin;
           fileset = pkgs.lib.fileset.unions [
@@ -602,8 +617,8 @@
               mkdir -p "$out"
             '';
 
-        configLibTests =
-          pkgs.runCommand "config-lib-tests"
+        configLibBunTests =
+          pkgs.runCommand "config-lib-bun-tests"
             {
               nativeBuildInputs = [ pkgs.bun ];
             }
@@ -620,6 +635,91 @@
 
               # Run tests
               bun test
+
+              mkdir -p "$out"
+            '';
+
+        configLibBiomeCheck =
+          pkgs.runCommand "config-lib-biome-check"
+            {
+              nativeBuildInputs = [ pkgs.biome ];
+            }
+            ''
+              set -euo pipefail
+
+              cp -r "${configLibBashPolicySrc}" ./bash-policy
+              chmod -R u+w ./bash-policy
+              cd ./bash-policy
+
+              biome check --formatter-enabled=false .
+
+              mkdir -p "$out"
+            '';
+
+        configLibBiomeFormat =
+          pkgs.runCommand "config-lib-biome-format"
+            {
+              nativeBuildInputs = [ pkgs.biome ];
+            }
+            ''
+              set -euo pipefail
+
+              cp -r "${configLibBashPolicySrc}" ./bash-policy
+              chmod -R u+w ./bash-policy
+              cd ./bash-policy
+
+              biome check --linter-enabled=false .
+
+              mkdir -p "$out"
+            '';
+
+        npmTests =
+          pkgs.runCommand "npm-bun-tests"
+            {
+              nativeBuildInputs = [ pkgs.bun ];
+            }
+            ''
+              set -euo pipefail
+
+              cp -r "${npmSrc}" ./repo
+              chmod -R u+w ./repo
+              cd ./repo/npm
+
+              bun test ./test/*.test.js
+
+              mkdir -p "$out"
+            '';
+
+        npmBiomeCheck =
+          pkgs.runCommand "npm-biome-check"
+            {
+              nativeBuildInputs = [ pkgs.biome ];
+            }
+            ''
+              set -euo pipefail
+
+              cp -r "${npmSrc}" ./repo
+              chmod -R u+w ./repo
+              cd ./repo/npm
+
+              biome check --formatter-enabled=false .
+
+              mkdir -p "$out"
+            '';
+
+        npmBiomeFormat =
+          pkgs.runCommand "npm-biome-format"
+            {
+              nativeBuildInputs = [ pkgs.biome ];
+            }
+            ''
+              set -euo pipefail
+
+              cp -r "${npmSrc}" ./repo
+              chmod -R u+w ./repo
+              cd ./repo/npm
+
+              biome check --linter-enabled=false .
 
               mkdir -p "$out"
             '';
@@ -666,7 +766,13 @@
 
           pkl-parity = pklParityCheck;
 
-          config-lib-tests = configLibTests;
+          npm-bun-tests = npmTests;
+          npm-biome-check = npmBiomeCheck;
+          npm-biome-format = npmBiomeFormat;
+
+          config-lib-bun-tests = configLibBunTests;
+          config-lib-biome-check = configLibBiomeCheck;
+          config-lib-biome-format = configLibBiomeFormat;
         };
 
         apps = {
@@ -718,6 +824,7 @@
           packages =
             with pkgs;
             [
+              biome
               bun
               jq
               pkl
@@ -733,6 +840,7 @@
             }
 
             echo "- bun: $(version_of bun)"
+            echo "- biome: $(version_of biome)"
             echo "- pkl: $(version_of pkl)"
             echo "- tsc: $(version_of tsc)"
             echo "- tsserver-lsp: $(version_of typescript-language-server)"

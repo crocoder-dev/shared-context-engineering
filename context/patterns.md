@@ -5,6 +5,14 @@
 - Use the Nix dev shell as the canonical toolchain entrypoint for generation work.
 - `flake.nix` includes `pkl` so contributors can run validation commands with `nix develop -c ...` without host-level installs.
 
+## Root Biome scoping
+
+- Keep Biome configuration at the repository root when one formatter/linter contract spans multiple JS package areas.
+- Scope root `biome.json` explicitly to the approved JS surfaces only; the current approved scope is `npm/**` and `config/lib/bash-policy-plugin/**`.
+- Exclude package-local install artifacts such as `node_modules/**` from root Biome coverage.
+- Provide Biome through the root Nix dev shell so contributors can run `nix develop -c biome ...` without a host-installed binary or package-local setup.
+- When exposing JS validation through `nix flake check`, split Bun test, Biome lint/check, and Biome format verification into separately named derivations per target directory so failures stay tool- and surface-specific.
+
 ## Flake app entrypoints
 
 - Expose operational workflows as flake apps so commands are stable and system-mapped across supported `flake-utils` default systems.
