@@ -38,6 +38,7 @@ const MANIFEST_PUBLIC_KEY_PATH = path.join(
 );
 const RUNTIME_DIR = path.join(PACKAGE_ROOT, "runtime");
 const DOWNLOAD_TIMEOUT_MS = 30_000;
+const DEFAULT_REPOSITORY_SLUG = "crocoder-dev/shared-context-engineering";
 
 function coerceManifestPayload(manifestPayload) {
 	if (typeof manifestPayload === "string" || Buffer.isBuffer(manifestPayload)) {
@@ -95,10 +96,14 @@ function readPackageVersion() {
 	return packageJson.version;
 }
 
-function getReleaseBaseUrl(version) {
+function getRepositorySlug() {
+	return process.env.GITHUB_REPOSITORY ?? DEFAULT_REPOSITORY_SLUG;
+}
+
+export function getReleaseBaseUrl(version) {
 	return (
 		process.env.SCE_NPM_RELEASE_BASE_URL ??
-		`https://github.com/crocoder-dev/sce/releases/download/v${version}`
+		`https://github.com/${getRepositorySlug()}/releases/download/v${version}`
 	);
 }
 

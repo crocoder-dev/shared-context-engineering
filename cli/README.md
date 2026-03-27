@@ -26,7 +26,7 @@ cargo install --path cli --locked
 
 ## Other supported install channels
 
-- Repo flake: `nix run github:crocoder-dev/sce -- --help`
+- Repo flake: `nix run github:crocoder-dev/shared-context-engineering -- --help`
 - npm package: `npm install -g sce`
 
 See the repository root and Shared Context docs for the broader first-wave install contract.
