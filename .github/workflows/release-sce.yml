@@ -52,7 +52,8 @@ jobs:
             next="v$(tr -d '\n' < .version)"
           else
             version="${latest#v}"
-            IFS='.' read -r major minor patch <<< "$version"
+            version_core="${version%%[-+]*}"
+            IFS='.' read -r major minor patch <<< "$version_core"
 
             case "$bump" in
               major)
@@ -164,26 +165,20 @@ jobs:
             --version "${{ needs.resolve-release.outputs.version }}" \
             --out-dir dist/npm
 
-      - name: Prepare CLI release notes
-        run: |
-          mkdir -p dist
-          cat > dist/release-notes.md <<'EOF'
-          ## CLI release assets
-
-          - Canonical `sce` archives are published as `sce-v<version>-<target-triple>.tar.gz`
-          - Per-archive SHA-256 checksum files are published as `sce-v<version>-<target-triple>.tar.gz.sha256`
-          - Combined artifact metadata is published as `sce-v<version>-release-manifest.json`
-          - Combined checksums are published as `sce-v<version>-SHA256SUMS`
-          - The npm package tarball is published as `sce-v<version>-npm.tgz`
-          EOF
-
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.resolve-release.outputs.tag }}
           name: sce ${{ needs.resolve-release.outputs.tag }}
           generate_release_notes: true
-          body_path: dist/release-notes.md
+          body: |
+            ## CLI release assets
+
+            - Canonical `sce` archives are published as `sce-v<version>-<target-triple>.tar.gz`
+            - Per-archive SHA-256 checksum files are published as `sce-v<version>-<target-triple>.tar.gz.sha256`
+            - Combined artifact metadata is published as `sce-v<version>-release-manifest.json`
+            - Combined checksums are published as `sce-v<version>-SHA256SUMS`
+            - The npm package tarball is published as `sce-v<version>-npm.tgz`
           files: |
             dist/cli/*.tar.gz
             dist/cli/*.sha256

@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build-macos-intel-artifacts:
-    runs-on: macos-13
+    runs-on: macos-15-intel
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
