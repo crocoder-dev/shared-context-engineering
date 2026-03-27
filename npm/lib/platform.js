@@ -50,7 +50,7 @@ export function formatUnsupportedPlatformMessage(
 		return null;
 	}
 
-	return `The npm sce package currently supports darwin/arm64, darwin/x64, and linux/x64. Received ${platform}/${arch}.`;
+	return `The npm sce package currently supports darwin/arm64, darwin/x64, linux/arm64, and linux/x64. Received ${platform}/${arch}.`;
 }
 
 export function selectReleaseArtifact(releaseManifest, targetTriple) {

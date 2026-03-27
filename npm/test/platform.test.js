@@ -26,10 +26,18 @@ describe("resolveSupportedPlatform", () => {
 		});
 	});
 
+	test("maps supported linux arm64", () => {
+		expect(resolveSupportedPlatform("linux", "arm64")).toEqual({
+			targetTriple: "aarch64-unknown-linux-gnu",
+			os: "linux",
+			arch: "arm64",
+		});
+	});
+
 	test("returns null for unsupported platforms", () => {
-		expect(resolveSupportedPlatform("linux", "arm64")).toBeNull();
-		expect(formatUnsupportedPlatformMessage("linux", "arm64")).toContain(
-			"linux/arm64",
+		expect(resolveSupportedPlatform("win32", "arm64")).toBeNull();
+		expect(formatUnsupportedPlatformMessage("win32", "arm64")).toContain(
+			"win32/arm64",
 		);
 	});
 });
