@@ -151,8 +151,16 @@ function extractArchive(archivePath, destinationDir) {
     encoding: "utf8",
   });
 
+  if (tarResult.error) {
+    throw new Error(`Failed to extract sce release archive: ${tarResult.error.message}`);
+  }
+
   if (tarResult.status !== 0) {
-    throw new Error(tarResult.stderr.trim() || "Failed to extract sce release archive.");
+    throw new Error(
+      tarResult.stderr?.trim() ||
+        tarResult.error?.message ||
+        "Failed to extract sce release archive.",
+    );
   }
 }
 
