@@ -3,6 +3,9 @@ name: Release sce CLI (macOS Intel)
 on:
   workflow_call:
     inputs:
+      release_ref:
+        required: true
+        type: string
       release_version:
         required: true
         type: string
@@ -16,9 +19,11 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_ref }}
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v19
+        uses: DeterminateSystems/determinate-nix-action@v3.17.1
 
       - name: Build canonical macOS Intel CLI release artifacts
         run: |
