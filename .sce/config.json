@@ -6,7 +6,6 @@
   "policies": {
     "bash":{
       "presets": [
-        "forbid-git-all"
       ]
     }
   }

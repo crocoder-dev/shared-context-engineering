@@ -7,9 +7,8 @@ This repository uses the Shared Context Engineering (SCE) approach for AI-assist
 
 ## Repository shape
 
-- Root repo contains four main working areas:
+- Root repo contains three main working areas:
 - `cli/` - Rust CLI (`sce`)
-- `evals/` - Bun + TypeScript eval harness
 - `config/` - generated agent config, skills, and Pkl sources
 - `context/` - shared context docs, plans, decisions, and handovers
 
@@ -30,9 +29,9 @@ This repository uses the Shared Context Engineering (SCE) approach for AI-assist
 - For validation, prefer `nix flake check` and avoid running `cargo test` directly unless a user explicitly requests it.
 - Optional local Nix tuning can live in user-level `~/.config/nix/nix.conf`; recommended values are `max-jobs = auto` and `cores = 0`.
 - `auto-optimise-store = true` is intentionally treated as a system-level `/etc/nix/nix.conf` setting, not a repo-managed user setting.
-- Bun is used for the eval harness, not npm or pnpm scripts.
+- Bun is used for repo-owned config/plugin workflows; prefer Bun rather than npm or pnpm scripts when working in those areas.
 - Rust edition is `2021`.
-- TypeScript runs in strict mode in `evals/tsconfig.json`.
+- TypeScript is still used in repo-owned config/plugin sources and should remain strict-mode friendly.
 
 ## High-value commands
 
@@ -59,17 +58,17 @@ Run these through Nix from repo root unless noted otherwise.
 - Auto-format: `nix develop -c sh -c 'cd cli && cargo fmt'`
 - Lint: `nix develop -c sh -c 'cd cli && cargo clippy --all-targets --all-features'`
 
-### Bun eval commands
+### Bun config/plugin commands
 
-Run these from `evals/`.
+Run these from `config/lib/bash-policy-plugin/` when working on the Bun-owned bash-policy runtime.
 
-- Run eval test suite: `bun test ./evals.test.ts`
-- Run a single Bun test by name: `bun test ./evals.test.ts -t "runs context bootstrap flow with Shared Context"`
+- Run plugin/runtime test suite: `bun test`
+- Run a single Bun test by name: `bun test -t "<test name>"`
 
 ### Useful combined validation flows
 
 - Preferred repo validation from repo root: `nix flake check`
-- Evals validation from repo root: `nix develop -c sh -c 'cd evals && bun test ./evals.test.ts'`
+- Config/plugin validation from repo root: `nix develop -c sh -c 'cd config/lib/bash-policy-plugin && bun test'`
 - Generated-config validation from repo root: `nix run .#pkl-check-generated`
 
 ## Testing notes
@@ -79,8 +78,7 @@ Run these from `evals/`.
 - Prefer `nix flake check` for routine verification and avoid `cargo test` unless the user explicitly asks for it.
 - Rust single-test selection uses standard Cargo substring matching; add `-- --exact` for deterministic one-test runs.
 - Bun tests use `bun:test` and support `-t` name filtering.
-- Evals create runtime artifacts under `evals/.results` and model-run directories; do not treat those as source files.
-- Some eval tests depend on an OpenCode SDK server and model configuration; they are heavier than unit tests.
+- Bun/plugin tests under `config/lib/bash-policy-plugin/` are lighter-weight repo validation and remain part of the flake check surface.
 
 ## CI and release hints
 
@@ -118,7 +116,7 @@ Run these from `evals/`.
 
 - Rust formatting is delegated to `rustfmt`; do not hand-format against it.
 - Rust uses 4-space indentation.
-- TypeScript in `evals/` uses 2-space indentation, semicolons, trailing commas where multiline, and double-quoted strings.
+- TypeScript uses 2-space indentation, semicolons, trailing commas where multiline, and double-quoted strings in the repo's remaining TS-owned areas.
 - Shell scripts use `#!/usr/bin/env bash` and `set -euo pipefail`.
 - Quote shell expansions unless you intentionally need word splitting.
 - Prefer readable multi-line expressions over dense one-liners.
@@ -180,12 +178,12 @@ Run these from `evals/`.
 - Avoid destructive git commands unless the user explicitly asks for them.
 - When touching both `config/` and `.opencode/`, verify whether sync/regeneration is expected.
 - When verifying changes, prefer `nix flake check` instead of running `cargo test` directly.
-- When changing eval harness code, run the narrowest Bun test or script that covers the change.
+- When changing Bun-owned config/plugin code, run the narrowest Bun test or script that covers the change.
 
 ## Recommended minimum verification by change type
 
 - Default verification for code changes: `nix flake check`
-- TypeScript eval change: `cd evals && bun test ./evals.test.ts -t "<test name>"`
+- Bun/TypeScript config-plugin change: `cd config/lib/bash-policy-plugin && bun test -t "<test name>"`
 - Generated config or Pkl change: `nix run .#pkl-check-generated`
 - Cross-cutting repo change: `nix flake check`
 
@@ -198,8 +196,7 @@ Run these from `evals/`.
 - `cli/Cargo.toml`
 - `cli/src/app.rs`
 - `cli/src/services/setup/tests.rs`
-- `evals/package.json`
-- `evals/tsconfig.json`
-- `evals/evals.test.ts`
-- `evals/test-setup.ts`
+- `config/lib/bash-policy-plugin/package.json`
+- `config/lib/bash-policy-plugin/bash-policy-runtime.test.ts`
+- `config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts`
 - `scripts/sync-opencode-config.sh`

@@ -1,5 +1,5 @@
 {
-  description = "Development shell for Bun + TypeScript + Pkl";
+  description = "Shared Context Engineering CLI and config workflows";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
