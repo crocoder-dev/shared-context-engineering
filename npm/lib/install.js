@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createVerify } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import {
   chmodSync,
@@ -31,8 +31,47 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(__dirname, "..");
 const PACKAGE_JSON_PATH = path.join(PACKAGE_ROOT, "package.json");
+const MANIFEST_PUBLIC_KEY_PATH = path.join(__dirname, "release-manifest-public-key.pem");
 const RUNTIME_DIR = path.join(PACKAGE_ROOT, "runtime");
 const DOWNLOAD_TIMEOUT_MS = 30_000;
+
+function coerceManifestPayload(manifestPayload) {
+  if (typeof manifestPayload === "string" || Buffer.isBuffer(manifestPayload)) {
+    return manifestPayload;
+  }
+
+  return JSON.stringify(manifestPayload);
+}
+
+function decodeManifestSignature(signaturePayload) {
+  if (Buffer.isBuffer(signaturePayload)) {
+    return signaturePayload;
+  }
+
+  if (typeof signaturePayload !== "string" || signaturePayload.trim().length === 0) {
+    throw new Error("Release manifest signature payload must be a non-empty base64 string or Buffer.");
+  }
+
+  return Buffer.from(signaturePayload.trim(), "base64");
+}
+
+export function readBundledReleaseManifestPublicKey(
+  publicKeyPath = MANIFEST_PUBLIC_KEY_PATH,
+) {
+  return readFileSync(publicKeyPath, "utf8");
+}
+
+export function verifyReleaseManifestSignature(
+  manifestPayload,
+  signaturePayload,
+  publicKeyPem = readBundledReleaseManifestPublicKey(),
+) {
+  const verifier = createVerify("sha256");
+  verifier.update(coerceManifestPayload(manifestPayload));
+  verifier.end();
+
+  return verifier.verify(publicKeyPem, decodeManifestSignature(signaturePayload));
+}
 
 function readPackageVersion() {
   const packageJson = JSON.parse(readFileSync(PACKAGE_JSON_PATH, "utf8"));
@@ -51,6 +90,10 @@ function getReleaseBaseUrl(version) {
 
 function getManifestUrl(version) {
   return `${getReleaseBaseUrl(version)}/${getReleaseManifestName(version)}`;
+}
+
+function getManifestSignatureUrl(version) {
+  return `${getManifestUrl(version)}.sig`;
 }
 
 async function downloadToFile(url, destinationPath, redirectsRemaining = 5) {
@@ -114,16 +157,69 @@ async function downloadToFile(url, destinationPath, redirectsRemaining = 5) {
   });
 }
 
-async function downloadJson(url) {
-  const tempDir = mkdtempSync(path.join(tmpdir(), "sce-npm-json-"));
-  const jsonPath = path.join(tempDir, "manifest.json");
+async function downloadText(url) {
+  const tempDir = mkdtempSync(path.join(tmpdir(), "sce-npm-text-"));
+  const textPath = path.join(tempDir, "payload.txt");
 
   try {
-    await downloadToFile(url, jsonPath);
-    return JSON.parse(readFileSync(jsonPath, "utf8"));
+    await downloadToFile(url, textPath);
+    return readFileSync(textPath, "utf8");
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
+}
+
+export function parseVerifiedReleaseManifest(
+  manifestPayload,
+  signaturePayload,
+  publicKeyPem = readBundledReleaseManifestPublicKey(),
+) {
+  let manifest;
+
+  try {
+    manifest = JSON.parse(coerceManifestPayload(manifestPayload).toString());
+  } catch {
+    throw new Error("Invalid sce release manifest: failed to parse JSON payload.");
+  }
+
+  try {
+    if (!verifyReleaseManifestSignature(manifestPayload, signaturePayload, publicKeyPem)) {
+      throw new Error();
+    }
+  } catch {
+    throw new Error(
+      "Release manifest authenticity check failed: signature verification did not succeed.",
+    );
+  }
+
+  return manifest;
+}
+
+export async function loadVerifiedReleaseManifest(
+  version,
+  {
+    downloadManifest = downloadText,
+    downloadManifestSignature = downloadText,
+    publicKeyPem = readBundledReleaseManifestPublicKey(),
+  } = {},
+) {
+  let manifestPayload;
+
+  try {
+    manifestPayload = await downloadManifest(getManifestUrl(version));
+  } catch (error) {
+    throw new Error(`Failed to download sce release manifest: ${error.message}`);
+  }
+
+  let signaturePayload;
+
+  try {
+    signaturePayload = await downloadManifestSignature(getManifestSignatureUrl(version));
+  } catch (error) {
+    throw new Error(`Failed to download sce release manifest signature: ${error.message}`);
+  }
+
+  return parseVerifiedReleaseManifest(manifestPayload, signaturePayload, publicKeyPem);
 }
 
 function sha256File(filePath) {
@@ -164,21 +260,31 @@ function extractArchive(archivePath, destinationDir) {
   }
 }
 
-export async function installBinary() {
+export async function installBinaryWithDependencies({
+  supportedPlatform = resolveSupportedPlatform(),
+  unsupportedMessage = formatUnsupportedPlatformMessage(),
+  version = readPackageVersion(),
+  loadReleaseManifest = loadVerifiedReleaseManifest,
+  downloadArchive = downloadToFile,
+  checksumFile = sha256File,
+  extractArchiveFn = extractArchive,
+  fileExists = existsSync,
+  createRuntimeDir = mkdirSync,
+  copyBinary = copyFileSync,
+  chmodBinary = chmodSync,
+  createTempDir = () => mkdtempSync(path.join(tmpdir(), "sce-npm-install-")),
+  removeTempDir = (tempDir) => rmSync(tempDir, { recursive: true, force: true }),
+} = {}) {
   if (process.env.SCE_NPM_SKIP_DOWNLOAD === "1") {
     console.log("Skipping sce binary download because SCE_NPM_SKIP_DOWNLOAD=1.");
     return;
   }
 
-  const supportedPlatform = resolveSupportedPlatform();
-  const unsupportedMessage = formatUnsupportedPlatformMessage();
-
   if (!supportedPlatform) {
     throw new Error(unsupportedMessage ?? "Unsupported platform for npm sce package.");
   }
 
-  const version = readPackageVersion();
-  const releaseManifest = await downloadJson(getManifestUrl(version));
+  const releaseManifest = await loadReleaseManifest(version);
   const artifact = selectReleaseArtifact(releaseManifest, supportedPlatform.targetTriple);
   const archiveName = artifact.archive ?? getArchiveName(version, supportedPlatform.targetTriple);
   const expectedChecksum = artifact.checksum_sha256;
@@ -187,22 +293,22 @@ export async function installBinary() {
     throw new Error(`Release artifact ${archiveName} is missing checksum_sha256 metadata.`);
   }
 
-  const tempDir = mkdtempSync(path.join(tmpdir(), "sce-npm-install-"));
+  const tempDir = createTempDir();
 
   try {
     const archivePath = path.join(tempDir, archiveName);
     const archiveUrl = `${getReleaseBaseUrl(version)}/${archiveName}`;
 
-    await downloadToFile(archiveUrl, archivePath);
+    await downloadArchive(archiveUrl, archivePath);
 
-    const actualChecksum = await sha256File(archivePath);
+    const actualChecksum = await checksumFile(archivePath);
     if (actualChecksum !== expectedChecksum) {
       throw new Error(
         `Downloaded sce archive checksum mismatch for ${archiveName}: expected ${expectedChecksum}, received ${actualChecksum}.`,
       );
     }
 
-    extractArchive(archivePath, tempDir);
+    extractArchiveFn(archivePath, tempDir);
 
     const extractedBinaryPath = path.join(
       tempDir,
@@ -211,17 +317,21 @@ export async function installBinary() {
       "sce",
     );
 
-    if (!existsSync(extractedBinaryPath)) {
+    if (!fileExists(extractedBinaryPath)) {
       throw new Error(`Extracted sce archive did not contain ${archiveName} -> bin/sce.`);
     }
 
-    mkdirSync(RUNTIME_DIR, { recursive: true });
+    createRuntimeDir(RUNTIME_DIR, { recursive: true });
     const installedBinaryPath = getInstalledBinaryPath(__dirname);
-    copyFileSync(extractedBinaryPath, installedBinaryPath);
-    chmodSync(installedBinaryPath, 0o755);
+    copyBinary(extractedBinaryPath, installedBinaryPath);
+    chmodBinary(installedBinaryPath, 0o755);
   } finally {
-    rmSync(tempDir, { recursive: true, force: true });
+    removeTempDir(tempDir);
   }
+}
+
+export async function installBinary() {
+  await installBinaryWithDependencies();
 }
 
 if (

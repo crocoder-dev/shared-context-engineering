@@ -23,7 +23,8 @@
 - Keep Nix-managed build/release entrypoints as the source of truth for downstream install channels.
 - Expose shared CLI release packaging through root-flake apps so local verification and GitHub release automation consume the same commands (`nix run .#release-artifacts`, `nix run .#release-manifest`, `nix run .#release-npm-package`).
 - Keep CLI release workflows split by platform in separate workflow files, with one thin orchestrator workflow calling those reusable per-platform jobs rather than mixing `sce` release logic into unrelated release pipelines.
-- For the npm channel, keep the package thin: download the already-built native release archive for the matching supported target, verify the published SHA-256 from the merged release manifest, and avoid adding a second build pipeline inside npm packaging.
+- For release-manifest signing, keep the private key outside the repository and feed it to `release-manifest` through `SCE_RELEASE_MANIFEST_SIGNING_KEY` or an explicit key file path; publish only the detached manifest signature artifact.
+- For the npm channel, keep the package thin: download the merged release manifest plus detached signature, verify the manifest with the bundled npm public key before trusting any manifest-provided checksum, then download the already-built native release archive for the matching supported target and verify its published SHA-256 without adding a second build pipeline inside npm packaging.
 
 ## Dev-shell fallback shims for unavailable nixpkgs tools
 

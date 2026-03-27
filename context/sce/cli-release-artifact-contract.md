@@ -10,7 +10,9 @@ This file captures the implemented shared release artifact foundation from `cont
 - The matching per-platform metadata fragment is `sce-v<version>-<target-triple>.json`.
 - `nix run .#release-manifest -- --version <semver> --artifacts-dir <path> --out-dir <path>` merges per-platform fragments into:
   - `sce-v<version>-release-manifest.json`
+  - `sce-v<version>-release-manifest.json.sig`
   - `sce-v<version>-SHA256SUMS`
+- `nix run .#release-manifest` signs the merged release manifest with a non-repo private key supplied via `SCE_RELEASE_MANIFEST_SIGNING_KEY` or `--signing-key-file <path>`.
 
 ## Archive contents
 
@@ -26,10 +28,12 @@ This file captures the implemented shared release artifact foundation from `cont
 - Tarball creation uses stable file ordering plus fixed ownership and mtime metadata.
 - Gzip output is emitted with deterministic headers.
 - Checksum files use SHA-256 and the standard `<hash><two spaces><filename>` line format.
+- Manifest signatures are detached base64-encoded RSA-SHA256 signatures over the exact emitted `sce-v<version>-release-manifest.json` bytes.
 
 ## Workflow topology
 
 - `.github/workflows/release-sce.yml` is the CLI release orchestrator for tag pushes and manual bump/tag creation.
+- The release orchestrator injects the non-repo manifest-signing private key through the `SCE_RELEASE_MANIFEST_SIGNING_KEY` secret when assembling release-level metadata.
 - Platform builds are split into separate reusable workflow files:
   - `.github/workflows/release-sce-linux.yml`
   - `.github/workflows/release-sce-macos-intel.yml`
@@ -45,4 +49,5 @@ This file captures the implemented shared release artifact foundation from `cont
 ## Downstream channel implication
 
 - The implemented npm channel consumes this artifact naming and manifest/checksum shape rather than inventing a channel-specific archive format.
+- The implemented npm channel also depends on the published `sce-v<version>-release-manifest.json.sig` asset so manifest-provided checksums are only trusted after signature verification.
 - Any future additional install channel should reuse this artifact contract unless a later decision explicitly supersedes it.
