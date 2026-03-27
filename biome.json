@@ -1,17 +1,17 @@
 {
-  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
-  "files": {
-    "includes": [
-      "npm/**",
-      "config/lib/bash-policy-plugin/**",
-      "!npm/node_modules/**",
-      "!config/lib/bash-policy-plugin/node_modules/**"
-    ]
-  },
-  "formatter": {
-    "enabled": true
-  },
-  "linter": {
-    "enabled": true
-  }
+	"$schema": "https://biomejs.dev/schemas/2.3.15/schema.json",
+	"files": {
+		"includes": [
+			"npm/**",
+			"config/lib/bash-policy-plugin/**",
+			"!npm/node_modules",
+			"!config/lib/bash-policy-plugin/node_modules"
+		]
+	},
+	"formatter": {
+		"enabled": true
+	},
+	"linter": {
+		"enabled": true
+	}
 }
