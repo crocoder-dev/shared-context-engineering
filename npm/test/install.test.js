@@ -9,6 +9,7 @@ import {
 	SIGNING_KEY_ENV_VAR,
 } from "../../scripts/lib/release-manifest-signing.mjs";
 import {
+	getReleaseBaseUrl,
 	installBinaryWithDependencies,
 	loadVerifiedReleaseManifest,
 	parseVerifiedReleaseManifest,
@@ -49,6 +50,48 @@ afterEach(() => {
 });
 
 describe("release manifest verification primitives", () => {
+	test("builds the default release base URL from the repository slug", () => {
+		const originalRepository = process.env.GITHUB_REPOSITORY;
+		const originalReleaseBaseUrl = process.env.SCE_NPM_RELEASE_BASE_URL;
+
+		delete process.env.SCE_NPM_RELEASE_BASE_URL;
+		process.env.GITHUB_REPOSITORY = "crocoder-dev/shared-context-engineering";
+
+		try {
+			expect(getReleaseBaseUrl("0.1.0")).toBe(
+				"https://github.com/crocoder-dev/shared-context-engineering/releases/download/v0.1.0",
+			);
+		} finally {
+			if (originalRepository === undefined) {
+				delete process.env.GITHUB_REPOSITORY;
+			} else {
+				process.env.GITHUB_REPOSITORY = originalRepository;
+			}
+
+			if (originalReleaseBaseUrl === undefined) {
+				delete process.env.SCE_NPM_RELEASE_BASE_URL;
+			} else {
+				process.env.SCE_NPM_RELEASE_BASE_URL = originalReleaseBaseUrl;
+			}
+		}
+	});
+
+	test("prefers an explicit release base URL override", () => {
+		const originalReleaseBaseUrl = process.env.SCE_NPM_RELEASE_BASE_URL;
+
+		process.env.SCE_NPM_RELEASE_BASE_URL = "https://example.com/releases";
+
+		try {
+			expect(getReleaseBaseUrl("0.1.0")).toBe("https://example.com/releases");
+		} finally {
+			if (originalReleaseBaseUrl === undefined) {
+				delete process.env.SCE_NPM_RELEASE_BASE_URL;
+			} else {
+				process.env.SCE_NPM_RELEASE_BASE_URL = originalReleaseBaseUrl;
+			}
+		}
+	});
+
 	test("loads the bundled release manifest public key", () => {
 		const publicKeyPem = readBundledReleaseManifestPublicKey();
 

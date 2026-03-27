@@ -21,11 +21,11 @@
 	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/crocoder-dev/sce.git"
+		"url": "git+https://github.com/crocoder-dev/shared-context-engineering.git"
 	},
-	"homepage": "https://github.com/crocoder-dev/sce",
+	"homepage": "https://github.com/crocoder-dev/shared-context-engineering",
 	"bugs": {
-		"url": "https://github.com/crocoder-dev/sce/issues"
+		"url": "https://github.com/crocoder-dev/shared-context-engineering/issues"
 	},
 	"keywords": [
 		"sce",
