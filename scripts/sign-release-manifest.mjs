@@ -12,6 +12,16 @@ function usage() {
   process.stderr.write(`Usage: sign-release-manifest --manifest <path> --signature-output <path> [--private-key-file <path>]\n`);
 }
 
+function readFlagValue(argv, index, flagName) {
+  const value = argv[index + 1];
+
+  if (!value || value.startsWith("-")) {
+    throw new Error(`Missing value for ${flagName}.`);
+  }
+
+  return value;
+}
+
 function parseArgs(argv) {
   let manifestPath = "";
   let signatureOutputPath = "";
@@ -22,15 +32,15 @@ function parseArgs(argv) {
 
     switch (arg) {
       case "--manifest":
-        manifestPath = argv[index + 1] ?? "";
+        manifestPath = readFlagValue(argv, index, arg);
         index += 1;
         break;
       case "--signature-output":
-        signatureOutputPath = argv[index + 1] ?? "";
+        signatureOutputPath = readFlagValue(argv, index, arg);
         index += 1;
         break;
       case "--private-key-file":
-        privateKeyPath = argv[index + 1] ?? "";
+        privateKeyPath = readFlagValue(argv, index, arg);
         index += 1;
         break;
       case "--help":
