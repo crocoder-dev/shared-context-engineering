@@ -428,33 +428,6 @@ function argvStartsWith(argv: string[], prefix: string[]): boolean {
 	return prefix.every((token: string, index: number) => argv[index] === token);
 }
 
-function _tokenizeAndNormalizeCommand(command: string): string[] | null {
-	const tokenized = tokenizeShellCommand(command);
-	if (!tokenized || tokenized.length === 0) {
-		return null;
-	}
-
-	const normalized = [...tokenized];
-	dropLeadingEnvAssignments(normalized);
-
-	while (normalized.length > 0) {
-		const executable = normalized[0];
-		if (executable === undefined || !WRAPPER_BINARIES.has(executable)) {
-			break;
-		}
-
-		normalized.shift();
-		dropLeadingEnvAssignments(normalized);
-	}
-
-	if (normalized.length === 0) {
-		return null;
-	}
-
-	normalized[0] = path.basename(normalized[0] ?? "");
-	return normalized;
-}
-
 function dropLeadingEnvAssignments(argv: string[]): void {
 	while (argv.length > 0 && ENV_ASSIGNMENT_PATTERN.test(argv[0] ?? "")) {
 		argv.shift();
