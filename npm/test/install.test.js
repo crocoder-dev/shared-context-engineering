@@ -156,13 +156,28 @@ describe("release manifest verification primitives", () => {
 			privateKeyEncoding: { type: "pkcs8", format: "pem" },
 		});
 		const signature = createReleaseManifestSignature(
-			manifestPayload,
+			Buffer.from(manifestPayload),
 			privateKey,
 		);
 
 		expect(
 			verifyReleaseManifestSignature(manifestPayload, signature, publicKey),
 		).toBe(true);
+	});
+
+	test("rejects non-byte manifest payloads when signing", () => {
+		const { privateKey } = generateKeyPairSync("rsa", {
+			modulusLength: 2048,
+			publicKeyEncoding: { type: "spki", format: "pem" },
+			privateKeyEncoding: { type: "pkcs8", format: "pem" },
+		});
+
+		expect(() =>
+			createReleaseManifestSignature(
+				{ version: "0.1.0", artifacts: [] },
+				privateKey,
+			),
+		).toThrow(new TypeError("manifestPayload must be a Buffer or Uint8Array."));
 	});
 
 	test("loads the release signing key from the configured environment variable", () => {
@@ -390,7 +405,7 @@ describe("npm installer trust flow", () => {
 			path.join(tempDir, `sce-v${version}-${targetTriple}`, "bin", "sce"),
 		);
 		expect(installedBinaryPaths[0].destinationPath).toBe(
-			getInstalledBinaryPath(path.join(process.cwd(), "npm", "lib")),
+			getInstalledBinaryPath(path.join(process.cwd(), "lib")),
 		);
 		expect(chmodCalls).toContainEqual({
 			destinationPath: installedBinaryPaths[0].destinationPath,
