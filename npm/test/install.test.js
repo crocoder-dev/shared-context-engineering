@@ -342,6 +342,7 @@ describe("npm installer trust flow", () => {
 			`sce-npm-install-test-${Date.now()}-${Math.random()}`,
 		);
 		const installedBinaryPaths = [];
+		const chmodCalls = [];
 		tempDirs.push(tempDir);
 
 		await expect(
@@ -378,7 +379,9 @@ describe("npm installer trust flow", () => {
 				copyBinary: (sourcePath, destinationPath) => {
 					installedBinaryPaths.push({ sourcePath, destinationPath });
 				},
-				chmodBinary: () => {},
+				chmodBinary: (destinationPath, mode) => {
+					chmodCalls.push({ destinationPath, mode });
+				},
 			}),
 		).resolves.toBeUndefined();
 
@@ -387,7 +390,11 @@ describe("npm installer trust flow", () => {
 			path.join(tempDir, `sce-v${version}-${targetTriple}`, "bin", "sce"),
 		);
 		expect(installedBinaryPaths[0].destinationPath).toBe(
-			getInstalledBinaryPath(path.join(process.cwd(), "lib")),
+			getInstalledBinaryPath(path.join(process.cwd(), "npm", "lib")),
 		);
+		expect(chmodCalls).toContainEqual({
+			destinationPath: installedBinaryPaths[0].destinationPath,
+			mode: 0o755,
+		});
 	});
 });
