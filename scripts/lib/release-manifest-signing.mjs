@@ -30,9 +30,13 @@ export function resolveReleaseManifestSigningKey({
 }
 
 export function createReleaseManifestSignature(manifestPayload, privateKeyPem) {
+  if (!Buffer.isBuffer(manifestPayload) && !(manifestPayload instanceof Uint8Array)) {
+    throw new TypeError("manifestPayload must be a Buffer or Uint8Array.");
+  }
+
   const manifestBuffer = Buffer.isBuffer(manifestPayload)
     ? manifestPayload
-    : Buffer.from(String(manifestPayload));
+    : Buffer.from(manifestPayload);
 
   return sign("sha256", manifestBuffer, privateKeyPem).toString("base64");
 }
