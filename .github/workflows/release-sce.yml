@@ -33,6 +33,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.target }}
           fetch-depth: 0
 
       - name: Configure git identity
@@ -139,7 +140,11 @@ jobs:
       - build-linux
       - build-macos-intel
       - build-macos-arm
-    if: needs.resolve-release.result == 'success'
+    if: |
+      needs.resolve-release.result == 'success' &&
+      needs.build-linux.result == 'success' &&
+      needs.build-macos-intel.result == 'success' &&
+      needs.build-macos-arm.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
