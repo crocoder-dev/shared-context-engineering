@@ -2267,7 +2267,7 @@ mod tests {
     }
 
     #[test]
-   fn doctor_reports_state_root_failure_without_losing_global_config_path() -> Result<()> {
+    fn doctor_reports_state_root_failure_without_losing_global_config_path() -> Result<()> {
         let test_dir = TestDir::new("doctor-state-root-failure")?;
         let repository_root = test_dir.path().join("repo");
         let hooks_dir = repository_root.join(".git").join("hooks");
@@ -2341,7 +2341,7 @@ mod tests {
         );
         Ok(())
     }
-    
+
     #[test]
     fn doctor_skips_opencode_structure_checks_without_root() -> Result<()> {
         let test_dir = TestDir::new("doctor-opencode-structure-skip")?;
@@ -2378,6 +2378,7 @@ mod tests {
             run_git_command: &run_git_command,
             check_git_available: &|| true,
             resolve_state_root: &resolve_state_root,
+            resolve_global_config_path: &|| Ok(test_dir.path().join("config-root/sce/config.json")),
             resolve_agent_trace_local_db_path: &resolve_agent_trace_local_db_path,
             validate_config_file: &|_| Ok(()),
             check_agent_trace_local_db_health: &|_| Ok(()),
@@ -2451,6 +2452,7 @@ mod tests {
             run_git_command: &run_git_command,
             check_git_available: &|| true,
             resolve_state_root: &resolve_state_root,
+            resolve_global_config_path: &|| Ok(test_dir.path().join("config-root/sce/config.json")),
             resolve_agent_trace_local_db_path: &resolve_agent_trace_local_db_path,
             validate_config_file: &|_| Ok(()),
             check_agent_trace_local_db_health: &|_| Ok(()),
