@@ -50,12 +50,12 @@ afterEach(() => {
 });
 
 describe("release manifest verification primitives", () => {
-	test("builds the default release base URL from the repository slug", () => {
+	test("builds the default release base URL from the publisher repository slug", () => {
 		const originalRepository = process.env.GITHUB_REPOSITORY;
 		const originalReleaseBaseUrl = process.env.SCE_NPM_RELEASE_BASE_URL;
 
 		delete process.env.SCE_NPM_RELEASE_BASE_URL;
-		process.env.GITHUB_REPOSITORY = "crocoder-dev/shared-context-engineering";
+		process.env.GITHUB_REPOSITORY = "someone-else/caller-repo";
 
 		try {
 			expect(getReleaseBaseUrl("0.1.0")).toBe(

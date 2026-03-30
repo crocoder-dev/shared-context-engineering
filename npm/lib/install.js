@@ -97,13 +97,13 @@ function readPackageVersion() {
 }
 
 function getRepositorySlug() {
-	return process.env.GITHUB_REPOSITORY ?? DEFAULT_REPOSITORY_SLUG;
+	return DEFAULT_REPOSITORY_SLUG;
 }
 
 export function getReleaseBaseUrl(version) {
 	return (
 		process.env.SCE_NPM_RELEASE_BASE_URL ??
-		`https://github.com/${getRepositorySlug()}/releases/download/v${version}`
+		`https://github.com/${DEFAULT_REPOSITORY_SLUG}/releases/download/v${version}`
 	);
 }
 
