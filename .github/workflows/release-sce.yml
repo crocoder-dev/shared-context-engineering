@@ -6,15 +6,6 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
-      bump:
-        description: "Version bump type"
-        required: true
-        type: choice
-        options:
-          - major
-          - minor
-          - patch
-        default: patch
       target:
         description: "Branch or commit SHA to tag"
         required: false
@@ -28,7 +19,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.version.outputs.tag }}
+      tag: ${{ steps.release_meta.outputs.tag }}
+      version: ${{ steps.release_meta.outputs.version }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -41,46 +33,41 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Calculate next version tag
-        id: version
+      - name: Resolve checked-in release version
+        id: release_meta
         shell: bash
         run: |
           set -euo pipefail
-          latest="$(git tag --list 'v*' --sort=-version:refname | head -n 1)"
-          bump="${{ inputs.bump }}"
 
-          if [ -z "$latest" ]; then
-            next="v$(tr -d '\n' < .version)"
-          else
-            version="${latest#v}"
-            version_core="${version%%[-+]*}"
-            IFS='.' read -r major minor patch <<< "$version_core"
+          cargo_version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' cli/Cargo.toml | head -n 1)"
+          npm_version="$(node -p \"JSON.parse(require('fs').readFileSync('npm/package.json', 'utf8')).version\")"
 
-            case "$bump" in
-              major)
-                major=$((major + 1))
-                minor=0
-                patch=0
-                ;;
-              minor)
-                minor=$((minor + 1))
-                patch=0
-                ;;
-              patch)
-                patch=$((patch + 1))
-                ;;
-            esac
+          version="$(tr -d '\n' < .version)"
+          tag="v${version}"
 
-            next="v${major}.${minor}.${patch}"
+          if [ "$cargo_version" != "$version" ]; then
+            printf 'cli/Cargo.toml version %s does not match .version %s\n' "$cargo_version" "$version" >&2
+            exit 1
           fi
 
-          echo "tag=$next" >> "$GITHUB_OUTPUT"
-          echo "Selected version: $next"
+          if [ "$npm_version" != "$version" ]; then
+            printf 'npm/package.json version %s does not match .version %s\n' "$npm_version" "$version" >&2
+            exit 1
+          fi
+
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            printf 'Release tag %s already exists. Update .version or use the existing tag.\n' "$tag" >&2
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Selected checked-in release version: $tag"
 
       - name: Create and push tag
         run: |
-          git tag "${{ steps.version.outputs.tag }}" "${{ inputs.target }}"
-          git push origin "${{ steps.version.outputs.tag }}"
+          git tag "${{ steps.release_meta.outputs.tag }}" "${{ inputs.target }}"
+          git push origin "${{ steps.release_meta.outputs.tag }}"
 
   resolve-release:
     needs: create-tag
@@ -90,6 +77,12 @@ jobs:
       tag: ${{ steps.resolve.outputs.tag }}
       version: ${{ steps.resolve.outputs.version }}
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && needs.create-tag.outputs.tag || github.ref_name }}
+          fetch-depth: 0
+
       - name: Resolve release version
         id: resolve
         shell: bash
@@ -99,6 +92,9 @@ jobs:
         run: |
           set -euo pipefail
 
+          cargo_version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' cli/Cargo.toml | head -n 1)"
+          npm_version="$(node -p \"JSON.parse(require('fs').readFileSync('npm/package.json', 'utf8')).version\")"
+
           if [ -n "$DISPATCH_TAG" ]; then
             tag="$DISPATCH_TAG"
           else
@@ -106,6 +102,22 @@ jobs:
           fi
 
           version="${tag#v}"
+
+          checked_in_version="$(tr -d '\n' < .version)"
+          if [ "$checked_in_version" != "$version" ]; then
+            printf 'Release tag %s does not match checked-in .version %s\n' "$tag" "$checked_in_version" >&2
+            exit 1
+          fi
+
+          if [ "$cargo_version" != "$version" ]; then
+            printf 'cli/Cargo.toml version %s does not match .version %s\n' "$cargo_version" "$version" >&2
+            exit 1
+          fi
+
+          if [ "$npm_version" != "$version" ]; then
+            printf 'npm/package.json version %s does not match .version %s\n' "$npm_version" "$version" >&2
+            exit 1
+          fi
 
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"

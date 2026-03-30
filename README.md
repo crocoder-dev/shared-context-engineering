@@ -8,9 +8,9 @@ AI-assisted software delivery with explicit, versioned context.
 
 Use the [WIP] `sce` CLI at `cli/`. See `cli/README.md` for current behavior and usage.
 
-Current first-wave install channels:
+Current first-wave install channels for `crocoder-dev/shared-context-engineering`:
 
-- Repo flake via Nix: `nix run github:crocoder-dev/sce -- --help` or `nix profile install github:crocoder-dev/sce`
+- Repo flake via Nix: `nix run github:crocoder-dev/shared-context-engineering -- --help` or `nix profile install github:crocoder-dev/shared-context-engineering`
 - Cargo: `cargo install sce`
 - npm: `npm install -g sce`
 
@@ -20,6 +20,13 @@ Additional supported Cargo paths:
 - `cargo install --path cli --locked`
 
 Homebrew is currently deferred from the active implementation stage.
+
+Release/version topology for the current rollout:
+
+- Repo-root `.version` is the canonical checked-in release version source.
+- GitHub Releases publish the canonical signed `sce` release archives and manifest/checksum assets.
+- crates.io and npm registry publication are separate downstream publish stages for the already-versioned checked-in packages.
+- Release packaging and registry publishing are not a single auto-bumping workflow.
 
 - [Docs](https://sce.crocoder.dev/docs)
 - [Getting Started](https://sce.crocoder.dev/docs/getting-started)

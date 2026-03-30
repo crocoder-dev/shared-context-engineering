@@ -29,10 +29,17 @@
 - Treat the approved first-wave channel set for the current implementation stage as closed: repo-flake Nix, Cargo, and npm only; `Homebrew` remains deferred until a later plan stage restores it explicitly.
 - Standardize new install-facing surfaces on the canonical `sce` name; remove or explicitly map legacy `sce-editor` references when they are touched.
 - Keep Nix-managed build/release entrypoints as the source of truth for downstream install channels.
+- Treat repo-root `.version` as the canonical checked-in release version source for GitHub Releases, Cargo publication, and npm publication.
 - Expose shared CLI release packaging through root-flake apps so local verification and GitHub release automation consume the same commands (`nix run .#release-artifacts`, `nix run .#release-manifest`, `nix run .#release-npm-package`).
+- Keep GitHub Releases as the canonical publication surface for signed release archives and manifest/checksum assets.
+- Keep crates.io and npm registry publication as separate downstream publish stages that consume already-versioned checked-in package metadata rather than inventing workflow-side version bumps.
+- Keep `.github/workflows/publish-crates.yml` scoped to crates.io publication only: it should validate `.version`, `cli/Cargo.toml`, and the release tag before running `cargo publish`, and real publication must require an explicit `CARGO_REGISTRY_TOKEN` secret while manual dispatch can stay on a dry-run path.
+- Keep `.github/workflows/publish-npm.yml` scoped to npm publication only: it should validate `.version`, `npm/package.json`, and the release tag before publish, download the canonical `sce-v<version>-npm.tgz` GitHub release asset instead of rebuilding or mutating package metadata, and require an explicit `NPM_TOKEN` secret only for real publication while manual dispatch can stay on a dry-run path.
 - Keep CLI release workflows split by platform in separate workflow files, with one thin orchestrator workflow calling those reusable per-platform jobs rather than mixing `sce` release logic into unrelated release pipelines.
 - For release-manifest signing, keep the private key outside the repository and feed it to `release-manifest` through `SCE_RELEASE_MANIFEST_SIGNING_KEY` or an explicit key file path; publish only the detached manifest signature artifact.
 - For the npm channel, keep the package thin: download the merged release manifest plus detached signature, verify the manifest with the bundled npm public key before trusting any manifest-provided checksum, then download the already-built native release archive for the matching supported target and verify its published SHA-256 without adding a second build pipeline inside npm packaging.
+- For published Cargo crate builds, prepare any generated setup/config payload required at compile time into an ephemeral crate-local mirror (`cli/assets/generated/**`) immediately before build/package/publish work, while keeping `config/` as the only committed source of truth.
+- When Cargo publish would otherwise require `--allow-dirty` because of ephemeral generated assets, publish from a temporary clean repository copy instead of weakening the workflow contract.
 
 ## Dev-shell fallback shims for unavailable nixpkgs tools
 

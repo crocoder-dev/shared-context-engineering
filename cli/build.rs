@@ -10,17 +10,17 @@ use std::{
 const TARGETS: &[TargetSpec] = &[
     TargetSpec {
         const_name: "OPENCODE_EMBEDDED_ASSETS",
-        relative_root: "config/.opencode",
-        include_prefix: "/../config/.opencode/",
+        relative_root: "assets/generated/config/opencode",
+        include_prefix: "/assets/generated/config/opencode/",
     },
     TargetSpec {
         const_name: "CLAUDE_EMBEDDED_ASSETS",
-        relative_root: "config/.claude",
-        include_prefix: "/../config/.claude/",
+        relative_root: "assets/generated/config/claude",
+        include_prefix: "/assets/generated/config/claude/",
     },
     TargetSpec {
         const_name: "HOOK_EMBEDDED_ASSETS",
-        relative_root: "cli/assets/hooks",
+        relative_root: "assets/hooks",
         include_prefix: "/assets/hooks/",
     },
 ];
@@ -92,17 +92,13 @@ fn emit_git_commit() {
 
 fn generate_embedded_asset_manifest() -> io::Result<()> {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").map_err(|e| invalid_data(&e))?);
-    let repository_root = manifest_dir
-        .parent()
-        .ok_or_else(|| invalid_data(&"CARGO_MANIFEST_DIR does not have a parent"))?
-        .to_path_buf();
     let out_dir = PathBuf::from(env::var("OUT_DIR").map_err(|e| invalid_data(&e))?);
     let destination_path = out_dir.join("setup_embedded_assets.rs");
 
     let mut output = String::new();
 
     for target in TARGETS {
-        let source_root = repository_root.join(target.relative_root);
+        let source_root = manifest_dir.join(target.relative_root);
         println!("cargo:rerun-if-changed={}", source_root.display());
 
         let mut files = Vec::new();

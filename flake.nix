@@ -41,11 +41,11 @@
           root = workspaceRoot;
           fileset = pkgs.lib.fileset.unions [
             (craneLib.fileset.commonCargoSources workspaceRoot)
+            (pkgs.lib.fileset.maybeMissing ./.version)
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/default_paths.rs)
-            (pkgs.lib.fileset.maybeMissing ./config/.opencode)
-            (pkgs.lib.fileset.maybeMissing ./config/.claude)
-            (pkgs.lib.fileset.maybeMissing ./config/schema/sce-config.schema.json)
+            ./config
             (pkgs.lib.fileset.maybeMissing ./cli/assets/hooks)
+            (pkgs.lib.fileset.maybeMissing ./scripts/prepare-cli-generated-assets.sh)
           ];
         };
 
@@ -126,6 +126,12 @@
           ];
 
           postUnpack = ''
+            mkdir -p "$sourceRoot/cli/assets/generated/config"
+            cp -R ${./config/.opencode} "$sourceRoot/cli/assets/generated/config/opencode"
+            cp -R ${./config/.claude} "$sourceRoot/cli/assets/generated/config/claude"
+            mkdir -p "$sourceRoot/cli/assets/generated/config/schema"
+            cp ${./config/schema/sce-config.schema.json} "$sourceRoot/cli/assets/generated/config/schema/sce-config.schema.json"
+
             cd "$sourceRoot/cli"
             sourceRoot="."
           '';
@@ -187,6 +193,7 @@
             pkgs.gzip
             pkgs.jq
             pkgs.nix
+            pkgs.nodejs
           ];
           text = ''
             set -euo pipefail
@@ -232,6 +239,25 @@
 
             if [[ ! -f "flake.nix" ]]; then
               printf 'release-artifacts must be run from the repository root that contains flake.nix\n' >&2
+              exit 1
+            fi
+
+            checked_in_version="$(tr -d '\n' < .version)"
+            if [[ "$version" != "$checked_in_version" ]]; then
+              printf 'Requested release version %s does not match checked-in .version %s\n' "$version" "$checked_in_version" >&2
+              exit 1
+            fi
+
+            cargo_version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' cli/Cargo.toml | head -n 1)"
+            npm_version="$(${pkgs.nodejs}/bin/node -p "JSON.parse(require('fs').readFileSync('npm/package.json', 'utf8')).version")"
+
+            if [[ "$cargo_version" != "$version" ]]; then
+              printf 'cli/Cargo.toml version %s does not match release version %s\n' "$cargo_version" "$version" >&2
+              exit 1
+            fi
+
+            if [[ "$npm_version" != "$version" ]]; then
+              printf 'npm/package.json version %s does not match release version %s\n' "$npm_version" "$version" >&2
               exit 1
             fi
 
@@ -288,6 +314,12 @@
             binary_path="result/bin/sce"
             if [[ ! -x "$binary_path" ]]; then
               printf 'Expected built CLI binary at %s\n' "$binary_path" >&2
+              exit 1
+            fi
+
+            binary_version="$($binary_path version --format json | ${pkgs.jq}/bin/jq -r '.version')"
+            if [[ "$binary_version" != "$version" ]]; then
+              printf 'Built CLI version %s does not match release version %s\n' "$binary_version" "$version" >&2
               exit 1
             fi
 
@@ -514,6 +546,25 @@
               exit 1
             fi
 
+            checked_in_version="$(tr -d '\n' < .version)"
+            if [[ "$version" != "$checked_in_version" ]]; then
+              printf 'Requested release version %s does not match checked-in .version %s\n' "$version" "$checked_in_version" >&2
+              exit 1
+            fi
+
+            cargo_version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' cli/Cargo.toml | head -n 1)"
+            npm_version="$(${pkgs.nodejs}/bin/node -p "JSON.parse(require('fs').readFileSync('npm/package.json', 'utf8')).version")"
+
+            if [[ "$cargo_version" != "$version" ]]; then
+              printf 'cli/Cargo.toml version %s does not match release version %s\n' "$cargo_version" "$version" >&2
+              exit 1
+            fi
+
+            if [[ "$npm_version" != "$version" ]]; then
+              printf 'npm/package.json version %s does not match release version %s\n' "$npm_version" "$version" >&2
+              exit 1
+            fi
+
             mkdir -p "$out_dir"
 
             tmp_dir="$(mktemp -d)"
@@ -525,10 +576,6 @@
             stage_dir="$tmp_dir/npm-package"
             mkdir -p "$stage_dir"
             cp -R npm/. "$stage_dir/"
-
-            jq --arg version "$version" '.version = $version' \
-              "$stage_dir/package.json" > "$tmp_dir/package.json"
-            mv "$tmp_dir/package.json" "$stage_dir/package.json"
 
             packed_name="$(npm pack --silent "$stage_dir")"
             package_name="sce-v''${version}-npm.tgz"

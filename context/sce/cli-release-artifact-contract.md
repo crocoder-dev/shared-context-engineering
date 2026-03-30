@@ -1,6 +1,6 @@
 # SCE CLI Release Artifact Contract
 
-This file captures the implemented shared release artifact foundation from `context/plans/sce-cli-first-install-channels.md` task `T02`.
+This file captures the current shared release artifact foundation plus the approved release-authority constraints that later release-topology tasks must satisfy.
 
 ## Canonical artifact set
 
@@ -32,8 +32,16 @@ This file captures the implemented shared release artifact foundation from `cont
 
 ## Workflow topology
 
-- `.github/workflows/release-sce.yml` is the CLI release orchestrator for tag pushes and manual bump/tag creation.
+- GitHub Releases are the canonical publication surface for `sce` release archives, checksums, metadata fragments, and merged release-manifest assets.
+- Repo-root `.version` is the canonical checked-in release version source for release tags, archive names, and packaged metadata across the release flow.
+- Release packaging consumes the checked-in version directly; workflow-side semver bump generation is not part of the current contract.
+- Cargo/crates.io and npm registry publication are separate downstream publish stages and are not part of the canonical GitHub release artifact assembly job.
+- `.github/workflows/release-sce.yml` remains the CLI release orchestrator that assembles GitHub release assets from the reusable platform build workflows.
 - The release orchestrator injects the non-repo manifest-signing private key through the `SCE_RELEASE_MANIFEST_SIGNING_KEY` secret when assembling release-level metadata.
+- Manual GitHub release dispatch resolves the tag from checked-in `.version` and refuses to create the tag when `.version`, `cli/Cargo.toml`, and `npm/package.json` are not already aligned.
+- Tag-triggered release execution also refuses to proceed when the pushed tag does not equal `v<.version>` or when checked-in Cargo/npm package metadata drift from `.version`.
+- `nix run .#release-artifacts` fails fast when the requested `--version` disagrees with `.version`, `cli/Cargo.toml`, `npm/package.json`, or the built CLI `sce version` output.
+- The release orchestrator passes the resolved checked-in version through to the platform builds, merged release-manifest assembly, and npm tarball packaging without mutating package versions during workflow execution.
 - Platform builds are split into separate reusable workflow files:
   - `.github/workflows/release-sce-linux.yml`
   - `.github/workflows/release-sce-macos-intel.yml`

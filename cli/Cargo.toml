@@ -8,6 +8,16 @@ repository = "https://github.com/crocoder-dev/shared-context-engineering"
 homepage = "https://sce.crocoder.dev"
 documentation = "https://sce.crocoder.dev/docs"
 readme = "README.md"
+
+include = [
+  "README.md",
+  "Cargo.toml",
+  "Cargo.lock",
+  "build.rs",
+  "assets/hooks/**",
+  "assets/generated/**",
+  "src/**",
+]
 keywords = ["cli", "automation", "developer-tools"]
 categories = ["command-line-utilities", "development-tools"]
 
