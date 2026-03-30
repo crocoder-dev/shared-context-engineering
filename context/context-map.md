@@ -42,10 +42,10 @@ Feature/domain context:
 - `context/sce/automated-profile-contract.md` (deterministic gate policy for automated OpenCode profile, including 10 gate categories, permission mappings, and automated profile constraints)
 - `context/sce/bash-tool-policy-enforcement-contract.md` (approved bash-tool blocking contract plus the implementation target for generated OpenCode enforcement, including config schema, argv-prefix matching, fixed preset catalog/messages, and precedence rules)
 - `context/sce/generated-opencode-plugin-registration.md` (current generated OpenCode plugin-registration contract, canonical Pkl ownership, generated manifest/plugin paths, and TypeScript source ownership; Claude bash-policy enforcement has been removed from generated outputs)
-- `context/sce/cli-first-install-channels-contract.md` (current first-wave `sce` install/distribution contract covering supported channels for the active implementation stage, canonical naming, and Nix-owned build policy)
-- `context/sce/cli-release-artifact-contract.md` (implemented shared `sce` release artifact naming, checksum/manifest outputs, Nix app entrypoints, and split per-platform CLI release workflow topology)
-- `context/sce/cli-npm-distribution-contract.md` (implemented `sce` npm launcher package, release-manifest/checksum-verified native binary install flow, supported npm platform matrix, and Nix-owned npm package release asset publishing)
-- `context/sce/cli-cargo-distribution-contract.md` (implemented `sce` Cargo publication posture plus supported crates.io, git, and local checkout install guidance)
+- `context/sce/cli-first-install-channels-contract.md` (current first-wave `sce` install/distribution contract covering supported channels, canonical naming, `.version` release authority, and Nix-owned build policy)
+- `context/sce/cli-release-artifact-contract.md` (shared `sce` release artifact naming, checksum/manifest outputs, GitHub Releases as the canonical artifact publication surface, and split per-platform CLI release workflow topology)
+- `context/sce/cli-npm-distribution-contract.md` (implemented `sce` npm launcher package, release-manifest/checksum-verified native binary install flow, supported npm platform matrix, and dedicated `.github/workflows/publish-npm.yml` downstream npm publish-stage contract)
+- `context/sce/cli-cargo-distribution-contract.md` (implemented `sce` Cargo publication posture plus supported crates.io, git, and local checkout install guidance, dedicated crates.io publish workflow, and ephemeral crate-local generated-asset mirror requirement for published builds)
 
 Working areas:
 - `context/plans/` (active plan execution artifacts, not durable history)

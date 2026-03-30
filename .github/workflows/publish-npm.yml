@@ -1,0 +1,136 @@
+name: Publish sce npm package
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to publish (for example v0.1.0)"
+        required: false
+      dry_run:
+        description: "Run npm publish --dry-run instead of publishing"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-npm-${{ github.event.release.tag_name || inputs.release_tag || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      DISPATCH_RELEASE_TAG: ${{ inputs.release_tag }}
+      EVENT_RELEASE_TAG: ${{ github.event.release.tag_name }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+      GH_TOKEN: ${{ github.token }}
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_tag || github.event.release.tag_name || github.ref }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Verify checked-in npm release version parity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          npm_version="$(node -p "JSON.parse(require('fs').readFileSync('npm/package.json', 'utf8')).version")"
+          version="$(tr -d '\n' < .version)"
+          expected_tag="v${version}"
+          release_tag="${DISPATCH_RELEASE_TAG:-${EVENT_RELEASE_TAG:-}}"
+
+          if [ -z "$release_tag" ]; then
+            printf 'No release tag was provided. Trigger this workflow from a published GitHub release or pass workflow_dispatch input release_tag.\n' >&2
+            exit 1
+          fi
+
+          if [ "$npm_version" != "$version" ]; then
+            printf 'npm/package.json version %s does not match .version %s\n' "$npm_version" "$version" >&2
+            exit 1
+          fi
+
+          if [ "$release_tag" != "$expected_tag" ]; then
+            printf 'Release tag %s does not match checked-in .version %s\n' "$release_tag" "$version" >&2
+            exit 1
+          fi
+
+          printf 'Publishing checked-in npm package version %s from tag %s\n' "$version" "$release_tag"
+
+      - name: Download canonical npm release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(tr -d '\n' < .version)"
+          release_tag="${DISPATCH_RELEASE_TAG:-${EVENT_RELEASE_TAG:-}}"
+          package_file="sce-v${version}-npm.tgz"
+
+          mkdir -p dist/npm
+          gh release download "$release_tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "$package_file" \
+            --dir dist/npm
+
+          if [ ! -f "dist/npm/$package_file" ]; then
+            printf 'Expected npm release asset %s for tag %s\n' "$package_file" "$release_tag" >&2
+            exit 1
+          fi
+
+      - name: Verify downloaded package metadata parity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(tr -d '\n' < .version)"
+          package_file="dist/npm/sce-v${version}-npm.tgz"
+          package_version="$(tar -xOf "$package_file" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")"
+          package_name="$(tar -xOf "$package_file" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).name")"
+
+          if [ "$package_name" != "sce" ]; then
+            printf 'Downloaded package name %s is not sce\n' "$package_name" >&2
+            exit 1
+          fi
+
+          if [ "$package_version" != "$version" ]; then
+            printf 'Downloaded npm package version %s does not match .version %s\n' "$package_version" "$version" >&2
+            exit 1
+          fi
+
+      - name: npm publish dry run
+        if: env.DRY_RUN == 'true'
+        run: |
+          version="$(tr -d '\n' < .version)"
+          npm publish "dist/npm/sce-v${version}-npm.tgz" --access public --dry-run
+
+      - name: Ensure npm token is configured
+        if: env.DRY_RUN != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            printf 'NPM_TOKEN secret is required for npm publication.\n' >&2
+            exit 1
+          fi
+
+      - name: Publish package to npm
+        if: env.DRY_RUN != 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          version="$(tr -d '\n' < .version)"
+          npm publish "dist/npm/sce-v${version}-npm.tgz" --access public

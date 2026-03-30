@@ -1,0 +1,103 @@
+name: Publish sce crate
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to publish (for example v0.1.0)"
+        required: false
+      dry_run:
+        description: "Run cargo publish --dry-run instead of publishing"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-crates-${{ github.event.release.tag_name || inputs.release_tag || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      DISPATCH_RELEASE_TAG: ${{ inputs.release_tag }}
+      EVENT_RELEASE_TAG: ${{ github.event.release.tag_name }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_tag || github.event.release.tag_name || github.ref }}
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3.17.1
+
+      - name: Verify checked-in release version parity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cargo_version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' cli/Cargo.toml | head -n 1)"
+          version="$(tr -d '\n' < .version)"
+          expected_tag="v${version}"
+          release_tag="${DISPATCH_RELEASE_TAG:-${EVENT_RELEASE_TAG:-}}"
+
+          if [ -z "$release_tag" ]; then
+            printf 'No release tag was provided. Trigger this workflow from a published GitHub release or pass workflow_dispatch input release_tag.\n' >&2
+            exit 1
+          fi
+
+          if [ "$cargo_version" != "$version" ]; then
+            printf 'cli/Cargo.toml version %s does not match .version %s\n' "$cargo_version" "$version" >&2
+            exit 1
+          fi
+
+          if [ "$release_tag" != "$expected_tag" ]; then
+            printf 'Release tag %s does not match checked-in .version %s\n' "$release_tag" "$version" >&2
+            exit 1
+          fi
+
+          printf 'Publishing checked-in crate version %s from tag %s\n' "$version" "$release_tag"
+
+      - name: Prepare crate-local generated assets
+        env:
+          WORK_ROOT: ${{ runner.temp }}/sce-crates-publish
+          REPO_COPY: ${{ runner.temp }}/sce-crates-publish/repo
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK_ROOT"
+          mkdir -p "$REPO_COPY"
+          rsync -a --exclude '.git/' ./ "$REPO_COPY/"
+          bash "$REPO_COPY/scripts/prepare-cli-generated-assets.sh" "$REPO_COPY"
+
+      - name: Cargo publish dry run
+        if: env.DRY_RUN == 'true'
+        env:
+          REPO_COPY: ${{ runner.temp }}/sce-crates-publish/repo
+        run: |
+          nix develop -c cargo publish --manifest-path "$REPO_COPY/cli/Cargo.toml" --locked --dry-run
+
+      - name: Ensure crates.io token is configured
+        if: env.DRY_RUN != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            printf 'CARGO_REGISTRY_TOKEN secret is required for crates.io publication.\n' >&2
+            exit 1
+          fi
+
+      - name: Publish crate to crates.io
+        if: env.DRY_RUN != 'true'
+        env:
+          REPO_COPY: ${{ runner.temp }}/sce-crates-publish/repo
+        run: |
+          nix develop -c cargo publish --manifest-path "$REPO_COPY/cli/Cargo.toml" --locked
