@@ -130,6 +130,14 @@ jobs:
       release_ref: ${{ needs.resolve-release.outputs.tag }}
       release_version: ${{ needs.resolve-release.outputs.version }}
 
+  build-linux-arm:
+    needs: resolve-release
+    if: needs.resolve-release.result == 'success'
+    uses: ./.github/workflows/release-sce-linux-arm.yml
+    with:
+      release_ref: ${{ needs.resolve-release.outputs.tag }}
+      release_version: ${{ needs.resolve-release.outputs.version }}
+
   build-macos-intel:
     needs: resolve-release
     if: needs.resolve-release.result == 'success'
@@ -150,11 +158,13 @@ jobs:
     needs:
       - resolve-release
       - build-linux
+      - build-linux-arm
       - build-macos-intel
       - build-macos-arm
     if: |
       needs.resolve-release.result == 'success' &&
       needs.build-linux.result == 'success' &&
+      needs.build-linux-arm.result == 'success' &&
       needs.build-macos-intel.result == 'success' &&
       needs.build-macos-arm.result == 'success'
     runs-on: ubuntu-latest

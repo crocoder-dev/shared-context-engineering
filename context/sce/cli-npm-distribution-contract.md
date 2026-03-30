@@ -16,7 +16,11 @@ This file captures the implemented npm distribution slice from `context/plans/sc
 - The npm package ships a built-in manifest-signing public key at `npm/lib/release-manifest-public-key.pem`; `npm/lib/install.js` uses Node built-in crypto to verify manifest signatures without relying on network-fetched trust anchors.
 - The installer downloads `sce-v<version>-release-manifest.json` and detached signature `sce-v<version>-release-manifest.json.sig`, verifies the manifest before parsing/selecting artifacts, then selects the artifact whose `target_triple` matches the current supported platform, downloads `sce-v<version>-<target-triple>.tar.gz`, verifies `checksum_sha256`, extracts `bin/sce`, and stores it in package-local runtime storage.
 - Missing or invalid manifest signatures abort installation before archive download or extraction with an authenticity failure.
-- Supported npm launcher platforms currently match the implemented release automation targets: `x86_64-unknown-linux-gnu`, `x86_64-apple-darwin`, and `aarch64-apple-darwin`.
+- Supported npm launcher platforms currently match the implemented release automation targets:
+  - `linux/x64` -> `x86_64-unknown-linux-gnu`
+  - `linux/arm64` -> `aarch64-unknown-linux-gnu`
+  - `darwin/x64` -> `x86_64-apple-darwin`
+  - `darwin/arm64` -> `aarch64-apple-darwin`
 - Unsupported platforms fail with explicit guidance instead of attempting alternate channels inside the npm package.
 
 ## Release integration

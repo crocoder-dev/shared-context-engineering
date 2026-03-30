@@ -34,6 +34,16 @@ describe("resolveSupportedPlatform", () => {
 		});
 	});
 
+	test("lists linux arm64 in unsupported platform guidance", () => {
+		const unsupportedMessage = formatUnsupportedPlatformMessage(
+			"win32",
+			"arm64",
+		);
+
+		expect(unsupportedMessage).toContain("linux/arm64");
+		expect(unsupportedMessage).toContain("win32/arm64");
+	});
+
 	test("returns null for unsupported platforms", () => {
 		expect(resolveSupportedPlatform("win32", "arm64")).toBeNull();
 		expect(formatUnsupportedPlatformMessage("win32", "arm64")).toContain(
