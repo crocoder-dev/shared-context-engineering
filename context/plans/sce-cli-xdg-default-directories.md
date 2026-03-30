@@ -29,47 +29,83 @@
 - Keep command/output/error contracts deterministic outside path-specific changes.
 
 ## Task stack
-- [ ] T01: `Create a canonical XDG location-definition seam for per-user sce storage` (status:todo)
+- [x] T01: `Create a canonical XDG location-definition seam for per-user sce storage` (status:done)
   - Task ID: T01
   - Goal: Introduce one canonical service/helper contract that owns both per-user `sce` root resolution and the named persisted-file locations consumed by the CLI so path policy is no longer duplicated across config, token, local DB, diagnostics, and related services.
   - Boundaries (in/out of scope): In - shared path-resolution helpers/types, canonical named accessors for persisted-file locations, replacement of duplicated root-resolution or file-location assembly logic across read/write/report/validation callers, focused unit tests for Linux/macOS/Windows/other fallback behavior and deterministic root-resolution failures. Out - changing command-facing storage behavior beyond wiring callers to the new shared contract.
   - Done when: A single canonical path-policy seam exists for per-user `sce` roots and default persisted-file locations, all current callers that read/write/report/validate these locations can consume it without ad hoc path assembly, and tests cover the approved XDG mapping plus fallback/error cases.
   - Verification notes (commands or checks): `nix flake check`.
 
-- [ ] T02: `Move default global config discovery to XDG config root` (status:todo)
+- [x] T02: `Move default global config discovery to XDG config root` (status:done)
   - Task ID: T02
   - Goal: Update config-path discovery, validation, and related diagnostics so the default global config path becomes `$XDG_CONFIG_HOME/sce/config.json` (or `dirs::config_dir()` platform equivalent).
   - Boundaries (in/out of scope): In - `cli/src/services/config.rs`, any command/help/diagnostic text or tests that assert the discovered global config location, doctor checks that reference the global config path. Out - repo-local `.sce/config.json`, config schema changes, migration/fallback support for old global paths.
   - Done when: Global config discovery uses the config root only, output/tests reflect the new location, and no legacy state/data-root fallback remains for the global config default.
   - Verification notes (commands or checks): `nix flake check`.
 
-- [ ] T03: `Move auth and runtime state artifacts to approved XDG roots` (status:todo)
+- [x] T03: `Move auth and runtime state artifacts to approved XDG roots` (status:done)
   - Task ID: T03
   - Goal: Apply the approved path mapping to auth tokens and all currently implemented per-user runtime artifacts owned by `sce`, keeping stateful artifacts under the state root and cache artifacts under the cache root where applicable.
   - Boundaries (in/out of scope): In - explicit artifact inventory and migration coverage for auth tokens, Agent Trace local DB, persisted logs if present, and any existing persisted temp/history/cache artifact path resolution, plus targeted tests for exact default file paths. Out - auto-migration, fallback reads from old locations, creation of new cache persistence features when none exist.
   - Done when: The implementation has an explicit inventory of current per-user persisted artifacts; token storage resolves to `$XDG_STATE_HOME/sce/auth/tokens.json`; stateful runtime artifacts resolve through the approved state-root policy; any existing cache-backed artifact uses the cache root if applicable; and tests/assertions cover the final path contract, including env-set/env-unset behavior and no legacy fallback.
   - Verification notes (commands or checks): `nix flake check`.
+  - Implementation notes: The canonical default-path seam now exposes an explicit persisted-artifact inventory covering the current default persisted artifacts (`global config`, `auth tokens`, `Agent Trace local DB`). No default cache-backed persisted artifact currently exists, so no speculative cache path was added in this task.
 
-- [ ] T04: `Update operator-facing diagnostics and path-sensitive command coverage` (status:todo)
+- [x] T04: `Update operator-facing diagnostics and path-sensitive command coverage` (status:done)
   - Task ID: T04
   - Goal: Align doctor/auth/config/runtime diagnostics and their tests with the new XDG path contract so user-facing reporting stays deterministic.
   - Boundaries (in/out of scope): In - doctor problem reporting/path facts, auth/token-related diagnostics, config/help text or JSON fields that expose default path provenance, targeted tests that assert these surfaces, and confirmation that these surfaces resolve locations only through the shared seam. Out - unrelated command-surface redesign, broader UX rewriting, backward-compatibility warnings.
   - Done when: Path-sensitive command outputs and diagnostics consistently reference the new XDG defaults, tests cover the changed reporting, no stale old-path wording remains in runtime-facing messages, and no reporting surface still computes these locations independently.
   - Verification notes (commands or checks): `nix flake check`.
+  - Implementation notes: `sce auth status` now reports the canonical credentials file path in text and JSON output, logout remediation includes the resolved auth-token path when available, and doctor coverage asserts shared-seam global-config path reporting in JSON output.
 
-- [ ] T05: `Sync context for the new XDG storage contract` (status:todo)
+- [x] T05: `Sync context for the new XDG storage contract` (status:done)
   - Task ID: T05
   - Goal: Update current-state context files to describe the new per-user storage mapping and remove stale references to the old defaults.
   - Boundaries (in/out of scope): In - focused updates to `context/overview.md`, `context/glossary.md`, and any relevant CLI/SCE path-contract docs. Out - historical change logs, implementation beyond documentation, broad context rewrites unrelated to storage paths.
   - Done when: Durable context files reflect the XDG config/state/cache mapping and no longer describe the previous global-config default path.
   - Verification notes (commands or checks): Manual review against code truth.
+  - Implementation notes: Root durable context now names the canonical XDG-backed defaults explicitly (`$XDG_CONFIG_HOME/sce/config.json`, `$XDG_STATE_HOME/sce/auth/tokens.json`, `$XDG_STATE_HOME/sce/agent-trace/local.db` on Linux) and states that no legacy default-path fallback remains.
 
-- [ ] T06: `Validation and cleanup` (status:todo)
+- [x] T06: `Validation and cleanup` (status:done)
   - Task ID: T06
   - Goal: Run the full required verification pass, confirm no task-scoped scaffolding remains, and leave the plan ready for completion tracking.
   - Boundaries (in/out of scope): In - full repo validation, generated-output parity check if touched, plan status updates. Out - new feature work or post-plan enhancements.
   - Done when: Required validation passes, plan state is current, and any temporary scaffolding introduced during implementation is removed.
   - Verification notes (commands or checks): `nix run .#pkl-check-generated` (if generated outputs change); `nix flake check`.
+  - Implementation notes: `nix flake check` passed for the current worktree. No task-scoped scaffolding was introduced during this validation task, and the existing ignored files under `context/tmp/` were left untouched. Final context sync for this task was verify-only; durable XDG-path documentation added in earlier tasks remains present and linked from current-state context.
+
+## Validation Report
+
+### Commands run
+- `nix flake check` -> exit 0 (`running 10 flake checks...`; completed without failures)
+- `nix run .#pkl-check-generated` -> exit 0 (`Generated outputs are up to date.`)
+
+### Scaffolding cleanup
+- No task-scoped scaffolding was introduced by T06.
+- Existing ignored files under `context/tmp/` were not modified by this task.
+
+### Context verification
+- Verify-only sync: `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/patterns.md`, and `context/context-map.md` were checked against code truth for this task and required no edits.
+- Durable XDG storage documentation remains present in `context/overview.md`, `context/glossary.md`, `context/cli/config-precedence-contract.md`, `context/cli/placeholder-foundation.md`, and is discoverable from `context/context-map.md`.
+
+### Success-criteria verification
+- [x] Global config discovery and validation default to the config root -> documented in `context/overview.md` and `context/cli/config-precedence-contract.md`; covered by passing `nix flake check`.
+- [x] Auth token storage defaults to the state root -> documented in `context/overview.md`, `context/glossary.md`, and `context/cli/placeholder-foundation.md`; covered by passing `nix flake check`.
+- [x] Agent Trace local DB and other implemented stateful artifacts remain under the state root -> documented in `context/overview.md`, `context/architecture.md`, and `context/glossary.md`; covered by passing `nix flake check`.
+- [x] No speculative cache artifact was introduced when none existed -> documented in `context/overview.md`, `context/glossary.md`, and `cli/src/services/default_paths.rs`; covered by passing `nix flake check`.
+- [x] Default-location reads, writes, validation, and reporting consume one shared seam -> represented by `cli/src/services/default_paths.rs` and related context files; covered by passing `nix flake check`.
+- [x] Tests cover XDG env-present/env-absent resolution and no legacy fallback behavior -> covered by passing `nix flake check`.
+- [x] Unsupported-root resolution behavior remains deterministic -> covered by passing `nix flake check`.
+- [x] Doctor/config/auth/runtime surfaces reflect the new XDG mapping with deterministic output -> documented in current-state context and covered by passing `nix flake check`.
+- [x] No runtime fallback reads or auto-migration logic were added for legacy paths -> represented in current-state context and covered by passing `nix flake check`.
+- [x] Context files describe the new current-state path contract -> verified in the context sync pass and discoverable from `context/context-map.md`.
+
+### Failed checks and follow-ups
+- None.
+
+### Residual risks
+- None identified for this task.
 
 ## Open questions
 - None.

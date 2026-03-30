@@ -8,6 +8,7 @@ use jsonschema::{validator_for, Validator};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::services::default_paths::resolve_sce_default_locations;
 use crate::services::output_format::OutputFormat;
 use crate::services::style::{self};
 
@@ -942,9 +943,7 @@ where
 
     let mut discovered_paths = Vec::new();
 
-    let global_path = resolve_global_config_path()?
-        .join("sce")
-        .join("config.json");
+    let global_path = resolve_global_config_path()?;
     if path_exists(&global_path) {
         discovered_paths.push(LoadedConfigPath {
             path: global_path,
@@ -964,35 +963,7 @@ where
 }
 
 fn resolve_default_global_config_path() -> Result<PathBuf> {
-    #[cfg(target_os = "linux")]
-    {
-        if let Some(state_dir) = dirs::state_dir() {
-            return Ok(state_dir);
-        }
-
-        let Some(home_dir) = dirs::home_dir() else {
-            bail!("Unable to resolve state directory: neither XDG_STATE_HOME nor HOME is set");
-        };
-
-        Ok(home_dir.join(".local").join("state"))
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    {
-        return dirs::data_dir().ok_or_else(|| anyhow!("Unable to resolve data directory"));
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        if let Some(state_dir) = dirs::state_dir() {
-            return Ok(state_dir);
-        }
-        if let Some(data_dir) = dirs::data_dir() {
-            return Ok(data_dir);
-        }
-
-        bail!("Unable to resolve state or data directory")
-    }
+    Ok(resolve_sce_default_locations()?.global_config_file())
 }
 
 pub(crate) fn validate_config_file(path: &Path) -> Result<()> {
@@ -2088,7 +2059,7 @@ mod tests {
                 Ok("{\"log_level\":\"error\",\"timeout_ms\":500,\"workos_client_id\":\"from-config\"}".to_string())
             },
             |_| true,
-            || Ok(PathBuf::from("/state")),
+            || Ok(PathBuf::from("/config/sce/config.json")),
         )?;
 
         assert_eq!(resolved.log_level.value, LogLevel::Warn);
@@ -2127,7 +2098,7 @@ mod tests {
                 Ok("{\"log_level\":\"error\",\"timeout_ms\":500,\"workos_client_id\":\"from-config\"}".to_string())
             },
             |_| true,
-            || Ok(PathBuf::from("/state")),
+            || Ok(PathBuf::from("/config/sce/config.json")),
         )?;
 
         assert_eq!(resolved.log_level.value, LogLevel::Warn);
@@ -2154,7 +2125,7 @@ mod tests {
             |_| None,
             |_| Ok("{}".to_string()),
             |_| false,
-            || Ok(PathBuf::from("/state")),
+            || Ok(PathBuf::from("/config/sce/config.json")),
         )?;
 
         assert_eq!(resolved.log_level.value, LogLevel::Error);
@@ -2198,7 +2169,7 @@ mod tests {
                 Ok("{\"log_format\":\"json\",\"log_file\":\".sce/sce.log\",\"log_file_mode\":\"append\",\"otel\":{\"enabled\":true,\"exporter_otlp_endpoint\":\"https://collector.example/v1/traces\",\"exporter_otlp_protocol\":\"http/protobuf\"}}".to_string())
             },
             |_| true,
-            || Ok(PathBuf::from("/state")),
+            || Ok(PathBuf::from("/config/sce/config.json")),
         )?;
 
         assert_eq!(resolved.log_format.value, LogFormat::Json);
@@ -2241,7 +2212,7 @@ mod tests {
                 Ok("{\"log_format\":\"json\",\"log_file\":\"config.log\",\"log_file_mode\":\"append\",\"otel\":{\"enabled\":false,\"exporter_otlp_endpoint\":\"https://config.example/v1/traces\",\"exporter_otlp_protocol\":\"http/protobuf\"}}".to_string())
             },
             |_| true,
-            || Ok(PathBuf::from("/state")),
+            || Ok(PathBuf::from("/config/sce/config.json")),
         )?;
 
         assert_eq!(resolved.log_format.value, LogFormat::Text);
@@ -2278,7 +2249,7 @@ mod tests {
                 Ok("{\"log_format\":\"json\",\"log_file\":\"config.log\",\"log_file_mode\":\"append\",\"otel\":{\"enabled\":false,\"exporter_otlp_endpoint\":\"https://config.example/v1/traces\",\"exporter_otlp_protocol\":\"http/protobuf\"}}".to_string())
             },
             |_| true,
-            || Ok(PathBuf::from("/state")),
+            || Ok(PathBuf::from("/config/sce/config.json")),
         )?;
 
         assert_eq!(
@@ -2293,7 +2264,7 @@ mod tests {
                 otel_protocol: OtlpProtocol::HttpProtobuf,
                 loaded_config_paths: vec![
                     LoadedConfigPath {
-                        path: PathBuf::from("/state/sce/config.json"),
+                        path: PathBuf::from("/config/sce/config.json"),
                         source: ConfigPathSource::DefaultDiscoveredGlobal,
                     },
                     LoadedConfigPath {
@@ -2316,7 +2287,7 @@ mod tests {
             },
             |_| Ok("{}".to_string()),
             |_| false,
-            || Ok(PathBuf::from("/state")),
+            || Ok(PathBuf::from("/config/sce/config.json")),
         )
         .expect_err("invalid env OTLP protocol should fail");
 
@@ -2403,7 +2374,7 @@ mod tests {
             |_| None,
             |_| Ok("{\"unknown\":true}".to_string()),
             |_| true,
-            || Ok(PathBuf::from("/state")),
+            || Ok(PathBuf::from("/config/sce/config.json")),
         )
         .expect_err("unknown config keys should fail");
         assert!(error
@@ -2431,7 +2402,7 @@ mod tests {
                 )
             },
             |_| true,
-            || Ok(PathBuf::from("/state")),
+            || Ok(PathBuf::from("/config/sce/config.json")),
         )?;
 
         assert_eq!(resolved.log_level.value, LogLevel::Warn);
@@ -2450,7 +2421,7 @@ mod tests {
             Path::new("/workspace"),
             |_| None,
             |path| {
-                if path == Path::new("/state/sce/config.json") {
+                if path == Path::new("/config/sce/config.json") {
                     return Ok("{\"log_level\":\"error\",\"log_format\":\"json\",\"otel\":{\"enabled\":true},\"timeout_ms\":500,\"workos_client_id\":\"global-client\"}".to_string());
                 }
                 if path == Path::new("/workspace/.sce/config.json") {
@@ -2464,10 +2435,10 @@ mod tests {
                 ))
             },
             |path| {
-                path == Path::new("/state/sce/config.json")
+                path == Path::new("/config/sce/config.json")
                     || path == Path::new("/workspace/.sce/config.json")
             },
-            || Ok(PathBuf::from("/state")),
+            || Ok(PathBuf::from("/config/sce/config.json")),
         )?;
 
         assert_eq!(resolved.loaded_config_paths.len(), 2);
@@ -2597,7 +2568,7 @@ mod tests {
             |_| None,
             |_| Ok("{\"log_file_mode\":\"append\"}".to_string()),
             |_| true,
-            || Ok(PathBuf::from("/state")),
+            || Ok(PathBuf::from("/config/sce/config.json")),
         )
         .expect_err("log file mode without file should fail");
 
@@ -2621,7 +2592,7 @@ mod tests {
                 )
             },
             |_| true,
-            || Ok(PathBuf::from("/state")),
+            || Ok(PathBuf::from("/config/sce/config.json")),
         )
         .expect_err("invalid otel endpoint should fail");
 
@@ -2639,7 +2610,7 @@ mod tests {
             Path::new("/workspace"),
             |_| None,
             |path| {
-                if path == Path::new("/state/sce/config.json") {
+                if path == Path::new("/config/sce/config.json") {
                     return Ok("{\"workos_client_id\":\"global-client\"}".to_string());
                 }
                 if path == Path::new("/workspace/.sce/config.json") {
@@ -2651,10 +2622,10 @@ mod tests {
                 ))
             },
             |path| {
-                path == Path::new("/state/sce/config.json")
+                path == Path::new("/config/sce/config.json")
                     || path == Path::new("/workspace/.sce/config.json")
             },
-            || Ok(PathBuf::from("/state")),
+            || Ok(PathBuf::from("/config/sce/config.json")),
         )?;
 
         assert_eq!(
@@ -2675,7 +2646,7 @@ mod tests {
         RuntimeConfig {
             loaded_config_paths: vec![
                 LoadedConfigPath {
-                    path: PathBuf::from("/state/sce/config.json"),
+                    path: PathBuf::from("/config/sce/config.json"),
                     source: ConfigPathSource::DefaultDiscoveredGlobal,
                 },
                 LoadedConfigPath {
@@ -3059,7 +3030,7 @@ mod tests {
             Path::new("/workspace"),
             |_| None,
             |path| {
-                if path == Path::new("/state/sce/config.json") {
+                if path == Path::new("/config/sce/config.json") {
                     return Ok(
                         "{\"policies\":{\"bash\":{\"presets\":[\"forbid-git-all\"]}}}".to_string(),
                     );
@@ -3073,10 +3044,10 @@ mod tests {
                 ))
             },
             |path| {
-                path == Path::new("/state/sce/config.json")
+                path == Path::new("/config/sce/config.json")
                     || path == Path::new("/workspace/.sce/config.json")
             },
-            || Ok(PathBuf::from("/state")),
+            || Ok(PathBuf::from("/config/sce/config.json")),
         )?;
 
         let policies = resolved
@@ -3110,7 +3081,7 @@ mod tests {
             |_| None,
             |_| Ok("{\"policies\":{\"bash\":{\"presets\":[\"forbid-hg\"]}}}".to_string()),
             |_| true,
-            || Ok(PathBuf::from("/state")),
+            || Ok(PathBuf::from("/config/sce/config.json")),
         )
         .expect_err("unknown preset should fail");
 
@@ -3134,7 +3105,7 @@ mod tests {
             |_| None,
             |_| Ok("{\"policies\":{\"bash\":{\"presets\":[\"use-pnpm-over-npm\",\"use-bun-over-npm\"]}}}".to_string()),
             |_| true,
-            || Ok(PathBuf::from("/state")),
+            || Ok(PathBuf::from("/config/sce/config.json")),
         )
         .expect_err("conflicting presets should fail");
 
@@ -3175,7 +3146,7 @@ mod tests {
             |_| None,
             |_| Ok("{\"policies\":{\"bash\":{\"custom\":[{\"id\":\"one\",\"match\":{\"argv_prefix\":[\"git\",\"status\"]},\"message\":\"one\"},{\"id\":\"two\",\"match\":{\"argv_prefix\":[\"git\",\"status\"]},\"message\":\"two\"}]}}}".to_string()),
             |_| true,
-            || Ok(PathBuf::from("/state")),
+            || Ok(PathBuf::from("/config/sce/config.json")),
         )
         .expect_err("duplicate custom prefix should fail");
 
@@ -3200,7 +3171,7 @@ mod tests {
                 Ok("{\"policies\":{\"bash\":{\"presets\":[\"forbid-git-all\",\"forbid-git-commit\"]}}}".to_string())
             },
             |_| true,
-            || Ok(PathBuf::from("/state")),
+            || Ok(PathBuf::from("/config/sce/config.json")),
         )?;
 
         let output = format_validate_output(&resolved, ReportFormat::Text);

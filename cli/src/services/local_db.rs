@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, ensure, Context, Result};
 use turso::Builder;
 
+use crate::services::default_paths::resolve_sce_default_locations;
 use crate::services::resilience::{run_with_retry, RetryPolicy};
 
 const CORE_SCHEMA_STATEMENTS: &[&str] = &[
@@ -173,8 +174,7 @@ pub struct CoreSchemaMigrationOutcome {
 }
 
 pub fn resolve_agent_trace_local_db_path() -> Result<PathBuf> {
-    let state_root = resolve_state_data_root()?;
-    Ok(state_root.join("sce").join("agent-trace").join("local.db"))
+    Ok(resolve_sce_default_locations()?.agent_trace_local_db())
 }
 
 pub fn ensure_agent_trace_local_db_ready_blocking() -> Result<PathBuf> {
@@ -232,44 +232,10 @@ fn target_location(target: LocalDatabaseTarget<'_>) -> Result<&str> {
 }
 
 pub(crate) fn resolve_state_data_root() -> Result<PathBuf> {
-    #[cfg(target_os = "linux")]
-    {
-        if let Some(state_dir) = dirs::state_dir() {
-            return Ok(state_dir);
-        }
-        if let Some(home_dir) = dirs::home_dir() {
-            return Ok(home_dir.join(".local").join("state"));
-        }
-        Err(anyhow!(
-            "Unable to resolve state directory: neither XDG_STATE_HOME nor HOME is set"
-        ))
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        dirs::data_dir().ok_or_else(|| anyhow!("Unable to resolve data directory for macOS"))
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        dirs::data_local_dir()
-            .or_else(|| dirs::data_dir())
-            .ok_or_else(|| anyhow!("Unable to resolve local data directory for Windows"))
-    }
-
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    {
-        if let Some(state_dir) = dirs::state_dir() {
-            return Ok(state_dir);
-        }
-        if let Some(data_dir) = dirs::data_dir() {
-            return Ok(data_dir);
-        }
-        if let Some(home_dir) = dirs::home_dir() {
-            return Ok(home_dir.join(".local").join("state"));
-        }
-        Err(anyhow!("Unable to resolve state or data directory"))
-    }
+    Ok(resolve_sce_default_locations()?
+        .roots()
+        .state_root()
+        .to_path_buf())
 }
 
 pub async fn apply_core_schema_migrations(

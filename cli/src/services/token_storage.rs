@@ -7,8 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::services::auth::TokenResponse;
-
-const TOKEN_FILE_SUBPATH: &str = "sce/auth/tokens.json";
+use crate::services::default_paths::resolve_sce_default_locations;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StoredTokens {
@@ -103,33 +102,9 @@ pub fn delete_tokens() -> Result<bool, TokenStorageError> {
 }
 
 pub fn token_file_path() -> Result<PathBuf, TokenStorageError> {
-    #[cfg(target_os = "linux")]
-    {
-        linux_token_file_path()
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    {
-        let Some(data_dir) = dirs::data_dir() else {
-            return Err(TokenStorageError::PathResolution(
-                "data directory could not be resolved".to_string(),
-            ));
-        };
-        return Ok(data_dir.join(TOKEN_FILE_SUBPATH));
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        if let Some(state_dir) = dirs::state_dir() {
-            return Ok(state_dir.join(TOKEN_FILE_SUBPATH));
-        }
-        if let Some(data_dir) = dirs::data_dir() {
-            return Ok(data_dir.join(TOKEN_FILE_SUBPATH));
-        }
-        Err(TokenStorageError::PathResolution(
-            "state and data directories could not be resolved".to_string(),
-        ))
-    }
+    resolve_sce_default_locations()
+        .map(|locations| locations.auth_tokens_file())
+        .map_err(|error| TokenStorageError::PathResolution(error.to_string()))
 }
 
 fn save_tokens_at_path(path: &Path, stored: &StoredTokens) -> Result<(), TokenStorageError> {
@@ -184,24 +159,6 @@ fn ensure_parent_directory(path: &Path) -> Result<(), TokenStorageError> {
     fs::create_dir_all(parent)?;
     apply_secure_directory_permissions(parent)?;
     Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn linux_token_file_path() -> Result<PathBuf, TokenStorageError> {
-    if let Some(state_dir) = dirs::state_dir() {
-        return Ok(state_dir.join(TOKEN_FILE_SUBPATH));
-    }
-
-    let Some(home_dir) = dirs::home_dir() else {
-        return Err(TokenStorageError::PathResolution(
-            "home directory could not be resolved for Linux fallback".to_string(),
-        ));
-    };
-
-    Ok(home_dir
-        .join(".local")
-        .join("state")
-        .join(TOKEN_FILE_SUBPATH))
 }
 
 fn current_unix_timestamp_seconds() -> Result<u64, TokenStorageError> {

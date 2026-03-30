@@ -5,6 +5,7 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use serde_json::json;
 
+use crate::services::default_paths::resolve_sce_default_locations;
 use crate::services::output_format::OutputFormat;
 use crate::services::setup::{
     install_required_git_hooks, iter_required_hook_assets, RequiredHookInstallStatus,
@@ -189,6 +190,7 @@ struct DoctorDependencies<'a> {
     run_git_command: &'a dyn Fn(&Path, &[&str]) -> Option<String>,
     check_git_available: &'a dyn Fn() -> bool,
     resolve_state_root: &'a dyn Fn() -> Result<PathBuf>,
+    resolve_global_config_path: &'a dyn Fn() -> Result<PathBuf>,
     resolve_agent_trace_local_db_path: &'a dyn Fn() -> Result<PathBuf>,
     validate_config_file: &'a dyn Fn(&Path) -> Result<()>,
     check_agent_trace_local_db_health: &'a dyn Fn(&Path) -> Result<()>,
@@ -224,6 +226,9 @@ fn execute_doctor(request: DoctorRequest, repository_root: &Path) -> DoctorExecu
             run_git_command: &run_git_command,
             check_git_available: &is_git_available,
             resolve_state_root: &crate::services::local_db::resolve_state_data_root,
+            resolve_global_config_path: &|| {
+                Ok(resolve_sce_default_locations()?.global_config_file())
+            },
             resolve_agent_trace_local_db_path:
                 &crate::services::local_db::resolve_agent_trace_local_db_path,
             validate_config_file: &crate::services::config::validate_config_file,
@@ -415,6 +420,7 @@ fn build_report_with_dependencies(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn collect_global_state_health(
     repository_root: &Path,
     problems: &mut Vec<DoctorProblem>,
@@ -430,8 +436,19 @@ fn collect_global_state_health(
                 state: if state_root.exists() { "present" } else { "expected" },
                 path: state_root.clone(),
             });
+        }
+        Err(error) => problems.push(DoctorProblem {
+            category: ProblemCategory::GlobalState,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!("Unable to resolve expected state root: {error}"),
+            remediation: "Verify that the current platform exposes a writable SCE state directory before rerunning 'sce doctor'.".to_string(),
+            next_action: "manual_steps",
+        }),
+    }
 
-            let global_path = state_root.join("sce").join("config.json");
+    match (dependencies.resolve_global_config_path)() {
+        Ok(global_path) => {
             if global_path.exists() {
                 if let Err(error) = (dependencies.validate_config_file)(&global_path) {
                     problems.push(DoctorProblem {
@@ -461,7 +478,7 @@ fn collect_global_state_health(
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
             summary: format!("Unable to resolve expected global config path: {error}"),
-            remediation: "Verify that the current platform exposes a writable SCE state directory before rerunning 'sce doctor'.".to_string(),
+            remediation: "Verify that the current platform exposes a writable SCE config directory before rerunning 'sce doctor'.".to_string(),
             next_action: "manual_steps",
         }),
     }
@@ -1784,6 +1801,7 @@ mod tests {
             run_git_command: &run_git_command,
             check_git_available: &|| true,
             resolve_state_root: &|| Ok(test_dir.path().join("state-root")),
+            resolve_global_config_path: &|| Ok(test_dir.path().join("config-root/sce/config.json")),
             resolve_agent_trace_local_db_path: &|| {
                 Ok(test_dir.path().join("state-root/sce/agent-trace/local.db"))
             },
@@ -1813,6 +1831,82 @@ mod tests {
             problem.summary.contains("Local config file")
                 && problem.summary.contains("schema mismatch")
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_reports_state_root_failure_without_losing_global_config_path() -> Result<()> {
+        let test_dir = TestDir::new("doctor-state-root-failure")?;
+        let repository_root = test_dir.path().join("repo");
+        let hooks_dir = repository_root.join(".git").join("hooks");
+        install_canonical_hooks(&hooks_dir)?;
+
+        let global_config_path = test_dir.path().join("config-root/sce/config.json");
+        fs::create_dir_all(
+            global_config_path
+                .parent()
+                .expect("global config path should have parent"),
+        )?;
+        fs::write(&global_config_path, "{}")?;
+
+        let repo_root = repository_root.clone();
+        let hooks_dir = hooks_dir.clone();
+        let run_git_command = move |_cwd: &Path, args: &[&str]| match args {
+            ["rev-parse", "--show-toplevel"] => Some(repo_root.display().to_string()),
+            ["rev-parse", "--is-bare-repository"] => Some("false".to_string()),
+            ["rev-parse", "--git-path", "hooks"] => Some(hooks_dir.display().to_string()),
+            _ => None,
+        };
+        let dependencies = DoctorDependencies {
+            run_git_command: &run_git_command,
+            check_git_available: &|| true,
+            resolve_state_root: &|| anyhow::bail!("state root unavailable"),
+            resolve_global_config_path: &|| Ok(global_config_path.clone()),
+            resolve_agent_trace_local_db_path: &|| {
+                Ok(test_dir.path().join("state-root/sce/agent-trace/local.db"))
+            },
+            validate_config_file: &|_| Ok(()),
+            check_agent_trace_local_db_health: &|_| Ok(()),
+            install_required_git_hooks: &|_| unreachable!("hook install should not run"),
+            create_directory_all: &|_| unreachable!("directory creation should not run"),
+        };
+
+        let execution = execute_doctor_with_dependencies(
+            DoctorRequest {
+                mode: DoctorMode::Diagnose,
+                database_inventory: DoctorDatabaseInventory::Repo,
+                format: DoctorFormat::Text,
+            },
+            &repository_root,
+            &dependencies,
+        );
+
+        assert_eq!(execution.report.readiness, Readiness::NotReady);
+        assert!(execution.report.problems.iter().any(|problem| {
+            problem.summary == "Unable to resolve expected state root: state root unavailable"
+        }));
+        assert!(execution
+            .report
+            .config_locations
+            .iter()
+            .any(
+                |location| location.label == "Global config" && location.path == global_config_path
+            ));
+
+        let output = render_report(
+            DoctorRequest {
+                mode: DoctorMode::Diagnose,
+                database_inventory: DoctorDatabaseInventory::Repo,
+                format: DoctorFormat::Json,
+            },
+            &execution,
+        )?;
+        let parsed: Value = serde_json::from_str(&output)?;
+        assert_eq!(parsed["config_paths"][0]["label"], "Global config");
+        assert_eq!(
+            parsed["config_paths"][0]["path"],
+            global_config_path.display().to_string()
+        );
         Ok(())
     }
 
@@ -1859,6 +1953,7 @@ mod tests {
             run_git_command: &run_git_command,
             check_git_available: &|| true,
             resolve_state_root: &resolve_state_root,
+            resolve_global_config_path: &|| Ok(test_dir.path().join("config-root/sce/config.json")),
             resolve_agent_trace_local_db_path: &resolve_agent_trace_local_db_path,
             validate_config_file: &|_| Ok(()),
             check_agent_trace_local_db_health: &|_| Ok(()),
@@ -1958,6 +2053,7 @@ mod tests {
             run_git_command: &run_git_command,
             check_git_available: &|| true,
             resolve_state_root: &resolve_state_root,
+            resolve_global_config_path: &|| Ok(test_dir.path().join("config-root/sce/config.json")),
             resolve_agent_trace_local_db_path: &resolve_agent_trace_local_db_path,
             validate_config_file: &|_| Ok(()),
             check_agent_trace_local_db_health: &|_| Ok(()),
@@ -2060,6 +2156,7 @@ mod tests {
             run_git_command: &run_git_command,
             check_git_available: &|| true,
             resolve_state_root: &resolve_state_root,
+            resolve_global_config_path: &|| Ok(test_dir.path().join("config-root/sce/config.json")),
             resolve_agent_trace_local_db_path: &resolve_agent_trace_local_db_path,
             validate_config_file: &|_| Ok(()),
             check_agent_trace_local_db_health: &|_| Ok(()),
@@ -2133,6 +2230,7 @@ mod tests {
             run_git_command: &run_git_command,
             check_git_available: &|| true,
             resolve_state_root: &|| Ok(state_root.clone()),
+            resolve_global_config_path: &|| Ok(test_dir.path().join("config-root/sce/config.json")),
             resolve_agent_trace_local_db_path: &|| Ok(agent_trace_db.clone()),
             validate_config_file: &|_| Ok(()),
             check_agent_trace_local_db_health: &|_| Ok(()),
@@ -2211,6 +2309,7 @@ mod tests {
             run_git_command: &run_git_command,
             check_git_available: &check_git_available,
             resolve_state_root: &resolve_state_root,
+            resolve_global_config_path: &|| Ok(test_dir.path().join("config-root/sce/config.json")),
             resolve_agent_trace_local_db_path: &resolve_agent_trace_local_db_path,
             validate_config_file: &validate_config_file,
             check_agent_trace_local_db_health: &check_agent_trace_local_db_health,
@@ -2270,6 +2369,7 @@ mod tests {
             run_git_command: &|_, _| None,
             check_git_available: &|| false,
             resolve_state_root: &|| Ok(PathBuf::from("/tmp/state-root")),
+            resolve_global_config_path: &|| Ok(PathBuf::from("/tmp/config-root/sce/config.json")),
             resolve_agent_trace_local_db_path: &|| {
                 Ok(PathBuf::from("/tmp/canonical/sce/agent-trace/local.db"))
             },

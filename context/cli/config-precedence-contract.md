@@ -43,7 +43,7 @@ Config file selection follows this deterministic order:
 1. `--config <path>`
 2. `SCE_CONFIG_FILE`
 3. discovered defaults when no explicit path/env override is provided:
-   - global: `${global_config_root}/sce/config.json`, where `global_config_root` uses `dirs::state_dir()` on Linux (with `~/.local/state` fallback when needed), `dirs::data_dir()` on macOS/Windows, and `state_dir` then `data_dir` fallback on other targets
+   - global: `${config_root}/sce/config.json`, where `config_root` comes from the shared default-path policy seam in `cli/src/services/default_paths.rs` and resolves to `dirs::config_dir()` on supported platforms (Linux fallback: `~/.config` when `XDG_CONFIG_HOME` is unset)
    - local: `.sce/config.json` under current working directory
 
 When both discovered defaults exist, they are merged in memory in deterministic order `global -> local`, and local values override global values per key.
