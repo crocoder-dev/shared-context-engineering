@@ -33,6 +33,7 @@ pub struct AuthRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct AuthStatusReport {
     authentication_state: &'static str,
+    stored_credentials_path: String,
     has_stored_credentials: bool,
     token_expired: Option<bool>,
     token_type: Option<String>,
@@ -97,10 +98,10 @@ pub fn run_login(format: AuthFormat) -> Result<String> {
 
 pub fn run_logout(format: AuthFormat) -> Result<String> {
     let deleted = token_storage::delete_tokens().map_err(|error| {
-        anyhow!(with_try_guidance(
-            error.to_string(),
-            "verify file permissions for the auth state directory and rerun 'sce auth logout'."
-        ))
+        let guidance = auth_state_path_guidance(
+            "verify file permissions for the auth state directory and rerun 'sce auth logout'",
+        );
+        anyhow!(with_try_guidance(error.to_string(), &guidance,))
     })?;
     render_logout_result(deleted, format)
 }
@@ -139,13 +140,15 @@ pub fn run_renew(format: AuthFormat, force: bool) -> Result<String> {
 }
 
 pub fn run_status(format: AuthFormat) -> Result<String> {
+    let stored_credentials_path = token_storage::token_file_path()?.display().to_string();
     let report = match token_storage::load_tokens()? {
         Some(tokens) => {
             let tokens = maybe_refresh_tokens_for_status(&tokens)?.unwrap_or(tokens);
-            build_authenticated_status_report(&tokens)?
+            build_authenticated_status_report(&tokens, stored_credentials_path)?
         }
         None => AuthStatusReport {
             authentication_state: "unauthenticated",
+            stored_credentials_path,
             has_stored_credentials: false,
             token_expired: None,
             token_type: None,
@@ -328,7 +331,10 @@ fn map_login_error(error: &AuthError) -> anyhow::Error {
     ))
 }
 
-fn build_authenticated_status_report(tokens: &StoredTokens) -> Result<AuthStatusReport> {
+fn build_authenticated_status_report(
+    tokens: &StoredTokens,
+    stored_credentials_path: String,
+) -> Result<AuthStatusReport> {
     let now_unix_seconds = current_unix_timestamp_seconds()?;
     let expires_at_unix_seconds = tokens
         .stored_at_unix_seconds
@@ -338,6 +344,7 @@ fn build_authenticated_status_report(tokens: &StoredTokens) -> Result<AuthStatus
 
     Ok(AuthStatusReport {
         authentication_state: "authenticated",
+        stored_credentials_path,
         has_stored_credentials: true,
         token_expired: Some(seconds_until_expiry <= 0),
         token_type: Some(tokens.token_type.clone()),
@@ -482,15 +489,23 @@ fn render_status_result(report: &AuthStatusReport, format: AuthFormat) -> Result
                     "{} {}",
                     label("Authentication status:"),
                     value("unauthenticated")
-                ) + &format!("\n{} {}", label("Stored credentials:"), value("none")));
+                ) + &format!(
+                    "\n{} {}\n{} {}",
+                    label("Stored credentials:"),
+                    value("none"),
+                    label("Credentials file:"),
+                    value(&report.stored_credentials_path),
+                ));
             }
 
             Ok(format!(
-                "{} {}\n{} {}\n{} {}\n{} {}\n{} {}\n{} {}\n{} {}",
+                "{} {}\n{} {}\n{} {}\n{} {}\n{} {}\n{} {}\n{} {}\n{} {}",
                 label("Authentication status:"),
                 value(report.authentication_state),
                 label("Stored credentials:"),
                 value("present"),
+                label("Credentials file:"),
+                value(&report.stored_credentials_path),
                 label("Token expired:"),
                 value(&report.token_expired.unwrap_or(false).to_string()),
                 label("Seconds until expiry:"),
@@ -508,6 +523,7 @@ fn render_status_result(report: &AuthStatusReport, format: AuthFormat) -> Result
             "command": NAME,
             "subcommand": "status",
             "authentication_state": report.authentication_state,
+            "stored_credentials_path": report.stored_credentials_path,
             "has_stored_credentials": report.has_stored_credentials,
             "token_expired": report.token_expired,
             "token_type": report.token_type,
@@ -532,6 +548,13 @@ fn with_try_guidance(message: String, guidance: &str) -> String {
         message
     } else {
         format!("{message} Try: {guidance}")
+    }
+}
+
+fn auth_state_path_guidance(action: &str) -> String {
+    match token_storage::token_file_path() {
+        Ok(path) => format!("{action}; expected path: '{}'", path.display()),
+        Err(_) => action.to_string(),
     }
 }
 
@@ -688,7 +711,7 @@ mod tests {
                     },
                     |_| Ok("{\"workos_client_id\":\"config-client\"}".to_string()),
                     |_| true,
-                    || Ok(PathBuf::from("/state")),
+                    || Ok(PathBuf::from("/config/sce/config.json")),
                 )
             },
             |client_id| {
@@ -711,7 +734,7 @@ mod tests {
                     Path::new("/workspace"),
                     |_| None,
                     |path| {
-                        if path == Path::new("/state/sce/config.json") {
+                        if path == Path::new("/config/sce/config.json") {
                             return Ok("{\"workos_client_id\":\"global-client\"}".to_string());
                         }
                         if path == Path::new("/workspace/.sce/config.json") {
@@ -720,10 +743,10 @@ mod tests {
                         Err(anyhow!("unexpected config path: {}", path.display()))
                     },
                     |path| {
-                        path == Path::new("/state/sce/config.json")
+                        path == Path::new("/config/sce/config.json")
                             || path == Path::new("/workspace/.sce/config.json")
                     },
-                    || Ok(PathBuf::from("/state")),
+                    || Ok(PathBuf::from("/config/sce/config.json")),
                 )
             },
             |client_id| {
@@ -744,7 +767,7 @@ mod tests {
                     Path::new("/workspace"),
                     |_| None,
                     |path| {
-                        if path == Path::new("/state/sce/config.json") {
+                        if path == Path::new("/config/sce/config.json") {
                             return Ok("{\"workos_client_id\":\"global-client\"}".to_string());
                         }
                         if path == Path::new("/workspace/.sce/config.json") {
@@ -753,10 +776,10 @@ mod tests {
                         Err(anyhow!("unexpected config path: {}", path.display()))
                     },
                     |path| {
-                        path == Path::new("/state/sce/config.json")
+                        path == Path::new("/config/sce/config.json")
                             || path == Path::new("/workspace/.sce/config.json")
                     },
-                    || Ok(PathBuf::from("/state")),
+                    || Ok(PathBuf::from("/config/sce/config.json")),
                 )
             },
             |client_id| {
@@ -778,7 +801,7 @@ mod tests {
                     |_| None,
                     |_| Ok("{}".to_string()),
                     |_| false,
-                    || Ok(PathBuf::from("/state")),
+                    || Ok(PathBuf::from("/config/sce/config.json")),
                 )
             },
             |client_id| {
@@ -803,7 +826,7 @@ mod tests {
                     },
                     |_| Ok("{\"workos_client_id\":\"config-client\"}".to_string()),
                     |_| true,
-                    || Ok(PathBuf::from("/state")),
+                    || Ok(PathBuf::from("/config/sce/config.json")),
                 )
             },
             |_| Err(anyhow!(AuthError::MissingClientId.to_string())),
@@ -844,6 +867,7 @@ mod tests {
         let output = render_status_result(
             &AuthStatusReport {
                 authentication_state: "unauthenticated",
+                stored_credentials_path: "/tmp/sce/auth/tokens.json".to_string(),
                 has_stored_credentials: false,
                 token_expired: None,
                 token_type: None,
@@ -857,25 +881,33 @@ mod tests {
 
         assert!(output.contains("unauthenticated"));
         assert!(output.contains("Stored credentials: none"));
+        assert!(output.contains("Credentials file: /tmp/sce/auth/tokens.json"));
         Ok(())
     }
 
     #[test]
     fn status_json_output_reports_expiry_fields() -> Result<()> {
-        let report = build_authenticated_status_report(&StoredTokens {
-            access_token: "access-token".to_string(),
-            token_type: "Bearer".to_string(),
-            expires_in: 3600,
-            refresh_token: "refresh-token".to_string(),
-            scope: Some("openid profile".to_string()),
-            stored_at_unix_seconds: super::current_unix_timestamp_seconds()? - 60,
-        })?;
+        let report = build_authenticated_status_report(
+            &StoredTokens {
+                access_token: "access-token".to_string(),
+                token_type: "Bearer".to_string(),
+                expires_in: 3600,
+                refresh_token: "refresh-token".to_string(),
+                scope: Some("openid profile".to_string()),
+                stored_at_unix_seconds: super::current_unix_timestamp_seconds()? - 60,
+            },
+            "/tmp/sce/auth/tokens.json".to_string(),
+        )?;
 
         let output = render_status_result(&report, AuthFormat::Json)?;
         let parsed: Value = serde_json::from_str(&output)?;
 
         assert_eq!(parsed["subcommand"], "status");
         assert_eq!(parsed["authentication_state"], "authenticated");
+        assert_eq!(
+            parsed["stored_credentials_path"],
+            "/tmp/sce/auth/tokens.json"
+        );
         assert!(parsed["has_stored_credentials"].as_bool().unwrap_or(false));
         assert!(parsed["seconds_until_expiry"].as_i64().is_some());
         Ok(())

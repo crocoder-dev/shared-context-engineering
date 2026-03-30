@@ -41,6 +41,7 @@
           root = workspaceRoot;
           fileset = pkgs.lib.fileset.unions [
             (craneLib.fileset.commonCargoSources workspaceRoot)
+            (pkgs.lib.fileset.maybeMissing ./cli/src/services/default_paths.rs)
             (pkgs.lib.fileset.maybeMissing ./config/.opencode)
             (pkgs.lib.fileset.maybeMissing ./config/.claude)
             (pkgs.lib.fileset.maybeMissing ./config/schema/sce-config.schema.json)

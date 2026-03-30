@@ -3,6 +3,7 @@ pub mod auth;
 pub mod auth_command;
 pub mod completion;
 pub mod config;
+pub mod default_paths;
 pub mod doctor;
 pub mod error;
 pub mod hooks;
