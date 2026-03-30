@@ -33,11 +33,14 @@ At the current implementation point, the runtime in `cli/src/services/doctor.rs`
 - Agent Trace local DB location reporting, DB parent-directory readiness checks, and existing-DB health validation
 - an empty repo-scoped database section in the default readiness view because no repo-owned SCE database currently exists
 - explicit all-SCE database inventory rendering for the canonical Agent Trace DB only
+- text output now prefixes every line with a status tag: `[PASS]`, `[FAIL]`, `[MISS]`, or `[WARN]`
+- status tag prefixes are colorized in text output (PASS=green, FAIL=red, WARN=yellow, MISS=blue) and only the prefix is colored
 - explicit git-unavailable, outside-repo, and bare-repo repository-targeting failures
 - effective hook-path source (`default`, local `core.hooksPath`, global `core.hooksPath`)
 - repository root and hooks directory resolution when a repository target is detected
 - required hook presence and executable permissions for `pre-commit`, `commit-msg`, and `post-commit` when repo-scoped checks apply
 - byte-for-byte stale-content detection for required hook payloads against canonical embedded SCE-managed hook assets
+- repo-scoped OpenCode structure checks for required `.opencode/agent`, `.opencode/command`, and `.opencode/skills` directories when `.opencode/` exists, with missing/non-directory paths reported as manual-only errors
 - repo-scoped OpenCode plugin registry/file presence checks for the `sce-bash-policy` plugin when `.opencode/` exists, plus runtime dependency and preset catalog presence checks; registry-missing is an error while file/runtime/preset findings are warnings (manual-only remediation)
 - repair-mode reuse of `cli/src/services/setup.rs::install_required_git_hooks` for missing hooks directories plus missing, stale, or non-executable required hooks
 - doctor-owned bootstrap of the missing canonical SCE-owned Agent Trace DB parent directory, with deterministic refusal when the resolved path does not match the expected owned location
@@ -199,6 +202,8 @@ Text and JSON output must both expose:
 - `--fix` result reporting when repair mode is used
 
 The JSON contract must remain stable enough for downstream automation and include machine-readable problem and fix-result records rather than free-form diagnostics only.
+
+Text output additionally prefixes every rendered line with one of `[PASS]`, `[FAIL]`, `[MISS]`, or `[WARN]` so operators can scan status quickly. The status prefix is colorized (PASS=green, FAIL=red, WARN=yellow, MISS=blue) while the remainder of the line is uncolored.
 
 ## Setup and doctor alignment rule
 

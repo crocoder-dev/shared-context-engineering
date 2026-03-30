@@ -13,7 +13,7 @@ use crate::services::setup::{
 };
 #[cfg(test)]
 use crate::services::setup::{iter_embedded_assets_for_setup_target, SetupTarget};
-use crate::services::style::{heading, label, success, value};
+use crate::services::style::{heading, label, success, value, OwoColorize};
 
 pub const NAME: &str = "doctor";
 
@@ -24,6 +24,7 @@ const OPENCODE_PLUGIN_RELATIVE_PATH: &str = "plugins/sce-bash-policy.ts";
 const OPENCODE_PLUGIN_RUNTIME_RELATIVE_PATH: &str = "plugins/bash-policy/runtime.ts";
 const OPENCODE_PLUGIN_PRESET_CATALOG_RELATIVE_PATH: &str = "lib/bash-policy-presets.json";
 const OPENCODE_PLUGIN_MANIFEST_ENTRY: &str = "./plugins/sce-bash-policy.ts";
+const OPENCODE_REQUIRED_DIRECTORIES: [&str; 3] = ["agent", "command", "skills"];
 
 pub type DoctorFormat = OutputFormat;
 
@@ -169,6 +170,14 @@ enum FixResult {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StatusTag {
+    Pass,
+    Fail,
+    Miss,
+    Warn,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DoctorProblem {
     category: ProblemCategory,
@@ -184,6 +193,12 @@ struct DoctorFixResultRecord {
     category: ProblemCategory,
     outcome: FixResult,
     detail: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TaggedLine {
+    tag: StatusTag,
+    text: String,
 }
 
 struct DoctorDependencies<'a> {
@@ -774,6 +789,8 @@ fn inspect_opencode_plugin_health(repository_root: &Path, problems: &mut Vec<Doc
         return;
     }
 
+    inspect_opencode_required_directories(&opencode_root, problems);
+
     let manifest_path = opencode_root.join(OPENCODE_MANIFEST_FILE);
     if let Some(summary) = opencode_plugin_registry_issue(&manifest_path) {
         problems.push(DoctorProblem {
@@ -821,6 +838,66 @@ fn inspect_opencode_plugin_health(repository_root: &Path, problems: &mut Vec<Doc
             ),
             next_action: "manual_steps",
         });
+    }
+}
+
+fn inspect_opencode_required_directories(opencode_root: &Path, problems: &mut Vec<DoctorProblem>) {
+    for directory in OPENCODE_REQUIRED_DIRECTORIES {
+        let required_path = opencode_root.join(directory);
+        match fs::metadata(&required_path) {
+            Ok(metadata) => {
+                if !metadata.is_dir() {
+                    problems.push(DoctorProblem {
+                        category: ProblemCategory::RepoAssets,
+                        severity: ProblemSeverity::Error,
+                        fixability: ProblemFixability::ManualOnly,
+                        summary: format!(
+                            "OpenCode required directory '{}' is not a directory.",
+                            required_path.display()
+                        ),
+                        remediation: format!(
+                            "Reinstall OpenCode assets so '{}' includes the required '{}' directory, then rerun 'sce doctor'.",
+                            opencode_root.display(),
+                            directory
+                        ),
+                        next_action: "manual_steps",
+                    });
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                problems.push(DoctorProblem {
+                    category: ProblemCategory::RepoAssets,
+                    severity: ProblemSeverity::Error,
+                    fixability: ProblemFixability::ManualOnly,
+                    summary: format!(
+                        "OpenCode required directory '{}' is missing.",
+                        required_path.display()
+                    ),
+                    remediation: format!(
+                        "Reinstall OpenCode assets so '{}' includes the required '{}' directory, then rerun 'sce doctor'.",
+                        opencode_root.display(),
+                        directory
+                    ),
+                    next_action: "manual_steps",
+                });
+            }
+            Err(error) => {
+                problems.push(DoctorProblem {
+                    category: ProblemCategory::RepoAssets,
+                    severity: ProblemSeverity::Error,
+                    fixability: ProblemFixability::ManualOnly,
+                    summary: format!(
+                        "OpenCode required directory '{}' could not be inspected: {error}",
+                        required_path.display()
+                    ),
+                    remediation: format!(
+                        "Verify that '{}' is readable and rerun 'sce doctor'.",
+                        required_path.display()
+                    ),
+                    next_action: "manual_steps",
+                });
+            }
+        }
     }
 }
 
@@ -1037,181 +1114,265 @@ fn run_git_command(repository_root: &Path, args: &[&str]) -> Option<String> {
 }
 
 #[allow(clippy::too_many_lines)]
-fn format_report(report: &HookDoctorReport) -> String {
+fn format_report_lines(report: &HookDoctorReport) -> Vec<TaggedLine> {
     let mut lines = Vec::new();
-    lines.push(format!(
-        "{}: {}",
-        label("SCE doctor"),
-        match report.readiness {
-            Readiness::Ready => success("ready"),
-            Readiness::NotReady => value("not ready"),
-        }
-    ));
-    lines.push(format!(
-        "{}: {}",
-        label("Mode"),
-        match report.mode {
-            DoctorMode::Diagnose => value("diagnose"),
-            DoctorMode::Fix => value("fix"),
-        }
-    ));
-    lines.push(format!(
-        "{}: {}",
-        label("Database inventory"),
-        match report.database_inventory {
-            DoctorDatabaseInventory::Repo => value("repo"),
-            DoctorDatabaseInventory::All => value("all"),
-        }
-    ));
+    lines.push(TaggedLine {
+        tag: readiness_tag(report.readiness),
+        text: format!(
+            "{}: {}",
+            label("SCE doctor"),
+            match report.readiness {
+                Readiness::Ready => success("ready"),
+                Readiness::NotReady => value("not ready"),
+            }
+        ),
+    });
+    lines.push(TaggedLine {
+        tag: StatusTag::Pass,
+        text: format!(
+            "{}: {}",
+            label("Mode"),
+            match report.mode {
+                DoctorMode::Diagnose => value("diagnose"),
+                DoctorMode::Fix => value("fix"),
+            }
+        ),
+    });
+    lines.push(TaggedLine {
+        tag: StatusTag::Pass,
+        text: format!(
+            "{}: {}",
+            label("Database inventory"),
+            match report.database_inventory {
+                DoctorDatabaseInventory::Repo => value("repo"),
+                DoctorDatabaseInventory::All => value("all"),
+            }
+        ),
+    });
 
-    lines.push(format!(
-        "{}: {}",
-        label("Hooks path source"),
-        value(match report.hook_path_source {
-            HookPathSource::Default => "default (.git/hooks)",
-            HookPathSource::LocalConfig => "per-repo core.hooksPath",
-            HookPathSource::GlobalConfig => "global core.hooksPath",
-        })
-    ));
+    lines.push(TaggedLine {
+        tag: StatusTag::Pass,
+        text: format!(
+            "{}: {}",
+            label("Hooks path source"),
+            value(match report.hook_path_source {
+                HookPathSource::Default => "default (.git/hooks)",
+                HookPathSource::LocalConfig => "per-repo core.hooksPath",
+                HookPathSource::GlobalConfig => "global core.hooksPath",
+            })
+        ),
+    });
 
-    lines.push(format!(
-        "{}: {}",
-        label("State root"),
-        report.state_root.as_ref().map_or_else(
-            || value("(not detected)"),
-            |location| format!(
-                "{} ({})",
+    lines.push(TaggedLine {
+        tag: report
+            .state_root
+            .as_ref()
+            .map_or(StatusTag::Miss, |location| {
+                tag_for_location_state(location.state)
+            }),
+        text: format!(
+            "{}: {}",
+            label("State root"),
+            report.state_root.as_ref().map_or_else(
+                || value("(not detected)"),
+                |location| format!(
+                    "{} ({})",
+                    value(location.state),
+                    value(&location.path.display().to_string())
+                )
+            )
+        ),
+    });
+
+    lines.push(TaggedLine {
+        tag: report
+            .repository_root
+            .as_ref()
+            .map_or(StatusTag::Miss, |_| StatusTag::Pass),
+        text: format!(
+            "{}: {}",
+            label("Repository root"),
+            report.repository_root.as_ref().map_or_else(
+                || value("(not detected)"),
+                |path| value(&path.display().to_string())
+            )
+        ),
+    });
+
+    lines.push(TaggedLine {
+        tag: report
+            .hooks_directory
+            .as_ref()
+            .map_or(StatusTag::Miss, |_| StatusTag::Pass),
+        text: format!(
+            "{}: {}",
+            label("Effective hooks directory"),
+            report.hooks_directory.as_ref().map_or_else(
+                || value("(not detected)"),
+                |path| value(&path.display().to_string())
+            )
+        ),
+    });
+
+    lines.push(TaggedLine {
+        tag: StatusTag::Pass,
+        text: format!("{}:", heading("Config files")),
+    });
+    for location in &report.config_locations {
+        lines.push(TaggedLine {
+            tag: tag_for_location_state(location.state),
+            text: format!(
+                "  {}: {} ({})",
+                label(location.label),
                 value(location.state),
                 value(&location.path.display().to_string())
-            )
-        )
-    ));
-
-    lines.push(format!(
-        "{}: {}",
-        label("Repository root"),
-        report.repository_root.as_ref().map_or_else(
-            || value("(not detected)"),
-            |path| value(&path.display().to_string())
-        )
-    ));
-
-    lines.push(format!(
-        "{}: {}",
-        label("Effective hooks directory"),
-        report.hooks_directory.as_ref().map_or_else(
-            || value("(not detected)"),
-            |path| value(&path.display().to_string())
-        )
-    ));
-
-    lines.push(format!("\n{}:", heading("Config files")));
-    for location in &report.config_locations {
-        lines.push(format!(
-            "  {}: {} ({})",
-            label(location.label),
-            value(location.state),
-            value(&location.path.display().to_string())
-        ));
+            ),
+        });
     }
 
-    lines.push(format!(
-        "\n{}: {}",
-        label("Agent Trace local DB"),
-        report.agent_trace_local_db.as_ref().map_or_else(
-            || value("(not detected)"),
-            |location| format!(
-                "{} ({})",
-                value(location.state),
-                value(&location.path.display().to_string())
+    lines.push(TaggedLine {
+        tag: report
+            .agent_trace_local_db
+            .as_ref()
+            .map_or(StatusTag::Miss, |location| {
+                tag_for_location_state(location.state)
+            }),
+        text: format!(
+            "{}: {}",
+            label("Agent Trace local DB"),
+            report.agent_trace_local_db.as_ref().map_or_else(
+                || value("(not detected)"),
+                |location| format!(
+                    "{} ({})",
+                    value(location.state),
+                    value(&location.path.display().to_string())
+                )
             )
-        )
-    ));
+        ),
+    });
 
     // Repo-scoped databases (empty by design)
-    lines.push(format!("\n{}:", heading("Repo-scoped databases")));
+    lines.push(TaggedLine {
+        tag: StatusTag::Pass,
+        text: format!("{}:", heading("Repo-scoped databases")),
+    });
     if report.repo_databases.is_empty() {
-        lines.push(value("  none").clone());
+        lines.push(TaggedLine {
+            tag: StatusTag::Miss,
+            text: value("  none"),
+        });
     } else {
         for database in &report.repo_databases {
-            lines.push(format!("- {}", format_database_record(database)));
+            lines.push(TaggedLine {
+                tag: tag_for_database_status(database.status),
+                text: format!("- {}", format_database_record(database)),
+            });
         }
     }
 
     // All SCE databases (when --all-databases)
     if report.database_inventory == DoctorDatabaseInventory::All {
-        lines.push(format!("\n{}:", heading("All SCE databases")));
+        lines.push(TaggedLine {
+            tag: StatusTag::Pass,
+            text: format!("{}:", heading("All SCE databases")),
+        });
         if report.all_databases.is_empty() {
-            lines.push(value("  none").clone());
+            lines.push(TaggedLine {
+                tag: StatusTag::Miss,
+                text: value("  none"),
+            });
         } else {
             for database in &report.all_databases {
-                lines.push(format!(
-                    "  {}: {} ({}) {}",
-                    value(database_family(database.family)),
-                    value(database_scope(database.scope)),
-                    value(database_status(database.status)),
-                    value(&database.canonical_path.display().to_string())
-                ));
+                lines.push(TaggedLine {
+                    tag: tag_for_database_status(database.status),
+                    text: format!(
+                        "  {}: {} ({}) {}",
+                        value(database_family(database.family)),
+                        value(database_scope(database.scope)),
+                        value(database_status(database.status)),
+                        value(&database.canonical_path.display().to_string())
+                    ),
+                });
             }
         }
     }
 
     // Required hooks
-    lines.push(format!("\n{}:", heading("Required hooks")));
+    lines.push(TaggedLine {
+        tag: StatusTag::Pass,
+        text: format!("{}:", heading("Required hooks")),
+    });
     for hook in &report.hooks {
-        lines.push(format!(
-            "  {}: {} (content={}, executable={}) {}",
-            value(hook.name),
-            value(hook_state(hook)),
-            value(hook_content_state(hook.content_state)),
-            value(if hook.executable { "yes" } else { "no" }),
-            value(&hook.path.display().to_string())
-        ));
+        lines.push(TaggedLine {
+            tag: tag_for_hook(hook),
+            text: format!(
+                "  {}: {} (content={}, executable={}) {}",
+                value(hook.name),
+                value(hook_state(hook)),
+                value(hook_content_state(hook.content_state)),
+                value(if hook.executable { "yes" } else { "no" }),
+                value(&hook.path.display().to_string())
+            ),
+        });
     }
 
     // Problems
     if report.problems.is_empty() {
-        lines.push(format!("\n{}: {}", label("Problems"), success("none")));
+        lines.push(TaggedLine {
+            tag: StatusTag::Pass,
+            text: format!("{}: {}", label("Problems"), success("none")),
+        });
     } else {
-        lines.push(format!("\n{}:", heading("Problems")));
+        lines.push(TaggedLine {
+            tag: tag_for_problem_heading(&report.problems),
+            text: format!("{}:", heading("Problems")),
+        });
         for problem in &report.problems {
-            lines.push(format!(
-                "  [{}|{}|{}] {}",
-                value(problem_category(problem.category)),
-                value(problem_severity(problem.severity)),
-                value(problem_fixability(problem.fixability)),
-                value(&problem.summary)
-            ));
+            lines.push(TaggedLine {
+                tag: tag_for_problem_severity(problem.severity),
+                text: format!(
+                    "  [{}|{}|{}] {}",
+                    value(problem_category(problem.category)),
+                    value(problem_severity(problem.severity)),
+                    value(problem_fixability(problem.fixability)),
+                    value(&problem.summary)
+                ),
+            });
         }
     }
 
-    lines.join("\n")
+    lines
 }
 
 fn format_execution(execution: &DoctorExecution) -> String {
     let report = &execution.report;
-    let base_report = format_report(report);
-    let mut lines = base_report
-        .lines()
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
+    let mut lines = format_report_lines(report);
 
     if report.mode == DoctorMode::Fix {
         if execution.fix_results.is_empty() {
-            lines.push(format!("\n{}: {}", label("Fix results"), value("none")));
+            lines.push(TaggedLine {
+                tag: StatusTag::Pass,
+                text: format!("{}: {}", label("Fix results"), value("none")),
+            });
         } else {
-            lines.push(format!("\n{}:", heading("Fix results")));
+            lines.push(TaggedLine {
+                tag: tag_for_fix_results_heading(&execution.fix_results),
+                text: format!("{}:", heading("Fix results")),
+            });
             for fix_result in &execution.fix_results {
-                lines.push(format!(
-                    "  [{}] {}",
-                    value(fix_result_outcome(fix_result.outcome)),
-                    value(&fix_result.detail)
-                ));
+                lines.push(TaggedLine {
+                    tag: tag_for_fix_result(fix_result.outcome),
+                    text: format!(
+                        "  [{}] {}",
+                        value(fix_result_outcome(fix_result.outcome)),
+                        value(&fix_result.detail)
+                    ),
+                });
             }
         }
     }
 
-    lines.join("\n")
+    format_tagged_lines(lines)
 }
 
 fn render_report(request: DoctorRequest, execution: &DoctorExecution) -> Result<String> {
@@ -1316,6 +1477,105 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
     });
 
     serde_json::to_string_pretty(&payload).context("failed to serialize doctor report to JSON")
+}
+
+fn format_tagged_lines(lines: Vec<TaggedLine>) -> String {
+    lines
+        .into_iter()
+        .map(|line| format!("{} {}", status_tag_prefix(line.tag), line.text))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn status_tag_prefix(tag: StatusTag) -> String {
+    let prefix = format!("[{}]", status_tag_label(tag));
+    match tag {
+        StatusTag::Pass => prefix.green().to_string(),
+        StatusTag::Fail => prefix.red().to_string(),
+        StatusTag::Warn => prefix.yellow().to_string(),
+        StatusTag::Miss => prefix.blue().to_string(),
+    }
+}
+
+fn status_tag_label(tag: StatusTag) -> &'static str {
+    match tag {
+        StatusTag::Pass => "PASS",
+        StatusTag::Fail => "FAIL",
+        StatusTag::Miss => "MISS",
+        StatusTag::Warn => "WARN",
+    }
+}
+
+fn readiness_tag(readiness: Readiness) -> StatusTag {
+    match readiness {
+        Readiness::Ready => StatusTag::Pass,
+        Readiness::NotReady => StatusTag::Fail,
+    }
+}
+
+fn tag_for_location_state(state: &str) -> StatusTag {
+    match state {
+        "present" => StatusTag::Pass,
+        "expected" => StatusTag::Miss,
+        _ => StatusTag::Warn,
+    }
+}
+
+fn tag_for_database_status(status: DatabaseStatus) -> StatusTag {
+    match status {
+        DatabaseStatus::Present => StatusTag::Pass,
+        DatabaseStatus::Missing => StatusTag::Miss,
+    }
+}
+
+fn tag_for_hook(hook: &HookFileHealth) -> StatusTag {
+    if hook_state(hook) == "ok" {
+        StatusTag::Pass
+    } else {
+        StatusTag::Fail
+    }
+}
+
+fn tag_for_problem_heading(problems: &[DoctorProblem]) -> StatusTag {
+    if problems
+        .iter()
+        .any(|problem| problem.severity == ProblemSeverity::Error)
+    {
+        StatusTag::Fail
+    } else {
+        StatusTag::Warn
+    }
+}
+
+fn tag_for_problem_severity(severity: ProblemSeverity) -> StatusTag {
+    match severity {
+        ProblemSeverity::Error => StatusTag::Fail,
+        ProblemSeverity::Warning => StatusTag::Warn,
+    }
+}
+
+fn tag_for_fix_results_heading(results: &[DoctorFixResultRecord]) -> StatusTag {
+    if results
+        .iter()
+        .any(|result| result.outcome == FixResult::Failed)
+    {
+        StatusTag::Fail
+    } else if results
+        .iter()
+        .any(|result| result.outcome == FixResult::Manual)
+    {
+        StatusTag::Warn
+    } else {
+        StatusTag::Pass
+    }
+}
+
+fn tag_for_fix_result(outcome: FixResult) -> StatusTag {
+    match outcome {
+        FixResult::Fixed | FixResult::Skipped => StatusTag::Pass,
+        FixResult::Manual => StatusTag::Warn,
+        FixResult::Failed => StatusTag::Fail,
+    }
 }
 
 fn hook_state(hook: &HookFileHealth) -> &'static str {
@@ -1636,9 +1896,9 @@ mod tests {
 
     use super::{
         execute_doctor_with_dependencies, render_report, run_filesystem_auto_fixes,
-        DoctorDatabaseInventory, DoctorDependencies, DoctorFormat, DoctorMode, DoctorProblem,
-        DoctorRequest, FileLocationHealth, FixResult, HookDoctorReport, HookPathSource,
-        ProblemCategory, ProblemFixability, ProblemSeverity, Readiness, NAME,
+        DoctorDatabaseInventory, DoctorDependencies, DoctorExecution, DoctorFormat, DoctorMode,
+        DoctorProblem, DoctorRequest, FileLocationHealth, FixResult, HookDoctorReport,
+        HookPathSource, ProblemCategory, ProblemFixability, ProblemSeverity, Readiness, NAME,
     };
     use crate::services::setup::RequiredHooksInstallOutcome;
 
@@ -1716,6 +1976,52 @@ mod tests {
                 .is_some_and(|value| value.contains(summary_fragment))
     }
 
+    fn assert_all_lines_tagged(output: &str) {
+        let prefixes = [
+            super::status_tag_prefix(super::StatusTag::Pass),
+            super::status_tag_prefix(super::StatusTag::Fail),
+            super::status_tag_prefix(super::StatusTag::Miss),
+            super::status_tag_prefix(super::StatusTag::Warn),
+        ]
+        .map(|prefix| format!("{prefix} "));
+        for line in output.lines() {
+            assert!(
+                prefixes.iter().any(|prefix| line.starts_with(prefix)),
+                "line missing status tag: '{line}'"
+            );
+        }
+    }
+
+    fn base_report(mode: DoctorMode, readiness: Readiness) -> HookDoctorReport {
+        HookDoctorReport {
+            mode,
+            database_inventory: DoctorDatabaseInventory::Repo,
+            readiness,
+            state_root: Some(FileLocationHealth {
+                label: "State root",
+                path: PathBuf::from("/tmp/state"),
+                state: "present",
+            }),
+            repository_root: Some(PathBuf::from("/tmp/repo")),
+            hook_path_source: HookPathSource::Default,
+            hooks_directory: Some(PathBuf::from("/tmp/repo/.git/hooks")),
+            config_locations: vec![FileLocationHealth {
+                label: "Global config",
+                path: PathBuf::from("/tmp/config.json"),
+                state: "present",
+            }],
+            agent_trace_local_db: Some(FileLocationHealth {
+                label: "Agent Trace local DB",
+                path: PathBuf::from("/tmp/state/sce/agent-trace/local.db"),
+                state: "present",
+            }),
+            repo_databases: Vec::new(),
+            all_databases: Vec::new(),
+            hooks: Vec::new(),
+            problems: Vec::new(),
+        }
+    }
+
     #[test]
     fn render_json_includes_stable_fields_without_filesystem() -> Result<()> {
         let output = render_report(
@@ -1773,6 +2079,89 @@ mod tests {
         assert_eq!(parsed["mode"], "fix");
         assert!(parsed["fix_results"].is_array());
         Ok(())
+    }
+
+    #[test]
+    fn doctor_text_output_tags_all_lines_for_ready_report() {
+        let execution = DoctorExecution {
+            report: base_report(DoctorMode::Diagnose, Readiness::Ready),
+            fix_results: Vec::new(),
+        };
+        let output = super::format_execution(&execution);
+
+        assert_all_lines_tagged(&output);
+    }
+
+    #[test]
+    fn doctor_text_output_tags_all_lines_for_not_ready_report() {
+        let mut report = base_report(DoctorMode::Diagnose, Readiness::NotReady);
+        report.problems.push(DoctorProblem {
+            category: ProblemCategory::HookRollout,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: "Missing required hook".to_string(),
+            remediation: "Install hooks".to_string(),
+            next_action: "manual_steps",
+        });
+        let execution = DoctorExecution {
+            report,
+            fix_results: Vec::new(),
+        };
+        let output = super::format_execution(&execution);
+
+        assert_all_lines_tagged(&output);
+        assert!(output.contains(&super::status_tag_prefix(super::StatusTag::Fail)));
+    }
+
+    #[test]
+    fn doctor_text_output_tags_all_lines_for_fix_results() {
+        let execution = DoctorExecution {
+            report: base_report(DoctorMode::Fix, Readiness::Ready),
+            fix_results: vec![
+                super::DoctorFixResultRecord {
+                    category: ProblemCategory::HookRollout,
+                    outcome: FixResult::Fixed,
+                    detail: "Installed hook".to_string(),
+                },
+                super::DoctorFixResultRecord {
+                    category: ProblemCategory::HookRollout,
+                    outcome: FixResult::Failed,
+                    detail: "Hook repair failed".to_string(),
+                },
+            ],
+        };
+        let output = super::format_execution(&execution);
+
+        assert_all_lines_tagged(&output);
+        assert!(output.contains(&super::status_tag_prefix(super::StatusTag::Fail)));
+    }
+
+    #[test]
+    fn doctor_text_output_includes_warn_and_miss_tags() {
+        let mut report = base_report(DoctorMode::Diagnose, Readiness::Ready);
+        report.state_root = None;
+        if let Some(location) = report.config_locations.first_mut() {
+            location.state = "expected";
+        }
+        report.problems.push(DoctorProblem {
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Warning,
+            fixability: ProblemFixability::ManualOnly,
+            summary: "warning from test".to_string(),
+            remediation: "manual remediation".to_string(),
+            next_action: "manual_steps",
+        });
+
+        let execution = DoctorExecution {
+            report,
+            fix_results: Vec::new(),
+        };
+        let output = super::format_execution(&execution);
+
+        assert_all_lines_tagged(&output);
+        assert!(output.contains(&super::status_tag_prefix(super::StatusTag::Warn)));
+        assert!(output.contains(&super::status_tag_prefix(super::StatusTag::Miss)));
+        assert!(output.contains("warning from test"));
     }
 
     #[test]
@@ -1835,7 +2224,7 @@ mod tests {
     }
 
     #[test]
-    fn doctor_reports_state_root_failure_without_losing_global_config_path() -> Result<()> {
+   fn doctor_reports_state_root_failure_without_losing_global_config_path() -> Result<()> {
         let test_dir = TestDir::new("doctor-state-root-failure")?;
         let repository_root = test_dir.path().join("repo");
         let hooks_dir = repository_root.join(".git").join("hooks");
@@ -1909,6 +2298,171 @@ mod tests {
         );
         Ok(())
     }
+    
+    #[test]
+    fn doctor_skips_opencode_structure_checks_without_root() -> Result<()> {
+        let test_dir = TestDir::new("doctor-opencode-structure-skip")?;
+        let repository_root = test_dir.path().join("repo");
+        let hooks_dir = repository_root.join(".git").join("hooks");
+        install_canonical_hooks(&hooks_dir)?;
+
+        let agent_trace_db = test_dir
+            .path()
+            .join("state-root")
+            .join("sce")
+            .join("agent-trace")
+            .join("local.db");
+        fs::create_dir_all(
+            agent_trace_db
+                .parent()
+                .expect("agent trace path should have parent"),
+        )?;
+
+        let repo_root = repository_root.clone();
+        let hooks_dir = hooks_dir.clone();
+        let run_git_command = move |_cwd: &Path, args: &[&str]| match args {
+            ["rev-parse", "--show-toplevel"] => Some(repo_root.display().to_string()),
+            ["rev-parse", "--is-bare-repository"] => Some("false".to_string()),
+            ["rev-parse", "--git-path", "hooks"] => Some(hooks_dir.display().to_string()),
+            _ => None,
+        };
+
+        let state_root = test_dir.path().join("state-root");
+        let resolve_state_root = move || Ok(state_root.clone());
+        let resolve_agent_trace_local_db_path = move || Ok(agent_trace_db.clone());
+
+        let dependencies = DoctorDependencies {
+            run_git_command: &run_git_command,
+            check_git_available: &|| true,
+            resolve_state_root: &resolve_state_root,
+            resolve_agent_trace_local_db_path: &resolve_agent_trace_local_db_path,
+            validate_config_file: &|_| Ok(()),
+            check_agent_trace_local_db_health: &|_| Ok(()),
+            install_required_git_hooks: &|_| unreachable!("hook install should not run"),
+            create_directory_all: &|_| unreachable!("directory creation should not run"),
+        };
+
+        let json_request = DoctorRequest {
+            mode: DoctorMode::Diagnose,
+            database_inventory: DoctorDatabaseInventory::Repo,
+            format: DoctorFormat::Json,
+        };
+        let execution = execute_doctor_with_dependencies(
+            DoctorRequest {
+                mode: DoctorMode::Diagnose,
+                database_inventory: DoctorDatabaseInventory::Repo,
+                format: DoctorFormat::Text,
+            },
+            &repository_root,
+            &dependencies,
+        );
+        let output = render_report(json_request, &execution)?;
+        let parsed: Value = serde_json::from_str(&output)?;
+
+        assert_eq!(parsed["readiness"], "ready");
+        let problems = parsed["problems"].as_array().expect("problems array");
+        assert!(problems.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_reports_opencode_structure_missing_directories() -> Result<()> {
+        let test_dir = TestDir::new("doctor-opencode-structure-missing")?;
+        let repository_root = test_dir.path().join("repo");
+        let hooks_dir = repository_root.join(".git").join("hooks");
+        install_canonical_hooks(&hooks_dir)?;
+
+        let opencode_root = repository_root.join(".opencode");
+        fs::create_dir_all(&opencode_root)?;
+        fs::write(
+            opencode_root.join("opencode.json"),
+            "{\"plugin\":[\"./plugins/sce-bash-policy.ts\"]}",
+        )?;
+
+        let agent_trace_db = test_dir
+            .path()
+            .join("state-root")
+            .join("sce")
+            .join("agent-trace")
+            .join("local.db");
+        fs::create_dir_all(
+            agent_trace_db
+                .parent()
+                .expect("agent trace path should have parent"),
+        )?;
+
+        let repo_root = repository_root.clone();
+        let hooks_dir = hooks_dir.clone();
+        let run_git_command = move |_cwd: &Path, args: &[&str]| match args {
+            ["rev-parse", "--show-toplevel"] => Some(repo_root.display().to_string()),
+            ["rev-parse", "--is-bare-repository"] => Some("false".to_string()),
+            ["rev-parse", "--git-path", "hooks"] => Some(hooks_dir.display().to_string()),
+            _ => None,
+        };
+
+        let state_root = test_dir.path().join("state-root");
+        let resolve_state_root = move || Ok(state_root.clone());
+        let resolve_agent_trace_local_db_path = move || Ok(agent_trace_db.clone());
+
+        let dependencies = DoctorDependencies {
+            run_git_command: &run_git_command,
+            check_git_available: &|| true,
+            resolve_state_root: &resolve_state_root,
+            resolve_agent_trace_local_db_path: &resolve_agent_trace_local_db_path,
+            validate_config_file: &|_| Ok(()),
+            check_agent_trace_local_db_health: &|_| Ok(()),
+            install_required_git_hooks: &|_| unreachable!("hook install should not run"),
+            create_directory_all: &|_| unreachable!("directory creation should not run"),
+        };
+
+        let json_request = DoctorRequest {
+            mode: DoctorMode::Diagnose,
+            database_inventory: DoctorDatabaseInventory::Repo,
+            format: DoctorFormat::Json,
+        };
+        let execution = execute_doctor_with_dependencies(
+            DoctorRequest {
+                mode: DoctorMode::Diagnose,
+                database_inventory: DoctorDatabaseInventory::Repo,
+                format: DoctorFormat::Text,
+            },
+            &repository_root,
+            &dependencies,
+        );
+        let output = render_report(json_request, &execution)?;
+        let parsed: Value = serde_json::from_str(&output)?;
+
+        assert_eq!(parsed["readiness"], "not_ready");
+        let problems = parsed["problems"].as_array().expect("problems array");
+        assert!(problems.iter().any(|problem| {
+            problem_matches(
+                problem,
+                "repo_assets",
+                "error",
+                "manual_only",
+                ".opencode/agent",
+            )
+        }));
+        assert!(problems.iter().any(|problem| {
+            problem_matches(
+                problem,
+                "repo_assets",
+                "error",
+                "manual_only",
+                ".opencode/command",
+            )
+        }));
+        assert!(problems.iter().any(|problem| {
+            problem_matches(
+                problem,
+                "repo_assets",
+                "error",
+                "manual_only",
+                ".opencode/skills",
+            )
+        }));
+        Ok(())
+    }
 
     #[test]
     fn doctor_reports_opencode_plugin_missing_file_warning() -> Result<()> {
@@ -1919,6 +2473,9 @@ mod tests {
 
         let opencode_root = repository_root.join(".opencode");
         fs::create_dir_all(&opencode_root)?;
+        fs::create_dir_all(opencode_root.join("agent"))?;
+        fs::create_dir_all(opencode_root.join("command"))?;
+        fs::create_dir_all(opencode_root.join("skills"))?;
         fs::write(
             opencode_root.join("opencode.json"),
             "{\"plugin\":[\"./plugins/sce-bash-policy.ts\"]}",
@@ -2001,6 +2558,9 @@ mod tests {
 
         let opencode_root = repository_root.join(".opencode");
         fs::create_dir_all(&opencode_root)?;
+        fs::create_dir_all(opencode_root.join("agent"))?;
+        fs::create_dir_all(opencode_root.join("command"))?;
+        fs::create_dir_all(opencode_root.join("skills"))?;
         fs::write(
             opencode_root.join("opencode.json"),
             "{\"plugin\":[\"./plugins/sce-bash-policy.ts\"]}",
@@ -2101,6 +2661,9 @@ mod tests {
 
         let opencode_root = repository_root.join(".opencode");
         fs::create_dir_all(&opencode_root)?;
+        fs::create_dir_all(opencode_root.join("agent"))?;
+        fs::create_dir_all(opencode_root.join("command"))?;
+        fs::create_dir_all(opencode_root.join("skills"))?;
         fs::write(
             opencode_root.join("opencode.json"),
             "{\"plugin\":[\"./plugins/sce-bash-policy.ts\"]}",
