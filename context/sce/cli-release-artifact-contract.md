@@ -44,15 +44,26 @@ This file captures the current shared release artifact foundation plus the appro
 - The release orchestrator passes the resolved checked-in version through to the platform builds, merged release-manifest assembly, and npm tarball packaging without mutating package versions during workflow execution.
 - Platform builds are split into separate reusable workflow files:
   - `.github/workflows/release-sce-linux.yml`
+  - `.github/workflows/release-sce-linux-arm.yml`
   - `.github/workflows/release-sce-macos-intel.yml`
   - `.github/workflows/release-sce-macos-arm.yml`
+- The reusable Linux ARM workflow builds canonical `aarch64-unknown-linux-gnu` artifacts on an ARM Linux runner, and the top-level release orchestrator now requires and publishes that lane alongside the other platform workflows.
 - `.github/workflows/release-agents.yml` remains Tessl/agent-file release automation and is not the CLI release workflow.
 
-## Current supported release targets in automation
+## Current orchestrated release targets in automation
 
 - `x86_64-unknown-linux-gnu`
+- `aarch64-unknown-linux-gnu`
 - `x86_64-apple-darwin`
 - `aarch64-apple-darwin`
+
+## Current supported release matrix
+
+- Linux x64 release artifacts are published as `x86_64-unknown-linux-gnu`.
+- Linux ARM release artifacts are published as `aarch64-unknown-linux-gnu`.
+- macOS Intel release artifacts are published as `x86_64-apple-darwin`.
+- macOS ARM release artifacts are published as `aarch64-apple-darwin`.
+- The merged release manifest and combined checksum outputs include all four current targets for each published `sce` release.
 
 ## Downstream channel implication
 
