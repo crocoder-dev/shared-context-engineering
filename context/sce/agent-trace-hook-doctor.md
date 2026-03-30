@@ -34,7 +34,7 @@ At the current implementation point, the runtime in `cli/src/services/doctor.rs`
 - an empty repo-scoped database section in the default readiness view because no repo-owned SCE database currently exists
 - explicit all-SCE database inventory rendering for the canonical Agent Trace DB only
 - text output now prefixes every line with a status tag: `[PASS]`, `[FAIL]`, `[MISS]`, or `[WARN]`
-- status tag prefixes are colorized in text output (PASS=green, FAIL=red, WARN=yellow, MISS=blue) and only the prefix is colored
+- status tag prefixes are colorized in text output (PASS=green, FAIL=red, WARN=yellow, MISS=blue) and only the prefix is colored when `supports_color()` allows it (TTY + no `NO_COLOR`)
 - explicit git-unavailable, outside-repo, and bare-repo repository-targeting failures
 - effective hook-path source (`default`, local `core.hooksPath`, global `core.hooksPath`)
 - repository root and hooks directory resolution when a repository target is detected
@@ -203,7 +203,7 @@ Text and JSON output must both expose:
 
 The JSON contract must remain stable enough for downstream automation and include machine-readable problem and fix-result records rather than free-form diagnostics only.
 
-Text output additionally prefixes every rendered line with one of `[PASS]`, `[FAIL]`, `[MISS]`, or `[WARN]` so operators can scan status quickly. The status prefix is colorized (PASS=green, FAIL=red, WARN=yellow, MISS=blue) while the remainder of the line is uncolored.
+Text output additionally prefixes every rendered line with one of `[PASS]`, `[FAIL]`, `[MISS]`, or `[WARN]` so operators can scan status quickly. The status prefix is colorized (PASS=green, FAIL=red, WARN=yellow, MISS=blue) while the remainder of the line is uncolored, and colorization is gated by `supports_color()` (TTY + no `NO_COLOR`).
 
 ## Setup and doctor alignment rule
 

@@ -108,5 +108,25 @@ pub fn prompt_value(text: &str) -> String {
     style_if_enabled(text, |s| s.yellow().to_string())
 }
 
+#[must_use]
+pub fn status_tag_pass(text: &str) -> String {
+    style_if_enabled(text, |s| s.green().to_string())
+}
+
+#[must_use]
+pub fn status_tag_fail(text: &str) -> String {
+    style_if_enabled(text, |s| s.red().to_string())
+}
+
+#[must_use]
+pub fn status_tag_warn(text: &str) -> String {
+    style_if_enabled(text, |s| s.yellow().to_string())
+}
+
+#[must_use]
+pub fn status_tag_miss(text: &str) -> String {
+    style_if_enabled(text, |s| s.blue().to_string())
+}
+
 #[cfg(test)]
 mod tests;

@@ -13,7 +13,10 @@ use crate::services::setup::{
 };
 #[cfg(test)]
 use crate::services::setup::{iter_embedded_assets_for_setup_target, SetupTarget};
-use crate::services::style::{heading, label, success, value, OwoColorize};
+use crate::services::style::{
+    heading, label, status_tag_fail, status_tag_miss, status_tag_pass, status_tag_warn, success,
+    value,
+};
 
 pub const NAME: &str = "doctor";
 
@@ -1490,10 +1493,10 @@ fn format_tagged_lines(lines: Vec<TaggedLine>) -> String {
 fn status_tag_prefix(tag: StatusTag) -> String {
     let prefix = format!("[{}]", status_tag_label(tag));
     match tag {
-        StatusTag::Pass => prefix.green().to_string(),
-        StatusTag::Fail => prefix.red().to_string(),
-        StatusTag::Warn => prefix.yellow().to_string(),
-        StatusTag::Miss => prefix.blue().to_string(),
+        StatusTag::Pass => status_tag_pass(&prefix),
+        StatusTag::Fail => status_tag_fail(&prefix),
+        StatusTag::Warn => status_tag_warn(&prefix),
+        StatusTag::Miss => status_tag_miss(&prefix),
     }
 }
 
@@ -1977,19 +1980,36 @@ mod tests {
     }
 
     fn assert_all_lines_tagged(output: &str) {
-        let prefixes = [
-            super::status_tag_prefix(super::StatusTag::Pass),
-            super::status_tag_prefix(super::StatusTag::Fail),
-            super::status_tag_prefix(super::StatusTag::Miss),
-            super::status_tag_prefix(super::StatusTag::Warn),
-        ]
-        .map(|prefix| format!("{prefix} "));
         for line in output.lines() {
+            let normalized = strip_ansi_codes(line);
             assert!(
-                prefixes.iter().any(|prefix| line.starts_with(prefix)),
+                normalized.starts_with("[PASS] ")
+                    || normalized.starts_with("[FAIL] ")
+                    || normalized.starts_with("[MISS] ")
+                    || normalized.starts_with("[WARN] "),
                 "line missing status tag: '{line}'"
             );
         }
+    }
+
+    fn strip_ansi_codes(input: &str) -> String {
+        let mut output = String::with_capacity(input.len());
+        let mut chars = input.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\u{1b}' {
+                if matches!(chars.peek(), Some('[')) {
+                    chars.next();
+                    for next in chars.by_ref() {
+                        if next == 'm' {
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+            output.push(ch);
+        }
+        output
     }
 
     fn base_report(mode: DoctorMode, readiness: Readiness) -> HookDoctorReport {
@@ -2110,7 +2130,8 @@ mod tests {
         let output = super::format_execution(&execution);
 
         assert_all_lines_tagged(&output);
-        assert!(output.contains(&super::status_tag_prefix(super::StatusTag::Fail)));
+        let normalized = strip_ansi_codes(&output);
+        assert!(normalized.contains("[FAIL]"));
     }
 
     #[test]
@@ -2133,7 +2154,8 @@ mod tests {
         let output = super::format_execution(&execution);
 
         assert_all_lines_tagged(&output);
-        assert!(output.contains(&super::status_tag_prefix(super::StatusTag::Fail)));
+        let normalized = strip_ansi_codes(&output);
+        assert!(normalized.contains("[FAIL]"));
     }
 
     #[test]
@@ -2159,9 +2181,30 @@ mod tests {
         let output = super::format_execution(&execution);
 
         assert_all_lines_tagged(&output);
-        assert!(output.contains(&super::status_tag_prefix(super::StatusTag::Warn)));
-        assert!(output.contains(&super::status_tag_prefix(super::StatusTag::Miss)));
+        let normalized = strip_ansi_codes(&output);
+        assert!(normalized.contains("[WARN]"));
+        assert!(normalized.contains("[MISS]"));
         assert!(output.contains("warning from test"));
+    }
+
+    #[test]
+    fn doctor_text_output_disables_prefix_colors_when_no_color_set() {
+        let previous = std::env::var("NO_COLOR").ok();
+        std::env::set_var("NO_COLOR", "1");
+        let execution = DoctorExecution {
+            report: base_report(DoctorMode::Diagnose, Readiness::Ready),
+            fix_results: Vec::new(),
+        };
+        let output = super::format_execution(&execution);
+
+        match previous {
+            Some(value) => std::env::set_var("NO_COLOR", value),
+            None => std::env::remove_var("NO_COLOR"),
+        }
+
+        assert_all_lines_tagged(&output);
+        assert!(output.contains("[PASS] "));
+        assert!(!output.contains("\u{1b}["));
     }
 
     #[test]
