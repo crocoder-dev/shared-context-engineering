@@ -101,7 +101,7 @@ pub fn run_logout(format: AuthFormat) -> Result<String> {
         let guidance = auth_state_path_guidance(
             "verify file permissions for the auth state directory and rerun 'sce auth logout'",
         );
-        anyhow!(with_try_guidance(error.to_string(), &guidance,))
+        anyhow!(format!("{} Try: {}", error, guidance))
     })?;
     render_logout_result(deleted, format)
 }
