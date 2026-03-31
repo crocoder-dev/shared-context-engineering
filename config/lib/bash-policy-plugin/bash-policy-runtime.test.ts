@@ -276,6 +276,46 @@ describe("evaluateBashCommandPolicy", () => {
 
 			expect(result.allowed).toBe(false);
 		});
+
+		test("blocks cargo inside nix develop shell payload", async () => {
+			const presetPath = createTestPresetFile(tempDir, { presets: [] });
+			mkdirSync(join(tempDir, ".sce"), { recursive: true });
+			writeFileSync(
+				join(tempDir, ".sce", "config.json"),
+				JSON.stringify({
+					policies: {
+						bash: {
+							presets: [],
+							custom: [
+								{
+									id: "use-nix-flake-check-over-cargo-fmt-check",
+									message:
+										"This repository prefers `nix flake check` over direct `cargo fmt --check`.",
+									match: {
+										argv_prefix: ["cargo", "fmt", "--check"],
+									},
+								},
+							],
+						},
+					},
+				}),
+			);
+
+			const result = await evaluateBashCommandPolicy({
+				command: "nix develop -c sh -c 'cd cli && cargo fmt --check'",
+				worktree: tempDir,
+				pluginDirectory: tempDir,
+				presetCatalogPath: presetPath,
+			});
+
+			expect(result.allowed).toBe(false);
+			if (!result.allowed) {
+				expect(result.normalizedArgv).toEqual(["cargo", "fmt", "--check"]);
+				expect(result.policy.id).toBe(
+					"use-nix-flake-check-over-cargo-fmt-check",
+				);
+			}
+		});
 	});
 
 	describe("command normalization", () => {
@@ -1011,6 +1051,15 @@ describe("parseCommandSegments", () => {
 			]);
 		});
 
+		test("does not split operators inside quoted payloads", () => {
+			const result = parseCommandSegments(
+				"nix develop -c sh -c 'cd cli && cargo fmt --check'",
+			);
+			expect(result).toEqual([
+				["nix", "develop", "-c", "sh", "-c", "cd cli && cargo fmt --check"],
+			]);
+		});
+
 		test("returns null for unclosed quotes", () => {
 			const result = parseCommandSegments("echo 'unclosed");
 			expect(result).toBeNull();
@@ -1034,6 +1083,26 @@ describe("parseCommandSegments", () => {
 			expect(result.allowed).toBe(false);
 			if (!result.allowed) {
 				expect(result.policy.id).toBe("forbid-git-all");
+			}
+		});
+
+		test("blocks sh -c payload with forbid-git-commit", async () => {
+			const presetPath = createTestPresetFile(tempDir, {
+				presets: [TEST_PRESETS.presets[1]],
+			});
+			createTestConfig(tempDir, ["forbid-git-commit"]);
+
+			const result = await evaluateBashCommandPolicy({
+				command: "sh -c 'git commit -m test'",
+				worktree: tempDir,
+				pluginDirectory: tempDir,
+				presetCatalogPath: presetPath,
+			});
+
+			expect(result.allowed).toBe(false);
+			if (!result.allowed) {
+				expect(result.normalizedArgv).toEqual(["git", "commit", "-m", "test"]);
+				expect(result.policy.id).toBe("forbid-git-commit");
 			}
 		});
 

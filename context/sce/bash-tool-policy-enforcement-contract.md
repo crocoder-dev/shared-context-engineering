@@ -118,7 +118,6 @@ The enforcement layer only needs to reason about the single normalized argv prod
 
 The following are intentionally out of scope for matching guarantees in this plan:
 
-- nested shell payloads like `bash -lc "git commit -m x"`
 - alias expansion, functions, subshells, and process substitution
 - parsing command intent from comments, heredocs, or multi-line scripts
 
@@ -142,6 +141,21 @@ The original contract intentionally excluded shell control operators (`|`, `&&`,
 - `git status && npm install` with `forbid-git-all` -> blocked (segment "git status" matches)
 - `ls; git push` with `forbid-git-commit` -> blocked (segment "git push" matches)
 - `cat file | ls` with no git policies -> allowed (no segment matches git policies)
+
+## Nested Shell Extension (2026-03)
+
+The enforcement layer now also inspects a narrow set of nested command wrappers so repo policies still apply when commands are routed through shell entrypoints commonly used by Nix workflows.
+
+**Extended behavior:**
+- `nix ... -c <argv...>` and `nix ... --command <argv...>` unwrap to the nested argv after the `-c` or `--command` flag
+- `sh -c "..."`, `bash -c "..."`, and combined short-option forms such as `bash -lc "..."` parse the nested command string into shell segments
+- Nested parsing is recursive, so `nix develop -c sh -c 'cd cli && cargo fmt --check'` is evaluated against the inner `cargo fmt --check` argv
+- If any nested segment matches a blocking policy, the full command is blocked
+
+**Still out of scope:**
+- shells or wrappers other than the explicit cases above
+- arbitrary script files passed to shells without `-c`
+- alias expansion, shell functions, and runtime evaluation features beyond tokenization of the `-c` payload
 
 ## Policy entry semantics
 

@@ -4,11 +4,32 @@
   "log_file": "context/tmp/sce.log",
   "log_file_mode": "append",
   "policies": {
-    "bash":{
+    "bash": {
       "presets": [
+      ],
+      "custom": [
+        {
+          "id": "use-nix-flake-check-over-cargo-test",
+          "match": {
+            "argv_prefix": [
+              "cargo",
+              "test"
+            ]
+          },
+          "message": "This repository prefers `nix flake check` over direct `cargo test` commands. Run `nix flake check` instead."
+        },
+        {
+          "id": "use-nix-flake-check-over-cargo-fmt-check",
+          "match": {
+            "argv_prefix": [
+              "cargo",
+              "fmt",
+              "--check"
+            ]
+          },
+          "message": "This repository prefers `nix flake check` over direct `cargo fmt --check`. Run `nix flake check` instead."
+        }
       ]
     }
   }
-
-
 }

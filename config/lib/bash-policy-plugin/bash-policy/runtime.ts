@@ -10,6 +10,7 @@ const WRAPPER_BINARIES = new Set([
 	"nohup",
 	"sudo",
 ]);
+const SHELL_BINARIES = new Set(["sh", "bash"]);
 
 interface PolicyMatch {
 	id: string;
@@ -81,18 +82,20 @@ export async function evaluateBashCommandPolicy({
 	const activePolicies = buildActivePolicies(policyConfig, presetCatalog);
 
 	for (const segment of segments) {
-		const normalizedArgv = normalizeSegment(segment);
-		if (!normalizedArgv || normalizedArgv.length === 0) {
-			continue;
-		}
+		const normalizedArgvCandidates = normalizeSegment(segment);
+		for (const normalizedArgv of normalizedArgvCandidates) {
+			if (normalizedArgv.length === 0) {
+				continue;
+			}
 
-		const match = selectMatchingPolicy(activePolicies, normalizedArgv);
-		if (match) {
-			return {
-				allowed: false,
-				normalizedArgv,
-				policy: match,
-			};
+			const match = selectMatchingPolicy(activePolicies, normalizedArgv);
+			if (match) {
+				return {
+					allowed: false,
+					normalizedArgv,
+					policy: match,
+				};
+			}
 		}
 	}
 
@@ -101,9 +104,9 @@ export async function evaluateBashCommandPolicy({
 	};
 }
 
-function normalizeSegment(segment: string[]): string[] | null {
+function normalizeSegment(segment: string[]): string[][] {
 	if (segment.length === 0) {
-		return null;
+		return [];
 	}
 
 	const normalized = [...segment];
@@ -120,11 +123,78 @@ function normalizeSegment(segment: string[]): string[] | null {
 	}
 
 	if (normalized.length === 0) {
-		return null;
+		return [];
 	}
 
 	normalized[0] = path.basename(normalized[0] ?? "");
-	return normalized;
+
+	const nestedSegments = unwrapNestedCommandSegments(normalized);
+	if (!nestedSegments) {
+		return [normalized];
+	}
+
+	const nestedNormalized: string[][] = [];
+	for (const nestedSegment of nestedSegments) {
+		nestedNormalized.push(...normalizeSegment(nestedSegment));
+	}
+
+	return nestedNormalized.length > 0 ? nestedNormalized : [normalized];
+}
+
+function unwrapNestedCommandSegments(segment: string[]): string[][] | null {
+	const executable = segment[0];
+	if (!executable) {
+		return null;
+	}
+
+	if (executable === "nix") {
+		const nestedArgv = extractNixCommandArgv(segment);
+		return nestedArgv ? [nestedArgv] : null;
+	}
+
+	if (SHELL_BINARIES.has(executable)) {
+		const shellPayload = extractShellCommandPayload(segment);
+		if (!shellPayload) {
+			return null;
+		}
+
+		return parseCommandSegments(shellPayload);
+	}
+
+	return null;
+}
+
+function extractNixCommandArgv(segment: string[]): string[] | null {
+	for (let index = 1; index < segment.length; index += 1) {
+		const token = segment[index];
+		if (token !== "-c" && token !== "--command") {
+			continue;
+		}
+
+		const nestedArgv = segment.slice(index + 1);
+		return nestedArgv.length > 0 ? nestedArgv : null;
+	}
+
+	return null;
+}
+
+function extractShellCommandPayload(segment: string[]): string | null {
+	for (let index = 1; index < segment.length; index += 1) {
+		const token = segment[index];
+		if (!token || token === "--") {
+			continue;
+		}
+
+		if (token === "-c") {
+			return segment[index + 1] ?? null;
+		}
+
+		if (token.startsWith("-") && token.includes("c")) {
+			return segment[index + 1] ?? null;
+		}
+	}
+
+	return null;
 }
 
 export function formatPolicyBlockMessage(match: PolicyMatch): string {
@@ -439,16 +509,28 @@ function tokenizeShellCommand(command: string): string[] | null {
 	let current = "";
 	let quote: string | null = null;
 	let escaping = false;
+	let index = 0;
 
-	for (const character of command) {
+	const pushCurrent = () => {
+		if (current.length > 0) {
+			tokens.push(current);
+			current = "";
+		}
+	};
+
+	while (index < command.length) {
+		const character = command[index] ?? "";
+
 		if (escaping) {
 			current += character;
 			escaping = false;
+			index += 1;
 			continue;
 		}
 
 		if (character === "\\" && quote !== "'") {
 			escaping = true;
+			index += 1;
 			continue;
 		}
 
@@ -458,32 +540,49 @@ function tokenizeShellCommand(command: string): string[] | null {
 			} else {
 				current += character;
 			}
+			index += 1;
 			continue;
 		}
 
 		if (character === '"' || character === "'") {
 			quote = character;
+			index += 1;
 			continue;
 		}
 
 		if (/\s/.test(character)) {
-			if (current.length > 0) {
-				tokens.push(current);
-				current = "";
+			pushCurrent();
+			index += 1;
+			continue;
+		}
+
+		if (character === "&" || character === "|" || character === ";") {
+			pushCurrent();
+
+			const nextCharacter = command[index + 1] ?? "";
+			if (
+				(character === "&" || character === "|") &&
+				nextCharacter === character
+			) {
+				tokens.push(character + nextCharacter);
+				index += 2;
+				continue;
 			}
+
+			tokens.push(character);
+			index += 1;
 			continue;
 		}
 
 		current += character;
+		index += 1;
 	}
 
 	if (escaping || quote) {
 		return null;
 	}
 
-	if (current.length > 0) {
-		tokens.push(current);
-	}
+	pushCurrent();
 
 	return tokens;
 }
@@ -506,52 +605,6 @@ function isShellOperator(token: string): boolean {
 }
 
 /**
- * Splits a token that may contain embedded operators (e.g., "ls;" -> ["ls", ";"])
- */
-function splitTokenWithEmbeddedOperators(token: string): string[] {
-	const result: string[] = [];
-	let current = "";
-	let i = 0;
-
-	while (i < token.length) {
-		// Check for multi-character operators first (&&, ||)
-		if (i + 1 < token.length) {
-			const twoChar = token.slice(i, i + 2);
-			if (twoChar === "&&" || twoChar === "||") {
-				if (current.length > 0) {
-					result.push(current);
-					current = "";
-				}
-				result.push(twoChar);
-				i += 2;
-				continue;
-			}
-		}
-
-		// Check for single-character operators
-		const char = token[i];
-		if (SHELL_OPERATORS.has(char)) {
-			if (current.length > 0) {
-				result.push(current);
-				current = "";
-			}
-			result.push(char);
-			i++;
-			continue;
-		}
-
-		current += char;
-		i++;
-	}
-
-	if (current.length > 0) {
-		result.push(current);
-	}
-
-	return result;
-}
-
-/**
  * Parses a command string into segments separated by shell control operators.
  *
  * @param command - The command string to parse (e.g., "cat abc | git diff")
@@ -571,17 +624,10 @@ export function parseCommandSegments(command: string): string[][] | null {
 		return null;
 	}
 
-	// Flatten tokens that may contain embedded operators (e.g., "ls;" -> ["ls", ";"])
-	const flattenedTokens: string[] = [];
-	for (const token of tokens) {
-		const splitTokens = splitTokenWithEmbeddedOperators(token);
-		flattenedTokens.push(...splitTokens);
-	}
-
 	const segments: string[][] = [];
 	let currentSegment: string[] = [];
 
-	for (const token of flattenedTokens) {
+	for (const token of tokens) {
 		if (isShellOperator(token)) {
 			// Start a new segment, skipping empty segments (consecutive operators)
 			if (currentSegment.length > 0) {
