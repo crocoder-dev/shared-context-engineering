@@ -15,9 +15,10 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 
 ## Onboarding documentation
 
-- `sce --help` includes quick-start commands for `setup`, `auth`, `doctor`, and `version`, plus the implemented-vs-placeholder top-level command catalog.
-- Command-local help is available for implemented commands including bare `sce auth`, `sce auth --help`, `sce auth login --help`, `sce auth renew --help`, `sce setup --help`, `sce doctor --help`, `sce trace --help`, `sce trace prompts --help`, and `sce completion --help`.
-- Current verification guidance for the CLI slice prefers repository-level `nix flake check`; release/install commands remain available for installability work (`cargo build --manifest-path cli/Cargo.toml --release`, `cargo install --path cli --locked`).
+<<<<<<< HEAD
+- `sce --help` includes a slim top-level command list and quick-start examples for `setup`, `doctor`, and `version`; `auth`, `hooks`, `trace`, and `sync` remain implemented in code but are hidden from `sce`, `sce help`, and `sce --help` for this phase.
+- Command-local help is available for implemented commands including bare `sce auth`, `sce auth --help`, `sce auth login --help`, `sce setup --help`, `sce doctor --help`, and `sce completion --help`; when stdout color is enabled those help payloads now reuse the shared heading/command/placeholder styling pass while non-TTY and `NO_COLOR` flows stay plain text. Human-readable stderr diagnostics and interactive setup prompt text now follow the same shared styling policy on their respective terminal streams.
+- Current verification guidance for the CLI slice uses crate-local `cargo test --manifest-path cli/Cargo.toml`, plus release/install commands for installability (`cargo build --manifest-path cli/Cargo.toml --release`, `cargo install --path cli --locked`).
 
 ## Nix release installability surface
 
@@ -37,29 +38,22 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 
 ## Command surface contract
 
-`sce --help` lists command names with explicit implementation status:
+`sce`, `sce help`, and `sce --help` now render a slim top-level help surface:
 
-- `help`: implemented
-- `config`: implemented
-- `setup`: implemented
-- `doctor`: implemented
-- `auth`: implemented
-- `hooks`: implemented
-- `trace`: implemented
-- `sync`: placeholder
-- `version`: implemented
-- `completion`: implemented
-
-Top-level help also includes copy-ready agent-oriented examples for interactive setup, non-interactive setup+hooks, repository-targeted hooks installs, and doctor/version machine-readable or repair-intent flows (`doctor --format json`, `doctor --all-databases --format json`, `doctor --fix`, `version --format json`).
+- the visible command list is `help`, `config`, `setup`, `doctor`, `version`, and `completion`
+- top-level help omits implemented/placeholder labels
+- top-level examples cover setup plus doctor/version machine-readable or repair-intent flows (`doctor --format json`, `doctor --all-databases --format json`, `doctor --fix`, `version --format json`) and use the shared example-command styling when stdout color is enabled
+- `auth`, `hooks`, `trace`, and `sync` stay parser-valid and directly invocable, but are hidden from those top-level help surfaces
 
 Placeholder commands currently acknowledge planned behavior and do not claim production implementation.
 `sync` routes through an explicit service-contract placeholder.
 `hooks` routes through implemented subcommand parsing/dispatch for `pre-commit`, `commit-msg`, `post-commit`, and `post-rewrite`.
-`config` exposes deterministic inspect/validate entrypoints (`sce config show`, `sce config validate`) with explicit precedence (`flags > env > config file > defaults`), a shared auth-runtime resolver for supported keys that declare env/config/optional baked-default inputs starting with `workos_client_id`, first-class `policies.bash` reporting for preset/custom blocked-command rules, and deterministic text/JSON output modes that report auth-key source metadata plus key-specific precedence details.
+`config` exposes deterministic inspect/validate entrypoints (`sce config show`, `sce config validate`) with explicit precedence (`flags > env > config file > defaults`), a shared auth-runtime resolver for supported keys that declare env/config/optional baked-default inputs starting with `workos_client_id`, first-class `policies.bash` reporting for preset/custom blocked-command rules, and deterministic text/JSON output modes where `show` reports resolved values with provenance while `validate` reports pass/fail plus validation issues and warnings only.
 `version` exposes deterministic runtime identification output in text mode by default and JSON mode via `--format json`.
 `completion` exposes deterministic shell completion generation via `sce completion --shell <bash|zsh|fish>`.
-`setup` defaults to an `inquire` interactive target selection (OpenCode, Claude, Both) and accepts mutually-exclusive non-interactive target flags (`--opencode`, `--claude`, `--both`).
-`auth` now emits auth-local guidance for bare `sce auth` and `sce auth --help`, listing `login`, `renew`, `logout`, and `status` plus copy-ready next steps.
+<<<<<<< HEAD
+`setup` defaults to an `inquire` interactive target selection (OpenCode, Claude, Both) and accepts mutually-exclusive non-interactive target flags (`--opencode`, `--claude`, `--both`); the interactive prompt title and target labels now reuse shared prompt styling helpers when stdout color is enabled.
+`auth` now emits auth-local guidance for bare `sce auth` and `sce auth --help`, listing `login`, `logout`, and `status` plus copy-ready next steps.
 `setup`, `doctor`, `hooks`, `trace`, `sync`, `version`, and `completion` all support command-local `--help`/`-h` usage output via top-level parser routing in `cli/src/app.rs`.
 `setup` now also exposes compile-time embedded config assets for OpenCode/Claude targets, sourced from the generated `config/.opencode/**` and `config/.claude/**` trees via `cli/build.rs` with normalized forward-slash relative paths and target-scoped iteration APIs; the embedded asset set includes the OpenCode bash-policy plugin/runtime files generated from the canonical preset catalog (Claude bash-policy enforcement has been removed from generated outputs).
 `setup` additionally includes a repository-root install engine (`install_embedded_setup_assets`) that stages embedded files, intentionally leaves generated `skills/*/tile.json` manifests in `config/` only, skips those tile files during repo-root installs, and applies backup-and-replace safety for `.opencode/`/`.claude/` with rollback restoration if staged swap fails while treating bash-policy enforcement files as first-class SCE-managed assets.
@@ -70,7 +64,9 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 ## Command loop and error model
 
 - Argument parsing is handled by `clap` derive macros in `cli/src/cli_schema.rs` and dispatched from `cli/src/app.rs`.
-- Runtime failures are classified and rendered as `Error [SCE-ERR-<CLASS>]: ...` on stderr, with stable exit codes `2` (parse), `3` (validation), `4` (runtime), and `5` (dependency).
+<<<<<<< HEAD
+- Top-level failures are classified into stable exit-code classes owned by `cli/src/app.rs`: `2` parse, `3` validation, `4` runtime, and `5` dependency.
+- User-facing diagnostics are rendered on `stderr` as `Error [SCE-ERR-<CLASS>]: ...` with class-default `Try:` remediation appended only when missing; when stderr color is enabled the heading, error code, and diagnostic body all render through shared stderr styling helpers.
 - Unknown commands/options and extra positional arguments return deterministic, actionable guidance to run `sce --help`.
 - `sce setup --help` returns setup-specific usage output with target-flag contract details and deterministic examples, including one-run non-interactive setup+hooks and composable follow-up validation/repair-intent flows (`sce doctor --format json`, `sce doctor --all-databases --format json`, `sce doctor --fix`).
 - `sce auth` and `sce auth --help` return auth-specific usage output with available subcommands and deterministic examples, while `sce auth <login|renew|logout|status> --help` stays scoped to the selected auth subcommand.
@@ -85,7 +81,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 ## Service contracts
 
 - `cli/src/services/setup.rs` defines setup parsing/selection contracts plus runtime install orchestration (`run_setup_for_mode`) over the embedded asset install engine.
-- `cli/src/services/config.rs` defines config parser/runtime contracts (`show`, `validate`, `--help`), strict config-file key/type validation, deterministic text/JSON rendering, repo-configured bash-policy preset/custom validation and reporting under `policies.bash`, and shared auth-key metadata that declares env key, config-file key, and optional baked-default eligibility for supported auth runtime values starting with `workos_client_id` (`WORKOS_CLIENT_ID` vs `workos_client_id`); auth-key output includes key-specific precedence metadata in both output modes and abbreviates credential-like values in text output.
+- `cli/src/services/config.rs` defines config parser/runtime contracts (`show`, `validate`, `--help`), strict config-file key/type validation, deterministic text/JSON rendering, repo-configured bash-policy preset/custom validation and reporting under `policies.bash`, and shared auth-key metadata that declares env key, config-file key, and optional baked-default eligibility for supported auth runtime values starting with `workos_client_id` (`WORKOS_CLIENT_ID` vs `workos_client_id`); auth-key provenance/preference metadata stays on `show`, while `validate` stays trimmed to validation status plus issues/warnings.
 - `cli/src/services/doctor.rs` now defines the implemented doctor request/report contract (`DoctorRequest`, `DoctorMode`, explicit repo-vs-all database inventory mode, `run_doctor`) with explicit fix-mode and `--all-databases` parsing, stable text/JSON problem and database-record rendering, deterministic fix-result reporting, state-root/config/local-DB reporting and validation, an empty default repo-scoped database inventory, ownership-based all-SCE database inventory, path-source detection plus required-hook presence/executable/content checks when a repository target is detected, repo-scoped OpenCode plugin registry/file presence checks for `sce-bash-policy` (plus runtime/preset presence) when `.opencode/` exists, repair-mode reuse of canonical setup hook installation for supported hook repairs, and a bounded doctor-owned Agent Trace directory bootstrap routine for the canonical missing DB parent path.
 - `cli/src/services/agent_trace.rs` defines the task-scoped schema adapter contract (`adapt_trace_payload`) from internal attribution input structs to Agent Trace-shaped record structs, including fixed git `vcs` mapping, contributor type mapping, and reserved `dev.crocoder.sce.*` metadata placement.
 - `cli/src/services/version.rs` defines the version parser/output contract (`parse_version_request`, `render_version`) with deterministic text/JSON output modes.
@@ -126,8 +122,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 
 ## Dependency baseline
 
-- `cli/Cargo.toml` declares: `anyhow`, `clap`, `clap_complete`, `hmac`, `inquire`, `opentelemetry`, `opentelemetry-otlp`, `opentelemetry_sdk`, `serde_json`, `sha2`, `tokio`, `tracing`, `tracing-opentelemetry`, `tracing-subscriber`, and `turso`.
-- `cli/Cargo.toml` currently declares: `anyhow`, `dirs`, `hmac`, `inquire`, `lexopt`, `opentelemetry`, `opentelemetry-otlp`, `opentelemetry_sdk`, `reqwest`, `serde`, `serde_json`, `sha2`, `tokio`, `tracing`, `tracing-opentelemetry`, `tracing-subscriber`, and `turso`.
+- `cli/Cargo.toml` currently declares: `anyhow`, `clap`, `clap_complete`, `comfy-table`, `dirs`, `hmac`, `inquire`, `opentelemetry`, `opentelemetry-otlp`, `opentelemetry_sdk`, `owo-colors`, `reqwest`, `serde`, `serde_json`, `sha2`, `tokio`, `tracing`, `tracing-opentelemetry`, `tracing-subscriber`, and `turso`.
 - `tokio` is pinned with `default-features = false` and keeps a constrained runtime footprint for current-thread `Runtime::block_on` usage, plus timer-backed bounded retry/timeout behavior in resilience-wrapped operations.
 - `cli/src/services/auth.rs` now includes both the T03 Device Authorization Flow runtime (`start_device_auth_flow`) and T04 token-refresh runtime (`ensure_valid_token`) for WorkOS: it requests device codes, polls `/oauth/device/token` at fixed API interval (adding 5 seconds on `slow_down`), maps RFC 8628 terminal errors to actionable `Try:` guidance, checks token expiry from persisted `stored_at_unix_seconds + expires_in` with a bounded skew guard, refreshes expired access tokens through `/oauth/token` using `grant_type=refresh_token`, retries transient refresh failures via the shared resilience wrapper, and persists rotated tokens via `cli/src/services/token_storage.rs`.
 

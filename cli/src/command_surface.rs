@@ -1,7 +1,7 @@
 use std::fmt::Write;
 
 use crate::services;
-use services::style::{command_name, heading, status_implemented, status_placeholder};
+use services::style::{command_name, example_command, heading};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImplementationStatus {
@@ -14,58 +14,69 @@ pub struct CommandContract {
     pub name: &'static str,
     pub status: ImplementationStatus,
     pub purpose: &'static str,
+    pub show_in_top_level_help: bool,
 }
 
 pub const COMMANDS: &[CommandContract] = &[
     CommandContract {
         name: "help",
         status: ImplementationStatus::Implemented,
-        purpose: "Print the current placeholder command surface",
+        purpose: "Show help for the current CLI surface",
+        show_in_top_level_help: true,
     },
     CommandContract {
         name: services::config::NAME,
         status: ImplementationStatus::Implemented,
         purpose: "Inspect and validate resolved CLI configuration",
+        show_in_top_level_help: true,
     },
     CommandContract {
         name: services::setup::NAME,
         status: ImplementationStatus::Implemented,
         purpose: "Prepare local repository/workspace prerequisites",
+        show_in_top_level_help: true,
     },
     CommandContract {
         name: services::doctor::NAME,
         status: ImplementationStatus::Implemented,
         purpose: "Inspect SCE operator health and explicit repair readiness",
+        show_in_top_level_help: true,
     },
     CommandContract {
         name: services::auth_command::NAME,
         status: ImplementationStatus::Implemented,
         purpose: "Authenticate with WorkOS and inspect local auth state",
+        show_in_top_level_help: false,
     },
     CommandContract {
         name: services::hooks::NAME,
         status: ImplementationStatus::Implemented,
         purpose: "Run git-hook runtime entrypoints for local Agent Trace flows",
+        show_in_top_level_help: false,
     },
     CommandContract {
         name: services::trace::NAME,
         status: ImplementationStatus::Implemented,
         purpose: "Inspect persisted Agent Trace records and captured prompts",
+        show_in_top_level_help: false,
     },
     CommandContract {
         name: services::sync::NAME,
         status: ImplementationStatus::Placeholder,
         purpose: "Coordinate future cloud sync workflows",
+        show_in_top_level_help: false,
     },
     CommandContract {
         name: services::version::NAME,
         status: ImplementationStatus::Implemented,
         purpose: "Print deterministic runtime version metadata",
+        show_in_top_level_help: true,
     },
     CommandContract {
         name: services::completion::NAME,
         status: ImplementationStatus::Implemented,
         purpose: "Generate deterministic shell completion scripts",
+        show_in_top_level_help: true,
     },
 ];
 
@@ -76,20 +87,14 @@ pub fn is_known_command(name: &str) -> bool {
 pub fn help_text() -> String {
     let mut command_rows = String::new();
     for command in COMMANDS {
-        let status_text = match command.status {
-            ImplementationStatus::Implemented => "implemented",
-            ImplementationStatus::Placeholder => "placeholder",
-        };
-        let styled_status = match command.status {
-            ImplementationStatus::Implemented => status_implemented(status_text),
-            ImplementationStatus::Placeholder => status_placeholder(status_text),
-        };
+        if !command.show_in_top_level_help {
+            continue;
+        }
 
         writeln!(
             command_rows,
-            "  {:<10} {:<12} {}",
+            "  {:<10} {}",
             command_name(command.name),
-            styled_status,
             command.purpose
         )
         .unwrap();
@@ -101,16 +106,11 @@ pub fn help_text() -> String {
 {}:\n  {} <show|validate> [--format <text|json>] [options]\n\n\
 {}:\n  {} [--opencode|--claude|--both] [--non-interactive] [--hooks] [--repo <path>]\n\n\
 {}:\n  {} [--fix] [--all-databases] [--format <text|json>]\n\n\
-{}:\n  {} <login|logout|status> [--format <text|json>]\n\n\
 {}:\n  {} --shell <bash|zsh|fish>\n\n\
-{}:\n  {} prompts <commit-sha> [--format <text|json>|--json]\n\n\
 {}:\n  Supported commands accept --format <text|json>\n\n\
-{}:\n  sce setup\n  sce setup --opencode --non-interactive --hooks\n  sce setup --hooks --repo ../demo-repo\n  sce auth status\n  sce auth login --format json\n  sce trace prompts abc1234\n  sce trace prompts abc1234 --json\n  sce doctor --format json\n  sce doctor --all-databases --format json\n  sce doctor --fix\n  sce version --format json\n\n\
-{}:\n{command_rows}\n\
-Setup defaults to interactive target selection when no setup target flag is passed, and installs hooks in the same run.\n\
-Use '--hooks' to install required git hooks for the current repository or '--repo <path>' for a specific repository.\n\
-`setup`, `doctor`, `auth`, `hooks`, `trace`, `version`, and `completion` are implemented; `sync` remains placeholder-oriented.\n",
-        heading("sce - Shared Context Engineering CLI (placeholder foundation)"),
+{}:\n  {}\n  {}\n  {}\n  {}\n  {}\n  {}\n  {}\n\n\
+{}:\n{command_rows}",
+        heading("sce - Shared Context Engineering CLI"),
         heading("Usage"),
         heading("Config usage"),
         command_name("sce config"),
@@ -118,14 +118,17 @@ Use '--hooks' to install required git hooks for the current repository or '--rep
         command_name("sce setup"),
         heading("Doctor usage"),
         command_name("sce doctor"),
-        heading("Auth usage"),
-        command_name("sce auth"),
         heading("Completion usage"),
         command_name("sce completion"),
-        heading("Trace usage"),
-        command_name("sce trace"),
         heading("Output format contract"),
         heading("Examples"),
+        example_command("sce setup"),
+        example_command("sce setup --opencode --non-interactive --hooks"),
+        example_command("sce setup --hooks --repo ../demo-repo"),
+        example_command("sce doctor --format json"),
+        example_command("sce doctor --all-databases --format json"),
+        example_command("sce doctor --fix"),
+        example_command("sce version --format json"),
         heading("Commands"),
     )
 }
@@ -151,7 +154,6 @@ mod tests {
         assert!(help.contains(
             "sce setup [--opencode|--claude|--both] [--non-interactive] [--hooks] [--repo <path>]"
         ));
-        assert!(help.contains("installs hooks in the same run"));
         assert!(help.contains("sce setup --opencode --non-interactive --hooks"));
     }
 
@@ -173,11 +175,25 @@ mod tests {
     }
 
     #[test]
-    fn help_text_mentions_auth_usage_examples() {
+    fn hidden_commands_remain_known_even_when_not_shown_in_top_level_help() {
+        for hidden_command in [
+            crate::services::auth_command::NAME,
+            crate::services::hooks::NAME,
+            crate::services::trace::NAME,
+            crate::services::sync::NAME,
+        ] {
+            assert!(crate::command_surface::is_known_command(hidden_command));
+        }
+    }
+
+    #[test]
+    fn help_text_hides_selected_commands_from_top_level_help() {
         let help = help_text();
-        assert!(help.contains("sce auth <login|logout|status> [--format <text|json>]"));
-        assert!(help.contains("sce auth status"));
-        assert!(help.contains("sce auth login --format json"));
+
+        assert!(!help.contains("auth"));
+        assert!(!help.contains("hooks"));
+        assert!(!help.contains("trace"));
+        assert!(!help.contains("sync"));
     }
 
     #[test]
@@ -188,11 +204,14 @@ mod tests {
     }
 
     #[test]
-    fn help_text_mentions_trace_command() {
+    fn help_text_drops_placeholder_and_status_copy() {
         let help = help_text();
-        assert!(help.contains("trace"));
-        assert!(help.contains("sce trace prompts <commit-sha>"));
-        assert!(help.contains("sce trace prompts abc1234 --json"));
+
+        assert!(!help.contains("placeholder foundation"));
+        assert!(!help.contains("implemented"));
+        assert!(!help.contains("placeholder-oriented"));
+        assert!(!help.contains("Setup defaults to interactive target selection"));
+        assert!(!help.contains("Use '--hooks' to install required git hooks"));
     }
 
     #[test]

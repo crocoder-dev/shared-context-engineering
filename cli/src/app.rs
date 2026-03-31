@@ -127,13 +127,11 @@ where
     };
 
     let styled_code = services::style::error_code(error.code());
+    let styled_heading = services::style::heading_stderr("Error");
+    let styled_message =
+        services::style::error_text(&services::security::redact_sensitive_text(&rendered));
 
-    let _ = writeln!(
-        writer,
-        "Error [{}]: {}",
-        styled_code,
-        services::security::redact_sensitive_text(&rendered)
-    );
+    let _ = writeln!(writer, "{styled_heading} [{styled_code}]: {styled_message}");
 }
 
 #[allow(clippy::too_many_lines)]
@@ -310,11 +308,8 @@ where
                 return Ok(Command::Help);
             }
             if error.kind() == clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand {
-                if args_vec.get(1).map(String::as_str) == Some(services::auth_command::NAME) {
-                    return Ok(Command::HelpText {
-                        name: services::auth_command::NAME.to_string(),
-                        text: cli_schema::auth_help_text(),
-                    });
+                if let Some(help_text) = render_missing_subcommand_help(&args_vec) {
+                    return Ok(help_text);
                 }
 
                 return Err(ClassifiedError::parse(
@@ -375,6 +370,22 @@ fn render_subcommand_help_from_args(args: &[String]) -> Option<(String, String)>
     }
 
     cli_schema::render_help_for_path(&command_path).map(|text| (command_name, text))
+}
+
+fn render_missing_subcommand_help(args: &[String]) -> Option<Command> {
+    let command_name = args.get(1)?.as_str();
+
+    match command_name {
+        services::auth_command::NAME => Some(Command::HelpText {
+            name: services::auth_command::NAME.to_string(),
+            text: cli_schema::auth_help_text(),
+        }),
+        services::config::NAME => Some(Command::HelpText {
+            name: services::config::NAME.to_string(),
+            text: cli_schema::render_help_for_path(&[services::config::NAME])?,
+        }),
+        _ => None,
+    }
 }
 
 fn clean_clap_error_message(message: &str, kind: clap::error::ErrorKind) -> String {
@@ -730,12 +741,13 @@ fn dispatch(
 mod tests {
     use std::process::ExitCode;
 
+    use crate::services::error::ClassifiedError;
     use crate::services::setup::{SetupMode, SetupRequest, SetupTarget};
 
     use super::{
         parse_command, run, run_with_dependency_check, run_with_dependency_check_and_streams,
-        Command, EXIT_CODE_DEPENDENCY_FAILURE, EXIT_CODE_PARSE_FAILURE, EXIT_CODE_RUNTIME_FAILURE,
-        EXIT_CODE_VALIDATION_FAILURE,
+        write_error_diagnostic, Command, EXIT_CODE_DEPENDENCY_FAILURE, EXIT_CODE_PARSE_FAILURE,
+        EXIT_CODE_RUNTIME_FAILURE, EXIT_CODE_VALIDATION_FAILURE,
     };
 
     #[test]
@@ -834,6 +846,21 @@ mod tests {
         let stderr = String::from_utf8(stderr).expect("stderr should be utf-8");
         assert!(stderr.contains("Error [SCE-ERR-PARSE]:"));
         assert!(stderr.contains("Try:"));
+    }
+
+    #[test]
+    fn write_error_diagnostic_preserves_plain_text_contract_without_color() {
+        let mut stderr = Vec::new();
+
+        write_error_diagnostic(
+            &mut stderr,
+            &ClassifiedError::parse("Unknown command 'nope'. Try: run 'sce --help'."),
+        );
+
+        assert_eq!(
+            String::from_utf8(stderr).expect("stderr should be utf-8"),
+            "Error [SCE-ERR-PARSE]: Unknown command 'nope'. Try: run 'sce --help'.\n"
+        );
     }
 
     #[test]
@@ -1541,6 +1568,38 @@ mod tests {
                 }
             ))
         );
+    }
+
+    #[test]
+    fn parser_routes_bare_config_to_help_text() {
+        let command = parse_command(vec!["sce".to_string(), "config".to_string()], None)
+            .expect("bare config should route to help");
+
+        assert_eq!(
+            command,
+            Command::HelpText {
+                name: crate::services::config::NAME.to_string(),
+                text: crate::cli_schema::render_help_for_path(&[crate::services::config::NAME])
+                    .expect("config help should render"),
+            }
+        );
+    }
+
+    #[test]
+    fn parser_routes_bare_config_to_same_help_as_config_help_flag() {
+        let bare_config = parse_command(vec!["sce".to_string(), "config".to_string()], None)
+            .expect("bare config should route to help");
+        let config_help = parse_command(
+            vec![
+                "sce".to_string(),
+                "config".to_string(),
+                "--help".to_string(),
+            ],
+            None,
+        )
+        .expect("config --help should route to help");
+
+        assert_eq!(bare_config, config_help);
     }
 
     #[test]

@@ -69,6 +69,14 @@ fn error_code_returns_plain_text_when_no_color() {
 }
 
 #[test]
+fn error_text_returns_plain_text_when_no_color() {
+    with_no_color(|| {
+        let result = error_text("Unknown command");
+        assert_eq!(result, "Unknown command");
+    });
+}
+
+#[test]
 fn example_command_returns_plain_text_when_no_color() {
     with_no_color(|| {
         let result = example_command("sce setup");
@@ -168,6 +176,17 @@ fn prompt_value_returns_plain_text_when_no_color() {
 }
 
 #[test]
+fn prompt_helpers_with_color_policy_style_when_enabled() {
+    let title = prompt_label_with_color_policy("Select setup target", true);
+    let option = prompt_value_with_color_policy("OpenCode", true);
+    let error = error_text("Unknown command");
+
+    assert!(title.contains("\u{1b}["));
+    assert!(option.contains("\u{1b}["));
+    assert!(!error.is_empty());
+}
+
+#[test]
 fn success_produces_non_empty_output() {
     without_no_color(|| {
         let _ = success("completed");
@@ -193,4 +212,25 @@ fn prompt_value_produces_non_empty_output() {
     without_no_color(|| {
         let _ = prompt_value("https://example.com");
     });
+}
+
+#[test]
+fn clap_help_with_color_policy_returns_plain_text_when_disabled() {
+    let input = "Usage: config show [OPTIONS]\n\nCommands:\n  validate  Validate config\n";
+
+    assert_eq!(clap_help_with_color_policy(input, false), input);
+}
+
+#[test]
+fn clap_help_with_color_policy_styles_headings_commands_and_placeholders() {
+    let input = "Usage: config show [OPTIONS]\n\nCommands:\n  validate  Validate config\nOptions:\n      --format <FORMAT>  Output format\n";
+    let output = clap_help_with_color_policy(input, true);
+
+    assert!(output.contains("\u{1b}["));
+    assert!(output.contains("Usage:"));
+    assert!(output.contains("config"));
+    assert!(output.contains("validate"));
+    assert!(output.contains("[OPTIONS]"));
+    assert!(output.contains("<FORMAT>"));
+    assert_ne!(output, input);
 }

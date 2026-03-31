@@ -18,6 +18,7 @@ use tracing_subscriber::prelude::*;
 use crate::services::config;
 use crate::services::error::ClassifiedError;
 use crate::services::security::redact_sensitive_text;
+use crate::services::style::{error_text, heading_stderr};
 
 pub const NAME: &str = "observability";
 
@@ -486,15 +487,13 @@ impl Logger {
 
         if let Some(file_sink) = &self.file_sink {
             if let Err(error) = file_sink.write_line(&redacted_line) {
-                eprintln!(
-                    "Error: {}",
-                    redact_sensitive_text(&format!(
-                        "Failed to write log file '{}': {}. Try: verify the file is writable or unset {}.",
-                        file_sink.path.display(),
-                        error,
-                        ENV_LOG_FILE
-                    ))
-                );
+                let diagnostic = redact_sensitive_text(&format!(
+                    "Failed to write log file '{}': {}. Try: verify the file is writable or unset {}.",
+                    file_sink.path.display(),
+                    error,
+                    ENV_LOG_FILE
+                ));
+                eprintln!("{}: {}", heading_stderr("Error"), error_text(&diagnostic));
             }
         }
     }
