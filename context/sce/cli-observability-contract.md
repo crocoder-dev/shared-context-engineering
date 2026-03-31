@@ -5,7 +5,7 @@
 This document defines the implemented structured observability baseline for `sce` runtime execution.
 It covers deterministic stderr logger controls, optional OpenTelemetry export bootstrap, config-backed runtime resolution, and event emission boundaries in `cli/src/services/observability.rs`, `cli/src/services/config.rs`, and `cli/src/app.rs`.
 
-Runtime observability now consumes the shared resolved observability config from `cli/src/services/config.rs`: env values still win, config-file values act as fallback, and defaults apply when both are absent. The same resolved values are now surfaced to operators through `sce config show|validate`, with deterministic text output plus text/JSON `source` and `config_source` provenance for the flat logging keys and nested `otel` keys.
+Runtime observability now consumes the shared resolved observability config from `cli/src/services/config.rs`: env values still win, config-file values act as fallback, and defaults apply when both are absent. Those resolved values are surfaced to operators through `sce config show`; `sce config validate` uses the same validation path but now reports only validation status plus any errors or warnings.
 
 ## Runtime controls
 

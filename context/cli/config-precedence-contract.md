@@ -4,14 +4,15 @@
 
 This contract documents the implemented `sce config` command behavior in `cli/src/services/config.rs`, the canonical Pkl-authored `sce/config.json` schema artifact generated to `config/schema/sce-config.schema.json` and embedded there as `SCE_CONFIG_SCHEMA_JSON`, and parser/dispatch wiring in `cli/src/app.rs`.
 
-The current implementation resolves flat logging keys plus nested `otel` keys with deterministic env-over-config precedence and source metadata, uses those resolved values in `cli/src/app.rs` / `cli/src/services/observability.rs` for runtime logging and OTEL bootstrap, and reports the same observability values through operator-facing `sce config show|validate` text and JSON output.
+The current implementation resolves flat logging keys plus nested `otel` keys with deterministic env-over-config precedence and source metadata, uses those resolved values in `cli/src/app.rs` / `cli/src/services/observability.rs` for runtime logging and OTEL bootstrap, exposes resolved-value inspection through `sce config show`, and keeps `sce config validate` focused on validation status plus errors/warnings.
 
 ## Command surface
 
 - `sce config show [--config <path>] [--log-level <error|warn|info|debug>] [--timeout-ms <value>] [--format <text|json>]`
 - `sce config validate [--config <path>] [--log-level <error|warn|info|debug>] [--timeout-ms <value>] [--format <text|json>]`
+- bare `sce config` returns the same help payload as `sce config --help`
 - `sce config --help`
-- Help text for `sce config`, `sce config show`, and `sce config validate` frames the command family as the operator entrypoint for inspecting and validating resolved runtime config, including config-backed observability values and their provenance.
+- Help text for `sce config`, `sce config show`, and `sce config validate` frames the command family as the operator entrypoint for config inspection and validation; `show` covers resolved runtime values with provenance, `validate` covers pass/fail plus validation issues and warnings, and bare `sce config` is help-first rather than defaulting to `show`.
 
 ## Resolution precedence
 
@@ -82,19 +83,20 @@ When both discovered defaults exist, they are merged in memory in deterministic 
 
 - `show` and `validate` support deterministic `text` and `json` outputs.
 - JSON responses include a top-level `status` and nested `result` object.
-- Text output includes the canonical precedence string: `flags > env > config file > defaults`.
-- Output reports discovered config files as `config_paths` (JSON) / `Config files:` (text).
-- Resolved values continue to report `source`; when source is `config_file`, output also reports a deterministic `config_source` value (`flag`, `env`, `default_discovered_global`, `default_discovered_local`).
-- `show` includes migrated supported auth keys in `result.resolved`; `validate` includes them in `result.resolved_auth`.
+- `show` text output includes the canonical precedence string: `flags > env > config file > defaults`.
+- `show` reports discovered config files as `config_paths` (JSON) / `Config files:` (text).
+- Resolved values in `show` continue to report `source`; when source is `config_file`, output also reports a deterministic `config_source` value (`flag`, `env`, `default_discovered_global`, `default_discovered_local`).
+- `show` includes migrated supported auth keys in `result.resolved`.
 - `show` includes resolved observability values directly in `result.resolved`, preserving flat logging keys (`log_level`, `log_format`, `log_file`, `log_file_mode`) plus nested `otel.{enabled,exporter_otlp_endpoint,exporter_otlp_protocol}`.
-- `validate` includes the same observability values under `result.resolved_observability`, preserving the mixed flat-plus-nested shape.
-- `show` includes resolved bash-tool policies under `result.resolved.policies.bash`; `validate` includes them under `result.resolved_policies.bash`.
+- `validate` text output is limited to `SCE config validation`, `Validation issues`, and `Validation warnings` lines.
+- `validate` JSON output is limited to `result.command`, `result.valid`, `result.issues`, and `result.warnings`.
+- `show` includes resolved bash-tool policies under `result.resolved.policies.bash`.
 - Bash-policy output includes resolved preset IDs, expanded custom entries (`id`, `match.argv_prefix`, `message`), and config-file source metadata when present.
-- Text output renders `policies.bash` as a single deterministic line and reports `(unset)` when no policy config resolves.
-- Text output renders observability values as deterministic per-key lines, using `otel.` prefixes for nested OTEL keys and reporting `(unset)` for `log_file` when no value resolves.
+- `show` text output renders `policies.bash` as a single deterministic line and reports `(unset)` when no policy config resolves.
+- `show` text output renders observability values as deterministic per-key lines, using `otel.` prefixes for nested OTEL keys and reporting `(unset)` for `log_file` when no value resolves.
 - `show` and `validate` both include `warnings`; this list is empty for normal valid config and carries deterministic redundancy messaging for valid-but-overlapping preset combinations such as `forbid-git-all` plus `forbid-git-commit`.
-- Auth-key JSON output includes `value`, text-oriented `display_value`, `source`, optional `config_source`, and a key-specific `precedence` string describing the allowed resolution chain.
-- Auth-key text output includes `auth_precedence` and abbreviates full values when they look credential-like; fully secret-bearing key classes remain redacted.
+- Auth-key JSON output in `show` includes `value`, text-oriented `display_value`, `source`, optional `config_source`, and a key-specific `precedence` string describing the allowed resolution chain.
+- Auth-key text output in `show` includes `auth_precedence` and abbreviates full values when they look credential-like; fully secret-bearing key classes remain redacted.
 - For the currently migrated key `workos_client_id`, `show` reports the baked default with `source: default` when env/config inputs are absent.
 
 ## Auth diagnostics contract

@@ -99,7 +99,9 @@
 ## Placeholder CLI scaffolding
 
 - For early CLI foundation tasks, keep implemented behavior and planned behavior explicitly separated in a single command contract table.
-- Mark placeholder commands in help output and runtime responses so scaffolding cannot be confused with production capability.
+- Keep top-level help intentionally curated: command visibility on `sce`, `sce help`, and `sce --help` may differ from parser availability when a command should remain directly invocable but temporarily hidden from operator-facing help.
+- Preserve implementation-status metadata in the command contract layer for internal classification and tests even when top-level help omits implemented/placeholder labels.
+- Keep placeholder or deferred state explicit in runtime responses and command-local docs rather than relying on top-level help status badges.
 - Parse CLI args with `clap` derive macros, classify top-level failures into stable exit-code classes (`parse`, `validation`, `runtime`, `dependency`), and keep user-facing failures deterministic/actionable.
 - Emit user-facing CLI diagnostics with stable class-based error IDs (`SCE-ERR-PARSE`, `SCE-ERR-VALIDATION`, `SCE-ERR-RUNTIME`, `SCE-ERR-DEPENDENCY`) using deterministic `Error [<code>]: ...` stderr formatting, and auto-append class-default `Try:` remediation only when the message does not already provide one.
 - Keep CLI observability separate from command payloads: emit deterministic lifecycle logs to `stderr` only with stable `event_id` values, and preserve `stdout` for command result payloads.

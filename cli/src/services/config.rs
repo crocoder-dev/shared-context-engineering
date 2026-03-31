@@ -1603,8 +1603,7 @@ fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> S
 fn format_validate_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> String {
     match report_format {
         ReportFormat::Text => {
-            let auth_precedence = WORKOS_CLIENT_ID_KEY.precedence_description();
-            let mut lines = vec![
+            let lines = [
                 format!(
                     "{}: {}",
                     style::success("SCE config validation"),
@@ -1612,28 +1611,11 @@ fn format_validate_output(runtime: &RuntimeConfig, report_format: ReportFormat) 
                 ),
                 format!(
                     "{}: {}",
-                    style::label("Precedence"),
-                    style::value(PRECEDENCE_DESCRIPTION)
-                ),
-                format_config_paths_text(runtime),
-                format!(
-                    "{}: {}",
                     style::label("Validation issues"),
                     style::value("none")
                 ),
                 format_validation_warnings_text(&runtime.validation_warnings),
-                format!(
-                    "{}: {}",
-                    style::label("Resolved auth precedence"),
-                    style::value(&auth_precedence)
-                ),
-                format_optional_auth_resolved_value_text(
-                    WORKOS_CLIENT_ID_KEY,
-                    &runtime.workos_client_id,
-                ),
-                format_bash_policies_text(&runtime.bash_policies),
             ];
-            lines.splice(5..5, format_observability_text_lines(runtime));
             lines.join("\n")
         }
         ReportFormat::Json => {
@@ -1642,17 +1624,8 @@ fn format_validate_output(runtime: &RuntimeConfig, report_format: ReportFormat) 
                 "result": {
                     "command": "config_validate",
                     "valid": true,
-                    "precedence": PRECEDENCE_DESCRIPTION,
-                    "config_paths": format_config_paths_json(runtime),
                     "issues": [],
                     "warnings": runtime.validation_warnings,
-                    "resolved_observability": format_observability_json(runtime),
-                    "resolved_auth": {
-                        "workos_client_id": format_optional_auth_resolved_value_json(WORKOS_CLIENT_ID_KEY, &runtime.workos_client_id)
-                    },
-                    "resolved_policies": {
-                        "bash": format_bash_policies_json(&runtime.bash_policies),
-                    }
                 }
             });
             serde_json::to_string_pretty(&payload)
@@ -1801,25 +1774,6 @@ fn format_observability_text_lines(runtime: &RuntimeConfig) -> Vec<String> {
             runtime.otel_protocol.source,
         ),
     ]
-}
-
-fn format_observability_json(runtime: &RuntimeConfig) -> Value {
-    json!({
-        "log_level": format_resolved_value_json(
-            runtime.log_level.value.as_str(),
-            runtime.log_level.source,
-        ),
-        "log_format": format_resolved_value_json(
-            runtime.log_format.value.as_str(),
-            runtime.log_format.source,
-        ),
-        "log_file": format_optional_resolved_value_json(&runtime.log_file),
-        "log_file_mode": format_resolved_value_json(
-            runtime.log_file_mode.value.as_str(),
-            runtime.log_file_mode.source,
-        ),
-        "otel": format_otel_resolved_json(runtime),
-    })
 }
 
 fn format_otel_resolved_json(runtime: &RuntimeConfig) -> Value {
@@ -2917,13 +2871,16 @@ mod tests {
         assert_eq!(parsed["result"]["valid"], true);
         assert!(parsed["result"]["issues"].as_array().is_some());
         assert!(parsed["result"]["warnings"].as_array().is_some());
-        assert!(parsed["result"]["resolved_auth"]["workos_client_id"].is_object());
-        assert!(parsed["result"]["resolved_policies"]["bash"].is_object());
+        assert!(parsed["result"].get("precedence").is_none());
+        assert!(parsed["result"].get("config_paths").is_none());
+        assert!(parsed["result"].get("resolved_observability").is_none());
+        assert!(parsed["result"].get("resolved_auth").is_none());
+        assert!(parsed["result"].get("resolved_policies").is_none());
         Ok(())
     }
 
     #[test]
-    fn validate_text_output_reports_auth_precedence_and_source() {
+    fn validate_text_output_is_trimmed_to_status_and_issues() {
         let runtime = RuntimeConfig {
             loaded_config_paths: vec![LoadedConfigPath {
                 path: PathBuf::from("/workspace/.sce/config.json"),
@@ -2975,49 +2932,32 @@ mod tests {
         };
 
         let output = format_validate_output(&runtime, ReportFormat::Text);
-        assert!(output.contains("log_format: text (source: default)"));
-        assert!(output.contains("log_file: (unset) (source: none)"));
-        assert!(output.contains("log_file_mode: truncate (source: default)"));
-        assert!(output.contains("otel.enabled: false (source: default)"));
-        assert!(
-            output.contains("otel.exporter_otlp_endpoint: http://127.0.0.1:4317 (source: default)")
-        );
-        assert!(output.contains("otel.exporter_otlp_protocol: grpc (source: default)"));
-        assert!(output.contains("Resolved auth precedence: env (WORKOS_CLIENT_ID) > config file (workos_client_id) > baked default (client_sce_default)"));
-        assert!(output.contains("workos_client_id: local-client (source: config_file, config_source: default_discovered_local"));
-        assert!(output.contains("policies.bash: (unset) (source: none)"));
+        assert!(output.contains("SCE config validation: valid"));
+        assert!(output.contains("Validation issues: none"));
+        assert!(output.contains("Validation warnings: none"));
+        assert!(!output.contains("Precedence:"));
+        assert!(!output.contains("Config files:"));
+        assert!(!output.contains("Resolved auth precedence:"));
+        assert!(!output.contains("workos_client_id:"));
+        assert!(!output.contains("policies.bash:"));
+        assert!(!output.contains("otel."));
     }
 
     #[test]
-    fn validate_json_output_includes_observability_values_and_sources() -> Result<()> {
+    fn validate_json_output_only_reports_status_and_issues() -> Result<()> {
         let parsed: Value = serde_json::from_str(&format_validate_output(
             &sample_runtime(),
             ReportFormat::Json,
         ))?;
 
+        assert_eq!(parsed["status"], "ok");
+        assert_eq!(parsed["result"]["command"], "config_validate");
+        assert_eq!(parsed["result"]["valid"], true);
+        assert!(parsed["result"]["issues"].is_array());
+        assert!(parsed["result"]["warnings"].is_array());
         assert_eq!(
-            parsed["result"]["resolved_observability"]["log_level"]["source"],
-            "env"
-        );
-        assert_eq!(
-            parsed["result"]["resolved_observability"]["log_format"]["value"],
-            "json"
-        );
-        assert_eq!(
-            parsed["result"]["resolved_observability"]["log_file"]["config_source"],
-            "default_discovered_local"
-        );
-        assert_eq!(
-            parsed["result"]["resolved_observability"]["otel"]["enabled"]["value"],
-            true
-        );
-        assert_eq!(
-            parsed["result"]["resolved_observability"]["otel"]["exporter_otlp_endpoint"]["value"],
-            "https://collector.example/v1/traces"
-        );
-        assert_eq!(
-            parsed["result"]["resolved_observability"]["otel"]["exporter_otlp_protocol"]["source"],
-            "default"
+            parsed["result"].as_object().map(serde_json::Map::len),
+            Some(4)
         );
         Ok(())
     }

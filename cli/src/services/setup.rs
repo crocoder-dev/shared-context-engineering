@@ -8,7 +8,10 @@ use std::{
 };
 
 use crate::services::security::{ensure_directory_is_writable, redact_sensitive_text};
-use crate::services::style::{label, success, value};
+use crate::services::style::{
+    label, prompt_label, prompt_label_with_color_policy, prompt_value_with_color_policy, success,
+    value,
+};
 
 pub const NAME: &str = "setup";
 
@@ -1154,7 +1157,7 @@ impl SetupTargetPrompter for InquireSetupTargetPrompter {
             SetupPromptTarget::Both,
         ];
 
-        let selection = Select::new("Select setup target", options).prompt();
+        let selection = Select::new(&setup_prompt_title(), options).prompt();
 
         match selection {
             Ok(SetupPromptTarget::OpenCode) => Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(
@@ -1186,14 +1189,35 @@ enum SetupPromptTarget {
 
 impl std::fmt::Display for SetupPromptTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let label = match self {
-            Self::OpenCode => "OpenCode",
-            Self::Claude => "Claude",
-            Self::Both => "Both",
-        };
-
-        write!(f, "{label}")
+        write!(f, "{}", setup_prompt_target_label(*self))
     }
+}
+
+fn setup_prompt_title() -> String {
+    prompt_label("Select setup target")
+}
+
+fn setup_prompt_target_label(target: SetupPromptTarget) -> String {
+    setup_prompt_target_label_with_color_policy(target, crate::services::style::supports_color())
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn setup_prompt_target_label_with_color_policy(
+    target: SetupPromptTarget,
+    color_enabled: bool,
+) -> String {
+    let label = match target {
+        SetupPromptTarget::OpenCode => "OpenCode",
+        SetupPromptTarget::Claude => "Claude",
+        SetupPromptTarget::Both => "Both",
+    };
+
+    prompt_value_with_color_policy(label, color_enabled)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn setup_prompt_title_with_color_policy(color_enabled: bool) -> String {
+    prompt_label_with_color_policy("Select setup target", color_enabled)
 }
 
 pub fn resolve_setup_dispatch<P>(mode: SetupMode, prompter: &P) -> Result<SetupDispatch>

@@ -1,6 +1,8 @@
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
+use crate::services::style;
+
 #[derive(Parser, Debug)]
 #[command(name = "sce", version, about, long_about = None)]
 pub struct Cli {
@@ -39,7 +41,9 @@ pub fn render_help_for_path(path: &[&str]) -> Option<String> {
         .write_long_help(&mut buffer)
         .expect("help rendering should write to memory");
 
-    Some(String::from_utf8(buffer).expect("help output should be valid UTF-8"))
+    let help = String::from_utf8(buffer).expect("help output should be valid UTF-8");
+
+    Some(style::clap_help(&help))
 }
 
 pub fn auth_help_text() -> String {
@@ -183,7 +187,7 @@ pub enum ConfigSubcommand {
         timeout_ms: Option<u64>,
     },
 
-    #[command(about = "Validate config files and report resolved observability values")]
+    #[command(about = "Validate config files and report pass/fail with errors or warnings")]
     Validate {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
@@ -504,11 +508,11 @@ mod tests {
     }
 
     #[test]
-    fn render_help_for_config_validate_mentions_observability() {
+    fn render_help_for_config_validate_mentions_pass_fail_output() {
         let help = render_help_for_path(&["config", "validate"])
             .expect("config validate help should render");
 
-        assert!(help.contains("Validate config files and report resolved observability values"));
+        assert!(help.contains("Validate config files and report pass/fail with errors or warnings"));
         assert!(help.contains("--config <CONFIG>"));
         assert!(help.contains("--format <FORMAT>"));
     }

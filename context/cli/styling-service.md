@@ -22,6 +22,7 @@ The CLI styling service in `cli/src/services/style.rs` provides deterministic te
 ### Conditional Styling
 
 - `style_if_enabled<F>(text: &str, f: F) -> String` - Applies styling function only when colors are enabled
+- `style_if_enabled_stderr<F>(text: &str, f: F) -> String` - Applies styling function only when stderr colors are enabled
 
 ### Help Output Styling
 
@@ -29,6 +30,7 @@ The CLI styling service in `cli/src/services/style.rs` provides deterministic te
 - `command_name(text: &str) -> String` - Styles command names (green) for help output
 - `example_command(text: &str) -> String` - Styles usage examples (yellow)
 - `placeholder(text: &str) -> String` - Styles placeholders/arguments (dim/italic)
+- `clap_help(text: &str) -> String` - Post-processes command-local clap help text so stdout help surfaces reuse shared heading, command, and placeholder styling without changing plain-text output when color is disabled
 - `status_implemented(text: &str) -> String` - Styles "implemented" status (green)
 - `status_placeholder(text: &str) -> String` - Styles "placeholder" status (dimmed)
 
@@ -36,6 +38,7 @@ The CLI styling service in `cli/src/services/style.rs` provides deterministic te
 
 - `error_code(text: &str) -> String` - Styles error codes (red/bold) for stderr diagnostics
 - `heading_stderr(text: &str) -> String` - Styles headings for stderr output (cyan/bold)
+- `error_text(text: &str) -> String` - Styles human-readable stderr diagnostic bodies (yellow)
 
 ### Command Output Styling
 
@@ -44,6 +47,7 @@ The CLI styling service in `cli/src/services/style.rs` provides deterministic te
 - `value(text: &str) -> String` - Returns values unchanged (for consistency with future styling)
 - `prompt_label(text: &str) -> String` - Styles prompt labels (bold) for interactive prompts
 - `prompt_value(text: &str) -> String` - Styles prompt values (yellow) for user-actionable items like URLs and codes
+- Interactive `sce setup` prompt titles and target-choice labels now reuse those same prompt helpers instead of raw strings.
 
 ## Policy
 
@@ -52,7 +56,9 @@ The CLI styling service in `cli/src/services/style.rs` provides deterministic te
 - JSON output paths remain unstyled
 - Completion scripts and MCP stdio outputs remain unstyled
 - Help output uses `supports_color()` for stdout TTY detection
+- Command-local help styling is applied after clap renders plain help text, covering `Usage:`, section headings, command rows, and placeholder tokens on stdout surfaces
 - Error diagnostics use `supports_color_stderr()` for stderr TTY detection
+- Top-level app diagnostics and observability log-file write failures both render through the shared stderr styling helpers when stderr color is enabled.
 
 ## Re-exports
 
@@ -62,14 +68,14 @@ The CLI styling service in `cli/src/services/style.rs` provides deterministic te
 ## Usage
 
 ```rust
-use crate::services::style::{heading, command_name, error_code, success, label, value, prompt_label, prompt_value, create_table, supports_color};
+use crate::services::style::{heading, command_name, error_code, error_text, success, label, value, prompt_label, prompt_value, create_table, supports_color};
 
 // Help output styling
 println!("{}", heading("Usage:"));
 println!("  {}", command_name("sce setup"));
 
 // Error diagnostics styling (stderr)
-eprintln!("Error [{}]: {}", error_code("SCE-ERR-PARSE"), message);
+eprintln!("{} [{}]: {}", heading_stderr("Error"), error_code("SCE-ERR-PARSE"), error_text(message));
 
 // Command output styling
 println!("{}", success("Setup completed successfully."));

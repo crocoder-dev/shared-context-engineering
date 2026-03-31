@@ -129,6 +129,27 @@ fn interactive_dispatch_returns_cancelled_without_side_effects() {
 }
 
 #[test]
+fn setup_prompt_title_stays_plain_when_color_disabled() {
+    assert_eq!(
+        super::setup_prompt_title_with_color_policy(false),
+        "Select setup target"
+    );
+}
+
+#[test]
+fn setup_prompt_title_and_choices_style_when_color_enabled() {
+    let title = super::setup_prompt_title_with_color_policy(true);
+    let option = super::setup_prompt_target_label_with_color_policy(
+        super::SetupPromptTarget::OpenCode,
+        true,
+    );
+
+    assert!(title.contains("\u{1b}["));
+    assert!(option.contains("\u{1b}["));
+    assert!(option.contains("OpenCode"));
+}
+
+#[test]
 fn embedded_manifest_paths_are_sorted_and_normalized() {
     for target in [SetupTarget::OpenCode, SetupTarget::Claude] {
         let assets = assets_for_target(target);
