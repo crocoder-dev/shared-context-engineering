@@ -9,7 +9,7 @@ In scope for this contract:
 
 - target repository and hooks-path resolution policy
 - required hook ownership and idempotent update rules
-- backup-and-replace lifecycle with rollback guarantees
+- backup-policy branching for git-backed vs non-git-backed replacement flows
 - deterministic outcome vocabulary and failure diagnostics
 - `sce doctor` readiness alignment after successful install
 
@@ -59,22 +59,23 @@ Re-running setup with unchanged canonical assets must be idempotent and produce 
 
 ## Preservation and backup policy
 
-When setup needs to replace an existing hook file, it must preserve prior state through backup-and-replace:
+When setup needs to replace an existing hook file, it performs replacement through a staged write/swap flow and preserves executable permissions required by git hooks.
 
-- create a deterministic backup before replacement
-- perform replacement through a staged write/swap flow
-- preserve executable permissions required by git hooks
+Backup behavior branches by repository type:
 
-Backups are considered part of successful update/install reporting and must be discoverable in command output.
+- non-git-backed repositories create deterministic backups before replacement
+- git-backed repositories do not create installer-managed hook backups and instead rely on git state as the recovery path
+
+Successful update/install reporting may include backup locations only when the active policy created one.
 
 ## Rollback guarantees
 
-If replacement fails after backup creation but before successful finalization, setup must:
+If replacement fails after staged write preparation but before successful finalization, setup must clean temporary staged artifacts used for failed replacement.
 
-- restore the prior hook content from backup
-- restore prior permissions when restoration is possible
-- clean temporary staged artifacts used for failed replacement
-- report failure with explicit rollback status
+Additional failure behavior branches by repository type:
+
+- non-git-backed repositories restore the prior hook content from backup when restoration is possible and report rollback context
+- git-backed repositories do not attempt installer-managed rollback and instead report deterministic guidance to recover the hook from git state
 
 Partial writes that leave required hooks in unknown state are not allowed for successful exits.
 
@@ -85,8 +86,9 @@ Failure output must be actionable and deterministic. Diagnostics should identify
 - repository resolution failures (not a git repo, inaccessible repo)
 - effective hooks-path resolution failures
 - filesystem write/permission failures
-- backup creation failures
+- backup creation failures for non-git-backed targets
 - rollback success/failure status when recovery is attempted
+- git-backed recovery guidance when installer-managed rollback is intentionally skipped
 
 Diagnostics should include affected hook name and target path whenever available.
 
@@ -107,5 +109,5 @@ T02-T05 implementation and tests must verify this contract across:
 - fresh install in empty hook directories
 - rerun idempotency with unchanged assets
 - upgrade path from older/non-canonical hook content
-- rollback behavior under injected replacement failures
+- backup-policy branching under injected replacement failures
 - post-setup `sce doctor` readiness

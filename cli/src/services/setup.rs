@@ -109,6 +109,12 @@ pub enum SetupMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SetupBackupPolicy {
+    CreateAndRestoreBackups,
+    GitBackedRepository,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SetupDispatch {
     Proceed(SetupMode),
     Cancelled,
@@ -274,6 +280,11 @@ fn format_setup_install_success_message(outcome: &SetupInstallOutcome) -> String
                     backup_root.display()
                 ))
             )),
+            None if result.skipped_backup_in_git_backed_repo => lines.push(format!(
+                "  {}: {}",
+                label("backup:"),
+                value("not created (git-backed repository)")
+            )),
             None => lines.push(format!(
                 "  {}: {}",
                 label("backup:"),
@@ -322,7 +333,22 @@ fn format_required_hook_install_success_message(outcome: &RequiredHooksInstallOu
                 label("backup:"),
                 value(&format!("'{}'", backup_path.display()))
             )),
-            None => lines.push(format!("  {}: {}", label("backup:"), value("not needed"))),
+            None if result.skipped_backup_in_git_backed_repo => lines.push(format!(
+                "  {}: {}",
+                label("backup:"),
+                value("not created (git-backed repository)")
+            )),
+            None => lines.push(format!(
+                "  {}: {}",
+                label("backup:"),
+                value(match result.status {
+                    RequiredHookInstallStatus::Installed => "not needed (no existing hook)",
+                    RequiredHookInstallStatus::Skipped => {
+                        "not needed (hook already matched canonical state)"
+                    }
+                    RequiredHookInstallStatus::Updated => "not needed",
+                })
+            )),
         }
     }
 
@@ -350,6 +376,7 @@ pub struct SetupInstallTargetResult {
     pub target: SetupTarget,
     pub destination_root: PathBuf,
     pub backup_root: Option<PathBuf>,
+    pub skipped_backup_in_git_backed_repo: bool,
     pub installed_file_count: usize,
 }
 
@@ -371,6 +398,7 @@ pub struct RequiredHookInstallResult {
     pub hook_path: PathBuf,
     pub status: RequiredHookInstallStatus,
     pub backup_path: Option<PathBuf>,
+    pub skipped_backup_in_git_backed_repo: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -382,9 +410,12 @@ pub struct RequiredHooksInstallOutcome {
 
 pub fn install_required_git_hooks(repository_root: &Path) -> Result<RequiredHooksInstallOutcome> {
     let resolved_repository_root = prepare_setup_hooks_repository(repository_root)?;
-    install_required_git_hooks_in_resolved_repository(&resolved_repository_root, |from, to| {
-        fs::rename(from, to)
-    })
+    let backup_policy = resolve_setup_backup_policy(&resolved_repository_root);
+    install_required_git_hooks_in_resolved_repository(
+        &resolved_repository_root,
+        backup_policy,
+        |from, to| fs::rename(from, to),
+    )
 }
 
 #[allow(dead_code)]
@@ -396,11 +427,17 @@ where
     F: FnMut(&Path, &Path) -> io::Result<()>,
 {
     let resolved_repository_root = prepare_setup_hooks_repository(repository_root)?;
-    install_required_git_hooks_in_resolved_repository(&resolved_repository_root, &mut rename_fn)
+    let backup_policy = resolve_setup_backup_policy(&resolved_repository_root);
+    install_required_git_hooks_in_resolved_repository(
+        &resolved_repository_root,
+        backup_policy,
+        &mut rename_fn,
+    )
 }
 
 fn install_required_git_hooks_in_resolved_repository<F>(
     resolved_repository_root: &Path,
+    backup_policy: SetupBackupPolicy,
     mut rename_fn: F,
 ) -> Result<RequiredHooksInstallOutcome>
 where
@@ -418,8 +455,12 @@ where
 
     let mut hook_results = Vec::new();
     for hook_asset in iter_required_hook_assets() {
-        let hook_result =
-            install_single_required_hook_with_rename(&hooks_directory, hook_asset, &mut rename_fn)?;
+        let hook_result = install_single_required_hook_with_rename(
+            &hooks_directory,
+            hook_asset,
+            backup_policy,
+            &mut rename_fn,
+        )?;
         hook_results.push(hook_result);
     }
 
@@ -433,6 +474,7 @@ where
 fn install_single_required_hook_with_rename<F>(
     hooks_directory: &Path,
     hook_asset: &EmbeddedAsset,
+    backup_policy: SetupBackupPolicy,
     rename_fn: &mut F,
 ) -> Result<RequiredHookInstallResult>
 where
@@ -457,6 +499,7 @@ where
                 hook_path,
                 status: RequiredHookInstallStatus::Skipped,
                 backup_path: None,
+                skipped_backup_in_git_backed_repo: false,
             });
         }
     } else if existing_metadata.is_some() {
@@ -489,7 +532,17 @@ where
             hook_path,
             status: RequiredHookInstallStatus::Installed,
             backup_path: None,
+            skipped_backup_in_git_backed_repo: false,
         });
+    }
+
+    if backup_policy == SetupBackupPolicy::GitBackedRepository {
+        return update_git_backed_required_hook_with_rename(
+            hook_asset,
+            hook_path,
+            &hook_staging_path,
+            rename_fn,
+        );
     }
 
     let backup_path = next_backup_path(&hook_path)?;
@@ -529,6 +582,43 @@ where
         hook_path,
         status: RequiredHookInstallStatus::Updated,
         backup_path: Some(backup_path),
+        skipped_backup_in_git_backed_repo: false,
+    })
+}
+
+fn update_git_backed_required_hook_with_rename<F>(
+    hook_asset: &EmbeddedAsset,
+    hook_path: PathBuf,
+    hook_staging_path: &Path,
+    rename_fn: &mut F,
+) -> Result<RequiredHookInstallResult>
+where
+    F: FnMut(&Path, &Path) -> io::Result<()>,
+{
+    remove_existing_install_target(&hook_path).with_context(|| {
+        format!(
+            "Failed to replace existing hook '{}' without creating a backup",
+            hook_path.display()
+        )
+    })?;
+
+    if let Err(error) = rename_fn(hook_staging_path, &hook_path).with_context(|| {
+        format!(
+            "Failed to update required hook '{}' at '{}'",
+            hook_asset.relative_path,
+            hook_path.display()
+        )
+    }) {
+        cleanup_path_if_exists(hook_staging_path);
+        return Err(error.context(git_backed_hook_install_recovery_guidance(&hook_path)));
+    }
+
+    Ok(RequiredHookInstallResult {
+        hook_name: hook_asset.relative_path.to_string(),
+        hook_path,
+        status: RequiredHookInstallStatus::Updated,
+        backup_path: None,
+        skipped_backup_in_git_backed_repo: true,
     })
 }
 
@@ -701,15 +791,20 @@ pub fn install_embedded_setup_assets(
     repository_root: &Path,
     target: SetupTarget,
 ) -> Result<SetupInstallOutcome> {
-    install_embedded_setup_assets_with_rename(repository_root, target, |from, to| {
-        fs::rename(from, to)
-    })
+    let backup_policy = resolve_setup_backup_policy(repository_root);
+    install_embedded_setup_assets_with_rename(
+        repository_root,
+        target,
+        |from, to| fs::rename(from, to),
+        backup_policy,
+    )
 }
 
 fn install_embedded_setup_assets_with_rename<F>(
     repository_root: &Path,
     target: SetupTarget,
     mut rename_fn: F,
+    backup_policy: SetupBackupPolicy,
 ) -> Result<SetupInstallOutcome>
 where
     F: FnMut(&Path, &Path) -> io::Result<()>,
@@ -726,6 +821,7 @@ where
             repository_root,
             concrete_target,
             &assets,
+            backup_policy,
             &mut rename_fn,
         )?;
         target_results.push(result);
@@ -738,6 +834,7 @@ fn install_assets_for_concrete_target_with_rename<F>(
     repository_root: &Path,
     target: SetupTarget,
     assets: &[&'static EmbeddedAsset],
+    backup_policy: SetupBackupPolicy,
     rename_fn: &mut F,
 ) -> Result<SetupInstallTargetResult>
 where
@@ -749,6 +846,16 @@ where
     if let Err(error) = write_assets_to_staging(&staging_root, assets) {
         cleanup_path_if_exists(&staging_root);
         return Err(error);
+    }
+
+    if backup_policy == SetupBackupPolicy::GitBackedRepository {
+        return install_assets_for_git_backed_target_with_rename(
+            target,
+            destination_root,
+            &staging_root,
+            assets.len(),
+            rename_fn,
+        );
     }
 
     let mut backup_root = None;
@@ -794,8 +901,96 @@ where
         target,
         destination_root,
         backup_root,
+        skipped_backup_in_git_backed_repo: false,
         installed_file_count: assets.len(),
     })
+}
+
+fn install_assets_for_git_backed_target_with_rename<F>(
+    target: SetupTarget,
+    destination_root: PathBuf,
+    staging_root: &Path,
+    installed_file_count: usize,
+    rename_fn: &mut F,
+) -> Result<SetupInstallTargetResult>
+where
+    F: FnMut(&Path, &Path) -> io::Result<()>,
+{
+    if destination_root.exists() {
+        remove_existing_install_target(&destination_root).with_context(|| {
+            format!(
+                "Failed to replace existing setup target '{}' without creating a backup",
+                destination_root.display()
+            )
+        })?;
+    }
+
+    if let Err(error) = rename_fn(staging_root, &destination_root).with_context(|| {
+        format!(
+            "Failed to swap staged install '{}' into destination '{}'",
+            staging_root.display(),
+            destination_root.display()
+        )
+    }) {
+        cleanup_path_if_exists(staging_root);
+        return Err(error.context(git_backed_setup_install_recovery_guidance(
+            target,
+            &destination_root,
+        )));
+    }
+
+    Ok(SetupInstallTargetResult {
+        target,
+        destination_root,
+        backup_root: None,
+        skipped_backup_in_git_backed_repo: true,
+        installed_file_count,
+    })
+}
+
+fn remove_existing_install_target(destination_root: &Path) -> Result<()> {
+    let metadata = fs::metadata(destination_root).with_context(|| {
+        format!(
+            "Failed to inspect existing setup target '{}'",
+            destination_root.display()
+        )
+    })?;
+
+    if metadata.is_dir() {
+        fs::remove_dir_all(destination_root).with_context(|| {
+            format!(
+                "Failed to remove existing setup target directory '{}'",
+                destination_root.display()
+            )
+        })?;
+    } else {
+        fs::remove_file(destination_root).with_context(|| {
+            format!(
+                "Failed to remove existing setup target file '{}'",
+                destination_root.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn git_backed_setup_install_recovery_guidance(
+    target: SetupTarget,
+    destination_root: &Path,
+) -> String {
+    format!(
+        "Git-backed setup for {} does not create backups. Recover '{}' from git state if needed.",
+        setup_target_label(target),
+        destination_root.display()
+    )
+}
+
+fn git_backed_hook_install_recovery_guidance(hook_path: &Path) -> String {
+    format!(
+        "Git-backed hook setup does not create backups. Recover '{}' from git state if needed.",
+        hook_path.display()
+    )
 }
 
 fn write_assets_to_staging(staging_root: &Path, assets: &[&'static EmbeddedAsset]) -> Result<()> {
@@ -890,6 +1085,32 @@ fn next_backup_path(destination_root: &Path) -> Result<PathBuf> {
     }
 
     unreachable!("backup suffix iterator is unbounded")
+}
+
+fn resolve_setup_backup_policy(repository_root: &Path) -> SetupBackupPolicy {
+    resolve_setup_backup_policy_with_probe(repository_root, is_git_backed_repository)
+}
+
+fn resolve_setup_backup_policy_with_probe<F>(
+    repository_root: &Path,
+    git_backed_repository_probe: F,
+) -> SetupBackupPolicy
+where
+    F: FnOnce(&Path) -> bool,
+{
+    if git_backed_repository_probe(repository_root) {
+        SetupBackupPolicy::GitBackedRepository
+    } else {
+        SetupBackupPolicy::CreateAndRestoreBackups
+    }
+}
+
+fn is_git_backed_repository(repository_root: &Path) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(repository_root)
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 fn target_install_directory_name(target: SetupTarget) -> &'static str {

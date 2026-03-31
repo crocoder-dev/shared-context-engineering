@@ -1,11 +1,18 @@
-use std::path::{Path, PathBuf};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::Result;
 
 use super::{
     get_required_hook_asset, iter_embedded_assets_for_setup_target, iter_required_hook_assets,
     resolve_setup_dispatch, resolve_setup_request, run_setup_for_mode, run_setup_hooks,
-    RequiredHookAsset, SetupCliOptions, SetupDispatch, SetupMode, SetupTarget,
+    RequiredHookAsset, RequiredHookInstallResult, RequiredHookInstallStatus,
+    RequiredHooksInstallOutcome, SetupBackupPolicy, SetupCliOptions, SetupDispatch,
+    SetupInstallOutcome, SetupInstallTargetResult, SetupMode, SetupTarget,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -93,32 +100,32 @@ fn run_setup_hooks_rejects_missing_repo_path() {
 }
 
 #[test]
-fn interactive_dispatch_maps_selected_target() -> Result<()> {
+fn interactive_dispatch_maps_selected_target() {
     let dispatch = resolve_setup_dispatch(
         SetupMode::Interactive,
         &MockPrompter {
             response: SetupDispatch::Proceed(SetupMode::NonInteractive(SetupTarget::Claude)),
         },
-    )?;
+    )
+    .expect("interactive dispatch should resolve selected target");
 
     assert_eq!(
         dispatch,
         SetupDispatch::Proceed(SetupMode::NonInteractive(SetupTarget::Claude))
     );
-    Ok(())
 }
 
 #[test]
-fn interactive_dispatch_returns_cancelled_without_side_effects() -> Result<()> {
+fn interactive_dispatch_returns_cancelled_without_side_effects() {
     let dispatch = resolve_setup_dispatch(
         SetupMode::Interactive,
         &MockPrompter {
             response: SetupDispatch::Cancelled,
         },
-    )?;
+    )
+    .expect("interactive dispatch should return cancelled response");
 
     assert_eq!(dispatch, SetupDispatch::Cancelled);
-    Ok(())
 }
 
 #[test]
@@ -152,11 +159,12 @@ fn embedded_manifest_paths_are_sorted_and_normalized() {
 }
 
 #[test]
-fn embedded_manifest_matches_runtime_config_tree() -> Result<()> {
+fn embedded_manifest_matches_runtime_config_tree() {
     let opencode_expected =
-        collect_runtime_relative_paths(&runtime_target_root(SetupTarget::OpenCode))?;
-    let claude_expected =
-        collect_runtime_relative_paths(&runtime_target_root(SetupTarget::Claude))?;
+        collect_runtime_relative_paths(&runtime_target_root(SetupTarget::OpenCode))
+            .expect("should collect OpenCode runtime asset paths");
+    let claude_expected = collect_runtime_relative_paths(&runtime_target_root(SetupTarget::Claude))
+        .expect("should collect Claude runtime asset paths");
 
     let opencode_actual: Vec<String> = assets_for_target(SetupTarget::OpenCode)
         .iter()
@@ -169,7 +177,6 @@ fn embedded_manifest_matches_runtime_config_tree() -> Result<()> {
 
     assert_eq!(opencode_actual, opencode_expected);
     assert_eq!(claude_actual, claude_expected);
-    Ok(())
 }
 
 #[test]
@@ -238,6 +245,321 @@ fn required_hook_lookup_resolves_each_canonical_hook() {
         assert_eq!(asset.relative_path, hook_filename(hook));
         assert!(!asset.bytes.is_empty());
     }
+}
+
+#[test]
+fn setup_backup_policy_detects_non_git_repository() {
+    assert_eq!(
+        super::resolve_setup_backup_policy_with_probe(Path::new("/tmp/non-git"), |_| false),
+        SetupBackupPolicy::CreateAndRestoreBackups
+    );
+}
+
+#[test]
+fn setup_backup_policy_detects_git_backed_repository() {
+    assert_eq!(
+        super::resolve_setup_backup_policy_with_probe(Path::new("/tmp/git"), |_| true),
+        SetupBackupPolicy::GitBackedRepository
+    );
+}
+
+#[test]
+fn install_paths_share_git_backed_backup_policy_input() {
+    let config_backup_policy =
+        super::resolve_setup_backup_policy_with_probe(Path::new("/tmp/shared"), |_| true);
+    let hook_backup_policy =
+        super::resolve_setup_backup_policy_with_probe(Path::new("/tmp/shared"), |_| true);
+
+    assert_eq!(config_backup_policy, SetupBackupPolicy::GitBackedRepository);
+    assert_eq!(hook_backup_policy, config_backup_policy);
+}
+
+#[test]
+fn git_backed_config_install_skips_backup_creation() -> Result<()> {
+    let repository_root = TestDir::new("setup-git-backed-no-backup-success")?;
+    let destination_root = repository_root.path().join(".opencode");
+    write_existing_setup_target(&destination_root)?;
+
+    let outcome = super::install_embedded_setup_assets_with_rename(
+        repository_root.path(),
+        SetupTarget::OpenCode,
+        |from, to| std::fs::rename(from, to),
+        SetupBackupPolicy::GitBackedRepository,
+    )?;
+
+    assert_eq!(outcome.target_results.len(), 1);
+    let result = &outcome.target_results[0];
+    assert_eq!(result.target, SetupTarget::OpenCode);
+    assert_eq!(result.backup_root, None);
+    assert!(destination_root.exists());
+    assert!(!destination_root.join("existing.txt").exists());
+    assert!(!repository_root.path().join(".opencode.backup").exists());
+
+    Ok(())
+}
+
+#[test]
+fn setup_success_output_reports_git_backed_no_backup_policy() {
+    let message = super::format_setup_install_success_message(&SetupInstallOutcome {
+        target_results: vec![SetupInstallTargetResult {
+            target: SetupTarget::OpenCode,
+            destination_root: PathBuf::from("/tmp/repo/.opencode"),
+            backup_root: None,
+            skipped_backup_in_git_backed_repo: true,
+            installed_file_count: 3,
+        }],
+    });
+
+    assert!(message.contains("backup: not created (git-backed repository)"));
+    assert!(!message.contains("backup: not needed (no existing target)"));
+}
+
+#[test]
+fn git_backed_config_install_failure_skips_rollback_and_emits_git_guidance() -> Result<()> {
+    let repository_root = TestDir::new("setup-git-backed-no-backup-failure")?;
+    let destination_root = repository_root.path().join(".opencode");
+    write_existing_setup_target(&destination_root)?;
+
+    let mut rename_calls = Vec::new();
+    let error = super::install_embedded_setup_assets_with_rename(
+        repository_root.path(),
+        SetupTarget::OpenCode,
+        |from, to| {
+            rename_calls.push((from.to_path_buf(), to.to_path_buf()));
+            Err(io::Error::other("injected swap failure"))
+        },
+        SetupBackupPolicy::GitBackedRepository,
+    )
+    .expect_err("git-backed swap failure should surface an error");
+
+    let message = format!("{error:#}");
+    assert!(message.contains("injected swap failure"));
+    assert!(message.contains("Git-backed setup for OpenCode does not create backups"));
+    assert!(message.contains(destination_root.to_string_lossy().as_ref()));
+    assert_eq!(rename_calls.len(), 1);
+    assert_eq!(rename_calls[0].1, destination_root);
+    assert!(!repository_root.path().join(".opencode.backup").exists());
+    assert!(!destination_root.exists());
+
+    Ok(())
+}
+
+#[test]
+fn non_git_backed_config_install_still_creates_backup() -> Result<()> {
+    let repository_root = TestDir::new("setup-non-git-backup-success")?;
+    let destination_root = repository_root.path().join(".opencode");
+    write_existing_setup_target(&destination_root)?;
+
+    let outcome = super::install_embedded_setup_assets_with_rename(
+        repository_root.path(),
+        SetupTarget::OpenCode,
+        |from, to| std::fs::rename(from, to),
+        SetupBackupPolicy::CreateAndRestoreBackups,
+    )?;
+
+    let result = &outcome.target_results[0];
+    let backup_root = result
+        .backup_root
+        .as_ref()
+        .expect("non-git-backed install should preserve backups");
+    assert!(backup_root.exists());
+    assert!(backup_root.join("existing.txt").exists());
+    assert!(destination_root.exists());
+
+    Ok(())
+}
+
+#[test]
+fn git_backed_hook_install_default_hooks_path_skips_backup_creation() -> Result<()> {
+    let repository_root = TestDir::new("setup-hooks-git-backed-default-no-backup")?;
+    init_git_repository(repository_root.path())?;
+
+    let pre_commit_path = repository_root.path().join(".git/hooks/pre-commit");
+    write_existing_hook(&pre_commit_path)?;
+
+    let outcome =
+        super::install_required_git_hooks_with_rename(repository_root.path(), |from, to| {
+            std::fs::rename(from, to)
+        })?;
+
+    assert_eq!(
+        outcome.hooks_directory,
+        repository_root.path().join(".git/hooks")
+    );
+    assert_eq!(outcome.hook_results.len(), 3);
+
+    let pre_commit_result = outcome
+        .hook_results
+        .iter()
+        .find(|result| result.hook_name == "pre-commit")
+        .expect("pre-commit result should exist");
+    assert_eq!(
+        pre_commit_result.status,
+        super::RequiredHookInstallStatus::Updated
+    );
+    assert_eq!(pre_commit_result.backup_path, None);
+    assert!(!repository_root
+        .path()
+        .join(".git/hooks/pre-commit.backup")
+        .exists());
+
+    let expected_hook = get_required_hook_asset(RequiredHookAsset::PreCommit)
+        .expect("pre-commit asset should exist");
+    assert_eq!(fs::read(&pre_commit_path)?, expected_hook.bytes);
+
+    Ok(())
+}
+
+#[test]
+fn hook_success_output_reports_git_backed_no_backup_policy() {
+    let message =
+        super::format_required_hook_install_success_message(&RequiredHooksInstallOutcome {
+            repository_root: PathBuf::from("/tmp/repo"),
+            hooks_directory: PathBuf::from("/tmp/repo/.git/hooks"),
+            hook_results: vec![RequiredHookInstallResult {
+                hook_name: "commit-msg".to_string(),
+                hook_path: PathBuf::from("/tmp/repo/.git/hooks/commit-msg"),
+                status: RequiredHookInstallStatus::Updated,
+                backup_path: None,
+                skipped_backup_in_git_backed_repo: true,
+            }],
+        });
+
+    assert!(message.contains("backup: not created (git-backed repository)"));
+    assert!(!message.contains("backup: not needed"));
+}
+
+#[test]
+fn git_backed_hook_install_custom_hooks_path_skips_backup_creation() -> Result<()> {
+    let repository_root = TestDir::new("setup-hooks-git-backed-custom-no-backup")?;
+    init_git_repository(repository_root.path())?;
+    run_git(
+        repository_root.path(),
+        &["config", "core.hooksPath", "custom-hooks"],
+    )?;
+
+    let custom_hooks_path = repository_root.path().join("custom-hooks");
+    let commit_msg_path = custom_hooks_path.join("commit-msg");
+    write_existing_hook(&commit_msg_path)?;
+
+    let outcome =
+        super::install_required_git_hooks_with_rename(repository_root.path(), |from, to| {
+            std::fs::rename(from, to)
+        })?;
+
+    assert_eq!(outcome.hooks_directory, custom_hooks_path);
+
+    let commit_msg_result = outcome
+        .hook_results
+        .iter()
+        .find(|result| result.hook_name == "commit-msg")
+        .expect("commit-msg result should exist");
+    assert_eq!(
+        commit_msg_result.status,
+        super::RequiredHookInstallStatus::Updated
+    );
+    assert_eq!(commit_msg_result.backup_path, None);
+    assert!(!repository_root
+        .path()
+        .join("custom-hooks/commit-msg.backup")
+        .exists());
+
+    let expected_hook = get_required_hook_asset(RequiredHookAsset::CommitMsg)
+        .expect("commit-msg asset should exist");
+    assert_eq!(fs::read(&commit_msg_path)?, expected_hook.bytes);
+
+    Ok(())
+}
+
+#[test]
+fn git_backed_hook_install_failure_skips_rollback_and_emits_git_guidance() -> Result<()> {
+    let repository_root = TestDir::new("setup-hooks-git-backed-failure")?;
+    init_git_repository(repository_root.path())?;
+
+    let commit_msg_path = repository_root.path().join(".git/hooks/commit-msg");
+    write_existing_hook(&commit_msg_path)?;
+
+    let mut rename_calls = Vec::new();
+    let error =
+        super::install_required_git_hooks_with_rename(repository_root.path(), |from, to| {
+            rename_calls.push((from.to_path_buf(), to.to_path_buf()));
+            Err(io::Error::other("injected hook swap failure"))
+        })
+        .expect_err("git-backed hook swap failure should surface an error");
+
+    let message = format!("{error:#}");
+    assert!(message.contains("injected hook swap failure"));
+    assert!(message.contains("Git-backed hook setup does not create backups"));
+    assert!(message.contains(commit_msg_path.to_string_lossy().as_ref()));
+    assert_eq!(rename_calls.len(), 1);
+    assert_eq!(rename_calls[0].1, commit_msg_path);
+    assert!(!repository_root
+        .path()
+        .join(".git/hooks/commit-msg.backup")
+        .exists());
+    assert!(!commit_msg_path.exists());
+
+    Ok(())
+}
+
+struct TestDir {
+    path: PathBuf,
+}
+
+impl TestDir {
+    fn new(label: &str) -> Result<Self> {
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let path = std::env::temp_dir().join(format!("sce-setup-{label}-{unique}"));
+        fs::create_dir_all(&path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn write_existing_setup_target(destination_root: &Path) -> Result<()> {
+    fs::create_dir_all(destination_root)?;
+    fs::write(destination_root.join("existing.txt"), "existing")?;
+    Ok(())
+}
+
+fn write_existing_hook(hook_path: &Path) -> Result<()> {
+    let parent = hook_path
+        .parent()
+        .expect("hook path should always have a parent directory");
+    fs::create_dir_all(parent)?;
+    fs::write(hook_path, "#!/bin/sh\nexit 0\n")?;
+    Ok(())
+}
+
+fn init_git_repository(repository_root: &Path) -> Result<()> {
+    run_git(repository_root, &["init"])?;
+    Ok(())
+}
+
+fn run_git(repository_root: &Path, args: &[&str]) -> Result<()> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repository_root)
+        .output()?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    ))
 }
 
 fn runtime_target_root(target: SetupTarget) -> PathBuf {
