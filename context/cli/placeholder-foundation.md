@@ -16,7 +16,7 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 ## Onboarding documentation
 
 - `sce --help` includes quick-start commands for `setup`, `auth`, `doctor`, and `version`, plus the implemented-vs-placeholder top-level command catalog.
-- Command-local help is available for implemented commands including bare `sce auth`, `sce auth --help`, `sce auth login --help`, `sce setup --help`, `sce doctor --help`, and `sce completion --help`.
+- Command-local help is available for implemented commands including bare `sce auth`, `sce auth --help`, `sce auth login --help`, `sce auth renew --help`, `sce setup --help`, `sce doctor --help`, `sce trace --help`, `sce trace prompts --help`, and `sce completion --help`.
 - Current verification guidance for the CLI slice uses crate-local `cargo test --manifest-path cli/Cargo.toml`, plus release/install commands for installability (`cargo build --manifest-path cli/Cargo.toml --release`, `cargo install --path cli --locked`).
 
 ## Nix release installability surface
@@ -59,7 +59,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 `version` exposes deterministic runtime identification output in text mode by default and JSON mode via `--format json`.
 `completion` exposes deterministic shell completion generation via `sce completion --shell <bash|zsh|fish>`.
 `setup` defaults to an `inquire` interactive target selection (OpenCode, Claude, Both) and accepts mutually-exclusive non-interactive target flags (`--opencode`, `--claude`, `--both`).
-`auth` now emits auth-local guidance for bare `sce auth` and `sce auth --help`, listing `login`, `logout`, and `status` plus copy-ready next steps.
+`auth` now emits auth-local guidance for bare `sce auth` and `sce auth --help`, listing `login`, `renew`, `logout`, and `status` plus copy-ready next steps.
 `setup`, `doctor`, `hooks`, `trace`, `sync`, `version`, and `completion` all support command-local `--help`/`-h` usage output via top-level parser routing in `cli/src/app.rs`.
 `setup` now also exposes compile-time embedded config assets for OpenCode/Claude targets, sourced from the generated `config/.opencode/**` and `config/.claude/**` trees via `cli/build.rs` with normalized forward-slash relative paths and target-scoped iteration APIs; the embedded asset set includes the OpenCode bash-policy plugin/runtime files generated from the canonical preset catalog (Claude bash-policy enforcement has been removed from generated outputs).
 `setup` additionally includes a repository-root install engine (`install_embedded_setup_assets`) that stages embedded files, intentionally leaves generated `skills/*/tile.json` manifests in `config/` only, skips those tile files during repo-root installs, and applies backup-and-replace safety for `.opencode/`/`.claude/` with rollback restoration if staged swap fails while treating bash-policy enforcement files as first-class SCE-managed assets.
@@ -70,11 +70,11 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 ## Command loop and error model
 
 - Argument parsing is handled by `clap` derive macros in `cli/src/cli_schema.rs` and dispatched from `cli/src/app.rs`.
-- Runtime errors are normalized through `anyhow` and rendered as `Error: ...` with exit code `2`.
+- Runtime failures are classified and rendered as `Error [SCE-ERR-<CLASS>]: ...` on stderr, with stable exit codes `2` (parse), `3` (validation), `4` (runtime), and `5` (dependency).
 - Unknown commands/options and extra positional arguments return deterministic, actionable guidance to run `sce --help`.
 - `sce setup --help` returns setup-specific usage output with target-flag contract details and deterministic examples, including one-run non-interactive setup+hooks and composable follow-up validation/repair-intent flows (`sce doctor --format json`, `sce doctor --all-databases --format json`, `sce doctor --fix`).
-- `sce auth` and `sce auth --help` return auth-specific usage output with available subcommands and deterministic examples, while `sce auth <subcommand> --help` stays scoped to the selected auth subcommand.
-- `sce doctor --help`, `sce hooks --help`, `sce trace --help`, and `sce sync --help` return command-local usage output and deterministic copy-ready examples.
+- `sce auth` and `sce auth --help` return auth-specific usage output with available subcommands and deterministic examples, while `sce auth <login|renew|logout|status> --help` stays scoped to the selected auth subcommand.
+- `sce doctor --help`, `sce hooks --help`, `sce trace --help`, `sce trace prompts --help`, and `sce sync --help` return command-local usage output and deterministic copy-ready examples.
 - Interactive `sce setup` prompt cancellation/interrupt exits cleanly with: `Setup cancelled. No files were changed.`
 - Command handlers return deterministic status messaging:
 - `setup`: `Setup completed successfully.` plus selected targets, per-target install destinations/counts, and policy-aware backup status lines (`existing target moved to '<path>'`, `not created (git-backed repository)`, or `not needed (no existing target)` for config targets; analogous hook status wording for hook setup).
@@ -95,7 +95,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - `cli/src/services/sync.rs` defines cloud-sync abstraction points (`CloudSyncGateway`, `CloudSyncRequest`, `CloudSyncPlan`) layered after the local Turso smoke gate, plus `SyncRequest` parsing/rendering for deterministic text or `--format json` placeholder output and command-local usage text (`sync_usage_text`).
 - `cli/src/services/default_paths.rs` defines the canonical per-user persisted-location seam for config/state/cache roots plus named default file paths and an explicit inventory of current default persisted artifacts (`global config`, `auth tokens`, `Agent Trace local DB`) used by config discovery, token storage, local DB bootstrap, and doctor diagnostics; no default cache-backed persisted artifact exists yet.
 - `cli/src/services/token_storage.rs` defines WorkOS token persistence (`save_tokens`, `load_tokens`, `delete_tokens`) with shared default-path-seam resolution for the default token file, JSON payload storage including `stored_at_unix_seconds`, graceful missing-file deletion behavior, missing/corrupted-file handling, and restrictive on-disk permissions (`0600` on Unix; Windows best-effort ACL hardening via `icacls`).
-- `cli/src/services/auth_command.rs` defines the auth command orchestration surface (`AuthRequest`, `AuthSubcommand`, `run_auth_subcommand`) for `login`, `logout`, and `status`, including shared text/JSON rendering, token-storage-backed logout deletion with path-aware remediation guidance, expiry-aware status reporting, canonical credentials-file path reporting sourced from the shared default-path seam, precedence-aware client-ID guidance sourced from the shared auth-runtime resolver instead of env-only assumptions, and a lazily initialized current-thread Tokio runtime with both I/O and time enabled so `sce auth login` can drive the WorkOS device flow without the prior I/O-disabled panic.
+- `cli/src/services/auth_command.rs` defines the auth command orchestration surface (`AuthRequest`, `AuthSubcommand`, `run_auth_subcommand`) for `login`, `renew`, `logout`, and `status`, including shared text/JSON rendering, token refresh/forced renewal handling for `sce auth renew`, token-storage-backed logout deletion with path-aware remediation guidance, expiry-aware status reporting, canonical credentials-file path reporting sourced from the shared default-path seam, precedence-aware client-ID guidance sourced from the shared auth-runtime resolver instead of env-only assumptions, and a lazily initialized current-thread Tokio runtime with both I/O and time enabled so the auth flows can drive the WorkOS device/refresh paths without the prior I/O-disabled panic.
 - `cli/src/app.rs` dispatches `auth`, `config`, `setup`, `doctor`, `hooks`, `trace`, `sync`, `version`, and `completion` through service-level modules so runtime messages are sourced from domain modules instead of inline strings.
 
 ## Local Turso adapter behavior
