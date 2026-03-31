@@ -35,13 +35,16 @@ At the current implementation point, the runtime in `cli/src/services/doctor.rs`
 - explicit all-SCE database inventory rendering for the canonical Agent Trace DB only
 - text output now prefixes every line with a status tag: `[PASS]`, `[FAIL]`, `[MISS]`, or `[WARN]`
 - status tag prefixes are colorized in text output (PASS=green, FAIL=red, WARN=yellow, MISS=blue) and only the prefix is colored when `supports_color()` allows it (TTY + no `NO_COLOR`)
+- text output now includes separate OpenCode sections (`OpenCode plugin`, `OpenCode agent`, `OpenCode command`, `OpenCode skills`) with PASS/FAIL summary lines and indented detail lines when failures occur
 - explicit git-unavailable, outside-repo, and bare-repo repository-targeting failures
 - effective hook-path source (`default`, local `core.hooksPath`, global `core.hooksPath`)
 - repository root and hooks directory resolution when a repository target is detected
 - required hook presence and executable permissions for `pre-commit`, `commit-msg`, and `post-commit` when repo-scoped checks apply
 - byte-for-byte stale-content detection for required hook payloads against canonical embedded SCE-managed hook assets
-- repo-scoped OpenCode structure checks for required `.opencode/agent`, `.opencode/command`, and `.opencode/skills` directories when `.opencode/` exists, with missing/non-directory paths reported as manual-only errors
-- repo-scoped OpenCode plugin registry/file presence checks for the `sce-bash-policy` plugin when `.opencode/` exists, plus runtime dependency and preset catalog presence checks; registry-missing is an error while file/runtime/preset findings are warnings (manual-only remediation)
+- repo-scoped OpenCode root directory presence is required; missing `.opencode/` is reported as a manual-only `repo_assets` error
+- repo-scoped OpenCode structure checks for required `.opencode/agent`, `.opencode/command`, and `.opencode/skills` directories, with missing/non-directory paths reported as manual-only errors
+- repo-scoped OpenCode embedded asset presence checks for expected files under `.opencode/agent`, `.opencode/command`, and `.opencode/skills`, with missing/non-file paths reported as manual-only `repo_assets` errors
+- repo-scoped OpenCode plugin registry/file presence checks for the `sce-bash-policy` plugin run when `.opencode/` exists, plus runtime dependency and preset catalog presence checks; registry-missing is an error while file/runtime/preset findings are warnings (manual-only remediation)
 - repair-mode reuse of `cli/src/services/setup.rs::install_required_git_hooks` for missing hooks directories plus missing, stale, or non-executable required hooks
 - doctor-owned bootstrap of the missing canonical SCE-owned Agent Trace DB parent directory, with deterministic refusal when the resolved path does not match the expected owned location
 

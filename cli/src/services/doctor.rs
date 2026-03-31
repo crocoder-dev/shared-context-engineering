@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -8,11 +9,9 @@ use serde_json::json;
 use crate::services::default_paths::resolve_sce_default_locations;
 use crate::services::output_format::OutputFormat;
 use crate::services::setup::{
-    install_required_git_hooks, iter_required_hook_assets, RequiredHookInstallStatus,
-    RequiredHooksInstallOutcome,
+    install_required_git_hooks, iter_embedded_assets_for_setup_target, iter_required_hook_assets,
+    RequiredHookInstallStatus, RequiredHooksInstallOutcome, SetupTarget,
 };
-#[cfg(test)]
-use crate::services::setup::{iter_embedded_assets_for_setup_target, SetupTarget};
 use crate::services::style::{
     heading, label, status_tag_fail, status_tag_miss, status_tag_pass, status_tag_warn, success,
     value,
@@ -113,6 +112,33 @@ enum HookContentState {
     Unknown,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OpenCodeSection {
+    Plugin,
+    Agent,
+    Command,
+    Skills,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct OpenCodeIssue {
+    summary: String,
+    path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct OpenCodeSectionHealth {
+    section: OpenCodeSection,
+    issues: Vec<OpenCodeIssue>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct OpenCodeHealth {
+    root: PathBuf,
+    root_missing: bool,
+    sections: Vec<OpenCodeSectionHealth>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FileLocationHealth {
     label: &'static str,
@@ -141,7 +167,76 @@ struct HookDoctorReport {
     repo_databases: Vec<DatabaseHealth>,
     all_databases: Vec<DatabaseHealth>,
     hooks: Vec<HookFileHealth>,
+    opencode_health: Option<OpenCodeHealth>,
     problems: Vec<DoctorProblem>,
+}
+
+impl OpenCodeSectionHealth {
+    fn new(section: OpenCodeSection) -> Self {
+        Self {
+            section,
+            issues: Vec::new(),
+        }
+    }
+}
+
+impl OpenCodeHealth {
+    fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            root_missing: false,
+            sections: vec![
+                OpenCodeSectionHealth::new(OpenCodeSection::Plugin),
+                OpenCodeSectionHealth::new(OpenCodeSection::Agent),
+                OpenCodeSectionHealth::new(OpenCodeSection::Command),
+                OpenCodeSectionHealth::new(OpenCodeSection::Skills),
+            ],
+        }
+    }
+
+    fn section_mut(&mut self, section: OpenCodeSection) -> &mut OpenCodeSectionHealth {
+        self.sections
+            .iter_mut()
+            .find(|entry| entry.section == section)
+            .expect("OpenCode section should exist")
+    }
+
+    fn push_issue(
+        &mut self,
+        section: OpenCodeSection,
+        summary: impl Into<String>,
+        path: Option<PathBuf>,
+    ) {
+        self.section_mut(section).issues.push(OpenCodeIssue {
+            summary: summary.into(),
+            path,
+        });
+    }
+
+    fn push_issue_all(&mut self, summary: impl Into<String>, path: Option<&PathBuf>) {
+        let summary = summary.into();
+        for section in [
+            OpenCodeSection::Plugin,
+            OpenCodeSection::Agent,
+            OpenCodeSection::Command,
+            OpenCodeSection::Skills,
+        ] {
+            self.push_issue(section, summary.clone(), path.cloned());
+        }
+    }
+
+    fn mark_root_missing(&mut self) {
+        self.root_missing = true;
+        let root = self.root.clone();
+        self.push_issue_all("OpenCode root directory is missing.", Some(&root));
+    }
+
+    fn section(&self, section: OpenCodeSection) -> &OpenCodeSectionHealth {
+        self.sections
+            .iter()
+            .find(|entry| entry.section == section)
+            .expect("OpenCode section should exist")
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -399,11 +494,13 @@ fn build_report_with_dependencies(
         Vec::new()
     };
 
-    if git_available && !bare_repository {
-        if let Some(resolved_root) = detected_repository_root.as_deref() {
-            inspect_opencode_plugin_health(resolved_root, &mut problems);
-        }
-    }
+    let opencode_health = if git_available && !bare_repository {
+        detected_repository_root
+            .as_deref()
+            .map(|resolved_root| collect_opencode_health(resolved_root, &mut problems))
+    } else {
+        None
+    };
 
     let repo_databases = Vec::new();
     let all_databases = if database_inventory == DoctorDatabaseInventory::All {
@@ -434,6 +531,7 @@ fn build_report_with_dependencies(
         repo_databases,
         all_databases,
         hooks,
+        opencode_health,
         problems,
     }
 }
@@ -786,16 +884,41 @@ fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> V
         .collect()
 }
 
-fn inspect_opencode_plugin_health(repository_root: &Path, problems: &mut Vec<DoctorProblem>) {
+fn collect_opencode_health(
+    repository_root: &Path,
+    problems: &mut Vec<DoctorProblem>,
+) -> OpenCodeHealth {
     let opencode_root = repository_root.join(OPENCODE_ROOT_DIR);
+    let mut health = OpenCodeHealth::new(opencode_root.clone());
+
     if !opencode_root.exists() {
-        return;
+        problems.push(DoctorProblem {
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "OpenCode root directory '{}' is missing.",
+                opencode_root.display()
+            ),
+            remediation:
+                "Run 'sce setup --opencode' to install OpenCode assets, then rerun 'sce doctor'."
+                    .to_string(),
+            next_action: "manual_steps",
+        });
+        health.mark_root_missing();
+        return health;
     }
 
-    inspect_opencode_required_directories(&opencode_root, problems);
+    inspect_opencode_required_directories(&opencode_root, problems, &mut health);
+    inspect_opencode_embedded_asset_presence(&opencode_root, problems, &mut health);
 
     let manifest_path = opencode_root.join(OPENCODE_MANIFEST_FILE);
     if let Some(summary) = opencode_plugin_registry_issue(&manifest_path) {
+        health.push_issue(
+            OpenCodeSection::Plugin,
+            summary.clone(),
+            Some(manifest_path.clone()),
+        );
         problems.push(DoctorProblem {
             category: ProblemCategory::RepoAssets,
             severity: ProblemSeverity::Error,
@@ -810,7 +933,7 @@ fn inspect_opencode_plugin_health(repository_root: &Path, problems: &mut Vec<Doc
         });
     }
 
-    inspect_opencode_plugin_dependency_health(&opencode_root, problems);
+    inspect_opencode_plugin_dependency_health(&opencode_root, problems, &mut health);
 
     let plugin_path = opencode_root.join(OPENCODE_PLUGIN_RELATIVE_PATH);
     let plugin_metadata = fs::metadata(&plugin_path).ok();
@@ -830,6 +953,11 @@ fn inspect_opencode_plugin_health(repository_root: &Path, problems: &mut Vec<Doc
                 plugin_path.display()
             )
         };
+        health.push_issue(
+            OpenCodeSection::Plugin,
+            summary.clone(),
+            Some(plugin_path.clone()),
+        );
         problems.push(DoctorProblem {
             category: ProblemCategory::RepoAssets,
             severity: ProblemSeverity::Warning,
@@ -842,14 +970,30 @@ fn inspect_opencode_plugin_health(repository_root: &Path, problems: &mut Vec<Doc
             next_action: "manual_steps",
         });
     }
+
+    health
 }
 
-fn inspect_opencode_required_directories(opencode_root: &Path, problems: &mut Vec<DoctorProblem>) {
+fn inspect_opencode_required_directories(
+    opencode_root: &Path,
+    problems: &mut Vec<DoctorProblem>,
+    opencode_health: &mut OpenCodeHealth,
+) {
     for directory in OPENCODE_REQUIRED_DIRECTORIES {
         let required_path = opencode_root.join(directory);
         match fs::metadata(&required_path) {
             Ok(metadata) => {
                 if !metadata.is_dir() {
+                    if let Some(section) = opencode_section_for_directory(directory) {
+                        opencode_health.push_issue(
+                            section,
+                            format!(
+                                "OpenCode required directory '{}' is not a directory.",
+                                required_path.display()
+                            ),
+                            Some(required_path.clone()),
+                        );
+                    }
                     problems.push(DoctorProblem {
                         category: ProblemCategory::RepoAssets,
                         severity: ProblemSeverity::Error,
@@ -868,6 +1012,16 @@ fn inspect_opencode_required_directories(opencode_root: &Path, problems: &mut Ve
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(section) = opencode_section_for_directory(directory) {
+                    opencode_health.push_issue(
+                        section,
+                        format!(
+                            "OpenCode required directory '{}' is missing.",
+                            required_path.display()
+                        ),
+                        Some(required_path.clone()),
+                    );
+                }
                 problems.push(DoctorProblem {
                     category: ProblemCategory::RepoAssets,
                     severity: ProblemSeverity::Error,
@@ -885,6 +1039,16 @@ fn inspect_opencode_required_directories(opencode_root: &Path, problems: &mut Ve
                 });
             }
             Err(error) => {
+                if let Some(section) = opencode_section_for_directory(directory) {
+                    opencode_health.push_issue(
+                        section,
+                        format!(
+                            "OpenCode required directory '{}' could not be inspected: {error}",
+                            required_path.display()
+                        ),
+                        Some(required_path.clone()),
+                    );
+                }
                 problems.push(DoctorProblem {
                     category: ProblemCategory::RepoAssets,
                     severity: ProblemSeverity::Error,
@@ -901,6 +1065,75 @@ fn inspect_opencode_required_directories(opencode_root: &Path, problems: &mut Ve
                 });
             }
         }
+    }
+}
+
+fn opencode_section_for_directory(directory: &str) -> Option<OpenCodeSection> {
+    match directory {
+        "agent" => Some(OpenCodeSection::Agent),
+        "command" => Some(OpenCodeSection::Command),
+        "skills" => Some(OpenCodeSection::Skills),
+        _ => None,
+    }
+}
+
+fn opencode_section_for_asset_path(relative_path: &str) -> Option<OpenCodeSection> {
+    match relative_path.split('/').next() {
+        Some("agent") => Some(OpenCodeSection::Agent),
+        Some("command") => Some(OpenCodeSection::Command),
+        Some("skills") => Some(OpenCodeSection::Skills),
+        _ => None,
+    }
+}
+
+fn inspect_opencode_embedded_asset_presence(
+    opencode_root: &Path,
+    problems: &mut Vec<DoctorProblem>,
+    opencode_health: &mut OpenCodeHealth,
+) {
+    let mut seen_paths = HashSet::new();
+
+    for asset in iter_embedded_assets_for_setup_target(SetupTarget::OpenCode) {
+        let Some(section) = opencode_section_for_asset_path(asset.relative_path) else {
+            continue;
+        };
+        if !seen_paths.insert(asset.relative_path) {
+            continue;
+        }
+
+        let asset_path = opencode_root.join(asset.relative_path);
+        let metadata = fs::metadata(&asset_path).ok();
+        let is_file = metadata.as_ref().is_some_and(std::fs::Metadata::is_file);
+
+        if is_file {
+            continue;
+        }
+
+        let summary = if metadata.is_some() {
+            format!(
+                "OpenCode embedded asset path '{}' is not a file.",
+                asset_path.display()
+            )
+        } else {
+            format!(
+                "OpenCode embedded asset '{}' is missing.",
+                asset_path.display()
+            )
+        };
+
+        opencode_health.push_issue(section, summary.clone(), Some(asset_path.clone()));
+        problems.push(DoctorProblem {
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary,
+            remediation: format!(
+                "Reinstall OpenCode assets so '{}' includes the embedded asset '{}', then rerun 'sce doctor'.",
+                opencode_root.display(),
+                asset_path.display()
+            ),
+            next_action: "manual_steps",
+        });
     }
 }
 
@@ -950,15 +1183,10 @@ fn opencode_plugin_registry_issue(manifest_path: &Path) -> Option<String> {
     }
 }
 
-#[cfg(test)]
-fn opencode_plugin_asset() -> Option<&'static crate::services::setup::EmbeddedAsset> {
-    iter_embedded_assets_for_setup_target(SetupTarget::OpenCode)
-        .find(|asset| asset.relative_path == OPENCODE_PLUGIN_RELATIVE_PATH)
-}
-
 fn inspect_opencode_plugin_dependency_health(
     opencode_root: &Path,
     problems: &mut Vec<DoctorProblem>,
+    opencode_health: &mut OpenCodeHealth,
 ) {
     inspect_opencode_asset_presence(
         opencode_root,
@@ -966,6 +1194,7 @@ fn inspect_opencode_plugin_dependency_health(
         "OpenCode bash-policy runtime",
         "bash-policy runtime",
         problems,
+        opencode_health,
     );
     inspect_opencode_asset_presence(
         opencode_root,
@@ -973,6 +1202,7 @@ fn inspect_opencode_plugin_dependency_health(
         "OpenCode bash-policy preset catalog",
         "bash-policy preset catalog",
         problems,
+        opencode_health,
     );
 }
 
@@ -982,6 +1212,7 @@ fn inspect_opencode_asset_presence(
     summary_label: &str,
     remediation_label: &str,
     problems: &mut Vec<DoctorProblem>,
+    opencode_health: &mut OpenCodeHealth,
 ) {
     let asset_path = opencode_root.join(relative_path);
     let metadata = fs::metadata(&asset_path).ok();
@@ -1002,6 +1233,11 @@ fn inspect_opencode_asset_presence(
             asset_path.display()
         )
     };
+    opencode_health.push_issue(
+        OpenCodeSection::Plugin,
+        summary.clone(),
+        Some(asset_path.clone()),
+    );
     problems.push(DoctorProblem {
         category: ProblemCategory::RepoAssets,
         severity: ProblemSeverity::Warning,
@@ -1319,6 +1555,8 @@ fn format_report_lines(report: &HookDoctorReport) -> Vec<TaggedLine> {
         });
     }
 
+    lines.extend(format_opencode_sections(report));
+
     // Problems
     if report.problems.is_empty() {
         lines.push(TaggedLine {
@@ -1345,6 +1583,93 @@ fn format_report_lines(report: &HookDoctorReport) -> Vec<TaggedLine> {
     }
 
     lines
+}
+
+fn format_opencode_sections(report: &HookDoctorReport) -> Vec<TaggedLine> {
+    let mut lines = Vec::new();
+    let sections = [
+        OpenCodeSection::Plugin,
+        OpenCodeSection::Agent,
+        OpenCodeSection::Command,
+        OpenCodeSection::Skills,
+    ];
+
+    for section in sections {
+        if let Some(health) = &report.opencode_health {
+            let section_health = health.section(section);
+            let issues = &section_health.issues;
+            let tag = if issues.is_empty() {
+                StatusTag::Pass
+            } else {
+                StatusTag::Fail
+            };
+            lines.push(TaggedLine {
+                tag,
+                text: format!(
+                    "{}: {}",
+                    label(opencode_section_label(section)),
+                    if issues.is_empty() {
+                        success("ok")
+                    } else {
+                        value("failed")
+                    }
+                ),
+            });
+
+            if !issues.is_empty() {
+                for issue in issues {
+                    let detail = match &issue.path {
+                        Some(path) => format!(
+                            "  - {} ({})",
+                            value(&issue.summary),
+                            value(&path.display().to_string())
+                        ),
+                        None => format!("  - {}", value(&issue.summary)),
+                    };
+                    lines.push(TaggedLine {
+                        tag: StatusTag::Fail,
+                        text: detail,
+                    });
+                }
+            }
+        } else {
+            lines.push(TaggedLine {
+                tag: StatusTag::Fail,
+                text: format!(
+                    "{}: {}",
+                    label(opencode_section_label(section)),
+                    value("not detected")
+                ),
+            });
+            lines.push(TaggedLine {
+                tag: StatusTag::Fail,
+                text: format!(
+                    "  - {}",
+                    value("OpenCode health is not available (repository not detected).")
+                ),
+            });
+        }
+    }
+
+    lines
+}
+
+fn opencode_section_label(section: OpenCodeSection) -> &'static str {
+    match section {
+        OpenCodeSection::Plugin => "OpenCode plugin",
+        OpenCodeSection::Agent => "OpenCode agent",
+        OpenCodeSection::Command => "OpenCode command",
+        OpenCodeSection::Skills => "OpenCode skills",
+    }
+}
+
+fn opencode_section_slug(section: OpenCodeSection) -> &'static str {
+    match section {
+        OpenCodeSection::Plugin => "plugin",
+        OpenCodeSection::Agent => "agent",
+        OpenCodeSection::Command => "command",
+        OpenCodeSection::Skills => "skills",
+    }
 }
 
 fn format_execution(execution: &DoctorExecution) -> String {
@@ -1387,33 +1712,6 @@ fn render_report(request: DoctorRequest, execution: &DoctorExecution) -> Result<
 
 fn render_report_json(execution: &DoctorExecution) -> Result<String> {
     let report = &execution.report;
-    let hooks = report
-        .hooks
-        .iter()
-        .map(|hook| {
-            json!({
-                "name": hook.name,
-                "path": hook.path.display().to_string(),
-                "exists": hook.exists,
-                "executable": hook.executable,
-                "state": hook_state(hook),
-                "content_state": hook_content_state(hook.content_state),
-            })
-        })
-        .collect::<Vec<_>>();
-
-    let config_paths = report
-        .config_locations
-        .iter()
-        .map(|location| {
-            json!({
-                "label": location.label,
-                "path": location.path.display().to_string(),
-                "state": location.state,
-            })
-        })
-        .collect::<Vec<_>>();
-
     let payload = json!({
         "status": "ok",
         "command": NAME,
@@ -1429,11 +1727,7 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
             Readiness::Ready => "ready",
             Readiness::NotReady => "not_ready",
         },
-        "state_root": report.state_root.as_ref().map(|location| json!({
-            "label": location.label,
-            "path": location.path.display().to_string(),
-            "state": location.state,
-        })),
+        "state_root": report.state_root.as_ref().map(render_location_json),
         "hook_path_source": match report.hook_path_source {
             HookPathSource::Default => "default",
             HookPathSource::LocalConfig => "local_config",
@@ -1447,39 +1741,117 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
             .hooks_directory
             .as_ref()
             .map(|path| path.display().to_string()),
-        "config_paths": config_paths,
-        "agent_trace_local_db": report.agent_trace_local_db.as_ref().map(|location| json!({
-            "label": location.label,
-            "path": location.path.display().to_string(),
-            "state": location.state,
-        })),
+        "config_paths": render_config_paths_json(report),
+        "agent_trace_local_db": report.agent_trace_local_db.as_ref().map(render_location_json),
         "repo_databases": report.repo_databases.iter().map(render_database_record_json).collect::<Vec<_>>(),
         "all_databases": report.all_databases.iter().map(render_database_record_json).collect::<Vec<_>>(),
-        "hooks": hooks,
-        "problems": report.problems.iter().map(|problem| json!({
-            "category": problem_category(problem.category),
-            "severity": problem_severity(problem.severity),
-            "fixability": problem_fixability(problem.fixability),
-            "summary": problem.summary,
-            "remediation": {
-                "next_action": problem.next_action,
-                "text": problem.remediation,
-            },
-        })).collect::<Vec<_>>(),
-        "fix_results": if report.mode == DoctorMode::Fix {
-            execution.fix_results.iter()
-                .map(|result| json!({
-                    "category": problem_category(result.category),
-                    "outcome": fix_result_outcome(result.outcome),
-                    "detail": result.detail,
-                }))
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        },
+        "hooks": render_hooks_json(report),
+        "opencode_health": report
+            .opencode_health
+            .as_ref()
+            .map(render_opencode_health_json),
+        "problems": render_problems_json(&report.problems),
+        "fix_results": render_fix_results_json(execution),
     });
 
     serde_json::to_string_pretty(&payload).context("failed to serialize doctor report to JSON")
+}
+
+fn render_hooks_json(report: &HookDoctorReport) -> Vec<serde_json::Value> {
+    report
+        .hooks
+        .iter()
+        .map(|hook| {
+            json!({
+                "name": hook.name,
+                "path": hook.path.display().to_string(),
+                "exists": hook.exists,
+                "executable": hook.executable,
+                "state": hook_state(hook),
+                "content_state": hook_content_state(hook.content_state),
+            })
+        })
+        .collect()
+}
+
+fn render_config_paths_json(report: &HookDoctorReport) -> Vec<serde_json::Value> {
+    report
+        .config_locations
+        .iter()
+        .map(render_location_json)
+        .collect()
+}
+
+fn render_location_json(location: &FileLocationHealth) -> serde_json::Value {
+    json!({
+        "label": location.label,
+        "path": location.path.display().to_string(),
+        "state": location.state,
+    })
+}
+
+fn render_opencode_health_json(health: &OpenCodeHealth) -> serde_json::Value {
+    json!({
+        "root": health.root.display().to_string(),
+        "root_missing": health.root_missing,
+        "sections": health
+            .sections
+            .iter()
+            .map(|section| {
+                json!({
+                    "section": opencode_section_slug(section.section),
+                    "status": if section.issues.is_empty() { "ok" } else { "failed" },
+                    "issues": section.issues.iter().map(render_opencode_issue_json).collect::<Vec<_>>(),
+                })
+            })
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn render_opencode_issue_json(issue: &OpenCodeIssue) -> serde_json::Value {
+    json!({
+        "summary": issue.summary,
+        "path": issue
+            .path
+            .as_ref()
+            .map(|path| path.display().to_string()),
+    })
+}
+
+fn render_problems_json(problems: &[DoctorProblem]) -> Vec<serde_json::Value> {
+    problems
+        .iter()
+        .map(|problem| {
+            json!({
+                "category": problem_category(problem.category),
+                "severity": problem_severity(problem.severity),
+                "fixability": problem_fixability(problem.fixability),
+                "summary": problem.summary,
+                "remediation": {
+                    "next_action": problem.next_action,
+                    "text": problem.remediation,
+                },
+            })
+        })
+        .collect()
+}
+
+fn render_fix_results_json(execution: &DoctorExecution) -> Vec<serde_json::Value> {
+    if execution.report.mode != DoctorMode::Fix {
+        return Vec::new();
+    }
+
+    execution
+        .fix_results
+        .iter()
+        .map(|result| {
+            json!({
+                "category": problem_category(result.category),
+                "outcome": fix_result_outcome(result.outcome),
+                "detail": result.detail,
+            })
+        })
+        .collect()
 }
 
 fn format_tagged_lines(lines: Vec<TaggedLine>) -> String {
@@ -1901,9 +2273,12 @@ mod tests {
         execute_doctor_with_dependencies, render_report, run_filesystem_auto_fixes,
         DoctorDatabaseInventory, DoctorDependencies, DoctorExecution, DoctorFormat, DoctorMode,
         DoctorProblem, DoctorRequest, FileLocationHealth, FixResult, HookDoctorReport,
-        HookPathSource, ProblemCategory, ProblemFixability, ProblemSeverity, Readiness, NAME,
+        HookPathSource, OpenCodeHealth, OpenCodeSection, ProblemCategory, ProblemFixability,
+        ProblemSeverity, Readiness, NAME,
     };
-    use crate::services::setup::RequiredHooksInstallOutcome;
+    use crate::services::setup::{
+        iter_embedded_assets_for_setup_target, RequiredHooksInstallOutcome, SetupTarget,
+    };
 
     struct TestDir {
         path: PathBuf,
@@ -1941,6 +2316,37 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    fn install_opencode_embedded_assets(opencode_root: &Path) -> Result<()> {
+        fs::create_dir_all(opencode_root)?;
+        for asset in iter_embedded_assets_for_setup_target(SetupTarget::OpenCode) {
+            let destination = opencode_root.join(asset.relative_path);
+            let parent = destination
+                .parent()
+                .expect("embedded asset path should have a parent");
+            fs::create_dir_all(parent)?;
+            fs::write(&destination, asset.bytes)?;
+        }
+        Ok(())
+    }
+
+    fn find_opencode_embedded_asset_for_section() -> (OpenCodeSection, &'static str) {
+        let candidates = [
+            (OpenCodeSection::Agent, "agent/"),
+            (OpenCodeSection::Command, "command/"),
+            (OpenCodeSection::Skills, "skills/"),
+        ];
+
+        for (section, prefix) in candidates {
+            if let Some(asset) = iter_embedded_assets_for_setup_target(SetupTarget::OpenCode)
+                .find(|asset| asset.relative_path.starts_with(prefix))
+            {
+                return (section, asset.relative_path);
+            }
+        }
+
+        panic!("Expected at least one embedded OpenCode asset under agent/command/skills");
     }
 
     fn filesystem_problem(summary: &str) -> DoctorProblem {
@@ -2038,6 +2444,7 @@ mod tests {
             repo_databases: Vec::new(),
             all_databases: Vec::new(),
             hooks: Vec::new(),
+            opencode_health: None,
             problems: Vec::new(),
         }
     }
@@ -2072,6 +2479,7 @@ mod tests {
         assert!(parsed["repo_databases"].is_array());
         assert!(parsed["all_databases"].is_array());
         assert!(parsed["hooks"].is_array());
+        assert!(parsed["opencode_health"].is_null() || parsed["opencode_health"].is_object());
         assert!(parsed["problems"].is_array());
         assert!(parsed["fix_results"].is_array());
         Ok(())
@@ -2098,6 +2506,61 @@ mod tests {
         let parsed: Value = serde_json::from_str(&output)?;
         assert_eq!(parsed["mode"], "fix");
         assert!(parsed["fix_results"].is_array());
+        Ok(())
+    }
+
+    #[test]
+    fn render_json_includes_opencode_health_sections() -> Result<()> {
+        let mut report = base_report(DoctorMode::Diagnose, Readiness::NotReady);
+        let mut opencode_health = OpenCodeHealth::new(PathBuf::from("/tmp/repo/.opencode"));
+        opencode_health.push_issue(
+            OpenCodeSection::Plugin,
+            "OpenCode plugin file '/tmp/repo/.opencode/plugins/sce-bash-policy.ts' is missing.",
+            Some(PathBuf::from(
+                "/tmp/repo/.opencode/plugins/sce-bash-policy.ts",
+            )),
+        );
+        opencode_health.push_issue(
+            OpenCodeSection::Agent,
+            "OpenCode required directory '/tmp/repo/.opencode/agent' is missing.",
+            Some(PathBuf::from("/tmp/repo/.opencode/agent")),
+        );
+        report.opencode_health = Some(opencode_health);
+
+        let execution = DoctorExecution {
+            report,
+            fix_results: Vec::new(),
+        };
+        let output = render_report(
+            DoctorRequest {
+                mode: DoctorMode::Diagnose,
+                database_inventory: DoctorDatabaseInventory::Repo,
+                format: DoctorFormat::Json,
+            },
+            &execution,
+        )?;
+        let parsed: Value = serde_json::from_str(&output)?;
+        let opencode = parsed["opencode_health"]
+            .as_object()
+            .expect("opencode_health object");
+        assert_eq!(opencode["root"], "/tmp/repo/.opencode");
+        assert_eq!(opencode["root_missing"], false);
+        let sections = opencode["sections"].as_array().expect("sections array");
+        let find_section = |slug: &str| {
+            sections
+                .iter()
+                .find(|section| section["section"] == slug)
+                .expect("section should exist")
+        };
+        let plugin = find_section("plugin");
+        assert_eq!(plugin["status"], "failed");
+        assert!(plugin["issues"].as_array().is_some());
+        let agent = find_section("agent");
+        assert_eq!(agent["status"], "failed");
+        let command = find_section("command");
+        assert_eq!(command["status"], "ok");
+        let skills = find_section("skills");
+        assert_eq!(skills["status"], "ok");
         Ok(())
     }
 
@@ -2185,6 +2648,139 @@ mod tests {
         assert!(normalized.contains("[WARN]"));
         assert!(normalized.contains("[MISS]"));
         assert!(output.contains("warning from test"));
+    }
+
+    #[test]
+    fn doctor_text_output_includes_opencode_sections_and_details() {
+        let mut report = base_report(DoctorMode::Diagnose, Readiness::NotReady);
+        let mut opencode_health = OpenCodeHealth::new(PathBuf::from("/tmp/repo/.opencode"));
+        opencode_health.push_issue(
+            OpenCodeSection::Plugin,
+            "OpenCode plugin file '/tmp/repo/.opencode/plugins/sce-bash-policy.ts' is missing.",
+            Some(PathBuf::from(
+                "/tmp/repo/.opencode/plugins/sce-bash-policy.ts",
+            )),
+        );
+        opencode_health.push_issue(
+            OpenCodeSection::Agent,
+            "OpenCode required directory '/tmp/repo/.opencode/agent' is missing.",
+            Some(PathBuf::from("/tmp/repo/.opencode/agent")),
+        );
+        report.opencode_health = Some(opencode_health);
+
+        let execution = DoctorExecution {
+            report,
+            fix_results: Vec::new(),
+        };
+        let output = super::format_execution(&execution);
+        let normalized = strip_ansi_codes(&output);
+
+        assert!(normalized.contains("OpenCode plugin"));
+        assert!(normalized.contains("OpenCode agent"));
+        assert!(normalized.contains("OpenCode command"));
+        assert!(normalized.contains("OpenCode skills"));
+        assert!(normalized.contains("OpenCode command: ok"));
+        assert!(normalized.contains("OpenCode skills: ok"));
+        assert!(normalized.contains("OpenCode plugin file"));
+        assert!(normalized.contains("OpenCode required directory"));
+        assert!(normalized.contains("/tmp/repo/.opencode/plugins/sce-bash-policy.ts"));
+    }
+
+    #[test]
+    fn doctor_text_output_places_missing_embedded_asset_in_section() -> Result<()> {
+        let test_dir = TestDir::new("doctor-opencode-embedded-asset-text")?;
+        let repository_root = test_dir.path().join("repo");
+        let hooks_dir = repository_root.join(".git").join("hooks");
+        install_canonical_hooks(&hooks_dir)?;
+
+        let opencode_root = repository_root.join(".opencode");
+        install_opencode_embedded_assets(&opencode_root)?;
+        let (section, relative_path) = find_opencode_embedded_asset_for_section();
+        let missing_path = opencode_root.join(relative_path);
+        fs::remove_file(&missing_path)?;
+        let missing_path_display = missing_path.display().to_string();
+
+        let agent_trace_db = test_dir
+            .path()
+            .join("state-root")
+            .join("sce")
+            .join("agent-trace")
+            .join("local.db");
+        fs::create_dir_all(
+            agent_trace_db
+                .parent()
+                .expect("agent trace path should have parent"),
+        )?;
+
+        let repo_root = repository_root.clone();
+        let hooks_dir = hooks_dir.clone();
+        let run_git_command = move |_cwd: &Path, args: &[&str]| match args {
+            ["rev-parse", "--show-toplevel"] => Some(repo_root.display().to_string()),
+            ["rev-parse", "--is-bare-repository"] => Some("false".to_string()),
+            ["rev-parse", "--git-path", "hooks"] => Some(hooks_dir.display().to_string()),
+            _ => None,
+        };
+
+        let state_root = test_dir.path().join("state-root");
+        let resolve_state_root = move || Ok(state_root.clone());
+        let resolve_agent_trace_local_db_path = move || Ok(agent_trace_db.clone());
+
+        let dependencies = DoctorDependencies {
+            run_git_command: &run_git_command,
+            check_git_available: &|| true,
+            resolve_state_root: &resolve_state_root,
+            resolve_global_config_path: &|| Ok(test_dir.path().join("config-root/sce/config.json")),
+            resolve_agent_trace_local_db_path: &resolve_agent_trace_local_db_path,
+            validate_config_file: &|_| Ok(()),
+            check_agent_trace_local_db_health: &|_| Ok(()),
+            install_required_git_hooks: &|_| unreachable!("hook install should not run"),
+            create_directory_all: &|_| unreachable!("directory creation should not run"),
+        };
+
+        let execution = execute_doctor_with_dependencies(
+            DoctorRequest {
+                mode: DoctorMode::Diagnose,
+                database_inventory: DoctorDatabaseInventory::Repo,
+                format: DoctorFormat::Text,
+            },
+            &repository_root,
+            &dependencies,
+        );
+        let output = super::format_execution(&execution);
+        let normalized = strip_ansi_codes(&output);
+
+        let section_label = match section {
+            OpenCodeSection::Agent => "OpenCode agent",
+            OpenCodeSection::Command => "OpenCode command",
+            OpenCodeSection::Skills => "OpenCode skills",
+            OpenCodeSection::Plugin => "OpenCode plugin",
+        };
+        let section_header = format!("{section_label}: failed");
+        let section_start = normalized
+            .find(&section_header)
+            .expect("section header should exist");
+        let issue_rel = normalized[section_start..]
+            .find(&missing_path_display)
+            .expect("missing embedded asset should be listed under section");
+        let issue_pos = section_start + issue_rel;
+
+        let next_section_label = match section {
+            OpenCodeSection::Agent => Some("OpenCode command"),
+            OpenCodeSection::Command => Some("OpenCode skills"),
+            OpenCodeSection::Skills | OpenCodeSection::Plugin => None,
+        };
+        let boundary = next_section_label
+            .and_then(|label| {
+                normalized[section_start..]
+                    .find(label)
+                    .map(|pos| section_start + pos)
+            })
+            .or_else(|| normalized.find("Problems"))
+            .unwrap_or(normalized.len());
+
+        assert!(issue_pos > section_start);
+        assert!(issue_pos < boundary);
+        Ok(())
     }
 
     #[test]
@@ -2343,7 +2939,7 @@ mod tests {
     }
 
     #[test]
-    fn doctor_skips_opencode_structure_checks_without_root() -> Result<()> {
+    fn doctor_reports_opencode_root_missing() -> Result<()> {
         let test_dir = TestDir::new("doctor-opencode-structure-skip")?;
         let repository_root = test_dir.path().join("repo");
         let hooks_dir = repository_root.join(".git").join("hooks");
@@ -2400,12 +2996,25 @@ mod tests {
             &repository_root,
             &dependencies,
         );
+        assert!(execution
+            .report
+            .opencode_health
+            .as_ref()
+            .is_some_and(|health| health.root_missing));
         let output = render_report(json_request, &execution)?;
         let parsed: Value = serde_json::from_str(&output)?;
 
-        assert_eq!(parsed["readiness"], "ready");
+        assert_eq!(parsed["readiness"], "not_ready");
         let problems = parsed["problems"].as_array().expect("problems array");
-        assert!(problems.is_empty());
+        assert!(problems.iter().any(|problem| {
+            problem_matches(
+                problem,
+                "repo_assets",
+                "error",
+                "manual_only",
+                "OpenCode root directory",
+            )
+        }));
         Ok(())
     }
 
@@ -2517,14 +3126,9 @@ mod tests {
         install_canonical_hooks(&hooks_dir)?;
 
         let opencode_root = repository_root.join(".opencode");
-        fs::create_dir_all(&opencode_root)?;
-        fs::create_dir_all(opencode_root.join("agent"))?;
-        fs::create_dir_all(opencode_root.join("command"))?;
-        fs::create_dir_all(opencode_root.join("skills"))?;
-        fs::write(
-            opencode_root.join("opencode.json"),
-            "{\"plugin\":[\"./plugins/sce-bash-policy.ts\"]}",
-        )?;
+        install_opencode_embedded_assets(&opencode_root)?;
+        let plugin_path = opencode_root.join(super::OPENCODE_PLUGIN_RELATIVE_PATH);
+        fs::remove_file(&plugin_path)?;
 
         let agent_trace_db = test_dir
             .path()
@@ -2602,32 +3206,9 @@ mod tests {
         install_canonical_hooks(&hooks_dir)?;
 
         let opencode_root = repository_root.join(".opencode");
-        fs::create_dir_all(&opencode_root)?;
-        fs::create_dir_all(opencode_root.join("agent"))?;
-        fs::create_dir_all(opencode_root.join("command"))?;
-        fs::create_dir_all(opencode_root.join("skills"))?;
-        fs::write(
-            opencode_root.join("opencode.json"),
-            "{\"plugin\":[\"./plugins/sce-bash-policy.ts\"]}",
-        )?;
-
-        let canonical_plugin = super::opencode_plugin_asset()
-            .expect("canonical OpenCode plugin asset should be embedded");
-        let plugin_path = opencode_root.join("plugins").join("sce-bash-policy.ts");
-        fs::create_dir_all(
-            plugin_path
-                .parent()
-                .expect("plugin path should have parent"),
-        )?;
-        fs::write(&plugin_path, canonical_plugin.bytes)?;
-
-        let preset_path = opencode_root.join("lib").join("bash-policy-presets.json");
-        fs::create_dir_all(
-            preset_path
-                .parent()
-                .expect("preset path should have parent"),
-        )?;
-        fs::write(&preset_path, "{}")?;
+        install_opencode_embedded_assets(&opencode_root)?;
+        let runtime_path = opencode_root.join(super::OPENCODE_PLUGIN_RUNTIME_RELATIVE_PATH);
+        fs::remove_file(&runtime_path)?;
 
         let agent_trace_db = test_dir
             .path()
@@ -2705,35 +3286,9 @@ mod tests {
         install_canonical_hooks(&hooks_dir)?;
 
         let opencode_root = repository_root.join(".opencode");
-        fs::create_dir_all(&opencode_root)?;
-        fs::create_dir_all(opencode_root.join("agent"))?;
-        fs::create_dir_all(opencode_root.join("command"))?;
-        fs::create_dir_all(opencode_root.join("skills"))?;
-        fs::write(
-            opencode_root.join("opencode.json"),
-            "{\"plugin\":[\"./plugins/sce-bash-policy.ts\"]}",
-        )?;
-
-        let canonical_plugin = super::opencode_plugin_asset()
-            .expect("canonical OpenCode plugin asset should be embedded");
-        let plugin_path = opencode_root.join("plugins").join("sce-bash-policy.ts");
-        fs::create_dir_all(
-            plugin_path
-                .parent()
-                .expect("plugin path should have parent"),
-        )?;
-        fs::write(&plugin_path, canonical_plugin.bytes)?;
-
-        let runtime_path = opencode_root
-            .join("plugins")
-            .join("bash-policy")
-            .join("runtime.ts");
-        fs::create_dir_all(
-            runtime_path
-                .parent()
-                .expect("runtime path should have parent"),
-        )?;
-        fs::write(&runtime_path, "runtime")?;
+        install_opencode_embedded_assets(&opencode_root)?;
+        let preset_path = opencode_root.join(super::OPENCODE_PLUGIN_PRESET_CATALOG_RELATIVE_PATH);
+        fs::remove_file(&preset_path)?;
 
         let agent_trace_db = test_dir
             .path()
@@ -2799,6 +3354,115 @@ mod tests {
                 "manual_only",
                 "preset catalog",
             )
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn doctor_reports_opencode_embedded_asset_missing_error() -> Result<()> {
+        let test_dir = TestDir::new("doctor-opencode-embedded-asset-missing")?;
+        let repository_root = test_dir.path().join("repo");
+        let hooks_dir = repository_root.join(".git").join("hooks");
+        install_canonical_hooks(&hooks_dir)?;
+
+        let opencode_root = repository_root.join(".opencode");
+        install_opencode_embedded_assets(&opencode_root)?;
+        let (section, relative_path) = find_opencode_embedded_asset_for_section();
+        let missing_path = opencode_root.join(relative_path);
+        fs::remove_file(&missing_path)?;
+        let missing_path_display = missing_path.display().to_string();
+
+        let agent_trace_db = test_dir
+            .path()
+            .join("state-root")
+            .join("sce")
+            .join("agent-trace")
+            .join("local.db");
+        fs::create_dir_all(
+            agent_trace_db
+                .parent()
+                .expect("agent trace path should have parent"),
+        )?;
+
+        let repo_root = repository_root.clone();
+        let hooks_dir = hooks_dir.clone();
+        let run_git_command = move |_cwd: &Path, args: &[&str]| match args {
+            ["rev-parse", "--show-toplevel"] => Some(repo_root.display().to_string()),
+            ["rev-parse", "--is-bare-repository"] => Some("false".to_string()),
+            ["rev-parse", "--git-path", "hooks"] => Some(hooks_dir.display().to_string()),
+            _ => None,
+        };
+
+        let state_root = test_dir.path().join("state-root");
+        let resolve_state_root = move || Ok(state_root.clone());
+        let resolve_agent_trace_local_db_path = move || Ok(agent_trace_db.clone());
+
+        let dependencies = DoctorDependencies {
+            run_git_command: &run_git_command,
+            check_git_available: &|| true,
+            resolve_state_root: &resolve_state_root,
+            resolve_global_config_path: &|| Ok(test_dir.path().join("config-root/sce/config.json")),
+            resolve_agent_trace_local_db_path: &resolve_agent_trace_local_db_path,
+            validate_config_file: &|_| Ok(()),
+            check_agent_trace_local_db_health: &|_| Ok(()),
+            install_required_git_hooks: &|_| unreachable!("hook install should not run"),
+            create_directory_all: &|_| unreachable!("directory creation should not run"),
+        };
+
+        let json_request = DoctorRequest {
+            mode: DoctorMode::Diagnose,
+            database_inventory: DoctorDatabaseInventory::Repo,
+            format: DoctorFormat::Json,
+        };
+        let execution = execute_doctor_with_dependencies(
+            DoctorRequest {
+                mode: DoctorMode::Diagnose,
+                database_inventory: DoctorDatabaseInventory::Repo,
+                format: DoctorFormat::Text,
+            },
+            &repository_root,
+            &dependencies,
+        );
+        let output = render_report(json_request, &execution)?;
+        let parsed: Value = serde_json::from_str(&output)?;
+
+        assert_eq!(parsed["readiness"], "not_ready");
+        let problems = parsed["problems"].as_array().expect("problems array");
+        assert!(problems.iter().any(|problem| {
+            problem_matches(
+                problem,
+                "repo_assets",
+                "error",
+                "manual_only",
+                &missing_path_display,
+            )
+        }));
+
+        let opencode = parsed["opencode_health"]
+            .as_object()
+            .expect("opencode health object");
+        let sections = opencode["sections"].as_array().expect("sections array");
+        let section_slug = match section {
+            OpenCodeSection::Agent => "agent",
+            OpenCodeSection::Command => "command",
+            OpenCodeSection::Skills => "skills",
+            OpenCodeSection::Plugin => "plugin",
+        };
+        let target_section = sections
+            .iter()
+            .find(|entry| {
+                entry
+                    .get("section")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value == section_slug)
+            })
+            .expect("section should exist");
+        let issues = target_section["issues"].as_array().expect("issues array");
+        assert!(issues.iter().any(|issue| {
+            issue
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(|path| path == missing_path_display)
         }));
         Ok(())
     }
@@ -2935,9 +3599,13 @@ mod tests {
             &dependencies,
         );
 
-        assert_eq!(execution.report.readiness, Readiness::Ready);
+        assert_eq!(execution.report.readiness, Readiness::NotReady);
         assert!(db_path.parent().is_some_and(Path::exists));
-        assert!(execution.report.problems.is_empty());
+        assert!(execution.report.problems.iter().any(|problem| {
+            problem.category == ProblemCategory::RepoAssets
+                && problem.severity == ProblemSeverity::Error
+                && problem.summary.contains("OpenCode root directory")
+        }));
         assert!(execution.fix_results.iter().any(|result| {
             result.category == ProblemCategory::FilesystemPermissions
                 && result.outcome == FixResult::Fixed
@@ -2968,6 +3636,7 @@ mod tests {
             repo_databases: Vec::new(),
             all_databases: Vec::new(),
             hooks: Vec::new(),
+            opencode_health: None,
             problems: vec![filesystem_problem(
                 "Agent Trace local DB parent directory is missing.",
             )],
