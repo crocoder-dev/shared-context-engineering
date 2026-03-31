@@ -48,12 +48,22 @@ where
 
 #[must_use]
 pub fn heading(text: &str) -> String {
-    style_if_enabled(text, |s| s.cyan().bold().to_string())
+    heading_with_color_policy(text, supports_color())
+}
+
+#[must_use]
+fn heading_with_color_policy(text: &str, color_enabled: bool) -> String {
+    style_if(text, color_enabled, |s| s.cyan().bold().to_string())
 }
 
 #[must_use]
 pub fn command_name(text: &str) -> String {
-    style_if_enabled(text, |s| s.green().to_string())
+    command_name_with_color_policy(text, supports_color())
+}
+
+#[must_use]
+fn command_name_with_color_policy(text: &str, color_enabled: bool) -> String {
+    style_if(text, color_enabled, |s| s.green().to_string())
 }
 
 #[must_use]
@@ -75,7 +85,12 @@ pub fn example_command(text: &str) -> String {
 #[must_use]
 #[allow(dead_code)]
 pub fn placeholder(text: &str) -> String {
-    style_if_enabled(text, |s| s.italic().dimmed().to_string())
+    placeholder_with_color_policy(text, supports_color())
+}
+
+#[must_use]
+fn placeholder_with_color_policy(text: &str, color_enabled: bool) -> String {
+    style_if(text, color_enabled, |s| s.italic().dimmed().to_string())
 }
 
 #[must_use]
@@ -145,7 +160,7 @@ pub(crate) fn clap_help_with_color_policy(text: &str, color_enabled: bool) -> St
     let trailing_newline = text.ends_with('\n');
     let rendered = text
         .lines()
-        .map(style_clap_help_line)
+        .map(|line| style_clap_help_line(line, color_enabled))
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -156,7 +171,7 @@ pub(crate) fn clap_help_with_color_policy(text: &str, color_enabled: bool) -> St
     }
 }
 
-fn style_clap_help_line(line: &str) -> String {
+fn style_clap_help_line(line: &str, color_enabled: bool) -> String {
     if line.is_empty() {
         return String::new();
     }
@@ -164,26 +179,26 @@ fn style_clap_help_line(line: &str) -> String {
     if let Some(remainder) = line.strip_prefix("Usage: ") {
         return format!(
             "{} {}",
-            heading("Usage:"),
-            style_clap_usage_segment(remainder)
+            heading_with_color_policy("Usage:", color_enabled),
+            style_clap_usage_segment(remainder, color_enabled)
         );
     }
 
     if !line.starts_with(' ') && line.ends_with(':') {
-        return heading(line);
+        return heading_with_color_policy(line, color_enabled);
     }
 
     if let Some((indent, token, remainder)) = split_help_table_row(line) {
         let styled_token = if token.starts_with('-') {
-            style_help_placeholders(token)
+            style_help_placeholders(token, color_enabled)
         } else {
-            command_name(token)
+            command_name_with_color_policy(token, color_enabled)
         };
 
         return format!("{indent}{styled_token}{remainder}");
     }
 
-    style_help_placeholders(line)
+    style_help_placeholders(line, color_enabled)
 }
 
 fn split_help_table_row(line: &str) -> Option<(&str, &str, &str)> {
@@ -200,23 +215,23 @@ fn split_help_table_row(line: &str) -> Option<(&str, &str, &str)> {
     Some((&line[..indent_len], token, remainder))
 }
 
-fn style_clap_usage_segment(segment: &str) -> String {
+fn style_clap_usage_segment(segment: &str, color_enabled: bool) -> String {
     segment
         .split(' ')
         .map(|part| {
             if part.is_empty() {
                 String::new()
             } else if is_help_placeholder(part) {
-                style_help_placeholders(part)
+                style_help_placeholders(part, color_enabled)
             } else {
-                command_name(part)
+                command_name_with_color_policy(part, color_enabled)
             }
         })
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-fn style_help_placeholders(text: &str) -> String {
+fn style_help_placeholders(text: &str, color_enabled: bool) -> String {
     let mut styled = String::new();
     let mut chars = text.chars().peekable();
 
@@ -235,7 +250,7 @@ fn style_help_placeholders(text: &str) -> String {
             }
 
             if closed && is_help_placeholder(&token) {
-                styled.push_str(&placeholder(&token));
+                styled.push_str(&placeholder_with_color_policy(&token, color_enabled));
             } else {
                 styled.push_str(&token);
             }
