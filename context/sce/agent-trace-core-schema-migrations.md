@@ -32,8 +32,7 @@
 
 ## Verification evidence
 
-- `cargo test --manifest-path cli/Cargo.toml core_schema_migrations`
-- `cargo build --manifest-path cli/Cargo.toml`
+- `nix flake check`
 
 ## Related context
 

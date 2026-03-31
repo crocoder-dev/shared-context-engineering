@@ -36,9 +36,4 @@ Write probe behavior is owned by `ensure_directory_is_writable(...)` in `cli/src
 
 ## Verification anchors
 
-- `cargo test --manifest-path cli/Cargo.toml services::security::tests`
-- `cargo test --manifest-path cli/Cargo.toml services::setup::tests`
-- `cargo test --manifest-path cli/Cargo.toml services::observability::tests`
-- `cargo test --manifest-path cli/Cargo.toml app::tests`
-- `cargo check --manifest-path cli/Cargo.toml`
-- `cargo build --manifest-path cli/Cargo.toml`
+- `nix flake check`

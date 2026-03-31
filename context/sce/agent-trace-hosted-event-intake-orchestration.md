@@ -45,9 +45,7 @@
 
 ## Verification evidence
 
-- `cargo test --manifest-path cli/Cargo.toml hosted_reconciliation`
-- `cargo fmt --manifest-path cli/Cargo.toml -- --check`
-- `cargo build --manifest-path cli/Cargo.toml`
+- `nix flake check`
 
 ## Related context
 

@@ -150,6 +150,7 @@ The enforcement layer now also inspects a narrow set of nested command wrappers 
 - `nix ... -c <argv...>` and `nix ... --command <argv...>` unwrap to the nested argv after the `-c` or `--command` flag
 - `sh -c "..."`, `bash -c "..."`, and combined short-option forms such as `bash -lc "..."` parse the nested command string into shell segments
 - Nested parsing is recursive, so `nix develop -c sh -c 'cd cli && cargo fmt --check'` is evaluated against the inner `cargo fmt --check` argv
+- Repo policy examples should distinguish verification from autofix: blocking `cargo test` or `cargo fmt --check` is compatible with still allowing direct `cargo fmt` when the repository keeps formatter autofix flows separate from verification
 - If any nested segment matches a blocking policy, the full command is blocked
 
 **Still out of scope:**

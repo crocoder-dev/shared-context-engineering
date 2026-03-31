@@ -38,10 +38,7 @@
 
 ## Verification evidence
 
-- `cargo fmt --manifest-path cli/Cargo.toml -- --check`
-- `cargo test --manifest-path cli/Cargo.toml core_schema_migrations`
-- `cargo test --manifest-path cli/Cargo.toml reconciliation_schema_supports_replay_safe_runs_and_mapping_queries`
-- `cargo build --manifest-path cli/Cargo.toml`
+- `nix flake check`
 
 ## Related context
 

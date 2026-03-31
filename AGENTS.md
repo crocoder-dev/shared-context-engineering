@@ -50,13 +50,13 @@ Run these through Nix from repo root unless noted otherwise.
 - Run CLI: `nix develop -c sh -c 'cd cli && cargo run -- --help'`
 - Build packaged CLI output: `nix build .#default`
 - Run packaged CLI app: `nix run .#sce -- --help`
-- Run all CLI tests: `nix develop -c sh -c 'cd cli && cargo test'`
-- Run a single test by exact name: `nix develop -c sh -c 'cd cli && cargo test parser_routes_mcp -- --exact'`
-- Run tests in one module/file pattern: `nix develop -c sh -c 'cd cli && cargo test setup'`
+- Preferred repo-level verification: `nix flake check`
+- Run a single Rust test by exact name when explicitly needed: `nix develop -c sh -c 'cd cli && cargo test parser_routes_mcp -- --exact'`
+- Run Rust tests in one module/file pattern when explicitly needed: `nix develop -c sh -c 'cd cli && cargo test setup'`
 - Run ignored? none were found; do not assume ignored-test flows exist.
-- Format check: `nix develop -c sh -c 'cd cli && cargo fmt --check'`
+- Rust format verification is covered by `nix flake check`
 - Auto-format: `nix develop -c sh -c 'cd cli && cargo fmt'`
-- Lint: `nix develop -c sh -c 'cd cli && cargo clippy --all-targets --all-features'`
+- Rust lint verification is covered by `nix flake check`
 
 ### Bun config/plugin commands
 

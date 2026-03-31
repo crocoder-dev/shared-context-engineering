@@ -44,6 +44,4 @@
 - Runtime posture remains fail-open: operational errors return deterministic skip/fallback messages instead of aborting commit progression.
 
 ## Verification evidence
-- `cargo test --manifest-path cli/Cargo.toml post_commit_finalization`
-- `cargo test --manifest-path cli/Cargo.toml post_commit`
-- `cargo build --manifest-path cli/Cargo.toml`
+- `nix flake check`

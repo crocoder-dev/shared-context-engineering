@@ -5,6 +5,12 @@
 - Use the Nix dev shell as the canonical toolchain entrypoint for generation work.
 - `flake.nix` includes `pkl` so contributors can run validation commands with `nix develop -c ...` without host-level installs.
 
+## Verification guidance
+
+- Prefer `nix flake check` for repository-level verification/check flows in contributor guidance.
+- Keep direct Cargo verification commands as secondary targeted-debugging tools rather than the default repo-validation path.
+- Keep `cargo fmt` available for explicit autofix formatting flows; do not present it as the preferred verification command.
+
 ## Root Biome scoping
 
 - Keep Biome configuration at the repository root when one formatter/linter contract spans multiple JS package areas.

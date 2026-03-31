@@ -32,6 +32,4 @@
 
 ## Verification commands
 
-- `cargo fmt --manifest-path cli/Cargo.toml -- --check`
-- `cargo test --manifest-path cli/Cargo.toml`
-- `cargo build --manifest-path cli/Cargo.toml`
+- `nix flake check`

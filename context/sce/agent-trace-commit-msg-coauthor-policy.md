@@ -34,7 +34,4 @@
 - The positive path remains explicit-marker driven: commit-msg appends the canonical trailer when an attribution-aware checkpoint producer marks staged ranges as SCE-attributed.
 
 ## Verification evidence
-- `cargo fmt --manifest-path cli/Cargo.toml -- --check`
-- `cargo test --manifest-path cli/Cargo.toml commit_msg_policy`
-- `cargo test --manifest-path cli/Cargo.toml commit_msg_runtime`
-- `cargo build --manifest-path cli/Cargo.toml`
+- `nix flake check`

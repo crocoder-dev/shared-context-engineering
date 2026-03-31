@@ -17,14 +17,14 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 
 - `sce --help` includes quick-start commands for `setup`, `auth`, `doctor`, and `version`, plus the implemented-vs-placeholder top-level command catalog.
 - Command-local help is available for implemented commands including bare `sce auth`, `sce auth --help`, `sce auth login --help`, `sce auth renew --help`, `sce setup --help`, `sce doctor --help`, `sce trace --help`, `sce trace prompts --help`, and `sce completion --help`.
-- Current verification guidance for the CLI slice uses crate-local `cargo test --manifest-path cli/Cargo.toml`, plus release/install commands for installability (`cargo build --manifest-path cli/Cargo.toml --release`, `cargo install --path cli --locked`).
+- Current verification guidance for the CLI slice prefers repository-level `nix flake check`; release/install commands remain available for installability work (`cargo build --manifest-path cli/Cargo.toml --release`, `cargo install --path cli --locked`).
 
 ## Nix release installability surface
 
 - Root `flake.nix` exposes `packages.sce` and `packages.default = packages.sce` for packaged release builds.
 - Root `flake.nix` exposes `apps.sce` pointing to `${packages.sce}/bin/sce` for runnable packaged CLI execution.
 - Root `flake.nix` is the single repository-level Nix entrypoint for CLI checks and packaging.
-- Current verification commands for this surface are:
+- Current installability checks for this surface are:
   - `nix build .#default`
   - `nix run .#sce -- --help`
 
@@ -32,7 +32,7 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 
 - `cli/Cargo.toml` includes crates.io-facing package metadata (`description`, `license`, `repository`, `homepage`, `documentation`, `readme`, `keywords`, `categories`) while keeping `publish = false`.
 - Current local install contract is `cargo install --path cli --locked`.
-- Current release build verification command is `cargo build --manifest-path cli/Cargo.toml --release`.
+- Current release build/installability check command is `cargo build --manifest-path cli/Cargo.toml --release`.
 - Future crates.io publication is readiness-only in this phase: before first publish, flip publish posture intentionally and run `cargo publish --manifest-path cli/Cargo.toml --dry-run` as a gate.
 
 ## Command surface contract

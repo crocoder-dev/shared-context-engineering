@@ -36,9 +36,7 @@
 
 ## Verification evidence
 
-- `cargo test --manifest-path cli/Cargo.toml` includes adapter mapping tests in `services::agent_trace::tests`.
-- `cargo fmt --manifest-path cli/Cargo.toml -- --check`.
-- `cargo build --manifest-path cli/Cargo.toml`.
+- `nix flake check` includes the current repo-level verification flow for the CLI and related checks.
 
 ## Out of scope (deferred)
 

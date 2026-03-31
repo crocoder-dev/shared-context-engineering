@@ -40,9 +40,4 @@
   - `idx_reconciliation_metrics_created_at`
 
 ## Verification evidence
-- `cargo test --manifest-path cli/Cargo.toml hooks::tests::retry_processor_recovers_failed_notes_write_and_emits_success_metric`
-- `cargo test --manifest-path cli/Cargo.toml hooks::tests::retry_processor_requeues_when_db_write_still_fails`
-- `cargo test --manifest-path cli/Cargo.toml hosted_reconciliation::tests::reconciliation_metrics_capture_mapped_unmapped_histogram_runtime_and_error_class`
-- `cargo test --manifest-path cli/Cargo.toml hosted_reconciliation::tests::reconciliation_error_classification_labels_signature_and_payload_failures`
-- `cargo test --manifest-path cli/Cargo.toml local_db::tests::core_schema_migrations_create_required_tables_and_indexes`
-- `cargo build --manifest-path cli/Cargo.toml`
+- `nix flake check`

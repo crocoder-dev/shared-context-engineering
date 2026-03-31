@@ -51,9 +51,7 @@
 
 ## Verification evidence
 
-- `cargo test --manifest-path cli/Cargo.toml post_rewrite_finalization`
-- `cargo fmt --manifest-path cli/Cargo.toml -- --check`
-- `cargo build --manifest-path cli/Cargo.toml`
+- `nix flake check`
 
 ## Tests added
 
