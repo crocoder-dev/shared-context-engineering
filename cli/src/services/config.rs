@@ -8,13 +8,12 @@ use jsonschema::{validator_for, Validator};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::services::default_paths::resolve_sce_default_locations;
+use crate::services::default_paths::{resolve_sce_default_locations, schema, RepoPaths};
 use crate::services::output_format::OutputFormat;
 use crate::services::style::{self};
 
 pub const NAME: &str = "config";
 #[cfg_attr(not(test), allow(dead_code))]
-const GENERATED_CONFIG_SCHEMA_PATH: &str = "config/schema/sce-config.schema.json";
 pub(crate) const SCE_CONFIG_SCHEMA_JSON: &str =
     include_str!("../../assets/generated/config/schema/sce-config.schema.json");
 
@@ -951,7 +950,7 @@ where
         });
     }
 
-    let local_path = cwd.join(".sce").join("config.json");
+    let local_path = RepoPaths::new(cwd).sce_config_file();
     if path_exists(&local_path) {
         discovered_paths.push(LoadedConfigPath {
             path: local_path,
@@ -981,6 +980,10 @@ fn config_schema_validator() -> &'static Validator {
     })
 }
 
+fn generated_config_schema_path() -> String {
+    format!("{}/{}", schema::SCHEMA_DIR, schema::SCE_CONFIG_SCHEMA)
+}
+
 fn validate_config_value_against_schema(value: &Value, path: &Path) -> Result<()> {
     let mut errors = config_schema_validator()
         .iter_errors(value)
@@ -992,10 +995,11 @@ fn validate_config_value_against_schema(value: &Value, path: &Path) -> Result<()
     }
 
     errors.sort();
+    let generated_schema_path = generated_config_schema_path();
     bail!(
         "Config file '{}' failed schema validation against generated schema '{}': {}",
         path.display(),
-        GENERATED_CONFIG_SCHEMA_PATH,
+        generated_schema_path,
         errors.join(" | ")
     );
 }
@@ -1960,13 +1964,13 @@ fn abbreviate_text_value(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_show_output, format_validate_output, resolve_observability_runtime_config_with,
-        resolve_optional_auth_config_value, resolve_runtime_config_with, AuthConfigKeySpec,
-        BashPolicyConfig, ConfigPathSource, ConfigRequest, CustomBashPolicyEntry, FileConfigValue,
-        LoadedConfigPath, LogFileMode, LogFormat, LogLevel, OtlpProtocol, ReportFormat,
-        ResolvedObservabilityRuntimeConfig, ResolvedOptionalValue, ResolvedValue, RuntimeConfig,
-        ValueSource, DEFAULT_OTEL_ENDPOINT, GENERATED_CONFIG_SCHEMA_PATH, SCE_CONFIG_SCHEMA_JSON,
-        WORKOS_CLIENT_ID_BAKED_DEFAULT, WORKOS_CLIENT_ID_KEY,
+        format_show_output, format_validate_output, generated_config_schema_path,
+        resolve_observability_runtime_config_with, resolve_optional_auth_config_value,
+        resolve_runtime_config_with, AuthConfigKeySpec, BashPolicyConfig, ConfigPathSource,
+        ConfigRequest, CustomBashPolicyEntry, FileConfigValue, LoadedConfigPath, LogFileMode,
+        LogFormat, LogLevel, OtlpProtocol, ReportFormat, ResolvedObservabilityRuntimeConfig,
+        ResolvedOptionalValue, ResolvedValue, RuntimeConfig, ValueSource, DEFAULT_OTEL_ENDPOINT,
+        SCE_CONFIG_SCHEMA_JSON, WORKOS_CLIENT_ID_BAKED_DEFAULT, WORKOS_CLIENT_ID_KEY,
     };
     use anyhow::Result;
     use serde_json::{json, Value};
@@ -2334,7 +2338,7 @@ mod tests {
         assert!(error
             .to_string()
             .contains("failed schema validation against generated schema"));
-        assert!(error.to_string().contains(GENERATED_CONFIG_SCHEMA_PATH));
+        assert!(error.to_string().contains(&generated_config_schema_path()));
         assert!(error.to_string().contains("unknown"));
     }
 
@@ -3066,7 +3070,7 @@ mod tests {
         assert!(error
             .to_string()
             .contains("failed schema validation against generated schema"));
-        assert!(error.to_string().contains(GENERATED_CONFIG_SCHEMA_PATH));
+        assert!(error.to_string().contains(&generated_config_schema_path()));
 
         std::fs::remove_file(&path).ok();
         std::fs::remove_dir(&temp_dir).ok();

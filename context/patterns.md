@@ -98,6 +98,7 @@
 
 ## Placeholder CLI scaffolding
 
+- Keep production CLI path ownership centralized in `cli/src/services/default_paths.rs`; new non-test path literals or path-shape definitions should be added there as named accessors/constants instead of becoming new path owners in other modules.
 - For early CLI foundation tasks, keep implemented behavior and planned behavior explicitly separated in a single command contract table.
 - Keep top-level help intentionally curated: command visibility on `sce`, `sce help`, and `sce --help` may differ from parser availability when a command should remain directly invocable but temporarily hidden from operator-facing help.
 - Preserve implementation-status metadata in the command contract layer for internal classification and tests even when top-level help omits implemented/placeholder labels.

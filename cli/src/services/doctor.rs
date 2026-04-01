@@ -5,7 +5,9 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use crate::services::default_paths::resolve_sce_default_locations;
+use crate::services::default_paths::{
+    hook_dir, opencode_asset, resolve_sce_default_locations, InstallTargetPaths, RepoPaths,
+};
 use crate::services::output_format::OutputFormat;
 use crate::services::setup::{
     install_required_git_hooks, iter_required_hook_assets, RequiredHookInstallStatus,
@@ -17,13 +19,11 @@ use crate::services::style::{heading, label, success, value};
 
 pub const NAME: &str = "doctor";
 
-const REQUIRED_HOOKS: [&str; 3] = ["pre-commit", "commit-msg", "post-commit"];
-const OPENCODE_ROOT_DIR: &str = ".opencode";
-const OPENCODE_MANIFEST_FILE: &str = "opencode.json";
-const OPENCODE_PLUGIN_RELATIVE_PATH: &str = "plugins/sce-bash-policy.ts";
-const OPENCODE_PLUGIN_RUNTIME_RELATIVE_PATH: &str = "plugins/bash-policy/runtime.ts";
-const OPENCODE_PLUGIN_PRESET_CATALOG_RELATIVE_PATH: &str = "lib/bash-policy-presets.json";
-const OPENCODE_PLUGIN_MANIFEST_ENTRY: &str = "./plugins/sce-bash-policy.ts";
+const REQUIRED_HOOKS: [&str; 3] = [
+    hook_dir::PRE_COMMIT,
+    hook_dir::COMMIT_MSG,
+    hook_dir::POST_COMMIT,
+];
 
 pub type DoctorFormat = OutputFormat;
 
@@ -483,7 +483,7 @@ fn collect_global_state_health(
         }),
     }
 
-    let local_path = repository_root.join(".sce").join("config.json");
+    let local_path = RepoPaths::new(repository_root).sce_config_file();
     if local_path.exists() {
         if let Err(error) = (dependencies.validate_config_file)(&local_path) {
             problems.push(DoctorProblem {
@@ -769,12 +769,14 @@ fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> V
 }
 
 fn inspect_opencode_plugin_health(repository_root: &Path, problems: &mut Vec<DoctorProblem>) {
-    let opencode_root = repository_root.join(OPENCODE_ROOT_DIR);
+    let repo_paths = RepoPaths::new(repository_root);
+    let install_targets = InstallTargetPaths::new(repository_root);
+    let opencode_root = repo_paths.opencode_dir();
     if !opencode_root.exists() {
         return;
     }
 
-    let manifest_path = opencode_root.join(OPENCODE_MANIFEST_FILE);
+    let manifest_path = repo_paths.opencode_manifest_file();
     if let Some(summary) = opencode_plugin_registry_issue(&manifest_path) {
         problems.push(DoctorProblem {
             category: ProblemCategory::RepoAssets,
@@ -784,15 +786,15 @@ fn inspect_opencode_plugin_health(repository_root: &Path, problems: &mut Vec<Doc
             remediation: format!(
                 "Reinstall OpenCode assets so '{}' registers '{}', then rerun 'sce doctor'.",
                 manifest_path.display(),
-                OPENCODE_PLUGIN_MANIFEST_ENTRY
+                opencode_asset::PLUGIN_MANIFEST_ENTRY
             ),
             next_action: "manual_steps",
         });
     }
 
-    inspect_opencode_plugin_dependency_health(&opencode_root, problems);
+    inspect_opencode_plugin_dependency_health(&install_targets, problems);
 
-    let plugin_path = opencode_root.join(OPENCODE_PLUGIN_RELATIVE_PATH);
+    let plugin_path = install_targets.opencode_plugin_target();
     let plugin_metadata = fs::metadata(&plugin_path).ok();
     let plugin_is_file = plugin_metadata
         .as_ref()
@@ -858,14 +860,14 @@ fn opencode_plugin_registry_issue(manifest_path: &Path) -> Option<String> {
 
     if plugins
         .iter()
-        .any(|entry| entry.as_str() == Some(OPENCODE_PLUGIN_MANIFEST_ENTRY))
+        .any(|entry| entry.as_str() == Some(opencode_asset::PLUGIN_MANIFEST_ENTRY))
     {
         None
     } else {
         Some(format!(
             "OpenCode plugin registry file '{}' does not register '{}'.",
             manifest_path.display(),
-            OPENCODE_PLUGIN_MANIFEST_ENTRY
+            opencode_asset::PLUGIN_MANIFEST_ENTRY
         ))
     }
 }
@@ -873,23 +875,21 @@ fn opencode_plugin_registry_issue(manifest_path: &Path) -> Option<String> {
 #[cfg(test)]
 fn opencode_plugin_asset() -> Option<&'static crate::services::setup::EmbeddedAsset> {
     iter_embedded_assets_for_setup_target(SetupTarget::OpenCode)
-        .find(|asset| asset.relative_path == OPENCODE_PLUGIN_RELATIVE_PATH)
+        .find(|asset| asset.relative_path == opencode_plugin_relative_path())
 }
 
 fn inspect_opencode_plugin_dependency_health(
-    opencode_root: &Path,
+    install_targets: &InstallTargetPaths,
     problems: &mut Vec<DoctorProblem>,
 ) {
     inspect_opencode_asset_presence(
-        opencode_root,
-        OPENCODE_PLUGIN_RUNTIME_RELATIVE_PATH,
+        &install_targets.opencode_runtime_target(),
         "OpenCode bash-policy runtime",
         "bash-policy runtime",
         problems,
     );
     inspect_opencode_asset_presence(
-        opencode_root,
-        OPENCODE_PLUGIN_PRESET_CATALOG_RELATIVE_PATH,
+        &install_targets.opencode_preset_catalog_target(),
         "OpenCode bash-policy preset catalog",
         "bash-policy preset catalog",
         problems,
@@ -897,14 +897,12 @@ fn inspect_opencode_plugin_dependency_health(
 }
 
 fn inspect_opencode_asset_presence(
-    opencode_root: &Path,
-    relative_path: &str,
+    asset_path: &Path,
     summary_label: &str,
     remediation_label: &str,
     problems: &mut Vec<DoctorProblem>,
 ) {
-    let asset_path = opencode_root.join(relative_path);
-    let metadata = fs::metadata(&asset_path).ok();
+    let metadata = fs::metadata(asset_path).ok();
     let is_file = metadata.as_ref().is_some_and(std::fs::Metadata::is_file);
 
     if is_file {
@@ -933,6 +931,15 @@ fn inspect_opencode_asset_presence(
         ),
         next_action: "manual_steps",
     });
+}
+
+#[cfg(test)]
+fn opencode_plugin_relative_path() -> String {
+    format!(
+        "{}/{}",
+        opencode_asset::PLUGINS_DIR,
+        opencode_asset::PLUGIN_FILE
+    )
 }
 
 fn inspect_hook_content_state(

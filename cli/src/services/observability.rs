@@ -16,6 +16,7 @@ use serde_json::json;
 use tracing_subscriber::prelude::*;
 
 use crate::services::config;
+use crate::services::default_paths::{repo_dir, repo_file};
 use crate::services::error::ClassifiedError;
 use crate::services::security::redact_sensitive_text;
 use crate::services::style::{error_text, heading};
@@ -309,7 +310,8 @@ impl LogFileSink {
     fn open(path: PathBuf, mode: LogFileMode) -> Result<Self> {
         if path.as_os_str().is_empty() {
             bail!(
-                "Invalid {ENV_LOG_FILE} ''. Try: set it to an absolute or relative file path, for example .sce/sce.log."
+                "Invalid {ENV_LOG_FILE} ''. Try: set it to an absolute or relative file path, for example {}.",
+                default_repo_log_file_example()
             );
         }
 
@@ -370,6 +372,10 @@ impl LogFileSink {
         writer.flush()?;
         Ok(())
     }
+}
+
+fn default_repo_log_file_example() -> String {
+    format!("{}/{}", repo_dir::SCE, repo_file::SCE_LOG)
 }
 
 impl Logger {

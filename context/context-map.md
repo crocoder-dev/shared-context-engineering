@@ -7,8 +7,8 @@ Primary context files:
 - `context/glossary.md`
 
 Feature/domain context:
-<<<<<<< HEAD
 - `context/cli/placeholder-foundation.md` (CLI command surface including slim top-level help visibility, setup install flow, WorkOS device authorization flow + token storage behavior, bounded resilience-wrapped sync/local-DB smoke and bootstrap behavior, nested flake release package/app installability, and Cargo local install + crates.io readiness policy)
+- `context/cli/default-path-catalog.md` (canonical production CLI path-ownership contract centered on `cli/src/services/default_paths.rs`, including persisted, repo-relative, embedded-asset, install/runtime, hook, and context-path families plus the regression guard that keeps production path ownership centralized)
 - `context/cli/styling-service.md` (CLI text-mode output styling with `owo-colors` and `comfy-table`, TTY/`NO_COLOR` policy, and shared helper API for human-facing surfaces)
 - `context/cli/config-precedence-contract.md` (implemented `sce config` show/validate command contract, deterministic `flags > env > config file > defaults` resolution order, canonical `$schema` acceptance for startup-loaded `sce/config.json` files, shared auth-key env/config/optional baked-default support starting with `workos_client_id`, shared runtime resolution for flat logging plus nested `otel` observability keys, canonical Pkl-generated `sce/config.json` schema ownership plus CLI embedding/reuse contract, config-file selection order, `show` provenance output, trimmed `validate` output contract, and opt-in compiled-binary config-precedence E2E coverage contract)
 - `context/sce/cli-observability-contract.md` (implemented config-backed runtime observability contract for the flat logging + nested `otel` config-file shape with env-over-config fallback, plus operator-facing `sce config show` observability reporting and the trimmed `sce config validate` status-only validation surface)
