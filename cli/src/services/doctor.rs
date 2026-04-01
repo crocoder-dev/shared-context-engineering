@@ -19,6 +19,8 @@ use crate::services::style::{
 
 pub const NAME: &str = "doctor";
 
+const DOCTOR_HEADER: &str = "SCE Doctor";
+const DOCTOR_DIVIDER: &str = "──────────────────";
 const REQUIRED_HOOKS: [&str; 3] = ["pre-commit", "commit-msg", "post-commit"];
 const OPENCODE_ROOT_DIR: &str = ".opencode";
 const OPENCODE_MANIFEST_FILE: &str = "opencode.json";
@@ -295,7 +297,7 @@ struct DoctorFixResultRecord {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TaggedLine {
-    tag: StatusTag,
+    tag: Option<StatusTag>,
     text: String,
 }
 
@@ -1352,23 +1354,45 @@ fn run_git_command(repository_root: &Path, args: &[&str]) -> Option<String> {
     }
 }
 
+fn tagged_line(tag: StatusTag, text: impl Into<String>) -> TaggedLine {
+    TaggedLine {
+        tag: Some(tag),
+        text: text.into(),
+    }
+}
+
+fn plain_line(text: impl Into<String>) -> TaggedLine {
+    TaggedLine {
+        tag: None,
+        text: text.into(),
+    }
+}
+
+fn push_section_heading(lines: &mut Vec<TaggedLine>, title: &str) {
+    lines.push(plain_line(heading(title)));
+}
+
 #[allow(clippy::too_many_lines)]
 fn format_report_lines(report: &HookDoctorReport) -> Vec<TaggedLine> {
     let mut lines = Vec::new();
-    lines.push(TaggedLine {
-        tag: readiness_tag(report.readiness),
-        text: format!(
+    lines.push(plain_line(heading(DOCTOR_HEADER)));
+    lines.push(plain_line(DOCTOR_DIVIDER));
+
+    push_section_heading(&mut lines, "Environment");
+    lines.push(tagged_line(
+        readiness_tag(report.readiness),
+        format!(
             "{}: {}",
-            label("SCE doctor"),
+            label("Status"),
             match report.readiness {
                 Readiness::Ready => success("ready"),
                 Readiness::NotReady => value("not ready"),
             }
         ),
-    });
-    lines.push(TaggedLine {
-        tag: StatusTag::Pass,
-        text: format!(
+    ));
+    lines.push(tagged_line(
+        StatusTag::Pass,
+        format!(
             "{}: {}",
             label("Mode"),
             match report.mode {
@@ -1376,10 +1400,10 @@ fn format_report_lines(report: &HookDoctorReport) -> Vec<TaggedLine> {
                 DoctorMode::Fix => value("fix"),
             }
         ),
-    });
-    lines.push(TaggedLine {
-        tag: StatusTag::Pass,
-        text: format!(
+    ));
+    lines.push(tagged_line(
+        StatusTag::Pass,
+        format!(
             "{}: {}",
             label("Database inventory"),
             match report.database_inventory {
@@ -1387,29 +1411,15 @@ fn format_report_lines(report: &HookDoctorReport) -> Vec<TaggedLine> {
                 DoctorDatabaseInventory::All => value("all"),
             }
         ),
-    });
-
-    lines.push(TaggedLine {
-        tag: StatusTag::Pass,
-        text: format!(
-            "{}: {}",
-            label("Hooks path source"),
-            value(match report.hook_path_source {
-                HookPathSource::Default => "default (.git/hooks)",
-                HookPathSource::LocalConfig => "per-repo core.hooksPath",
-                HookPathSource::GlobalConfig => "global core.hooksPath",
-            })
-        ),
-    });
-
-    lines.push(TaggedLine {
-        tag: report
+    ));
+    lines.push(tagged_line(
+        report
             .state_root
             .as_ref()
             .map_or(StatusTag::Miss, |location| {
                 tag_for_location_state(location.state)
             }),
-        text: format!(
+        format!(
             "{}: {}",
             label("State root"),
             report.state_root.as_ref().map_or_else(
@@ -1421,64 +1431,17 @@ fn format_report_lines(report: &HookDoctorReport) -> Vec<TaggedLine> {
                 )
             )
         ),
-    });
-
-    lines.push(TaggedLine {
-        tag: report
-            .repository_root
-            .as_ref()
-            .map_or(StatusTag::Miss, |_| StatusTag::Pass),
-        text: format!(
-            "{}: {}",
-            label("Repository root"),
-            report.repository_root.as_ref().map_or_else(
-                || value("(not detected)"),
-                |path| value(&path.display().to_string())
-            )
-        ),
-    });
-
-    lines.push(TaggedLine {
-        tag: report
-            .hooks_directory
-            .as_ref()
-            .map_or(StatusTag::Miss, |_| StatusTag::Pass),
-        text: format!(
-            "{}: {}",
-            label("Effective hooks directory"),
-            report.hooks_directory.as_ref().map_or_else(
-                || value("(not detected)"),
-                |path| value(&path.display().to_string())
-            )
-        ),
-    });
-
-    lines.push(TaggedLine {
-        tag: StatusTag::Pass,
-        text: format!("{}:", heading("Config files")),
-    });
-    for location in &report.config_locations {
-        lines.push(TaggedLine {
-            tag: tag_for_location_state(location.state),
-            text: format!(
-                "  {}: {} ({})",
-                label(location.label),
-                value(location.state),
-                value(&location.path.display().to_string())
-            ),
-        });
-    }
-
-    lines.push(TaggedLine {
-        tag: report
+    ));
+    lines.push(tagged_line(
+        report
             .agent_trace_local_db
             .as_ref()
             .map_or(StatusTag::Miss, |location| {
                 tag_for_location_state(location.state)
             }),
-        text: format!(
+        format!(
             "{}: {}",
-            label("Agent Trace local DB"),
+            label("Agent Trace DB"),
             report.agent_trace_local_db.as_ref().map_or_else(
                 || value("(not detected)"),
                 |location| format!(
@@ -1488,97 +1451,150 @@ fn format_report_lines(report: &HookDoctorReport) -> Vec<TaggedLine> {
                 )
             )
         ),
-    });
+    ));
 
-    // Repo-scoped databases (empty by design)
-    lines.push(TaggedLine {
-        tag: StatusTag::Pass,
-        text: format!("{}:", heading("Repo-scoped databases")),
+    push_section_heading(&mut lines, "Configuration");
+    let mut config_locations = report.config_locations.clone();
+    config_locations.sort_by_key(|location| match location.label {
+        "Local config" => 0,
+        "Global config" => 1,
+        _ => 2,
     });
-    if report.repo_databases.is_empty() {
-        lines.push(TaggedLine {
-            tag: StatusTag::Miss,
-            text: value("  none"),
-        });
-    } else {
-        for database in &report.repo_databases {
-            lines.push(TaggedLine {
-                tag: tag_for_database_status(database.status),
-                text: format!("- {}", format_database_record(database)),
-            });
-        }
+    for location in config_locations {
+        let optional_suffix = if location.label == "Global config" {
+            " (optional)"
+        } else {
+            ""
+        };
+        lines.push(tagged_line(
+            tag_for_location_state(location.state),
+            format!(
+                "{}: {} ({}){}",
+                label(location.label),
+                value(location.state),
+                value(&location.path.display().to_string()),
+                value(optional_suffix)
+            ),
+        ));
     }
 
-    // All SCE databases (when --all-databases)
+    push_section_heading(&mut lines, "Repository");
+    lines.push(tagged_line(
+        report
+            .repository_root
+            .as_ref()
+            .map_or(StatusTag::Miss, |_| StatusTag::Pass),
+        format!(
+            "{}: {}",
+            label("Root"),
+            report.repository_root.as_ref().map_or_else(
+                || value("(not detected)"),
+                |path| value(&path.display().to_string())
+            )
+        ),
+    ));
+    lines.push(tagged_line(
+        StatusTag::Pass,
+        format!(
+            "{}: {}",
+            label("Hooks path source"),
+            value(match report.hook_path_source {
+                HookPathSource::Default => "default (.git/hooks)",
+                HookPathSource::LocalConfig => "per-repo core.hooksPath",
+                HookPathSource::GlobalConfig => "global core.hooksPath",
+            })
+        ),
+    ));
+    lines.push(tagged_line(
+        report
+            .hooks_directory
+            .as_ref()
+            .map_or(StatusTag::Miss, |_| StatusTag::Pass),
+        format!(
+            "{}: {}",
+            label("Hooks directory"),
+            report.hooks_directory.as_ref().map_or_else(
+                || value("(not detected)"),
+                |path| value(&path.display().to_string())
+            )
+        ),
+    ));
+    if report.repo_databases.is_empty() {
+        lines.push(tagged_line(
+            StatusTag::Miss,
+            format!("{}: {}", label("Repo databases"), value("none")),
+        ));
+    } else {
+        lines.push(tagged_line(
+            StatusTag::Pass,
+            format!("{}:", label("Repo databases")),
+        ));
+        for database in &report.repo_databases {
+            lines.push(tagged_line(
+                tag_for_database_status(database.status),
+                format!("  - {}", format_database_record(database)),
+            ));
+        }
+    }
     if report.database_inventory == DoctorDatabaseInventory::All {
-        lines.push(TaggedLine {
-            tag: StatusTag::Pass,
-            text: format!("{}:", heading("All SCE databases")),
-        });
         if report.all_databases.is_empty() {
-            lines.push(TaggedLine {
-                tag: StatusTag::Miss,
-                text: value("  none"),
-            });
+            lines.push(tagged_line(
+                StatusTag::Miss,
+                format!("{}: {}", label("All databases"), value("none")),
+            ));
         } else {
+            lines.push(tagged_line(
+                StatusTag::Pass,
+                format!("{}:", label("All databases")),
+            ));
             for database in &report.all_databases {
-                lines.push(TaggedLine {
-                    tag: tag_for_database_status(database.status),
-                    text: format!(
-                        "  {}: {} ({}) {}",
-                        value(database_family(database.family)),
-                        value(database_scope(database.scope)),
-                        value(database_status(database.status)),
-                        value(&database.canonical_path.display().to_string())
-                    ),
-                });
+                lines.push(tagged_line(
+                    tag_for_database_status(database.status),
+                    format!("  - {}", format_database_record(database)),
+                ));
             }
         }
     }
 
-    // Required hooks
-    lines.push(TaggedLine {
-        tag: StatusTag::Pass,
-        text: format!("{}:", heading("Required hooks")),
-    });
+    push_section_heading(&mut lines, "Git Hooks");
     for hook in &report.hooks {
-        lines.push(TaggedLine {
-            tag: tag_for_hook(hook),
-            text: format!(
-                "  {}: {} (content={}, executable={}) {}",
+        lines.push(tagged_line(
+            tag_for_hook(hook),
+            format!(
+                "{}: {} (content={}, executable={}) {}",
                 value(hook.name),
                 value(hook_state(hook)),
                 value(hook_content_state(hook.content_state)),
                 value(if hook.executable { "yes" } else { "no" }),
                 value(&hook.path.display().to_string())
             ),
-        });
+        ));
     }
 
+    push_section_heading(&mut lines, "Integrations");
     lines.extend(format_opencode_sections(report));
 
-    // Problems
     if report.problems.is_empty() {
-        lines.push(TaggedLine {
-            tag: StatusTag::Pass,
-            text: format!("{}: {}", label("Problems"), success("none")),
-        });
+        lines.push(tagged_line(
+            StatusTag::Pass,
+            format!("{}: {}", label("Problems"), success("none")),
+        ));
     } else {
-        lines.push(TaggedLine {
-            tag: tag_for_problem_heading(&report.problems),
-            text: format!("{}:", heading("Problems")),
-        });
+        lines.push(tagged_line(
+            tag_for_problem_heading(&report.problems),
+            format!("{}:", heading("Problems")),
+        ));
         for problem in &report.problems {
-            lines.push(TaggedLine {
-                tag: tag_for_problem_severity(problem.severity),
-                text: format!(
+            lines.push(tagged_line(
+                tag_for_problem_severity(problem.severity),
+                format!(
                     "  [{}|{}|{}] {}",
                     value(problem_category(problem.category)),
                     value(problem_severity(problem.severity)),
                     value(problem_fixability(problem.fixability)),
                     value(&problem.summary)
                 ),
-            });
+            ));
         }
     }
 
@@ -1603,9 +1619,9 @@ fn format_opencode_sections(report: &HookDoctorReport) -> Vec<TaggedLine> {
             } else {
                 StatusTag::Fail
             };
-            lines.push(TaggedLine {
+            lines.push(tagged_line(
                 tag,
-                text: format!(
+                format!(
                     "{}: {}",
                     label(opencode_section_label(section)),
                     if issues.is_empty() {
@@ -1614,7 +1630,7 @@ fn format_opencode_sections(report: &HookDoctorReport) -> Vec<TaggedLine> {
                         value("failed")
                     }
                 ),
-            });
+            ));
 
             if !issues.is_empty() {
                 for issue in issues {
@@ -1626,28 +1642,25 @@ fn format_opencode_sections(report: &HookDoctorReport) -> Vec<TaggedLine> {
                         ),
                         None => format!("  - {}", value(&issue.summary)),
                     };
-                    lines.push(TaggedLine {
-                        tag: StatusTag::Fail,
-                        text: detail,
-                    });
+                    lines.push(tagged_line(StatusTag::Fail, detail));
                 }
             }
         } else {
-            lines.push(TaggedLine {
-                tag: StatusTag::Fail,
-                text: format!(
+            lines.push(tagged_line(
+                StatusTag::Fail,
+                format!(
                     "{}: {}",
                     label(opencode_section_label(section)),
                     value("not detected")
                 ),
-            });
-            lines.push(TaggedLine {
-                tag: StatusTag::Fail,
-                text: format!(
+            ));
+            lines.push(tagged_line(
+                StatusTag::Fail,
+                format!(
                     "  - {}",
                     value("OpenCode health is not available (repository not detected).")
                 ),
-            });
+            ));
         }
     }
 
@@ -1678,27 +1691,40 @@ fn format_execution(execution: &DoctorExecution) -> String {
 
     if report.mode == DoctorMode::Fix {
         if execution.fix_results.is_empty() {
-            lines.push(TaggedLine {
-                tag: StatusTag::Pass,
-                text: format!("{}: {}", label("Fix results"), value("none")),
-            });
+            lines.push(tagged_line(
+                StatusTag::Pass,
+                format!("{}: {}", label("Fix results"), value("none")),
+            ));
         } else {
-            lines.push(TaggedLine {
-                tag: tag_for_fix_results_heading(&execution.fix_results),
-                text: format!("{}:", heading("Fix results")),
-            });
+            lines.push(tagged_line(
+                tag_for_fix_results_heading(&execution.fix_results),
+                format!("{}:", heading("Fix results")),
+            ));
             for fix_result in &execution.fix_results {
-                lines.push(TaggedLine {
-                    tag: tag_for_fix_result(fix_result.outcome),
-                    text: format!(
+                lines.push(tagged_line(
+                    tag_for_fix_result(fix_result.outcome),
+                    format!(
                         "  [{}] {}",
                         value(fix_result_outcome(fix_result.outcome)),
                         value(&fix_result.detail)
                     ),
-                });
+                ));
             }
         }
     }
+
+    lines.push(plain_line(DOCTOR_DIVIDER));
+    let summary_tag = if report.problems.is_empty() {
+        StatusTag::Pass
+    } else {
+        tag_for_problem_heading(&report.problems)
+    };
+    let summary_text = if report.problems.is_empty() {
+        "No problems detected".to_string()
+    } else {
+        format!("{} problem(s) detected", report.problems.len())
+    };
+    lines.push(tagged_line(summary_tag, summary_text));
 
     format_tagged_lines(lines)
 }
@@ -1857,7 +1883,10 @@ fn render_fix_results_json(execution: &DoctorExecution) -> Vec<serde_json::Value
 fn format_tagged_lines(lines: Vec<TaggedLine>) -> String {
     lines
         .into_iter()
-        .map(|line| format!("{} {}", status_tag_prefix(line.tag), line.text))
+        .map(|line| match line.tag {
+            Some(tag) => format!("{} {}", status_tag_prefix(tag), line.text),
+            None => line.text,
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -2385,9 +2414,19 @@ mod tests {
                 .is_some_and(|value| value.contains(summary_fragment))
     }
 
-    fn assert_all_lines_tagged(output: &str) {
+    fn assert_lines_tagged_or_heading(output: &str) {
         for line in output.lines() {
             let normalized = strip_ansi_codes(line);
+            if normalized.is_empty()
+                || normalized == super::DOCTOR_HEADER
+                || normalized == super::DOCTOR_DIVIDER
+                || matches!(
+                    normalized.as_str(),
+                    "Environment" | "Configuration" | "Repository" | "Git Hooks" | "Integrations"
+                )
+            {
+                continue;
+            }
             assert!(
                 normalized.starts_with("[PASS] ")
                     || normalized.starts_with("[FAIL] ")
@@ -2572,7 +2611,15 @@ mod tests {
         };
         let output = super::format_execution(&execution);
 
-        assert_all_lines_tagged(&output);
+        assert_lines_tagged_or_heading(&output);
+        let normalized = strip_ansi_codes(&output);
+        assert!(normalized.contains(super::DOCTOR_HEADER));
+        assert!(normalized.contains(super::DOCTOR_DIVIDER));
+        assert!(normalized.contains("Environment"));
+        assert!(normalized.contains("Configuration"));
+        assert!(normalized.contains("Repository"));
+        assert!(normalized.contains("Git Hooks"));
+        assert!(normalized.contains("Integrations"));
     }
 
     #[test]
@@ -2592,7 +2639,7 @@ mod tests {
         };
         let output = super::format_execution(&execution);
 
-        assert_all_lines_tagged(&output);
+        assert_lines_tagged_or_heading(&output);
         let normalized = strip_ansi_codes(&output);
         assert!(normalized.contains("[FAIL]"));
     }
@@ -2616,7 +2663,7 @@ mod tests {
         };
         let output = super::format_execution(&execution);
 
-        assert_all_lines_tagged(&output);
+        assert_lines_tagged_or_heading(&output);
         let normalized = strip_ansi_codes(&output);
         assert!(normalized.contains("[FAIL]"));
     }
@@ -2643,7 +2690,7 @@ mod tests {
         };
         let output = super::format_execution(&execution);
 
-        assert_all_lines_tagged(&output);
+        assert_lines_tagged_or_heading(&output);
         let normalized = strip_ansi_codes(&output);
         assert!(normalized.contains("[WARN]"));
         assert!(normalized.contains("[MISS]"));
@@ -2798,7 +2845,7 @@ mod tests {
             None => std::env::remove_var("NO_COLOR"),
         }
 
-        assert_all_lines_tagged(&output);
+        assert_lines_tagged_or_heading(&output);
         assert!(output.contains("[PASS] "));
         assert!(!output.contains("\u{1b}["));
     }

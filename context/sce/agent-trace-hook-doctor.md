@@ -33,9 +33,10 @@ At the current implementation point, the runtime in `cli/src/services/doctor.rs`
 - Agent Trace local DB location reporting, DB parent-directory readiness checks, and existing-DB health validation
 - an empty repo-scoped database section in the default readiness view because no repo-owned SCE database currently exists
 - explicit all-SCE database inventory rendering for the canonical Agent Trace DB only
-- text output now prefixes every line with a status tag: `[PASS]`, `[FAIL]`, `[MISS]`, or `[WARN]`
+- text output is grouped into sections (`Environment`, `Configuration`, `Repository`, `Git Hooks`, `Integrations`) with an `SCE Doctor` header and divider lines
+- section headings and divider lines are untagged; status tags (`[PASS]`, `[FAIL]`, `[MISS]`, `[WARN]`) still prefix all content lines
 - status tag prefixes are colorized in text output (PASS=green, FAIL=red, WARN=yellow, MISS=blue) and only the prefix is colored when `supports_color()` allows it (TTY + no `NO_COLOR`)
-- text output now includes separate OpenCode sections (`OpenCode plugin`, `OpenCode agent`, `OpenCode command`, `OpenCode skills`) with PASS/FAIL summary lines and indented detail lines when failures occur
+- text output includes separate OpenCode entries (`OpenCode plugin`, `OpenCode agent`, `OpenCode command`, `OpenCode skills`) with PASS/FAIL summary lines and indented detail lines when failures occur
 - explicit git-unavailable, outside-repo, and bare-repo repository-targeting failures
 - effective hook-path source (`default`, local `core.hooksPath`, global `core.hooksPath`)
 - repository root and hooks directory resolution when a repository target is detected
@@ -206,7 +207,7 @@ Text and JSON output must both expose:
 
 The JSON contract must remain stable enough for downstream automation and include machine-readable problem and fix-result records rather than free-form diagnostics only.
 
-Text output additionally prefixes every rendered line with one of `[PASS]`, `[FAIL]`, `[MISS]`, or `[WARN]` so operators can scan status quickly. The status prefix is colorized (PASS=green, FAIL=red, WARN=yellow, MISS=blue) while the remainder of the line is uncolored, and colorization is gated by `supports_color()` (TTY + no `NO_COLOR`).
+Text output uses grouped sections (`Environment`, `Configuration`, `Repository`, `Git Hooks`, `Integrations`) with an `SCE Doctor` header and divider lines. Section headings and divider lines are untagged; status tags (`[PASS]`, `[FAIL]`, `[MISS]`, `[WARN]`) still prefix all content lines so operators can scan status quickly. The status prefix is colorized (PASS=green, FAIL=red, WARN=yellow, MISS=blue) while the remainder of the line is uncolored, and colorization is gated by `supports_color()` (TTY + no `NO_COLOR`).
 
 ## Setup and doctor alignment rule
 
