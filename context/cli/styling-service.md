@@ -28,16 +28,12 @@ The CLI styling service in `cli/src/services/style.rs` provides deterministic te
 
 - `heading(text: &str) -> String` - Styles section headings (cyan/bold) for help output
 - `command_name(text: &str) -> String` - Styles command names (green) for help output
-- `example_command(text: &str) -> String` - Styles usage examples (yellow)
-- `placeholder(text: &str) -> String` - Styles placeholders/arguments (dim/italic)
 - `clap_help(text: &str) -> String` - Post-processes command-local clap help text so stdout help surfaces reuse shared heading, command, and placeholder styling without changing plain-text output when color is disabled
-- `status_implemented(text: &str) -> String` - Styles "implemented" status (green)
-- `status_placeholder(text: &str) -> String` - Styles "placeholder" status (dimmed)
 
 ### Error Diagnostics Styling
 
 - `error_code(text: &str) -> String` - Styles error codes (red/bold) for stderr diagnostics
-- `heading_stderr(text: &str) -> String` - Styles headings for stderr output (cyan/bold)
+- `heading(text: &str) -> String` - Styles headings for both stdout and stderr output (cyan/bold)
 - `error_text(text: &str) -> String` - Styles human-readable stderr diagnostic bodies (yellow)
 
 ### Command Output Styling
@@ -75,7 +71,7 @@ println!("{}", heading("Usage:"));
 println!("  {}", command_name("sce setup"));
 
 // Error diagnostics styling (stderr)
-eprintln!("{} [{}]: {}", heading_stderr("Error"), error_code("SCE-ERR-PARSE"), error_text(message));
+eprintln!("{} [{}]: {}", heading("Error"), error_code("SCE-ERR-PARSE"), error_text(message));
 
 // Command output styling
 println!("{}", success("Setup completed successfully."));
