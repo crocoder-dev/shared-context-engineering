@@ -12,6 +12,7 @@ use crate::services::style::{
     label, prompt_label, prompt_label_with_color_policy, prompt_value_with_color_policy, success,
     value,
 };
+use crate::services::{default_paths, default_paths::InstallTargetPaths};
 
 pub const NAME: &str = "setup";
 
@@ -45,9 +46,9 @@ pub fn iter_required_hook_assets() -> std::slice::Iter<'static, EmbeddedAsset> {
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn get_required_hook_asset(hook: RequiredHookAsset) -> Option<&'static EmbeddedAsset> {
     let hook_name = match hook {
-        RequiredHookAsset::PreCommit => "pre-commit",
-        RequiredHookAsset::CommitMsg => "commit-msg",
-        RequiredHookAsset::PostCommit => "post-commit",
+        RequiredHookAsset::PreCommit => default_paths::hook_dir::PRE_COMMIT,
+        RequiredHookAsset::CommitMsg => default_paths::hook_dir::COMMIT_MSG,
+        RequiredHookAsset::PostCommit => default_paths::hook_dir::POST_COMMIT,
     };
 
     HOOK_EMBEDDED_ASSETS
@@ -101,7 +102,7 @@ fn is_installable_setup_asset(asset: &EmbeddedAsset) -> bool {
             .split('/')
             .collect::<Vec<_>>()
             .as_slice(),
-        ["skills", _, "tile.json"]
+        [default_paths::opencode_asset::SKILLS_DIR, _, "tile.json"]
     )
 }
 
@@ -843,7 +844,12 @@ fn install_assets_for_concrete_target_with_rename<F>(
 where
     F: FnMut(&Path, &Path) -> io::Result<()>,
 {
-    let destination_root = repository_root.join(target_install_directory_name(target));
+    let install_targets = InstallTargetPaths::new(repository_root);
+    let destination_root = match target {
+        SetupTarget::OpenCode => install_targets.opencode_target_dir(),
+        SetupTarget::Claude => install_targets.claude_target_dir(),
+        SetupTarget::Both => unreachable!("both is expanded into concrete targets"),
+    };
     let staging_root = create_staging_root(repository_root, target)?;
 
     if let Err(error) = write_assets_to_staging(&staging_root, assets) {
@@ -1042,7 +1048,17 @@ fn validate_embedded_relative_path(relative_path: &str) -> Result<()> {
 }
 
 fn create_staging_root(repository_root: &Path, target: SetupTarget) -> Result<PathBuf> {
-    let target_label = target_install_directory_name(target).trim_start_matches('.');
+    let install_targets = InstallTargetPaths::new(repository_root);
+    let target_dir = match target {
+        SetupTarget::OpenCode => install_targets.opencode_target_dir(),
+        SetupTarget::Claude => install_targets.claude_target_dir(),
+        SetupTarget::Both => unreachable!("both is expanded into concrete targets"),
+    };
+    let target_label = target_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("Setup target directory should have a valid UTF-8 file name")?
+        .trim_start_matches('.');
     let epoch_nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .context("System clock is before UNIX_EPOCH")?
@@ -1114,14 +1130,6 @@ fn is_git_backed_repository(repository_root: &Path) -> bool {
         .current_dir(repository_root)
         .output()
         .is_ok_and(|output| output.status.success())
-}
-
-fn target_install_directory_name(target: SetupTarget) -> &'static str {
-    match target {
-        SetupTarget::OpenCode => ".opencode",
-        SetupTarget::Claude => ".claude",
-        SetupTarget::Both => unreachable!("both is expanded into concrete targets"),
-    }
 }
 
 fn concrete_targets_for(target: SetupTarget) -> &'static [SetupTarget] {

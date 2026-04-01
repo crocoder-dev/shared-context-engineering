@@ -13,6 +13,7 @@ use crate::services::agent_trace::{
     TraceAdapterInput, METADATA_IDEMPOTENCY_KEY, METADATA_QUALITY_STATUS, TRACE_CONTENT_TYPE,
     TRACE_VERSION, VCS_TYPE_GIT,
 };
+use crate::services::default_paths;
 use crate::services::local_db::ensure_agent_trace_local_db_ready_blocking;
 
 pub const NAME: &str = "hooks";
@@ -27,8 +28,6 @@ const MODEL_ID_ENV_KEYS: [&str; 5] = [
     "ANTHROPIC_MODEL",
     "MODEL_ID",
 ];
-const PRE_COMMIT_CHECKPOINT_GIT_PATH: &str = "sce/pre-commit-checkpoint.json";
-const PROMPT_CAPTURE_GIT_PATH: &str = "sce/prompts.jsonl";
 const RETRY_QUEUE_MAX_ITEMS_PER_RUN: usize = 16;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -321,7 +320,8 @@ fn resolve_pre_commit_model_id() -> Option<String> {
 }
 
 fn load_pending_prompts(repository_root: &Path) -> Result<Vec<PendingPromptCheckpoint>> {
-    let prompt_capture_path = resolve_git_path(repository_root, PROMPT_CAPTURE_GIT_PATH)?;
+    let prompt_capture_path =
+        resolve_git_path(repository_root, default_paths::git_relative_path::PROMPTS)?;
     let payload = match fs::read_to_string(&prompt_capture_path) {
         Ok(payload) => payload,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -466,7 +466,11 @@ fn parse_hunk_new_range(header_line: &str) -> Result<Option<PendingLineRange>> {
 fn resolve_pre_commit_checkpoint_path(repository_root: &Path) -> Result<PathBuf> {
     let resolved = run_git_command(
         repository_root,
-        &["rev-parse", "--git-path", PRE_COMMIT_CHECKPOINT_GIT_PATH],
+        &[
+            "rev-parse",
+            "--git-path",
+            default_paths::git_relative_path::PRE_COMMIT_CHECKPOINT,
+        ],
         "Failed to resolve pre-commit checkpoint handoff path.",
     )?;
     let path = PathBuf::from(resolved);
@@ -764,8 +768,14 @@ struct PostCommitRuntimePaths {
 
 fn resolve_post_commit_runtime_paths(repository_root: &Path) -> Result<PostCommitRuntimePaths> {
     let local_db_path = ensure_agent_trace_local_db_ready_blocking()?;
-    let retry_queue_path = resolve_git_path(repository_root, "sce/trace-retry-queue.jsonl")?;
-    let emission_ledger_path = resolve_git_path(repository_root, "sce/trace-emission-ledger.txt")?;
+    let retry_queue_path = resolve_git_path(
+        repository_root,
+        default_paths::git_relative_path::TRACE_RETRY_QUEUE,
+    )?;
+    let emission_ledger_path = resolve_git_path(
+        repository_root,
+        default_paths::git_relative_path::TRACE_EMISSION_LEDGER,
+    )?;
 
     Ok(PostCommitRuntimePaths {
         local_db_path,
