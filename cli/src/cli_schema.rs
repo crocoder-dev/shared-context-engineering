@@ -11,15 +11,6 @@ pub struct Cli {
 }
 
 impl Cli {
-    #[allow(dead_code)]
-    pub fn parse_from<I, T>(args: I) -> Self
-    where
-        I: IntoIterator<Item = T>,
-        T: Into<std::ffi::OsString> + Clone,
-    {
-        <Self as Parser>::parse_from(args)
-    }
-
     pub fn try_parse_from<I, T>(args: I) -> Result<Self, clap::Error>
     where
         I: IntoIterator<Item = T>,

@@ -22,22 +22,11 @@
   - remaining failed targets.
 - Hook command output now includes deterministic retry observability summary text: attempted/recovered/requeued counts plus transient/permanent failure counts.
 
-## Reconciliation metrics contract
-- Reconciliation mapping metrics entrypoint: `cli/src/services/hosted_reconciliation.rs` -> `summarize_reconciliation_metrics`.
-- Snapshot shape (`ReconciliationMetricsSnapshot`) tracks:
-  - `mapped` / `unmapped` counts
-  - confidence histogram buckets (`high`/`medium`/`low`)
-  - run runtime (`runtime_ms`)
-  - optional error class (`signature`, `payload`, `store`).
-- Error-class normalization helper: `classify_reconciliation_error`.
-
 ## Persistence schema additions
 - `cli/src/services/local_db.rs` core migrations now include:
   - `trace_retry_queue` (DB-first fallback queue storage)
-  - `reconciliation_metrics` (runtime metric snapshots)
 - Added indexes:
   - `idx_trace_retry_queue_created_at`
-  - `idx_reconciliation_metrics_created_at`
 
 ## Verification evidence
 - `nix flake check`

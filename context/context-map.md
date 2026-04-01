@@ -36,8 +36,6 @@ Feature/domain context:
 - `context/sce/agent-trace-rewrite-trace-transformation.md` (T09 rewritten-SHA trace transformation contract with rewrite metadata, confidence-to-quality mapping, and notes+DB persistence parity)
 - `context/sce/agent-trace-core-schema-migrations.md` (T10 core local schema migration contract for `repositories`, `commits`, `trace_records`, and `trace_ranges` with upgrade-safe idempotent create semantics)
 - `context/sce/agent-trace-reconciliation-schema-ingestion.md` (T11 reconciliation persistence schema for `reconciliation_runs`, `rewrite_mappings`, and `conversations` with replay-safe idempotency and query indexes)
-- `context/sce/agent-trace-hosted-event-intake-orchestration.md` (T12 hosted GitHub/GitLab event intake contract with signature verification, old/new head resolution, and deterministic reconciliation-run idempotency keys)
-- `context/sce/agent-trace-rewrite-mapping-engine.md` (T13 hosted rewrite mapping engine contract with patch-id exact precedence, range-diff/fuzzy scoring, and deterministic unresolved outcomes)
 - `context/sce/agent-trace-retry-queue-observability.md` (T14 retry queue recovery contract plus reconciliation/runtime observability metrics and DB-first queue schema additions)
 - `context/sce/agent-trace-local-hooks-mvp-contract-gap-matrix.md` (T01 Local Hooks MVP production contract freeze and deterministic gap matrix for `agent-trace-local-hooks-production-mvp`)
 - `context/sce/agent-trace-hooks-command-routing.md` (implemented `sce hooks` command routing plus current runtime entrypoint behavior, including commit-msg policy gating/file mutation and post-rewrite remap+rewrite finalization wiring)

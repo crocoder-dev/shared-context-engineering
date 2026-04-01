@@ -5,15 +5,6 @@ use crate::{cli_schema, command_surface, services};
 use anyhow::Context;
 use services::error::{ClassifiedError, FailureClass};
 
-#[allow(dead_code)]
-const EXIT_CODE_PARSE_FAILURE: u8 = 2;
-#[allow(dead_code)]
-const EXIT_CODE_VALIDATION_FAILURE: u8 = 3;
-#[allow(dead_code)]
-const EXIT_CODE_RUNTIME_FAILURE: u8 = 4;
-#[allow(dead_code)]
-const EXIT_CODE_DEPENDENCY_FAILURE: u8 = 5;
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Command {
     Help,
@@ -127,7 +118,7 @@ where
     };
 
     let styled_code = services::style::error_code(error.code());
-    let styled_heading = services::style::heading_stderr("Error");
+    let styled_heading = services::style::heading("Error");
     let styled_message =
         services::style::error_text(&services::security::redact_sensitive_text(&rendered));
 
@@ -746,9 +737,9 @@ mod tests {
 
     use super::{
         parse_command, run, run_with_dependency_check, run_with_dependency_check_and_streams,
-        write_error_diagnostic, Command, EXIT_CODE_DEPENDENCY_FAILURE, EXIT_CODE_PARSE_FAILURE,
-        EXIT_CODE_RUNTIME_FAILURE, EXIT_CODE_VALIDATION_FAILURE,
+        write_error_diagnostic, Command,
     };
+    use crate::services::error::FailureClass;
 
     #[test]
     fn successful_output_is_written_to_stdout() {
@@ -840,7 +831,7 @@ mod tests {
             &mut stdout,
             &mut stderr,
         );
-        assert_eq!(code, ExitCode::from(EXIT_CODE_PARSE_FAILURE));
+        assert_eq!(code, ExitCode::from(FailureClass::Parse.exit_code()));
         assert!(stdout.is_empty());
 
         let stderr = String::from_utf8(stderr).expect("stderr should be utf-8");
@@ -882,7 +873,7 @@ mod tests {
             &mut first_stdout,
             &mut first_stderr,
         );
-        assert_eq!(first_code, ExitCode::from(EXIT_CODE_PARSE_FAILURE));
+        assert_eq!(first_code, ExitCode::from(FailureClass::Parse.exit_code()));
         assert!(first_stdout.is_empty());
 
         let mut second_stdout = Vec::new();
@@ -893,7 +884,7 @@ mod tests {
             &mut second_stdout,
             &mut second_stderr,
         );
-        assert_eq!(second_code, ExitCode::from(EXIT_CODE_PARSE_FAILURE));
+        assert_eq!(second_code, ExitCode::from(FailureClass::Parse.exit_code()));
         assert!(second_stdout.is_empty());
 
         let first_stderr = String::from_utf8(first_stderr).expect("stderr should be utf-8");
@@ -912,7 +903,7 @@ mod tests {
             &mut stdout,
             &mut stderr,
         );
-        assert_eq!(code, ExitCode::from(EXIT_CODE_DEPENDENCY_FAILURE));
+        assert_eq!(code, ExitCode::from(FailureClass::Dependency.exit_code()));
         assert!(stdout.is_empty());
 
         let stderr = String::from_utf8(stderr).expect("stderr should be utf-8");
@@ -929,7 +920,7 @@ mod tests {
     #[test]
     fn hooks_command_without_subcommand_exits_non_zero() {
         let code = run(vec!["sce".to_string(), "hooks".to_string()]);
-        assert_eq!(code, ExitCode::from(EXIT_CODE_PARSE_FAILURE));
+        assert_eq!(code, ExitCode::from(FailureClass::Parse.exit_code()));
     }
 
     #[test]
@@ -972,7 +963,7 @@ mod tests {
     #[test]
     fn unknown_command_exits_non_zero() {
         let code = run(vec!["sce".to_string(), "does-not-exist".to_string()]);
-        assert_eq!(code, ExitCode::from(EXIT_CODE_PARSE_FAILURE));
+        assert_eq!(code, ExitCode::from(FailureClass::Parse.exit_code()));
     }
 
     #[test]
@@ -983,7 +974,7 @@ mod tests {
             "--repo".to_string(),
             "../demo-repo".to_string(),
         ]);
-        assert_eq!(code, ExitCode::from(EXIT_CODE_VALIDATION_FAILURE));
+        assert_eq!(code, ExitCode::from(FailureClass::Validation.exit_code()));
     }
 
     #[test]
@@ -994,7 +985,7 @@ mod tests {
             "commit-msg".to_string(),
             "/definitely/missing/COMMIT_EDITMSG".to_string(),
         ]);
-        assert_eq!(code, ExitCode::from(EXIT_CODE_RUNTIME_FAILURE));
+        assert_eq!(code, ExitCode::from(FailureClass::Runtime.exit_code()));
     }
 
     #[test]
@@ -1002,7 +993,7 @@ mod tests {
         let code = run_with_dependency_check(vec!["sce".to_string(), "--help".to_string()], || {
             anyhow::bail!("simulated dependency check failure")
         });
-        assert_eq!(code, ExitCode::from(EXIT_CODE_DEPENDENCY_FAILURE));
+        assert_eq!(code, ExitCode::from(FailureClass::Dependency.exit_code()));
     }
 
     #[test]

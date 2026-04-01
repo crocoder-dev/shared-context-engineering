@@ -18,7 +18,7 @@ use tracing_subscriber::prelude::*;
 use crate::services::config;
 use crate::services::error::ClassifiedError;
 use crate::services::security::redact_sensitive_text;
-use crate::services::style::{error_text, heading_stderr};
+use crate::services::style::{error_text, heading};
 
 pub const NAME: &str = "observability";
 
@@ -39,6 +39,7 @@ enum OtlpProtocol {
 }
 
 impl OtlpProtocol {
+    #[cfg_attr(not(test), allow(dead_code))]
     fn parse(raw: &str) -> Result<Self> {
         match raw {
             "grpc" => Ok(Self::Grpc),
@@ -66,6 +67,7 @@ impl Default for TelemetryConfig {
 }
 
 impl TelemetryConfig {
+    #[cfg_attr(not(test), allow(dead_code))]
     fn from_env_lookup<F>(lookup: F) -> Result<Self>
     where
         F: Fn(&str) -> Option<String>,
@@ -99,11 +101,6 @@ pub struct TelemetryRuntime {
 }
 
 impl TelemetryRuntime {
-    #[allow(dead_code)]
-    pub fn from_env() -> Result<Self> {
-        Self::from_env_lookup(|key| std::env::var(key).ok())
-    }
-
     pub fn from_resolved_config(
         config: &config::ResolvedObservabilityRuntimeConfig,
     ) -> Result<Self> {
@@ -117,6 +114,7 @@ impl TelemetryRuntime {
         })
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn from_env_lookup<F>(lookup: F) -> Result<Self>
     where
         F: Fn(&str) -> Option<String>,
@@ -175,6 +173,7 @@ impl Drop for TelemetryRuntime {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn parse_bool_env(key: &str, raw: &str) -> Result<bool> {
     match raw {
         "1" | "true" => Ok(true),
@@ -206,6 +205,7 @@ pub enum LogFormat {
 }
 
 impl LogFormat {
+    #[cfg_attr(not(test), allow(dead_code))]
     fn parse(raw: &str) -> Result<Self> {
         match raw {
             "text" => Ok(Self::Text),
@@ -231,6 +231,7 @@ pub enum LogLevel {
 }
 
 impl LogLevel {
+    #[cfg_attr(not(test), allow(dead_code))]
     fn parse(raw: &str) -> Result<Self> {
         match raw {
             "error" => Ok(Self::Error),
@@ -288,6 +289,7 @@ enum LogFileMode {
 }
 
 impl LogFileMode {
+    #[cfg_attr(not(test), allow(dead_code))]
     fn parse(raw: &str) -> Result<Self> {
         match raw {
             "truncate" => Ok(Self::Truncate),
@@ -371,11 +373,6 @@ impl LogFileSink {
 }
 
 impl Logger {
-    #[allow(dead_code)]
-    pub fn from_env() -> Result<Self> {
-        Self::from_env_lookup(|key| std::env::var(key).ok())
-    }
-
     pub fn from_resolved_config(
         config: &config::ResolvedObservabilityRuntimeConfig,
     ) -> Result<Self> {
@@ -407,6 +404,7 @@ impl Logger {
         })
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn from_env_lookup<F>(lookup: F) -> Result<Self>
     where
         F: Fn(&str) -> Option<String>,
@@ -455,12 +453,11 @@ impl Logger {
         self.log(LogLevel::Debug, event_id, message, fields);
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn error(&self, event_id: &str, message: &str, fields: &[(&str, &str)]) {
         self.log(LogLevel::Error, event_id, message, fields);
     }
 
-    #[allow(dead_code)]
     pub fn log_classified_error(&self, error: &ClassifiedError) {
         let event_id = format!("sce.error.{}", error.code());
         self.log(
@@ -493,7 +490,7 @@ impl Logger {
                     error,
                     ENV_LOG_FILE
                 ));
-                eprintln!("{}: {}", heading_stderr("Error"), error_text(&diagnostic));
+                eprintln!("{}: {}", heading("Error"), error_text(&diagnostic));
             }
         }
     }

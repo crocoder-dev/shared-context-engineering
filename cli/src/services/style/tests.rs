@@ -77,55 +77,10 @@ fn error_text_returns_plain_text_when_no_color() {
 }
 
 #[test]
-fn example_command_returns_plain_text_when_no_color() {
-    with_no_color(|| {
-        let result = example_command("sce setup");
-        assert_eq!(result, "sce setup");
-    });
-}
-
-#[test]
-fn placeholder_returns_plain_text_when_no_color() {
-    with_no_color(|| {
-        let result = placeholder("<command>");
-        assert_eq!(result, "<command>");
-    });
-}
-
-#[test]
-fn status_implemented_returns_plain_text_when_no_color() {
-    with_no_color(|| {
-        let result = status_implemented("implemented");
-        assert_eq!(result, "implemented");
-    });
-}
-
-#[test]
-fn status_placeholder_returns_plain_text_when_no_color() {
-    with_no_color(|| {
-        let result = status_placeholder("placeholder");
-        assert_eq!(result, "placeholder");
-    });
-}
-
-#[test]
-fn heading_stderr_returns_plain_text_when_no_color() {
-    with_no_color(|| {
-        let result = heading_stderr("Error:");
-        assert_eq!(result, "Error:");
-    });
-}
-
-#[test]
 fn style_functions_produce_non_empty_output() {
     without_no_color(|| {
         let _ = heading("Usage:");
         let _ = command_name("setup");
-        let _ = example_command("sce setup");
-        let _ = placeholder("<command>");
-        let _ = status_implemented("implemented");
-        let _ = status_placeholder("placeholder");
-        let _ = heading_stderr("Error:");
         let _ = error_code("SCE-ERR-PARSE");
     });
 }

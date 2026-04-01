@@ -77,38 +77,8 @@ pub fn error_text(text: &str) -> String {
 }
 
 #[must_use]
-#[allow(dead_code)]
-pub fn example_command(text: &str) -> String {
-    style_if_enabled(text, |s| s.yellow().to_string())
-}
-
-#[must_use]
-#[allow(dead_code)]
-pub fn placeholder(text: &str) -> String {
-    placeholder_with_color_policy(text, supports_color())
-}
-
-#[must_use]
 fn placeholder_with_color_policy(text: &str, color_enabled: bool) -> String {
     style_if(text, color_enabled, |s| s.italic().dimmed().to_string())
-}
-
-#[must_use]
-#[allow(dead_code)]
-pub fn status_implemented(text: &str) -> String {
-    style_if_enabled(text, |s| s.green().to_string())
-}
-
-#[must_use]
-#[allow(dead_code)]
-pub fn status_placeholder(text: &str) -> String {
-    style_if_enabled(text, |s| s.dimmed().to_string())
-}
-
-#[must_use]
-#[allow(dead_code)]
-pub fn heading_stderr(text: &str) -> String {
-    style_if_enabled_stderr(text, |s| s.cyan().bold().to_string())
 }
 
 #[must_use]

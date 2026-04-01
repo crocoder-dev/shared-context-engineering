@@ -1,7 +1,7 @@
 use std::fmt::Write;
 
 use crate::services;
-use services::style::{command_name, example_command, heading};
+use services::style::{command_name, heading};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImplementationStatus {
@@ -108,7 +108,7 @@ pub fn help_text() -> String {
 {}:\n  {} [--fix] [--all-databases] [--format <text|json>]\n\n\
 {}:\n  {} --shell <bash|zsh|fish>\n\n\
 {}:\n  Supported commands accept --format <text|json>\n\n\
-{}:\n  {}\n  {}\n  {}\n  {}\n  {}\n  {}\n  {}\n\n\
+{}:\n  sce setup\n  sce setup --opencode --non-interactive --hooks\n  sce setup --hooks --repo ../demo-repo\n  sce doctor --format json\n  sce doctor --all-databases --format json\n  sce doctor --fix\n  sce version --format json\n\n\
 {}:\n{command_rows}",
         heading("sce - Shared Context Engineering CLI"),
         heading("Usage"),
@@ -122,13 +122,6 @@ pub fn help_text() -> String {
         command_name("sce completion"),
         heading("Output format contract"),
         heading("Examples"),
-        example_command("sce setup"),
-        example_command("sce setup --opencode --non-interactive --hooks"),
-        example_command("sce setup --hooks --repo ../demo-repo"),
-        example_command("sce doctor --format json"),
-        example_command("sce doctor --all-databases --format json"),
-        example_command("sce doctor --fix"),
-        example_command("sce version --format json"),
         heading("Commands"),
     )
 }
