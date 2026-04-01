@@ -23,16 +23,14 @@ Out of scope for this contract task:
 At the current implementation point, the runtime in `cli/src/services/doctor.rs` exposes the approved doctor command surface and stable output-shape scaffolding, and now covers the global-readiness slice plus the current repo-integrity, database-inventory, and repair slices:
 
 - explicit mode selection through `sce doctor` (`diagnose`) and `sce doctor --fix` (`fix`)
-- explicit all-SCE database inventory selection through `sce doctor --all-databases`
-- command/help wiring for `--fix` and `--all-databases` plus stable text/JSON mode reporting
-- stable repo-vs-all database inventory reporting in text and JSON output
+- command/help wiring for `--fix` plus stable text/JSON mode reporting
+- Agent Trace local DB reporting in default doctor output
 - stable problem records with category, severity, fixability, and remediation metadata
 - deterministic fix-result records in fix mode with `fixed`, `skipped`, `manual`, and `failed` outcomes
 - state-root reporting as `present` or `expected`
 - default global/local config-file location reporting, plus validation of existing global and repo-local `sce/config.json` readability and schema compliance
 - Agent Trace local DB location reporting, DB parent-directory readiness checks, and existing-DB health validation
-- an empty repo-scoped database section in the default readiness view because no repo-owned SCE database currently exists
-- explicit all-SCE database inventory rendering for the canonical Agent Trace DB only
+- Agent Trace local DB reporting in default doctor output
 - explicit git-unavailable, outside-repo, and bare-repo repository-targeting failures
 - effective hook-path source (`default`, local `core.hooksPath`, global `core.hooksPath`)
 - repository root and hooks directory resolution when a repository target is detected
@@ -43,13 +41,11 @@ At the current implementation point, the runtime in `cli/src/services/doctor.rs`
 - doctor-owned bootstrap of the missing canonical SCE-owned Agent Trace DB parent directory, with deterministic refusal when the resolved path does not match the expected owned location
 
 Downstream tasks must expand the runtime from this current baseline to the full contract below without changing the command entrypoint.
-The focused database inventory contract for `sce-doctor-database-and-config-coverage` task `T02` lives in `context/sce/doctor-database-inventory-contract.md` and owns repo-scoped versus all-SCE database inventory expectations.
 
 ## Command surface contract
 
 - Canonical operator command: `sce doctor`
 - Canonical explicit repair mode: `sce doctor --fix`
-- Canonical explicit all-database inventory mode: `sce doctor --all-databases`
 - Stable output modes: text (default) and `--format json`
 
 Default `sce doctor` behavior remains diagnosis-only and read-only.

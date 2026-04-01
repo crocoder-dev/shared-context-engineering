@@ -4,25 +4,21 @@
 agentDescriptions = new Mapping {
   ["shared-context-plan"] = "Plans a change into atomic tasks in context/plans without touching application code."
   ["shared-context-code"] = "Executes one approved SCE task, validates behavior, and syncs context."
-  ["shared-context-drift"] = "Analyzes and fixes context-code drift using a lightweight model."
 }
 
 agentDisplayNames = new Mapping {
   ["shared-context-plan"] = "Shared Context Plan"
   ["shared-context-code"] = "Shared Context Code"
-  ["shared-context-drift"] = "Shared Context Drift"
 }
 
 agentColors = new Mapping {
   ["shared-context-plan"] = "#2563eb"
   ["shared-context-code"] = "#059669"
-  ["shared-context-drift"] = "#ea580c"
 }
 
 agentBehaviorBlocks = new Mapping {
   ["shared-context-plan"] = ""
   ["shared-context-code"] = ""
-  ["shared-context-drift"] = "\nmode: subagent\nhidden: true"
 }
 
 agentPermissionBlocks = new Mapping {
@@ -77,38 +73,12 @@ permission:
     "sce-validation": allow
     "sce-atomic-commit": allow
 """
-  ["shared-context-drift"] = """
-permission:
-  default: allow
-  read: allow
-  edit: allow
-  glob: allow
-  grep: allow
-  list: allow
-  bash: allow
-  task: allow
-  external_directory: block
-  todowrite: allow
-  todoread: allow
-  question: allow
-  webfetch: allow
-  websearch: allow
-  codesearch: allow
-  lsp: allow
-  doom_loop: block
-  skill:
-    "*": allow
-    "sce-drift-analyzer": allow
-    "sce-drift-fixer": allow
-"""
 }
 
 commandAgents = new Mapping {
   ["next-task"] = "Shared Context Code"
   ["change-to-plan"] = "Shared Context Plan"
   ["change-to-plan-interactive"] = "Shared Context Plan"
-  ["drift-detect"] = "Shared Context Drift"
-  ["fix-drift"] = "Shared Context Drift"
   ["handover"] = "Shared Context Code"
   ["commit"] = "Shared Context Code"
   ["validate"] = "Shared Context Code"
@@ -117,8 +87,6 @@ commandAgents = new Mapping {
 skillDescriptions = new Mapping {
   ["sce-bootstrap-context"] = "Use when user wants to Bootstrap SCE baseline context directory when missing."
   ["sce-context-sync"] = "Use when user wants to update project documentation to reflect code changes, sync docs with code, refresh project context, or keep AI memory files accurate after completing an implementation task. Scans modified code, classifies the change significance, then updates or verifies Markdown context files under `context/` (overview, architecture, glossary, patterns, context-map, and domain files) so that durable AI memory stays aligned with current code truth."
-  ["sce-drift-analyzer"] = "Compares documentation in `context/` files against the actual codebase to detect and fix mismatches. Use when the user notices docs are out of date, code comments are stale, spec no longer matches implementation, or wants to sync documentation with code — e.g. \\\"my docs are outdated\\\", \\\"check if context files match the code\\\", \\\"find undocumented capabilities\\\", \\\"docs out of date\\\", \\\"documentation sync\\\". Scans for missing documentation, outdated claims, changed paths, and completed tasks with no supporting code. Produces a structured drift report and auto-applies context-only fixes without confirmation."
-  ["sce-drift-fixer"] = "Use when user wants to audit and repair code-context drift in context/ using SCE rules."
   ["sce-handover-writer"] = "Creates a structured handover document summarizing task context, decisions made, open questions, and recommended next steps — saved to `context/handovers/`. Use when a user wants to hand off, transition, or pass a task to someone else, create handover notes, write a task transition document, or capture current progress for a future session. Trigger phrases include \"create a handover\", \"hand this off\", \"write handover notes\", \"pass this task on\", or \"document where I'm up to\"."
   ["sce-plan-authoring"] = "Transforms a change request into a structured implementation plan saved under context/plans/, breaking work down into atomic, commit-sized tasks with clear goals, scope boundaries, acceptance criteria, and verification steps. Use when a user wants to create or update a project plan, task breakdown, implementation roadmap, or work plan — including requests like \"plan this feature\", \"break this into tasks\", \"write an implementation plan\", or \"scope out this change\". Handles ambiguity resolution through a blocking clarification gate before writing any plan, and produces a machine-friendly task list ready for handoff to the Shared Context Engineering (SCE) implementation agent."
   ["sce-plan-authoring-interactive"] = "Use when a user wants to create or update a Shared Context Engineering (SCE) implementation plan with interactive clarification. Triggers on requests like \"write a plan\", \"create an implementation roadmap\", \"draft a rollout plan\", \"plan this change\", or \"break this into tasks\" for a software change. Interactively resolves ambiguity by asking targeted clarifying questions, then produces a structured markdown plan under `context/plans/` with a change summary, success criteria, constraints, atomic task stack, and verification steps — ready to hand off to the Shared Context Code agent for execution."

@@ -93,9 +93,6 @@ pub enum Commands {
         #[arg(long)]
         fix: bool,
 
-        #[arg(long)]
-        all_databases: bool,
-
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
@@ -656,13 +653,8 @@ mod tests {
     fn parse_doctor() {
         let cli = Cli::try_parse_from(["sce", "doctor"]).expect("doctor should parse");
         match cli.command {
-            Some(Commands::Doctor {
-                fix,
-                all_databases,
-                format,
-            }) => {
+            Some(Commands::Doctor { fix, format }) => {
                 assert!(!fix);
-                assert!(!all_databases);
                 assert_eq!(format, OutputFormat::Text);
             }
             _ => panic!("Expected Doctor command"),
@@ -674,13 +666,8 @@ mod tests {
         let cli = Cli::try_parse_from(["sce", "doctor", "--format", "json"])
             .expect("doctor json should parse");
         match cli.command {
-            Some(Commands::Doctor {
-                fix,
-                all_databases,
-                format,
-            }) => {
+            Some(Commands::Doctor { fix, format }) => {
                 assert!(!fix);
-                assert!(!all_databases);
                 assert_eq!(format, OutputFormat::Json);
             }
             _ => panic!("Expected Doctor command"),
@@ -692,31 +679,8 @@ mod tests {
         let cli =
             Cli::try_parse_from(["sce", "doctor", "--fix"]).expect("doctor --fix should parse");
         match cli.command {
-            Some(Commands::Doctor {
-                fix,
-                all_databases,
-                format,
-            }) => {
+            Some(Commands::Doctor { fix, format }) => {
                 assert!(fix);
-                assert!(!all_databases);
-                assert_eq!(format, OutputFormat::Text);
-            }
-            _ => panic!("Expected Doctor command"),
-        }
-    }
-
-    #[test]
-    fn parse_doctor_all_databases() {
-        let cli = Cli::try_parse_from(["sce", "doctor", "--all-databases"])
-            .expect("doctor --all-databases should parse");
-        match cli.command {
-            Some(Commands::Doctor {
-                fix,
-                all_databases,
-                format,
-            }) => {
-                assert!(!fix);
-                assert!(all_databases);
                 assert_eq!(format, OutputFormat::Text);
             }
             _ => panic!("Expected Doctor command"),
@@ -729,7 +693,6 @@ mod tests {
 
         assert!(help.contains("Inspect and repair SCE operator environment health"));
         assert!(help.contains("--fix"));
-        assert!(help.contains("--all-databases"));
         assert!(help.contains("--format <FORMAT>"));
     }
 

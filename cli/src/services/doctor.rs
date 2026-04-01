@@ -28,12 +28,6 @@ const REQUIRED_HOOKS: [&str; 3] = [
 pub type DoctorFormat = OutputFormat;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DoctorDatabaseInventory {
-    Repo,
-    All,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DoctorMode {
     Diagnose,
     Fix,
@@ -42,41 +36,7 @@ pub enum DoctorMode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DoctorRequest {
     pub mode: DoctorMode,
-    pub database_inventory: DoctorDatabaseInventory,
     pub format: DoctorFormat,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DatabaseFamily {
-    AgentTraceLocal,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DatabaseScope {
-    Global,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DatabaseOwnershipStatus {
-    Canonical,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DatabaseStatus {
-    Present,
-    Missing,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct DatabaseHealth {
-    family: DatabaseFamily,
-    scope: DatabaseScope,
-    canonical_path: PathBuf,
-    ownership_status: DatabaseOwnershipStatus,
-    status: DatabaseStatus,
-    repository_root: Option<PathBuf>,
-    repository_hash: Option<String>,
-    belongs_to_active_repository: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -126,7 +86,6 @@ struct GlobalStateHealth {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct HookDoctorReport {
     mode: DoctorMode,
-    database_inventory: DoctorDatabaseInventory,
     readiness: Readiness,
     state_root: Option<FileLocationHealth>,
     repository_root: Option<PathBuf>,
@@ -134,8 +93,6 @@ struct HookDoctorReport {
     hooks_directory: Option<PathBuf>,
     config_locations: Vec<FileLocationHealth>,
     agent_trace_local_db: Option<FileLocationHealth>,
-    repo_databases: Vec<DatabaseHealth>,
-    all_databases: Vec<DatabaseHealth>,
     hooks: Vec<HookFileHealth>,
     problems: Vec<DoctorProblem>,
 }
@@ -245,12 +202,8 @@ fn execute_doctor_with_dependencies(
     repository_root: &Path,
     dependencies: &DoctorDependencies<'_>,
 ) -> DoctorExecution {
-    let initial_report = build_report_with_dependencies(
-        request.mode,
-        request.database_inventory,
-        repository_root,
-        dependencies,
-    );
+    let initial_report =
+        build_report_with_dependencies(request.mode, repository_root, dependencies);
 
     if request.mode != DoctorMode::Fix {
         return DoctorExecution {
@@ -260,12 +213,7 @@ fn execute_doctor_with_dependencies(
     }
 
     let mut fix_results = run_auto_fixes(&initial_report, dependencies);
-    let final_report = build_report_with_dependencies(
-        request.mode,
-        request.database_inventory,
-        repository_root,
-        dependencies,
-    );
+    let final_report = build_report_with_dependencies(request.mode, repository_root, dependencies);
     fix_results.extend(build_manual_fix_results(&final_report));
 
     DoctorExecution {
@@ -277,7 +225,6 @@ fn execute_doctor_with_dependencies(
 #[allow(clippy::too_many_lines)]
 fn build_report_with_dependencies(
     mode: DoctorMode,
-    database_inventory: DoctorDatabaseInventory,
     repository_root: &Path,
     dependencies: &DoctorDependencies<'_>,
 ) -> HookDoctorReport {
@@ -387,13 +334,6 @@ fn build_report_with_dependencies(
         }
     }
 
-    let repo_databases = Vec::new();
-    let all_databases = if database_inventory == DoctorDatabaseInventory::All {
-        collect_all_database_health(global_state.agent_trace_local_db.as_ref())
-    } else {
-        Vec::new()
-    };
-
     let readiness = if problems
         .iter()
         .any(|problem| problem.severity == ProblemSeverity::Error)
@@ -405,7 +345,6 @@ fn build_report_with_dependencies(
 
     HookDoctorReport {
         mode,
-        database_inventory,
         readiness,
         state_root: global_state.state_root,
         repository_root: detected_repository_root,
@@ -413,8 +352,6 @@ fn build_report_with_dependencies(
         hooks_directory,
         config_locations: global_state.config_locations,
         agent_trace_local_db: global_state.agent_trace_local_db,
-        repo_databases,
-        all_databases,
         hooks,
         problems,
     }
@@ -540,37 +477,6 @@ fn collect_global_state_health(
         config_locations,
         agent_trace_local_db,
     }
-}
-
-fn collect_all_database_health(
-    agent_trace_local_db: Option<&FileLocationHealth>,
-) -> Vec<DatabaseHealth> {
-    let mut databases = Vec::new();
-
-    if let Some(agent_trace_local_db) = agent_trace_local_db {
-        databases.push(DatabaseHealth {
-            family: DatabaseFamily::AgentTraceLocal,
-            scope: DatabaseScope::Global,
-            canonical_path: agent_trace_local_db.path.clone(),
-            ownership_status: DatabaseOwnershipStatus::Canonical,
-            status: if agent_trace_local_db.path.exists() {
-                DatabaseStatus::Present
-            } else {
-                DatabaseStatus::Missing
-            },
-            repository_root: None,
-            repository_hash: None,
-            belongs_to_active_repository: false,
-        });
-    }
-
-    databases.sort_by(|left, right| {
-        database_scope(left.scope)
-            .cmp(database_scope(right.scope))
-            .then_with(|| database_family(left.family).cmp(database_family(right.family)))
-            .then_with(|| left.canonical_path.cmp(&right.canonical_path))
-    });
-    databases
 }
 
 fn inspect_agent_trace_db_health(
@@ -1062,14 +968,6 @@ fn format_report(report: &HookDoctorReport) -> String {
             DoctorMode::Fix => value("fix"),
         }
     ));
-    lines.push(format!(
-        "{}: {}",
-        label("Database inventory"),
-        match report.database_inventory {
-            DoctorDatabaseInventory::Repo => value("repo"),
-            DoctorDatabaseInventory::All => value("all"),
-        }
-    ));
 
     lines.push(format!(
         "{}: {}",
@@ -1134,34 +1032,6 @@ fn format_report(report: &HookDoctorReport) -> String {
             )
         )
     ));
-
-    // Repo-scoped databases (empty by design)
-    lines.push(format!("\n{}:", heading("Repo-scoped databases")));
-    if report.repo_databases.is_empty() {
-        lines.push(value("  none").clone());
-    } else {
-        for database in &report.repo_databases {
-            lines.push(format!("- {}", format_database_record(database)));
-        }
-    }
-
-    // All SCE databases (when --all-databases)
-    if report.database_inventory == DoctorDatabaseInventory::All {
-        lines.push(format!("\n{}:", heading("All SCE databases")));
-        if report.all_databases.is_empty() {
-            lines.push(value("  none").clone());
-        } else {
-            for database in &report.all_databases {
-                lines.push(format!(
-                    "  {}: {} ({}) {}",
-                    value(database_family(database.family)),
-                    value(database_scope(database.scope)),
-                    value(database_status(database.status)),
-                    value(&database.canonical_path.display().to_string())
-                ));
-            }
-        }
-    }
 
     // Required hooks
     lines.push(format!("\n{}:", heading("Required hooks")));
@@ -1264,10 +1134,6 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
             DoctorMode::Diagnose => "diagnose",
             DoctorMode::Fix => "fix",
         },
-        "database_inventory": match report.database_inventory {
-            DoctorDatabaseInventory::Repo => "repo",
-            DoctorDatabaseInventory::All => "all",
-        },
         "readiness": match report.readiness {
             Readiness::Ready => "ready",
             Readiness::NotReady => "not_ready",
@@ -1296,8 +1162,6 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
             "path": location.path.display().to_string(),
             "state": location.state,
         })),
-        "repo_databases": report.repo_databases.iter().map(render_database_record_json).collect::<Vec<_>>(),
-        "all_databases": report.all_databases.iter().map(render_database_record_json).collect::<Vec<_>>(),
         "hooks": hooks,
         "problems": report.problems.iter().map(|problem| json!({
             "category": problem_category(problem.category),
@@ -1344,49 +1208,6 @@ fn hook_content_state(state: HookContentState) -> &'static str {
         HookContentState::Missing => "missing",
         HookContentState::Unknown => "unknown",
     }
-}
-
-fn format_database_record(database: &DatabaseHealth) -> String {
-    let mut details = vec![
-        format!("family={}", database_family(database.family)),
-        format!("scope={}", database_scope(database.scope)),
-        format!("status={}", database_status(database.status)),
-        format!(
-            "ownership={}",
-            database_ownership_status(database.ownership_status)
-        ),
-        format!("path={}", database.canonical_path.display()),
-    ];
-
-    if let Some(repository_root) = &database.repository_root {
-        details.push(format!("repository_root={}", repository_root.display()));
-    }
-    if let Some(repository_hash) = &database.repository_hash {
-        details.push(format!("repository_hash={repository_hash}"));
-    }
-    details.push(format!(
-        "active_repository={}",
-        if database.belongs_to_active_repository {
-            "yes"
-        } else {
-            "no"
-        }
-    ));
-
-    details.join(", ")
-}
-
-fn render_database_record_json(database: &DatabaseHealth) -> serde_json::Value {
-    json!({
-        "family": database_family(database.family),
-        "scope": database_scope(database.scope),
-        "canonical_path": database.canonical_path.display().to_string(),
-        "ownership_status": database_ownership_status(database.ownership_status),
-        "status": database_status(database.status),
-        "repository_root": database.repository_root.as_ref().map(|path| path.display().to_string()),
-        "repository_hash": database.repository_hash,
-        "belongs_to_active_repository": database.belongs_to_active_repository,
-    })
 }
 
 fn run_auto_fixes(
@@ -1606,31 +1427,6 @@ fn fix_result_outcome(outcome: FixResult) -> &'static str {
     }
 }
 
-fn database_family(family: DatabaseFamily) -> &'static str {
-    match family {
-        DatabaseFamily::AgentTraceLocal => "agent_trace_local",
-    }
-}
-
-fn database_scope(scope: DatabaseScope) -> &'static str {
-    match scope {
-        DatabaseScope::Global => "global",
-    }
-}
-
-fn database_ownership_status(status: DatabaseOwnershipStatus) -> &'static str {
-    match status {
-        DatabaseOwnershipStatus::Canonical => "canonical",
-    }
-}
-
-fn database_status(status: DatabaseStatus) -> &'static str {
-    match status {
-        DatabaseStatus::Present => "present",
-        DatabaseStatus::Missing => "missing",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -1643,9 +1439,9 @@ mod tests {
 
     use super::{
         execute_doctor_with_dependencies, render_report, run_filesystem_auto_fixes,
-        DoctorDatabaseInventory, DoctorDependencies, DoctorFormat, DoctorMode, DoctorProblem,
-        DoctorRequest, FileLocationHealth, FixResult, HookDoctorReport, HookPathSource,
-        ProblemCategory, ProblemFixability, ProblemSeverity, Readiness, NAME,
+        DoctorDependencies, DoctorFormat, DoctorMode, DoctorProblem, DoctorRequest,
+        FileLocationHealth, FixResult, HookDoctorReport, HookPathSource, ProblemCategory,
+        ProblemFixability, ProblemSeverity, Readiness, NAME,
     };
     use crate::services::setup::RequiredHooksInstallOutcome;
 
@@ -1728,13 +1524,11 @@ mod tests {
         let output = render_report(
             DoctorRequest {
                 mode: DoctorMode::Diagnose,
-                database_inventory: DoctorDatabaseInventory::Repo,
                 format: DoctorFormat::Json,
             },
             &super::execute_doctor(
                 DoctorRequest {
                     mode: DoctorMode::Diagnose,
-                    database_inventory: DoctorDatabaseInventory::Repo,
                     format: DoctorFormat::Text,
                 },
                 std::path::Path::new("/nonexistent"),
@@ -1745,13 +1539,10 @@ mod tests {
         assert_eq!(parsed["status"], "ok");
         assert_eq!(parsed["command"], NAME);
         assert_eq!(parsed["mode"], "diagnose");
-        assert_eq!(parsed["database_inventory"], "repo");
         assert!(parsed["readiness"].as_str().is_some());
         assert!(parsed["state_root"].is_null() || parsed["state_root"].is_object());
         assert!(parsed["hook_path_source"].as_str().is_some());
         assert!(parsed["config_paths"].is_array());
-        assert!(parsed["repo_databases"].is_array());
-        assert!(parsed["all_databases"].is_array());
         assert!(parsed["hooks"].is_array());
         assert!(parsed["problems"].is_array());
         assert!(parsed["fix_results"].is_array());
@@ -1763,13 +1554,11 @@ mod tests {
         let output = render_report(
             DoctorRequest {
                 mode: DoctorMode::Fix,
-                database_inventory: DoctorDatabaseInventory::Repo,
                 format: DoctorFormat::Json,
             },
             &super::execute_doctor(
                 DoctorRequest {
                     mode: DoctorMode::Fix,
-                    database_inventory: DoctorDatabaseInventory::Repo,
                     format: DoctorFormat::Text,
                 },
                 std::path::Path::new("/nonexistent"),
@@ -1826,7 +1615,6 @@ mod tests {
         let execution = execute_doctor_with_dependencies(
             DoctorRequest {
                 mode: DoctorMode::Diagnose,
-                database_inventory: DoctorDatabaseInventory::Repo,
                 format: DoctorFormat::Text,
             },
             &repository_root,
@@ -1881,7 +1669,6 @@ mod tests {
         let execution = execute_doctor_with_dependencies(
             DoctorRequest {
                 mode: DoctorMode::Diagnose,
-                database_inventory: DoctorDatabaseInventory::Repo,
                 format: DoctorFormat::Text,
             },
             &repository_root,
@@ -1903,7 +1690,6 @@ mod tests {
         let output = render_report(
             DoctorRequest {
                 mode: DoctorMode::Diagnose,
-                database_inventory: DoctorDatabaseInventory::Repo,
                 format: DoctorFormat::Json,
             },
             &execution,
@@ -1970,13 +1756,11 @@ mod tests {
 
         let json_request = DoctorRequest {
             mode: DoctorMode::Diagnose,
-            database_inventory: DoctorDatabaseInventory::Repo,
             format: DoctorFormat::Json,
         };
         let execution = execute_doctor_with_dependencies(
             DoctorRequest {
                 mode: DoctorMode::Diagnose,
-                database_inventory: DoctorDatabaseInventory::Repo,
                 format: DoctorFormat::Text,
             },
             &repository_root,
@@ -2070,13 +1854,11 @@ mod tests {
 
         let json_request = DoctorRequest {
             mode: DoctorMode::Diagnose,
-            database_inventory: DoctorDatabaseInventory::Repo,
             format: DoctorFormat::Json,
         };
         let execution = execute_doctor_with_dependencies(
             DoctorRequest {
                 mode: DoctorMode::Diagnose,
-                database_inventory: DoctorDatabaseInventory::Repo,
                 format: DoctorFormat::Text,
             },
             &repository_root,
@@ -2173,13 +1955,11 @@ mod tests {
 
         let json_request = DoctorRequest {
             mode: DoctorMode::Diagnose,
-            database_inventory: DoctorDatabaseInventory::Repo,
             format: DoctorFormat::Json,
         };
         let execution = execute_doctor_with_dependencies(
             DoctorRequest {
                 mode: DoctorMode::Diagnose,
-                database_inventory: DoctorDatabaseInventory::Repo,
                 format: DoctorFormat::Text,
             },
             &repository_root,
@@ -2199,65 +1979,6 @@ mod tests {
                 "preset catalog",
             )
         }));
-        Ok(())
-    }
-
-    #[test]
-    #[allow(clippy::too_many_lines)]
-    fn render_all_database_inventory_json_includes_agent_trace_record() -> Result<()> {
-        let test_dir = TestDir::new("doctor-all-databases")?;
-        let repository_root = test_dir.path().join("repo");
-        let hooks_dir = repository_root.join(".git").join("hooks");
-        install_canonical_hooks(&hooks_dir)?;
-
-        let agent_trace_db = test_dir
-            .path()
-            .join("state-root")
-            .join("sce")
-            .join("agent-trace")
-            .join("local.db");
-        fs::create_dir_all(
-            agent_trace_db
-                .parent()
-                .expect("agent trace path should have parent"),
-        )?;
-        fs::write(&agent_trace_db, [])?;
-
-        let state_root = test_dir.path().join("state-root");
-
-        let repo_root = repository_root.clone();
-        let hooks_dir = hooks_dir.clone();
-        let run_git_command = move |_cwd: &Path, args: &[&str]| match args {
-            ["rev-parse", "--show-toplevel"] => Some(repo_root.display().to_string()),
-            ["rev-parse", "--is-bare-repository"] => Some("false".to_string()),
-            ["rev-parse", "--git-path", "hooks"] => Some(hooks_dir.display().to_string()),
-            _ => None,
-        };
-        let dependencies = DoctorDependencies {
-            run_git_command: &run_git_command,
-            check_git_available: &|| true,
-            resolve_state_root: &|| Ok(state_root.clone()),
-            resolve_global_config_path: &|| Ok(test_dir.path().join("config-root/sce/config.json")),
-            resolve_agent_trace_local_db_path: &|| Ok(agent_trace_db.clone()),
-            validate_config_file: &|_| Ok(()),
-            check_agent_trace_local_db_health: &|_| Ok(()),
-            install_required_git_hooks: &|_| unreachable!("hook install should not run"),
-            create_directory_all: &|_| unreachable!("directory creation should not run"),
-        };
-
-        let request = DoctorRequest {
-            mode: DoctorMode::Diagnose,
-            database_inventory: DoctorDatabaseInventory::All,
-            format: DoctorFormat::Json,
-        };
-        let execution = execute_doctor_with_dependencies(request, &repository_root, &dependencies);
-        let output = render_report(request, &execution)?;
-
-        let parsed: Value = serde_json::from_str(&output)?;
-        assert_eq!(parsed["database_inventory"], "all");
-        assert_eq!(parsed["all_databases"][0]["family"], "agent_trace_local");
-        assert_eq!(parsed["all_databases"].as_array().map(Vec::len), Some(1));
-        assert_eq!(parsed["repo_databases"].as_array().map(Vec::len), Some(0));
         Ok(())
     }
 
@@ -2327,7 +2048,6 @@ mod tests {
         let execution = execute_doctor_with_dependencies(
             DoctorRequest {
                 mode: DoctorMode::Fix,
-                database_inventory: DoctorDatabaseInventory::Repo,
                 format: DoctorFormat::Text,
             },
             &repository_root,
@@ -2352,7 +2072,6 @@ mod tests {
     fn filesystem_auto_fix_refuses_non_canonical_directory() {
         let report = HookDoctorReport {
             mode: DoctorMode::Fix,
-            database_inventory: DoctorDatabaseInventory::Repo,
             readiness: Readiness::NotReady,
             state_root: None,
             repository_root: None,
@@ -2364,8 +2083,6 @@ mod tests {
                 path: PathBuf::from("/tmp/unexpected/local.db"),
                 state: "expected",
             }),
-            repo_databases: Vec::new(),
-            all_databases: Vec::new(),
             hooks: Vec::new(),
             problems: vec![filesystem_problem(
                 "Agent Trace local DB parent directory is missing.",
