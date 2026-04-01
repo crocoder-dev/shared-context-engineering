@@ -86,7 +86,6 @@
 - Treat `nix run .#pkl-check-generated` and `nix flake check` as the lightweight post-task verification baseline and run both after each completed task.
 - For non-destructive verification during development, run `nix develop -c pkl eval -m context/tmp/t04-generated config/pkl/generate.pkl` and inspect emitted paths under `context/tmp/`.
 - Keep `output.files` limited to generated-owned paths only (`config/{opencode_root}/{agent,command,skills,lib,plugins}`, generated `config/{opencode_root}/package.json`, and `config/{claude_root}/{agents,commands,skills,lib,hooks,settings.json}`, where roots map to `.opencode` and `.claude`).
-- Keep the shared drift library source marker-free in `config/.opencode/lib/drift-collectors.js` so generated `lib/drift-collectors.js` outputs stay behavior-only and deterministic across both targets.
 - For OpenCode pre-execution tool policy hooks, keep the plugin entrypoint thin (`plugins/*.ts`) and move normalization, config loading, and policy matching logic into `lib/*.ts` so manual and automated profiles regenerate identical enforcement behavior from one canonical TypeScript source.
 
 ## Internal subagent parity mapping
@@ -94,7 +93,7 @@
 - Encode internal-agent parity by target capability, not by forcing unsupported frontmatter keys.
 - For OpenCode agents that must be internal, set behavior flags in `config/pkl/renderers/opencode-metadata.pkl` (`agentBehaviorBlocks`) and render those directly into frontmatter.
 - For Claude agents, represent equivalent intent using supported metadata and body guidance in `config/pkl/renderers/claude-metadata.pkl` (for example description + preamble blocks for delegated command/task routing).
-- Keep parity decisions reproducible by validating generated outputs directly (for Shared Context Drift: `config/.opencode/agent/Shared Context Drift.md` and `config/.claude/agents/shared-context-drift.md`).
+- Keep parity decisions reproducible by validating generated outputs directly.
 
 ## Placeholder CLI scaffolding
 

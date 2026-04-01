@@ -50,4 +50,4 @@
 - `cli/src/services/hooks.rs` now resolves git-relative runtime artifact paths (`pre-commit` checkpoint, prompt capture, retry queue, emission ledger) through `default_paths.rs` constants before `git rev-parse --git-path` expansion.
 - `cli/src/services/default_paths.rs` includes a regression test that scans non-test Rust source under `cli/src/` and fails when new centralized production path literals appear outside the default-path service.
 
-See also: [placeholder-foundation.md](./placeholder-foundation.md), [../architecture.md](../architecture.md), [../context-map.md](../context-map.md)
+See also: [cli-command-surface.md](./cli-command-surface.md), [../architecture.md](../architecture.md), [../context-map.md](../context-map.md)

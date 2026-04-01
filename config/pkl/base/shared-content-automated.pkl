@@ -147,28 +147,7 @@ Definition of done
 - Context and code have no unresolved drift for this task.
 """
   }
-  ["shared-context-drift"] = new ContentUnit {
-    id = "agent.shared-context-drift"
-    kind = "agent"
-    slug = "shared-context-drift"
-    title = "Shared Context Drift"
-    canonicalBody = """
-You are the Shared Context Drift agent (automated profile).
-
-Mission
-- Analyze and fix context-code drift in `context/` using SCE rules.
-
-Procedure
-- For drift detection, load `sce-drift-analyzer` and follow it exactly.
-- For drift repair, load `sce-drift-fixer` and follow it exactly.
-
-Hard rules
-- Treat code as source of truth when context and code disagree.
-- Auto-apply drift fixes to `context/` files without confirmation.
-- If code changes would be required, emit report-only with blocker: "Drift requires code changes. Manual intervention required."
-- Log all applied fixes to `context/tmp/automated-drift-fixes.md`.
-"""
-  }
+  
 }
 
 commands {
@@ -241,43 +220,7 @@ Behavior:
 - Prompt user to start a new session to implement `T01` and provide `/next-task {plan_name} T01`.
 """
   }
-  ["drift-detect"] = new ContentUnit {
-    id = "command.drift-detect"
-    kind = "command"
-    slug = "drift-detect"
-    title = "Drift Detect"
-    canonicalBody = """
-Load and follow the `sce-drift-analyzer` skill.
-
-Behavior:
-- Collect structured signals from `context/` and code.
-- Analyze mismatches between documented and implemented state.
-- Save findings to `context/tmp/drift-analysis-YYYY-MM-DD.md`.
-- Auto-apply drift fixes to `context/` files without confirmation.
-- If code changes would be required, emit report-only with blocker: "Drift requires code changes. Manual intervention required."
-- Log all applied fixes to `context/tmp/automated-drift-fixes.md`.
-"""
-  }
-  ["fix-drift"] = new ContentUnit {
-    id = "command.fix-drift"
-    kind = "command"
-    slug = "fix-drift"
-    title = "Fix Drift"
-    canonicalBody = """
-Load and follow the `sce-drift-fixer` skill.
-
-Audit the `context/` and ensure it correctly describes the system as implemented
-
-- treat code as authoritative
-- summarize each discrepancy clearly
-- propose exact context updates
-- auto-apply updates to `context/` files without confirmation
-- if code changes would be required, emit report-only with blocker: "Drift requires code changes. Manual intervention required."
-- log all applied fixes to `context/tmp/automated-drift-fixes.md`
-
-Make updates directly in `context/` and keep files concise, current-state oriented, and linked from `context/context-map.md` when relevant.
-"""
-  }
+  
   ["handover"] = new ContentUnit {
     id = "command.handover"
     kind = "command"
@@ -475,150 +418,7 @@ See also: [overview.md](../overview.md), [context-map.md](../context-map.md)
 - Ensure major code areas have matching context coverage.
 """
   }
-  ["sce-drift-analyzer"] = new ContentUnit {
-    id = "skill.sce-drift-analyzer"
-    kind = "skill"
-    slug = "sce-drift-analyzer"
-    title = "SCE Drift Analyzer"
-    canonicalBody = """
-## What I do
-- Collect context and code signals with JavaScript collectors.
-- Detect mismatches between documented state (`context/`) and implemented state (source code).
-- Produce a clear drift report with actionable fixes.
-- Auto-apply drift fixes to `context/` files without confirmation.
-
-## How to run this
-- If `context/` is missing, stop with error: "Automated profile requires existing context/. Run manual bootstrap first."
-- Collect data using the drift collectors module located at `lib/drift-collectors.js` (relative to the project root):
-
-```javascript
-const collectors = require("../../lib/drift-collectors.js");
-const data = await collectors.collectAll(process.cwd(), {
-  sources: ["context", "code"],
-});
-```
-
-- Analyze for these drift classes using the collected data. For each class, a pseudocode description is followed by a concrete implementation approach:
-
-```
-// PSEUDOCODE - translate to concrete file/AST operations for the target project
-
-// Missing documentation:
-//   Find all exported functions, classes, and modules in source code.
-//   Cross-reference each against mentions in context/ files.
-//   Flag any capability with no matching mention.
-missingDocs = code.exports.filter(cap => !context.mentions(cap.name))
-```
-
-Concrete example - grep-based check for a missing export mention:
-```bash
-# List all named exports from source files
-grep -rE "^export (function|class|const) (\\w+)" src/ --include="*.ts" -h \\
-  | sed -E 's/^export (function|class|const) ([A-Za-z_]+).*/\\2/' \\
-  | sort -u > /tmp/exported_names.txt
-
-# For each name, check whether it appears anywhere in context/
-while IFS= read -r name; do
-  grep -rl "$name" context/ > /dev/null 2>&1 || echo "MISSING: $name"
-done < /tmp/exported_names.txt
-```
-
-```
-// Outdated context:
-//   For each factual claim in context/ (e.g. "AuthService exposes refreshToken()"),
-//   verify the referenced identifier still exists at the stated path/signature.
-//   Flag claims where the identifier is absent or the signature has changed.
-outdatedContext = context.claims.filter(claim =>
-  !sourceFileContains(claim.referencedPath, claim.referencedIdentifier)
-)
-
-// Structure drift:
-//   Extract file paths and module boundaries named in context/ files.
-//   Check each against the current directory tree.
-//   Flag any path that no longer exists on disk.
-structureDrift = context.paths.filter(p => !existsOnDisk(p))
-
-// Completion drift:
-//   Extract tasks marked as done/completed in context/ files.
-//   For each, search source code for an implementation matching the task description.
-//   Flag tasks with no corresponding implementation found.
-completionDrift = context.completedTasks.filter(task =>
-  !grepSource(task.keywords)
-)
-```
-
-- Write findings to `context/tmp/drift-analysis-YYYY-MM-DD.md` using this format:
-
-```markdown
-## Drift Finding: <DriftClass>
-- **File:** `context/architecture.md` (line 12)
-- **Claim:** "AuthService exposes a `refreshToken()` method"
-- **Reality:** No `refreshToken` found in `src/auth/AuthService.ts`
-- **Severity:** High
-- **Fix:** Remove or update the claim to match current implementation.
-```
-
-- Auto-apply context-only fixes to `context/` files.
-- After applying fixes, re-run collectors to verify drift was resolved:
-
-```javascript
-const verification = await collectors.collectAll(process.cwd(), {
-  sources: ["context", "code"],
-});
-const remaining = verification.drift.length;
-if (remaining > 0) {
-  console.warn(`${remaining} drift item(s) could not be auto-resolved.`);
-}
-```
-
-- If code changes would be required, emit report-only with blocker: "Drift requires code changes. Manual intervention required."
-- Log all applied fixes to `context/tmp/automated-drift-fixes.md`.
-
-## Rules
-- Treat code as source of truth when context and code disagree.
-- Keep findings concrete with file-level evidence.
-- Keep recommendations scoped and directly actionable.
-- Auto-apply context-only fixes without confirmation.
-
-## Expected output
-- Drift report in `context/tmp/drift-analysis-YYYY-MM-DD.md` with one section per finding.
-- Prioritized action list with exact context files to update.
-- Applied fixes logged to `context/tmp/automated-drift-fixes.md`.
-- Verification summary confirming how many drift items were resolved.
-"""
-  }
-  ["sce-drift-fixer"] = new ContentUnit {
-    id = "skill.sce-drift-fixer"
-    kind = "skill"
-    slug = "sce-drift-fixer"
-    title = "SCE Drift Fixer"
-    canonicalBody = """
-## What I do
-- Audit `context/` and verify it matches the implemented system.
-- Treat code as the source of truth when context and code disagree.
-- Summarize drift items with clear evidence.
-- Auto-apply updates to `context/` files without confirmation.
-- Use existing drift analysis reports from `context/tmp/` as the primary input for fixes.
-
-## How to run this
-- If `context/` is missing, stop with error: "Automated profile requires existing context/. Run manual bootstrap first."
-- Search `context/tmp/` for `drift-analysis-*.md`.
-- If one or more reports exist, use the latest report as the fix input.
-- If no report exists, run `sce-drift-analyzer` to generate one before continuing.
-- Auto-apply all fixes to `context/` files without confirmation.
-- If code changes would be required, emit report-only with blocker: "Drift requires code changes. Manual intervention required."
-- Log all applied fixes to `context/tmp/automated-drift-fixes.md`.
-- Keep context files concise, current-state oriented, and linked from `context/context-map.md` when relevant.
-
-## Expected output
-- A clear list of drift findings sourced from `context/tmp/drift-analysis-*.md`.
-- Concrete file-level edits in `context/` that resolve selected drift items.
-- Applied fixes logged to `context/tmp/automated-drift-fixes.md`.
-- Verification summary:
-  - items resolved
-  - context files updated
-"""
-  }
+  
   ["sce-handover-writer"] = new ContentUnit {
     id = "skill.sce-handover-writer"
     kind = "skill"
@@ -1234,15 +1034,5 @@ Write to `context/plans/{plan_name}.md` including:
 - None identified.
 ```
 """
-  }
-}
-
-libraries {
-  ["drift-collectors"] = new ContentUnit {
-    id = "lib.drift-collectors"
-    kind = "lib"
-    slug = "drift-collectors"
-    title = "Drift Collectors"
-    canonicalBody = "Node utility module for collecting context and code inventory metrics."
   }
 }

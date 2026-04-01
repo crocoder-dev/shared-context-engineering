@@ -1,25 +1,21 @@
 agentDescriptions = new Mapping {
   ["shared-context-plan"] = "Plans a change into atomic tasks in context/plans without touching application code."
   ["shared-context-code"] = "Executes one approved SCE task, validates behavior, and syncs context."
-  ["shared-context-drift"] = "Analyzes and fixes context-code drift using a lightweight model."
 }
 
 agentDisplayNames = new Mapping {
   ["shared-context-plan"] = "Shared Context Plan"
   ["shared-context-code"] = "Shared Context Code"
-  ["shared-context-drift"] = "Shared Context Drift"
 }
 
 agentColors = new Mapping {
   ["shared-context-plan"] = "#2563eb"
   ["shared-context-code"] = "#059669"
-  ["shared-context-drift"] = "#ea580c"
 }
 
 agentBehaviorBlocks = new Mapping {
   ["shared-context-plan"] = ""
   ["shared-context-code"] = ""
-  ["shared-context-drift"] = "\nmode: subagent\nhidden: true"
 }
 
 agentPermissionBlocks = new Mapping {
@@ -74,37 +70,11 @@ permission:
     "sce-validation": allow
     "sce-atomic-commit": allow
 """
-  ["shared-context-drift"] = """
-permission:
-  default: ask
-  read: allow
-  edit: allow
-  glob: allow
-  grep: allow
-  list: allow
-  bash: allow
-  task: allow
-  external_directory: ask
-  todowrite: allow
-  todoread: allow
-  question: allow
-  webfetch: allow
-  websearch: allow
-  codesearch: allow
-  lsp: allow
-  doom_loop: ask
-  skill:
-    "*": ask
-    "sce-drift-analyzer": allow
-    "sce-drift-fixer": allow
-"""
 }
 
 commandAgents = new Mapping {
   ["next-task"] = "Shared Context Code"
   ["change-to-plan"] = "Shared Context Plan"
-  ["drift-detect"] = "Shared Context Drift"
-  ["fix-drift"] = "Shared Context Drift"
   ["handover"] = "Shared Context Code"
   ["commit"] = "Shared Context Code"
   ["validate"] = "Shared Context Code"
@@ -113,8 +83,6 @@ commandAgents = new Mapping {
 skillDescriptions = new Mapping {
   ["sce-bootstrap-context"] = "Creates the SCE (Shared Context Engineering) baseline `context/` directory structure — a set of markdown files and sub-folders used as shared project memory (overview, architecture, patterns, glossary, decisions, plans, handovers, and a temporary scratch space). Use when the `context/` folder is missing from the repository, when a user asks to initialise the project context, set up context, create baseline documentation structure, or when shared configuration files for project memory are absent."
   ["sce-context-sync"] = "Use when user wants to update project documentation to reflect code changes, sync docs with code, refresh project context, or keep AI memory files accurate after completing an implementation task. Scans modified code, classifies the change significance, then updates or verifies Markdown context files under `context/` (overview, architecture, glossary, patterns, context-map, and domain files) so that durable AI memory stays aligned with current code truth."
-  ["sce-drift-analyzer"] = "Compares project documentation against actual code implementation to identify outdated, missing, or mismatched content — then produces a prioritized report with actionable fixes. Use when the user says docs are out of date, wants to sync documentation with code, suspects the spec no longer matches implementation, notices code comments or context files are stale, or asks whether documentation reflects the current codebase. Third-person: analyzes documentation-vs-implementation alignment using JavaScript collectors, writes a structured drift report, and asks the user before applying any changes."
-  ["sce-drift-fixer"] = "Use when the user wants to fix stale or outdated context documentation that no longer matches the actual codebase — e.g. \"update docs\", \"sync context files\", \"fix outdated documentation\", \"refresh context\", or \"context is out of date\". Audits files in `context/`, identifies discrepancies between documentation and implemented code (treating code as the source of truth), then updates context files to remove outdated references, correct stale descriptions, and sync documentation with recent code changes."
   ["sce-handover-writer"] = "Creates a structured handover document summarizing task context, decisions made, open questions, and recommended next steps — saved to `context/handovers/`. Use when a user wants to hand off, transition, or pass a task to someone else, create handover notes, write a task transition document, or capture current progress for a future session. Trigger phrases include \"create a handover\", \"hand this off\", \"write handover notes\", \"pass this task on\", or \"document where I'm up to\"."
   ["sce-plan-authoring"] = "Creates or updates structured SCE (Shared Context Engine) implementation plans saved to `context/plans/{plan_name}.md`. Breaks a change request into scoped, atomic tasks with clear goals, boundaries, acceptance criteria, and verification steps. Use when a user wants to plan a new feature, refactor, or integration; needs a project plan, task breakdown, implementation roadmap, or work plan; or describes a change with success criteria that requires structured planning before execution."
   ["sce-plan-authoring-interactive"] = "Use when user wants to Create or update an SCE implementation plan with interactive clarification."

@@ -5,7 +5,6 @@ import "renderers/common.pkl" as common
 import "base/sce-config-schema.pkl" as sce_config_schema
 import "base/bash-policy-presets.pkl" as bash_policy_presets
 
-local sharedLibrarySource = read("./lib/drift-collectors.js").text
 local bashPolicyPresetCatalogSource = bash_policy_presets.output.text
 local bashPolicyRuntimeSource = read("../lib/bash-policy-plugin/bash-policy/runtime.ts").text
 local opencodeBashPolicyPluginSource = read("../lib/bash-policy-plugin/opencode-bash-policy-plugin.ts").text
@@ -74,9 +73,6 @@ output {
       }
     }
 
-    ["config/.opencode/lib/drift-collectors.js"] {
-      text = sharedLibrarySource
-    }
     ["config/.opencode/lib/bash-policy-presets.json"] {
       text = bashPolicyPresetCatalogSource
     }
@@ -89,9 +85,6 @@ output {
     ["config/.opencode/opencode.json"] {
       text = opencode.opencodeConfig.rendered
     }
-    ["config/automated/.opencode/lib/drift-collectors.js"] {
-      text = sharedLibrarySource
-    }
     ["config/automated/.opencode/lib/bash-policy-presets.json"] {
       text = bashPolicyPresetCatalogSource
     }
@@ -103,9 +96,6 @@ output {
     }
     ["config/automated/.opencode/opencode.json"] {
       text = opencode_automated.opencodeConfig.rendered
-    }
-    ["config/.claude/lib/drift-collectors.js"] {
-      text = sharedLibrarySource
     }
     ["config/schema/sce-config.schema.json"] {
       text = sce_config_schema.rendered

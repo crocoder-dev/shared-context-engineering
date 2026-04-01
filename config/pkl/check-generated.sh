@@ -32,15 +32,12 @@ paths=(
   "config/.opencode/agent"
   "config/.opencode/command"
   "config/.opencode/skills"
-  "config/.opencode/lib/drift-collectors.js"
   "config/automated/.opencode/agent"
   "config/automated/.opencode/command"
   "config/automated/.opencode/skills"
-  "config/automated/.opencode/lib/drift-collectors.js"
   "config/.claude/agents"
   "config/.claude/commands"
   "config/.claude/skills"
-  "config/.claude/lib/drift-collectors.js"
   "config/schema/sce-config.schema.json"
 )
 

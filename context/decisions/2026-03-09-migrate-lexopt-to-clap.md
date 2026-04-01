@@ -36,6 +36,6 @@ Plan: `context/plans/migrate-lexopt-to-clap.md`
 
 ## Consequences for follow-up tasks
 
-- Context files (`context/overview.md`, `context/glossary.md`, `context/architecture.md`, `context/patterns.md`, `context/cli/placeholder-foundation.md`) updated to reference clap instead of lexopt.
+- Context files (`context/overview.md`, `context/glossary.md`, `context/architecture.md`, `context/patterns.md`, `context/cli/cli-command-surface.md`) updated to reference clap instead of lexopt.
 - Future CLI commands should be added to `cli/src/cli_schema.rs` using derive macros.
 - Completion scripts will automatically include new commands when added to the schema.

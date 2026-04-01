@@ -105,10 +105,10 @@ pub fn help_text() -> String {
 {}:\n  sce [command]\n\n\
 {}:\n  {} <show|validate> [--format <text|json>] [options]\n\n\
 {}:\n  {} [--opencode|--claude|--both] [--non-interactive] [--hooks] [--repo <path>]\n\n\
-{}:\n  {} [--fix] [--all-databases] [--format <text|json>]\n\n\
+{}:\n  {} [--fix] [--format <text|json>]\n\n\
 {}:\n  {} --shell <bash|zsh|fish>\n\n\
 {}:\n  Supported commands accept --format <text|json>\n\n\
-{}:\n  sce setup\n  sce setup --opencode --non-interactive --hooks\n  sce setup --hooks --repo ../demo-repo\n  sce doctor --format json\n  sce doctor --all-databases --format json\n  sce doctor --fix\n  sce version --format json\n\n\
+{}:\n  sce setup\n  sce setup --opencode --non-interactive --hooks\n  sce setup --hooks --repo ../demo-repo\n  sce doctor --format json\n  sce doctor --fix\n  sce version --format json\n\n\
 {}:\n{command_rows}",
         heading("sce - Shared Context Engineering CLI"),
         heading("Usage"),
@@ -213,7 +213,6 @@ mod tests {
         assert!(help.contains("Output format contract:"));
         assert!(help.contains("--format <text|json>"));
         assert!(help.contains("sce doctor --format json"));
-        assert!(help.contains("sce doctor --all-databases --format json"));
         assert!(help.contains("sce doctor --fix"));
         assert!(help.contains("sce version --format json"));
     }
