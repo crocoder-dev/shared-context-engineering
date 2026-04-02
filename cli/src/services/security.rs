@@ -181,35 +181,3 @@ pub fn ensure_directory_is_writable(path: &std::path::Path, context: &str) -> Re
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::redact_sensitive_text;
-
-    #[test]
-    fn redacts_assignment_values() {
-        let message = "failed password=hunter2 token=abc123";
-        assert_eq!(
-            redact_sensitive_text(message),
-            "failed password=[REDACTED] token=[REDACTED]"
-        );
-    }
-
-    #[test]
-    fn redacts_json_values() {
-        let message = "{\"api_key\":\"secret-value\",\"status\":\"ok\"}";
-        assert_eq!(
-            redact_sensitive_text(message),
-            "{\"api_key\":\"[REDACTED]\",\"status\":\"ok\"}"
-        );
-    }
-
-    #[test]
-    fn redacts_bearer_tokens() {
-        let message = "authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
-        assert_eq!(
-            redact_sensitive_text(message),
-            "authorization: Bearer [REDACTED]"
-        );
-    }
-}

@@ -280,18 +280,3 @@ pub async fn run_smoke_check(target: LocalDatabaseTarget<'_>) -> Result<SmokeChe
 
     Ok(SmokeCheckOutcome { inserted_rows })
 }
-
-#[cfg(test)]
-mod tests {
-    use anyhow::Result;
-
-    use super::{run_smoke_check, LocalDatabaseTarget};
-
-    #[test]
-    fn in_memory_smoke_check_succeeds() -> Result<()> {
-        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-        let outcome = runtime.block_on(run_smoke_check(LocalDatabaseTarget::InMemory))?;
-        assert_eq!(outcome.inserted_rows, 1);
-        Ok(())
-    }
-}

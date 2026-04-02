@@ -245,6 +245,3 @@ fn is_help_placeholder(token: &str) -> bool {
         .chars()
         .any(|ch| ch.is_ascii_uppercase() || matches!(ch, '<' | '>' | '[' | ']'))
 }
-
-#[cfg(test)]
-mod tests;

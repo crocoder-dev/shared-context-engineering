@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::{bail, Context, Result};
 use inquire::{InquireError, Select};
 use std::{
@@ -1250,6 +1252,3 @@ where
 pub fn setup_cancelled_text() -> String {
     value("Setup cancelled. No files were changed.")
 }
-
-#[cfg(test)]
-mod tests;

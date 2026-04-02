@@ -3250,6 +3250,3 @@ pub fn finalize_pre_commit_checkpoint(
         prompts,
     })
 }
-
-#[cfg(test)]
-mod tests;

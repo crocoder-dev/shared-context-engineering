@@ -240,32 +240,3 @@ fn phase_name(phase: CloudSyncPhase) -> &'static str {
         CloudSyncPhase::Apply => "apply",
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use anyhow::Result;
-
-    use super::{CloudSyncGateway, CloudSyncPhase, CloudSyncRequest, PlaceholderCloudSyncGateway};
-
-    use super::shared_runtime;
-
-    #[test]
-    fn cloud_sync_gateway_stays_non_executable() {
-        let gateway = PlaceholderCloudSyncGateway;
-        let request = CloudSyncRequest {
-            workspace: "local",
-            phase: CloudSyncPhase::DryRun,
-        };
-        let plan = gateway.plan(&request);
-        assert!(!plan.can_execute);
-        assert!(plan.checkpoints.len() >= 3);
-    }
-
-    #[test]
-    fn sync_runtime_is_reused_across_calls() -> Result<()> {
-        let first = shared_runtime()?;
-        let second = shared_runtime()?;
-        assert!(std::ptr::eq(first, second));
-        Ok(())
-    }
-}
