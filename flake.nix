@@ -286,9 +286,6 @@
                 Linux:aarch64)
                   printf 'aarch64-unknown-linux-gnu'
                   ;;
-                Darwin:x86_64)
-                  printf 'x86_64-apple-darwin'
-                  ;;
                 Darwin:aarch64)
                   printf 'aarch64-apple-darwin'
                   ;;

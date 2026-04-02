@@ -10,10 +10,6 @@ const SUPPORTED_TARGETS = new Map([
 		{ targetTriple: "aarch64-unknown-linux-gnu", os: "linux", arch: "arm64" },
 	],
 	[
-		"darwin:x64",
-		{ targetTriple: "x86_64-apple-darwin", os: "darwin", arch: "x64" },
-	],
-	[
 		"linux:x64",
 		{ targetTriple: "x86_64-unknown-linux-gnu", os: "linux", arch: "x64" },
 	],
@@ -50,7 +46,7 @@ export function formatUnsupportedPlatformMessage(
 		return null;
 	}
 
-	return `The npm sce package currently supports darwin/arm64, darwin/x64, linux/arm64, and linux/x64. Received ${platform}/${arch}.`;
+	return `The npm sce package currently supports darwin/arm64, linux/arm64, and linux/x64. Received ${platform}/${arch}.`;
 }
 
 export function selectReleaseArtifact(releaseManifest, targetTriple) {

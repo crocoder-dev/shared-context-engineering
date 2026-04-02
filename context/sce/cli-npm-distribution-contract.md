@@ -19,7 +19,6 @@ This file captures the implemented npm distribution slice from `context/plans/sc
 - Supported npm launcher platforms currently match the implemented release automation targets:
   - `linux/x64` -> `x86_64-unknown-linux-gnu`
   - `linux/arm64` -> `aarch64-unknown-linux-gnu`
-  - `darwin/x64` -> `x86_64-apple-darwin`
   - `darwin/arm64` -> `aarch64-apple-darwin`
 - Unsupported platforms fail with explicit guidance instead of attempting alternate channels inside the npm package.
 

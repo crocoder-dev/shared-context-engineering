@@ -34,13 +34,21 @@ describe("resolveSupportedPlatform", () => {
 		});
 	});
 
+	test("does not map darwin x64", () => {
+		expect(resolveSupportedPlatform("darwin", "x64")).toBeNull();
+	});
+
 	test("lists linux arm64 in unsupported platform guidance", () => {
 		const unsupportedMessage = formatUnsupportedPlatformMessage(
 			"win32",
 			"arm64",
 		);
 
+		expect(unsupportedMessage).toContain("darwin/arm64");
 		expect(unsupportedMessage).toContain("linux/arm64");
+		expect(unsupportedMessage).toBe(
+			"The npm sce package currently supports darwin/arm64, linux/arm64, and linux/x64. Received win32/arm64.",
+		);
 		expect(unsupportedMessage).toContain("win32/arm64");
 	});
 
@@ -71,7 +79,7 @@ describe("selectReleaseArtifact", () => {
 		const artifact = selectReleaseArtifact(
 			{
 				artifacts: [
-					{ target_triple: "x86_64-apple-darwin", archive: "macos.tgz" },
+					{ target_triple: "aarch64-apple-darwin", archive: "macos.tgz" },
 					{ target_triple: "x86_64-unknown-linux-gnu", archive: "linux.tgz" },
 				],
 			},
@@ -86,7 +94,7 @@ describe("selectReleaseArtifact", () => {
 			selectReleaseArtifact(
 				{
 					artifacts: [
-						{ target_triple: "x86_64-apple-darwin", archive: "macos.tgz" },
+						{ target_triple: "aarch64-apple-darwin", archive: "macos.tgz" },
 					],
 				},
 				"x86_64-unknown-linux-gnu",

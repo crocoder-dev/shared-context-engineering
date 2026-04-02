@@ -41,11 +41,11 @@ This file captures the current shared release artifact foundation plus the appro
 - Manual GitHub release dispatch resolves the tag from checked-in `.version` and refuses to create the tag when `.version`, `cli/Cargo.toml`, and `npm/package.json` are not already aligned.
 - Tag-triggered release execution also refuses to proceed when the pushed tag does not equal `v<.version>` or when checked-in Cargo/npm package metadata drift from `.version`.
 - `nix run .#release-artifacts` fails fast when the requested `--version` disagrees with `.version`, `cli/Cargo.toml`, `npm/package.json`, or the built CLI `sce version` output.
+- `nix run .#release-artifacts` also rejects host OS/architecture pairs outside the current three-target release matrix; macOS Intel (`Darwin:x86_64`) is no longer a supported current-platform packaging host.
 - The release orchestrator passes the resolved checked-in version through to the platform builds, merged release-manifest assembly, and npm tarball packaging without mutating package versions during workflow execution.
 - Platform builds are split into separate reusable workflow files:
   - `.github/workflows/release-sce-linux.yml`
   - `.github/workflows/release-sce-linux-arm.yml`
-  - `.github/workflows/release-sce-macos-intel.yml`
   - `.github/workflows/release-sce-macos-arm.yml`
 - The reusable Linux ARM workflow builds canonical `aarch64-unknown-linux-gnu` artifacts on an ARM Linux runner, and the top-level release orchestrator now requires and publishes that lane alongside the other platform workflows.
 - `.github/workflows/release-agents.yml` remains Tessl/agent-file release automation and is not the CLI release workflow.
@@ -54,16 +54,14 @@ This file captures the current shared release artifact foundation plus the appro
 
 - `x86_64-unknown-linux-gnu`
 - `aarch64-unknown-linux-gnu`
-- `x86_64-apple-darwin`
 - `aarch64-apple-darwin`
 
 ## Current supported release matrix
 
 - Linux x64 release artifacts are published as `x86_64-unknown-linux-gnu`.
 - Linux ARM release artifacts are published as `aarch64-unknown-linux-gnu`.
-- macOS Intel release artifacts are published as `x86_64-apple-darwin`.
 - macOS ARM release artifacts are published as `aarch64-apple-darwin`.
-- The merged release manifest and combined checksum outputs include all four current targets for each published `sce` release.
+- The merged release manifest and combined checksum outputs include those three current targets for each published `sce` release.
 
 ## Downstream channel implication
 
