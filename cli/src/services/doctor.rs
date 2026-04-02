@@ -10,10 +10,10 @@ use crate::services::default_paths::{
 };
 use crate::services::output_format::OutputFormat;
 use crate::services::setup::{
-    install_required_git_hooks, iter_required_hook_assets, RequiredHookInstallStatus,
-    RequiredHooksInstallOutcome,
+    install_required_git_hooks, iter_embedded_assets_for_setup_target, iter_required_hook_assets,
+    RequiredHookInstallStatus, RequiredHooksInstallOutcome, SetupTarget,
 };
-use crate::services::style::{heading, label, success, value};
+use crate::services::style::{heading, label, supports_color, value, OwoColorize};
 
 pub const NAME: &str = "doctor";
 
@@ -22,6 +22,9 @@ const REQUIRED_HOOKS: [&str; 3] = [
     hook_dir::COMMIT_MSG,
     hook_dir::POST_COMMIT,
 ];
+
+const OPENCODE_AGENT_DIR: &str = "agent";
+const OPENCODE_COMMAND_DIR: &str = "command";
 
 pub type DoctorFormat = OutputFormat;
 
@@ -92,7 +95,21 @@ struct HookDoctorReport {
     config_locations: Vec<FileLocationHealth>,
     agent_trace_local_db: Option<FileLocationHealth>,
     hooks: Vec<HookFileHealth>,
+    integration_groups: Vec<IntegrationGroupHealth>,
     problems: Vec<DoctorProblem>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct IntegrationGroupHealth {
+    label: &'static str,
+    children: Vec<IntegrationChildHealth>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct IntegrationChildHealth {
+    relative_path: String,
+    path: PathBuf,
+    present: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -164,6 +181,13 @@ enum DirectoryWriteReadiness {
     NotDirectory,
     ReadOnly,
     Unknown(std::io::Error),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HumanTextStatus {
+    Pass,
+    Fail,
+    Miss,
 }
 
 pub fn run_doctor(request: DoctorRequest) -> Result<String> {
@@ -328,9 +352,15 @@ fn build_report_with_dependencies(
 
     if git_available && !bare_repository {
         if let Some(resolved_root) = detected_repository_root.as_deref() {
-            inspect_opencode_plugin_health(resolved_root, &mut problems);
+            inspect_opencode_integration_health(resolved_root, &mut problems);
         }
     }
+
+    let integration_groups = detected_repository_root
+        .as_deref()
+        .filter(|_| git_available && !bare_repository)
+        .map(collect_opencode_integration_groups)
+        .unwrap_or_default();
 
     let readiness = if problems
         .iter()
@@ -351,6 +381,7 @@ fn build_report_with_dependencies(
         config_locations: global_state.config_locations,
         agent_trace_local_db: global_state.agent_trace_local_db,
         hooks,
+        integration_groups,
         problems,
     }
 }
@@ -672,108 +703,74 @@ fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> V
         .collect()
 }
 
-fn inspect_opencode_plugin_health(repository_root: &Path, problems: &mut Vec<DoctorProblem>) {
-    let repo_paths = RepoPaths::new(repository_root);
-    let install_targets = InstallTargetPaths::new(repository_root);
-    let opencode_root = repo_paths.opencode_dir();
-    if !opencode_root.exists() {
-        return;
+fn inspect_opencode_integration_health(repository_root: &Path, problems: &mut Vec<DoctorProblem>) {
+    let integration_groups = collect_opencode_integration_groups(repository_root);
+
+    for group in &integration_groups {
+        let missing_children = group
+            .children
+            .iter()
+            .filter(|child| !child.present)
+            .collect::<Vec<_>>();
+        if missing_children.is_empty() {
+            continue;
+        }
+
+        let missing_paths = missing_children
+            .iter()
+            .map(|child| format!("'{}'", child.path.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        problems.push(DoctorProblem {
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "{} required file(s) are missing: {}.",
+                group.label, missing_paths
+            ),
+            remediation: format!(
+                "Reinstall repo-root OpenCode assets to restore the missing {} file(s), then rerun 'sce doctor'.",
+                group.label.to_ascii_lowercase()
+            ),
+            next_action: "manual_steps",
+        });
     }
 
+    let repo_paths = RepoPaths::new(repository_root);
+    let install_targets = InstallTargetPaths::new(repository_root);
+
     let manifest_path = repo_paths.opencode_manifest_file();
-    if let Some(summary) = opencode_plugin_registry_issue(&manifest_path) {
+    let manifest_metadata = fs::metadata(&manifest_path).ok();
+    let manifest_is_file = manifest_metadata
+        .as_ref()
+        .is_some_and(std::fs::Metadata::is_file);
+    if !manifest_is_file {
+        let summary = if manifest_metadata.is_some() {
+            format!(
+                "OpenCode plugin registry path '{}' is not a file.",
+                manifest_path.display()
+            )
+        } else {
+            format!(
+                "OpenCode plugin registry file '{}' is missing.",
+                manifest_path.display()
+            )
+        };
         problems.push(DoctorProblem {
             category: ProblemCategory::RepoAssets,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
             summary,
             remediation: format!(
-                "Reinstall OpenCode assets so '{}' registers '{}', then rerun 'sce doctor'.",
-                manifest_path.display(),
-                opencode_asset::PLUGIN_MANIFEST_ENTRY
+                "Reinstall OpenCode assets to restore the canonical plugin registry at '{}', then rerun 'sce doctor'.",
+                manifest_path.display()
             ),
             next_action: "manual_steps",
         });
     }
 
     inspect_opencode_plugin_dependency_health(&install_targets, problems);
-
-    let plugin_path = install_targets.opencode_plugin_target();
-    let plugin_metadata = fs::metadata(&plugin_path).ok();
-    let plugin_is_file = plugin_metadata
-        .as_ref()
-        .is_some_and(std::fs::Metadata::is_file);
-
-    if !plugin_is_file {
-        let summary = if plugin_metadata.is_some() {
-            format!(
-                "OpenCode plugin path '{}' is not a file.",
-                plugin_path.display()
-            )
-        } else {
-            format!(
-                "OpenCode plugin file '{}' is missing.",
-                plugin_path.display()
-            )
-        };
-        problems.push(DoctorProblem {
-            category: ProblemCategory::RepoAssets,
-            severity: ProblemSeverity::Warning,
-            fixability: ProblemFixability::ManualOnly,
-            summary,
-            remediation: format!(
-                "Reinstall OpenCode assets to restore the canonical plugin at '{}', then rerun 'sce doctor'.",
-                plugin_path.display()
-            ),
-            next_action: "manual_steps",
-        });
-    }
-}
-
-fn opencode_plugin_registry_issue(manifest_path: &Path) -> Option<String> {
-    if !manifest_path.exists() {
-        return Some(format!(
-            "OpenCode plugin registry file '{}' is missing.",
-            manifest_path.display()
-        ));
-    }
-
-    let Ok(bytes) = fs::read(manifest_path) else {
-        return Some(format!(
-            "OpenCode plugin registry file '{}' is not readable.",
-            manifest_path.display()
-        ));
-    };
-
-    let payload: serde_json::Value = match serde_json::from_slice(&bytes) {
-        Ok(value) => value,
-        Err(_) => {
-            return Some(format!(
-                "OpenCode plugin registry file '{}' is not valid JSON.",
-                manifest_path.display()
-            ));
-        }
-    };
-
-    let Some(plugins) = payload.get("plugin").and_then(|value| value.as_array()) else {
-        return Some(format!(
-            "OpenCode plugin registry file '{}' does not define a 'plugin' array.",
-            manifest_path.display()
-        ));
-    };
-
-    if plugins
-        .iter()
-        .any(|entry| entry.as_str() == Some(opencode_asset::PLUGIN_MANIFEST_ENTRY))
-    {
-        None
-    } else {
-        Some(format!(
-            "OpenCode plugin registry file '{}' does not register '{}'.",
-            manifest_path.display(),
-            opencode_asset::PLUGIN_MANIFEST_ENTRY
-        ))
-    }
 }
 
 fn inspect_opencode_plugin_dependency_health(
@@ -829,6 +826,85 @@ fn inspect_opencode_asset_presence(
         ),
         next_action: "manual_steps",
     });
+}
+
+fn collect_opencode_integration_groups(repository_root: &Path) -> Vec<IntegrationGroupHealth> {
+    let repo_paths = RepoPaths::new(repository_root);
+    let opencode_root = repo_paths.opencode_dir();
+    let mut plugin_children = vec![IntegrationChildHealth {
+        relative_path: String::from("opencode.json"),
+        path: repo_paths.opencode_manifest_file(),
+        present: path_is_file(&repo_paths.opencode_manifest_file()),
+    }];
+    let mut agent_children = Vec::new();
+    let mut command_children = Vec::new();
+    let mut skill_children = Vec::new();
+
+    for asset in iter_embedded_assets_for_setup_target(SetupTarget::OpenCode) {
+        let path = opencode_root.join(asset.relative_path);
+        let child = IntegrationChildHealth {
+            relative_path: asset.relative_path.to_string(),
+            path,
+            present: path_is_file(&opencode_root.join(asset.relative_path)),
+        };
+
+        if child
+            .relative_path
+            .starts_with(&format!("{}/", opencode_asset::PLUGINS_DIR))
+            || child
+                .relative_path
+                .starts_with(&format!("{}/", opencode_asset::LIB_DIR))
+        {
+            plugin_children.push(child);
+        } else if child
+            .relative_path
+            .starts_with(&format!("{OPENCODE_AGENT_DIR}/"))
+        {
+            agent_children.push(child);
+        } else if child
+            .relative_path
+            .starts_with(&format!("{OPENCODE_COMMAND_DIR}/"))
+        {
+            command_children.push(child);
+        } else if child
+            .relative_path
+            .starts_with(&format!("{}/", opencode_asset::SKILLS_DIR))
+        {
+            skill_children.push(child);
+        }
+    }
+
+    sort_integration_children(&mut plugin_children);
+    sort_integration_children(&mut agent_children);
+    sort_integration_children(&mut command_children);
+    sort_integration_children(&mut skill_children);
+
+    vec![
+        IntegrationGroupHealth {
+            label: "OpenCode plugins",
+            children: plugin_children,
+        },
+        IntegrationGroupHealth {
+            label: "OpenCode agents",
+            children: agent_children,
+        },
+        IntegrationGroupHealth {
+            label: "OpenCode commands",
+            children: command_children,
+        },
+        IntegrationGroupHealth {
+            label: "OpenCode skills",
+            children: skill_children,
+        },
+    ]
+}
+
+fn sort_integration_children(children: &mut [IntegrationChildHealth]) {
+    children.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+}
+
+fn path_is_file(path: &Path) -> bool {
+    fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
 }
 
 fn inspect_hook_content_state(
@@ -934,118 +1010,306 @@ fn run_git_command(repository_root: &Path, args: &[&str]) -> Option<String> {
 
 #[allow(clippy::too_many_lines)]
 fn format_report(report: &HookDoctorReport) -> String {
+    format_report_with_color_policy(report, supports_color())
+}
+
+#[allow(clippy::too_many_lines)]
+fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: bool) -> String {
+    let blocking_problem_count = report
+        .problems
+        .iter()
+        .filter(|problem| problem.severity == ProblemSeverity::Error)
+        .count();
+    let warning_problem_count = report
+        .problems
+        .iter()
+        .filter(|problem| problem.severity == ProblemSeverity::Warning)
+        .count();
     let mut lines = Vec::new();
     lines.push(format!(
-        "{}: {}",
+        "{} {}",
         label("SCE doctor"),
-        match report.readiness {
-            Readiness::Ready => success("ready"),
-            Readiness::NotReady => value("not ready"),
-        }
-    ));
-    lines.push(format!(
-        "{}: {}",
-        label("Mode"),
-        match report.mode {
-            DoctorMode::Diagnose => value("diagnose"),
-            DoctorMode::Fix => value("fix"),
-        }
-    ));
-
-    lines.push(format!(
-        "{}: {}",
-        label("Hooks path source"),
-        value(match report.hook_path_source {
-            HookPathSource::Default => "default (.git/hooks)",
-            HookPathSource::LocalConfig => "per-repo core.hooksPath",
-            HookPathSource::GlobalConfig => "global core.hooksPath",
+        value(match report.mode {
+            DoctorMode::Diagnose => "diagnose",
+            DoctorMode::Fix => "fix",
         })
     ));
 
-    lines.push(format!(
-        "{}: {}",
-        label("State root"),
+    lines.push(format!("\n{}:", heading("Environment")));
+    lines.push(format_human_text_row(
+        color_enabled,
+        state_root_status(report),
+        "State root",
         report.state_root.as_ref().map_or_else(
-            || value("(not detected)"),
-            |location| format!(
-                "{} ({})",
-                value(location.state),
-                value(&location.path.display().to_string())
-            )
-        )
+            || String::from("not detected"),
+            |location| location.path.display().to_string(),
+        ),
     ));
-
-    lines.push(format!(
-        "{}: {}",
-        label("Repository root"),
-        report.repository_root.as_ref().map_or_else(
-            || value("(not detected)"),
-            |path| value(&path.display().to_string())
-        )
-    ));
-
-    lines.push(format!(
-        "{}: {}",
-        label("Effective hooks directory"),
-        report.hooks_directory.as_ref().map_or_else(
-            || value("(not detected)"),
-            |path| value(&path.display().to_string())
-        )
-    ));
-
-    lines.push(format!("\n{}:", heading("Config files")));
-    for location in &report.config_locations {
-        lines.push(format!(
-            "  {}: {} ({})",
-            label(location.label),
-            value(location.state),
-            value(&location.path.display().to_string())
-        ));
-    }
-
-    lines.push(format!(
-        "\n{}: {}",
-        label("Agent Trace local DB"),
+    lines.push(format_human_text_row(
+        color_enabled,
+        agent_trace_local_db_status(report),
+        "Agent Trace local DB",
         report.agent_trace_local_db.as_ref().map_or_else(
-            || value("(not detected)"),
-            |location| format!(
-                "{} ({})",
-                value(location.state),
-                value(&location.path.display().to_string())
-            )
-        )
+            || String::from("not detected"),
+            |location| location.path.display().to_string(),
+        ),
     ));
 
-    // Required hooks
-    lines.push(format!("\n{}:", heading("Required hooks")));
-    for hook in &report.hooks {
-        lines.push(format!(
-            "  {}: {} (content={}, executable={}) {}",
-            value(hook.name),
-            value(hook_state(hook)),
-            value(hook_content_state(hook.content_state)),
-            value(if hook.executable { "yes" } else { "no" }),
-            value(&hook.path.display().to_string())
+    lines.push(format!("\n{}:", heading("Configuration")));
+    for location in &report.config_locations {
+        lines.push(format_human_text_row(
+            color_enabled,
+            config_location_status(report, location),
+            location.label,
+            location.path.display().to_string(),
         ));
     }
 
-    // Problems
-    if report.problems.is_empty() {
-        lines.push(format!("\n{}: {}", label("Problems"), success("none")));
-    } else {
-        lines.push(format!("\n{}:", heading("Problems")));
-        for problem in &report.problems {
-            lines.push(format!(
-                "  [{}|{}|{}] {}",
-                value(problem_category(problem.category)),
-                value(problem_severity(problem.severity)),
-                value(problem_fixability(problem.fixability)),
-                value(&problem.summary)
+    lines.push(format!("\n{}:", heading("Repository")));
+    lines.push(format_human_text_row(
+        color_enabled,
+        repository_root_status(report),
+        "Repository",
+        report.repository_root.as_ref().map_or_else(
+            || String::from("not detected"),
+            |path| path.display().to_string(),
+        ),
+    ));
+    lines.push(format_human_text_row(
+        color_enabled,
+        hooks_directory_status(report),
+        "Hooks",
+        report.hooks_directory.as_ref().map_or_else(
+            || String::from("not detected"),
+            |path| path.display().to_string(),
+        ),
+    ));
+
+    lines.push(format!("\n{}:", heading("Git Hooks")));
+    if report.hooks.is_empty() {
+        for hook_name in REQUIRED_HOOKS {
+            lines.push(format_human_text_row(
+                color_enabled,
+                HumanTextStatus::Fail,
+                hook_name,
+                "not inspected",
+            ));
+        }
+    }
+    for hook in &report.hooks {
+        lines.push(format_human_text_row(
+            color_enabled,
+            hook_human_text_status(hook),
+            hook.name,
+            hook.path.display().to_string(),
+        ));
+    }
+
+    lines.push(format!("\n{}:", heading("Integrations")));
+    for group in integration_groups_for_text(report) {
+        lines.push(format_human_text_row(
+            color_enabled,
+            integration_group_status(&group, report.repository_root.is_some()),
+            group.label,
+            "",
+        ));
+        for child in &group.children {
+            lines.push(format_human_text_child_row(
+                color_enabled,
+                integration_child_status(child, report.repository_root.is_some()),
+                &child.relative_path,
+                child.path.display().to_string(),
             ));
         }
     }
 
+    lines.push(format!(
+        "\n{}: {} blocking problem(s), {} warning(s)",
+        label("Summary"),
+        value(&blocking_problem_count.to_string()),
+        value(&warning_problem_count.to_string())
+    ));
+
     lines.join("\n")
+}
+
+fn format_human_text_row(
+    color_enabled: bool,
+    status: HumanTextStatus,
+    name: &str,
+    detail: impl AsRef<str>,
+) -> String {
+    let detail = detail.as_ref();
+
+    if detail.is_empty() {
+        format!(
+            "  {} {}",
+            value(&human_text_status_token(status, color_enabled)),
+            value(name),
+        )
+    } else {
+        format!(
+            "  {} {} ({})",
+            value(&human_text_status_token(status, color_enabled)),
+            value(name),
+            value(detail)
+        )
+    }
+}
+
+fn format_human_text_child_row(
+    color_enabled: bool,
+    status: HumanTextStatus,
+    name: &str,
+    detail: impl AsRef<str>,
+) -> String {
+    format!(
+        "    {} {} ({})",
+        value(&human_text_status_token(status, color_enabled)),
+        value(name),
+        value(detail.as_ref())
+    )
+}
+
+fn human_text_status_label(status: HumanTextStatus) -> &'static str {
+    match status {
+        HumanTextStatus::Pass => "PASS",
+        HumanTextStatus::Fail => "FAIL",
+        HumanTextStatus::Miss => "MISS",
+    }
+}
+
+fn human_text_status_token(status: HumanTextStatus, color_enabled: bool) -> String {
+    let token = format!("[{}]", human_text_status_label(status));
+
+    if !color_enabled {
+        return token;
+    }
+
+    match status {
+        HumanTextStatus::Pass => token.green().bold().to_string(),
+        HumanTextStatus::Fail | HumanTextStatus::Miss => token.red().bold().to_string(),
+    }
+}
+
+fn state_root_status(report: &HookDoctorReport) -> HumanTextStatus {
+    if report.problems.iter().any(|problem| {
+        problem
+            .summary
+            .starts_with("Unable to resolve expected state root")
+    }) {
+        HumanTextStatus::Fail
+    } else {
+        HumanTextStatus::Pass
+    }
+}
+
+fn agent_trace_local_db_status(report: &HookDoctorReport) -> HumanTextStatus {
+    if report.agent_trace_local_db.is_none()
+        || report.problems.iter().any(|problem| {
+            problem
+                .summary
+                .starts_with("Unable to resolve expected Agent Trace local DB path")
+                || problem.summary.starts_with("Agent Trace local DB path '")
+                || problem.summary.starts_with("Agent Trace local DB parent ")
+                || problem
+                    .summary
+                    .starts_with("Unable to inspect Agent Trace local DB parent directory '")
+                || problem.summary.starts_with("Agent Trace local DB '")
+        })
+    {
+        HumanTextStatus::Fail
+    } else {
+        HumanTextStatus::Pass
+    }
+}
+
+fn config_location_status(
+    report: &HookDoctorReport,
+    location: &FileLocationHealth,
+) -> HumanTextStatus {
+    if report.problems.iter().any(|problem| {
+        problem.summary.starts_with(location.label) && problem.summary.contains("failed validation")
+    }) {
+        HumanTextStatus::Fail
+    } else {
+        HumanTextStatus::Pass
+    }
+}
+
+fn repository_root_status(report: &HookDoctorReport) -> HumanTextStatus {
+    if report.repository_root.is_some() {
+        HumanTextStatus::Pass
+    } else {
+        HumanTextStatus::Fail
+    }
+}
+
+fn hooks_directory_status(report: &HookDoctorReport) -> HumanTextStatus {
+    if report.hooks_directory.is_some() {
+        HumanTextStatus::Pass
+    } else {
+        HumanTextStatus::Fail
+    }
+}
+
+fn hook_human_text_status(hook: &HookFileHealth) -> HumanTextStatus {
+    if !hook.exists {
+        HumanTextStatus::Miss
+    } else if hook.content_state == HookContentState::Stale || !hook.executable {
+        HumanTextStatus::Fail
+    } else {
+        HumanTextStatus::Pass
+    }
+}
+
+fn integration_groups_for_text(report: &HookDoctorReport) -> Vec<IntegrationGroupHealth> {
+    if report.repository_root.is_none() {
+        return vec![
+            IntegrationGroupHealth {
+                label: "OpenCode plugins",
+                children: Vec::new(),
+            },
+            IntegrationGroupHealth {
+                label: "OpenCode agents",
+                children: Vec::new(),
+            },
+            IntegrationGroupHealth {
+                label: "OpenCode commands",
+                children: Vec::new(),
+            },
+            IntegrationGroupHealth {
+                label: "OpenCode skills",
+                children: Vec::new(),
+            },
+        ];
+    }
+
+    report.integration_groups.clone()
+}
+
+fn integration_group_status(
+    group: &IntegrationGroupHealth,
+    repository_available: bool,
+) -> HumanTextStatus {
+    if !repository_available || group.children.iter().any(|child| !child.present) {
+        HumanTextStatus::Fail
+    } else {
+        HumanTextStatus::Pass
+    }
+}
+
+fn integration_child_status(
+    child: &IntegrationChildHealth,
+    repository_available: bool,
+) -> HumanTextStatus {
+    if !repository_available {
+        HumanTextStatus::Fail
+    } else if child.present {
+        HumanTextStatus::Pass
+    } else {
+        HumanTextStatus::Miss
+    }
 }
 
 fn format_execution(execution: &DoctorExecution) -> String {
