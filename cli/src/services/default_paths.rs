@@ -185,6 +185,8 @@ pub(crate) mod opencode_asset {
     pub const RUNTIME_FILE: &str = "runtime.ts";
     pub const LIB_DIR: &str = "lib";
     pub const PRESET_CATALOG: &str = "bash-policy-presets.json";
+    pub const OPENCODE_AGENT_DIR: &str = "agent";
+    pub const OPENCODE_COMMAND_DIR: &str = "command";
     pub const SKILLS_DIR: &str = "skills";
     pub const AGENTS_DIR: &str = "agents";
 }
