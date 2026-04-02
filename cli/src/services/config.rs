@@ -1677,12 +1677,12 @@ fn format_bash_policies_text(value: &ResolvedOptionalValue<BashPolicyConfig>) ->
     match (value.value.as_ref(), value.source) {
         (Some(config), Some(source)) => {
             let presets = if config.presets.is_empty() {
-                "(none)".to_string()
+                String::from("(none)")
             } else {
                 config.presets.join(", ")
             };
             let custom = if config.custom.is_empty() {
-                "(none)".to_string()
+                String::from("(none)")
             } else {
                 config
                     .custom
@@ -1918,7 +1918,7 @@ fn format_optional_auth_resolved_value_json(
 
 fn format_text_display_value(key: &str, value: &str) -> String {
     if should_fully_redact_text_value(key) {
-        return "[REDACTED]".to_string();
+        return String::from("[REDACTED]");
     }
 
     if looks_credential_like(value) {

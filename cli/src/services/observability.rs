@@ -107,6 +107,7 @@ impl TelemetryRuntime {
     ) -> Result<Self> {
         Self::from_config(&TelemetryConfig {
             enabled: config.otel_enabled,
+            // Clone required: TelemetryConfig owns the endpoint String
             endpoint: config.otel_endpoint.clone(),
             protocol: match config.otel_protocol {
                 config::OtlpProtocol::Grpc => OtlpProtocol::Grpc,
@@ -132,11 +133,13 @@ impl TelemetryRuntime {
         let exporter = match config.protocol {
             OtlpProtocol::Grpc => opentelemetry_otlp::SpanExporter::builder()
                 .with_tonic()
+                // Clone required: with_endpoint takes ownership of the endpoint String
                 .with_endpoint(config.endpoint.clone())
                 .build()
                 .map_err(|error| anyhow!("Failed to initialize OTLP gRPC exporter: {error}"))?,
             OtlpProtocol::HttpProtobuf => opentelemetry_otlp::SpanExporter::builder()
                 .with_http()
+                // Clone required: with_endpoint takes ownership of the endpoint String
                 .with_endpoint(config.endpoint.clone())
                 .build()
                 .map_err(|error| anyhow!("Failed to initialize OTLP HTTP exporter: {error}"))?,
@@ -169,7 +172,10 @@ impl TelemetryRuntime {
 impl Drop for TelemetryRuntime {
     fn drop(&mut self) {
         if let Some(provider) = self.provider.take() {
-            let _ = provider.shutdown();
+            // Best-effort shutdown during drop; errors are logged but not propagated
+            if let Err(e) = provider.shutdown() {
+                eprintln!("Warning: Failed to shutdown telemetry provider: {e:?}");
+            }
         }
     }
 }

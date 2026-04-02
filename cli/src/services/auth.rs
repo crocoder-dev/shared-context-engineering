@@ -66,7 +66,7 @@ pub struct TokenResponse {
 }
 
 fn default_token_type() -> String {
-    "Bearer".to_string()
+    String::from("Bearer")
 }
 
 fn default_access_token_expires_in() -> u64 {
@@ -193,7 +193,7 @@ pub async fn ensure_valid_token(
 
     let Some(stored) = load_tokens()? else {
         return Err(AuthError::Unauthorized(
-            "No stored WorkOS credentials were found. Try: run 'sce login' before running authenticated commands.".to_string(),
+            String::from("No stored WorkOS credentials were found. Try: run 'sce login' before running authenticated commands."),
         ));
     };
 
@@ -220,7 +220,7 @@ pub async fn renew_stored_token(
 
     let Some(stored) = load_tokens()? else {
         return Err(AuthError::Unauthorized(
-            "No stored WorkOS credentials were found. Try: run 'sce auth login' before running authenticated commands.".to_string(),
+            String::from("No stored WorkOS credentials were found. Try: run 'sce auth login' before running authenticated commands."),
         ));
     };
 
@@ -257,9 +257,9 @@ pub async fn request_device_authorization(
             || parsed.user_code.trim().is_empty()
             || parsed.verification_uri.trim().is_empty()
         {
-            return Err(AuthError::InvalidResponse(
-                "device authorization response is missing required fields".to_string(),
-            ));
+            return Err(AuthError::InvalidResponse(String::from(
+                "device authorization response is missing required fields",
+            )));
         }
         return Ok(parsed);
     }
@@ -299,7 +299,7 @@ async fn poll_for_device_token(
         attempts = attempts.saturating_add(1);
         if attempts > max_polls {
             return Err(AuthError::Unauthorized(
-                "WorkOS device authorization expired before approval completed. Try: run 'sce login' again and complete verification before the code expires.".to_string(),
+                String::from("WorkOS device authorization expired before approval completed. Try: run 'sce login' again and complete verification before the code expires."),
             ));
         }
 

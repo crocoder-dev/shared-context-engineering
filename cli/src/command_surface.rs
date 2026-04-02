@@ -97,7 +97,7 @@ pub fn help_text() -> String {
             command_name(command.name),
             command.purpose
         )
-        .unwrap();
+        .expect("writing to String should never fail");
     }
 
     format!(

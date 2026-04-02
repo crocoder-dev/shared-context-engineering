@@ -289,8 +289,8 @@ fn build_report_with_dependencies(
             category: ProblemCategory::RepositoryTargeting,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
-            summary: "Git is not available on this machine.".to_string(),
-            remediation: "Install an accessible 'git' binary and ensure it is on PATH before rerunning 'sce doctor'.".to_string(),
+            summary: String::from("Git is not available on this machine."),
+            remediation: String::from("Install an accessible 'git' binary and ensure it is on PATH before rerunning 'sce doctor'."),
             next_action: "manual_steps",
         });
         Vec::new()
@@ -299,8 +299,8 @@ fn build_report_with_dependencies(
             category: ProblemCategory::RepositoryTargeting,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
-            summary: "The current repository is bare and does not support local SCE hook rollout.".to_string(),
-            remediation: "Run 'sce doctor' from a non-bare working tree clone to inspect repo-scoped SCE hook health.".to_string(),
+            summary: String::from("The current repository is bare and does not support local SCE hook rollout."),
+            remediation: String::from("Run 'sce doctor' from a non-bare working tree clone to inspect repo-scoped SCE hook health."),
             next_action: "manual_steps",
         });
         Vec::new()
@@ -309,8 +309,8 @@ fn build_report_with_dependencies(
             category: ProblemCategory::RepositoryTargeting,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
-            summary: "The current directory is not inside a git repository.".to_string(),
-            remediation: "Run 'sce doctor' from inside the target repository working tree to inspect repo-scoped SCE hook health.".to_string(),
+            summary: String::from("The current directory is not inside a git repository."),
+            remediation: String::from("Run 'sce doctor' from inside the target repository working tree to inspect repo-scoped SCE hook health."),
             next_action: "manual_steps",
         });
         Vec::new()
@@ -321,8 +321,8 @@ fn build_report_with_dependencies(
             category: ProblemCategory::RepositoryTargeting,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
-            summary: "Unable to resolve git hooks directory.".to_string(),
-            remediation: "Verify that git repository inspection succeeds and rerun 'sce doctor' inside a non-bare git repository.".to_string(),
+            summary: String::from("Unable to resolve git hooks directory."),
+            remediation: String::from("Verify that git repository inspection succeeds and rerun 'sce doctor' inside a non-bare git repository."),
             next_action: "manual_steps",
         });
         Vec::new()
@@ -379,7 +379,7 @@ fn collect_global_state_health(
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
             summary: format!("Unable to resolve expected state root: {error}"),
-            remediation: "Verify that the current platform exposes a writable SCE state directory before rerunning 'sce doctor'.".to_string(),
+            remediation: String::from("Verify that the current platform exposes a writable SCE state directory before rerunning 'sce doctor'."),
             next_action: "manual_steps",
         }),
     }
@@ -415,7 +415,7 @@ fn collect_global_state_health(
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
             summary: format!("Unable to resolve expected global config path: {error}"),
-            remediation: "Verify that the current platform exposes a writable SCE config directory before rerunning 'sce doctor'.".to_string(),
+            remediation: String::from("Verify that the current platform exposes a writable SCE config directory before rerunning 'sce doctor'."),
             next_action: "manual_steps",
         }),
     }
@@ -465,7 +465,7 @@ fn collect_global_state_health(
                 severity: ProblemSeverity::Error,
                 fixability: ProblemFixability::ManualOnly,
                 summary: format!("Unable to resolve expected Agent Trace local DB path: {error}"),
-                remediation: "Verify that the SCE state root can be resolved on this machine before rerunning 'sce doctor'.".to_string(),
+                remediation: String::from("Verify that the SCE state root can be resolved on this machine before rerunning 'sce doctor'."),
                 next_action: "manual_steps",
             });
             None
@@ -493,7 +493,7 @@ fn inspect_agent_trace_db_health(
                 "Agent Trace local DB path '{}' has no parent directory.",
                 db_health.path.display()
             ),
-            remediation: "Verify that the SCE state root resolves to a normal filesystem path before rerunning 'sce doctor'.".to_string(),
+            remediation: String::from("Verify that the SCE state root resolves to a normal filesystem path before rerunning 'sce doctor'."),
             next_action: "manual_steps",
         });
         return;
@@ -1241,7 +1241,7 @@ fn run_auto_fixes(
             fix_results.push(DoctorFixResultRecord {
                 category: ProblemCategory::HookRollout,
                 outcome: FixResult::Failed,
-                detail: "Automatic hook repair could not start because the repository root was not resolved during diagnosis.".to_string(),
+                detail: String::from("Automatic hook repair could not start because the repository root was not resolved during diagnosis."),
             });
             return fix_results;
         };
@@ -1273,7 +1273,7 @@ fn run_filesystem_auto_fixes(
         return vec![DoctorFixResultRecord {
             category: ProblemCategory::FilesystemPermissions,
             outcome: FixResult::Failed,
-            detail: "Automatic Agent Trace directory repair could not start because the expected local DB path was not resolved during diagnosis.".to_string(),
+            detail: String::from("Automatic Agent Trace directory repair could not start because the expected local DB path was not resolved during diagnosis."),
         }];
     };
 
@@ -1464,7 +1464,10 @@ mod tests {
 
     impl Drop for TestDir {
         fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
+            // Best-effort cleanup in test harness; ignore errors since we can't propagate them
+            if let Err(e) = fs::remove_dir_all(&self.path) {
+                eprintln!("Warning: Failed to clean up test directory: {e}");
+            }
         }
     }
 
@@ -1489,7 +1492,7 @@ mod tests {
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::AutoFixable,
             summary: summary.to_string(),
-            remediation: "Run 'sce doctor --fix'.".to_string(),
+            remediation: String::from("Run 'sce doctor --fix'."),
             next_action: "doctor_fix",
         }
     }

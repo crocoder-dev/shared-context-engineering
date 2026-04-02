@@ -122,7 +122,8 @@ where
     let styled_message =
         services::style::error_text(&services::security::redact_sensitive_text(&rendered));
 
-    let _ = writeln!(writer, "{styled_heading} [{styled_code}]: {styled_message}");
+    writeln!(writer, "{styled_heading} [{styled_code}]: {styled_message}")
+        .expect("writing error diagnostic to writer should not fail");
 }
 
 #[allow(clippy::too_many_lines)]
@@ -345,7 +346,7 @@ fn classify_clap_error(error: &clap::Error) -> ClassifiedError {
 }
 
 fn render_subcommand_help_from_args(args: &[String]) -> Option<(String, String)> {
-    let command_name = args.get(1)?.clone();
+    let command_name = args.get(1)?.to_owned();
     let command_path = args[1..]
         .iter()
         .take_while(|arg| !arg.starts_with('-'))
@@ -651,10 +652,11 @@ fn dispatch(
 ) -> Result<String, ClassifiedError> {
     match command {
         Command::Help => Ok(command_surface::help_text()),
-        Command::HelpText { text, .. } => Ok(text.clone()),
+        Command::HelpText { text, .. } => Ok(text.to_owned()),
         Command::Auth(request) => services::auth_command::run_auth_subcommand(*request)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::Completion(request) => Ok(services::completion::render_completion(*request)),
+        // Clone required: run_config_subcommand takes ownership of ConfigSubcommand
         Command::Config(subcommand) => services::config::run_config_subcommand(subcommand.clone())
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::Setup(request) => {
@@ -710,8 +712,10 @@ fn dispatch(
         }
         Command::Doctor(request) => services::doctor::run_doctor(*request)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
+        // Clone required: run_hooks_subcommand takes ownership of HookSubcommand
         Command::Hooks(subcommand) => services::hooks::run_hooks_subcommand(subcommand.clone())
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
+        // Clone required: run_trace_subcommand takes ownership of TraceRequest
         Command::Trace(request) => services::trace::run_trace_subcommand(request.clone())
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::Sync(request) => services::sync::run_placeholder_sync(*request)

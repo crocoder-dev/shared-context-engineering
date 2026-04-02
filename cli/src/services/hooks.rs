@@ -183,7 +183,7 @@ fn run_git_command(repository_root: &Path, args: &[&str], context_message: &str)
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let diagnostic = if stderr.is_empty() {
-            "git command exited with a non-zero status".to_string()
+            String::from("git command exited with a non-zero status")
         } else {
             stderr
         };
@@ -215,7 +215,7 @@ fn run_git_command_allow_empty(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let diagnostic = if stderr.is_empty() {
-            "git command exited with a non-zero status".to_string()
+            String::from("git command exited with a non-zero status")
         } else {
             stderr
         };
@@ -262,9 +262,11 @@ fn collect_pending_checkpoint(repository_root: &Path) -> Result<PendingCheckpoin
 
     let mut all_paths = HashSet::new();
     for path in staged_ranges.keys() {
+        // Clone required: HashSet::insert requires ownership of the key
         all_paths.insert(path.clone());
     }
     for path in unstaged_ranges.keys() {
+        // Clone required: HashSet::insert requires ownership of the key
         all_paths.insert(path.clone());
     }
 
@@ -959,7 +961,7 @@ fn load_post_commit_checkpoint_files(repository_root: &Path) -> Result<Vec<FileA
         files.push(FileAttributionInput {
             path: path.to_string(),
             conversations: vec![ConversationInput {
-                url: "https://crocoder.dev/sce/local-hooks/pre-commit-checkpoint".to_string(),
+                url: String::from("https://crocoder.dev/sce/local-hooks/pre-commit-checkpoint"),
                 related: Vec::new(),
                 ranges,
             }],
@@ -2104,7 +2106,7 @@ async fn write_trace_record_to_local_db(
         .metadata
         .get(METADATA_QUALITY_STATUS)
         .cloned()
-        .unwrap_or_else(|| "final".to_string());
+        .unwrap_or_else(|| String::from("final"));
 
     conn.execute(
         "INSERT INTO trace_records (repository_id, commit_id, trace_id, version, content_type, notes_ref, payload_json, quality_status, idempotency_key, recorded_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -2326,7 +2328,10 @@ impl TraceEmissionLedger for FileTraceEmissionLedger {
             .append(true)
             .open(&self.path)
         {
-            let _ = writeln!(file, "{commit_sha}");
+            // Best-effort append to notes; errors are logged but don't fail the commit
+            if let Err(e) = writeln!(file, "{commit_sha}") {
+                eprintln!("Warning: Failed to append commit SHA to notes: {e}");
+            }
         }
     }
 }
