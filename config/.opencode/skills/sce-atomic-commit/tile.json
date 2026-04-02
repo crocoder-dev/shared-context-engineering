@@ -1,6 +1,6 @@
 {
   "name": "crocoder-dev/opencode-sce-atomic-commit",
-  "version": "0.1.0",
+  "version": "0.2.0-pre-alpha-v1",
   "summary": "Write atomic, repo-style git commits from a change summary or diff.",
   "private": false,
   "skills": {
