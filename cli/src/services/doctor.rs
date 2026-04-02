@@ -23,8 +23,10 @@ const REQUIRED_HOOKS: [&str; 3] = [
     hook_dir::POST_COMMIT,
 ];
 
-const OPENCODE_AGENT_DIR: &str = "agent";
-const OPENCODE_COMMAND_DIR: &str = "command";
+const OPENCODE_PLUGINS_LABEL: &str = "OpenCode plugins";
+const OPENCODE_AGENTS_LABEL: &str = "OpenCode agents";
+const OPENCODE_COMMANDS_LABEL: &str = "OpenCode commands";
+const OPENCODE_SKILLS_LABEL: &str = "OpenCode skills";
 
 pub type DoctorFormat = OutputFormat;
 
@@ -134,6 +136,34 @@ enum ProblemFixability {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProblemKind {
+    GitUnavailable,
+    BareRepository,
+    NotInsideGitRepository,
+    UnableToResolveGitHooksDirectory,
+    UnableToResolveStateRoot,
+    GlobalConfigValidationFailed,
+    UnableToResolveGlobalConfigPath,
+    LocalConfigValidationFailed,
+    UnableToResolveAgentTraceLocalDbPath,
+    AgentTraceLocalDbPathHasNoParent,
+    AgentTraceLocalDbParentMissing,
+    AgentTraceLocalDbParentNotDirectory,
+    AgentTraceLocalDbParentNotWritable,
+    AgentTraceLocalDbParentInspectionFailed,
+    AgentTraceLocalDbHealthCheckFailed,
+    HooksDirectoryMissing,
+    HooksPathNotDirectory,
+    RequiredHookMissing,
+    HookNotExecutable,
+    HookContentStale,
+    OpenCodeIntegrationFilesMissing,
+    OpenCodePluginRegistryInvalid,
+    OpenCodeAssetMissingOrInvalid,
+    HookReadFailed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FixResult {
     Fixed,
     Skipped,
@@ -143,6 +173,7 @@ enum FixResult {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DoctorProblem {
+    kind: ProblemKind,
     category: ProblemCategory,
     severity: ProblemSeverity,
     fixability: ProblemFixability,
@@ -308,6 +339,7 @@ fn build_report_with_dependencies(
 
     let hooks = if !git_available {
         problems.push(DoctorProblem {
+            kind: ProblemKind::GitUnavailable,
             category: ProblemCategory::RepositoryTargeting,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
@@ -318,6 +350,7 @@ fn build_report_with_dependencies(
         Vec::new()
     } else if bare_repository {
         problems.push(DoctorProblem {
+            kind: ProblemKind::BareRepository,
             category: ProblemCategory::RepositoryTargeting,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
@@ -328,6 +361,7 @@ fn build_report_with_dependencies(
         Vec::new()
     } else if detected_repository_root.is_none() {
         problems.push(DoctorProblem {
+            kind: ProblemKind::NotInsideGitRepository,
             category: ProblemCategory::RepositoryTargeting,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
@@ -340,6 +374,7 @@ fn build_report_with_dependencies(
         collect_hook_health(directory, &mut problems)
     } else {
         problems.push(DoctorProblem {
+            kind: ProblemKind::UnableToResolveGitHooksDirectory,
             category: ProblemCategory::RepositoryTargeting,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
@@ -350,17 +385,17 @@ fn build_report_with_dependencies(
         Vec::new()
     };
 
-    if git_available && !bare_repository {
+    let integration_groups = if git_available && !bare_repository {
         if let Some(resolved_root) = detected_repository_root.as_deref() {
-            inspect_opencode_integration_health(resolved_root, &mut problems);
+            let integration_groups = collect_opencode_integration_groups(resolved_root);
+            inspect_opencode_integration_health(resolved_root, &integration_groups, &mut problems);
+            integration_groups
+        } else {
+            Vec::new()
         }
-    }
-
-    let integration_groups = detected_repository_root
-        .as_deref()
-        .filter(|_| git_available && !bare_repository)
-        .map(collect_opencode_integration_groups)
-        .unwrap_or_default();
+    } else {
+        Vec::new()
+    };
 
     let readiness = if problems
         .iter()
@@ -404,6 +439,7 @@ fn collect_global_state_health(
             });
         }
         Err(error) => problems.push(DoctorProblem {
+            kind: ProblemKind::UnableToResolveStateRoot,
             category: ProblemCategory::GlobalState,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
@@ -418,6 +454,7 @@ fn collect_global_state_health(
             if global_path.exists() {
                 if let Err(error) = (dependencies.validate_config_file)(&global_path) {
                     problems.push(DoctorProblem {
+                        kind: ProblemKind::GlobalConfigValidationFailed,
                         category: ProblemCategory::GlobalState,
                         severity: ProblemSeverity::Error,
                         fixability: ProblemFixability::ManualOnly,
@@ -440,6 +477,7 @@ fn collect_global_state_health(
             });
         }
         Err(error) => problems.push(DoctorProblem {
+            kind: ProblemKind::UnableToResolveGlobalConfigPath,
             category: ProblemCategory::GlobalState,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
@@ -453,6 +491,7 @@ fn collect_global_state_health(
     if local_path.exists() {
         if let Err(error) = (dependencies.validate_config_file)(&local_path) {
             problems.push(DoctorProblem {
+                kind: ProblemKind::LocalConfigValidationFailed,
                 category: ProblemCategory::GlobalState,
                 severity: ProblemSeverity::Error,
                 fixability: ProblemFixability::ManualOnly,
@@ -490,6 +529,7 @@ fn collect_global_state_health(
         }
         Err(error) => {
             problems.push(DoctorProblem {
+                kind: ProblemKind::UnableToResolveAgentTraceLocalDbPath,
                 category: ProblemCategory::GlobalState,
                 severity: ProblemSeverity::Error,
                 fixability: ProblemFixability::ManualOnly,
@@ -515,6 +555,7 @@ fn inspect_agent_trace_db_health(
 ) {
     let Some(parent) = db_health.path.parent() else {
         problems.push(DoctorProblem {
+            kind: ProblemKind::AgentTraceLocalDbPathHasNoParent,
             category: ProblemCategory::GlobalState,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
@@ -531,6 +572,7 @@ fn inspect_agent_trace_db_health(
     match inspect_directory_write_readiness(parent) {
         DirectoryWriteReadiness::Ready => {}
         DirectoryWriteReadiness::Missing => problems.push(DoctorProblem {
+            kind: ProblemKind::AgentTraceLocalDbParentMissing,
             category: ProblemCategory::FilesystemPermissions,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::AutoFixable,
@@ -545,6 +587,7 @@ fn inspect_agent_trace_db_health(
             next_action: "doctor_fix",
         }),
         DirectoryWriteReadiness::NotDirectory => problems.push(DoctorProblem {
+            kind: ProblemKind::AgentTraceLocalDbParentNotDirectory,
             category: ProblemCategory::FilesystemPermissions,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
@@ -559,6 +602,7 @@ fn inspect_agent_trace_db_health(
             next_action: "manual_steps",
         }),
         DirectoryWriteReadiness::ReadOnly => problems.push(DoctorProblem {
+            kind: ProblemKind::AgentTraceLocalDbParentNotWritable,
             category: ProblemCategory::FilesystemPermissions,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
@@ -573,6 +617,7 @@ fn inspect_agent_trace_db_health(
             next_action: "manual_steps",
         }),
         DirectoryWriteReadiness::Unknown(error) => problems.push(DoctorProblem {
+            kind: ProblemKind::AgentTraceLocalDbParentInspectionFailed,
             category: ProblemCategory::FilesystemPermissions,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
@@ -591,6 +636,7 @@ fn inspect_agent_trace_db_health(
     if db_health.path.exists() {
         if let Err(error) = (dependencies.check_agent_trace_local_db_health)(&db_health.path) {
             problems.push(DoctorProblem {
+                kind: ProblemKind::AgentTraceLocalDbHealthCheckFailed,
                 category: ProblemCategory::GlobalState,
                 severity: ProblemSeverity::Error,
                 fixability: ProblemFixability::ManualOnly,
@@ -611,6 +657,7 @@ fn inspect_agent_trace_db_health(
 fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> Vec<HookFileHealth> {
     if !directory.exists() {
         problems.push(DoctorProblem {
+            kind: ProblemKind::HooksDirectoryMissing,
             category: ProblemCategory::HookRollout,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::AutoFixable,
@@ -623,6 +670,7 @@ fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> V
         });
     } else if !directory.is_dir() {
         problems.push(DoctorProblem {
+            kind: ProblemKind::HooksPathNotDirectory,
             category: ProblemCategory::HookRollout,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
@@ -648,6 +696,7 @@ fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> V
 
             if !exists {
                 problems.push(DoctorProblem {
+                    kind: ProblemKind::RequiredHookMissing,
                     category: ProblemCategory::HookRollout,
                     severity: ProblemSeverity::Error,
                     fixability: ProblemFixability::AutoFixable,
@@ -663,6 +712,7 @@ fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> V
                 });
             } else if !executable {
                 problems.push(DoctorProblem {
+                    kind: ProblemKind::HookNotExecutable,
                     category: ProblemCategory::HookRollout,
                     severity: ProblemSeverity::Error,
                     fixability: ProblemFixability::AutoFixable,
@@ -677,6 +727,7 @@ fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> V
 
             if content_state == HookContentState::Stale {
                 problems.push(DoctorProblem {
+                    kind: ProblemKind::HookContentStale,
                     category: ProblemCategory::HookRollout,
                     severity: ProblemSeverity::Error,
                     fixability: ProblemFixability::AutoFixable,
@@ -703,10 +754,12 @@ fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> V
         .collect()
 }
 
-fn inspect_opencode_integration_health(repository_root: &Path, problems: &mut Vec<DoctorProblem>) {
-    let integration_groups = collect_opencode_integration_groups(repository_root);
-
-    for group in &integration_groups {
+fn inspect_opencode_integration_health(
+    repository_root: &Path,
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
+    for group in integration_groups {
         let missing_children = group
             .children
             .iter()
@@ -722,6 +775,7 @@ fn inspect_opencode_integration_health(repository_root: &Path, problems: &mut Ve
             .collect::<Vec<_>>()
             .join(", ");
         problems.push(DoctorProblem {
+            kind: ProblemKind::OpenCodeIntegrationFilesMissing,
             category: ProblemCategory::RepoAssets,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
@@ -758,6 +812,7 @@ fn inspect_opencode_integration_health(repository_root: &Path, problems: &mut Ve
             )
         };
         problems.push(DoctorProblem {
+            kind: ProblemKind::OpenCodePluginRegistryInvalid,
             category: ProblemCategory::RepoAssets,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
@@ -816,6 +871,7 @@ fn inspect_opencode_asset_presence(
         )
     };
     problems.push(DoctorProblem {
+        kind: ProblemKind::OpenCodeAssetMissingOrInvalid,
         category: ProblemCategory::RepoAssets,
         severity: ProblemSeverity::Warning,
         fixability: ProblemFixability::ManualOnly,
@@ -831,21 +887,22 @@ fn inspect_opencode_asset_presence(
 fn collect_opencode_integration_groups(repository_root: &Path) -> Vec<IntegrationGroupHealth> {
     let repo_paths = RepoPaths::new(repository_root);
     let opencode_root = repo_paths.opencode_dir();
+    let manifest_path = repo_paths.opencode_manifest_file();
     let mut plugin_children = vec![IntegrationChildHealth {
         relative_path: String::from("opencode.json"),
-        path: repo_paths.opencode_manifest_file(),
-        present: path_is_file(&repo_paths.opencode_manifest_file()),
+        path: manifest_path.clone(),
+        present: path_is_file(&manifest_path),
     }];
     let mut agent_children = Vec::new();
     let mut command_children = Vec::new();
     let mut skill_children = Vec::new();
 
     for asset in iter_embedded_assets_for_setup_target(SetupTarget::OpenCode) {
-        let path = opencode_root.join(asset.relative_path);
+        let asset_path = opencode_root.join(asset.relative_path);
         let child = IntegrationChildHealth {
             relative_path: asset.relative_path.to_string(),
-            path,
-            present: path_is_file(&opencode_root.join(asset.relative_path)),
+            path: asset_path.clone(),
+            present: path_is_file(&asset_path),
         };
 
         if child
@@ -858,12 +915,12 @@ fn collect_opencode_integration_groups(repository_root: &Path) -> Vec<Integratio
             plugin_children.push(child);
         } else if child
             .relative_path
-            .starts_with(&format!("{OPENCODE_AGENT_DIR}/"))
+            .starts_with(&format!("{}/", opencode_asset::OPENCODE_AGENT_DIR))
         {
             agent_children.push(child);
         } else if child
             .relative_path
-            .starts_with(&format!("{OPENCODE_COMMAND_DIR}/"))
+            .starts_with(&format!("{}/", opencode_asset::OPENCODE_COMMAND_DIR))
         {
             command_children.push(child);
         } else if child
@@ -881,19 +938,19 @@ fn collect_opencode_integration_groups(repository_root: &Path) -> Vec<Integratio
 
     vec![
         IntegrationGroupHealth {
-            label: "OpenCode plugins",
+            label: OPENCODE_PLUGINS_LABEL,
             children: plugin_children,
         },
         IntegrationGroupHealth {
-            label: "OpenCode agents",
+            label: OPENCODE_AGENTS_LABEL,
             children: agent_children,
         },
         IntegrationGroupHealth {
-            label: "OpenCode commands",
+            label: OPENCODE_COMMANDS_LABEL,
             children: command_children,
         },
         IntegrationGroupHealth {
-            label: "OpenCode skills",
+            label: OPENCODE_SKILLS_LABEL,
             children: skill_children,
         },
     ]
@@ -933,6 +990,7 @@ fn inspect_hook_content_state(
         }
         Err(error) => {
             problems.push(DoctorProblem {
+                kind: ProblemKind::HookReadFailed,
                 category: ProblemCategory::FilesystemPermissions,
                 severity: ProblemSeverity::Error,
                 fixability: ProblemFixability::ManualOnly,
@@ -1193,11 +1251,11 @@ fn human_text_status_token(status: HumanTextStatus, color_enabled: bool) -> Stri
 }
 
 fn state_root_status(report: &HookDoctorReport) -> HumanTextStatus {
-    if report.problems.iter().any(|problem| {
-        problem
-            .summary
-            .starts_with("Unable to resolve expected state root")
-    }) {
+    if report
+        .problems
+        .iter()
+        .any(|problem| problem.kind == ProblemKind::UnableToResolveStateRoot)
+    {
         HumanTextStatus::Fail
     } else {
         HumanTextStatus::Pass
@@ -1207,15 +1265,16 @@ fn state_root_status(report: &HookDoctorReport) -> HumanTextStatus {
 fn agent_trace_local_db_status(report: &HookDoctorReport) -> HumanTextStatus {
     if report.agent_trace_local_db.is_none()
         || report.problems.iter().any(|problem| {
-            problem
-                .summary
-                .starts_with("Unable to resolve expected Agent Trace local DB path")
-                || problem.summary.starts_with("Agent Trace local DB path '")
-                || problem.summary.starts_with("Agent Trace local DB parent ")
-                || problem
-                    .summary
-                    .starts_with("Unable to inspect Agent Trace local DB parent directory '")
-                || problem.summary.starts_with("Agent Trace local DB '")
+            matches!(
+                problem.kind,
+                ProblemKind::UnableToResolveAgentTraceLocalDbPath
+                    | ProblemKind::AgentTraceLocalDbPathHasNoParent
+                    | ProblemKind::AgentTraceLocalDbParentMissing
+                    | ProblemKind::AgentTraceLocalDbParentNotDirectory
+                    | ProblemKind::AgentTraceLocalDbParentNotWritable
+                    | ProblemKind::AgentTraceLocalDbParentInspectionFailed
+                    | ProblemKind::AgentTraceLocalDbHealthCheckFailed
+            )
         })
     {
         HumanTextStatus::Fail
@@ -1267,19 +1326,19 @@ fn integration_groups_for_text(report: &HookDoctorReport) -> Vec<IntegrationGrou
     if report.repository_root.is_none() {
         return vec![
             IntegrationGroupHealth {
-                label: "OpenCode plugins",
+                label: OPENCODE_PLUGINS_LABEL,
                 children: Vec::new(),
             },
             IntegrationGroupHealth {
-                label: "OpenCode agents",
+                label: OPENCODE_AGENTS_LABEL,
                 children: Vec::new(),
             },
             IntegrationGroupHealth {
-                label: "OpenCode commands",
+                label: OPENCODE_COMMANDS_LABEL,
                 children: Vec::new(),
             },
             IntegrationGroupHealth {
-                label: "OpenCode skills",
+                label: OPENCODE_SKILLS_LABEL,
                 children: Vec::new(),
             },
         ];
