@@ -1297,25 +1297,47 @@ fn config_location_status(
 }
 
 fn repository_root_status(report: &HookDoctorReport) -> HumanTextStatus {
-    if report.repository_root.is_some() {
+    let has_blocking_problem = report.problems.iter().any(|p| {
+        matches!(
+            p.kind,
+            ProblemKind::BareRepository | ProblemKind::NotInsideGitRepository
+        )
+    });
+    if has_blocking_problem {
+        HumanTextStatus::Fail
+    } else if report.repository_root.is_some() {
         HumanTextStatus::Pass
     } else {
-        HumanTextStatus::Fail
+        HumanTextStatus::Miss
     }
 }
 
 fn hooks_directory_status(report: &HookDoctorReport) -> HumanTextStatus {
-    if report.hooks_directory.is_some() {
+    let has_blocking_problem = report.problems.iter().any(|p| {
+        matches!(
+            p.kind,
+            ProblemKind::HooksDirectoryMissing
+                | ProblemKind::HooksPathNotDirectory
+                | ProblemKind::UnableToResolveGitHooksDirectory
+        )
+    });
+    if has_blocking_problem {
+        HumanTextStatus::Fail
+    } else if report.hooks_directory.is_some() {
         HumanTextStatus::Pass
     } else {
-        HumanTextStatus::Fail
+        HumanTextStatus::Miss
     }
 }
 
 fn hook_human_text_status(hook: &HookFileHealth) -> HumanTextStatus {
     if !hook.exists {
         HumanTextStatus::Miss
-    } else if hook.content_state == HookContentState::Stale || !hook.executable {
+    } else if matches!(
+        hook.content_state,
+        HookContentState::Stale | HookContentState::Unknown
+    ) || !hook.executable
+    {
         HumanTextStatus::Fail
     } else {
         HumanTextStatus::Pass
