@@ -20,27 +20,106 @@ Out of scope for this contract task:
 
 ## Current implementation baseline
 
-At the current implementation point, the runtime in `cli/src/services/doctor.rs` exposes the approved doctor command surface and stable output-shape scaffolding, and now covers the global-readiness slice plus the current repo-integrity, database-inventory, and repair slices:
+The runtime in `cli/src/services/doctor.rs` exposes the approved doctor command surface and stable output-shape scaffolding, and covers the global-readiness slice plus the current repo-integrity, database-inventory, and repair slices:
 
 - explicit mode selection through `sce doctor` (`diagnose`) and `sce doctor --fix` (`fix`)
 - command/help wiring for `--fix` plus stable text/JSON mode reporting
+- human text rendering with `SCE doctor diagnose` / `SCE doctor fix` header + ordered `Environment`, `Configuration`, `Repository`, `Git Hooks`, and `Integrations` sections
+- exact human text status vocabulary `[PASS]`, `[FAIL]`, and `[MISS]`
+- text summary footer with blocking-problem and warning counts
 - Agent Trace local DB reporting in default doctor output
 - stable problem records with category, severity, fixability, and remediation metadata
 - deterministic fix-result records in fix mode with `fixed`, `skipped`, `manual`, and `failed` outcomes
-- state-root reporting as `present` or `expected`
+- simplified `label (path)` human rows for healthy path-backed state/config/repository/hook entries, without redundant `present` / `expected` prose
 - default global/local config-file location reporting, plus validation of existing global and repo-local `sce/config.json` readability and schema compliance
 - Agent Trace local DB location reporting, DB parent-directory readiness checks, and existing-DB health validation
 - Agent Trace local DB reporting in default doctor output
 - explicit git-unavailable, outside-repo, and bare-repo repository-targeting failures
 - effective hook-path source (`default`, local `core.hooksPath`, global `core.hooksPath`)
 - repository root and hooks directory resolution when a repository target is detected
+- top-level-only human text hook rows for `pre-commit`, `commit-msg`, and `post-commit`, with nested `content` / `executable` detail removed from text mode
 - required hook presence and executable permissions for `pre-commit`, `commit-msg`, and `post-commit` when repo-scoped checks apply
 - byte-for-byte stale-content detection for required hook payloads against canonical embedded SCE-managed hook assets
-- repo-scoped OpenCode plugin registry/file presence checks for the `sce-bash-policy` plugin when `.opencode/` exists, plus runtime dependency and preset catalog presence checks; registry-missing is an error while file/runtime/preset findings are warnings (manual-only remediation)
+- repo-root installed OpenCode integration presence inventory for `OpenCode plugins`, `OpenCode agents`, `OpenCode commands`, and `OpenCode skills`
+- presence-only child-row reporting for those four integration groups, with missing required files rendered as `[MISS]` and any affected parent group rendered as `[FAIL]`
+- repo-root OpenCode plugin inventory includes the installed manifest file plus plugin/runtime/preset artifacts as required presence-only files; generated `config/.opencode/**` trees are not inspected by doctor
 - repair-mode reuse of `cli/src/services/setup.rs::install_required_git_hooks` for missing hooks directories plus missing, stale, or non-executable required hooks
 - doctor-owned bootstrap of the missing canonical SCE-owned Agent Trace DB parent directory, with deterministic refusal when the resolved path does not match the expected owned location
 
-Downstream tasks must expand the runtime from this current baseline to the full contract below without changing the command entrypoint.
+## Approved human text-mode contract
+
+Plan `doctor-human-text-integration-audit` task `T01` locks the approved human-facing `sce doctor` text contract for downstream implementation tasks.
+This section is now implemented by the current runtime and remains normative for future changes.
+
+### Text-mode section order
+
+Human text output for `sce doctor` must render these sections in this exact order:
+
+1. `Environment`
+2. `Configuration`
+3. `Repository`
+4. `Git Hooks`
+5. `Integrations`
+
+### Human text status vocabulary
+
+Human text rows must use exactly this status vocabulary:
+
+- `[PASS]`: healthy
+- `[FAIL]`: SCE will not work unless fixed
+- `[MISS]`: required file is missing
+
+No alternate human text status labels are allowed for this layout.
+
+When shared CLI color output is enabled, `[PASS]` renders green and `[FAIL]` / `[MISS]` render red.
+When color is disabled, human text still renders the exact bracketed tokens without ANSI sequences.
+
+### Header and row formatting
+
+Diagnose mode renders the header `SCE doctor diagnose`.
+Fix mode renders the header `SCE doctor fix`.
+
+Human text rows with path detail use the simplified `label (path)` form.
+Healthy human rows do not append redundant prose such as `present`, `expected`, or `all required files present`.
+
+Repository rows use the labels `Repository` and `Hooks` in text mode.
+
+### Git Hooks text simplification
+
+Human text output for `Git Hooks` is simplified to top-level required-hook presence rows only.
+Nested human text rows for hook `content` or `executable` detail are not part of the approved layout.
+This simplification is text-mode only and does not change JSON output requirements.
+
+### Integrations text contract
+
+Human text output for `Integrations` must use exactly these groups:
+
+- `OpenCode plugins`
+- `OpenCode agents`
+- `OpenCode commands`
+- `OpenCode skills`
+
+Integration checks for this contract inspect installed repo-root artifacts only.
+They validate file presence only and do not inspect file contents.
+Generated `config/.opencode/**` trees are out of scope for doctor integration checks in this change stream.
+
+For `agents`, `commands`, and `skills`, the installed repo-root trees are required inventory.
+If any required file in an integration group is missing:
+
+- the missing child row renders `[MISS]`
+- the parent integration group renders `[FAIL]`
+
+An integration group renders `[PASS]` only when every required installed file in that group is present.
+
+Healthy integration parent rows render the group name only.
+Integration child rows render as `[STATUS] relative/path (absolute/path)` in text mode.
+
+### Non-goals for this contract slice
+
+- no JSON output shape or semantic changes
+- no `sce doctor --fix` behavior changes
+- no integration content-drift validation
+- no new integration group names
 
 ## Command surface contract
 
@@ -212,5 +291,5 @@ No new SCE setup/install capability is considered complete until matching `sce d
 
 ## Downstream verification targets
 
-`T02` through `T08` must verify this contract through parser/help tests, doctor-focused service tests, and final repo verification.
-At minimum, downstream work must prove deterministic coverage for output shape, readiness transitions, diagnosis-only safety, supported `--fix` repairs, refusal paths for unsafe repairs, and setup-to-doctor alignment for newly managed surfaces.
+The implemented doctor command is verified through parser/help tests, doctor-focused service tests, and final repository verification.
+The current validation baseline proves deterministic coverage for output shape, readiness transitions, diagnosis-only safety, supported `--fix` repairs, refusal paths for unsafe repairs, and setup-to-doctor alignment for newly managed surfaces.
