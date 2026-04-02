@@ -735,7 +735,7 @@ fn run_git_command_in_directory(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let diagnostic = if stderr.is_empty() {
-            "git command exited with a non-zero status".to_string()
+            String::from("git command exited with a non-zero status")
         } else {
             redact_sensitive_text(&stderr)
         };
@@ -1147,7 +1147,14 @@ fn cleanup_path_if_exists(path: &Path) {
         fs::remove_file(path)
     };
 
-    let _ = cleanup_result;
+    // Best-effort cleanup; log errors but don't fail the operation
+    if let Err(e) = cleanup_result {
+        eprintln!(
+            "Warning: Failed to clean up temporary path '{}': {}",
+            path.display(),
+            e
+        );
+    }
 }
 
 pub trait SetupTargetPrompter {

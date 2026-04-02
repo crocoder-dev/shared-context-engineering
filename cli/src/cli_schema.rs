@@ -24,6 +24,8 @@ pub fn render_help_for_path(path: &[&str]) -> Option<String> {
     let mut command = Cli::command();
 
     for segment in path {
+        // Clone required: find_subcommand_mut returns a mutable reference that cannot
+        // be kept alive across loop iterations, so we must clone to get an owned value
         command = command.find_subcommand_mut(segment)?.clone();
     }
 

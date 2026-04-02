@@ -105,21 +105,23 @@ fn generate_embedded_asset_manifest() -> io::Result<()> {
         collect_files(&source_root, &source_root, &mut files)?;
         files.sort_unstable_by(|a, b| a.relative_path.cmp(&b.relative_path));
 
-        let _ = writeln!(
+        writeln!(
             output,
             "pub static {}: &[EmbeddedAsset] = &[",
             target.const_name
-        );
+        )
+        .expect("writing to String buffer should never fail");
 
         for file in &files {
             println!("cargo:rerun-if-changed={}", file.absolute_path.display());
-            let _ = writeln!(
+            writeln!(
                 output,
                 "    EmbeddedAsset {{ relative_path: \"{}\", bytes: include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"{}{}\")) }},",
                 escape_for_rust_string(&file.relative_path),
                 target.include_prefix,
                 escape_for_rust_string(&file.relative_path),
-            );
+            )
+            .expect("writing to String buffer should never fail");
         }
 
         output.push_str("];\n\n");

@@ -272,7 +272,9 @@ fn render_prompt_trace_text(report: &PromptTraceReport) -> String {
         );
         if prompt.is_truncated {
             use std::fmt::Write;
-            let _ = write!(&mut header, "  {}", style::value("[truncated]"));
+            // Writing to String buffer cannot fail in practice
+            write!(&mut header, "  {}", style::value("[truncated]"))
+                .expect("writing to String buffer should never fail");
         }
         lines.push(header);
         lines.push(format!("  {}", prompt.prompt_text.replace('\n', "\n  ")));
@@ -332,7 +334,7 @@ pub(crate) fn render_prompt_trace_for_test(
 
 fn format_duration_ms(duration_ms: i64) -> String {
     if duration_ms <= 0 {
-        return "0s".to_string();
+        return String::from("0s");
     }
 
     let total_seconds = duration_ms / 1_000;
