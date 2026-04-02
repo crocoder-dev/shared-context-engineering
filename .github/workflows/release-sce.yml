@@ -40,7 +40,7 @@ jobs:
           set -euo pipefail
 
           cargo_version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' cli/Cargo.toml | head -n 1)"
-          npm_version="$(node -p \"JSON.parse(require('fs').readFileSync('npm/package.json', 'utf8')).version\")"
+          npm_version="$(node -p "JSON.parse(require('fs').readFileSync('npm/package.json', 'utf8')).version")"
 
           version="$(tr -d '\n' < .version)"
           tag="v${version}"
@@ -93,7 +93,7 @@ jobs:
           set -euo pipefail
 
           cargo_version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' cli/Cargo.toml | head -n 1)"
-          npm_version="$(node -p \"JSON.parse(require('fs').readFileSync('npm/package.json', 'utf8')).version\")"
+          npm_version="$(node -p "JSON.parse(require('fs').readFileSync('npm/package.json', 'utf8')).version")"
 
           if [ -n "$DISPATCH_TAG" ]; then
             tag="$DISPATCH_TAG"
