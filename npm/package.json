@@ -1,5 +1,5 @@
 {
-	"name": "sce",
+	"name": "@crocoder-dev/sce",
 	"version": "0.2.0-pre-alpha-v1",
 	"description": "npm launcher package for the Shared Context Engineering CLI",
 	"type": "module",
