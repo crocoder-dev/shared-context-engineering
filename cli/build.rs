@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::{
     env,
     fmt::Write,
@@ -114,12 +115,15 @@ fn generate_embedded_asset_manifest() -> io::Result<()> {
 
         for file in &files {
             println!("cargo:rerun-if-changed={}", file.absolute_path.display());
+            let sha256 = compute_sha256(&file.absolute_path)?;
+            let sha256_literal = format_sha256_literal(&sha256);
             writeln!(
                 output,
-                "    EmbeddedAsset {{ relative_path: \"{}\", bytes: include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"{}{}\")) }},",
+                "    EmbeddedAsset {{ relative_path: \"{}\", bytes: include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"{}{}\")), sha256: {} }},",
                 escape_for_rust_string(&file.relative_path),
                 target.include_prefix,
                 escape_for_rust_string(&file.relative_path),
+                sha256_literal,
             )
             .expect("writing to String buffer should never fail");
         }
@@ -185,6 +189,24 @@ fn normalize_relative_path(path: &Path) -> io::Result<String> {
 
 fn escape_for_rust_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn compute_sha256(path: &Path) -> io::Result<[u8; 32]> {
+    let bytes = fs::read(path)?;
+    let digest = Sha256::digest(&bytes);
+    Ok(digest.into())
+}
+
+fn format_sha256_literal(hash: &[u8; 32]) -> String {
+    let mut output = String::from("[");
+    for (index, byte) in hash.iter().enumerate() {
+        if index > 0 {
+            output.push_str(", ");
+        }
+        write!(&mut output, "0x{byte:02x}").expect("writing to String buffer should never fail");
+    }
+    output.push(']');
+    output
 }
 
 fn invalid_data<E: ToString>(error: &E) -> io::Error {

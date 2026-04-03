@@ -40,8 +40,8 @@ The runtime in `cli/src/services/doctor.rs` exposes the approved doctor command 
 - top-level-only human text hook rows for `pre-commit`, `commit-msg`, and `post-commit`, with nested `content` / `executable` detail removed from text mode
 - required hook presence and executable permissions for `pre-commit`, `commit-msg`, and `post-commit` when repo-scoped checks apply
 - byte-for-byte stale-content detection for required hook payloads against canonical embedded SCE-managed hook assets
-- repo-root installed OpenCode integration presence inventory for `OpenCode plugins`, `OpenCode agents`, `OpenCode commands`, and `OpenCode skills`
-- presence-only child-row reporting for those four integration groups, with missing required files rendered as `[MISS]` and any affected parent group rendered as `[FAIL]`
+- repo-root installed OpenCode integration inventory for `OpenCode plugins`, `OpenCode agents`, `OpenCode commands`, and `OpenCode skills`
+- integration child-row reporting for those four groups now validates file content against embedded SHA-256; missing files render as `[MISS]`, content mismatches render as `[FAIL]`, and any affected parent group renders as `[FAIL]`
 - repo-root OpenCode plugin inventory includes the installed manifest file plus plugin/runtime/preset artifacts as required presence-only files; generated `config/.opencode/**` trees are not inspected by doctor
 - repair-mode reuse of `cli/src/services/setup.rs::install_required_git_hooks` for missing hooks directories plus missing, stale, or non-executable required hooks
 - doctor-owned bootstrap of the missing canonical SCE-owned Agent Trace DB parent directory, with deterministic refusal when the resolved path does not match the expected owned location
@@ -100,13 +100,14 @@ Human text output for `Integrations` must use exactly these groups:
 - `OpenCode skills`
 
 Integration checks for this contract inspect installed repo-root artifacts only.
-They validate file presence only and do not inspect file contents.
+They validate file presence and content hashes against embedded OpenCode assets.
 Generated `config/.opencode/**` trees are out of scope for doctor integration checks in this change stream.
 
 For `agents`, `commands`, and `skills`, the installed repo-root trees are required inventory.
-If any required file in an integration group is missing:
+If any required file in an integration group is missing or mismatched:
 
-- the missing child row renders `[MISS]`
+- missing child rows render `[MISS]`
+- mismatched child rows render `[FAIL]` and include a content-mismatch detail
 - the parent integration group renders `[FAIL]`
 
 An integration group renders `[PASS]` only when every required installed file in that group is present.
@@ -118,7 +119,7 @@ Integration child rows render as `[STATUS] relative/path (absolute/path)` in tex
 
 - no JSON output shape or semantic changes
 - no `sce doctor --fix` behavior changes
-- no integration content-drift validation
+- no Claude integration content validation
 - no new integration group names
 
 ## Command surface contract
