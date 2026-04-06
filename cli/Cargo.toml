@@ -1,5 +1,5 @@
 [package]
-name = "sce"
+name = "shared-context-engineering"
 version = "0.2.0-pre-alpha-v1"
 edition = "2021"
 description = "Shared Context Engineering CLI"
