@@ -2600,33 +2600,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
-name = "shared-context-engineering"
-version = "0.2.0-pre-alpha-v1"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "clap_complete",
- "dirs",
- "hmac",
- "inquire",
- "jsonschema",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "owo-colors 4.3.0",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "turso",
-]
-
-[[package]]
 name = "scoped-tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2723,6 +2696,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
+]
+
+[[package]]
+name = "shared-context-engineering"
+version = "0.2.0-pre-alpha-v2"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "dirs",
+ "hmac",
+ "inquire",
+ "jsonschema",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "owo-colors 4.3.0",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "turso",
 ]
 
 [[package]]
