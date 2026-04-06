@@ -101,8 +101,8 @@ jobs:
           package_version="$(tar -xOf "$package_file" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")"
           package_name="$(tar -xOf "$package_file" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).name")"
 
-          if [ "$package_name" != "sce" ]; then
-            printf 'Downloaded package name %s is not sce\n' "$package_name" >&2
+          if [ "$package_name" != "@crocoder-dev/sce" ]; then
+            printf 'Downloaded package name %s is not @crocoder-dev/sce\n' "$package_name" >&2
             exit 1
           fi
 

@@ -4,7 +4,7 @@ This file captures the implemented npm distribution slice from `context/plans/sc
 
 ## Package surface
 
-- The npm package name is `sce`.
+- The npm package name is `@crocoder-dev/sce`.
 - The committed package source lives under `npm/`.
 - `npm/package.json` exposes the `sce` binary through `bin/sce.js`.
 - The npm package is a thin launcher package, not a separate build pipeline.
@@ -41,7 +41,7 @@ This file captures the implemented npm distribution slice from `context/plans/sc
 - It triggers from a published GitHub release or manual dispatch.
 - It validates parity across repo-root `.version`, checked-in `npm/package.json`, and the target release tag before attempting publication.
 - It downloads the canonical `sce-v<version>-npm.tgz` asset from the corresponding GitHub release rather than rebuilding or mutating package metadata during publish.
-- It verifies the downloaded tarball still declares package name `sce` and version `<.version>` before `npm publish`.
+- It verifies the downloaded tarball still declares package name `@crocoder-dev/sce` and version `<.version>` before `npm publish`.
 - Real publication requires `NPM_TOKEN`; manual dispatch can remain on a dry-run path via `npm publish --dry-run`.
 - The npm publish workflow publishes the already-versioned checked-in `npm/` package and does not invent or bump a release version during workflow execution.
 - The npm installer continues to trust GitHub Releases as the canonical host for signed manifest and native binary artifacts.

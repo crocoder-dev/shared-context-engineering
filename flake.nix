@@ -580,15 +580,18 @@
 
             mv "$packed_name" "$out_dir/$package_name"
 
+            npm_pkg_name="$(${pkgs.nodejs}/bin/node -p "JSON.parse(require('fs').readFileSync('npm/package.json', 'utf8')).name")"
+
             jq \
               --null-input \
               --arg version "$version" \
               --arg package "$package_name" \
+              --arg npm_pkg_name "$npm_pkg_name" \
               '{
                 version: $version,
-                package_name: "sce",
+                package_name: $npm_pkg_name,
                 package_file: $package,
-                install_command: "npm install -g sce"
+                install_command: "npm install -g \($npm_pkg_name)"
               }' > "$out_dir/$metadata_name"
 
             printf 'Built npm release assets:\n'
