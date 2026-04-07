@@ -12,24 +12,20 @@ const TARGETS: &[TargetSpec] = &[
     TargetSpec {
         const_name: "OPENCODE_EMBEDDED_ASSETS",
         relative_root: "assets/generated/config/opencode",
-        include_prefix: "/assets/generated/config/opencode/",
     },
     TargetSpec {
         const_name: "CLAUDE_EMBEDDED_ASSETS",
         relative_root: "assets/generated/config/claude",
-        include_prefix: "/assets/generated/config/claude/",
     },
     TargetSpec {
         const_name: "HOOK_EMBEDDED_ASSETS",
         relative_root: "assets/hooks",
-        include_prefix: "/assets/hooks/",
     },
 ];
 
 struct TargetSpec {
     const_name: &'static str,
     relative_root: &'static str,
-    include_prefix: &'static str,
 }
 
 fn main() {
@@ -115,14 +111,15 @@ fn generate_embedded_asset_manifest() -> io::Result<()> {
 
         for file in &files {
             println!("cargo:rerun-if-changed={}", file.absolute_path.display());
-            let sha256 = compute_sha256(&file.absolute_path)?;
+            let bytes = fs::read(&file.absolute_path)?;
+            let sha256 = compute_sha256(&bytes);
             let sha256_literal = format_sha256_literal(&sha256);
+            let bytes_literal = format_bytes_literal(&bytes);
             writeln!(
                 output,
-                "    EmbeddedAsset {{ relative_path: \"{}\", bytes: include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"{}{}\")), sha256: {} }},",
+                "    EmbeddedAsset {{ relative_path: \"{}\", bytes: {}, sha256: {} }},",
                 escape_for_rust_string(&file.relative_path),
-                target.include_prefix,
-                escape_for_rust_string(&file.relative_path),
+                bytes_literal,
                 sha256_literal,
             )
             .expect("writing to String buffer should never fail");
@@ -191,15 +188,26 @@ fn escape_for_rust_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn compute_sha256(path: &Path) -> io::Result<[u8; 32]> {
-    let bytes = fs::read(path)?;
-    let digest = Sha256::digest(&bytes);
-    Ok(digest.into())
+fn compute_sha256(bytes: &[u8]) -> [u8; 32] {
+    let digest = Sha256::digest(bytes);
+    digest.into()
 }
 
 fn format_sha256_literal(hash: &[u8; 32]) -> String {
     let mut output = String::from("[");
     for (index, byte) in hash.iter().enumerate() {
+        if index > 0 {
+            output.push_str(", ");
+        }
+        write!(&mut output, "0x{byte:02x}").expect("writing to String buffer should never fail");
+    }
+    output.push(']');
+    output
+}
+
+fn format_bytes_literal(bytes: &[u8]) -> String {
+    let mut output = String::from("&[");
+    for (index, byte) in bytes.iter().enumerate() {
         if index > 0 {
             output.push_str(", ");
         }

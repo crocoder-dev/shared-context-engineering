@@ -787,7 +787,7 @@ fn push_opencode_integration_missing_problems(
         let missing_children = group
             .children
             .iter()
-            .filter(|child| matches!(child.content_state, IntegrationContentState::Missing))
+            .filter(|child| matches!(&child.content_state, IntegrationContentState::Missing))
             .collect::<Vec<_>>();
         if missing_children.is_empty() {
             continue;
@@ -824,7 +824,7 @@ fn push_opencode_integration_mismatch_problems(
         let mismatched_children = group
             .children
             .iter()
-            .filter(|child| matches!(child.content_state, IntegrationContentState::Mismatch))
+            .filter(|child| matches!(&child.content_state, IntegrationContentState::Mismatch))
             .collect::<Vec<_>>();
         if mismatched_children.is_empty() {
             continue;
@@ -1525,7 +1525,7 @@ fn integration_group_status(
         || group
             .children
             .iter()
-            .any(|child| !matches!(child.content_state, IntegrationContentState::Match))
+            .any(|child| !matches!(&child.content_state, IntegrationContentState::Match))
     {
         HumanTextStatus::Fail
     } else {
@@ -1538,7 +1538,7 @@ fn integration_child_status(
     repository_available: bool,
 ) -> HumanTextStatus {
     if repository_available {
-        match child.content_state {
+        match &child.content_state {
             IntegrationContentState::Match => HumanTextStatus::Pass,
             IntegrationContentState::Missing => HumanTextStatus::Miss,
             IntegrationContentState::Mismatch | IntegrationContentState::ReadFailed(_) => {
