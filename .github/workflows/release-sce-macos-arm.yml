@@ -23,7 +23,7 @@ jobs:
           ref: ${{ inputs.release_ref }}
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@v3.17.1
+        uses: DeterminateSystems/determinate-nix-action@v3.17.3
 
       - name: Build canonical macOS ARM CLI release artifacts
         run: |
@@ -32,7 +32,7 @@ jobs:
             --out-dir dist
 
       - name: Upload macOS ARM CLI release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sce-release-aarch64-apple-darwin
           path: dist/
