@@ -3,3 +3,4 @@ node_modules/
 cli/target/
 cli/assets/generated/
 result*
+dist/

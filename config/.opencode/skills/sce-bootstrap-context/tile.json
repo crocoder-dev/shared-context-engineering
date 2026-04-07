@@ -1,6 +1,6 @@
 {
   "name": "crocoder-dev/opencode-sce-bootstrap-context",
-  "version": "0.2.0-pre-alpha-v1",
+  "version": "0.2.0-pre-alpha-v2",
   "summary": "Create the baseline Shared Context Engineering context directory structure.",
   "private": false,
   "skills": {

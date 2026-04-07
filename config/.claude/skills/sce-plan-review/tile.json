@@ -1,6 +1,6 @@
 {
   "name": "crocoder-dev/sce-plan-review",
-  "version": "0.2.0-pre-alpha-v1",
+  "version": "0.2.0-pre-alpha-v2",
   "summary": "Review Shared Context Engineering plans and identify the next ready task.",
   "private": false,
   "skills": {

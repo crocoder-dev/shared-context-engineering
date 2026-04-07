@@ -1,6 +1,6 @@
 {
   "name": "crocoder-dev/opencode-sce-plan-authoring",
-  "version": "0.2.0-pre-alpha-v1",
+  "version": "0.2.0-pre-alpha-v2",
   "summary": "Author structured Shared Context Engineering implementation plans.",
   "private": false,
   "skills": {

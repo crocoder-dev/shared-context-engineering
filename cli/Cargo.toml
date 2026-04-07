@@ -9,6 +9,10 @@ homepage = "https://sce.crocoder.dev"
 documentation = "https://sce.crocoder.dev/docs"
 readme = "README.md"
 
+[[bin]]
+name = "sce"
+path = "src/main.rs"
+
 include = [
   "README.md",
   "Cargo.toml",

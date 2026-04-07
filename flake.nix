@@ -616,6 +616,8 @@
               chmod -R u+w ./repo
               cd ./repo
 
+              export GIT_PAGER=cat
+
               tmp_dir="$(mktemp -d)"
               cleanup() {
                 rm -rf "$tmp_dir"
