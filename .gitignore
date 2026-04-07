@@ -1,6 +1,7 @@
 .direnv/
 node_modules/
 cli/target/
+integrations/**/target/
 cli/assets/generated/
 result*
 dist/

@@ -75,6 +75,15 @@
           ];
         };
 
+        integrationsInstallSrc = pkgs.lib.fileset.toSource {
+          root = workspaceRoot;
+          fileset = pkgs.lib.fileset.unions [
+            ./integrations/install/Cargo.toml
+            ./integrations/install/Cargo.lock
+            ./integrations/install/src
+          ];
+        };
+
         # Fixed-output derivation to fetch Bun dependencies
         # The output hash must be updated when package.json or bun.lock changes
         configLibBashPolicyDeps = pkgs.stdenv.mkDerivation {
@@ -141,6 +150,43 @@
           commonCargoArgs
           // {
             pname = "sce-deps";
+          }
+        );
+
+        integrationsInstallCargoArgs = {
+          pname = "sce-install-channel-integration-tests";
+          version = "0.1.0";
+          src = integrationsInstallSrc;
+          cargoToml = ./integrations/install/Cargo.toml;
+          cargoLock = ./integrations/install/Cargo.lock;
+          strictDeps = true;
+          doCheck = false;
+
+          nativeBuildInputs = [
+            rustToolchain
+          ];
+
+          postUnpack = ''
+            cd "$sourceRoot/integrations/install"
+            sourceRoot="."
+          '';
+        };
+
+        integrationsInstallCargoArtifacts = craneLib.buildDepsOnly (
+          integrationsInstallCargoArgs
+          // {
+            pname = "sce-install-channel-integration-tests-deps";
+          }
+        );
+
+        integrationsInstallPackage = craneLib.buildPackage (
+          integrationsInstallCargoArgs
+          // {
+            cargoArtifacts = integrationsInstallCargoArtifacts;
+            meta = {
+              mainProgram = "install-channel-integration-tests";
+              description = "Opt-in install-channel integration runner for sce";
+            };
           }
         );
 
@@ -588,6 +634,20 @@
           '';
         };
 
+        installChannelIntegrationTestsApp = pkgs.writeShellApplication {
+          name = "install-channel-integration-tests";
+          runtimeInputs = [
+            pkgs.nodejs
+            scePackage
+          ];
+          text = ''
+            set -euo pipefail
+
+            export SCE_INSTALL_CHANNEL_SCE_BIN="${scePackage}/bin/sce"
+            exec "${integrationsInstallPackage}/bin/install-channel-integration-tests" "$@"
+          '';
+        };
+
         pklParityCheck =
           pkgs.runCommand "pkl-parity-check"
             {
@@ -802,6 +862,30 @@
             }
           );
 
+          integrations-install-tests = craneLib.cargoTest (
+            integrationsInstallCargoArgs
+            // {
+              pname = "sce-integrations-install-tests";
+              cargoArtifacts = integrationsInstallCargoArtifacts;
+            }
+          );
+
+          integrations-install-clippy = craneLib.cargoClippy (
+            integrationsInstallCargoArgs
+            // {
+              pname = "sce-integrations-install-clippy";
+              cargoArtifacts = integrationsInstallCargoArtifacts;
+              cargoClippyExtraArgs = "--all-targets --all-features";
+            }
+          );
+
+          integrations-install-fmt = craneLib.cargoFmt (
+            integrationsInstallCargoArgs
+            // {
+              pname = "sce-integrations-install-fmt";
+            }
+          );
+
           pkl-parity = pklParityCheck;
 
           npm-bun-tests = npmTests;
@@ -846,6 +930,14 @@
             program = "${releaseNpmPackageApp}/bin/release-npm-package";
             meta = {
               description = "Build sce npm package tarball";
+            };
+          };
+
+          install-channel-integration-tests = {
+            type = "app";
+            program = "${installChannelIntegrationTestsApp}/bin/install-channel-integration-tests";
+            meta = {
+              description = "Run opt-in install-channel integration entrypoint";
             };
           };
         };

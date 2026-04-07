@@ -1,0 +1,9 @@
+[package]
+name = "sce-install-channel-integration-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "install-channel-integration-tests"
+path = "src/main.rs"
