@@ -7,3 +7,9 @@ publish = false
 [[bin]]
 name = "install-channel-integration-tests"
 path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+fs_extra = "1"
+tempfile = "3"
+thiserror = "2"
