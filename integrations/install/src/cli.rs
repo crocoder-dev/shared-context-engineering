@@ -1,35 +1,35 @@
+use clap::Parser;
+
 use crate::channels::Channel;
 
-const USAGE: &str = "Usage: install-channel-integration-tests [--channel <npm|bun|cargo|all>]\n\nOpt-in install-channel integration runner for `sce`.\nThe npm and Bun channels now perform real install-and-verify flows through the\nRust runner, while Cargo remains a shared-harness smoke path until a later task.\n\nSelectors:\n  npm    Run the npm install-and-verify channel path\n  bun    Run the Bun install-and-verify channel path\n  cargo  Run only the Cargo channel path\n  all    Run all channel paths (default)";
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Command {
-    Help(String),
-    Run { channels: Vec<Channel> },
+/// Opt-in install-channel integration runner for `sce`.
+///
+/// The npm and Bun channels now perform real install-and-verify flows through the
+/// Rust runner, while Cargo remains a shared-harness smoke path until a later task.
+#[derive(Parser, Debug)]
+#[command(name = "install-channel-integration-tests")]
+pub(crate) struct Args {
+    /// Channel selector: npm, bun, cargo, or all (default: all)
+    #[arg(short, long, value_enum, default_value = "all")]
+    pub(crate) channel: ChannelArg,
 }
 
-pub(crate) fn parse_args<I>(args: I) -> Result<Command, String>
-where
-    I: IntoIterator<Item = String>,
-{
-    let mut channel_selector = String::from("all");
-    let mut args = args.into_iter();
+/// Channel selector for integration tests.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
+pub(crate) enum ChannelArg {
+    Npm,
+    Bun,
+    Cargo,
+    All,
+}
 
-    while let Some(argument) = args.next() {
-        match argument.as_str() {
-            "--help" | "-h" => return Ok(Command::Help(USAGE.to_string())),
-            "--channel" => {
-                let selector = args
-                    .next()
-                    .ok_or_else(|| String::from("Missing value for --channel.\n\nTry --channel npm, --channel bun, --channel cargo, or --channel all."))?;
-                channel_selector = selector;
-            }
-            _ => {
-                return Err(format!("Unknown argument: {argument}\n\n{USAGE}"));
-            }
+impl From<ChannelArg> for Vec<Channel> {
+    fn from(arg: ChannelArg) -> Self {
+        match arg {
+            ChannelArg::Npm => vec![Channel::Npm],
+            ChannelArg::Bun => vec![Channel::Bun],
+            ChannelArg::Cargo => vec![Channel::Cargo],
+            ChannelArg::All => vec![Channel::Npm, Channel::Bun, Channel::Cargo],
         }
     }
-
-    let channels = Channel::from_selector(&channel_selector)?;
-    Ok(Command::Run { channels })
 }

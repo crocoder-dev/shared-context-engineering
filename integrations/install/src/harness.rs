@@ -1,14 +1,16 @@
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::ExitStatus;
-use std::time::{SystemTime, UNIX_EPOCH};
+
+use fs_extra::dir;
+use tempfile::TempDir;
 
 use crate::channels::Channel;
+use crate::error::HarnessError;
+use crate::platform::ensure_executable;
 
 const SCE_BINARY_ENV: &str = "SCE_INSTALL_CHANNEL_SCE_BIN";
 
@@ -36,30 +38,34 @@ impl HarnessRequest {
         Self { channel, mode }
     }
 
-    pub(crate) fn channel(self) -> Channel {
+    pub(crate) fn channel(&self) -> Channel {
         self.channel
     }
 
-    pub(crate) fn mode(self) -> HarnessMode {
+    pub(crate) fn mode(&self) -> HarnessMode {
         self.mode
     }
 }
 
 pub(crate) struct ChannelHarness {
     channel: Channel,
-    root: PathBuf,
+    temp_dir: TempDir,
     workdir: PathBuf,
     original_path: OsString,
 }
 
 impl ChannelHarness {
-    pub(crate) fn new(channel: Channel) -> Result<Self, String> {
-        let root = create_harness_root(channel)?;
+    pub(crate) fn new(channel: Channel) -> Result<Self, HarnessError> {
+        let temp_dir = tempfile::Builder::new()
+            .prefix(&format!("sce-install-channel-{}.", channel.as_str()))
+            .tempdir()
+            .map_err(|e| HarnessError::TempDirCreate(e.to_string()))?;
+        let root = temp_dir.path().to_path_buf();
         let workdir = root.join("workdir");
 
         let harness = Self {
             channel,
-            root,
+            temp_dir,
             workdir,
             original_path: env::var_os("PATH").unwrap_or_default(),
         };
@@ -70,18 +76,18 @@ impl ChannelHarness {
 
     #[cfg(test)]
     pub(crate) fn root(&self) -> &Path {
-        &self.root
+        self.temp_dir.path()
     }
 
     pub(crate) fn setup_message(&self) -> String {
         format!(
             "[PASS] channel={} isolated harness ready: {}",
             self.channel.as_str(),
-            self.root.display()
+            self.temp_dir.path().display()
         )
     }
 
-    pub(crate) fn resolve_sce_binary(&self) -> Result<PathBuf, String> {
+    pub(crate) fn resolve_sce_binary(&self) -> Result<PathBuf, HarnessError> {
         if let Some(binary) = env::var_os(SCE_BINARY_ENV) {
             return self.resolve_executable(binary.as_os_str());
         }
@@ -89,44 +95,45 @@ impl ChannelHarness {
         self.resolve_executable(OsStr::new("sce"))
     }
 
-    pub(crate) fn assert_sce_version_success(&self, binary_path: &Path) -> Result<String, String> {
-        ensure_executable(binary_path).map_err(|reason| {
-            format!(
-                "[FAIL] channel={} expected executable not found: {} ({reason})",
-                self.channel.as_str(),
-                binary_path.display()
-            )
+    pub(crate) fn assert_sce_version_success(
+        &self,
+        binary_path: &Path,
+    ) -> Result<String, HarnessError> {
+        ensure_executable(binary_path).map_err(|e| match e {
+            HarnessError::UnixOnly => HarnessError::ExecutableNotFound {
+                channel: self.channel.as_str().to_string(),
+                path: binary_path.to_path_buf(),
+                reason: "not executable or not found".to_string(),
+            },
+            _ => e,
         })?;
 
         let output = self.run_command(binary_path, ["version"])?;
 
         if !output.status.success() {
-            let mut message = format!(
-                "[FAIL] channel={} sce version failed via {}",
-                self.channel.as_str(),
-                binary_path.display()
-            );
-            if !output.stderr.is_empty() {
-                message.push('\n');
-                message.push_str(&output.stderr);
-            }
-            return Err(message);
+            return Err(HarnessError::SceVersionFailed {
+                channel: self.channel.as_str().to_string(),
+                path: binary_path.to_path_buf(),
+                stderr: if output.stderr.is_empty() {
+                    None
+                } else {
+                    Some(output.stderr)
+                },
+            });
         }
 
         if !is_valid_version_output(&output.stdout) {
-            return Err(format!(
-                "[FAIL] channel={} unexpected sce version output: {}",
-                self.channel.as_str(),
-                output.stdout
-            ));
+            return Err(HarnessError::SceVersionUnexpected {
+                channel: self.channel.as_str().to_string(),
+                output: output.stdout,
+            });
         }
 
         if !output.stderr.is_empty() {
-            return Err(format!(
-                "[FAIL] channel={} expected empty stderr for sce version.\n{}",
-                self.channel.as_str(),
-                output.stderr
-            ));
+            return Err(HarnessError::SceVersionStderr {
+                channel: self.channel.as_str().to_string(),
+                stderr: output.stderr,
+            });
         }
 
         Ok(output.stdout)
@@ -140,18 +147,24 @@ impl ChannelHarness {
         )
     }
 
-    pub(crate) fn create_temp_subdir(&self, name: &str) -> Result<PathBuf, String> {
-        let path = self.root.join(name);
-        fs::create_dir_all(&path)
-            .map_err(|error| format!("failed to create {}: {error}", path.display()))?;
+    pub(crate) fn create_temp_subdir(&self, name: &str) -> Result<PathBuf, HarnessError> {
+        let path = self.temp_dir.path().join(name);
+        fs::create_dir_all(&path).map_err(|e| HarnessError::DirectoryCreate {
+            path: path.clone(),
+            error: e.to_string(),
+        })?;
         Ok(path)
     }
 
-    pub(crate) fn resolve_program(&self, program: &str) -> Result<PathBuf, String> {
+    pub(crate) fn resolve_program(&self, program: &str) -> Result<PathBuf, HarnessError> {
         self.resolve_executable(OsStr::new(program))
     }
 
-    pub(crate) fn run_command<I, S>(&self, program: &Path, args: I) -> Result<CommandOutput, String>
+    pub(crate) fn run_command<I, S>(
+        &self,
+        program: &Path,
+        args: I,
+    ) -> Result<CommandOutput, HarnessError>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
@@ -170,7 +183,7 @@ impl ChannelHarness {
         args: I,
         current_dir: &Path,
         extra_env: impl IntoIterator<Item = (K, V)>,
-    ) -> Result<CommandOutput, String>
+    ) -> Result<CommandOutput, HarnessError>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
@@ -182,7 +195,7 @@ impl ChannelHarness {
             .args(args)
             .current_dir(current_dir)
             .env("SCE_INSTALL_CHANNEL", self.channel.as_str())
-            .env("SCE_CHANNEL_HARNESS_ROOT", &self.root)
+            .env("SCE_CHANNEL_HARNESS_ROOT", self.temp_dir.path())
             .env("SCE_CHANNEL_WORKDIR", &self.workdir)
             .env("HOME", self.home_dir())
             .env("XDG_CONFIG_HOME", self.xdg_config_home())
@@ -199,12 +212,10 @@ impl ChannelHarness {
             command.env(key, value);
         }
 
-        let output = command.output().map_err(|error| {
-            format!(
-                "[FAIL] channel={} failed to run {}: {error}",
-                self.channel.as_str(),
-                program.display()
-            )
+        let output = command.output().map_err(|e| HarnessError::CommandFailed {
+            channel: self.channel.as_str().to_string(),
+            program: program.display().to_string(),
+            error: e.to_string(),
         })?;
 
         Ok(CommandOutput {
@@ -214,7 +225,7 @@ impl ChannelHarness {
         })
     }
 
-    fn create_layout(&self) -> Result<(), String> {
+    fn create_layout(&self) -> Result<(), HarnessError> {
         for path in [
             self.workdir.clone(),
             self.home_dir(),
@@ -227,14 +238,16 @@ impl ChannelHarness {
             self.cargo_home_bin(),
             self.cargo_target_dir(),
         ] {
-            fs::create_dir_all(&path)
-                .map_err(|error| format!("failed to create {}: {error}", path.display()))?;
+            fs::create_dir_all(&path).map_err(|e| HarnessError::DirectoryCreate {
+                path: path.clone(),
+                error: e.to_string(),
+            })?;
         }
 
         Ok(())
     }
 
-    fn resolve_executable(&self, program: &OsStr) -> Result<PathBuf, String> {
+    fn resolve_executable(&self, program: &OsStr) -> Result<PathBuf, HarnessError> {
         let candidate = Path::new(program);
         if candidate.components().count() > 1 {
             return Ok(candidate.to_path_buf());
@@ -247,32 +260,31 @@ impl ChannelHarness {
             }
         }
 
-        Err(format!(
-            "Unable to resolve executable '{}' for channel={}. Set {} or ensure it is on PATH.",
-            candidate.display(),
-            self.channel.as_str(),
-            SCE_BINARY_ENV
-        ))
+        Err(HarnessError::ExecutableResolve {
+            program: candidate.display().to_string(),
+            channel: self.channel.as_str().to_string(),
+            env: SCE_BINARY_ENV.to_string(),
+        })
     }
 
     fn home_dir(&self) -> PathBuf {
-        self.root.join("home")
+        self.temp_dir.path().join("home")
     }
 
     fn xdg_config_home(&self) -> PathBuf {
-        self.root.join("xdg/config")
+        self.temp_dir.path().join("xdg/config")
     }
 
     fn xdg_state_home(&self) -> PathBuf {
-        self.root.join("xdg/state")
+        self.temp_dir.path().join("xdg/state")
     }
 
     fn xdg_cache_home(&self) -> PathBuf {
-        self.root.join("xdg/cache")
+        self.temp_dir.path().join("xdg/cache")
     }
 
     fn npm_prefix_dir(&self) -> PathBuf {
-        self.root.join("npm/prefix")
+        self.temp_dir.path().join("npm/prefix")
     }
 
     fn npm_prefix_bin(&self) -> PathBuf {
@@ -280,11 +292,11 @@ impl ChannelHarness {
     }
 
     fn npm_cache_dir(&self) -> PathBuf {
-        self.root.join("npm/cache")
+        self.temp_dir.path().join("npm/cache")
     }
 
     fn bun_install_dir(&self) -> PathBuf {
-        self.root.join("bun")
+        self.temp_dir.path().join("bun")
     }
 
     fn bun_install_bin(&self) -> PathBuf {
@@ -292,7 +304,7 @@ impl ChannelHarness {
     }
 
     fn cargo_home_dir(&self) -> PathBuf {
-        self.root.join("cargo/home")
+        self.temp_dir.path().join("cargo/home")
     }
 
     fn cargo_home_bin(&self) -> PathBuf {
@@ -300,7 +312,7 @@ impl ChannelHarness {
     }
 
     fn cargo_target_dir(&self) -> PathBuf {
-        self.root.join("cargo/target")
+        self.temp_dir.path().join("cargo/target")
     }
 
     fn path_with_harness_bins(&self) -> OsString {
@@ -314,51 +326,10 @@ impl ChannelHarness {
     }
 }
 
-impl Drop for ChannelHarness {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
-    }
-}
-
 pub(crate) struct CommandOutput {
     pub(crate) status: ExitStatus,
     pub(crate) stdout: String,
     pub(crate) stderr: String,
-}
-
-fn create_harness_root(channel: Channel) -> Result<PathBuf, String> {
-    let mut attempt = 0u32;
-    let temp_dir = env::temp_dir();
-
-    loop {
-        let unique = unique_suffix(attempt);
-        let root = temp_dir.join(format!(
-            "sce-install-channel-{}.{}",
-            channel.as_str(),
-            unique
-        ));
-
-        match fs::create_dir(&root) {
-            Ok(()) => return Ok(root),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && attempt < 8 => {
-                attempt += 1;
-            }
-            Err(error) => {
-                return Err(format!(
-                    "failed to create harness root {}: {error}",
-                    root.display()
-                ));
-            }
-        }
-    }
-}
-
-fn unique_suffix(attempt: u32) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time should be after unix epoch")
-        .as_nanos();
-    format!("{nanos}-{}-{attempt}", std::process::id())
 }
 
 fn normalize_output(bytes: &[u8]) -> String {
@@ -383,47 +354,20 @@ fn is_valid_version_output(output: &str) -> bool {
         && profile.len() > 2
 }
 
-fn ensure_executable(path: &Path) -> Result<(), &'static str> {
-    let metadata = path.metadata().map_err(|_| "missing")?;
-    if !metadata.is_file() {
-        return Err("not a file");
-    }
+pub(crate) fn copy_directory_recursive(
+    source: &Path,
+    destination: &Path,
+) -> Result<(), HarnessError> {
+    let mut options = dir::CopyOptions::new();
+    options.overwrite = true;
+    options.copy_inside = true;
+    options.content_only = true;
 
-    #[cfg(unix)]
-    {
-        if metadata.permissions().mode() & 0o111 == 0 {
-            return Err("not executable");
-        }
-    }
-
-    Ok(())
-}
-
-pub(crate) fn copy_directory_recursive(source: &Path, destination: &Path) -> Result<(), String> {
-    fs::create_dir_all(destination)
-        .map_err(|error| format!("failed to create {}: {error}", destination.display()))?;
-
-    for entry in fs::read_dir(source)
-        .map_err(|error| format!("failed to read {}: {error}", source.display()))?
-    {
-        let entry = entry.map_err(|error| format!("failed to read directory entry: {error}"))?;
-        let entry_type = entry
-            .file_type()
-            .map_err(|error| format!("failed to inspect {}: {error}", entry.path().display()))?;
-        let destination_path = destination.join(entry.file_name());
-
-        if entry_type.is_dir() {
-            copy_directory_recursive(&entry.path(), &destination_path)?;
-        } else if entry_type.is_file() {
-            fs::copy(entry.path(), &destination_path).map_err(|error| {
-                format!(
-                    "failed to copy {} to {}: {error}",
-                    entry.path().display(),
-                    destination_path.display()
-                )
-            })?;
-        }
-    }
+    dir::copy(source, destination, &options).map_err(|e| HarnessError::DirectoryCopy {
+        src: source.to_path_buf(),
+        dest: destination.to_path_buf(),
+        error: e.to_string(),
+    })?;
 
     Ok(())
 }

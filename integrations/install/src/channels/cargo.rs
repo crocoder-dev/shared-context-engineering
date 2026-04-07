@@ -1,10 +1,11 @@
 use std::path::Path;
 
+use crate::error::HarnessError;
 use crate::harness::{ChannelHarness, HarnessRequest};
 
 use super::npm::find_repo_root;
 
-pub(crate) fn run(request: HarnessRequest) -> Result<(), String> {
+pub(crate) fn run(request: HarnessRequest) -> Result<(), HarnessError> {
     let harness = ChannelHarness::new(request.channel())?;
     println!("{}", harness.setup_message());
 
@@ -25,7 +26,7 @@ pub(crate) fn run(request: HarnessRequest) -> Result<(), String> {
     Ok(())
 }
 
-fn install_cargo_package(harness: &ChannelHarness, cli_path: &Path) -> Result<(), String> {
+fn install_cargo_package(harness: &ChannelHarness, cli_path: &Path) -> Result<(), HarnessError> {
     let cargo = harness.resolve_program("cargo")?;
 
     let install_output = harness.run_command_in_dir_with_env(
@@ -41,19 +42,20 @@ fn install_cargo_package(harness: &ChannelHarness, cli_path: &Path) -> Result<()
     )?;
 
     if !install_output.status.success() {
-        let mut message = format!(
-            "[FAIL] channel=cargo cargo install failed for {}",
-            cli_path.display()
-        );
-        if !install_output.stdout.is_empty() {
-            message.push('\n');
-            message.push_str(&install_output.stdout);
-        }
-        if !install_output.stderr.is_empty() {
-            message.push('\n');
-            message.push_str(&install_output.stderr);
-        }
-        return Err(message);
+        return Err(HarnessError::CargoInstallFailed {
+            channel: "cargo".to_string(),
+            path: cli_path.to_path_buf(),
+            stdout: if install_output.stdout.is_empty() {
+                None
+            } else {
+                Some(install_output.stdout)
+            },
+            stderr: if install_output.stderr.is_empty() {
+                None
+            } else {
+                Some(install_output.stderr)
+            },
+        });
     }
 
     println!(

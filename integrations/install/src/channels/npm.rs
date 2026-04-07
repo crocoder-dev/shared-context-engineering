@@ -1,11 +1,11 @@
 use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use crate::error::HarnessError;
 use crate::harness::{copy_directory_recursive, ChannelHarness, HarnessRequest};
+use crate::platform::set_executable_permissions;
 
-pub(crate) fn run(request: HarnessRequest) -> Result<(), String> {
+pub(crate) fn run(request: HarnessRequest) -> Result<(), HarnessError> {
     let harness = ChannelHarness::new(request.channel())?;
     println!("{}", harness.setup_message());
 
@@ -36,7 +36,7 @@ fn install_npm_package(
     harness: &ChannelHarness,
     repo_root: &Path,
     package_tarball: &Path,
-) -> Result<(), String> {
+) -> Result<(), HarnessError> {
     let npm = harness.resolve_program("npm")?;
 
     let install_output = harness.run_command_in_dir_with_env(
@@ -51,19 +51,20 @@ fn install_npm_package(
     )?;
 
     if !install_output.status.success() {
-        let mut message = format!(
-            "[FAIL] channel=npm npm install failed for {}",
-            package_tarball.display()
-        );
-        if !install_output.stdout.is_empty() {
-            message.push('\n');
-            message.push_str(&install_output.stdout);
-        }
-        if !install_output.stderr.is_empty() {
-            message.push('\n');
-            message.push_str(&install_output.stderr);
-        }
-        return Err(message);
+        return Err(HarnessError::NpmInstallFailed {
+            channel: "npm".to_string(),
+            tarball: package_tarball.to_path_buf(),
+            stdout: if install_output.stdout.is_empty() {
+                None
+            } else {
+                Some(install_output.stdout)
+            },
+            stderr: if install_output.stderr.is_empty() {
+                None
+            } else {
+                Some(install_output.stderr)
+            },
+        });
     }
 
     println!(
@@ -73,9 +74,10 @@ fn install_npm_package(
     Ok(())
 }
 
-pub(super) fn find_repo_root(channel_name: &str) -> Result<PathBuf, String> {
-    let mut current = std::env::current_dir()
-        .map_err(|error| format!("failed to resolve current directory: {error}"))?;
+pub(super) fn find_repo_root(channel_name: &str) -> Result<PathBuf, HarnessError> {
+    let mut current = std::env::current_dir().map_err(|e| HarnessError::CurrentDir {
+        error: e.to_string(),
+    })?;
 
     loop {
         if current.join("flake.nix").is_file() {
@@ -83,9 +85,9 @@ pub(super) fn find_repo_root(channel_name: &str) -> Result<PathBuf, String> {
         }
 
         if !current.pop() {
-            return Err(format!(
-                "[FAIL] channel={channel_name} could not locate repository root containing flake.nix."
-            ));
+            return Err(HarnessError::RepoRootMissing {
+                channel: channel_name.to_string(),
+            });
         }
     }
 }
@@ -94,7 +96,7 @@ pub(super) fn build_local_npm_fixture(
     harness: &ChannelHarness,
     repo_root: &Path,
     channel_name: &str,
-) -> Result<PathBuf, String> {
+) -> Result<PathBuf, HarnessError> {
     let fixture_root = harness.create_temp_subdir("npm-package-fixture")?;
     let stage_dir = fixture_root.join("package");
     let pack_dir = fixture_root.join("packed");
@@ -103,37 +105,23 @@ pub(super) fn build_local_npm_fixture(
 
     copy_directory_recursive(&npm_source_dir, &stage_dir)?;
     add_runtime_to_staged_package_manifest(&stage_dir.join("package.json"))?;
-    fs::create_dir_all(stage_dir.join("runtime")).map_err(|error| {
-        format!(
-            "failed to create npm runtime directory {}: {error}",
-            stage_dir.join("runtime").display()
-        )
+    fs::create_dir_all(stage_dir.join("runtime")).map_err(|e| HarnessError::DirectoryCreate {
+        path: stage_dir.join("runtime"),
+        error: e.to_string(),
     })?;
-    fs::create_dir_all(&pack_dir)
-        .map_err(|error| format!("failed to create {}: {error}", pack_dir.display()))?;
+    fs::create_dir_all(&pack_dir).map_err(|e| HarnessError::DirectoryCreate {
+        path: pack_dir.clone(),
+        error: e.to_string(),
+    })?;
 
     let staged_binary = stage_dir.join("runtime/sce");
-    fs::copy(&packaged_sce_binary, &staged_binary).map_err(|error| {
-        format!(
-            "failed to stage {} into {}: {error}",
-            packaged_sce_binary.display(),
-            staged_binary.display()
-        )
+    fs::copy(&packaged_sce_binary, &staged_binary).map_err(|e| HarnessError::BinaryStage {
+        binary: packaged_sce_binary.clone(),
+        path: staged_binary.clone(),
+        error: e.to_string(),
     })?;
 
-    #[cfg(unix)]
-    {
-        let mut permissions = fs::metadata(&staged_binary)
-            .map_err(|error| format!("failed to inspect {}: {error}", staged_binary.display()))?
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&staged_binary, permissions).map_err(|error| {
-            format!(
-                "failed to set executable permissions on {}: {error}",
-                staged_binary.display()
-            )
-        })?;
-    }
+    set_executable_permissions(&staged_binary)?;
 
     let npm = harness.resolve_program("npm")?;
     let pack_output = harness.run_command_in_dir_with_env(
@@ -144,17 +132,19 @@ pub(super) fn build_local_npm_fixture(
     )?;
 
     if !pack_output.status.success() {
-        let mut message =
-            format!("[FAIL] channel={channel_name} npm pack failed for local fixture");
-        if !pack_output.stdout.is_empty() {
-            message.push('\n');
-            message.push_str(&pack_output.stdout);
-        }
-        if !pack_output.stderr.is_empty() {
-            message.push('\n');
-            message.push_str(&pack_output.stderr);
-        }
-        return Err(message);
+        return Err(HarnessError::NpmPackFailed {
+            channel: channel_name.to_string(),
+            stdout: if pack_output.stdout.is_empty() {
+                None
+            } else {
+                Some(pack_output.stdout)
+            },
+            stderr: if pack_output.stderr.is_empty() {
+                None
+            } else {
+                Some(pack_output.stderr)
+            },
+        });
     }
 
     let package_name = pack_output
@@ -162,17 +152,17 @@ pub(super) fn build_local_npm_fixture(
         .lines()
         .last()
         .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .ok_or_else(|| {
-            format!("[FAIL] channel={channel_name} npm pack did not report a tarball name.")
+        .filter(|line: &&str| !line.is_empty())
+        .ok_or_else(|| HarnessError::NpmPackNoTarball {
+            channel: channel_name.to_string(),
         })?;
     let package_tarball = pack_dir.join(package_name);
 
     if !package_tarball.is_file() {
-        return Err(format!(
-            "[FAIL] channel={channel_name} expected packed tarball was not created: {}",
-            package_tarball.display()
-        ));
+        return Err(HarnessError::NpmPackTarballMissing {
+            channel: channel_name.to_string(),
+            path: package_tarball.clone(),
+        });
     }
 
     println!(
@@ -182,42 +172,45 @@ pub(super) fn build_local_npm_fixture(
     Ok(package_tarball)
 }
 
-fn add_runtime_to_staged_package_manifest(package_json_path: &Path) -> Result<(), String> {
-    let package_json = fs::read_to_string(package_json_path)
-        .map_err(|error| format!("failed to read {}: {error}", package_json_path.display()))?;
+fn add_runtime_to_staged_package_manifest(package_json_path: &Path) -> Result<(), HarnessError> {
+    let package_json =
+        fs::read_to_string(package_json_path).map_err(|e| HarnessError::FileRead {
+            path: package_json_path.to_path_buf(),
+            error: e.to_string(),
+        })?;
     let updated_package_json = package_json.replace(
         "\"lib\",\n\t\t\"README.md\"",
         "\"lib\",\n\t\t\"runtime\",\n\t\t\"README.md\"",
     );
 
     if updated_package_json == package_json {
-        return Err(format!(
-            "failed to inject runtime/ into staged package manifest {}",
-            package_json_path.display()
-        ));
+        return Err(HarnessError::ManifestInject {
+            path: package_json_path.to_path_buf(),
+        });
     }
 
-    fs::write(package_json_path, updated_package_json)
-        .map_err(|error| format!("failed to write {}: {error}", package_json_path.display()))
+    fs::write(package_json_path, updated_package_json).map_err(|e| HarnessError::FileWrite {
+        path: package_json_path.to_path_buf(),
+        error: e.to_string(),
+    })
 }
 
-fn assert_sce_doctor_success(harness: &ChannelHarness, sce_binary: &Path) -> Result<(), String> {
+fn assert_sce_doctor_success(
+    harness: &ChannelHarness,
+    sce_binary: &Path,
+) -> Result<(), HarnessError> {
     let output = harness.run_command(sce_binary, ["doctor", "--format", "json"])?;
 
     if !output.status.success() {
-        let mut message = format!(
-            "[FAIL] channel=npm sce doctor failed via {}",
-            sce_binary.display()
-        );
-        if !output.stdout.is_empty() {
-            message.push('\n');
-            message.push_str(&output.stdout);
-        }
-        if !output.stderr.is_empty() {
-            message.push('\n');
-            message.push_str(&output.stderr);
-        }
-        return Err(message);
+        return Err(HarnessError::CommandFailed {
+            channel: "npm".to_string(),
+            program: sce_binary.display().to_string(),
+            error: if output.stderr.is_empty() {
+                output.stdout
+            } else {
+                output.stderr
+            },
+        });
     }
 
     Ok(())

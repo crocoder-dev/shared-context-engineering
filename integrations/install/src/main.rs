@@ -1,11 +1,15 @@
 mod channels;
 mod cli;
+mod error;
 mod harness;
+mod platform;
 
 use std::process::ExitCode;
 
 use channels::ChannelRunner;
-use cli::{parse_args, Command};
+use clap::Parser;
+use cli::Args;
+use error::HarnessError;
 
 fn main() -> ExitCode {
     match run() {
@@ -17,15 +21,9 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<(), String> {
-    match parse_args(std::env::args().skip(1))? {
-        Command::Help(help_text) => {
-            println!("{help_text}");
-            Ok(())
-        }
-        Command::Run { channels } => {
-            let runner = ChannelRunner::new();
-            runner.run(&channels)
-        }
-    }
+fn run() -> Result<(), HarnessError> {
+    let args = Args::parse();
+    let channels = Vec::from(args.channel);
+    let runner = ChannelRunner;
+    runner.run(&channels)
 }
