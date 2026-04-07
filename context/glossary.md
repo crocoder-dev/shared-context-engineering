@@ -1,6 +1,5 @@
 # Glossary
 
-- `sync-opencode-config`: Flake app command exposed as `nix run .#sync-opencode-config`; canonical operator entrypoint for staged regeneration/replacement of `config/` and replacement of repository-root `.opencode/` from regenerated `config/.opencode/`, with repo-root `.version` mirrored into the staging root before `pkl eval -m`.
 - `pkl-check-generated`: Flake app command exposed as `nix run .#pkl-check-generated`; canonical lightweight parity test entrypoint that runs the generated-output drift check inside the Nix dev shell.
 - `repo-level verification preference`: Current repository guidance that contributor-facing validation/check flows should prefer `nix flake check`; direct Cargo verification commands are secondary and used only when explicitly requested or for narrow targeted debugging, while `cargo fmt` remains the explicit autofix path.
 - lightweight post-task verification baseline: Required quick checks after each completed task in this repo: `nix run .#pkl-check-generated` and `nix flake check`.

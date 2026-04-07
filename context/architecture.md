@@ -27,7 +27,6 @@ Current target renderer helper modules:
 - `config/pkl/renderers/metadata-coverage-check.pkl`
 - `config/pkl/generate.pkl` (single multi-file generation entrypoint)
 - `config/pkl/check-generated.sh` (dev-shell integration stale-output detection against committed generated files)
-- `nix run .#sync-opencode-config` (flake app entrypoint for config regeneration and sync workflow)
 - `nix flake check` / `checks.<system>.{cli-tests,cli-clippy,cli-fmt,npm-bun-tests,npm-biome-check,npm-biome-format,config-lib-bun-tests,config-lib-biome-check,config-lib-biome-format}` (root-flake check derivations for the current CLI + JS validation inventory)
 - `.github/workflows/pkl-generated-parity.yml` (CI wrapper that runs the parity check for pushes to `main` and pull requests targeting `main`)
 
@@ -45,14 +44,6 @@ Renderer modules apply target-specific metadata/frontmatter rules while reusing 
 - `config/pkl/generate.pkl` emits deterministic `output.files` mappings for all authored generated targets: OpenCode/Claude agents, commands, skills, shared bash-policy runtime and preset assets under `lib/`, the OpenCode bash-policy plugin entrypoint under `plugins/`, generated OpenCode `package.json` and `opencode.json` manifests for manual and automated profiles, and the generated `sce/config.json` schema artifact at `config/schema/sce-config.schema.json`.
 - Generated-file warning markers are not injected by the generator: Markdown outputs render deterministic frontmatter + body, and shared library outputs are emitted without a leading generated warning header.
 - `config/pkl/check-generated.sh` is intentionally dev-shell scoped (`nix develop -c ...`): it requires `IN_NIX_SHELL`, runs `pkl eval -m <tmp> config/pkl/generate.pkl`, and fails when generated-owned paths drift.
-
-Current sync-command state:
-
-- `sync-opencode-config` is exported as a flake app from `flake.nix` and is runnable through `nix run .#sync-opencode-config`.
-- The app regenerates generated-owned `config/` outputs in a staging workspace, validates expected generated directories, and only then replaces live `config/`.
-- The staging workspace also mirrors repo-root `.version` before `pkl eval -m`, so version-aware Pkl reads resolve the same way they do in the live repository root.
-- After `config/` replacement, the app replaces repository-root `.opencode/` from staged `config/.opencode/` using explicit runtime exclusions.
-- Root `.opencode/` replacement uses backup-and-restore safety semantics plus post-copy parity verification (`diff -rq` with exclusion filters) before finalizing.
 
 Generated authored classes:
 

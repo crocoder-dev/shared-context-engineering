@@ -155,18 +155,6 @@
           }
         );
 
-        syncOpencodeConfigApp = pkgs.writeShellApplication {
-          name = "sync-opencode-config";
-          runtimeInputs = [
-            pkgs.coreutils
-            pkgs.diffutils
-            pkgs.git
-            pkgs.pkl
-            pkgs.rsync
-          ];
-          text = builtins.readFile ./scripts/sync-opencode-config.sh;
-        };
-
         pklCheckGeneratedApp = pkgs.writeShellApplication {
           name = "pkl-check-generated";
           runtimeInputs = [
@@ -829,14 +817,6 @@
           sce = sceApp;
           default = sceApp;
 
-          sync-opencode-config = {
-            type = "app";
-            program = "${syncOpencodeConfigApp}/bin/sync-opencode-config";
-            meta = {
-              description = "Regenerate config and sync root .opencode";
-            };
-          };
-
           pkl-check-generated = {
             type = "app";
             program = "${pklCheckGeneratedApp}/bin/pkl-check-generated";
@@ -896,8 +876,6 @@
             echo "- tsserver-lsp: $(version_of typescript-language-server)"
             echo "- rust: $(version_of rustc)"
             echo "- sce: $(version_of sce)"
-            echo "- sync-opencode-config: nix run .#sync-opencode-config"
-            echo "- sync-opencode-config help: nix run .#sync-opencode-config -- --help"
             echo "- pkl-check-generated: nix run .#pkl-check-generated"
             echo "- release-artifacts: nix run .#release-artifacts -- --help"
             echo "- release-manifest: nix run .#release-manifest -- --help"
