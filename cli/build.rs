@@ -113,14 +113,12 @@ fn generate_embedded_asset_manifest() -> io::Result<()> {
             println!("cargo:rerun-if-changed={}", file.absolute_path.display());
             let bytes = fs::read(&file.absolute_path)?;
             let sha256 = compute_sha256(&bytes);
-            let sha256_literal = format_sha256_literal(&sha256);
-            let bytes_literal = format_bytes_literal(&bytes);
             writeln!(
                 output,
                 "    EmbeddedAsset {{ relative_path: \"{}\", bytes: {}, sha256: {} }},",
                 escape_for_rust_string(&file.relative_path),
-                bytes_literal,
-                sha256_literal,
+                format_byte_literal("&[", &bytes),
+                format_byte_literal("[", &sha256),
             )
             .expect("writing to String buffer should never fail");
         }
@@ -193,19 +191,9 @@ fn compute_sha256(bytes: &[u8]) -> [u8; 32] {
     digest.into()
 }
 
-fn format_sha256_literal(hash: &[u8; 32]) -> String {
+fn format_byte_literal(prefix: &str, bytes: &[u8]) -> String {
     format!(
-        "[{}]",
-        hash.iter()
-            .map(|byte| format!("0x{byte:02x}"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
-}
-
-fn format_bytes_literal(bytes: &[u8]) -> String {
-    format!(
-        "&[{}]",
+        "{prefix}{}]",
         bytes
             .iter()
             .map(|byte| format!("0x{byte:02x}"))
