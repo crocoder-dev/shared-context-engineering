@@ -4,6 +4,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use crate::services::default_paths::{
     hook_dir, opencode_asset, resolve_sce_default_locations, InstallTargetPaths, RepoPaths,
@@ -11,7 +12,7 @@ use crate::services::default_paths::{
 use crate::services::output_format::OutputFormat;
 use crate::services::setup::{
     install_required_git_hooks, iter_embedded_assets_for_setup_target, iter_required_hook_assets,
-    RequiredHookInstallStatus, RequiredHooksInstallOutcome, SetupTarget,
+    EmbeddedAsset, RequiredHookInstallStatus, RequiredHooksInstallOutcome, SetupTarget,
 };
 use crate::services::style::{heading, label, supports_color, value, OwoColorize};
 
@@ -111,7 +112,15 @@ struct IntegrationGroupHealth {
 struct IntegrationChildHealth {
     relative_path: String,
     path: PathBuf,
-    present: bool,
+    content_state: IntegrationContentState,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum IntegrationContentState {
+    Match,
+    Missing,
+    Mismatch,
+    ReadFailed(String),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -158,9 +167,11 @@ enum ProblemKind {
     HookNotExecutable,
     HookContentStale,
     OpenCodeIntegrationFilesMissing,
+    OpenCodeIntegrationContentMismatch,
     OpenCodePluginRegistryInvalid,
     OpenCodeAssetMissingOrInvalid,
     HookReadFailed,
+    OpenCodeAssetReadFailed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -759,11 +770,24 @@ fn inspect_opencode_integration_health(
     integration_groups: &[IntegrationGroupHealth],
     problems: &mut Vec<DoctorProblem>,
 ) {
+    push_opencode_integration_missing_problems(integration_groups, problems);
+    push_opencode_integration_mismatch_problems(integration_groups, problems);
+    push_opencode_integration_read_fail_problems(integration_groups, problems);
+    inspect_opencode_plugin_registry_health(repository_root, problems);
+
+    let install_targets = InstallTargetPaths::new(repository_root);
+    inspect_opencode_plugin_dependency_health(&install_targets, problems);
+}
+
+fn push_opencode_integration_missing_problems(
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
     for group in integration_groups {
         let missing_children = group
             .children
             .iter()
-            .filter(|child| !child.present)
+            .filter(|child| matches!(&child.content_state, IntegrationContentState::Missing))
             .collect::<Vec<_>>();
         if missing_children.is_empty() {
             continue;
@@ -790,42 +814,111 @@ fn inspect_opencode_integration_health(
             next_action: "manual_steps",
         });
     }
+}
 
+fn push_opencode_integration_mismatch_problems(
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
+    for group in integration_groups {
+        let mismatched_children = group
+            .children
+            .iter()
+            .filter(|child| matches!(&child.content_state, IntegrationContentState::Mismatch))
+            .collect::<Vec<_>>();
+        if mismatched_children.is_empty() {
+            continue;
+        }
+
+        let mismatched_paths = mismatched_children
+            .iter()
+            .map(|child| format!("'{}'", child.path.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        problems.push(DoctorProblem {
+            kind: ProblemKind::OpenCodeIntegrationContentMismatch,
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "{} file(s) differ from the canonical embedded content: {}.",
+                group.label, mismatched_paths
+            ),
+            remediation: format!(
+                "Reinstall repo-root OpenCode assets to restore the canonical {} content, then rerun 'sce doctor'.",
+                group.label.to_ascii_lowercase()
+            ),
+            next_action: "manual_steps",
+        });
+    }
+}
+
+fn push_opencode_integration_read_fail_problems(
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
+    for group in integration_groups {
+        for child in &group.children {
+            let IntegrationContentState::ReadFailed(error) = &child.content_state else {
+                continue;
+            };
+            problems.push(DoctorProblem {
+                kind: ProblemKind::OpenCodeAssetReadFailed,
+                category: ProblemCategory::FilesystemPermissions,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "Unable to read OpenCode asset '{}' at '{}': {error}",
+                    child.relative_path,
+                    child.path.display()
+                ),
+                remediation: format!(
+                    "Verify that '{}' is readable before rerunning 'sce doctor'.",
+                    child.path.display()
+                ),
+                next_action: "manual_steps",
+            });
+        }
+    }
+}
+
+fn inspect_opencode_plugin_registry_health(
+    repository_root: &Path,
+    problems: &mut Vec<DoctorProblem>,
+) {
     let repo_paths = RepoPaths::new(repository_root);
-    let install_targets = InstallTargetPaths::new(repository_root);
-
     let manifest_path = repo_paths.opencode_manifest_file();
     let manifest_metadata = fs::metadata(&manifest_path).ok();
     let manifest_is_file = manifest_metadata
         .as_ref()
         .is_some_and(std::fs::Metadata::is_file);
-    if !manifest_is_file {
-        let summary = if manifest_metadata.is_some() {
-            format!(
-                "OpenCode plugin registry path '{}' is not a file.",
-                manifest_path.display()
-            )
-        } else {
-            format!(
-                "OpenCode plugin registry file '{}' is missing.",
-                manifest_path.display()
-            )
-        };
-        problems.push(DoctorProblem {
-            kind: ProblemKind::OpenCodePluginRegistryInvalid,
-            category: ProblemCategory::RepoAssets,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary,
-            remediation: format!(
-                "Reinstall OpenCode assets to restore the canonical plugin registry at '{}', then rerun 'sce doctor'.",
-                manifest_path.display()
-            ),
-            next_action: "manual_steps",
-        });
+    if manifest_is_file {
+        return;
     }
 
-    inspect_opencode_plugin_dependency_health(&install_targets, problems);
+    let summary = if manifest_metadata.is_some() {
+        format!(
+            "OpenCode plugin registry path '{}' is not a file.",
+            manifest_path.display()
+        )
+    } else {
+        format!(
+            "OpenCode plugin registry file '{}' is missing.",
+            manifest_path.display()
+        )
+    };
+    problems.push(DoctorProblem {
+        kind: ProblemKind::OpenCodePluginRegistryInvalid,
+        category: ProblemCategory::RepoAssets,
+        severity: ProblemSeverity::Error,
+        fixability: ProblemFixability::ManualOnly,
+        summary,
+        remediation: format!(
+            "Reinstall OpenCode assets to restore the canonical plugin registry at '{}', then rerun 'sce doctor'.",
+            manifest_path.display()
+        ),
+        next_action: "manual_steps",
+    });
 }
 
 fn inspect_opencode_plugin_dependency_health(
@@ -888,22 +981,27 @@ fn collect_opencode_integration_groups(repository_root: &Path) -> Vec<Integratio
     let repo_paths = RepoPaths::new(repository_root);
     let opencode_root = repo_paths.opencode_dir();
     let manifest_path = repo_paths.opencode_manifest_file();
-    let mut plugin_children = vec![IntegrationChildHealth {
-        relative_path: String::from("opencode.json"),
-        path: manifest_path.clone(),
-        present: path_is_file(&manifest_path),
-    }];
+    let embedded_assets =
+        iter_embedded_assets_for_setup_target(SetupTarget::OpenCode).collect::<Vec<_>>();
+    let mut plugin_children = Vec::new();
     let mut agent_children = Vec::new();
     let mut command_children = Vec::new();
     let mut skill_children = Vec::new();
 
-    for asset in iter_embedded_assets_for_setup_target(SetupTarget::OpenCode) {
-        let asset_path = opencode_root.join(asset.relative_path);
-        let child = IntegrationChildHealth {
-            relative_path: asset.relative_path.to_string(),
-            path: asset_path.clone(),
-            present: path_is_file(&asset_path),
-        };
+    let manifest_child = embedded_assets
+        .iter()
+        .find(|asset| asset.relative_path == "opencode.json")
+        .map_or_else(
+            || build_integration_child_presence_only("opencode.json", &manifest_path),
+            |asset| build_integration_child_from_asset(&opencode_root, asset),
+        );
+    plugin_children.push(manifest_child);
+
+    for asset in embedded_assets {
+        if asset.relative_path == "opencode.json" {
+            continue;
+        }
+        let child = build_integration_child_from_asset(&opencode_root, asset);
 
         if child
             .relative_path
@@ -958,6 +1056,56 @@ fn collect_opencode_integration_groups(repository_root: &Path) -> Vec<Integratio
 
 fn sort_integration_children(children: &mut [IntegrationChildHealth]) {
     children.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+}
+
+fn build_integration_child_from_asset(
+    opencode_root: &Path,
+    asset: &EmbeddedAsset,
+) -> IntegrationChildHealth {
+    let path = opencode_root.join(asset.relative_path);
+    let content_state = inspect_opencode_asset_state(&path, &asset.sha256);
+    IntegrationChildHealth {
+        relative_path: asset.relative_path.to_string(),
+        path,
+        content_state,
+    }
+}
+
+fn build_integration_child_presence_only(
+    relative_path: &str,
+    path: &Path,
+) -> IntegrationChildHealth {
+    let content_state = if path_is_file(path) {
+        IntegrationContentState::Match
+    } else {
+        IntegrationContentState::Missing
+    };
+    IntegrationChildHealth {
+        relative_path: relative_path.to_string(),
+        path: path.to_path_buf(),
+        content_state,
+    }
+}
+
+fn inspect_opencode_asset_state(
+    path: &Path,
+    expected_sha256: &[u8; 32],
+) -> IntegrationContentState {
+    if !path_is_file(path) {
+        return IntegrationContentState::Missing;
+    }
+
+    match fs::read(path) {
+        Ok(bytes) => {
+            let digest: [u8; 32] = Sha256::digest(&bytes).into();
+            if &digest == expected_sha256 {
+                IntegrationContentState::Match
+            } else {
+                IntegrationContentState::Mismatch
+            }
+        }
+        Err(error) => IntegrationContentState::ReadFailed(error.to_string()),
+    }
 }
 
 fn path_is_file(path: &Path) -> bool {
@@ -1176,7 +1324,7 @@ fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: boo
                 color_enabled,
                 integration_child_status(child, report.repository_root.is_some()),
                 &child.relative_path,
-                child.path.display().to_string(),
+                integration_child_detail(child),
             ));
         }
     }
@@ -1373,7 +1521,12 @@ fn integration_group_status(
     group: &IntegrationGroupHealth,
     repository_available: bool,
 ) -> HumanTextStatus {
-    if !repository_available || group.children.iter().any(|child| !child.present) {
+    if !repository_available
+        || group
+            .children
+            .iter()
+            .any(|child| !matches!(&child.content_state, IntegrationContentState::Match))
+    {
         HumanTextStatus::Fail
     } else {
         HumanTextStatus::Pass
@@ -1384,12 +1537,30 @@ fn integration_child_status(
     child: &IntegrationChildHealth,
     repository_available: bool,
 ) -> HumanTextStatus {
-    if !repository_available {
-        HumanTextStatus::Fail
-    } else if child.present {
-        HumanTextStatus::Pass
+    if repository_available {
+        match &child.content_state {
+            IntegrationContentState::Match => HumanTextStatus::Pass,
+            IntegrationContentState::Missing => HumanTextStatus::Miss,
+            IntegrationContentState::Mismatch | IntegrationContentState::ReadFailed(_) => {
+                HumanTextStatus::Fail
+            }
+        }
     } else {
-        HumanTextStatus::Miss
+        HumanTextStatus::Fail
+    }
+}
+
+fn integration_child_detail(child: &IntegrationChildHealth) -> String {
+    match &child.content_state {
+        IntegrationContentState::Mismatch => {
+            format!("{} - content mismatch", child.path.display())
+        }
+        IntegrationContentState::ReadFailed(_) => {
+            format!("{} - read failed", child.path.display())
+        }
+        IntegrationContentState::Match | IntegrationContentState::Missing => {
+            child.path.display().to_string()
+        }
     }
 }
 

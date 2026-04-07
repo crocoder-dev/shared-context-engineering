@@ -29,6 +29,7 @@ pub enum SetupTarget {
 pub struct EmbeddedAsset {
     pub relative_path: &'static str,
     pub bytes: &'static [u8],
+    pub sha256: [u8; 32],
 }
 
 #[cfg_attr(not(test), allow(dead_code))]

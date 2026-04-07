@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::{
     env,
     fmt::Write,
@@ -11,24 +12,20 @@ const TARGETS: &[TargetSpec] = &[
     TargetSpec {
         const_name: "OPENCODE_EMBEDDED_ASSETS",
         relative_root: "assets/generated/config/opencode",
-        include_prefix: "/assets/generated/config/opencode/",
     },
     TargetSpec {
         const_name: "CLAUDE_EMBEDDED_ASSETS",
         relative_root: "assets/generated/config/claude",
-        include_prefix: "/assets/generated/config/claude/",
     },
     TargetSpec {
         const_name: "HOOK_EMBEDDED_ASSETS",
         relative_root: "assets/hooks",
-        include_prefix: "/assets/hooks/",
     },
 ];
 
 struct TargetSpec {
     const_name: &'static str,
     relative_root: &'static str,
-    include_prefix: &'static str,
 }
 
 fn main() {
@@ -114,12 +111,14 @@ fn generate_embedded_asset_manifest() -> io::Result<()> {
 
         for file in &files {
             println!("cargo:rerun-if-changed={}", file.absolute_path.display());
+            let bytes = fs::read(&file.absolute_path)?;
+            let sha256 = compute_sha256(&bytes);
             writeln!(
                 output,
-                "    EmbeddedAsset {{ relative_path: \"{}\", bytes: include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"{}{}\")) }},",
+                "    EmbeddedAsset {{ relative_path: \"{}\", bytes: {}, sha256: {} }},",
                 escape_for_rust_string(&file.relative_path),
-                target.include_prefix,
-                escape_for_rust_string(&file.relative_path),
+                format_byte_literal("&[", &bytes),
+                format_byte_literal("[", &sha256),
             )
             .expect("writing to String buffer should never fail");
         }
@@ -185,6 +184,22 @@ fn normalize_relative_path(path: &Path) -> io::Result<String> {
 
 fn escape_for_rust_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn compute_sha256(bytes: &[u8]) -> [u8; 32] {
+    let digest = Sha256::digest(bytes);
+    digest.into()
+}
+
+fn format_byte_literal(prefix: &str, bytes: &[u8]) -> String {
+    format!(
+        "{prefix}{}]",
+        bytes
+            .iter()
+            .map(|byte| format!("0x{byte:02x}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 fn invalid_data<E: ToString>(error: &E) -> io::Error {
