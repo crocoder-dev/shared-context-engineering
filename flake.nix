@@ -306,7 +306,7 @@
 
             mkdir -p "$out_dir"
 
-            nix build .#default
+            nix build .#default --out-link result
 
             binary_path="result/bin/sce"
             if [[ ! -x "$binary_path" ]]; then
