@@ -23,7 +23,7 @@ jobs:
           ref: ${{ inputs.release_ref }}
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v19
+        uses: DeterminateSystems/nix-installer-action@v22
 
       - name: Build canonical Linux ARM CLI release artifacts
         run: |
@@ -32,7 +32,7 @@ jobs:
             --out-dir dist
 
       - name: Upload Linux ARM CLI release artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sce-release-aarch64-unknown-linux-gnu
           path: dist/

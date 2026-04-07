@@ -165,10 +165,10 @@ jobs:
           ref: ${{ needs.resolve-release.outputs.tag }}
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@v3.17.1
+        uses: DeterminateSystems/determinate-nix-action@v3.17.3
 
       - name: Download CLI release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: sce-release-*
           path: dist/cli
