@@ -194,27 +194,24 @@ fn compute_sha256(bytes: &[u8]) -> [u8; 32] {
 }
 
 fn format_sha256_literal(hash: &[u8; 32]) -> String {
-    let mut output = String::from("[");
-    for (index, byte) in hash.iter().enumerate() {
-        if index > 0 {
-            output.push_str(", ");
-        }
-        write!(&mut output, "0x{byte:02x}").expect("writing to String buffer should never fail");
-    }
-    output.push(']');
-    output
+    format!(
+        "[{}]",
+        hash.iter()
+            .map(|byte| format!("0x{byte:02x}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 fn format_bytes_literal(bytes: &[u8]) -> String {
-    let mut output = String::from("&[");
-    for (index, byte) in bytes.iter().enumerate() {
-        if index > 0 {
-            output.push_str(", ");
-        }
-        write!(&mut output, "0x{byte:02x}").expect("writing to String buffer should never fail");
-    }
-    output.push(']');
-    output
+    format!(
+        "&[{}]",
+        bytes
+            .iter()
+            .map(|byte| format!("0x{byte:02x}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 fn invalid_data<E: ToString>(error: &E) -> io::Error {
