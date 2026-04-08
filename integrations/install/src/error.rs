@@ -35,7 +35,7 @@ pub(crate) enum HarnessError {
         reason: String,
     },
 
-    #[error("[FAIL] channel={channel} sce version failed via {path}")]
+    #[error("[FAIL] channel={channel} sce version failed via {path}\nstderr: {stderr:?}")]
     SceVersionFailed {
         channel: String,
         path: PathBuf,
@@ -76,7 +76,7 @@ pub(crate) enum HarnessError {
     #[error("failed to write {path}: {error}")]
     FileWrite { path: PathBuf, error: String },
 
-    #[error("[FAIL] channel={channel} npm install failed for {tarball}")]
+    #[error("[FAIL] channel={channel} npm install failed for {tarball}\nstdout: {stdout:?}\nstderr: {stderr:?}")]
     NpmInstallFailed {
         channel: String,
         tarball: PathBuf,
@@ -84,7 +84,7 @@ pub(crate) enum HarnessError {
         stderr: Option<String>,
     },
 
-    #[error("[FAIL] channel={channel} npm pack failed for local fixture")]
+    #[error("[FAIL] channel={channel} npm pack failed for local fixture\nstdout: {stdout:?}\nstderr: {stderr:?}")]
     NpmPackFailed {
         channel: String,
         stdout: Option<String>,
@@ -97,7 +97,7 @@ pub(crate) enum HarnessError {
     #[error("[FAIL] channel={channel} expected packed tarball was not created: {path}")]
     NpmPackTarballMissing { channel: String, path: PathBuf },
 
-    #[error("[FAIL] channel={channel} bun global install failed for {tarball}")]
+    #[error("[FAIL] channel={channel} bun global install failed for {tarball}\nstdout: {stdout:?}\nstderr: {stderr:?}")]
     BunInstallFailed {
         channel: String,
         tarball: PathBuf,
@@ -105,7 +105,7 @@ pub(crate) enum HarnessError {
         stderr: Option<String>,
     },
 
-    #[error("[FAIL] channel={channel} cargo install failed for {path}")]
+    #[error("[FAIL] channel={channel} cargo install failed for {path}\nstdout: {stdout:?}\nstderr: {stderr:?}")]
     CargoInstallFailed {
         channel: String,
         path: PathBuf,
