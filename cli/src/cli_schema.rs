@@ -111,12 +111,6 @@ pub enum Commands {
         subcommand: TraceSubcommand,
     },
 
-    #[command(about = "Coordinate future cloud sync workflows (placeholder)")]
-    Sync {
-        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
-        format: OutputFormat,
-    },
-
     #[command(about = "Print deterministic runtime version metadata")]
     Version {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]

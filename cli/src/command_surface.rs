@@ -6,7 +6,6 @@ use services::style::{command_name, heading};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImplementationStatus {
     Implemented,
-    Placeholder,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,12 +57,6 @@ pub const COMMANDS: &[CommandContract] = &[
         name: services::trace::NAME,
         status: ImplementationStatus::Implemented,
         purpose: "Inspect persisted Agent Trace records and captured prompts",
-        show_in_top_level_help: false,
-    },
-    CommandContract {
-        name: services::sync::NAME,
-        status: ImplementationStatus::Placeholder,
-        purpose: "Coordinate future cloud sync workflows",
         show_in_top_level_help: false,
     },
     CommandContract {

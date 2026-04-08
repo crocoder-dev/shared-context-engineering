@@ -40,8 +40,8 @@
 
 ## Persistence semantics
 
-- Rewritten trace finalization follows the same notes+DB persistence contract as post-commit traces.
-- On dual-write success:
+- Rewritten trace finalization follows the same current notes-plus-no-op-DB baseline as post-commit traces.
+- On success:
   - commit SHA is marked emitted in `TraceEmissionLedger`
   - outcome is `RewriteTraceFinalization::Persisted`
 - On any target failure:
@@ -54,7 +54,7 @@
 
 ## Tests added
 
-- Metadata integrity and notes/DB parity for persisted rewrite traces.
+- Metadata integrity and current notes/no-op-DB persistence behavior for rewritten traces.
 - Confidence-threshold quality mapping (`final`, `partial`, `needs_review`).
 - Confidence range validation errors for out-of-range input.
 - No-op behavior when rewritten commit was already finalized.

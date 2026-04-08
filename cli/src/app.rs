@@ -16,7 +16,6 @@ enum Command {
     Doctor(services::doctor::DoctorRequest),
     Hooks(services::hooks::HookSubcommand),
     Trace(services::trace::TraceRequest),
-    Sync(services::sync::SyncRequest),
     Version(services::version::VersionRequest),
 }
 
@@ -32,7 +31,6 @@ impl Command {
             Self::Doctor(_) => services::doctor::NAME,
             Self::Hooks(_) => services::hooks::NAME,
             Self::Trace(_) => services::trace::NAME,
-            Self::Sync(_) => services::sync::NAME,
             Self::Version(_) => services::version::NAME,
         }
     }
@@ -464,9 +462,6 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<Command, Classi
         }
         cli_schema::Commands::Hooks { subcommand } => convert_hooks_subcommand(subcommand),
         cli_schema::Commands::Trace { subcommand } => convert_trace_subcommand(subcommand),
-        cli_schema::Commands::Sync { format } => Ok(Command::Sync(services::sync::SyncRequest {
-            format: convert_output_format(format),
-        })),
         cli_schema::Commands::Version { format } => {
             Ok(Command::Version(services::version::VersionRequest {
                 format: convert_output_format(format),
@@ -656,7 +651,6 @@ fn dispatch(
         Command::Auth(request) => services::auth_command::run_auth_subcommand(*request)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::Completion(request) => Ok(services::completion::render_completion(*request)),
-        // Clone required: run_config_subcommand takes ownership of ConfigSubcommand
         Command::Config(subcommand) => services::config::run_config_subcommand(subcommand.clone())
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::Setup(request) => {
@@ -712,13 +706,9 @@ fn dispatch(
         }
         Command::Doctor(request) => services::doctor::run_doctor(*request)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
-        // Clone required: run_hooks_subcommand takes ownership of HookSubcommand
         Command::Hooks(subcommand) => services::hooks::run_hooks_subcommand(subcommand.clone())
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
-        // Clone required: run_trace_subcommand takes ownership of TraceRequest
         Command::Trace(request) => services::trace::run_trace_subcommand(request.clone())
-            .map_err(|error| ClassifiedError::runtime(error.to_string())),
-        Command::Sync(request) => services::sync::run_placeholder_sync(*request)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::Version(request) => services::version::render_version(*request)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
