@@ -78,7 +78,6 @@ pub(crate) enum PersistedArtifactRootKind {
 pub(crate) enum PersistedArtifactId {
     GlobalConfig,
     AuthTokens,
-    LocalDb,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -106,10 +105,6 @@ impl SceDefaultLocations {
             .join("tokens.json")
     }
 
-    pub(crate) fn local_db(&self) -> PathBuf {
-        self.roots.state_root().join("sce").join("local.db")
-    }
-
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn persisted_artifact_locations(&self) -> Vec<PersistedArtifactLocation> {
         vec![
@@ -122,11 +117,6 @@ impl SceDefaultLocations {
                 id: PersistedArtifactId::AuthTokens,
                 root_kind: PersistedArtifactRootKind::State,
                 path: self.auth_tokens_file(),
-            },
-            PersistedArtifactLocation {
-                id: PersistedArtifactId::LocalDb,
-                root_kind: PersistedArtifactRootKind::State,
-                path: self.local_db(),
             },
         ]
     }
@@ -461,6 +451,13 @@ impl InstallTargetPaths {
             .join(hook_dir::HOOKS)
             .join(format!("{hook_name}.backup"))
     }
+}
+
+pub(crate) fn resolve_state_data_root() -> Result<PathBuf> {
+    Ok(resolve_sce_default_locations()?
+        .roots()
+        .state_root()
+        .to_path_buf())
 }
 
 pub(crate) fn resolve_sce_default_locations() -> Result<SceDefaultLocations> {
