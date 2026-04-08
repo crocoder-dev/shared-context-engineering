@@ -1,4 +1,4 @@
-# Agent Trace post-commit dual-write finalization
+# Agent Trace post-commit persistence baseline
 
 ## Status
 - Plan: `agent-trace-attribution-no-git-wrapper`
@@ -18,11 +18,12 @@
   - optional `metadata[dev.crocoder.sce.parent_revision]` when a parent SHA is available
 - Notes write policy is fixed to `refs/notes/agent-trace` with MIME `application/vnd.agent-trace.record+json`.
 
-## Dual-write and fallback behavior
-- Finalization attempts both targets in one pass:
+## Current persistence behavior
+- Finalization still attempts both persistence targets in one pass:
   - notes write via `TraceNotesWriter`
-  - DB persistence via `TraceRecordStore`
-- Successful writes (`Written` or `AlreadyExists`) on both targets mark commit emission in `TraceEmissionLedger` and return `Persisted`.
+  - local DB write via `TraceRecordStore`
+- The production local DB adapter is now `NoOpTraceRecordStore`, so the DB target returns `AlreadyExists` without writing trace rows.
+- Successful notes persistence plus the no-op DB result mark commit emission in `TraceEmissionLedger` and return `Persisted`.
 - Any failed target (`PersistenceWriteResult::Failed`) enqueues one retry item via `TraceRetryQueue` with explicit failed target list and returns `QueuedFallback`.
 - Retry queue entries carry the full trace record, MIME type, notes ref, and failed target list to support replay-safe recovery.
 
@@ -35,12 +36,12 @@
   - derives deterministic idempotency (`post-commit:<sha>`) and deterministic UUIDv4 trace IDs from commit/timestamp seed
 - Production adapters currently bound in runtime:
   - notes adapter: `GitNotesTraceWriter` writes canonical JSON note payloads to `refs/notes/agent-trace`
-  - local record store adapter: `LocalDbTraceRecordStore` writes trace records and flattened ranges into the persistent Turso target at `.../sce/agent-trace/local.db`
+  - local record store adapter: `NoOpTraceRecordStore` disconnects local DB trace persistence while keeping the finalize path compile-safe
   - emission ledger adapter: `FileTraceEmissionLedger` stores emitted commit SHAs at `sce/trace-emission-ledger.txt`
   - retry queue adapter: `JsonFileTraceRetryQueue` appends failed-target fallback entries to `sce/trace-retry-queue.jsonl`
-- Runtime schema bootstrap is mandatory before post-commit persistence:
+- Runtime DB-file bootstrap remains mandatory before post-commit execution:
   - `resolve_post_commit_runtime_paths` calls `ensure_agent_trace_local_db_ready_blocking`.
-  - `ensure_agent_trace_local_db_ready_blocking` resolves platform state-data DB path (`${XDG_STATE_HOME:-~/.local/state}/sce/agent-trace/local.db` on Linux, platform-equivalent user state root elsewhere), creates parent directories, and applies `apply_core_schema_migrations` before writes.
+  - `ensure_agent_trace_local_db_ready_blocking` resolves platform state-data DB path (`${XDG_STATE_HOME:-~/.local/state}/sce/agent-trace/local.db` on Linux, platform-equivalent user state root elsewhere), creates parent directories, and opens/creates the DB file without applying schema migrations.
 - Runtime posture remains fail-open: operational errors return deterministic skip/fallback messages instead of aborting commit progression.
 
 ## Verification evidence

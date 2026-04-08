@@ -43,7 +43,7 @@ Freeze one implementation-ready contract for Local Hooks MVP productionization a
 
 ### 6) Persistence and schema contract
 - Local production runtime MUST use a deterministic persistent DB path policy (not in-memory).
-- Schema bootstrap (`apply_core_schema_migrations`) MUST run before production write paths.
+- Current rollback baseline opens/creates the deterministic local DB file only; schema bootstrap is not part of the active runtime.
 - Notes persistence target MUST remain `refs/notes/agent-trace` with content type `application/vnd.agent-trace.record+json`.
 
 ### 7) Retry/observability contract

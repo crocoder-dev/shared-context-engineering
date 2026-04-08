@@ -10,8 +10,7 @@ use crate::services::agent_trace::{
     build_trace_payload, AgentTraceContributor, AgentTraceConversation, AgentTraceFile,
     AgentTraceRange, AgentTraceRecord, AgentTraceVcs, ContributorInput, ContributorType,
     ConversationInput, FileAttributionInput, QualityStatus, RangeInput, RewriteInfo,
-    TraceAdapterInput, METADATA_IDEMPOTENCY_KEY, METADATA_QUALITY_STATUS, TRACE_CONTENT_TYPE,
-    TRACE_VERSION, VCS_TYPE_GIT,
+    TraceAdapterInput, METADATA_IDEMPOTENCY_KEY, TRACE_CONTENT_TYPE, TRACE_VERSION, VCS_TYPE_GIT,
 };
 use crate::services::default_paths;
 use crate::services::local_db::ensure_agent_trace_local_db_ready_blocking;
@@ -694,10 +693,7 @@ fn run_post_commit_subcommand_in_repo(repository_root: &Path) -> Result<String> 
     let mut notes_writer = GitNotesTraceWriter {
         repository_root: repository_root.to_path_buf(),
     };
-    let mut record_store = LocalDbTraceRecordStore {
-        repository_root: repository_root.to_path_buf(),
-        db_path: runtime_paths.local_db_path,
-    };
+    let mut record_store = NoOpTraceRecordStore;
     let mut retry_queue = JsonFileTraceRetryQueue {
         path: runtime_paths.retry_queue_path,
     };
@@ -763,13 +759,12 @@ fn resolve_post_commit_runtime_state(repository_root: &Path) -> PostCommitRuntim
 
 #[allow(clippy::struct_field_names)]
 struct PostCommitRuntimePaths {
-    local_db_path: PathBuf,
     retry_queue_path: PathBuf,
     emission_ledger_path: PathBuf,
 }
 
 fn resolve_post_commit_runtime_paths(repository_root: &Path) -> Result<PostCommitRuntimePaths> {
-    let local_db_path = ensure_agent_trace_local_db_ready_blocking()?;
+    let _ = ensure_agent_trace_local_db_ready_blocking()?;
     let retry_queue_path = resolve_git_path(
         repository_root,
         default_paths::git_relative_path::TRACE_RETRY_QUEUE,
@@ -780,7 +775,6 @@ fn resolve_post_commit_runtime_paths(repository_root: &Path) -> Result<PostCommi
     )?;
 
     Ok(PostCommitRuntimePaths {
-        local_db_path,
         retry_queue_path,
         emission_ledger_path,
     })
@@ -1356,9 +1350,7 @@ fn run_post_rewrite_subcommand_in_repo(
         }
     };
 
-    let mut ingestion = LocalDbRewriteRemapIngestion {
-        repository_root: repository_root.to_path_buf(),
-        db_path: runtime_paths.local_db_path.clone(),
+    let mut ingestion = NoOpRewriteRemapIngestion {
         accepted_requests: Vec::new(),
     };
 
@@ -1379,10 +1371,7 @@ fn run_post_rewrite_subcommand_in_repo(
     let mut notes_writer = GitNotesTraceWriter {
         repository_root: repository_root.to_path_buf(),
     };
-    let mut record_store = LocalDbTraceRecordStore {
-        repository_root: repository_root.to_path_buf(),
-        db_path: runtime_paths.local_db_path,
-    };
+    let mut record_store = NoOpTraceRecordStore;
     let mut retry_queue = JsonFileTraceRetryQueue {
         path: runtime_paths.retry_queue_path,
     };
@@ -1546,134 +1535,15 @@ fn build_rewrite_trace_input(
     })
 }
 
-struct LocalDbRewriteRemapIngestion {
-    repository_root: PathBuf,
-    db_path: PathBuf,
+struct NoOpRewriteRemapIngestion {
     accepted_requests: Vec<RewriteRemapRequest>,
 }
 
-impl RewriteRemapIngestion for LocalDbRewriteRemapIngestion {
+impl RewriteRemapIngestion for NoOpRewriteRemapIngestion {
     fn ingest(&mut self, request: RewriteRemapRequest) -> Result<bool> {
-        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-        let accepted = runtime.block_on(ingest_rewrite_mapping_to_local_db(
-            &self.repository_root,
-            &self.db_path,
-            &request,
-        ))?;
-        if accepted {
-            self.accepted_requests.push(request);
-        }
-        Ok(accepted)
+        self.accepted_requests.push(request);
+        Ok(true)
     }
-}
-
-async fn ingest_rewrite_mapping_to_local_db(
-    repository_root: &Path,
-    db_path: &Path,
-    request: &RewriteRemapRequest,
-) -> Result<bool> {
-    let location = db_path.to_str().ok_or_else(|| {
-        anyhow::anyhow!("Local DB path must be valid UTF-8: {}", db_path.display())
-    })?;
-    let db = turso::Builder::new_local(location).build().await?;
-    let conn = db.connect()?;
-    conn.execute("PRAGMA foreign_keys = ON", ()).await?;
-
-    let canonical_root = repository_root
-        .canonicalize()
-        .unwrap_or_else(|_| repository_root.to_path_buf())
-        .to_string_lossy()
-        .to_string();
-
-    conn.execute(
-        "INSERT OR IGNORE INTO repositories (canonical_root) VALUES (?1)",
-        [canonical_root.as_str()],
-    )
-    .await?;
-
-    let repository_id = {
-        let mut rows = conn
-            .query(
-                "SELECT id FROM repositories WHERE canonical_root = ?1 LIMIT 1",
-                [canonical_root.as_str()],
-            )
-            .await?;
-        let row = rows
-            .next()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("repository id query returned no rows"))?;
-        let value = row.get_value(0)?;
-        value
-            .as_integer()
-            .copied()
-            .ok_or_else(|| anyhow::anyhow!("repository id query returned non-integer"))?
-    };
-
-    let existing = {
-        let mut rows = conn
-            .query(
-                "SELECT COUNT(*) FROM rewrite_mappings WHERE repository_id = ?1 AND idempotency_key = ?2",
-                (repository_id, request.idempotency_key.as_str()),
-            )
-            .await?;
-        let row = rows
-            .next()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("rewrite mapping count query returned no rows"))?;
-        let value = row.get_value(0)?;
-        value
-            .as_integer()
-            .copied()
-            .ok_or_else(|| anyhow::anyhow!("rewrite mapping count query returned non-integer"))?
-    };
-    if existing > 0 {
-        return Ok(false);
-    }
-
-    let reconciliation_key = format!(
-        "local-post-rewrite:{}:{}",
-        request.rewrite_method.canonical_label(),
-        request.new_sha
-    );
-    conn.execute(
-        "INSERT OR IGNORE INTO reconciliation_runs (repository_id, provider, idempotency_key, status) VALUES (?1, ?2, ?3, ?4)",
-        (repository_id, "local-hook", reconciliation_key.as_str(), "completed"),
-    )
-    .await?;
-
-    let run_id = {
-        let mut rows = conn
-            .query(
-                "SELECT id FROM reconciliation_runs WHERE repository_id = ?1 AND idempotency_key = ?2 LIMIT 1",
-                (repository_id, reconciliation_key.as_str()),
-            )
-            .await?;
-        let row = rows
-            .next()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("reconciliation run id query returned no rows"))?;
-        let value = row.get_value(0)?;
-        value
-            .as_integer()
-            .copied()
-            .ok_or_else(|| anyhow::anyhow!("reconciliation run id query returned non-integer"))?
-    };
-
-    conn.execute(
-        "INSERT INTO rewrite_mappings (reconciliation_run_id, repository_id, old_commit_sha, new_commit_sha, mapping_status, confidence, idempotency_key) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        (
-            run_id,
-            repository_id,
-            request.old_sha.as_str(),
-            request.new_sha.as_str(),
-            "mapped",
-            1.0_f64,
-            request.idempotency_key.as_str(),
-        ),
-    )
-    .await?;
-
-    Ok(true)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1967,225 +1837,12 @@ impl TraceNotesWriter for GitNotesTraceWriter {
     }
 }
 
-struct LocalDbTraceRecordStore {
-    repository_root: PathBuf,
-    db_path: PathBuf,
-}
+struct NoOpTraceRecordStore;
 
-impl TraceRecordStore for LocalDbTraceRecordStore {
-    fn write_trace_record(&mut self, record: PersistedTraceRecord) -> PersistenceWriteResult {
-        let runtime = match tokio::runtime::Builder::new_current_thread().build() {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                return PersistenceWriteResult::Failed(PersistenceFailure {
-                    class: PersistenceErrorClass::Permanent,
-                    message: format!("failed to initialize local DB runtime: {error}"),
-                })
-            }
-        };
-
-        match runtime.block_on(write_trace_record_to_local_db(
-            &self.db_path,
-            &self.repository_root,
-            &record,
-        )) {
-            Ok(written) => {
-                if written {
-                    PersistenceWriteResult::Written
-                } else {
-                    PersistenceWriteResult::AlreadyExists
-                }
-            }
-            Err(error) => PersistenceWriteResult::Failed(PersistenceFailure {
-                class: classify_persistence_error_class_from_message(&error.to_string()),
-                message: format!(
-                    "failed to persist trace record in local DB '{}': {error}",
-                    self.db_path.display()
-                ),
-            }),
-        }
+impl TraceRecordStore for NoOpTraceRecordStore {
+    fn write_trace_record(&mut self, _record: PersistedTraceRecord) -> PersistenceWriteResult {
+        PersistenceWriteResult::AlreadyExists
     }
-}
-
-#[allow(clippy::too_many_lines)]
-async fn write_trace_record_to_local_db(
-    db_path: &Path,
-    repository_root: &Path,
-    record: &PersistedTraceRecord,
-) -> Result<bool> {
-    let location = db_path.to_str().ok_or_else(|| {
-        anyhow::anyhow!("Local DB path must be valid UTF-8: {}", db_path.display())
-    })?;
-    let db = turso::Builder::new_local(location).build().await?;
-    let conn = db.connect()?;
-    conn.execute("PRAGMA foreign_keys = ON", ()).await?;
-
-    let canonical_root = repository_root
-        .canonicalize()
-        .unwrap_or_else(|_| repository_root.to_path_buf())
-        .to_string_lossy()
-        .to_string();
-
-    conn.execute(
-        "INSERT OR IGNORE INTO repositories (canonical_root) VALUES (?1)",
-        [canonical_root.as_str()],
-    )
-    .await?;
-
-    let repository_id = {
-        let mut rows = conn
-            .query(
-                "SELECT id FROM repositories WHERE canonical_root = ?1 LIMIT 1",
-                [canonical_root.as_str()],
-            )
-            .await?;
-        let row = rows
-            .next()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("repository id query returned no rows"))?;
-        let value = row.get_value(0)?;
-        value
-            .as_integer()
-            .copied()
-            .ok_or_else(|| anyhow::anyhow!("repository id query returned non-integer"))?
-    };
-
-    conn.execute(
-        "INSERT OR IGNORE INTO commits (repository_id, commit_sha, idempotency_key) VALUES (?1, ?2, ?3)",
-        (
-            repository_id,
-            record.commit_sha.as_str(),
-            record.idempotency_key.as_str(),
-        ),
-    )
-    .await?;
-
-    let commit_id = {
-        let mut rows = conn
-            .query(
-                "SELECT id FROM commits WHERE repository_id = ?1 AND commit_sha = ?2 LIMIT 1",
-                (repository_id, record.commit_sha.as_str()),
-            )
-            .await?;
-        let row = rows
-            .next()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("commit id query returned no rows"))?;
-        let value = row.get_value(0)?;
-        value
-            .as_integer()
-            .copied()
-            .ok_or_else(|| anyhow::anyhow!("commit id query returned non-integer"))?
-    };
-
-    let existing = {
-        let mut rows = conn
-            .query(
-                "SELECT COUNT(*) FROM trace_records WHERE repository_id = ?1 AND (commit_id = ?2 OR idempotency_key = ?3)",
-                (repository_id, commit_id, record.idempotency_key.as_str()),
-            )
-            .await?;
-        let row = rows
-            .next()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("existing trace count query returned no rows"))?;
-        let value = row.get_value(0)?;
-        value
-            .as_integer()
-            .copied()
-            .ok_or_else(|| anyhow::anyhow!("existing trace count query returned non-integer"))?
-    };
-    if existing > 0 {
-        return Ok(false);
-    }
-
-    let payload_json = serde_json::to_string(&trace_record_to_json(&record.record))
-        .context("failed to serialize trace record JSON payload")?;
-    let quality_status = record
-        .record
-        .metadata
-        .get(METADATA_QUALITY_STATUS)
-        .cloned()
-        .unwrap_or_else(|| String::from("final"));
-
-    conn.execute(
-        "INSERT INTO trace_records (repository_id, commit_id, trace_id, version, content_type, notes_ref, payload_json, quality_status, idempotency_key, recorded_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        (
-            repository_id,
-            commit_id,
-            record.record.id.as_str(),
-            record.record.version.as_str(),
-            record.content_type.as_str(),
-            record.notes_ref.as_str(),
-            payload_json.as_str(),
-            quality_status.as_str(),
-            record.idempotency_key.as_str(),
-            record.record.timestamp.as_str(),
-        ),
-    )
-    .await?;
-
-    let trace_record_id = {
-        let mut rows = conn
-            .query(
-                "SELECT id FROM trace_records WHERE trace_id = ?1 LIMIT 1",
-                [record.record.id.as_str()],
-            )
-            .await?;
-        let row = rows
-            .next()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("trace record id query returned no rows"))?;
-        let value = row.get_value(0)?;
-        value
-            .as_integer()
-            .copied()
-            .ok_or_else(|| anyhow::anyhow!("trace record id query returned non-integer"))?
-    };
-
-    for file in &record.record.files {
-        for conversation in &file.conversations {
-            for range in &conversation.ranges {
-                conn.execute(
-                    "INSERT INTO trace_ranges (trace_record_id, file_path, conversation_url, start_line, end_line, contributor_type, contributor_model_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    (
-                        trace_record_id,
-                        file.path.as_str(),
-                        conversation.url.as_str(),
-                        i64::from(range.start_line),
-                        i64::from(range.end_line),
-                        range.contributor.r#type.as_str(),
-                        range.contributor.model_id.as_deref(),
-                    ),
-                )
-                .await?;
-            }
-        }
-    }
-
-    for prompt in &record.prompts {
-        conn.execute(
-            "INSERT INTO prompts (commit_id, prompt_text, prompt_length, is_truncated, turn_number, harness_type, model_id, cwd, git_branch, tool_call_count, duration_ms, captured_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            (
-                commit_id,
-                prompt.prompt_text.as_str(),
-                i64::try_from(prompt.prompt_length)
-                    .context("Prompt length exceeded supported SQLite integer range")?,
-                prompt.is_truncated,
-                i64::from(prompt.turn_number),
-                prompt.harness_type.as_str(),
-                prompt.model_id.as_deref(),
-                prompt.cwd.as_deref(),
-                prompt.git_branch.as_deref(),
-                i64::from(prompt.tool_call_count),
-                prompt.duration_ms,
-                prompt.captured_at.as_str(),
-            ),
-        )
-        .await?;
-    }
-
-    Ok(true)
 }
 
 struct JsonFileTraceRetryQueue {
@@ -2364,19 +2021,6 @@ fn classify_persistence_error_class_from_stderr(stderr: &str) -> PersistenceErro
         || lowered.contains("temporar")
         || lowered.contains("try again")
         || lowered.contains("index.lock")
-    {
-        return PersistenceErrorClass::Transient;
-    }
-
-    PersistenceErrorClass::Permanent
-}
-
-fn classify_persistence_error_class_from_message(message: &str) -> PersistenceErrorClass {
-    let lowered = message.to_ascii_lowercase();
-    if lowered.contains("locked")
-        || lowered.contains("timed out")
-        || lowered.contains("temporar")
-        || lowered.contains("try again")
     {
         return PersistenceErrorClass::Transient;
     }

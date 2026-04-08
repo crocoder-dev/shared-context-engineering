@@ -1,34 +1,34 @@
-# Agent Trace Core Schema Migrations
+# Agent Trace local DB empty-file baseline
 
 ## Scope
 
-- Implements T10 for plan `agent-trace-attribution-no-git-wrapper`.
-- Defines foundational local persistence schema for Agent Trace ingestion.
-- Covers only core entities: `repositories`, `commits`, `trace_records`, `trace_ranges`.
+- Current state after `agent-trace-removal-and-hook-noop-reset` T01.
+- Defines the minimal local DB runtime baseline for the existing Agent Trace path.
+- Covers file creation/open behavior only; schema tables and migrations are not active.
 
 ## Code ownership
 
-- Migration entrypoint: `cli/src/services/local_db.rs` (`apply_core_schema_migrations`).
+- Runtime bootstrap entrypoint: `cli/src/services/local_db.rs` (`ensure_agent_trace_local_db_ready_blocking`).
 - Shared local DB connection helper: `cli/src/services/local_db.rs` (`connect_local`).
 
-## Migration contract
+## Current contract
 
-- Migrations are idempotent and upgrade-safe via `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS`.
-- Reapplying migrations must succeed on both empty and preexisting local DB states.
-- Core schema statements are deterministic and owned in one ordered list (`CORE_SCHEMA_STATEMENTS`).
+- `ensure_agent_trace_local_db_ready_blocking` resolves the canonical per-user state path and creates parent directories when needed.
+- The runtime opens/creates the local Turso file and returns its path.
+- No schema bootstrap runs.
+- No trace, reconciliation, retry, or prompt tables are created as part of runtime readiness.
 
-## Core tables
+## Observable consequences
 
-- `repositories`: repository identity root (`canonical_root`) plus VCS provider marker.
-- `commits`: per-repository commit identity (`commit_sha`), optional parent SHA, and idempotency key capture.
-- `trace_records`: canonical stored Agent Trace payload envelope per commit (content type, notes ref, payload JSON, quality status, recorded timestamp).
-- `trace_ranges`: flattened line-range attribution rows linked to a trace record.
+- A newly created DB file is empty until another future task introduces schema creation.
+- Hook runtime may still ensure the file exists, but it must not assume DB tables are present.
+- Local DB persistence adapters that previously wrote trace or reconciliation rows are disconnected in the current runtime.
 
-## Indexes
+## Removed behavior
 
-- `idx_commits_repository_commit_sha` on `commits(repository_id, commit_sha)`.
-- `idx_trace_records_repository_commit` on `trace_records(repository_id, commit_id)`.
-- `idx_trace_ranges_record_file` on `trace_ranges(trace_record_id, file_path)`.
+- `apply_core_schema_migrations` is no longer part of the active runtime surface.
+- The ordered schema statement list for Agent Trace persistence is no longer present in `cli/src/services/local_db.rs`.
+- Hosted reconciliation schema ingestion is also absent from the current local DB bootstrap path.
 
 ## Verification evidence
 
