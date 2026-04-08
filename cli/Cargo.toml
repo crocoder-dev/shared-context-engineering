@@ -43,7 +43,6 @@ tokio = { version = "1", default-features = false, features = ["rt", "io-util"] 
 tracing = "0.1"
 tracing-opentelemetry = "0.29"
 tracing-subscriber = { version = "0.3", features = ["registry"] }
-turso = "0"
 opentelemetry = { version = "0.28", features = ["trace"] }
 opentelemetry_sdk = { version = "0.28", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.28", features = ["grpc-tonic", "http-proto", "trace"] }

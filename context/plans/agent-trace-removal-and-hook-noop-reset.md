@@ -61,12 +61,43 @@
   - Files changed: `context/architecture.md`, `context/cli/cli-command-surface.md`, `context/context-map.md`, `context/glossary.md`, `context/overview.md`, `context/patterns.md`, `context/sce/agent-trace-implementation-contract.md`, `context/sce/agent-trace-local-hooks-mvp-contract-gap-matrix.md`, `context/sce/agent-trace-payload-builder-validation.md`, `context/sce/agent-trace-post-commit-dual-write.md`, `context/sce/agent-trace-post-rewrite-local-remap-ingestion.md`, `context/sce/agent-trace-pre-commit-staged-checkpoint.md`, `context/sce/agent-trace-retry-queue-observability.md`, `context/sce/agent-trace-rewrite-trace-transformation.md`, `context/sce/agent-trace-schema-adapter.md`
   - Evidence: `nix run .#pkl-check-generated`; `nix flake check`
 
-- [ ] T05: Validation and cleanup (status:todo)
+- [x] T05: Validation and cleanup (status:done)
   - Task ID: T05
   - Goal: Run full repository validation, confirm removed tracing behavior stays absent while optional attribution behavior still works when enabled, and clean up any leftover dead references or temporary scaffolding.
   - Boundaries (in/out of scope): In scope: `nix run .#pkl-check-generated`, `nix flake check`, final targeted spot-checks for disabled-default noop hooks, enabled attribution-only behavior, empty DB expectations, and final context-sync verification. Out of scope: new feature work or redesign follow-ons.
   - Done when: Required validation passes, leftover dead/stale trace-removal artifacts are cleaned up, and plan/context state is ready for handoff completion.
   - Verification notes (commands or checks): `nix run .#pkl-check-generated`; `nix flake check`; targeted inspection that hooks are no-op by default, attribution works when enabled, and local DB bootstrap remains empty-file only.
+  - Completed: 2026-04-08
+  - Files changed: `context/plans/agent-trace-removal-and-hook-noop-reset.md`
+  - Evidence: `nix run .#pkl-check-generated`; `nix flake check`; targeted `hooks` runtime spot-check in a temporary git repo; code inspection of `cli/src/services/local_db.rs`
+
+## Validation Report
+
+### Commands run
+- `nix run .#pkl-check-generated` -> exit 0 (`Generated outputs are up to date.`)
+- `nix flake check` -> exit 0 (all 13 flake checks passed; Nix reported only the standard incompatible-system omission warning)
+- Targeted hook spot-check in a temporary git repo via `nix develop <repo> -c cargo run --manifest-path <repo>/cli/Cargo.toml --quiet -- hooks ...` -> exit 0
+  - `hooks pre-commit` reported `AttributionOnlyCommitMsgMode`
+  - `hooks post-commit` reported `AttributionOnlyCommitMsgMode`
+  - `hooks post-rewrite amend` reported `AttributionOnlyCommitMsgMode`
+  - `hooks commit-msg` with default config reported `policy_gate_passed=false, trailer_applied=false`
+  - `hooks commit-msg` with `SCE_ATTRIBUTION_HOOKS_ENABLED=true` reported `policy_gate_passed=true, trailer_applied=true` and appended the canonical `Co-authored-by: SCE <sce@crocoder.dev>` trailer
+
+### Cleanup
+- No leftover dead references or temporary scaffolding required removal during this task.
+
+### Success-criteria verification
+- [x] Agent Trace persistence, schema migration, trace emission, retry, notes, and rewrite-handling behavior remain removed from the active runtime surface -> confirmed by `nix flake check`, targeted hook runtime spot-checks, and no active Agent Trace runtime references found in current CLI surfaces during validation.
+- [x] `local_db` remains create/open only with no schema bootstrap or trace tables -> confirmed by `cli/src/services/local_db.rs`, which only opens the local DB, enables `PRAGMA foreign_keys`, and checks `PRAGMA schema_version` without any schema DDL or migration calls.
+- [x] Hook entrypoints remain present while default behavior is deterministic no-op -> confirmed by successful `hooks pre-commit`, `hooks post-commit`, and `hooks post-rewrite amend` spot-checks reporting `AttributionOnlyCommitMsgMode`.
+- [x] Attribution behavior remains disabled by default and still works when explicitly enabled -> confirmed by `hooks commit-msg` spot-checks with default config (`trailer_applied=false`) and `SCE_ATTRIBUTION_HOOKS_ENABLED=true` (`trailer_applied=true` plus canonical trailer insertion).
+- [x] Generated/current-state assets remain aligned -> confirmed by `nix run .#pkl-check-generated` and final context verification for this task.
+
+### Failed checks and follow-ups
+- None.
+
+### Residual risks
+- None identified for this task scope.
 
 ## Open questions
 - None.

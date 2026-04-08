@@ -7,7 +7,8 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::services::default_paths::{
-    hook_dir, opencode_asset, resolve_sce_default_locations, InstallTargetPaths, RepoPaths,
+    hook_dir, opencode_asset, resolve_sce_default_locations, resolve_state_data_root,
+    InstallTargetPaths, RepoPaths,
 };
 use crate::services::output_format::OutputFormat;
 use crate::services::setup::{
@@ -84,7 +85,6 @@ struct FileLocationHealth {
 struct GlobalStateHealth {
     state_root: Option<FileLocationHealth>,
     config_locations: Vec<FileLocationHealth>,
-    local_db: Option<FileLocationHealth>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -96,7 +96,6 @@ struct HookDoctorReport {
     hook_path_source: HookPathSource,
     hooks_directory: Option<PathBuf>,
     config_locations: Vec<FileLocationHealth>,
-    local_db: Option<FileLocationHealth>,
     hooks: Vec<HookFileHealth>,
     integration_groups: Vec<IntegrationGroupHealth>,
     problems: Vec<DoctorProblem>,
@@ -154,13 +153,6 @@ enum ProblemKind {
     GlobalConfigValidationFailed,
     UnableToResolveGlobalConfigPath,
     LocalConfigValidationFailed,
-    UnableToResolveLocalDbPath,
-    LocalDbPathHasNoParent,
-    LocalDbParentMissing,
-    LocalDbParentNotDirectory,
-    LocalDbParentNotWritable,
-    LocalDbParentInspectionFailed,
-    LocalDbHealthCheckFailed,
     HooksDirectoryMissing,
     HooksPathNotDirectory,
     RequiredHookMissing,
@@ -205,24 +197,13 @@ struct DoctorDependencies<'a> {
     check_git_available: &'a dyn Fn() -> bool,
     resolve_state_root: &'a dyn Fn() -> Result<PathBuf>,
     resolve_global_config_path: &'a dyn Fn() -> Result<PathBuf>,
-    resolve_local_db_path: &'a dyn Fn() -> Result<PathBuf>,
     validate_config_file: &'a dyn Fn(&Path) -> Result<()>,
-    check_local_db_health: &'a dyn Fn(&Path) -> Result<()>,
     install_required_git_hooks: &'a dyn Fn(&Path) -> Result<RequiredHooksInstallOutcome>,
-    create_directory_all: &'a dyn Fn(&Path) -> Result<()>,
 }
 
 struct DoctorExecution {
     report: HookDoctorReport,
     fix_results: Vec<DoctorFixResultRecord>,
-}
-
-enum DirectoryWriteReadiness {
-    Ready,
-    Missing,
-    NotDirectory,
-    ReadOnly,
-    Unknown(std::io::Error),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -246,15 +227,12 @@ fn execute_doctor(request: DoctorRequest, repository_root: &Path) -> DoctorExecu
         &DoctorDependencies {
             run_git_command: &run_git_command,
             check_git_available: &is_git_available,
-            resolve_state_root: &crate::services::local_db::resolve_state_data_root,
+            resolve_state_root: &resolve_state_data_root,
             resolve_global_config_path: &|| {
                 Ok(resolve_sce_default_locations()?.global_config_file())
             },
-            resolve_local_db_path: &crate::services::local_db::resolve_local_db_path,
             validate_config_file: &crate::services::config::validate_config_file,
-            check_local_db_health: &crate::services::local_db::check_local_db_health_blocking,
             install_required_git_hooks: &install_required_git_hooks,
-            create_directory_all: &create_directory_all,
         },
     )
 }
@@ -423,7 +401,6 @@ fn build_report_with_dependencies(
         hook_path_source,
         hooks_directory,
         config_locations: global_state.config_locations,
-        local_db: global_state.local_db,
         hooks,
         integration_groups,
         problems,
@@ -526,125 +503,9 @@ fn collect_global_state_health(
         path: local_path,
     });
 
-    let local_db = match (dependencies.resolve_local_db_path)() {
-        Ok(path) => {
-            let health = FileLocationHealth {
-                label: "Local DB",
-                state: if path.exists() { "present" } else { "expected" },
-                path,
-            };
-            inspect_local_db_health(&health, problems, dependencies);
-            Some(health)
-        }
-        Err(error) => {
-            problems.push(DoctorProblem {
-                kind: ProblemKind::UnableToResolveLocalDbPath,
-                category: ProblemCategory::GlobalState,
-                severity: ProblemSeverity::Error,
-                fixability: ProblemFixability::ManualOnly,
-                summary: format!("Unable to resolve expected local DB path: {error}"),
-                remediation: String::from("Verify that the SCE state root can be resolved on this machine before rerunning 'sce doctor'."),
-                next_action: "manual_steps",
-            });
-            None
-        }
-    };
-
     GlobalStateHealth {
         state_root: state_root_health,
         config_locations,
-        local_db,
-    }
-}
-
-fn inspect_local_db_health(
-    db_health: &FileLocationHealth,
-    problems: &mut Vec<DoctorProblem>,
-    dependencies: &DoctorDependencies<'_>,
-) {
-    let Some(parent) = db_health.path.parent() else {
-        problems.push(DoctorProblem {
-            kind: ProblemKind::LocalDbPathHasNoParent,
-            category: ProblemCategory::GlobalState,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!("Local DB path '{}' has no parent directory.", db_health.path.display()),
-            remediation: String::from("Verify that the SCE state root resolves to a normal filesystem path before rerunning 'sce doctor'."),
-            next_action: "manual_steps",
-        });
-        return;
-    };
-
-    match inspect_directory_write_readiness(parent) {
-        DirectoryWriteReadiness::Ready => {}
-        DirectoryWriteReadiness::Missing => problems.push(DoctorProblem {
-            kind: ProblemKind::LocalDbParentMissing,
-            category: ProblemCategory::FilesystemPermissions,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::AutoFixable,
-            summary: format!("Local DB parent directory '{}' does not exist.", parent.display()),
-            remediation: format!(
-                "Run 'sce doctor --fix' to create the SCE-owned state directory '{}', or create it manually with write access and rerun 'sce doctor'.",
-                parent.display()
-            ),
-            next_action: "doctor_fix",
-        }),
-        DirectoryWriteReadiness::NotDirectory => problems.push(DoctorProblem {
-            kind: ProblemKind::LocalDbParentNotDirectory,
-            category: ProblemCategory::FilesystemPermissions,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!("Local DB parent path '{}' is not a directory.", parent.display()),
-            remediation: format!(
-                "Replace '{}' with a writable directory before rerunning 'sce doctor'.",
-                parent.display()
-            ),
-            next_action: "manual_steps",
-        }),
-        DirectoryWriteReadiness::ReadOnly => problems.push(DoctorProblem {
-            kind: ProblemKind::LocalDbParentNotWritable,
-            category: ProblemCategory::FilesystemPermissions,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!("Local DB parent directory '{}' is not writable.", parent.display()),
-            remediation: format!(
-                "Grant write access to '{}' before rerunning 'sce doctor'.",
-                parent.display()
-            ),
-            next_action: "manual_steps",
-        }),
-        DirectoryWriteReadiness::Unknown(error) => problems.push(DoctorProblem {
-            kind: ProblemKind::LocalDbParentInspectionFailed,
-            category: ProblemCategory::FilesystemPermissions,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!("Unable to inspect local DB parent directory '{}': {error}", parent.display()),
-            remediation: format!(
-                "Verify that '{}' is accessible and writable before rerunning 'sce doctor'.",
-                parent.display()
-            ),
-            next_action: "manual_steps",
-        }),
-    }
-
-    if db_health.path.exists() {
-        if let Err(error) = (dependencies.check_local_db_health)(&db_health.path) {
-            problems.push(DoctorProblem {
-                kind: ProblemKind::LocalDbHealthCheckFailed,
-                category: ProblemCategory::GlobalState,
-                severity: ProblemSeverity::Error,
-                fixability: ProblemFixability::ManualOnly,
-                summary: format!(
-                    "Local DB '{}' failed health checks: {error}",
-                    db_health.path.display()
-                ),
-                remediation: format!(
-                    "Repair or replace the local DB at '{}' and rerun 'sce doctor'.",
-                    db_health.path.display()
-                ),
-                next_action: "manual_steps",
-            });
-        }
     }
 }
 
@@ -1160,24 +1021,6 @@ fn is_executable(metadata: &fs::Metadata) -> bool {
     metadata.is_file()
 }
 
-fn inspect_directory_write_readiness(path: &Path) -> DirectoryWriteReadiness {
-    match fs::metadata(path) {
-        Ok(metadata) => {
-            if !metadata.is_dir() {
-                DirectoryWriteReadiness::NotDirectory
-            } else if metadata.permissions().readonly() {
-                DirectoryWriteReadiness::ReadOnly
-            } else {
-                DirectoryWriteReadiness::Ready
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            DirectoryWriteReadiness::Missing
-        }
-        Err(error) => DirectoryWriteReadiness::Unknown(error),
-    }
-}
-
 fn run_git_command(repository_root: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
         .args(args)
@@ -1230,15 +1073,6 @@ fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: boo
         state_root_status(report),
         "State root",
         report.state_root.as_ref().map_or_else(
-            || String::from("not detected"),
-            |location| location.path.display().to_string(),
-        ),
-    ));
-    lines.push(format_human_text_row(
-        color_enabled,
-        local_db_status(report),
-        "Local DB",
-        report.local_db.as_ref().map_or_else(
             || String::from("not detected"),
             |location| location.path.display().to_string(),
         ),
@@ -1386,27 +1220,6 @@ fn state_root_status(report: &HookDoctorReport) -> HumanTextStatus {
         .problems
         .iter()
         .any(|problem| problem.kind == ProblemKind::UnableToResolveStateRoot)
-    {
-        HumanTextStatus::Fail
-    } else {
-        HumanTextStatus::Pass
-    }
-}
-
-fn local_db_status(report: &HookDoctorReport) -> HumanTextStatus {
-    if report.local_db.is_none()
-        || report.problems.iter().any(|problem| {
-            matches!(
-                problem.kind,
-                ProblemKind::UnableToResolveLocalDbPath
-                    | ProblemKind::LocalDbPathHasNoParent
-                    | ProblemKind::LocalDbParentMissing
-                    | ProblemKind::LocalDbParentNotDirectory
-                    | ProblemKind::LocalDbParentNotWritable
-                    | ProblemKind::LocalDbParentInspectionFailed
-                    | ProblemKind::LocalDbHealthCheckFailed
-            )
-        })
     {
         HumanTextStatus::Fail
     } else {
@@ -1639,11 +1452,6 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
             .as_ref()
             .map(|path| path.display().to_string()),
         "config_paths": config_paths,
-        "local_db": report.local_db.as_ref().map(|location| json!({
-            "label": location.label,
-            "path": location.path.display().to_string(),
-            "state": location.state,
-        })),
         "hooks": hooks,
         "problems": report.problems.iter().map(|problem| json!({
             "category": problem_category(problem.category),
@@ -1710,13 +1518,6 @@ fn run_auto_fixes(
 
     if auto_fixable_problems
         .iter()
-        .any(|problem| problem.category == ProblemCategory::FilesystemPermissions)
-    {
-        fix_results.extend(run_filesystem_auto_fixes(report, dependencies));
-    }
-
-    if auto_fixable_problems
-        .iter()
         .any(|problem| problem.category == ProblemCategory::HookRollout)
     {
         let Some(repository_root) = report.repository_root.as_deref() else {
@@ -1741,89 +1542,6 @@ fn run_auto_fixes(
     }
 
     fix_results
-}
-
-fn run_filesystem_auto_fixes(
-    report: &HookDoctorReport,
-    dependencies: &DoctorDependencies<'_>,
-) -> Vec<DoctorFixResultRecord> {
-    let Some(db_path) = report.local_db.as_ref().map(|location| &location.path) else {
-        return vec![DoctorFixResultRecord {
-            category: ProblemCategory::FilesystemPermissions,
-            outcome: FixResult::Failed,
-            detail: String::from("Automatic local DB directory repair could not start because the expected local DB path was not resolved during diagnosis."),
-        }];
-    };
-
-    let Some(parent) = db_path.parent() else {
-        return vec![DoctorFixResultRecord {
-            category: ProblemCategory::FilesystemPermissions,
-            outcome: FixResult::Failed,
-            detail: format!(
-                "Automatic local DB directory repair could not start because '{}' has no parent directory.",
-                db_path.display()
-            ),
-        }];
-    };
-
-    let expected_parent = match (dependencies.resolve_local_db_path)() {
-        Ok(path) => path.parent().map(Path::to_path_buf),
-        Err(error) => {
-            return vec![DoctorFixResultRecord {
-                category: ProblemCategory::FilesystemPermissions,
-                outcome: FixResult::Failed,
-                detail: format!(
-                    "Automatic local DB directory repair could not confirm the canonical SCE-owned path: {error}"
-                ),
-            }];
-        }
-    };
-
-    if expected_parent.as_deref() != Some(parent) {
-        return vec![DoctorFixResultRecord {
-            category: ProblemCategory::FilesystemPermissions,
-            outcome: FixResult::Failed,
-            detail: format!(
-                "Automatic local DB directory repair refused to modify '{}' because it does not match the canonical SCE-owned path.",
-                parent.display()
-            ),
-        }];
-    }
-
-    if parent.exists() {
-        return vec![DoctorFixResultRecord {
-            category: ProblemCategory::FilesystemPermissions,
-            outcome: FixResult::Skipped,
-            detail: format!(
-                "Local DB directory '{}' already exists; no directory bootstrap was needed.",
-                parent.display()
-            ),
-        }];
-    }
-
-    match (dependencies.create_directory_all)(parent) {
-        Ok(()) => vec![DoctorFixResultRecord {
-            category: ProblemCategory::FilesystemPermissions,
-            outcome: FixResult::Fixed,
-            detail: format!(
-                "Created the SCE-owned local DB directory '{}'.",
-                parent.display()
-            ),
-        }],
-        Err(error) => vec![DoctorFixResultRecord {
-            category: ProblemCategory::FilesystemPermissions,
-            outcome: FixResult::Failed,
-            detail: format!(
-                "Automatic local DB directory repair failed for '{}': {error}",
-                parent.display()
-            ),
-        }],
-    }
-}
-
-fn create_directory_all(path: &Path) -> Result<()> {
-    fs::create_dir_all(path)
-        .with_context(|| format!("Failed to create directory '{}'.", path.display()))
 }
 
 fn build_hook_fix_results(outcome: &RequiredHooksInstallOutcome) -> Vec<DoctorFixResultRecord> {
