@@ -51,12 +51,15 @@
   - Files changed: `cli/src/app.rs`, `cli/src/cli_schema.rs`, `cli/src/command_surface.rs`, `cli/src/services/default_paths.rs`, `cli/src/services/doctor.rs`, `cli/src/services/local_db.rs`, `cli/src/services/mod.rs`
   - Evidence: `nix develop -c sh -c 'cd cli && cargo check'`; `nix run .#pkl-check-generated`; `nix flake check`
 
-- [ ] T04: Sync current-state context for the trace-removal baseline (status:todo)
+- [x] T04: Sync current-state context for the trace-removal baseline (status:done)
   - Task ID: T04
   - Goal: Update shared context to reflect that Agent Trace runtime behavior has been removed, hook attribution is optional and disabled by default, and local DB bootstrap is empty-file only.
   - Boundaries (in/out of scope): In scope: affected `context/overview.md`, `context/glossary.md`, `context/context-map.md`, and focused `context/sce/` artifacts describing tracing/hooks/local DB behavior. Out of scope: speculative v0.3.0 redesign docs or historical postmortems.
   - Done when: Current-state context no longer documents removed Agent Trace behavior as active, and retained hook attribution/local DB behavior is described accurately for future sessions.
   - Verification notes (commands or checks): Review all touched context files against code truth; ensure stale Agent Trace contract files are updated, replaced, or removed as appropriate.
+  - Completed: 2026-04-08
+  - Files changed: `context/architecture.md`, `context/cli/cli-command-surface.md`, `context/context-map.md`, `context/glossary.md`, `context/overview.md`, `context/patterns.md`, `context/sce/agent-trace-implementation-contract.md`, `context/sce/agent-trace-local-hooks-mvp-contract-gap-matrix.md`, `context/sce/agent-trace-payload-builder-validation.md`, `context/sce/agent-trace-post-commit-dual-write.md`, `context/sce/agent-trace-post-rewrite-local-remap-ingestion.md`, `context/sce/agent-trace-pre-commit-staged-checkpoint.md`, `context/sce/agent-trace-retry-queue-observability.md`, `context/sce/agent-trace-rewrite-trace-transformation.md`, `context/sce/agent-trace-schema-adapter.md`
+  - Evidence: `nix run .#pkl-check-generated`; `nix flake check`
 
 - [ ] T05: Validation and cleanup (status:todo)
   - Task ID: T05

@@ -1,13 +1,14 @@
 # Agent Trace Local Hooks MVP Contract and Gap Matrix
 
 ## Status
+- This document is retained as a historical freeze artifact, not as current runtime truth.
 - Plan: `agent-trace-local-hooks-production-mvp`
 - Task: `T01`
-- Scope: contract and gap freeze only (no production code changes)
+- Scope at the time: contract and gap freeze only (no production code changes)
 - Normative keywords: `MUST`, `SHOULD`, `MAY`
 
-## Objective
-Freeze one implementation-ready contract for Local Hooks MVP productionization and map current code-truth seams to missing runtime wiring required by tasks `T02`..`T10`.
+## Historical objective
+Freeze one implementation-ready contract for Local Hooks MVP productionization and map then-current code-truth seams to missing runtime wiring required by tasks `T02`..`T10`.
 
 ## Local MVP boundary
 - In scope: `sce hooks` runtime command flow for `pre-commit`, `commit-msg`, `post-commit`, `post-rewrite`; local notes + DB persistence; retry replay; rollout readiness alignment with `sce setup --hooks` and `sce doctor`.
@@ -61,7 +62,7 @@ Freeze one implementation-ready contract for Local Hooks MVP productionization a
 - Runtime failure posture for local hooks: fail-open for commit progression by default, while preserving retry-safe persistence intent and diagnostics.
 - Idempotency unit for finalized local commit traces: one canonical finalized record per commit SHA.
 
-## Module ownership map (code truth)
+## Historical module ownership map (at freeze time)
 - CLI command parsing/dispatch: `cli/src/app.rs`
 - Command surface status/help text: `cli/src/command_surface.rs`
 - Hook-domain contracts/finalizers/retry processor: `cli/src/services/hooks.rs`
@@ -70,7 +71,7 @@ Freeze one implementation-ready contract for Local Hooks MVP productionization a
 - Hook installation orchestration: `cli/src/services/setup.rs`
 - Hook readiness diagnostics: `cli/src/services/doctor.rs`
 
-## Gap matrix (current code truth -> required runtime completion)
+## Gap matrix (historical code truth at freeze time -> required runtime completion)
 
 | MVP area | Current state (code truth) | Required completion target | Planned task(s) |
 | --- | --- | --- | --- |
