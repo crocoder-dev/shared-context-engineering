@@ -84,7 +84,7 @@ struct FileLocationHealth {
 struct GlobalStateHealth {
     state_root: Option<FileLocationHealth>,
     config_locations: Vec<FileLocationHealth>,
-    agent_trace_local_db: Option<FileLocationHealth>,
+    local_db: Option<FileLocationHealth>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -96,7 +96,7 @@ struct HookDoctorReport {
     hook_path_source: HookPathSource,
     hooks_directory: Option<PathBuf>,
     config_locations: Vec<FileLocationHealth>,
-    agent_trace_local_db: Option<FileLocationHealth>,
+    local_db: Option<FileLocationHealth>,
     hooks: Vec<HookFileHealth>,
     integration_groups: Vec<IntegrationGroupHealth>,
     problems: Vec<DoctorProblem>,
@@ -154,13 +154,13 @@ enum ProblemKind {
     GlobalConfigValidationFailed,
     UnableToResolveGlobalConfigPath,
     LocalConfigValidationFailed,
-    UnableToResolveAgentTraceLocalDbPath,
-    AgentTraceLocalDbPathHasNoParent,
-    AgentTraceLocalDbParentMissing,
-    AgentTraceLocalDbParentNotDirectory,
-    AgentTraceLocalDbParentNotWritable,
-    AgentTraceLocalDbParentInspectionFailed,
-    AgentTraceLocalDbHealthCheckFailed,
+    UnableToResolveLocalDbPath,
+    LocalDbPathHasNoParent,
+    LocalDbParentMissing,
+    LocalDbParentNotDirectory,
+    LocalDbParentNotWritable,
+    LocalDbParentInspectionFailed,
+    LocalDbHealthCheckFailed,
     HooksDirectoryMissing,
     HooksPathNotDirectory,
     RequiredHookMissing,
@@ -205,9 +205,9 @@ struct DoctorDependencies<'a> {
     check_git_available: &'a dyn Fn() -> bool,
     resolve_state_root: &'a dyn Fn() -> Result<PathBuf>,
     resolve_global_config_path: &'a dyn Fn() -> Result<PathBuf>,
-    resolve_agent_trace_local_db_path: &'a dyn Fn() -> Result<PathBuf>,
+    resolve_local_db_path: &'a dyn Fn() -> Result<PathBuf>,
     validate_config_file: &'a dyn Fn(&Path) -> Result<()>,
-    check_agent_trace_local_db_health: &'a dyn Fn(&Path) -> Result<()>,
+    check_local_db_health: &'a dyn Fn(&Path) -> Result<()>,
     install_required_git_hooks: &'a dyn Fn(&Path) -> Result<RequiredHooksInstallOutcome>,
     create_directory_all: &'a dyn Fn(&Path) -> Result<()>,
 }
@@ -250,11 +250,9 @@ fn execute_doctor(request: DoctorRequest, repository_root: &Path) -> DoctorExecu
             resolve_global_config_path: &|| {
                 Ok(resolve_sce_default_locations()?.global_config_file())
             },
-            resolve_agent_trace_local_db_path:
-                &crate::services::local_db::resolve_agent_trace_local_db_path,
+            resolve_local_db_path: &crate::services::local_db::resolve_local_db_path,
             validate_config_file: &crate::services::config::validate_config_file,
-            check_agent_trace_local_db_health:
-                &crate::services::local_db::check_agent_trace_local_db_health_blocking,
+            check_local_db_health: &crate::services::local_db::check_local_db_health_blocking,
             install_required_git_hooks: &install_required_git_hooks,
             create_directory_all: &create_directory_all,
         },
@@ -425,7 +423,7 @@ fn build_report_with_dependencies(
         hook_path_source,
         hooks_directory,
         config_locations: global_state.config_locations,
-        agent_trace_local_db: global_state.agent_trace_local_db,
+        local_db: global_state.local_db,
         hooks,
         integration_groups,
         problems,
@@ -528,23 +526,23 @@ fn collect_global_state_health(
         path: local_path,
     });
 
-    let agent_trace_local_db = match (dependencies.resolve_agent_trace_local_db_path)() {
+    let local_db = match (dependencies.resolve_local_db_path)() {
         Ok(path) => {
             let health = FileLocationHealth {
-                label: "Agent Trace local DB",
+                label: "Local DB",
                 state: if path.exists() { "present" } else { "expected" },
                 path,
             };
-            inspect_agent_trace_db_health(&health, problems, dependencies);
+            inspect_local_db_health(&health, problems, dependencies);
             Some(health)
         }
         Err(error) => {
             problems.push(DoctorProblem {
-                kind: ProblemKind::UnableToResolveAgentTraceLocalDbPath,
+                kind: ProblemKind::UnableToResolveLocalDbPath,
                 category: ProblemCategory::GlobalState,
                 severity: ProblemSeverity::Error,
                 fixability: ProblemFixability::ManualOnly,
-                summary: format!("Unable to resolve expected Agent Trace local DB path: {error}"),
+                summary: format!("Unable to resolve expected local DB path: {error}"),
                 remediation: String::from("Verify that the SCE state root can be resolved on this machine before rerunning 'sce doctor'."),
                 next_action: "manual_steps",
             });
@@ -555,25 +553,22 @@ fn collect_global_state_health(
     GlobalStateHealth {
         state_root: state_root_health,
         config_locations,
-        agent_trace_local_db,
+        local_db,
     }
 }
 
-fn inspect_agent_trace_db_health(
+fn inspect_local_db_health(
     db_health: &FileLocationHealth,
     problems: &mut Vec<DoctorProblem>,
     dependencies: &DoctorDependencies<'_>,
 ) {
     let Some(parent) = db_health.path.parent() else {
         problems.push(DoctorProblem {
-            kind: ProblemKind::AgentTraceLocalDbPathHasNoParent,
+            kind: ProblemKind::LocalDbPathHasNoParent,
             category: ProblemCategory::GlobalState,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
-            summary: format!(
-                "Agent Trace local DB path '{}' has no parent directory.",
-                db_health.path.display()
-            ),
+            summary: format!("Local DB path '{}' has no parent directory.", db_health.path.display()),
             remediation: String::from("Verify that the SCE state root resolves to a normal filesystem path before rerunning 'sce doctor'."),
             next_action: "manual_steps",
         });
@@ -583,29 +578,23 @@ fn inspect_agent_trace_db_health(
     match inspect_directory_write_readiness(parent) {
         DirectoryWriteReadiness::Ready => {}
         DirectoryWriteReadiness::Missing => problems.push(DoctorProblem {
-            kind: ProblemKind::AgentTraceLocalDbParentMissing,
+            kind: ProblemKind::LocalDbParentMissing,
             category: ProblemCategory::FilesystemPermissions,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::AutoFixable,
-            summary: format!(
-                "Agent Trace local DB parent directory '{}' does not exist.",
-                parent.display()
-            ),
+            summary: format!("Local DB parent directory '{}' does not exist.", parent.display()),
             remediation: format!(
-                "Run 'sce doctor --fix' to create the SCE-owned Agent Trace state directory '{}', or create it manually with write access and rerun 'sce doctor'.",
+                "Run 'sce doctor --fix' to create the SCE-owned state directory '{}', or create it manually with write access and rerun 'sce doctor'.",
                 parent.display()
             ),
             next_action: "doctor_fix",
         }),
         DirectoryWriteReadiness::NotDirectory => problems.push(DoctorProblem {
-            kind: ProblemKind::AgentTraceLocalDbParentNotDirectory,
+            kind: ProblemKind::LocalDbParentNotDirectory,
             category: ProblemCategory::FilesystemPermissions,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
-            summary: format!(
-                "Agent Trace local DB parent path '{}' is not a directory.",
-                parent.display()
-            ),
+            summary: format!("Local DB parent path '{}' is not a directory.", parent.display()),
             remediation: format!(
                 "Replace '{}' with a writable directory before rerunning 'sce doctor'.",
                 parent.display()
@@ -613,14 +602,11 @@ fn inspect_agent_trace_db_health(
             next_action: "manual_steps",
         }),
         DirectoryWriteReadiness::ReadOnly => problems.push(DoctorProblem {
-            kind: ProblemKind::AgentTraceLocalDbParentNotWritable,
+            kind: ProblemKind::LocalDbParentNotWritable,
             category: ProblemCategory::FilesystemPermissions,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
-            summary: format!(
-                "Agent Trace local DB parent directory '{}' is not writable.",
-                parent.display()
-            ),
+            summary: format!("Local DB parent directory '{}' is not writable.", parent.display()),
             remediation: format!(
                 "Grant write access to '{}' before rerunning 'sce doctor'.",
                 parent.display()
@@ -628,14 +614,11 @@ fn inspect_agent_trace_db_health(
             next_action: "manual_steps",
         }),
         DirectoryWriteReadiness::Unknown(error) => problems.push(DoctorProblem {
-            kind: ProblemKind::AgentTraceLocalDbParentInspectionFailed,
+            kind: ProblemKind::LocalDbParentInspectionFailed,
             category: ProblemCategory::FilesystemPermissions,
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
-            summary: format!(
-                "Unable to inspect Agent Trace local DB parent directory '{}': {error}",
-                parent.display()
-            ),
+            summary: format!("Unable to inspect local DB parent directory '{}': {error}", parent.display()),
             remediation: format!(
                 "Verify that '{}' is accessible and writable before rerunning 'sce doctor'.",
                 parent.display()
@@ -645,18 +628,18 @@ fn inspect_agent_trace_db_health(
     }
 
     if db_health.path.exists() {
-        if let Err(error) = (dependencies.check_agent_trace_local_db_health)(&db_health.path) {
+        if let Err(error) = (dependencies.check_local_db_health)(&db_health.path) {
             problems.push(DoctorProblem {
-                kind: ProblemKind::AgentTraceLocalDbHealthCheckFailed,
+                kind: ProblemKind::LocalDbHealthCheckFailed,
                 category: ProblemCategory::GlobalState,
                 severity: ProblemSeverity::Error,
                 fixability: ProblemFixability::ManualOnly,
                 summary: format!(
-                    "Agent Trace local DB '{}' failed health checks: {error}",
+                    "Local DB '{}' failed health checks: {error}",
                     db_health.path.display()
                 ),
                 remediation: format!(
-                    "Repair or replace the Agent Trace local DB at '{}' and rerun 'sce doctor'.",
+                    "Repair or replace the local DB at '{}' and rerun 'sce doctor'.",
                     db_health.path.display()
                 ),
                 next_action: "manual_steps",
@@ -1253,9 +1236,9 @@ fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: boo
     ));
     lines.push(format_human_text_row(
         color_enabled,
-        agent_trace_local_db_status(report),
-        "Agent Trace local DB",
-        report.agent_trace_local_db.as_ref().map_or_else(
+        local_db_status(report),
+        "Local DB",
+        report.local_db.as_ref().map_or_else(
             || String::from("not detected"),
             |location| location.path.display().to_string(),
         ),
@@ -1410,18 +1393,18 @@ fn state_root_status(report: &HookDoctorReport) -> HumanTextStatus {
     }
 }
 
-fn agent_trace_local_db_status(report: &HookDoctorReport) -> HumanTextStatus {
-    if report.agent_trace_local_db.is_none()
+fn local_db_status(report: &HookDoctorReport) -> HumanTextStatus {
+    if report.local_db.is_none()
         || report.problems.iter().any(|problem| {
             matches!(
                 problem.kind,
-                ProblemKind::UnableToResolveAgentTraceLocalDbPath
-                    | ProblemKind::AgentTraceLocalDbPathHasNoParent
-                    | ProblemKind::AgentTraceLocalDbParentMissing
-                    | ProblemKind::AgentTraceLocalDbParentNotDirectory
-                    | ProblemKind::AgentTraceLocalDbParentNotWritable
-                    | ProblemKind::AgentTraceLocalDbParentInspectionFailed
-                    | ProblemKind::AgentTraceLocalDbHealthCheckFailed
+                ProblemKind::UnableToResolveLocalDbPath
+                    | ProblemKind::LocalDbPathHasNoParent
+                    | ProblemKind::LocalDbParentMissing
+                    | ProblemKind::LocalDbParentNotDirectory
+                    | ProblemKind::LocalDbParentNotWritable
+                    | ProblemKind::LocalDbParentInspectionFailed
+                    | ProblemKind::LocalDbHealthCheckFailed
             )
         })
     {
@@ -1656,7 +1639,7 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
             .as_ref()
             .map(|path| path.display().to_string()),
         "config_paths": config_paths,
-        "agent_trace_local_db": report.agent_trace_local_db.as_ref().map(|location| json!({
+        "local_db": report.local_db.as_ref().map(|location| json!({
             "label": location.label,
             "path": location.path.display().to_string(),
             "state": location.state,
@@ -1764,15 +1747,11 @@ fn run_filesystem_auto_fixes(
     report: &HookDoctorReport,
     dependencies: &DoctorDependencies<'_>,
 ) -> Vec<DoctorFixResultRecord> {
-    let Some(db_path) = report
-        .agent_trace_local_db
-        .as_ref()
-        .map(|location| &location.path)
-    else {
+    let Some(db_path) = report.local_db.as_ref().map(|location| &location.path) else {
         return vec![DoctorFixResultRecord {
             category: ProblemCategory::FilesystemPermissions,
             outcome: FixResult::Failed,
-            detail: String::from("Automatic Agent Trace directory repair could not start because the expected local DB path was not resolved during diagnosis."),
+            detail: String::from("Automatic local DB directory repair could not start because the expected local DB path was not resolved during diagnosis."),
         }];
     };
 
@@ -1781,20 +1760,20 @@ fn run_filesystem_auto_fixes(
             category: ProblemCategory::FilesystemPermissions,
             outcome: FixResult::Failed,
             detail: format!(
-                "Automatic Agent Trace directory repair could not start because '{}' has no parent directory.",
+                "Automatic local DB directory repair could not start because '{}' has no parent directory.",
                 db_path.display()
             ),
         }];
     };
 
-    let expected_parent = match (dependencies.resolve_agent_trace_local_db_path)() {
+    let expected_parent = match (dependencies.resolve_local_db_path)() {
         Ok(path) => path.parent().map(Path::to_path_buf),
         Err(error) => {
             return vec![DoctorFixResultRecord {
                 category: ProblemCategory::FilesystemPermissions,
                 outcome: FixResult::Failed,
                 detail: format!(
-                    "Automatic Agent Trace directory repair could not confirm the canonical SCE-owned path: {error}"
+                    "Automatic local DB directory repair could not confirm the canonical SCE-owned path: {error}"
                 ),
             }];
         }
@@ -1805,7 +1784,7 @@ fn run_filesystem_auto_fixes(
             category: ProblemCategory::FilesystemPermissions,
             outcome: FixResult::Failed,
             detail: format!(
-                "Automatic Agent Trace directory repair refused to modify '{}' because it does not match the canonical SCE-owned path.",
+                "Automatic local DB directory repair refused to modify '{}' because it does not match the canonical SCE-owned path.",
                 parent.display()
             ),
         }];
@@ -1816,7 +1795,7 @@ fn run_filesystem_auto_fixes(
             category: ProblemCategory::FilesystemPermissions,
             outcome: FixResult::Skipped,
             detail: format!(
-                "Agent Trace directory '{}' already exists; no directory bootstrap was needed.",
+                "Local DB directory '{}' already exists; no directory bootstrap was needed.",
                 parent.display()
             ),
         }];
@@ -1827,7 +1806,7 @@ fn run_filesystem_auto_fixes(
             category: ProblemCategory::FilesystemPermissions,
             outcome: FixResult::Fixed,
             detail: format!(
-                "Created the SCE-owned Agent Trace directory '{}'.",
+                "Created the SCE-owned local DB directory '{}'.",
                 parent.display()
             ),
         }],
@@ -1835,7 +1814,7 @@ fn run_filesystem_auto_fixes(
             category: ProblemCategory::FilesystemPermissions,
             outcome: FixResult::Failed,
             detail: format!(
-                "Automatic Agent Trace directory repair failed for '{}': {error}",
+                "Automatic local DB directory repair failed for '{}': {error}",
                 parent.display()
             ),
         }],

@@ -50,13 +50,7 @@ pub const COMMANDS: &[CommandContract] = &[
     CommandContract {
         name: services::hooks::NAME,
         status: ImplementationStatus::Implemented,
-        purpose: "Run git-hook runtime entrypoints for local Agent Trace flows",
-        show_in_top_level_help: false,
-    },
-    CommandContract {
-        name: services::trace::NAME,
-        status: ImplementationStatus::Implemented,
-        purpose: "Inspect persisted Agent Trace records and captured prompts",
+        purpose: "Run attribution-only git hooks (disabled by default)",
         show_in_top_level_help: false,
     },
     CommandContract {

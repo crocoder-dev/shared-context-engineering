@@ -27,13 +27,13 @@ The runtime in `cli/src/services/doctor.rs` exposes the approved doctor command 
 - human text rendering with `SCE doctor diagnose` / `SCE doctor fix` header + ordered `Environment`, `Configuration`, `Repository`, `Git Hooks`, and `Integrations` sections
 - exact human text status vocabulary `[PASS]`, `[FAIL]`, and `[MISS]`
 - text summary footer with blocking-problem and warning counts
-- Agent Trace local DB reporting in default doctor output
+- local DB reporting in default doctor output
 - stable problem records with category, severity, fixability, and remediation metadata
 - deterministic fix-result records in fix mode with `fixed`, `skipped`, `manual`, and `failed` outcomes
 - simplified `label (path)` human rows for healthy path-backed state/config/repository/hook entries, without redundant `present` / `expected` prose
 - default global/local config-file location reporting, plus validation of existing global and repo-local `sce/config.json` readability and schema compliance
-- Agent Trace local DB location reporting, DB parent-directory readiness checks, and existing-DB health validation
-- Agent Trace local DB reporting in default doctor output
+- local DB location reporting, DB parent-directory readiness checks, and existing-DB health validation
+- local DB reporting in default doctor output
 - explicit git-unavailable, outside-repo, and bare-repo repository-targeting failures
 - effective hook-path source (`default`, local `core.hooksPath`, global `core.hooksPath`)
 - repository root and hooks directory resolution when a repository target is detected
@@ -44,7 +44,7 @@ The runtime in `cli/src/services/doctor.rs` exposes the approved doctor command 
 - integration child-row reporting for those four groups now validates file content against embedded SHA-256; missing files render as `[MISS]`, content mismatches render as `[FAIL]`, and any affected parent group renders as `[FAIL]`
 - repo-root OpenCode plugin inventory includes the installed manifest file plus plugin/runtime/preset artifacts as required presence-only files; generated `config/.opencode/**` trees are not inspected by doctor
 - repair-mode reuse of `cli/src/services/setup.rs::install_required_git_hooks` for missing hooks directories plus missing, stale, or non-executable required hooks
-- doctor-owned bootstrap of the missing canonical SCE-owned Agent Trace DB parent directory, with deterministic refusal when the resolved path does not match the expected owned location
+- doctor-owned bootstrap of the missing canonical SCE-owned local DB parent directory, with deterministic refusal when the resolved path does not match the expected owned location
 
 ## Approved human text-mode contract
 
@@ -158,7 +158,7 @@ Repo-scoped issues make readiness `not_ready` only when a repository target is r
 Every detected issue must map to exactly one stable problem category:
 
 - `runtime_identity`: installed binary/runtime metadata or command-surface problems
-- `global_state`: global state-root, config-path, config-contents, or Agent Trace DB readiness problems
+- `global_state`: global state-root, config-path, config-contents, or local DB readiness problems
 - `repository_targeting`: repository resolution, git availability, bare-repo, or hooks-path discovery problems
 - `hook_rollout`: missing, partial, stale, non-executable, or otherwise unhealthy required SCE-managed hooks
 - `repo_assets`: missing or stale repo-local SCE-managed assets outside the hook files themselves
@@ -194,9 +194,9 @@ The broadened contract for `sce doctor` must cover the following problem invento
 - global SCE state root cannot be resolved
 - expected global config path cannot be resolved
 - global config file exists but is unreadable, invalid JSON, or fails schema validation
-- Agent Trace local DB path cannot be resolved
-- Agent Trace DB parent directories are missing or not writable
-- Agent Trace DB exists but bootstrap or migration health is broken
+- local DB path cannot be resolved
+- local DB parent directories are missing or not writable
+- local DB exists but bootstrap or migration health is broken
 
 ### Repository targeting and git readiness
 

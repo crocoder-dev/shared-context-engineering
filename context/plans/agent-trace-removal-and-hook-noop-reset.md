@@ -41,12 +41,15 @@
   - Files changed: `cli/src/services/config.rs`, `cli/src/services/hooks.rs`, `config/pkl/base/sce-config-schema.pkl`, `config/schema/sce-config.schema.json`
   - Evidence: `nix run .#pkl-check-generated`; `nix flake check`; `nix develop -c sh -c 'cd cli && cargo check'`
 
-- [ ] T03: Remove Agent Trace-specific command, doctor, setup, and path-surface behavior (status:todo)
+- [x] T03: Remove Agent Trace-specific command, doctor, setup, and path-surface behavior (status:done)
   - Task ID: T03
   - Goal: Eliminate remaining active runtime references to Agent Trace from command help, doctor/setup readiness checks, default-path inventories, and related operator-facing surfaces while preserving the optional attribution-only hook baseline.
   - Boundaries (in/out of scope): In scope: command/help text, doctor checks, setup/install expectations, default-path/service references, and removal of dead trace-only seams exposed to users/operators. Out of scope: broad unrelated CLI polish and the future tracing redesign.
   - Done when: User-facing runtime/help/doctor/setup/path surfaces no longer present Agent Trace as an active supported feature; any retained hook trigger surface is described as attribution-only and disabled by default; removed trace-only code paths no longer drive warnings/dead branches.
   - Verification notes (commands or checks): Inspect command-surface, doctor, setup, and default-path outputs/contracts for removed Agent Trace references; run targeted checks for affected CLI modules, then defer full repo checks to the final task.
+  - Completed: 2026-04-08
+  - Files changed: `cli/src/app.rs`, `cli/src/cli_schema.rs`, `cli/src/command_surface.rs`, `cli/src/services/default_paths.rs`, `cli/src/services/doctor.rs`, `cli/src/services/local_db.rs`, `cli/src/services/mod.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo check'`; `nix run .#pkl-check-generated`; `nix flake check`
 
 - [ ] T04: Sync current-state context for the trace-removal baseline (status:todo)
   - Task ID: T04

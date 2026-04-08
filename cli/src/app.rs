@@ -15,7 +15,6 @@ enum Command {
     Setup(services::setup::SetupRequest),
     Doctor(services::doctor::DoctorRequest),
     Hooks(services::hooks::HookSubcommand),
-    Trace(services::trace::TraceRequest),
     Version(services::version::VersionRequest),
 }
 
@@ -30,7 +29,6 @@ impl Command {
             Self::Setup(_) => services::setup::NAME,
             Self::Doctor(_) => services::doctor::NAME,
             Self::Hooks(_) => services::hooks::NAME,
-            Self::Trace(_) => services::trace::NAME,
             Self::Version(_) => services::version::NAME,
         }
     }
@@ -461,7 +459,6 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<Command, Classi
             }))
         }
         cli_schema::Commands::Hooks { subcommand } => convert_hooks_subcommand(subcommand),
-        cli_schema::Commands::Trace { subcommand } => convert_trace_subcommand(subcommand),
         cli_schema::Commands::Version { format } => {
             Ok(Command::Version(services::version::VersionRequest {
                 format: convert_output_format(format),
@@ -617,30 +614,6 @@ fn convert_hooks_subcommand(
     }
 }
 
-#[allow(clippy::unnecessary_wraps)]
-fn convert_trace_subcommand(
-    subcommand: cli_schema::TraceSubcommand,
-) -> Result<Command, ClassifiedError> {
-    match subcommand {
-        cli_schema::TraceSubcommand::Prompts {
-            commit_sha,
-            format,
-            json,
-        } => Ok(Command::Trace(services::trace::TraceRequest {
-            subcommand: services::trace::TraceSubcommand::Prompts(
-                services::trace::TracePromptsRequest {
-                    commit_sha,
-                    format: if json {
-                        services::trace::TraceFormat::Json
-                    } else {
-                        convert_output_format(format)
-                    },
-                },
-            ),
-        })),
-    }
-}
-
 fn dispatch(
     command: &Command,
     _logger: &services::observability::Logger,
@@ -707,8 +680,6 @@ fn dispatch(
         Command::Doctor(request) => services::doctor::run_doctor(*request)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::Hooks(subcommand) => services::hooks::run_hooks_subcommand(subcommand.clone())
-            .map_err(|error| ClassifiedError::runtime(error.to_string())),
-        Command::Trace(request) => services::trace::run_trace_subcommand(request.clone())
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::Version(request) => services::version::render_version(*request)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
