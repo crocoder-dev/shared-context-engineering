@@ -5,7 +5,6 @@ use turso::Builder;
 
 use crate::services::default_paths::resolve_sce_default_locations;
 
-
 #[derive(Clone, Copy, Debug)]
 pub enum LocalDatabaseTarget<'a> {
     Path(&'a Path),
@@ -51,4 +50,3 @@ pub(crate) fn resolve_state_data_root() -> Result<PathBuf> {
         .state_root()
         .to_path_buf())
 }
-
