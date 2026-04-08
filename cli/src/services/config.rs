@@ -41,6 +41,7 @@ const ENV_LOG_FILE_MODE: &str = "SCE_LOG_FILE_MODE";
 const ENV_OTEL_ENABLED: &str = "SCE_OTEL_ENABLED";
 const ENV_OTEL_ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
 const ENV_OTEL_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
+const ENV_ATTRIBUTION_HOOKS_ENABLED: &str = "SCE_ATTRIBUTION_HOOKS_ENABLED";
 const WORKOS_CLIENT_ID_ENV: &str = "WORKOS_CLIENT_ID";
 const WORKOS_CLIENT_ID_BAKED_DEFAULT: &str = "client_sce_default";
 const WORKOS_CLIENT_ID_KEY: AuthConfigKeySpec = AuthConfigKeySpec {
@@ -259,6 +260,7 @@ struct RuntimeConfig {
     otel_endpoint: ResolvedValue<String>,
     otel_protocol: ResolvedValue<OtlpProtocol>,
     timeout_ms: ResolvedValue<u64>,
+    attribution_hooks_enabled: ResolvedValue<bool>,
     workos_client_id: ResolvedOptionalValue<String>,
     bash_policies: ResolvedOptionalValue<BashPolicyConfig>,
     validation_warnings: Vec<String>,
@@ -288,6 +290,11 @@ pub(crate) struct ResolvedObservabilityRuntimeConfig {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedHookRuntimeConfig {
+    pub(crate) attribution_hooks_enabled: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct FileConfig {
     log_level: Option<FileConfigValue<LogLevel>>,
     log_format: Option<FileConfigValue<LogFormat>>,
@@ -297,6 +304,7 @@ struct FileConfig {
     otel_endpoint: Option<FileConfigValue<String>>,
     otel_protocol: Option<FileConfigValue<OtlpProtocol>>,
     timeout_ms: Option<FileConfigValue<u64>>,
+    attribution_hooks_enabled: Option<FileConfigValue<bool>>,
     workos_client_id: Option<FileConfigValue<String>>,
     bash_policy_presets: Option<FileConfigValue<Vec<String>>>,
     bash_policy_custom: Option<FileConfigValue<Vec<CustomBashPolicyEntry>>>,
@@ -454,6 +462,19 @@ pub(crate) fn resolve_observability_runtime_config(
     )
 }
 
+pub(crate) fn resolve_hook_runtime_config(cwd: &Path) -> Result<ResolvedHookRuntimeConfig> {
+    resolve_hook_runtime_config_with(
+        cwd,
+        |key| std::env::var(key).ok(),
+        |path| {
+            std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to read config file '{}'.", path.display()))
+        },
+        Path::exists,
+        resolve_default_global_config_path,
+    )
+}
+
 pub(crate) fn resolve_auth_runtime_config_with<FEnv, FRead, FGlobalPath>(
     cwd: &Path,
     env_lookup: FEnv,
@@ -523,6 +544,37 @@ where
     })
 }
 
+pub(crate) fn resolve_hook_runtime_config_with<FEnv, FRead, FGlobalPath>(
+    cwd: &Path,
+    env_lookup: FEnv,
+    read_file: FRead,
+    path_exists: fn(&Path) -> bool,
+    resolve_global_config_path: FGlobalPath,
+) -> Result<ResolvedHookRuntimeConfig>
+where
+    FEnv: Fn(&str) -> Option<String>,
+    FRead: Fn(&Path) -> Result<String>,
+    FGlobalPath: Fn() -> Result<PathBuf>,
+{
+    let runtime = resolve_runtime_config_with(
+        &ConfigRequest {
+            report_format: ReportFormat::Text,
+            config_path: None,
+            log_level: None,
+            timeout_ms: None,
+        },
+        cwd,
+        env_lookup,
+        read_file,
+        path_exists,
+        resolve_global_config_path,
+    )?;
+
+    Ok(ResolvedHookRuntimeConfig {
+        attribution_hooks_enabled: runtime.attribution_hooks_enabled.value,
+    })
+}
+
 fn resolve_runtime_config(request: &ConfigRequest, cwd: &Path) -> Result<RuntimeConfig> {
     resolve_runtime_config_with(
         request,
@@ -568,6 +620,7 @@ where
         otel_endpoint: None,
         otel_protocol: None,
         timeout_ms: None,
+        attribution_hooks_enabled: None,
         workos_client_id: None,
         bash_policy_presets: None,
         bash_policy_custom: None,
@@ -598,6 +651,9 @@ where
         }
         if let Some(timeout_ms) = layer.timeout_ms {
             file_config.timeout_ms = Some(timeout_ms);
+        }
+        if let Some(attribution_hooks_enabled) = layer.attribution_hooks_enabled {
+            file_config.attribution_hooks_enabled = Some(attribution_hooks_enabled);
         }
         if let Some(workos_client_id) = layer.workos_client_id {
             file_config.workos_client_id = Some(workos_client_id);
@@ -769,6 +825,27 @@ where
         };
     }
 
+    let mut resolved_attribution_hooks_enabled = ResolvedValue {
+        value: false,
+        source: ValueSource::Default,
+    };
+    if let Some(value) = file_config.attribution_hooks_enabled {
+        resolved_attribution_hooks_enabled = ResolvedValue {
+            value: value.value,
+            source: ValueSource::ConfigFile(value.source),
+        };
+    }
+    if let Some(raw) = env_lookup(ENV_ATTRIBUTION_HOOKS_ENABLED) {
+        resolved_attribution_hooks_enabled = ResolvedValue {
+            value: parse_bool_value(
+                ENV_ATTRIBUTION_HOOKS_ENABLED,
+                &raw,
+                ENV_ATTRIBUTION_HOOKS_ENABLED,
+            )?,
+            source: ValueSource::Env,
+        };
+    }
+
     let resolved_workos_client_id = resolve_optional_auth_config_value(
         WORKOS_CLIENT_ID_KEY,
         file_config.workos_client_id,
@@ -791,6 +868,7 @@ where
         otel_endpoint: resolved_otel_endpoint,
         otel_protocol: resolved_otel_protocol,
         timeout_ms: resolved_timeout_ms,
+        attribution_hooks_enabled: resolved_attribution_hooks_enabled,
         workos_client_id: resolved_workos_client_id,
         bash_policies: resolved_bash_policies,
         validation_warnings,
@@ -1110,6 +1188,7 @@ fn parse_file_config(raw: &str, path: &Path, source: ConfigPathSource) -> Result
         None => None,
     };
 
+    let attribution_hooks_enabled = parse_attribution_hooks_config(object, path, source)?;
     let workos_client_id = parse_optional_string_key(object, path, source, WORKOS_CLIENT_ID_KEY)?;
     let (bash_policy_presets, bash_policy_custom) = parse_bash_policy_config(object, path, source)?;
 
@@ -1122,6 +1201,7 @@ fn parse_file_config(raw: &str, path: &Path, source: ConfigPathSource) -> Result
         otel_endpoint,
         otel_protocol,
         timeout_ms,
+        attribution_hooks_enabled,
         workos_client_id,
         bash_policy_presets,
         bash_policy_custom,
@@ -1219,9 +1299,9 @@ fn parse_bash_policy_config(
     })?;
 
     for key in policies_object.keys() {
-        if key != "bash" {
+        if key != "bash" && key != "attribution_hooks" {
             bail!(
-                "Config key 'policies' in '{}' contains unknown key '{}'. Allowed keys: bash.",
+                "Config key 'policies' in '{}' contains unknown key '{}'. Allowed keys: bash, attribution_hooks.",
                 path.display(),
                 key
             );
@@ -1266,6 +1346,60 @@ fn parse_bash_policy_config(
     };
 
     Ok((presets, custom))
+}
+
+fn parse_attribution_hooks_config(
+    object: &serde_json::Map<String, Value>,
+    path: &Path,
+    source: ConfigPathSource,
+) -> Result<Option<FileConfigValue<bool>>> {
+    let Some(policies_value) = object.get("policies") else {
+        return Ok(None);
+    };
+
+    let policies_object = policies_value.as_object().with_context(|| {
+        format!(
+            "Config key 'policies' in '{}' must be an object.",
+            path.display()
+        )
+    })?;
+
+    let Some(attribution_hooks_value) = policies_object.get("attribution_hooks") else {
+        return Ok(None);
+    };
+
+    let attribution_hooks_object = attribution_hooks_value.as_object().with_context(|| {
+        format!(
+            "Config key 'policies.attribution_hooks' in '{}' must be an object.",
+            path.display()
+        )
+    })?;
+
+    for key in attribution_hooks_object.keys() {
+        if key != "enabled" {
+            bail!(
+                "Config key 'policies.attribution_hooks' in '{}' contains unknown key '{}'. Allowed keys: enabled.",
+                path.display(),
+                key
+            );
+        }
+    }
+
+    let Some(enabled) = attribution_hooks_object.get("enabled") else {
+        return Ok(None);
+    };
+
+    let enabled = enabled.as_bool().with_context(|| {
+        format!(
+            "Config key 'policies.attribution_hooks.enabled' in '{}' must be a boolean.",
+            path.display()
+        )
+    })?;
+
+    Ok(Some(FileConfigValue {
+        value: enabled,
+        source,
+    }))
 }
 
 fn parse_bash_policy_presets(value: &Value, path: &Path) -> Result<Vec<String>> {

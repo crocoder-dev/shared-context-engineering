@@ -74,6 +74,15 @@ local sceConfigSchema = new JsonSchema {
       type = "object"
       additionalProperties = false
       properties {
+        ["attribution_hooks"] = new JsonSchema {
+          type = "object"
+          additionalProperties = false
+          properties {
+            ["enabled"] = new JsonSchema {
+              type = "boolean"
+            }
+          }
+        }
         ["bash"] = new JsonSchema {
           type = "object"
           additionalProperties = false

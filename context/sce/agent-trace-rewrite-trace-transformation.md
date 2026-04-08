@@ -1,5 +1,9 @@
 # Agent Trace Rewrite Trace Transformation (T09)
 
+## Current status
+- This contract is no longer active in runtime.
+- The current `cli/src/services/hooks.rs` keeps `sce hooks post-rewrite` as a deterministic no-op.
+
 ## Status
 - Plan: `agent-trace-attribution-no-git-wrapper`
 - Task: `T09`
@@ -15,6 +19,7 @@
 `finalize_rewrite_trace` returns `NoOp` without persistence when any guard applies:
 
 - `sce_disabled = true`
+- `trace_side_effects_enabled = false`
 - `cli_available = false`
 - `is_bare_repo = true`
 - rewritten commit SHA is already marked emitted in `TraceEmissionLedger`
@@ -57,4 +62,4 @@
 - Metadata integrity and current notes/no-op-DB persistence behavior for rewritten traces.
 - Confidence-threshold quality mapping (`final`, `partial`, `needs_review`).
 - Confidence range validation errors for out-of-range input.
-- No-op behavior when rewritten commit was already finalized.
+- No-op behavior when attribution-only mode is active or the rewritten commit was already finalized.

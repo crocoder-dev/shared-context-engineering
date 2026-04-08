@@ -67,6 +67,15 @@
     "policies": {
       "type": "object",
       "properties": {
+        "attribution_hooks": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
         "bash": {
           "type": "object",
           "properties": {

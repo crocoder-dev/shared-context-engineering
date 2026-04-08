@@ -11,13 +11,11 @@
 - Runtime entrypoint: `cli/src/services/hooks.rs` -> `run_commit_msg_subcommand` / `run_commit_msg_subcommand_in_repo`.
 - Canonical trailer string: `Co-authored-by: SCE <sce@crocoder.dev>`.
 - Runtime gating conditions:
+  - `attribution_hooks_enabled = true`
   - `sce_disabled = false`
-  - `sce_coauthor_enabled = true`
-  - `has_staged_sce_attribution = true`
 - Runtime gate source mapping:
+  - `attribution_hooks_enabled` resolves from env `SCE_ATTRIBUTION_HOOKS_ENABLED` over config key `policies.attribution_hooks.enabled`, default `false`.
   - `sce_disabled` resolves from `SCE_DISABLED` truthy evaluation.
-  - `sce_coauthor_enabled` resolves from `SCE_COAUTHOR_ENABLED` with enabled-by-default semantics.
-  - `has_staged_sce_attribution` resolves from staged pre-commit checkpoint artifact content only when at least one file has both non-empty `ranges[]` and `has_sce_attribution = true`.
 - When all gate conditions pass, output commit message MUST contain exactly one canonical SCE trailer.
 - When any gate condition fails, commit message is returned unchanged.
 
@@ -28,10 +26,7 @@
 - Existing trailing newline is preserved when present.
 - Commit-msg runtime writes the file only when policy gates pass and transformed content differs from original content.
 - Human author/committer identity is not rewritten; only commit message trailer content is affected.
-- Missing or `false` `has_sce_attribution` markers fail the gate even when staged ranges are present, so generic human-only staged diffs do not trigger trailer insertion.
-  - **TEMPORARY (v0.1.x)**: Currently defaults to `true` for all staged files (see TODO(0.3.0) in `cli/src/services/hooks.rs:collect_pending_checkpoint`).
-  - **PLANNED (v0.3.0)**: Will default to `false` and require explicit attribution marking.
-- The positive path remains explicit-marker driven: commit-msg appends the canonical trailer when an attribution-aware checkpoint producer marks staged ranges as SCE-attributed.
+- The current positive path is gate-driven only: when attribution hooks are enabled, `commit-msg` appends the canonical trailer without depending on checkpoint files or other helper state.
 
 ## Verification evidence
 - `nix flake check`
