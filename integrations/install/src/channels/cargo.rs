@@ -5,11 +5,14 @@ use crate::harness::{ChannelHarness, HarnessRequest};
 
 use super::npm::find_repo_root;
 
-pub(crate) fn run(request: HarnessRequest) -> Result<(), HarnessError> {
+pub(crate) fn run(
+    request: HarnessRequest,
+    explicit_repo_root: Option<&Path>,
+) -> Result<(), HarnessError> {
     let harness = ChannelHarness::new(request.channel())?;
     println!("{}", harness.setup_message());
 
-    let repo_root = find_repo_root(request.channel().as_str())?;
+    let repo_root = find_repo_root(request.channel().as_str(), explicit_repo_root)?;
     let cli_path = repo_root.join("cli");
 
     install_cargo_package(&harness, &cli_path)?;

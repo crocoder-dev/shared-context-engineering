@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::Parser;
 
 use crate::channels::Channel;
@@ -12,6 +14,10 @@ pub(crate) struct Args {
     /// Channel selector: npm, bun, cargo, or all (default: all)
     #[arg(short, long, value_enum, default_value = "all")]
     pub(crate) channel: ChannelArg,
+
+    /// Explicit repository root path (must contain flake.nix)
+    #[arg(long, value_name = "PATH")]
+    pub(crate) repo_root: Option<PathBuf>,
 }
 
 /// Channel selector for integration tests.

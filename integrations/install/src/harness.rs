@@ -160,6 +160,13 @@ impl ChannelHarness {
         self.resolve_executable(OsStr::new(program))
     }
 
+    pub(crate) fn resolve_program_in_harness_bins(
+        &self,
+        program: &str,
+    ) -> Result<PathBuf, HarnessError> {
+        self.resolve_executable_in_harness_bins(OsStr::new(program))
+    }
+
     pub(crate) fn run_command<I, S>(
         &self,
         program: &Path,
@@ -248,12 +255,24 @@ impl ChannelHarness {
     }
 
     fn resolve_executable(&self, program: &OsStr) -> Result<PathBuf, HarnessError> {
+        self.resolve_executable_in_paths(program, &self.path_with_harness_bins())
+    }
+
+    fn resolve_executable_in_harness_bins(&self, program: &OsStr) -> Result<PathBuf, HarnessError> {
+        self.resolve_executable_in_paths(program, &self.harness_bins_only_path())
+    }
+
+    fn resolve_executable_in_paths(
+        &self,
+        program: &OsStr,
+        paths: &OsStr,
+    ) -> Result<PathBuf, HarnessError> {
         let candidate = Path::new(program);
         if candidate.components().count() > 1 {
             return Ok(candidate.to_path_buf());
         }
 
-        for path_entry in env::split_paths(&self.path_with_harness_bins()) {
+        for path_entry in env::split_paths(paths) {
             let resolved = path_entry.join(candidate);
             if ensure_executable(&resolved).is_ok() {
                 return Ok(resolved);
@@ -322,6 +341,15 @@ impl ChannelHarness {
             self.cargo_home_bin(),
         ];
         paths.extend(env::split_paths(&self.original_path));
+        env::join_paths(paths).expect("harness paths should be valid")
+    }
+
+    fn harness_bins_only_path(&self) -> OsString {
+        let paths = vec![
+            self.npm_prefix_bin(),
+            self.bun_install_bin(),
+            self.cargo_home_bin(),
+        ];
         env::join_paths(paths).expect("harness paths should be valid")
     }
 }

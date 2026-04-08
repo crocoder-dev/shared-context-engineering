@@ -638,7 +638,8 @@
           name = "install-channel-integration-tests";
           runtimeInputs = [
             pkgs.nodejs
-            scePackage
+            pkgs.bun
+            rustToolchain
           ];
           text = ''
             set -euo pipefail

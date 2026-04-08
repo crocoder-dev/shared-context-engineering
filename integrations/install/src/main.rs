@@ -25,5 +25,5 @@ fn run() -> Result<(), HarnessError> {
     let args = Args::parse();
     let channels = Vec::from(args.channel);
     let runner = ChannelRunner;
-    runner.run(&channels)
+    runner.run(&channels, args.repo_root.as_deref())
 }
