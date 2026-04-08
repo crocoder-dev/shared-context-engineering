@@ -1,5 +1,9 @@
 # Agent Trace post-commit persistence baseline
 
+## Current status
+- This contract is no longer active in runtime.
+- The current `cli/src/services/hooks.rs` keeps `sce hooks post-commit` as a deterministic no-op.
+
 ## Status
 - Plan: `agent-trace-attribution-no-git-wrapper`
 - Task: `T06`
@@ -7,8 +11,11 @@
 
 ## Canonical contract
 - Policy entrypoint: `cli/src/services/hooks.rs` -> `finalize_post_commit_trace`.
+- Runtime entrypoint status: retained but not active in the current trace-removal baseline.
 - Runtime no-op guards:
   - `sce_disabled = true` -> `NoOp(Disabled)`
+  - `attribution_hooks_enabled = false` -> `NoOp(AttributionDisabled)`
+  - `trace_side_effects_enabled = false` -> `NoOp(AttributionOnlyMode)`
   - `cli_available = false` -> `NoOp(CliUnavailable)`
   - `is_bare_repo = true` -> `NoOp(BareRepository)`
 - Idempotency guard: `TraceEmissionLedger::has_emitted(commit_sha)` short-circuits to `NoOp(AlreadyFinalized)`.
@@ -27,8 +34,11 @@
 - Any failed target (`PersistenceWriteResult::Failed`) enqueues one retry item via `TraceRetryQueue` with explicit failed target list and returns `QueuedFallback`.
 - Retry queue entries carry the full trace record, MIME type, notes ref, and failed target list to support replay-safe recovery.
 
-## Local hook runtime adapter wiring
+## Retained runtime wiring details
 - Runtime entrypoint: `cli/src/services/hooks.rs` -> `run_post_commit_subcommand_in_repo`.
+- Current runtime posture:
+  - `post-commit` remains invocable but exits through deterministic no-op output before invoking trace persistence behavior.
+  - Enabling the attribution-hooks gate does not reactivate notes writes, local DB writes, retry replay, or emission-ledger mutation.
 - Runtime input assembly:
   - resolves `HEAD` + optional `HEAD^` via git
   - derives commit timestamp from `git show -s --format=%cI HEAD`
@@ -39,9 +49,7 @@
   - local record store adapter: `NoOpTraceRecordStore` disconnects local DB trace persistence while keeping the finalize path compile-safe
   - emission ledger adapter: `FileTraceEmissionLedger` stores emitted commit SHAs at `sce/trace-emission-ledger.txt`
   - retry queue adapter: `JsonFileTraceRetryQueue` appends failed-target fallback entries to `sce/trace-retry-queue.jsonl`
-- Runtime DB-file bootstrap remains mandatory before post-commit execution:
-  - `resolve_post_commit_runtime_paths` calls `ensure_agent_trace_local_db_ready_blocking`.
-  - `ensure_agent_trace_local_db_ready_blocking` resolves platform state-data DB path (`${XDG_STATE_HOME:-~/.local/state}/sce/agent-trace/local.db` on Linux, platform-equivalent user state root elsewhere), creates parent directories, and opens/creates the DB file without applying schema migrations.
+- If later runtime work reactivates this path, `resolve_post_commit_runtime_paths` still points at the empty-file/open-only Agent Trace DB baseline rather than any schema-backed trace store.
 - Runtime posture remains fail-open: operational errors return deterministic skip/fallback messages instead of aborting commit progression.
 
 ## Verification evidence

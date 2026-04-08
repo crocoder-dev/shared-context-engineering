@@ -1,5 +1,9 @@
 # Agent Trace Post-Rewrite Local Remap Ingestion (T08)
 
+## Current status
+- This contract is no longer active in runtime.
+- The current `cli/src/services/hooks.rs` keeps `sce hooks post-rewrite` as a deterministic no-op.
+
 ## Status
 - Plan: `agent-trace-attribution-no-git-wrapper`
 - Task: `T08`
@@ -15,6 +19,8 @@
 `finalize_post_rewrite_remap` returns `NoOp` and performs no ingestion when any of these guards apply:
 
 - `sce_disabled = true`
+- `attribution_hooks_enabled = false`
+- `trace_side_effects_enabled = false`
 - `cli_available = false`
 - `is_bare_repo = true`
 
@@ -55,7 +61,7 @@
 
 ## Tests added
 
-- No-op behavior when SCE is disabled.
+- No-op behavior when SCE is disabled, attribution hooks are disabled, or attribution-only mode is active.
 - Amend-pair ingestion with deterministic idempotency-key derivation.
 - Rebase duplicate replay behavior (second identical pair skipped).
 - Strict malformed-line rejection (`<old_sha> <new_sha>` required).

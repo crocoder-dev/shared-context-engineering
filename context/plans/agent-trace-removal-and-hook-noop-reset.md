@@ -31,12 +31,15 @@
   - Files changed: `cli/src/services/local_db.rs`, `cli/src/services/hooks.rs`
   - Evidence: `nix run .#pkl-check-generated`; `nix flake check`; `nix develop -c sh -c 'cd cli && cargo check'`
 
-- [ ] T02: Keep attribution-only hooks behind a disabled-by-default gate (status:todo)
+- [x] T02: Keep attribution-only hooks behind a disabled-by-default gate (status:done)
   - Task ID: T02
   - Goal: Keep the hook-trigger surface present while removing trace persistence, retry, rewrite handling, and other Agent Trace side effects; preserve attribution-only behavior behind a config/env gate that defaults to disabled.
   - Boundaries (in/out of scope): In scope: hook runtime entrypoints, config/env resolution, disabled-default no-op behavior, and enabled-path attribution behavior that does not depend on trace infrastructure. Out of scope: future v0.3.0 tracing redesign, new persistence behavior, and unrelated CLI command-surface redesign.
   - Done when: Hook commands/installed triggers remain invocable; default behavior is disabled/no-op; enabling the new config/env gate restores attribution-only behavior; no trace-related side effect runs in either mode; the new gate resolves through the existing precedence model and is documented in code/tests.
   - Verification notes (commands or checks): Inspect hook runtime and config resolution paths for disabled-default no-op behavior plus enabled attribution-only behavior; run targeted hook/config tests where available; include full repo validation in the final task.
+  - Completed: 2026-04-08
+  - Files changed: `cli/src/services/config.rs`, `cli/src/services/hooks.rs`, `config/pkl/base/sce-config-schema.pkl`, `config/schema/sce-config.schema.json`
+  - Evidence: `nix run .#pkl-check-generated`; `nix flake check`; `nix develop -c sh -c 'cd cli && cargo check'`
 
 - [ ] T03: Remove Agent Trace-specific command, doctor, setup, and path-surface behavior (status:todo)
   - Task ID: T03

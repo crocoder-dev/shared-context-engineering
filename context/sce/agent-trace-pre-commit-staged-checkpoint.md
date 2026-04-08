@@ -1,5 +1,9 @@
 # Agent Trace Pre-commit Staged Checkpoint
 
+## Current status
+
+This contract is no longer active. The current `cli/src/services/hooks.rs` runtime keeps `sce hooks pre-commit` as a deterministic no-op and does not persist checkpoint artifacts.
+
 ## Scope
 
 Task `agent-trace-attribution-no-git-wrapper` `T04` adds a pre-commit finalization contract that filters pending attribution to staged content only and preserves index/tree anchors for deterministic commit-time binding.
@@ -11,10 +15,12 @@ Task `agent-trace-attribution-no-git-wrapper` `T04` adds a pre-commit finalizati
 - Runtime hook entrypoint: `run_pre_commit_subcommand` -> `run_pre_commit_subcommand_in_repo(repository_root)`.
 - Runtime no-op guards:
   - `sce_disabled = true` -> `NoOp(Disabled)`.
+  - `attribution_hooks_enabled = false` -> `NoOp(AttributionDisabled)`.
   - `cli_available = false` -> `NoOp(CliUnavailable)`.
   - `is_bare_repo = true` -> `NoOp(BareRepository)`.
 - Runtime state resolution:
   - `SCE_DISABLED` truthy env values (`1`, `true`, `yes`, `on`) set disabled mode.
+  - `SCE_ATTRIBUTION_HOOKS_ENABLED` overrides config key `policies.attribution_hooks.enabled` and defaults to disabled.
   - CLI availability checks `git --version` in the repository context.
   - Bare-repository guard uses `git rev-parse --is-bare-repository`.
 - Staged-only enforcement:
@@ -43,5 +49,5 @@ Task `agent-trace-attribution-no-git-wrapper` `T04` adds a pre-commit finalizati
 ## Verification coverage
 
 - Mixed staged/unstaged fixture test confirms unstaged ranges are excluded and anchor values are preserved.
-- Guard-path tests cover disabled, missing CLI, and bare-repository no-op behavior.
+- Guard-path tests cover disabled, attribution-disabled, missing CLI, and bare-repository no-op behavior.
 - Runtime fixture test validates persisted pre-commit checkpoint artifact contains staged-only ranges when both staged and unstaged edits exist for the same file.
