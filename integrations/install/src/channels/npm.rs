@@ -5,17 +5,20 @@ use crate::error::HarnessError;
 use crate::harness::{copy_directory_recursive, ChannelHarness, HarnessRequest};
 use crate::platform::set_executable_permissions;
 
-pub(crate) fn run(request: HarnessRequest) -> Result<(), HarnessError> {
+pub(crate) fn run(
+    request: HarnessRequest,
+    explicit_repo_root: Option<&Path>,
+) -> Result<(), HarnessError> {
     let harness = ChannelHarness::new(request.channel())?;
     println!("{}", harness.setup_message());
 
-    let repo_root = find_repo_root(request.channel().as_str())?;
+    let repo_root = find_repo_root(request.channel().as_str(), explicit_repo_root)?;
     let package_tarball =
         build_local_npm_fixture(&harness, &repo_root, request.channel().as_str())?;
 
     install_npm_package(&harness, &repo_root, &package_tarball)?;
 
-    let sce_binary = harness.resolve_program("sce")?;
+    let sce_binary = harness.resolve_program_in_harness_bins("sce")?;
     let version_output = harness.assert_sce_version_success(&sce_binary)?;
     assert_sce_doctor_success(&harness, &sce_binary)?;
 
@@ -74,7 +77,18 @@ fn install_npm_package(
     Ok(())
 }
 
-pub(super) fn find_repo_root(channel_name: &str) -> Result<PathBuf, HarnessError> {
+pub(super) fn find_repo_root(
+    channel_name: &str,
+    explicit_root: Option<&Path>,
+) -> Result<PathBuf, HarnessError> {
+    // First, check explicit path if provided
+    if let Some(explicit) = explicit_root {
+        if explicit.join("flake.nix").is_file() {
+            return Ok(explicit.to_path_buf());
+        }
+    }
+
+    // Fall back to upward walk from current directory
     let mut current = std::env::current_dir().map_err(|e| HarnessError::CurrentDir {
         error: e.to_string(),
     })?;
