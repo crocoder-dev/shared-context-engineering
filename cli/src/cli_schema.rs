@@ -99,16 +99,10 @@ pub enum Commands {
         format: OutputFormat,
     },
 
-    #[command(about = "Run git-hook runtime entrypoints for local Agent Trace flows")]
+    #[command(about = "Run attribution-only git hooks (disabled by default)")]
     Hooks {
         #[command(subcommand)]
         subcommand: HooksSubcommand,
-    },
-
-    #[command(about = "Inspect persisted Agent Trace records and prompt captures")]
-    Trace {
-        #[command(subcommand)]
-        subcommand: TraceSubcommand,
     },
 
     #[command(about = "Print deterministic runtime version metadata")]
@@ -200,20 +194,6 @@ pub enum HooksSubcommand {
 
     #[command(about = "Run post-rewrite hook (reads pairs from STDIN)")]
     PostRewrite { rewrite_method: String },
-}
-
-#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
-pub enum TraceSubcommand {
-    #[command(about = "Show captured prompts for a persisted commit trace")]
-    Prompts {
-        commit_sha: String,
-
-        #[arg(long, value_enum, default_value_t = OutputFormat::Text, conflicts_with = "json")]
-        format: OutputFormat,
-
-        #[arg(long, conflicts_with = "format")]
-        json: bool,
-    },
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]

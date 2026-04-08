@@ -16,7 +16,7 @@
 
 - global config: `<config_root>/sce/config.json`
 - auth tokens: `<state_root>/sce/auth/tokens.json`
-- Agent Trace local DB: `<state_root>/sce/agent-trace/local.db`
+- local DB: `<state_root>/sce/local.db`
 
 ### Repo-relative paths
 
@@ -33,13 +33,6 @@
 - OpenCode plugin/runtime/catalog targets under `.opencode/`
 - required git hook install targets under `.git/hooks/`
 
-### Git-relative hook runtime paths
-
-- `sce/pre-commit-checkpoint.json`
-- `sce/prompts.jsonl`
-- `sce/trace-retry-queue.jsonl`
-- `sce/trace-emission-ledger.txt`
-
 ## Contract
 
 - Production CLI code should define named path accessors or constants in `default_paths.rs`, not introduce new hardcoded path owners elsewhere.
@@ -47,7 +40,6 @@
 - `cli/src/services/doctor.rs` now resolves the repo-local config path through `RepoPaths::sce_config_file()` for local-config health reporting and validation.
 - `cli/src/services/doctor.rs` also resolves OpenCode manifest/plugin/runtime/preset locations through shared `RepoPaths` and `InstallTargetPaths` accessors instead of owning those paths locally.
 - `cli/src/services/setup.rs` now resolves setup target directory names and required hook identifiers through `default_paths.rs` constants/accessors instead of owning those path literals locally.
-- `cli/src/services/hooks.rs` now resolves git-relative runtime artifact paths (`pre-commit` checkpoint, prompt capture, retry queue, emission ledger) through `default_paths.rs` constants before `git rev-parse --git-path` expansion.
 - `cli/src/services/default_paths.rs` includes a regression test that scans non-test Rust source under `cli/src/` and fails when new centralized production path literals appear outside the default-path service.
 
 See also: [cli-command-surface.md](./cli-command-surface.md), [../architecture.md](../architecture.md), [../context-map.md](../context-map.md)

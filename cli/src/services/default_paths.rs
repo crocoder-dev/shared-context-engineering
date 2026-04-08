@@ -78,7 +78,7 @@ pub(crate) enum PersistedArtifactRootKind {
 pub(crate) enum PersistedArtifactId {
     GlobalConfig,
     AuthTokens,
-    AgentTraceLocalDb,
+    LocalDb,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -106,12 +106,8 @@ impl SceDefaultLocations {
             .join("tokens.json")
     }
 
-    pub(crate) fn agent_trace_local_db(&self) -> PathBuf {
-        self.roots
-            .state_root()
-            .join("sce")
-            .join("agent-trace")
-            .join("local.db")
+    pub(crate) fn local_db(&self) -> PathBuf {
+        self.roots.state_root().join("sce").join("local.db")
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -128,9 +124,9 @@ impl SceDefaultLocations {
                 path: self.auth_tokens_file(),
             },
             PersistedArtifactLocation {
-                id: PersistedArtifactId::AgentTraceLocalDb,
+                id: PersistedArtifactId::LocalDb,
                 root_kind: PersistedArtifactRootKind::State,
-                path: self.agent_trace_local_db(),
+                path: self.local_db(),
             },
         ]
     }
@@ -158,15 +154,6 @@ pub(crate) mod hook_dir {
     pub const PRE_COMMIT: &str = "pre-commit";
     pub const COMMIT_MSG: &str = "commit-msg";
     pub const POST_COMMIT: &str = "post-commit";
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) mod git_relative_path {
-    pub const SCE_DIR: &str = "sce";
-    pub const PRE_COMMIT_CHECKPOINT: &str = "sce/pre-commit-checkpoint.json";
-    pub const PROMPTS: &str = "sce/prompts.jsonl";
-    pub const TRACE_RETRY_QUEUE: &str = "sce/trace-retry-queue.jsonl";
-    pub const TRACE_EMISSION_LEDGER: &str = "sce/trace-emission-ledger.txt";
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
