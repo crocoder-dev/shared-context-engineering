@@ -20,8 +20,13 @@ pub(crate) fn run(
 
     let sce_binary = harness.resolve_program("sce")?;
     let version_output = harness.assert_sce_version_success(&sce_binary)?;
+    harness.assert_sce_doctor_success(&sce_binary)?;
 
     println!("{}", harness.version_success_message(&version_output));
+    println!(
+        "[PASS] channel={} sce doctor completed successfully via installed bun launcher.",
+        request.channel().as_str()
+    );
     println!(
         "bun install-and-verify flow passed for channel={} via the Rust runner (mode={}).",
         request.channel().as_str(),
@@ -39,9 +44,9 @@ fn install_bun_package(
     let install_output = harness.run_command_in_dir_with_env(
         &bun,
         [
-            "add",
-            "--global",
-            package_tarball.to_string_lossy().as_ref(),
+            std::ffi::OsStr::new("add"),
+            std::ffi::OsStr::new("--global"),
+            package_tarball.as_os_str(),
         ],
         repo_root,
         [("SCE_NPM_SKIP_DOWNLOAD", "1")],

@@ -16,8 +16,13 @@ pub(crate) enum HarnessError {
         error: String,
     },
 
+    #[error(
+        "Unable to resolve executable '{program}' for channel={channel}. Ensure it is on PATH."
+    )]
+    ExecutableResolve { program: String, channel: String },
+
     #[error("Unable to resolve executable '{program}' for channel={channel}. Set {env} or ensure it is on PATH.")]
-    ExecutableResolve {
+    SceBinaryResolve {
         program: String,
         channel: String,
         env: String,
@@ -48,6 +53,15 @@ pub(crate) enum HarnessError {
         channel: String,
         program: String,
         error: String,
+    },
+
+    #[error("[FAIL] channel={channel} command {program} exited with status {status}\nstdout: {stdout}\nstderr: {stderr}")]
+    CommandExitedNonZero {
+        channel: String,
+        program: String,
+        status: i32,
+        stdout: String,
+        stderr: String,
     },
 
     #[error("failed to inspect {path}: {error}")]
@@ -117,4 +131,10 @@ pub(crate) enum HarnessError {
 
     #[error("executable permissions are only supported on Unix systems")]
     UnixOnly,
+
+    #[error("path is not a file: {path}")]
+    NotAFile { path: PathBuf },
+
+    #[error("missing execute permission for file: {path}")]
+    MissingExecutePermission { path: PathBuf },
 }

@@ -2,8 +2,7 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::process::ExitStatus;
+use std::process::{Command, ExitStatus};
 
 use fs_extra::dir;
 use tempfile::TempDir;
@@ -89,10 +88,14 @@ impl ChannelHarness {
 
     pub(crate) fn resolve_sce_binary(&self) -> Result<PathBuf, HarnessError> {
         if let Some(binary) = env::var_os(SCE_BINARY_ENV) {
-            return self.resolve_executable(binary.as_os_str());
+            return self.resolve_executable_in_paths(
+                binary.as_os_str(),
+                &self.path_with_harness_bins(),
+                true,
+            );
         }
 
-        self.resolve_executable(OsStr::new("sce"))
+        self.resolve_executable_in_paths(OsStr::new("sce"), &self.path_with_harness_bins(), true)
     }
 
     pub(crate) fn assert_sce_version_success(
@@ -145,6 +148,22 @@ impl ChannelHarness {
             self.channel.as_str(),
             version_output
         )
+    }
+
+    pub(crate) fn assert_sce_doctor_success(&self, binary_path: &Path) -> Result<(), HarnessError> {
+        let output = self.run_command(binary_path, ["doctor", "--format", "json"])?;
+
+        if !output.status.success() {
+            return Err(HarnessError::CommandExitedNonZero {
+                channel: self.channel.as_str().to_string(),
+                program: binary_path.display().to_string(),
+                status: output.status.code().unwrap_or(-1),
+                stdout: output.stdout,
+                stderr: output.stderr,
+            });
+        }
+
+        Ok(())
     }
 
     pub(crate) fn create_temp_subdir(&self, name: &str) -> Result<PathBuf, HarnessError> {
@@ -255,17 +274,18 @@ impl ChannelHarness {
     }
 
     fn resolve_executable(&self, program: &OsStr) -> Result<PathBuf, HarnessError> {
-        self.resolve_executable_in_paths(program, &self.path_with_harness_bins())
+        self.resolve_executable_in_paths(program, &self.path_with_harness_bins(), false)
     }
 
     fn resolve_executable_in_harness_bins(&self, program: &OsStr) -> Result<PathBuf, HarnessError> {
-        self.resolve_executable_in_paths(program, &self.harness_bins_only_path())
+        self.resolve_executable_in_paths(program, &self.harness_bins_only_path(), false)
     }
 
     fn resolve_executable_in_paths(
         &self,
         program: &OsStr,
         paths: &OsStr,
+        is_sce_binary: bool,
     ) -> Result<PathBuf, HarnessError> {
         let candidate = Path::new(program);
         if candidate.components().count() > 1 {
@@ -279,11 +299,18 @@ impl ChannelHarness {
             }
         }
 
-        Err(HarnessError::ExecutableResolve {
-            program: candidate.display().to_string(),
-            channel: self.channel.as_str().to_string(),
-            env: SCE_BINARY_ENV.to_string(),
-        })
+        if is_sce_binary {
+            Err(HarnessError::SceBinaryResolve {
+                program: candidate.display().to_string(),
+                channel: self.channel.as_str().to_string(),
+                env: SCE_BINARY_ENV.to_string(),
+            })
+        } else {
+            Err(HarnessError::ExecutableResolve {
+                program: candidate.display().to_string(),
+                channel: self.channel.as_str().to_string(),
+            })
+        }
     }
 
     fn home_dir(&self) -> PathBuf {
