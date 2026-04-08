@@ -20,7 +20,7 @@ pub(crate) fn run(
 
     let sce_binary = harness.resolve_program_in_harness_bins("sce")?;
     let version_output = harness.assert_sce_version_success(&sce_binary)?;
-    assert_sce_doctor_success(&harness, &sce_binary)?;
+    harness.assert_sce_doctor_success(&sce_binary)?;
 
     println!("{}", harness.version_success_message(&version_output));
     println!(
@@ -45,9 +45,9 @@ fn install_npm_package(
     let install_output = harness.run_command_in_dir_with_env(
         &npm,
         [
-            "install",
-            "--global",
-            package_tarball.to_string_lossy().as_ref(),
+            std::ffi::OsStr::new("install"),
+            std::ffi::OsStr::new("--global"),
+            package_tarball.as_os_str(),
         ],
         repo_root,
         [("SCE_NPM_SKIP_DOWNLOAD", "1")],
@@ -140,7 +140,11 @@ pub(super) fn build_local_npm_fixture(
     let npm = harness.resolve_program("npm")?;
     let pack_output = harness.run_command_in_dir_with_env(
         &npm,
-        ["pack", "--silent", stage_dir.to_string_lossy().as_ref()],
+        [
+            std::ffi::OsStr::new("pack"),
+            std::ffi::OsStr::new("--silent"),
+            stage_dir.as_os_str(),
+        ],
         &pack_dir,
         [("SCE_NPM_SKIP_DOWNLOAD", "1")],
     )?;
@@ -207,25 +211,4 @@ fn add_runtime_to_staged_package_manifest(package_json_path: &Path) -> Result<()
         path: package_json_path.to_path_buf(),
         error: e.to_string(),
     })
-}
-
-fn assert_sce_doctor_success(
-    harness: &ChannelHarness,
-    sce_binary: &Path,
-) -> Result<(), HarnessError> {
-    let output = harness.run_command(sce_binary, ["doctor", "--format", "json"])?;
-
-    if !output.status.success() {
-        return Err(HarnessError::CommandFailed {
-            channel: "npm".to_string(),
-            program: sce_binary.display().to_string(),
-            error: if output.stderr.is_empty() {
-                output.stdout
-            } else {
-                output.stderr
-            },
-        });
-    }
-
-    Ok(())
 }

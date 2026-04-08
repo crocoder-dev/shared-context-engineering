@@ -19,8 +19,13 @@ pub(crate) fn run(
 
     let sce_binary = harness.resolve_program("sce")?;
     let version_output = harness.assert_sce_version_success(&sce_binary)?;
+    harness.assert_sce_doctor_success(&sce_binary)?;
 
     println!("{}", harness.version_success_message(&version_output));
+    println!(
+        "[PASS] channel={} sce doctor completed successfully via installed cargo launcher.",
+        request.channel().as_str()
+    );
     println!(
         "cargo install-and-verify flow passed for channel={} via the Rust runner (mode={}).",
         request.channel().as_str(),
@@ -35,10 +40,10 @@ fn install_cargo_package(harness: &ChannelHarness, cli_path: &Path) -> Result<()
     let install_output = harness.run_command_in_dir_with_env(
         &cargo,
         [
-            "install",
-            "--path",
-            cli_path.to_string_lossy().as_ref(),
-            "--locked",
+            std::ffi::OsStr::new("install"),
+            std::ffi::OsStr::new("--path"),
+            cli_path.as_os_str(),
+            std::ffi::OsStr::new("--locked"),
         ],
         cli_path,
         std::iter::empty::<(&str, &str)>(),
