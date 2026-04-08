@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -374,6 +374,13 @@ fn load_pending_prompts(repository_root: &Path) -> Result<Vec<PendingPromptCheck
             .map(ToOwned::to_owned)
             .or_else(|| last_known_cwd.clone());
 
+        let conversation_url = json
+            .get("conversation_url")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+
         if let Some(cwd_value) = &cwd {
             last_known_cwd = Some(cwd_value.clone());
         }
@@ -384,6 +391,7 @@ fn load_pending_prompts(repository_root: &Path) -> Result<Vec<PendingPromptCheck
             prompt_length: prompt_text.len(),
             is_truncated: false,
             cwd,
+            conversation_url,
             transcript_path: json
                 .get("transcript_path")
                 .and_then(serde_json::Value::as_str)
@@ -523,6 +531,7 @@ fn write_finalized_checkpoint(
             "prompt_length": prompt.prompt_length,
             "is_truncated": prompt.is_truncated,
             "cwd": prompt.cwd,
+            "conversation_url": prompt.conversation_url,
             "transcript_path": prompt.transcript_path,
             "captured_at": prompt.captured_at,
         }));
@@ -823,6 +832,7 @@ fn build_post_commit_input(repository_root: &Path) -> Result<PostCommitInput> {
     let files = collect_post_commit_file_attribution(repository_root)?;
     let prompts =
         load_post_commit_prompt_records(repository_root, committed_at_unix_ms, &timestamp_rfc3339)?;
+    let conversation_events = load_post_commit_conversation_events(repository_root, &commit_sha)?;
     let idempotency_key = format!("post-commit:{commit_sha}");
     let record_id = deterministic_uuid_v4_from_seed(&format!("{commit_sha}:{timestamp_rfc3339}"));
 
@@ -835,6 +845,7 @@ fn build_post_commit_input(repository_root: &Path) -> Result<PostCommitInput> {
         idempotency_key,
         files,
         prompts,
+        conversation_events,
     })
 }
 
@@ -1078,6 +1089,180 @@ fn load_post_commit_prompt_records(
     Ok(prompt_windows)
 }
 
+fn load_post_commit_conversation_events(
+    repository_root: &Path,
+    commit_sha: &str,
+) -> Result<Vec<PersistedConversationEvent>> {
+    let checkpoint_path = resolve_pre_commit_checkpoint_path(repository_root)?;
+    let payload = match fs::read_to_string(&checkpoint_path) {
+        Ok(payload) => payload,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            bail!(
+                "Failed to read pre-commit checkpoint '{}' for conversation events: {}",
+                checkpoint_path.display(),
+                error
+            )
+        }
+    };
+
+    let checkpoint = serde_json::from_str::<serde_json::Value>(&payload).with_context(|| {
+        format!(
+            "Failed to parse pre-commit checkpoint '{}' as JSON for conversation events.",
+            checkpoint_path.display()
+        )
+    })?;
+
+    let harness_type = checkpoint
+        .get("harness_type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(CLAUDE_CODE_HARNESS_TYPE)
+        .to_string();
+    let Some(prompts_json) = checkpoint
+        .get("prompts")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(Vec::new());
+    };
+
+    let mut transcript_paths: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for prompt_json in prompts_json {
+        let transcript_path = prompt_json
+            .get("transcript_path")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let Some(transcript_path) = transcript_path else {
+            continue;
+        };
+        let conversation_url = prompt_json
+            .get("conversation_url")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+
+        let entry = transcript_paths
+            .entry(transcript_path.to_string())
+            .or_insert_with(|| conversation_url.clone());
+        if entry.is_none() && conversation_url.is_some() {
+            *entry = conversation_url;
+        }
+    }
+
+    let mut events = Vec::new();
+    let fallback_url = format!("sce://local-hooks/{commit_sha}");
+    for (transcript_path, conversation_url) in transcript_paths {
+        let payload = fs::read_to_string(&transcript_path).with_context(|| {
+            format!("Failed to read transcript '{transcript_path}' for conversation events.")
+        })?;
+        let conversation_url = conversation_url
+            .clone()
+            .unwrap_or_else(|| fallback_url.clone());
+
+        for (index, line) in payload.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+                continue;
+            };
+
+            let metadata = extract_conversation_event_metadata(&json);
+            let event_index = u32::try_from(index + 1).unwrap_or(u32::MAX);
+            events.push(PersistedConversationEvent {
+                conversation_url: conversation_url.clone(),
+                source: harness_type.clone(),
+                event_index,
+                role: metadata.role,
+                event_type: metadata.event_type,
+                content_text: metadata.content_text,
+                payload_json: trimmed.to_string(),
+                captured_at: metadata.captured_at,
+            });
+        }
+    }
+
+    Ok(events)
+}
+
+struct ConversationEventMetadata {
+    role: Option<String>,
+    event_type: Option<String>,
+    content_text: Option<String>,
+    captured_at: Option<String>,
+}
+
+fn extract_conversation_event_metadata(value: &serde_json::Value) -> ConversationEventMetadata {
+    let role = extract_optional_text(value.get("role")).or_else(|| {
+        let role = extract_optional_text(value.get("type"))?;
+        match role.as_str() {
+            "assistant" | "user" | "system" | "tool" => Some(role),
+            _ => None,
+        }
+    });
+
+    let event_type = extract_optional_text(value.get("event_type"))
+        .or_else(|| extract_optional_text(value.get("type")))
+        .or_else(|| extract_optional_text(value.get("kind")));
+    let captured_at = extract_optional_text(value.get("timestamp"))
+        .or_else(|| extract_optional_text(value.get("created_at")))
+        .or_else(|| extract_optional_text(value.get("time")));
+    let content_text = extract_conversation_content_text(value);
+
+    ConversationEventMetadata {
+        role,
+        event_type,
+        content_text,
+        captured_at,
+    }
+}
+
+fn extract_optional_text(value: Option<&serde_json::Value>) -> Option<String> {
+    value
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn extract_conversation_content_text(value: &serde_json::Value) -> Option<String> {
+    if let Some(text) = extract_optional_text(value.get("content")) {
+        return Some(text);
+    }
+    if let Some(text) = extract_optional_text(value.get("message")) {
+        return Some(text);
+    }
+
+    if let Some(message) = value.get("message") {
+        if let Some(text) = extract_optional_text(message.get("content")) {
+            return Some(text);
+        }
+        if let Some(text) = extract_text_from_content_array(message.get("content")) {
+            return Some(text);
+        }
+    }
+
+    extract_text_from_content_array(value.get("content"))
+}
+
+fn extract_text_from_content_array(value: Option<&serde_json::Value>) -> Option<String> {
+    let items = value.and_then(serde_json::Value::as_array)?;
+    let mut chunks = Vec::new();
+    for item in items {
+        if let Some(text) = extract_optional_text(item.get("text")) {
+            chunks.push(text);
+        }
+    }
+    if chunks.is_empty() {
+        None
+    } else {
+        Some(chunks.join("\n"))
+    }
+}
+
 fn count_tool_uses_in_transcript(
     transcript_path: &str,
     captured_at_unix_ms: i64,
@@ -1291,6 +1476,60 @@ fn prompt_from_json(value: &serde_json::Value) -> Result<PersistedPromptRecord> 
             .and_then(serde_json::Value::as_str)
             .context("Prompt payload missing 'captured_at' string")?
             .to_string(),
+    })
+}
+
+fn conversation_event_to_json(event: &PersistedConversationEvent) -> serde_json::Value {
+    serde_json::json!({
+        "conversation_url": event.conversation_url,
+        "source": event.source,
+        "event_index": event.event_index,
+        "role": event.role,
+        "event_type": event.event_type,
+        "content_text": event.content_text,
+        "payload_json": event.payload_json,
+        "captured_at": event.captured_at,
+    })
+}
+
+fn conversation_event_from_json(value: &serde_json::Value) -> Result<PersistedConversationEvent> {
+    Ok(PersistedConversationEvent {
+        conversation_url: value
+            .get("conversation_url")
+            .and_then(serde_json::Value::as_str)
+            .context("Conversation event payload missing 'conversation_url' string")?
+            .to_string(),
+        source: value
+            .get("source")
+            .and_then(serde_json::Value::as_str)
+            .context("Conversation event payload missing 'source' string")?
+            .to_string(),
+        event_index: value
+            .get("event_index")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|raw| u32::try_from(raw).ok())
+            .context("Conversation event payload missing 'event_index' integer")?,
+        role: value
+            .get("role")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        event_type: value
+            .get("event_type")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        content_text: value
+            .get("content_text")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        payload_json: value
+            .get("payload_json")
+            .and_then(serde_json::Value::as_str)
+            .context("Conversation event payload missing 'payload_json' string")?
+            .to_string(),
+        captured_at: value
+            .get("captured_at")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
     })
 }
 
@@ -1726,6 +1965,7 @@ pub struct PendingPromptCheckpoint {
     pub prompt_length: usize,
     pub is_truncated: bool,
     pub cwd: Option<String>,
+    pub conversation_url: Option<String>,
     pub transcript_path: Option<String>,
     pub captured_at: String,
 }
@@ -1737,6 +1977,7 @@ pub struct FinalizedPromptCheckpoint {
     pub prompt_length: usize,
     pub is_truncated: bool,
     pub cwd: Option<String>,
+    pub conversation_url: Option<String>,
     pub transcript_path: Option<String>,
     pub captured_at: String,
 }
@@ -1788,6 +2029,7 @@ pub struct PostCommitInput {
     pub idempotency_key: String,
     pub files: Vec<FileAttributionInput>,
     pub prompts: Vec<PersistedPromptRecord>,
+    pub conversation_events: Vec<PersistedConversationEvent>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1806,6 +2048,18 @@ pub struct PersistedPromptRecord {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PersistedConversationEvent {
+    pub conversation_url: String,
+    pub source: String,
+    pub event_index: u32,
+    pub role: Option<String>,
+    pub event_type: Option<String>,
+    pub content_text: Option<String>,
+    pub payload_json: String,
+    pub captured_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TraceNote {
     pub notes_ref: String,
     pub commit_sha: String,
@@ -1821,6 +2075,7 @@ pub struct PersistedTraceRecord {
     pub notes_ref: String,
     pub record: AgentTraceRecord,
     pub prompts: Vec<PersistedPromptRecord>,
+    pub conversation_events: Vec<PersistedConversationEvent>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1856,6 +2111,7 @@ pub struct TraceRetryQueueEntry {
     pub notes_ref: String,
     pub record: AgentTraceRecord,
     pub prompts: Vec<PersistedPromptRecord>,
+    pub conversation_events: Vec<PersistedConversationEvent>,
 }
 
 pub trait TraceNotesWriter {
@@ -2145,6 +2401,23 @@ async fn write_trace_record_to_local_db(
 
     for file in &record.record.files {
         for conversation in &file.conversations {
+            conn.execute(
+                "INSERT OR IGNORE INTO conversations (repository_id, url, source) VALUES (?1, ?2, ?3)",
+                (
+                    repository_id,
+                    conversation.url.as_str(),
+                    record
+                        .prompts
+                        .first()
+                        .map_or(CLAUDE_CODE_HARNESS_TYPE, |prompt| {
+                            prompt.harness_type.as_str()
+                        }),
+                ),
+            )
+            .await?;
+        }
+
+        for conversation in &file.conversations {
             for range in &conversation.ranges {
                 conn.execute(
                     "INSERT INTO trace_ranges (trace_record_id, file_path, conversation_url, start_line, end_line, contributor_type, contributor_model_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -2185,6 +2458,56 @@ async fn write_trace_record_to_local_db(
         .await?;
     }
 
+    let mut conversation_ids: HashMap<String, i64> = HashMap::new();
+    for event in &record.conversation_events {
+        let conversation_id = if let Some(id) = conversation_ids.get(&event.conversation_url) {
+            *id
+        } else {
+            conn.execute(
+                "INSERT OR IGNORE INTO conversations (repository_id, url, source) VALUES (?1, ?2, ?3)",
+                (
+                    repository_id,
+                    event.conversation_url.as_str(),
+                    event.source.as_str(),
+                ),
+            )
+            .await?;
+
+            let mut rows = conn
+                .query(
+                    "SELECT id FROM conversations WHERE repository_id = ?1 AND url = ?2 LIMIT 1",
+                    (repository_id, event.conversation_url.as_str()),
+                )
+                .await?;
+            let row = rows
+                .next()
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("conversation id query returned no rows"))?;
+            let value = row.get_value(0)?;
+            let conversation_id = value
+                .as_integer()
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("conversation id query returned non-integer"))?;
+            conversation_ids.insert(event.conversation_url.clone(), conversation_id);
+            conversation_id
+        };
+
+        conn.execute(
+            "INSERT OR IGNORE INTO conversation_events (commit_id, conversation_id, event_index, role, event_type, content_text, payload_json, captured_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            (
+                commit_id,
+                conversation_id,
+                i64::from(event.event_index),
+                event.role.as_deref(),
+                event.event_type.as_deref(),
+                event.content_text.as_deref(),
+                event.payload_json.as_str(),
+                event.captured_at.as_deref(),
+            ),
+        )
+        .await?;
+    }
+
     Ok(true)
 }
 
@@ -2215,6 +2538,11 @@ impl TraceRetryQueue for JsonFileTraceRetryQueue {
             "notes_ref": entry.notes_ref,
             "record": trace_record_to_json(&entry.record),
             "prompts": entry.prompts.iter().map(prompt_to_json).collect::<Vec<_>>(),
+            "conversation_events": entry
+                .conversation_events
+                .iter()
+                .map(conversation_event_to_json)
+                .collect::<Vec<_>>(),
         })
         .to_string();
         append_jsonl_line(&self.path, &line)?;
@@ -2289,6 +2617,13 @@ impl TraceRetryQueue for JsonFileTraceRetryQueue {
             .flatten()
             .map(prompt_from_json)
             .collect::<Result<Vec<_>>>()?;
+        let conversation_events = parsed
+            .get("conversation_events")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(conversation_event_from_json)
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(Some(TraceRetryQueueEntry {
             commit_sha,
@@ -2297,6 +2632,7 @@ impl TraceRetryQueue for JsonFileTraceRetryQueue {
             notes_ref,
             record,
             prompts,
+            conversation_events,
         }))
     }
 }
@@ -2835,6 +3171,7 @@ pub fn finalize_rewrite_trace(
         notes_ref: crate::services::agent_trace::NOTES_REF.to_string(),
         record: record.clone(),
         prompts: Vec::new(),
+        conversation_events: Vec::new(),
     };
 
     let notes_result = notes_writer.write_note(note);
@@ -2859,6 +3196,7 @@ pub fn finalize_rewrite_trace(
         notes_ref: crate::services::agent_trace::NOTES_REF.to_string(),
         record: record.clone(),
         prompts: Vec::new(),
+        conversation_events: Vec::new(),
     })?;
 
     Ok(RewriteTraceFinalization::QueuedFallback(
@@ -2982,6 +3320,7 @@ pub fn finalize_post_commit_trace(
         idempotency_key,
         files,
         prompts,
+        conversation_events,
     } = input;
 
     let mut record = build_trace_payload(TraceAdapterInput {
@@ -3013,6 +3352,7 @@ pub fn finalize_post_commit_trace(
         notes_ref: crate::services::agent_trace::NOTES_REF.to_string(),
         record: record.clone(),
         prompts: prompts.clone(),
+        conversation_events: conversation_events.clone(),
     };
 
     let notes_result = notes_writer.write_note(note);
@@ -3036,6 +3376,7 @@ pub fn finalize_post_commit_trace(
         notes_ref: crate::services::agent_trace::NOTES_REF.to_string(),
         record: record.clone(),
         prompts,
+        conversation_events,
     })?;
 
     Ok(PostCommitFinalization::QueuedFallback(
@@ -3113,6 +3454,7 @@ pub fn process_trace_retry_queue(
                 notes_ref: entry.notes_ref.clone(),
                 record: entry.record.clone(),
                 prompts: entry.prompts.clone(),
+                conversation_events: entry.conversation_events.clone(),
             })
         } else {
             PersistenceWriteResult::AlreadyExists
@@ -3142,6 +3484,7 @@ pub fn process_trace_retry_queue(
             notes_ref: entry.notes_ref,
             record: entry.record,
             prompts: entry.prompts,
+            conversation_events: entry.conversation_events,
         })?;
     }
 
@@ -3236,6 +3579,7 @@ pub fn finalize_pre_commit_checkpoint(
             prompt_length: prompt.prompt_length,
             is_truncated: prompt.is_truncated,
             cwd: prompt.cwd,
+            conversation_url: prompt.conversation_url,
             transcript_path: prompt.transcript_path,
             captured_at: prompt.captured_at,
         })

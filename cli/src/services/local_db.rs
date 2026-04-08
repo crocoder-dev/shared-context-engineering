@@ -92,6 +92,21 @@ const CORE_SCHEMA_STATEMENTS: &[&str] = &[
         FOREIGN KEY(repository_id) REFERENCES repositories(id) ON DELETE CASCADE,\
         UNIQUE(repository_id, url)\
     )",
+    "CREATE TABLE IF NOT EXISTS conversation_events (\
+        id INTEGER PRIMARY KEY,\
+        commit_id INTEGER NOT NULL,\
+        conversation_id INTEGER NOT NULL,\
+        event_index INTEGER NOT NULL,\
+        role TEXT,\
+        event_type TEXT,\
+        content_text TEXT,\
+        payload_json TEXT NOT NULL,\
+        captured_at TEXT,\
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\
+        FOREIGN KEY(commit_id) REFERENCES commits(id) ON DELETE CASCADE,\
+        FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,\
+        UNIQUE(conversation_id, commit_id, event_index)\
+    )",
     "CREATE TABLE IF NOT EXISTS trace_retry_queue (\
         id INTEGER PRIMARY KEY,\
         trace_id TEXT NOT NULL UNIQUE,\
@@ -141,6 +156,10 @@ const CORE_SCHEMA_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_rewrite_mappings_run_old_sha ON rewrite_mappings(reconciliation_run_id, old_commit_sha)",
     "CREATE INDEX IF NOT EXISTS idx_rewrite_mappings_repository_old_sha ON rewrite_mappings(repository_id, old_commit_sha)",
     "CREATE INDEX IF NOT EXISTS idx_conversations_repository_source ON conversations(repository_id, source)",
+    "CREATE INDEX IF NOT EXISTS idx_conversation_events_commit ON conversation_events(commit_id)",
+    "CREATE INDEX IF NOT EXISTS idx_conversation_events_conversation ON conversation_events(conversation_id)",
+    "CREATE INDEX IF NOT EXISTS idx_conversation_events_commit_index ON conversation_events(commit_id, event_index)",
+    "CREATE INDEX IF NOT EXISTS idx_conversation_events_captured ON conversation_events(captured_at)",
     "CREATE INDEX IF NOT EXISTS idx_trace_retry_queue_created_at ON trace_retry_queue(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_reconciliation_metrics_created_at ON reconciliation_metrics(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_prompts_commit ON prompts(commit_id)",
@@ -155,6 +174,11 @@ const CORE_SCHEMA_RETRY_POLICY: RetryPolicy = RetryPolicy {
     initial_backoff_ms: 150,
     max_backoff_ms: 600,
 };
+
+const HEALTH_CHECK_QUERIES: &[&str] = &[
+    "SELECT 1 FROM conversations LIMIT 1",
+    "SELECT 1 FROM conversation_events LIMIT 1",
+];
 
 #[derive(Clone, Copy, Debug)]
 #[allow(dead_code)]
@@ -211,6 +235,10 @@ async fn check_agent_trace_local_db_health(path: &Path) -> Result<()> {
     let conn = connect_local(LocalDatabaseTarget::Path(path)).await?;
     let mut rows = conn.query("PRAGMA schema_version", ()).await?;
     let _ = rows.next().await?;
+    for query in HEALTH_CHECK_QUERIES {
+        let mut rows = conn.query(*query, ()).await?;
+        let _ = rows.next().await?;
+    }
     Ok(())
 }
 
