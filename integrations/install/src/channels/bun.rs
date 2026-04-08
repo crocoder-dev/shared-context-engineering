@@ -18,7 +18,7 @@ pub(crate) fn run(
 
     install_bun_package(&harness, &repo_root, &package_tarball)?;
 
-    let sce_binary = harness.resolve_program("sce")?;
+    let sce_binary = harness.resolve_program_in_harness_bins("sce")?;
     let version_output = harness.assert_sce_version_success(&sce_binary)?;
     harness.assert_sce_doctor_success(&sce_binary)?;
 
