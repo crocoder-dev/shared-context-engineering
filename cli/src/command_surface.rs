@@ -70,45 +70,136 @@ pub const COMMANDS: &[CommandContract] = &[
 pub fn is_known_command(name: &str) -> bool {
     COMMANDS.iter().any(|command| command.name == name)
 }
+enum HelpSectionBodyLine {
+    Text(&'static str),
+    Command {
+        cmd: &'static str,
+        suffix: &'static str,
+    },
+}
 
-pub fn help_text() -> String {
-    let mut command_rows = String::new();
+struct HelpSection {
+    title: &'static str,
+    body: &'static [HelpSectionBodyLine],
+}
+
+const HELP_SECTIONS: &[HelpSection] = &[
+    HelpSection {
+        title: "Usage:",
+        body: &[HelpSectionBodyLine::Text("  sce [command]")],
+    },
+    HelpSection {
+        title: "Config Usage:",
+        body: &[HelpSectionBodyLine::Command {
+            cmd: "  sce config",
+            suffix: " <show|validate> [--format <text|json>] [options]",
+        }],
+    },
+    HelpSection {
+        title: "Setup Usage:",
+        body: &[HelpSectionBodyLine::Command {
+            cmd: "  sce setup",
+            suffix: " [--opencode|--claude|--both] [--non-interactive] [--hooks] [--repo <path>]",
+        }],
+    },
+    HelpSection {
+        title: "Doctor Usage:",
+        body: &[HelpSectionBodyLine::Command {
+            cmd: "  sce doctor",
+            suffix: " [--fix] [--format <text|json>]",
+        }],
+    },
+    HelpSection {
+        title: "Version Usage:",
+        body: &[HelpSectionBodyLine::Command {
+            cmd: "  sce version",
+            suffix: " [--format <text|json>]",
+        }],
+    },
+    HelpSection {
+        title: "Completion Usage:",
+        body: &[HelpSectionBodyLine::Command {
+            cmd: "  sce completion",
+            suffix: " --shell <bash|zsh|fish>",
+        }],
+    },
+    HelpSection {
+        title: "Output format contract:",
+        body: &[HelpSectionBodyLine::Text(
+            "  Supported commands accept --format <text|json>",
+        )],
+    },
+    HelpSection {
+        title: "Examples:",
+        body: &[
+            HelpSectionBodyLine::Text("  sce config"),
+            HelpSectionBodyLine::Text("  sce config show --format json"),
+            HelpSectionBodyLine::Text("  sce setup"),
+            HelpSectionBodyLine::Text("  sce setup --opencode --non-interactive --hooks"),
+            HelpSectionBodyLine::Text("  sce setup --hooks --repo ../demo-repo"),
+            HelpSectionBodyLine::Text("  sce doctor --format json"),
+            HelpSectionBodyLine::Text("  sce doctor --fix"),
+            HelpSectionBodyLine::Text("  sce version --format json"),
+        ],
+    },
+];
+
+fn commands_section() -> String {
+    let mut out = String::new();
+    writeln!(out, "{}", heading("Commands")).expect("writing to String should not fail");
     for command in COMMANDS {
         if !command.show_in_top_level_help {
             continue;
         }
-
         writeln!(
-            command_rows,
+            out,
             "  {:<10} {}",
             command_name(command.name),
             command.purpose
         )
         .expect("writing to String should never fail");
     }
+    out
+}
 
-    format!(
-        "{}\n\n\
-{}:\n  sce [command]\n\n\
-{}:\n  {} <show|validate> [--format <text|json>] [options]\n\n\
-{}:\n  {} [--opencode|--claude|--both] [--non-interactive] [--hooks] [--repo <path>]\n\n\
-{}:\n  {} [--fix] [--format <text|json>]\n\n\
-{}:\n  {} --shell <bash|zsh|fish>\n\n\
-{}:\n  Supported commands accept --format <text|json>\n\n\
-{}:\n  sce setup\n  sce setup --opencode --non-interactive --hooks\n  sce setup --hooks --repo ../demo-repo\n  sce doctor --format json\n  sce doctor --fix\n  sce version --format json\n\n\
-{}:\n{command_rows}",
-        heading("sce - Shared Context Engineering CLI"),
-        heading("Usage"),
-        heading("Config usage"),
-        command_name("sce config"),
-        heading("Setup usage"),
-        command_name("sce setup"),
-        heading("Doctor usage"),
-        command_name("sce doctor"),
-        heading("Completion usage"),
-        command_name("sce completion"),
-        heading("Output format contract"),
-        heading("Examples"),
-        heading("Commands"),
-    )
+fn push_blank_line(out: &mut String) {
+    out.push('\n');
+}
+
+fn push_section(out: &mut String, section: &str) {
+    out.push_str(section);
+}
+
+pub fn help_text() -> String {
+    let mut output = String::new();
+
+    push_section(
+        &mut output,
+        &heading("sce - Shared Context Engineering CLI"),
+    );
+    push_blank_line(&mut output);
+
+    for section in HELP_SECTIONS {
+        push_section(&mut output, &heading(section.title));
+        push_blank_line(&mut output);
+
+        for line in section.body {
+            match line {
+                HelpSectionBodyLine::Text(text) => {
+                    push_section(&mut output, &text);
+                    push_blank_line(&mut output);
+                }
+                HelpSectionBodyLine::Command { cmd, suffix } => {
+                    writeln!(output, "{}{}", command_name(cmd), suffix)
+                        .expect("writing to String should never fail");
+                }
+            }
+        }
+
+        push_blank_line(&mut output);
+    }
+
+    writeln!(output, "{}", commands_section()).expect("writing to String should not fail");
+
+    output
 }
