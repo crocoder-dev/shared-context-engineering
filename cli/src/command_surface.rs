@@ -178,6 +178,7 @@ pub fn help_text() -> String {
         &heading("sce - Shared Context Engineering CLI"),
     );
     push_blank_line(&mut output);
+    push_blank_line(&mut output);
 
     for section in HELP_SECTIONS {
         push_section(&mut output, &heading(section.title));
