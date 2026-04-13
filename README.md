@@ -1,35 +1,55 @@
-# Shared Context Engineering
+# Shared Context Engineering (SCE)
 
-AI-assisted software delivery with explicit, versioned context.
+[![GitHub Actions](https://img.shields.io/github/actions/workflow/status/crocoder-dev/shared-context-engineering/publish-tiles.yml?branch=main&label=github%20actions)](https://github.com/crocoder-dev/shared-context-engineering/actions/workflows/publish-tiles.yml)
+[![crates.io](https://img.shields.io/crates/v/shared-context-engineering?logo=rust)](https://crates.io/crates/shared-context-engineering)
+[![npm](https://img.shields.io/npm/v/%40crocoder-dev%2Fsce?logo=npm)](https://www.npmjs.com/package/@crocoder-dev/sce)
 
----
+Shared Context Engineering is AI-assisted software delivery with explicit, versioned context.
 
-## Run and install the CLI
+This repository contains the `sce` CLI, generated assistant configuration, and the shared `context/` memory used across SCE workflows.
 
-Use the [WIP] `sce` CLI at `cli/`. See `cli/README.md` for current behavior and usage.
+## Documentation
 
-Current first-wave install channels for `crocoder-dev/shared-context-engineering`:
-
-- Repo flake via Nix: `nix run github:crocoder-dev/shared-context-engineering -- --help` or `nix profile install github:crocoder-dev/shared-context-engineering`
-- Cargo: `cargo install sce`
-- npm: `npm install -g sce`
-
-Additional supported Cargo paths:
-
-- `cargo install --git https://github.com/crocoder-dev/shared-context-engineering sce --locked`
-- `cargo install --path cli --locked`
-
-Homebrew is currently deferred from the active implementation stage.
-
-Release/version topology for the current rollout:
-
-- Repo-root `.version` is the canonical checked-in release version source.
-- GitHub Releases publish the canonical signed `sce` release archives and manifest/checksum assets.
-- crates.io and npm registry publication are separate downstream publish stages for the already-versioned checked-in packages.
-- Release packaging and registry publishing are not a single auto-bumping workflow.
-
-- [Docs](https://sce.crocoder.dev/docs)
-- [Getting Started](https://sce.crocoder.dev/docs/getting-started)
+- [Documentation site](https://sce.crocoder.dev/)
+- [Getting started](https://sce.crocoder.dev/docs/getting-started)
 - [Motivation](https://sce.crocoder.dev/docs/motivation)
+- [GitHub repository](https://github.com/crocoder-dev/shared-context-engineering)
+
+## Install the `sce` CLI
+
+### Nix
+
+```bash
+nix run github:crocoder-dev/shared-context-engineering -- --help
+```
+
+To install it into your profile:
+
+```bash
+nix profile install github:crocoder-dev/shared-context-engineering
+```
+
+### Cargo
+
+Published releases target the `shared-context-engineering` crate and install the `sce` binary.
+
+```bash
+cargo install shared-context-engineering --locked
+```
+
+Additional supported Cargo install paths:
+
+```bash
+cargo install --git https://github.com/crocoder-dev/shared-context-engineering shared-context-engineering --locked
+cargo install --path cli --locked
+```
+
+### npm
+
+Published npm releases target the `@crocoder-dev/sce` package and install the `sce` launcher.
+
+```bash
+npm install -g @crocoder-dev/sce
+```
 
 Built by [CroCoder](https://www.crocoder.dev/)

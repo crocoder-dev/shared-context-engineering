@@ -139,7 +139,7 @@
 - In `flake.nix`, select the Rust toolchain via an explicit Rust overlay (`rust-overlay`) and thread that toolchain through Crane package/check derivations so CLI builds and checks do not rely on implicit nixpkgs Rust defaults.
 - For installable CLI release surfaces in the root flake, expose an explicit named package plus default alias (`packages.sce` and `packages.default = packages.sce`) and pair it with a runnable app output (`apps.sce`) that points to the packaged binary path.
 - For root-flake CLI release metadata, source the package/check version from repo-root `.version` and trim it at eval time so packaged outputs stay aligned without hardcoded semver strings in `flake.nix`.
-- For Cargo CLI distribution, keep crate metadata publication-ready, document the supported Cargo install paths in `cli/README.md` (`cargo install sce`, git install with `--locked`, and local `cargo install --path cli --locked`), and verify at least the repo-local build/check path through the Nix-managed validation baseline.
+- For Cargo CLI distribution, keep crate metadata publication-ready, document the supported Cargo install paths in `cli/README.md` (`cargo install shared-context-engineering --locked`, git install with `--locked`, and local `cargo install --path cli --locked`), and verify at least the repo-local build/check path through the Nix-managed validation baseline.
 
 ## Unit testing in Nix sandbox
 

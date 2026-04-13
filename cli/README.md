@@ -1,23 +1,32 @@
-# sce
+# Shared Context Engineering CLI (`sce`)
 
-Shared Context Engineering CLI.
+[![crates.io](https://img.shields.io/crates/v/shared-context-engineering?logo=rust)](https://crates.io/crates/shared-context-engineering)
+[![docs.rs](https://img.shields.io/docsrs/shared-context-engineering?logo=docs.rs)](https://docs.rs/shared-context-engineering)
+
+Shared Context Engineering is AI-assisted software delivery with explicit, versioned context.
+
+This crate publishes the `sce` CLI for Shared Context Engineering workflows.
+
+## Documentation
+
+- [Documentation site](https://sce.crocoder.dev/)
+- [Getting started](https://sce.crocoder.dev/docs/getting-started)
+- [GitHub repository](https://github.com/crocoder-dev/shared-context-engineering)
 
 ## Install with Cargo
 
-Published releases target the `sce` crate name.
-
-Repo-root `.version` is the canonical checked-in release version source for the CLI rollout; Cargo publication publishes the already-versioned checked-in crate metadata rather than bumping versions during the publish workflow.
+Published Cargo releases target the `shared-context-engineering` crate and install the `sce` binary.
 
 ### crates.io
 
 ```bash
-cargo install sce
+cargo install shared-context-engineering --locked
 ```
 
 ### Git repository
 
 ```bash
-cargo install --git https://github.com/crocoder-dev/shared-context-engineering sce --locked
+cargo install --git https://github.com/crocoder-dev/shared-context-engineering shared-context-engineering --locked
 ```
 
 ### Local checkout
@@ -28,11 +37,7 @@ cargo install --path cli --locked
 
 ## Other supported install channels
 
-- Repo flake: `nix run github:crocoder-dev/shared-context-engineering -- --help`
-- npm package: `npm install -g sce`
+- Nix: `nix run github:crocoder-dev/shared-context-engineering -- --help`
+- npm: `npm install -g @crocoder-dev/sce`
 
-GitHub Releases are the canonical publication surface for signed release archives and manifest/checksum assets; Cargo and npm registry publication are separate downstream publish stages.
-
-Current repository slug for git-based installation and release references: `crocoder-dev/shared-context-engineering`.
-
-See the repository root and Shared Context docs for the broader first-wave install contract.
+Built by [CroCoder](https://www.crocoder.dev/)

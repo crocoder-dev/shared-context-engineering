@@ -1,31 +1,36 @@
-# sce
+# Shared Context Engineering npm package (`@crocoder-dev/sce`)
 
-Thin npm launcher package for the `sce` CLI.
+[![npm](https://img.shields.io/npm/v/%40crocoder-dev%2Fsce?logo=npm)](https://www.npmjs.com/package/@crocoder-dev/sce)
 
-Published from the `crocoder-dev/shared-context-engineering` repository.
+Shared Context Engineering is AI-assisted software delivery with explicit, versioned context.
 
-## Install
+This package publishes the `@crocoder-dev/sce` npm launcher for the `sce` CLI.
+
+## Documentation
+
+- [Documentation site](https://sce.crocoder.dev/)
+- [Getting started](https://sce.crocoder.dev/docs/getting-started)
+- [GitHub repository](https://github.com/crocoder-dev/shared-context-engineering)
+
+## Install with npm
+
+Published npm releases target the `@crocoder-dev/sce` package and install the `sce` launcher.
 
 ```bash
-npm install -g sce
+npm install -g @crocoder-dev/sce
 ```
 
-Supported npm install targets:
+## Supported platforms
 
 - `darwin/arm64` → `aarch64-apple-darwin`
 - `linux/arm64` → `aarch64-unknown-linux-gnu`
 - `linux/x64` → `x86_64-unknown-linux-gnu`
 
-## Release flow
+Unsupported platforms fail with explicit guidance instead of attempting an alternate install channel inside the npm package.
 
-On install, this package downloads the matching platform release artifact for the
-current `sce` version from GitHub Releases, verifies the published SHA-256
-checksum, and installs the native `sce` binary for local execution. Linux ARM
-is an officially supported npm install target via `linux/arm64` mapping to the
-GitHub release artifact for `aarch64-unknown-linux-gnu`.
+## Other supported install channels
 
-Repo-root `.version` is the canonical checked-in release version source. GitHub
-Releases publish the canonical signed release archives and manifest/checksum
-assets first; npm registry publication is a separate downstream publish stage
-for the already-versioned checked-in package and does not auto-bump the package
-version during publish.
+- Nix: `nix run github:crocoder-dev/shared-context-engineering -- --help`
+- Cargo: `cargo install shared-context-engineering --locked`
+
+Built by [CroCoder](https://www.crocoder.dev/)
