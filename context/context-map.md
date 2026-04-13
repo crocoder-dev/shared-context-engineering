@@ -17,7 +17,7 @@ Feature/domain context:
 - `context/sce/plan-code-overlap-map.md` (T01 overlap matrix for Shared Context Plan/Code, related commands, and core skill ownership/dedup targets)
 - `context/sce/dedup-ownership-table.md` (current-state canonical owner-vs-consumer matrix for shared SCE behavior domains and thin-command ownership boundaries)
 
-- `context/sce/atomic-commit-workflow.md` (canonical `/commit` command + `sce-atomic-commit` skill contract and naming decision)
+- `context/sce/atomic-commit-workflow.md` (canonical manual-vs-automated `/commit` contract, including the single-message rule, the staged-plan commit-body requirement to cite affected plan slug(s) + updated task ID(s), and automated single-commit execution behavior)
 - `context/sce/agent-trace-implementation-contract.md` (historical no-git-wrapper Agent Trace design contract; not active runtime behavior)
 - `context/sce/agent-trace-schema-adapter.md` (historical Agent Trace adapter reference for the removed `cli/src/services/agent_trace.rs` surface)
 - `context/sce/agent-trace-payload-builder-validation.md` (historical Agent Trace builder/validation reference for the removed runtime surface)
@@ -37,7 +37,7 @@ Feature/domain context:
 - `context/sce/agent-trace-retry-queue-observability.md` (inactive local-hook retry path plus historical retry/metrics reference)
 - `context/sce/agent-trace-local-hooks-mvp-contract-gap-matrix.md` (T01 Local Hooks MVP production contract freeze and deterministic gap matrix for `agent-trace-local-hooks-production-mvp`)
 - `context/sce/agent-trace-hooks-command-routing.md` (implemented `sce hooks` command routing plus the current minimal runtime behavior: disabled-default commit-msg attribution and no-op `pre-commit`/`post-commit`/`post-rewrite` entrypoints)
-- `context/sce/automated-profile-contract.md` (deterministic gate policy for automated OpenCode profile, including 10 gate categories, permission mappings, and automated profile constraints)
+- `context/sce/automated-profile-contract.md` (deterministic gate policy for automated OpenCode profile, including 10 gate categories, permission mappings, automated `/commit` single-commit execution behavior, and automated profile constraints)
 - `context/sce/bash-tool-policy-enforcement-contract.md` (approved bash-tool blocking contract plus the implementation target for generated OpenCode enforcement, including config schema, argv-prefix matching, fixed preset catalog/messages, and precedence rules)
 - `context/sce/generated-opencode-plugin-registration.md` (current generated OpenCode plugin-registration contract, canonical Pkl ownership, generated manifest/plugin paths, and TypeScript source ownership; Claude bash-policy enforcement has been removed from generated outputs)
 - `context/sce/cli-first-install-channels-contract.md` (current first-wave `sce` install/distribution contract covering supported channels, canonical naming, `.version` release authority, and Nix-owned build policy)

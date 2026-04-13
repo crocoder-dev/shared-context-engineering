@@ -7,12 +7,12 @@ compatibility: opencode
 
 ## Goal
 
-Turn a set of code changes (diff, file list, PR summary, or notes) into atomic commits with repository-style commit messages.
+Turn the current staged changes into one straightforward repository-style commit message.
 
-Atomic means:
-- one coherent change per commit
-- minimal scope that still builds/tests logically
-- a short, technical, actionable commit message
+For this workflow:
+- produce exactly one commit message
+- keep the message focused on the staged change as a single coherent unit
+- do not default to multi-commit split planning
 
 ## Inputs
 
@@ -22,23 +22,26 @@ Accept any of:
 - PR/task summary
 - before/after behavior notes
 
-If changes mix unrelated goals, split them.
-
 ## Output format
 
-Commit messages must follow:
+Produce one commit message that follows:
 - `scope: Subject`
 - imperative verb (Fix/Add/Remove/Implement/Refactor/Simplify/Rename/Update/Ensure/Allow)
 - no trailing period in subject
 - body when context is needed (why/what changed/impact)
 - issue references on their own lines (for example `Fixes #123`)
 
+When staged changes include `context/plans/*.md`, the commit body must also include:
+- affected plan slug(s)
+- updated task ID(s) (`T0X`)
+
+If staged `context/plans/*.md` changes do not expose the plan slug or updated task ID clearly enough to cite faithfully, stop and ask for clarification instead of inventing references.
+
 ## Procedure
 
-1) Identify smallest coherent units
-- Group by reason and user-visible effect, not file type.
-- Typical atomic boundaries: pure refactor, behavior change, tests, build/config, docs.
-- Avoid mixing refactor and behavior unless strictly required.
+1) Review the staged change as one unit
+- Infer the main reason for the staged change from the staged diff first.
+- Use optional notes only to refine wording, not to override the staged truth.
 
 2) Choose scope
 - Use the smallest stable subsystem/module name recognizable in the repo.
@@ -52,26 +55,16 @@ Commit messages must follow:
 - Explain what was wrong/missing, why it matters, what changed conceptually, and impact.
 - Add issue references on separate lines.
 
-5) Validate atomicity
-- Reverting the commit should cleanly remove one logical change.
-- Review should not require unrelated context.
-- No drive-by formatting or unrelated refactors.
+5) Apply the plan-update body rule when needed
+- Check whether staged changes include `context/plans/*.md`.
+- If yes, cite the affected plan slug(s) and updated task ID(s) in the body.
+- If the staged plan diff is ambiguous, stop with actionable guidance asking the user to stage or clarify the plan/task reference explicitly.
 
-If atomicity fails, split further.
-
-## Split guidance
-
-Split when you see:
-- renames with behavior changes
-- pure refactors bundled with fixes
-- formatting-only changes mixed with logic
-- multiple features shipped together
-
-Default split order:
-1. mechanical rename/refactor
-2. behavior change
-3. tests
-4. docs
+6) Validate the single-message result
+- The message should describe the staged diff faithfully as one coherent change.
+- The subject should stay concise and technical.
+- The body should add useful why/impact context instead of repeating the subject.
+- Do not invent plan or task references.
 
 ## Context-file Guidance gating
 
@@ -83,6 +76,6 @@ Default split order:
 
 - vague subjects ("cleanup", "updates")
 - body repeats subject without adding why
-- unrelated changes in one commit
 - playful tone in serious fixes/architecture changes
 - mention `context/` sync activity in commit messages
+- inventing plan slugs or task IDs for staged plan edits

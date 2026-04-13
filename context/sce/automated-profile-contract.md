@@ -142,9 +142,12 @@ Defines deterministic behavior for the automated OpenCode profile at `config/aut
 **Behavior:**
 - Skip staging confirmation prompt
 - Validate staged content exists; if empty, emit error: "No staged changes. Stage changes before commit."
-- Proceed directly to commit message proposal
+- Run `sce-atomic-commit` to produce exactly one commit message for the staged diff
+- Preserve the shared staged-plan citation rule: when staged changes include `context/plans/*.md`, the generated commit body must cite the affected plan slug(s) and updated task ID(s); if those references are ambiguous in the staged diff, stop instead of inventing them
+- Run `git commit` with that one message against the staged changes
+- Do not branch into multi-commit or split guidance
 
-**Rationale:** Automated profile assumes caller has staged correct changes; validation catches empty staging
+**Rationale:** Automated profile assumes caller has staged correct changes; validation catches empty staging and the automated `/commit` flow performs the single staged commit directly.
 
 ### P9. Drift Fix Application
 

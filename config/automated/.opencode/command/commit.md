@@ -10,11 +10,11 @@ Input:
 
 Behavior:
 - If arguments are empty, treat input as unstated and infer commit intent from staged changes only.
-- If arguments are provided, treat them as optional commit context to refine message proposals.
+- If arguments are provided, treat them as optional commit context to refine the one commit message.
 - Skip staging confirmation prompt.
 - Validate staged content exists; if empty, stop with error: "No staged changes. Stage changes before commit."
 - Classify staged diff scope (`context/`-only vs mixed `context/` + non-`context/`) and apply the context-guidance gate from `sce-atomic-commit`.
-- Delegate commit-message grammar, atomic split decisions, and split guidance to `sce-atomic-commit`.
-
-- Do not create commits automatically.
-- Output only proposed commit message(s) and split guidance when needed.
+- Run `sce-atomic-commit` to produce exactly one commit message for the staged diff.
+- Do not branch into multi-commit or split guidance.
+- Use the resulting message to run `git commit` against the staged changes.
+- If `git commit` fails, stop and report the failure without inventing fallback commits.
