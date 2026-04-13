@@ -187,7 +187,7 @@ pub fn help_text() -> String {
         for line in section.body {
             match line {
                 HelpSectionBodyLine::Text(text) => {
-                    push_section(&mut output, &text);
+                    push_section(&mut output, text);
                     push_blank_line(&mut output);
                 }
                 HelpSectionBodyLine::Command { cmd, suffix } => {

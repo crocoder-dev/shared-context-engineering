@@ -1,0 +1,578 @@
+import "shared-content-automated-common.pkl" as common
+
+local class UnitSpec {
+  title: String
+  canonicalBody: String
+}
+
+agents = new Mapping {
+  ["shared-context-plan"] = new UnitSpec {
+    title = "Shared Context Plan"
+    canonicalBody = """
+You are the Shared Context Plan agent (automated profile).
+
+Mission
+- Convert a human change request into an implementation plan in `context/plans/`.
+- Keep planning deterministic and reviewable.
+
+\(common.sharedSceCorePrinciplesSection)
+
+Hard boundaries
+- Never modify application code.
+- Never run shell commands.
+- Only write planning and context artifacts.
+- Planning does not imply execution approval.
+
+\(common.sharedSceContextAuthoritySection)
+
+Startup
+1) Check for `context/`.
+2) If missing, stop with error: "Automated profile requires existing context/. Run manual bootstrap first."
+3) Do not auto-create context structure.
+4) Read `context/context-map.md`, `context/overview.md`, and `context/glossary.md` if present.
+5) Before broad exploration, consult `context/context-map.md` for relevant context files.
+6) If context is partial or stale, continue with code truth and propose focused context repairs.
+
+Procedure
+- Load `sce-plan-authoring` and follow it exactly.
+- If any critical detail is unclear (scope, success criteria, constraints, dependencies, domain ambiguity, architecture concerns, task ordering), stop with structured error listing all unresolved items with category labels.
+- Do not invent assumptions silently.
+- Write or update `context/plans/{plan_name}.md`.
+- Confirm plan creation with `plan_name` and exact file path.
+- Present the full ordered task list in chat, if it's written to a subagent print it in the main agent.
+- Prompt the user to start a new session to implement `T01`.
+- Provide one canonical next command: `/next-task {plan_name} T01`.
+
+Important behaviors
+\(common.sharedSceQualityPosturePrefixBullets)
+\(common.sharedSceDisposablePlanLifecycleBullet)
+\(common.sharedSceLongTermQualityBullet)
+
+Natural nudges to use
+- "Let me pull relevant files from `context/` before implementation."
+- "Per SCE, chat-mode first, then implementation mode."
+- "I will propose a plan with trade-offs first, then implement."
+- "Now that this is settled, I will sync `context/` so future sessions stay aligned."
+
+Definition of done
+- Plan has stable task IDs (`T01..T0N`).
+- Each task has boundaries, done checks, and verification notes.
+- Final task is always validation and cleanup.
+"""
+  }
+}
+
+commands = new Mapping {
+  ["change-to-plan"] = new UnitSpec {
+    title = "Change To Plan"
+    canonicalBody = """
+Load and follow the `sce-plan-authoring` skill.
+
+Input change request:
+`$ARGUMENTS`
+
+Behavior:
+- Keep this command as thin orchestration; delegate clarification/ambiguity handling and plan-shape contracts to `sce-plan-authoring`.
+- If any critical detail is unclear, stop with structured error listing all unresolved items with category labels.
+- Do not invent assumptions silently.
+- Ensure plan output follows one-task/one-atomic-commit slicing through `sce-plan-authoring` task-shape rules.
+- Write/update `context/plans/{plan_name}.md`.
+- Confirm plan creation with `{plan_name}` and exact path.
+- Return the full ordered task list.
+- Prompt user to start a new session to implement `T01` and provide `/next-task {plan_name} T01`.
+"""
+  }
+  ["change-to-plan-interactive"] = new UnitSpec {
+    title = "Change To Plan (Interactive)"
+    canonicalBody = """
+Load and follow the `sce-plan-authoring-interactive` skill.
+
+Input change request:
+`$ARGUMENTS`
+
+Behavior:
+- Keep this command as thin orchestration; delegate clarification/ambiguity handling and plan-shape contracts to `sce-plan-authoring-interactive`.
+- Ensure plan output follows one-task/one-atomic-commit slicing through `sce-plan-authoring-interactive` task-shape rules.
+- Write/update `context/plans/{plan_name}.md`.
+- Confirm plan creation with `{plan_name}` and exact path.
+- Return the full ordered task list.
+- Prompt user to start a new session to implement `T01` and provide `/next-task {plan_name} T01`.
+"""
+  }
+  ["handover"] = new UnitSpec {
+    title = "Handover"
+    canonicalBody = """
+Load and follow the `sce-handover-writer` skill.
+
+Input:
+`$ARGUMENTS`
+
+Create a new handover file in `context/handovers/` that captures:
+
+- current task state
+- decisions made and rationale
+- open questions or blockers
+- next recommended step
+
+Default naming should align with task execution handovers: `context/handovers/{plan_name}-{task_id}-{timestamp}.md`.
+If key details are missing, infer what you can from the current repo state and clearly label assumptions.
+"""
+  }
+}
+
+skills = new Mapping {
+  ["sce-bootstrap-context"] = new UnitSpec {
+    title = "SCE Bootstrap Context"
+    canonicalBody = """
+## When to use
+- Use only when `context/` is missing.
+- Automated profile does not support auto-bootstrap; stop with error requiring manual bootstrap.
+
+## Required baseline
+Create these paths:
+- `context/overview.md`
+- `context/architecture.md`
+- `context/patterns.md`
+- `context/glossary.md`
+- `context/context-map.md`
+- `context/plans/`
+- `context/handovers/`
+- `context/decisions/`
+- `context/tmp/`
+- `context/tmp/.gitignore`
+
+`context/tmp/.gitignore` content:
+```
+*
+!.gitignore
+```
+
+## No-code bootstrap rule
+- If the repository has no application code, keep `overview.md`, `architecture.md`, `patterns.md`, and `glossary.md` empty or placeholder-only.
+- Do not invent implementation details.
+
+## After bootstrapping
+- Add baseline links in `context/context-map.md`.
+- Tell the user that `context/` should be committed as shared memory.
+"""
+  }
+  ["sce-handover-writer"] = new UnitSpec {
+    title = "SCE Handover Writer"
+    canonicalBody = """
+## What I do
+- Create a new handover file in `context/handovers/`.
+- Capture:
+  - current task state
+  - decisions made and rationale
+  - open questions or blockers
+  - next recommended step
+
+## How to run this
+
+1. **Gather context** - review the current task, recent changes, and repo state.
+2. **Create the file** - use task-aligned naming: `context/handovers/{plan_name}-{task_id}.md`.
+3. **Fill each section** - follow the template below, labelling any inferred details as assumptions.
+4. **Verify completeness** - confirm all four sections are populated before finishing.
+
+If key details are missing, infer from repo state and clearly label assumptions.
+
+## Handover document template
+
+```markdown
+# Handover: {plan_name} - {task_id}
+
+## Current Task State
+- What was being worked on and how far along it is.
+- e.g. "Implementing OAuth login flow; token generation complete, redirect handling in progress."
+
+## Decisions Made
+- Key choices and their rationale.
+- e.g. "Chose JWT over session cookies for statelessness. Rejected library X due to licence constraints."
+
+## Open Questions / Blockers
+- Unresolved issues or outstanding dependencies.
+- e.g. "Awaiting confirmation on token expiry policy from product team."
+
+## Next Recommended Step
+- The single most important action for whoever picks this up.
+- e.g. "Complete the redirect handler in `src/auth/callback.ts`, then run the auth integration tests."
+```
+
+## Expected output
+- A complete handover document in `context/handovers/` using task-aligned naming when possible.
+"""
+  }
+  ["sce-plan-authoring"] = new UnitSpec {
+    title = "SCE Plan Authoring"
+    canonicalBody = """
+## Goal
+Turn a human change request into `context/plans/{plan_name}.md`.
+
+## Intake trigger
+- If a request includes both a change description and success criteria, planning is mandatory before implementation.
+- Planning does not imply execution approval.
+
+## Clarification gate (blocking)
+- Before writing or updating any plan, run an ambiguity check.
+- If any critical detail is unclear, stop with structured error listing all unresolved items with category labels.
+- Do not write or update `context/plans/{plan_name}.md` until all critical details are resolved.
+- Critical details that must be resolved before planning include:
+  - scope boundaries and out-of-scope items
+  - success criteria and acceptance signals
+  - constraints and non-goals
+  - dependency choices (new libs/services, versions, and integration approach)
+  - domain ambiguity (unclear business rules, terminology, or ownership)
+  - architecture concerns (patterns, interfaces, data flow, migration strategy, and risk tradeoffs)
+  - task ordering assumptions and prerequisite sequencing
+- Do not silently invent missing requirements.
+- If the user explicitly allows assumptions, record them in an `Assumptions` section.
+- Incorporate resolved details into the plan before handoff.
+
+**Example structured error (clarification gate triggered):**
+```
+PLANNING BLOCKED - unresolved critical details:
+
+[scope]       Is the auth middleware change limited to the API gateway, or does it also cover the admin panel?
+[dependency]  Should the new Redis client use the existing `ioredis` version (4.x) or upgrade to 5.x?
+[criteria]    What does "performance acceptable" mean? Specific p95 threshold required.
+
+Resolve all items above before planning can proceed.
+```
+
+## Plan format
+1) Change summary
+2) Success criteria
+3) Constraints and non-goals
+4) Assumptions (if any)
+5) Task stack (`T01..T0N`)
+6) Open questions (if any)
+
+## Task format (required)
+For each task include:
+- Task ID
+- Goal
+- Boundaries (in/out of scope)
+- Done when
+- Verification notes (commands or checks)
+
+## Atomic task slicing contract (required)
+- Author each executable task as one atomic commit unit by default.
+- Every task must be scoped so one contributor can complete it and land it as one coherent commit without bundling unrelated changes.
+- If a candidate task would require multiple independent commits (for example: refactor + behavior change + docs), split it into separate sequential tasks before finalizing the plan.
+- Keep broad wrappers (`polish`, `finalize`, `misc updates`) out of executable tasks; convert them into specific outcomes with concrete acceptance checks.
+
+Use this quick atomicity check before accepting each task:
+- `single_intent`: task delivers one primary outcome
+- `single_area`: task touch scope is narrow and related
+- `single_verification`: done checks validate one coherent change set
+
+Example compliant skeleton:
+- [ ] T0X: `[single intent title]` (status:todo)
+  - Task ID: T0X
+  - Goal: `[one outcome]`
+  - Boundaries (in/out of scope): `[tight scope]`
+  - Done when: `[clear acceptance for one coherent change]`
+  - Verification notes (commands or checks): `[targeted checks for this change]`
+
+Use checkbox lines for machine-friendly progress tracking:
+- `- [ ] T01: ... (status:todo)`
+
+## Required final task
+- Final task is always validation and cleanup.
+- It must include full checks and context sync verification.
+
+## Worked example
+
+**Input change request:**
+> "Add rate limiting to the public API so that unauthenticated requests are capped at 60 req/min per IP. Use Redis for the counter store. No changes to authenticated routes."
+
+**Output plan (`context/plans/rate-limiting-public-api.md`):**
+
+```markdown
+# Plan: rate-limiting-public-api
+
+## Change summary
+Introduce per-IP rate limiting (60 req/min) for unauthenticated requests to the public API using a Redis-backed counter. Authenticated routes are out of scope.
+
+## Success criteria
+- Unauthenticated requests exceeding 60/min from a single IP receive HTTP 429.
+- Authenticated requests are unaffected.
+- Rate limit headers (`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`) are present on all public responses.
+
+## Constraints and non-goals
+- Out of scope: authenticated route limiting, user-level quotas, Redis cluster setup.
+- Must not increase p95 latency on public endpoints by more than 5 ms.
+
+## Task stack
+
+- [ ] T01: Add Redis rate-limit middleware for unauthenticated routes (status:todo)
+  - Task ID: T01
+  - Goal: Implement middleware that increments a Redis counter keyed by IP and returns 429 when the limit is exceeded.
+  - Boundaries in scope: middleware module, unauthenticated route registration.
+  - Boundaries out of scope: authenticated routes, Redis connection config (use existing client).
+  - Done when: Middleware rejects the 61st request in a 60 s window with HTTP 429; requests 1-60 pass through.
+  - Verification notes: `npm test src/middleware/rateLimiter.test.ts`; manual smoke test with `wrk -d 65s -c 1 http://localhost:3000/api/public`.
+
+- [ ] T02: Expose rate limit response headers (status:todo)
+  - Task ID: T02
+  - Goal: Attach `X-RateLimit-*` headers to every response from the rate-limited middleware.
+  - Boundaries in scope: header injection in the middleware added in T01.
+  - Boundaries out of scope: changing status codes, logging, or metrics.
+  - Done when: All public API responses include the three headers with correct values.
+  - Verification notes: `curl -I http://localhost:3000/api/public/health` shows all three headers.
+
+- [ ] T03: Validate, measure latency, and sync context (status:todo)
+  - Task ID: T03
+  - Goal: Run full test suite, confirm no regression on authenticated routes, verify latency budget, update context docs.
+  - Boundaries in scope: integration tests, latency benchmarks, context/plans status update.
+  - Boundaries out of scope: new feature work.
+  - Done when: All tests green; p95 latency delta < 5 ms; plan marked complete.
+  - Verification notes: `npm test`; `npm run bench:public`; review `context/plans/rate-limiting-public-api.md` checkboxes.
+```
+
+## Output contract
+- Save plan under `context/plans/`.
+- Confirm plan creation with `plan_name` and exact file path.
+- Present the full ordered task list in chat.
+- Prompt the user to start a new session with Shared Context Code agent to implement `T01`.
+- Provide one canonical next command: `/next-task {plan_name} T01`.
+"""
+  }
+  ["sce-plan-authoring-interactive"] = new UnitSpec {
+    title = "SCE Plan Authoring (Interactive)"
+    canonicalBody = """
+## Goal
+Turn a human change request into `context/plans/{plan_name}.md`.
+
+## Intake trigger
+- If a request includes both a change description and success criteria, planning is mandatory before implementation.
+- Planning does not imply execution approval.
+
+## Clarification gate (blocking)
+- Before writing or updating any plan, run an ambiguity check.
+- If any critical detail is unclear, ask 1-3 targeted questions and stop.
+- Do not write or update `context/plans/{plan_name}.md` until the user answers.
+- Critical details that must be resolved before planning include:
+  - scope boundaries and out-of-scope items
+  - success criteria and acceptance signals
+  - constraints and non-goals
+  - dependency choices (new libs/services, versions, and integration approach)
+  - domain ambiguity (unclear business rules, terminology, or ownership)
+  - architecture concerns (patterns, interfaces, data flow, migration strategy, and risk tradeoffs)
+  - task ordering assumptions and prerequisite sequencing
+- Do not silently invent missing requirements.
+- If the user explicitly allows assumptions, record them in an `Assumptions` section.
+- Incorporate user answers into the plan before handoff.
+
+### Clarification gate example
+
+**User request:** "Add rate limiting to the API."
+
+**Clarification questions asked before writing the plan:**
+1. Which endpoints should be rate-limited - all public routes, authenticated routes only, or specific ones?
+2. What are the limits (e.g., requests per minute per IP/token) and what should happen when a limit is exceeded (429 response, queue, or silent drop)?
+3. Should this use an existing library (e.g., `express-rate-limit`) or is a custom middleware preferred?
+
+*(Planning is blocked until the user answers all three.)*
+
+## Plan format
+1) Change summary
+2) Success criteria
+3) Constraints and non-goals
+4) Task stack (`T01..T0N`)
+5) Open questions (if any)
+
+## Task format (required)
+For each task include:
+- Task ID
+- Goal
+- Boundaries (in/out of scope)
+- Done when
+- Verification notes (commands or checks)
+
+## Atomic task slicing contract (required)
+- Author each executable task as one atomic commit unit by default.
+- Every task must be scoped so one contributor can complete it and land it as one coherent commit without bundling unrelated changes.
+- If a candidate task would require multiple independent commits (for example: refactor + behavior change + docs), split it into separate sequential tasks before finalizing the plan.
+- Keep broad wrappers (`polish`, `finalize`, `misc updates`) out of executable tasks; convert them into specific outcomes with concrete acceptance checks.
+
+Use this quick atomicity check before accepting each task:
+- `single_intent`: task delivers one primary outcome
+- `single_area`: task touch scope is narrow and related
+- `single_verification`: done checks validate one coherent change set
+
+Example compliant skeleton:
+- [ ] T0X: `[single intent title]` (status:todo)
+  - Task ID: T0X
+  - Goal: `[one outcome]`
+  - Boundaries (in/out of scope): `[tight scope]`
+  - Done when: `[clear acceptance for one coherent change]`
+  - Verification notes (commands or checks): `[targeted checks for this change]`
+
+Use checkbox lines for machine-friendly progress tracking:
+- `- [ ] T01: ... (status:todo)`
+
+## Required final task
+- Final task is always validation and cleanup.
+- It must include full checks and context sync verification.
+
+## Output contract
+- Save plan under `context/plans/`.
+- Confirm plan creation with `plan_name` and exact file path.
+- Present the full ordered task list in chat.
+- Prompt the user to start a new session with Shared Context Code agent to implement `T01`.
+- Provide one canonical next command: `/next-task {plan_name} T01`.
+
+---
+
+## Complete plan example
+
+The following shows what a finished plan file looks like for a realistic request: *"Add per-user rate limiting to the REST API using `express-rate-limit`."*
+
+**File:** `context/plans/api-rate-limiting.md`
+
+```markdown
+# Plan: api-rate-limiting
+
+## Change summary
+Add per-user rate limiting to all authenticated REST API endpoints using the
+`express-rate-limit` library. Unauthenticated endpoints are out of scope.
+
+## Success criteria
+- Authenticated requests exceeding 100 req/min per token receive a 429 response
+  with a `Retry-After` header.
+- All existing authenticated-endpoint tests continue to pass.
+- A new integration test confirms the 429 path is exercised.
+
+## Constraints and non-goals
+- **In scope:** authenticated routes under `/api/v1/`
+- **Out of scope:** unauthenticated routes, IP-based limiting, admin bypass logic
+- **Constraint:** must use `express-rate-limit ^7`; no custom Redis store in this change
+- **Non-goal:** dashboarding or alerting on rate-limit events
+
+## Task stack
+
+- [ ] T01: Install and configure `express-rate-limit` middleware (status:todo)
+  - Task ID: T01
+  - Goal: Add `express-rate-limit` as a dependency and wire a per-token limiter
+    into the authenticated router.
+  - Boundaries (in/out of scope): `src/middleware/rateLimiter.ts` and
+    `src/router/authenticated.ts` only; no changes to unauthenticated routes.
+  - Done when: Middleware is applied to the authenticated router and the dev
+    server starts without errors.
+  - Verification notes: `npm install` succeeds; `npm run dev` starts; manual
+    `curl` with a valid token returns 200.
+
+- [ ] T02: Return correct 429 response with `Retry-After` header (status:todo)
+  - Task ID: T02
+  - Goal: Configure the limiter to respond with HTTP 429 and a `Retry-After`
+    header when the per-token limit is exceeded.
+  - Boundaries (in/out of scope): `src/middleware/rateLimiter.ts` handler only;
+    no route logic changes.
+  - Done when: Exceeding the limit returns `{ "error": "Too Many Requests" }`
+    with status 429 and a `Retry-After` value in seconds.
+  - Verification notes: `npm run test -- --grep "rate limit"` passes; manual
+    burst test with `artillery` confirms 429 after 100 req/min.
+
+- [ ] T03: Add integration test for the 429 path (status:todo)
+  - Task ID: T03
+  - Goal: Write one integration test that fires 101 requests and asserts the
+    101st receives 429 with `Retry-After`.
+  - Boundaries (in/out of scope): `tests/integration/rateLimiter.test.ts` only;
+    no changes to existing test files.
+  - Done when: New test file exists and `npm run test:integration` is green.
+  - Verification notes: `npm run test:integration` exits 0; coverage report
+    shows the 429 branch covered.
+
+- [ ] T04: Validation and cleanup (status:todo)
+  - Task ID: T04
+  - Goal: Confirm full test suite passes, no regressions, and context files are
+    in sync.
+  - Boundaries (in/out of scope): Read-only audit of test results and context
+    directory; no new code changes.
+  - Done when: `npm test` exits 0; `context/` reflects the completed plan state.
+  - Verification notes: `npm test && npm run lint`; verify
+    `context/plans/api-rate-limiting.md` task statuses are all `done`.
+
+## Open questions
+_(none - all clarifications resolved before planning)_
+```
+"""
+  }
+  ["sce-plan-review"] = new UnitSpec {
+    title = "SCE Plan Review"
+    canonicalBody = """
+## What I do
+- Continue execution from an existing plan in `context/plans/`.
+- Read the selected plan and identify the next task from the first unchecked checkbox.
+- Stop with structured error for anything not clear enough to execute safely.
+
+## How to run this
+- Use this skill when the user asks to continue a plan or pick the next task.
+- If `context/` is missing, stop with error: "Automated profile requires existing context/. Run manual bootstrap first."
+- Read `context/context-map.md`, `context/overview.md`, and `context/glossary.md` before broad exploration.
+- Resolve plan target:
+  - If plan path argument exists, use it.
+  - If no plan path specified and multiple plans exist, stop with error listing available plans and requiring explicit plan path.
+  - If no plan path specified and single plan exists, auto-select the single plan.
+- Collect:
+  - completed tasks
+  - next task
+  - blockers, ambiguity, and missing acceptance criteria
+- If any blockers, ambiguity, or missing acceptance criteria exist, stop with structured error listing all unresolved items with category labels.
+- Confirm scope explicitly for this session: one task only (multi-task execution not supported in automated profile).
+
+## Rules
+- Do not auto-mark tasks complete during review.
+- Keep continuation state in the plan markdown itself.
+- Treat `context/plans/` as active execution artifacts; completed plans are disposable and not a durable context source.
+- If durable history is needed, record it in current-state context files and/or `context/decisions/` instead of completed plan files.
+- Keep implementation blocked until all issues are resolved.
+- If plan context is stale or partial, continue with code truth and flag context updates.
+
+## Expected output
+Emit a readiness verdict using this structure:
+
+```
+next_task: "Task title or description from plan"
+acceptance_criteria:
+  - Criterion A
+  - Criterion B
+ready_for_implementation: yes | no
+```
+
+If `ready_for_implementation: no`, include an issues block:
+
+```
+issues:
+  blockers:
+    - "Dependency on X is unresolved"
+  ambiguity:
+    - "It is unclear whether Y should be replaced or extended"
+  missing_acceptance_criteria:
+    - "No definition of done for the migration step"
+```
+
+- Auto-proceed to implementation when `ready_for_implementation: yes`.
+
+## Structured error examples
+
+**Multiple plans found (no path specified):**
+```
+ERROR: Multiple plans found. Specify an explicit plan path.
+Available plans:
+  - context/plans/migrate-auth.md
+  - context/plans/refactor-api.md
+```
+
+**Blockers or ambiguity detected:**
+```
+ERROR: Next task cannot proceed. Unresolved items:
+  [blocker] Auth service interface not yet defined - task depends on it.
+  [ambiguity] "Update schema" - unclear whether additive or destructive migration.
+  [missing_acceptance_criteria] No rollback criteria specified for the deployment step.
+Resolve all items above before re-running plan review.
+```
+"""
+  }
+}

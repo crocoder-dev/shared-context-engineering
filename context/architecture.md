@@ -11,7 +11,16 @@ For authored config content, generation is standardized around one canonical Pkl
 
 Current scaffold location for canonical shared content primitives:
 
-- `config/pkl/base/shared-content.pkl`
+- `config/pkl/base/shared-content.pkl` (manual profile aggregation surface)
+- `config/pkl/base/shared-content-common.pkl` (shared primitives)
+- `config/pkl/base/shared-content-plan.pkl` (plan-focused content)
+- `config/pkl/base/shared-content-code.pkl` (code-focused content)
+- `config/pkl/base/shared-content-commit.pkl` (commit-focused content)
+- `config/pkl/base/shared-content-automated.pkl` (automated profile aggregation surface)
+- `config/pkl/base/shared-content-automated-common.pkl`
+- `config/pkl/base/shared-content-automated-plan.pkl`
+- `config/pkl/base/shared-content-automated-code.pkl`
+- `config/pkl/base/shared-content-automated-commit.pkl`
 - `config/pkl/base/opencode.pkl`
 - `config/pkl/base/sce-config-schema.pkl`
 
@@ -115,7 +124,7 @@ Shared Context Plan and Shared Context Code remain separate architectural roles.
 - Shared Context Code owns exactly one approved task execution, validation, and mandatory `context/` synchronization.
 - `/change-to-plan` and `/next-task` remain separate command entrypoints aligned to those roles.
 - Reuse is handled through shared canonical guidance blocks and skill-owned phase contracts, not by collapsing both roles into one agent.
-- Shared baseline doctrine for both agents is centralized in reusable constants in `config/pkl/base/shared-content.pkl` and interpolated into each role body at generation time.
+- Shared baseline doctrine for both agents is centralized in reusable constants in `config/pkl/base/shared-content-common.pkl` and interpolated into each role body at generation time; the aggregation surfaces `config/pkl/base/shared-content.pkl` (manual) and `config/pkl/base/shared-content-automated.pkl` (automated) import from grouped `plan`, `code`, and `commit` modules for downstream renderers.
 - `/next-task` is a thin orchestration wrapper: it owns gate sequencing, while phase-detail contracts stay canonical in `sce-plan-review`, `sce-task-execution`, and `sce-context-sync`.
 - `/change-to-plan` is a thin orchestration wrapper: it delegates clarification and plan-shape ownership to `sce-plan-authoring` (including one-task/one-atomic-commit task slicing) while retaining wrapper-level plan creation confirmation and `/next-task` handoff obligations.
 - `/commit` is a thin orchestration wrapper: it retains staged-changes confirmation and no-auto-commit constraints, while commit grammar and atomic split logic stay canonical in `sce-atomic-commit`.

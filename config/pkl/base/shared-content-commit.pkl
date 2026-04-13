@@ -1,10 +1,41 @@
----
-name: sce-atomic-commit
-description: |
-  Write atomic, repo-style git commits from a change summary or diff. Use when preparing commit messages, splitting work into coherent commits, or reviewing whether a commit is too broad.
-compatibility: opencode
----
+local class UnitSpec {
+  title: String
+  canonicalBody: String
+}
 
+agents = new Mapping {}
+
+commands = new Mapping {
+  ["commit"] = new UnitSpec {
+    title = "Commit"
+    canonicalBody = """
+Load and follow the `sce-atomic-commit` skill.
+
+Input:
+`$ARGUMENTS`
+
+Behavior:
+- If arguments are empty, treat input as unstated and infer commit intent from staged changes only.
+- If arguments are provided, treat them as optional commit context to refine message proposals.
+- Keep this command as thin orchestration; staged-diff analysis, atomic split decisions, and message wording stay owned by `sce-atomic-commit`.
+- Before running `sce-atomic-commit`, explicitly stop and prompt the user:
+
+  "Please run `git add <files>` for all changes you want included in this commit.
+  Atomic commits should only include intentionally staged changes.
+  Confirm once staging is complete."
+
+- After confirmation:
+  - Classify staged diff scope (`context/`-only vs mixed `context/` + non-`context/`) and apply the context-guidance gate from `sce-atomic-commit`.
+  - Run `sce-atomic-commit` to produce commit-message proposals and any needed split guidance.
+- Do not create commits automatically; stop after returning proposed commit message(s) and split guidance when needed.
+"""
+  }
+}
+
+skills = new Mapping {
+  ["sce-atomic-commit"] = new UnitSpec {
+    title = "SCE Atomic Commit"
+    canonicalBody = """
 ## Goal
 
 Turn a set of code changes (diff, file list, PR summary, or notes) into atomic commits with repository-style commit messages.
@@ -73,7 +104,7 @@ Default split order:
 3. tests
 4. docs
 
-## Context-file Guidance gating
+## Context-file guidance gating
 
 - Check staged diff scope before proposing commit messaging guidance.
 - If staged changes are context-only (`context/**`), context-file-focused guidance is allowed.
@@ -86,3 +117,6 @@ Default split order:
 - unrelated changes in one commit
 - playful tone in serious fixes/architecture changes
 - mention `context/` sync activity in commit messages
+"""
+  }
+}

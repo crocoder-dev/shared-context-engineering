@@ -51,10 +51,10 @@
 
 ## Pkl renderer layering
 
-- Keep target-agnostic canonical content in `config/pkl/base/shared-content.pkl`.
+- Keep target-agnostic canonical content organized by concern in `config/pkl/base/shared-content-{common,plan,code,commit}.pkl` (manual) and `config/pkl/base/shared-content-automated-{common,plan,code,commit}.pkl` (automated); the aggregation surfaces `config/pkl/base/shared-content.pkl` and `config/pkl/base/shared-content-automated.pkl` import from these grouped modules for downstream renderers.
 - Keep cross-target generated-config primitives in focused base modules under `config/pkl/base/` and re-export them through `config/pkl/renderers/common.pkl` when multiple renderers need the same contract.
-- Keep `config/pkl/base/shared-content.pkl` synchronized with the canonical authored instruction bodies (currently mirrored from the OpenCode source tree under `config/{opencode_root}` for `agent`, `command`, and `skills`, with frontmatter removed) before regenerating targets.
-- When two or more generated agent bodies share baseline doctrine, extract that doctrine into reusable canonical constants in `config/pkl/base/shared-content.pkl` and compose via interpolation instead of duplicating prose per agent.
+- Keep the grouped shared-content modules synchronized with canonical authored instruction bodies (currently mirrored from the OpenCode source tree under `config/{opencode_root}` for `agent`, `command`, and `skills`, with frontmatter removed) before regenerating targets.
+- When two or more generated agent bodies share baseline doctrine, extract that doctrine into reusable canonical constants in `config/pkl/base/shared-content-common.pkl` and compose via interpolation instead of duplicating prose per agent.
 - Implement target-specific formatting in dedicated renderer modules under `config/pkl/renderers/`.
 - Keep shared renderer contracts and only truly shared description maps in `config/pkl/renderers/common.pkl`.
 - Keep per-target metadata tables in dedicated modules (`opencode-metadata.pkl`, `opencode-automated-metadata.pkl`, `claude-metadata.pkl`), including target-specific skill descriptions, and import them into target renderer modules.

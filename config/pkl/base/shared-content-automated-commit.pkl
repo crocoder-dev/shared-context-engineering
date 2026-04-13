@@ -1,10 +1,37 @@
----
-name: sce-atomic-commit
-description: |
-  Write atomic, repo-style git commits from a change summary or diff. Use when preparing commit messages, splitting work into coherent commits, or reviewing whether a commit is too broad.
-compatibility: opencode
----
+local class UnitSpec {
+  title: String
+  canonicalBody: String
+}
 
+agents = new Mapping {}
+
+commands = new Mapping {
+  ["commit"] = new UnitSpec {
+    title = "Commit"
+    canonicalBody = """
+Load and follow the `sce-atomic-commit` skill.
+
+Input:
+`$ARGUMENTS`
+
+Behavior:
+- If arguments are empty, treat input as unstated and infer commit intent from staged changes only.
+- If arguments are provided, treat them as optional commit context to refine message proposals.
+- Skip staging confirmation prompt.
+- Validate staged content exists; if empty, stop with error: "No staged changes. Stage changes before commit."
+- Classify staged diff scope (`context/`-only vs mixed `context/` + non-`context/`) and apply the context-guidance gate from `sce-atomic-commit`.
+- Delegate commit-message grammar, atomic split decisions, and split guidance to `sce-atomic-commit`.
+
+- Do not create commits automatically.
+- Output only proposed commit message(s) and split guidance when needed.
+"""
+  }
+}
+
+skills = new Mapping {
+  ["sce-atomic-commit"] = new UnitSpec {
+    title = "SCE Atomic Commit"
+    canonicalBody = """
 ## Goal
 
 Turn a set of code changes (diff, file list, PR summary, or notes) into atomic commits with repository-style commit messages.
@@ -86,3 +113,6 @@ Default split order:
 - unrelated changes in one commit
 - playful tone in serious fixes/architecture changes
 - mention `context/` sync activity in commit messages
+"""
+  }
+}

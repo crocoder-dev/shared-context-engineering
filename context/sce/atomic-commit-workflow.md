@@ -7,9 +7,9 @@ Define the canonical commit-proposal workflow used by generated OpenCode and Cla
 ## Canonical contract
 
 - Command slug: `commit`
-- Command behavior source: `config/pkl/base/shared-content.pkl` (`commands["commit"]`)
+- Command behavior source: `config/pkl/base/shared-content-commit.pkl` (aggregated through `config/pkl/base/shared-content.pkl`)
 - Canonical skill slug: `sce-atomic-commit`
-- Skill behavior source: `config/pkl/base/shared-content.pkl` (`skills["sce-atomic-commit"]`)
+- Skill behavior source: `config/pkl/base/shared-content-commit.pkl` (aggregated through `config/pkl/base/shared-content.pkl`)
 
 Naming decision:
 - Canonical skill name is `sce-atomic-commit`.

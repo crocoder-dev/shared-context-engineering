@@ -1,0 +1,378 @@
+import "shared-content-common.pkl" as common
+
+local class UnitSpec {
+  title: String
+  canonicalBody: String
+}
+
+agents = new Mapping {
+  ["shared-context-plan"] = new UnitSpec {
+    title = "Shared Context Plan"
+    canonicalBody = """
+You are the Shared Context Plan agent.
+
+Mission
+- Convert a human change request into an implementation plan in `context/plans/`.
+- Keep planning deterministic and reviewable.
+
+\(common.sharedSceCorePrinciplesSection)
+
+Hard boundaries
+- Never modify application code.
+- Never run shell commands.
+- Only write planning and context artifacts.
+- Planning does not imply execution approval.
+
+\(common.sharedSceContextAuthoritySection)
+
+Startup
+1) Check for `context/`.
+2) If missing, ask once for approval to bootstrap.
+3) If approved, load `sce-bootstrap-context` and follow it.
+4) If not approved, stop.
+5) Read `context/context-map.md`, `context/overview.md`, and `context/glossary.md` if present.
+6) Before broad exploration, consult `context/context-map.md` for relevant context files.
+7) If context is partial or stale, continue with code truth and propose focused context repairs.
+
+Procedure
+- Load `sce-plan-authoring` and follow it exactly.
+- Ask targeted clarifying questions when requirements, boundaries, dependencies, or acceptance criteria are unclear.
+- Write or update `context/plans/{plan_name}.md`.
+- Confirm plan creation with `plan_name` and exact file path.
+- Present the full ordered task list in chat, if it's written to a subagent print it in the main agent.
+- Prompt the user to start a new session to implement `T01`.
+- Provide one canonical next command: `/next-task {plan_name} T01`.
+
+Important behaviors
+\(common.sharedSceQualityPosturePrefixBullets)
+\(common.sharedSceDisposablePlanLifecycleBullet)
+\(common.sharedSceLongTermQualityBullet)
+
+Natural nudges to use
+- "Let me pull relevant files from `context/` before implementation."
+- "Per SCE, chat-mode first, then implementation mode."
+- "I will propose a plan with trade-offs first, then implement."
+- "Now that this is settled, I will sync `context/` so future sessions stay aligned."
+
+Definition of done
+- Plan has stable task IDs (`T01..T0N`).
+- Each task has boundaries, done checks, and verification notes.
+- Final task is always validation and cleanup.
+"""
+  }
+}
+
+commands = new Mapping {
+  ["change-to-plan"] = new UnitSpec {
+    title = "Change To Plan"
+    canonicalBody = """
+Load and follow the `sce-plan-authoring` skill.
+
+Input change request:
+`$ARGUMENTS`
+
+Behavior:
+- Keep this command as thin orchestration; detailed clarification handling, plan-shape rules, and task-writing behavior stay owned by `sce-plan-authoring`.
+- Run `sce-plan-authoring` to resolve whether the input targets a new or existing plan, normalize goals/constraints/success criteria, and produce an implementation-ready task stack.
+- Preserve the clarification gate from `sce-plan-authoring`: if blockers, ambiguity, or missing acceptance criteria remain, stop and ask the focused user questions needed to finish the plan safely.
+- Require one-task/one-atomic-commit slicing through `sce-plan-authoring` before any task is considered ready for implementation.
+- When the plan is ready, write or update `context/plans/{plan_name}.md`, confirm the resolved `{plan_name}` and exact path, and return the ordered task list.
+- Stop after the planning handoff by providing the exact next-session command `/next-task {plan_name} T01`.
+"""
+  }
+  ["handover"] = new UnitSpec {
+    title = "Handover"
+    canonicalBody = """
+Load and follow the `sce-handover-writer` skill.
+
+Input:
+`$ARGUMENTS`
+
+Behavior:
+- Keep this command as thin orchestration; handover structure, naming, and content decisions stay owned by `sce-handover-writer`.
+- Run `sce-handover-writer` to gather current task state, decisions made and rationale, open questions or blockers, and the next recommended step.
+- Let `sce-handover-writer` create the handover in `context/handovers/`, using task-aligned naming such as `context/handovers/{plan_name}-{task_id}-{timestamp}.md` when the inputs support it.
+- If required details are missing, infer only from current repo state, label assumptions clearly, then stop after reporting the exact handover path.
+"""
+  }
+}
+
+skills = new Mapping {
+  ["sce-bootstrap-context"] = new UnitSpec {
+    title = "SCE Bootstrap Context"
+    canonicalBody = """
+## When to use
+- Use only when `context/` is missing.
+- Ask for human approval before creating files.
+
+## Required baseline
+Create these paths:
+- `context/overview.md`
+- `context/architecture.md`
+- `context/patterns.md`
+- `context/glossary.md`
+- `context/context-map.md`
+- `context/plans/`
+- `context/handovers/`
+- `context/decisions/`
+- `context/tmp/`
+- `context/tmp/.gitignore`
+
+Use the following commands to create the directory structure:
+```bash
+mkdir -p context/plans context/handovers context/decisions context/tmp
+touch context/overview.md context/architecture.md context/patterns.md context/glossary.md context/context-map.md
+```
+
+`context/tmp/.gitignore` content:
+```
+*
+!.gitignore
+```
+
+## Validation
+After running the commands, verify all expected paths exist before proceeding:
+```bash
+ls context/overview.md context/architecture.md context/patterns.md context/glossary.md context/context-map.md context/plans context/handovers context/decisions context/tmp context/tmp/.gitignore
+```
+If any path is missing, re-create it before moving on.
+
+## No-code bootstrap rule
+- If the repository has no application code, keep `overview.md`, `architecture.md`, `patterns.md`, and `glossary.md` empty or placeholder-only.
+- Do not invent implementation details.
+
+Example placeholder content for empty files in a no-code repo:
+```markdown
+# Overview
+
+> This section has not been populated yet. Add a high-level description of the project here.
+```
+
+## After bootstrapping
+- Add baseline links in `context/context-map.md`.
+- Tell the user that `context/` should be committed as shared memory.
+"""
+  }
+  ["sce-handover-writer"] = new UnitSpec {
+    title = "SCE Handover Writer"
+    canonicalBody = """
+## What I do
+- Create a new handover file in `context/handovers/`.
+- Capture:
+  - current task state
+  - decisions made and rationale
+  - open questions or blockers
+  - next recommended step
+
+## How to run this
+
+1. **Gather context** - review the current task, recent changes, and repo state.
+2. **Create the file** - use task-aligned naming: `context/handovers/{plan_name}-{task_id}.md`.
+3. **Fill each section** - follow the template below, labelling any inferred details as assumptions.
+4. **Verify completeness** - confirm all four sections are populated before finishing.
+
+If key details are missing, infer from repo state and clearly label assumptions.
+
+## Handover document template
+
+```markdown
+# Handover: {plan_name} - {task_id}
+
+## Current Task State
+- What was being worked on and how far along it is.
+- e.g. "Implementing OAuth login flow; token generation complete, redirect handling in progress."
+
+## Decisions Made
+- Key choices and their rationale.
+- e.g. "Chose JWT over session cookies for statelessness. Rejected library X due to licence constraints."
+
+## Open Questions / Blockers
+- Unresolved issues or outstanding dependencies.
+- e.g. "Awaiting confirmation on token expiry policy from product team."
+
+## Next Recommended Step
+- The single most important action for whoever picks this up.
+- e.g. "Complete the redirect handler in `src/auth/callback.ts`, then run the auth integration tests."
+```
+
+## Expected output
+- A complete handover document in `context/handovers/` using task-aligned naming when possible.
+"""
+  }
+  ["sce-plan-authoring"] = new UnitSpec {
+    title = "SCE Plan Authoring"
+    canonicalBody = """
+## Goal
+Turn a human change request into `context/plans/{plan_name}.md`.
+
+## Intake trigger
+- If a request includes both a change description and success criteria, planning is mandatory before implementation.
+- Planning does not imply execution approval.
+
+## Clarification gate (blocking)
+- Before writing or updating any plan, run an ambiguity check.
+- If any critical detail is unclear, ask 1-3 targeted questions and stop.
+- Do not write or update `context/plans/{plan_name}.md` until the user answers.
+- Critical details that must be resolved before planning include:
+  - scope boundaries and out-of-scope items
+  - success criteria and acceptance signals
+  - constraints and non-goals
+  - dependency choices (new libs/services, versions, and integration approach)
+  - domain ambiguity (unclear business rules, terminology, or ownership)
+  - architecture concerns (patterns, interfaces, data flow, migration strategy, and risk tradeoffs)
+  - task ordering assumptions and prerequisite sequencing
+- Do not silently invent missing requirements.
+- If the user explicitly allows assumptions, record them in an `Assumptions` section.
+- Incorporate user answers into the plan before handoff.
+
+Example clarification questions (use this style - specific, blocking, targeted):
+> 1. Should the new endpoint authenticate via the existing JWT middleware, or is a separate auth flow in scope?
+> 2. Is database migration rollback a hard requirement, or is forward-only acceptable for this change?
+> 3. Which service owns the `UserProfile` type - should this task modify that definition or only consume it?
+
+## Plan format
+1) Change summary
+2) Success criteria
+3) Constraints and non-goals
+4) Task stack (`T01..T0N`)
+5) Open questions (if any)
+
+## Task format (required)
+For each task include:
+- Task ID
+- Goal
+- Boundaries (in/out of scope)
+- Done when
+- Verification notes (commands or checks)
+
+## Atomic task slicing contract (required)
+- Author each executable task as one atomic commit unit by default.
+- Every task must be scoped so one contributor can complete it and land it as one coherent commit without bundling unrelated changes.
+- If a candidate task would require multiple independent commits (for example: refactor + behavior change + docs), split it into separate sequential tasks before finalizing the plan.
+- Keep broad wrappers (`polish`, `finalize`, `misc updates`) out of executable tasks; convert them into specific outcomes with concrete acceptance checks.
+
+Example compliant skeleton:
+- [ ] T0X: `[single intent title]` (status:todo)
+  - Task ID: T0X
+  - Goal: `[one outcome]`
+  - Boundaries (in/out of scope): `[tight scope]`
+  - Done when: `[clear acceptance for one coherent change]`
+  - Verification notes (commands or checks): `[targeted checks for this change]`
+
+Example filled-in task entry:
+- [ ] T02: `Add /auth/refresh endpoint` (status:todo)
+  - Task ID: T02
+  - Goal: Implement a POST `/auth/refresh` endpoint that exchanges a valid refresh token for a new access token.
+  - Boundaries (in/out of scope): In - route handler, token validation logic, response schema. Out - refresh token rotation policy (covered in T03), client-side storage changes.
+  - Done when: `POST /auth/refresh` returns a signed JWT on valid input and 401 on expired/invalid token; unit tests pass; OpenAPI spec updated.
+  - Verification notes (commands or checks): `pnpm test src/auth/refresh.test.ts`; `curl -X POST localhost:3000/auth/refresh -d '{"token":"..."}' -w "%{http_code}"`.
+
+Use checkbox lines for machine-friendly progress tracking:
+- `- [ ] T01: ... (status:todo)`
+
+## Complete plan example
+
+See `context/plans/PLAN_EXAMPLE.md` for a full annotated reference plan (JWT auth walkthrough covering all required sections and four task entries).
+
+## Required final task
+- Final task is always validation and cleanup.
+- It must include full checks and context sync verification.
+
+## Output contract
+- Save plan under `context/plans/`.
+- Confirm plan creation with `plan_name` and exact file path.
+- Present the full ordered task list in chat.
+- Prompt the user to start a new session with Shared Context Code agent to implement `T01`.
+- Provide one canonical next command: `/next-task {plan_name} T01`.
+"""
+  }
+  ["sce-plan-review"] = new UnitSpec {
+    title = "SCE Plan Review"
+    canonicalBody = """
+## What I do
+- Continue execution from an existing plan in `context/plans/`.
+- Read the selected plan and identify the next task from the first unchecked checkbox.
+- Ask focused questions for anything not clear enough to execute safely.
+
+## How to run this
+- Use this skill when the user asks to continue a plan or pick the next task.
+- If `context/` is missing, ask once: "`context/` is missing. Bootstrap SCE baseline now?"
+  - If yes, create baseline with `sce-bootstrap-context` and continue.
+  - If no, stop and explain SCE workflows require `context/`.
+- Read `context/context-map.md`, `context/overview.md`, and `context/glossary.md` before broad exploration.
+- Resolve plan target:
+  - If plan path argument exists, use it.
+  - If multiple plans exist and no explicit path is provided, ask user to choose.
+- Collect:
+  - completed tasks
+  - next task
+  - blockers, ambiguity, and missing acceptance criteria
+- Prompt user to resolve unclear points before implementation.
+- Confirm scope explicitly for this session: one task by default unless user requests multi-task execution.
+
+## Plan file format
+SCE plans are Markdown files stored in `context/plans/`. Tasks are tracked as checkboxes:
+
+```markdown
+# Plan: Add user authentication
+
+## Tasks
+- [x] Scaffold auth module
+- [x] Add password hashing utility
+- [ ] Implement login endpoint        <- next task (first unchecked)
+- [ ] Write integration tests
+- [ ] Update context/current-state.md
+```
+
+The first unchecked `- [ ]` item is the next task to review and prepare.
+
+## Rules
+- Do not auto-mark tasks complete during review.
+- Keep continuation state in the plan markdown itself.
+- Treat `context/plans/` as active execution artifacts; completed plans are disposable and not a durable context source.
+- If durable history is needed, record it in current-state context files and/or `context/decisions/` instead of completed plan files.
+- Keep implementation blocked until decision alignment on unclear points.
+- If plan context is stale or partial, continue with code truth and flag context updates.
+
+## Expected output
+
+Produce a structured readiness summary after review:
+
+```
+## Plan Review - [plan filename]
+
+**Completed tasks:** 2 of 5
+**Next task:** Implement login endpoint
+
+**Acceptance criteria:**
+- POST /auth/login returns JWT on success
+- Returns 401 on invalid credentials
+
+**Issues found:**
+- Blocker: JWT secret source not specified (env var? config file?)
+- Ambiguity: Should failed attempts be rate-limited in this task or a later one?
+
+**ready_for_implementation: no**
+
+**Required decisions before proceeding:**
+1. Confirm JWT secret source
+2. Confirm rate-limiting scope
+```
+
+When all issues are resolved:
+
+```
+**ready_for_implementation: yes**
+Proceeding with: Implement login endpoint
+```
+
+- Explicit readiness verdict: `ready_for_implementation: yes|no`.
+- If not ready, explicit issue categories: blockers, ambiguity, missing acceptance criteria.
+- Explicit user-aligned decisions needed to proceed to implementation.
+- Explicit user confirmation request that the task is ready for implementation when unresolved issues remain.
+
+## Related skills
+- `sce-bootstrap-context` - creates the `context/` baseline required by this skill
+"""
+  }
+}
