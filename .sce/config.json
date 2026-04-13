@@ -4,6 +4,9 @@
   "log_file": "context/tmp/sce.log",
   "log_file_mode": "append",
   "policies": {
+    "attribution_hooks": {
+      "enabled": true
+    },
     "bash": {
       "presets": [
       ],
