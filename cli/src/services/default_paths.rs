@@ -444,13 +444,6 @@ impl InstallTargetPaths {
             .join(hook_dir::HOOKS)
             .join(hook_dir::POST_COMMIT)
     }
-
-    pub(crate) fn hook_backup_path(&self, hook_name: &str) -> PathBuf {
-        self.repo_root
-            .join(repo_dir::GIT)
-            .join(hook_dir::HOOKS)
-            .join(format!("{hook_name}.backup"))
-    }
 }
 
 pub(crate) fn resolve_state_data_root() -> Result<PathBuf> {

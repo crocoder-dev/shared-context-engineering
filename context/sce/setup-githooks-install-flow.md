@@ -42,27 +42,16 @@ The flow iterates canonical embedded required hooks (`pre-commit`, `commit-msg`,
 - `Updated`: hook existed but content and/or executable bit did not match canonical state.
 - `Skipped`: hook already matched canonical bytes and executable state.
 
-## Backup, staged write, and rollback behavior
+## Staged write and remove-and-replace behavior
 
-When replacing an existing hook, setup always writes canonical bytes to a unique staging file in the hooks directory, enforces executable permissions on the staged payload, and then branches backup behavior through the shared `SetupBackupPolicy` seam.
+When replacing an existing hook, setup always writes canonical bytes to a unique staging file in the hooks directory, enforces executable permissions on the staged payload, removes the existing hook directly, and swaps the staged content into the final hook path.
 
-### Non-git-backed repositories
-
-- setup creates a deterministic backup path via `next_backup_path(...)`
-- swaps the staged hook into the final hook path
-- if swap fails after backup, setup removes the staging artifact, restores the previous hook from backup when the destination path is absent, and returns explicit rollback context in the error chain
-
-### Git-backed repositories
-
-- setup removes the existing hook directly instead of creating a `.backup` artifact
-- swaps the staged hook into the final hook path without backup-based rollback
-- if swap fails, setup removes the staging artifact and returns deterministic guidance to recover the hook from git state
+On swap failure, setup removes the staging artifact and returns deterministic recovery guidance (recover the hook from version control if needed). No backup artifacts are created and no backup-based rollback is attempted.
 
 ## Verification coverage
 
 `cli/src/services/setup.rs` includes T03-focused tests for:
 
-- git-backed update in the default hooks directory with no backup artifact creation
-- git-backed update in custom `core.hooksPath` with no backup artifact creation
-- injected git-backed swap failure with staging cleanup, no rollback, and deterministic git-recovery guidance
-- existing non-git-backed backup behavior remaining covered separately
+- hook update in the default hooks directory with no backup artifact creation
+- hook update in custom `core.hooksPath` with no backup artifact creation
+- injected swap failure with staging cleanup and deterministic recovery guidance

@@ -43,11 +43,6 @@ Successful hook setup emits deterministic human/automation-friendly output inclu
 - repository root
 - effective hooks directory
 - per-hook outcome lines with canonical lowercase statuses (`installed`, `updated`, `skipped`)
-- backup status per hook with policy-aware wording:
-  - `backup: '<path>'` when a non-git-backed replacement created a backup
-  - `backup: not created (git-backed repository)` when git-backed replacement skipped backup creation
-  - `backup: not needed (no existing hook)` for first-time hook installs
-  - `backup: not needed (hook already matched canonical state)` for skipped no-change hooks
 
 When config install and hook install run together, CLI output is deterministic: config-install summary first, one blank separator line, then hook-install summary.
 
