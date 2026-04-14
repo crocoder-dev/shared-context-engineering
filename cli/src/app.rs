@@ -631,6 +631,10 @@ fn dispatch(
                 .context("Failed to determine current directory")
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
 
+            // Gate all setup modes on an existing git repository before any writes.
+            services::setup::ensure_git_repository(&current_dir)
+                .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
+
             let preflight_hooks_repository = if request.install_hooks {
                 let repository_root = request
                     .hooks_repo_path
