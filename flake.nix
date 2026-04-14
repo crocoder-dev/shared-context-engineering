@@ -84,6 +84,15 @@
           ];
         };
 
+        integrationsCliSrc = pkgs.lib.fileset.toSource {
+          root = workspaceRoot;
+          fileset = pkgs.lib.fileset.unions [
+            ./integrations/cli/Cargo.toml
+            ./integrations/cli/Cargo.lock
+            ./integrations/cli/src
+          ];
+        };
+
         # Fixed-output derivation to fetch Bun dependencies
         # The output hash must be updated when package.json or bun.lock changes
         configLibBashPolicyDeps = pkgs.stdenv.mkDerivation {
@@ -186,6 +195,43 @@
             meta = {
               mainProgram = "install-channel-integration-tests";
               description = "Opt-in install-channel integration runner for sce";
+            };
+          }
+        );
+
+        integrationsCliCargoArgs = {
+          pname = "sce-cli-integration-tests";
+          version = "0.2.0-pre-alpha-v2";
+          src = integrationsCliSrc;
+          cargoToml = ./integrations/cli/Cargo.toml;
+          cargoLock = ./integrations/cli/Cargo.lock;
+          strictDeps = true;
+          doCheck = false;
+
+          nativeBuildInputs = [
+            rustToolchain
+          ];
+
+          postUnpack = ''
+            cd "$sourceRoot/integrations/cli"
+            sourceRoot="."
+          '';
+        };
+
+        integrationsCliCargoArtifacts = craneLib.buildDepsOnly (
+          integrationsCliCargoArgs
+          // {
+            pname = "sce-cli-integration-tests-deps";
+          }
+        );
+
+        integrationsCliPackage = craneLib.buildPackage (
+          integrationsCliCargoArgs
+          // {
+            cargoArtifacts = integrationsCliCargoArtifacts;
+            meta = {
+              mainProgram = "cli-integration-tests";
+              description = "Opt-in CLI help integration runner for sce";
             };
           }
         );
@@ -649,6 +695,16 @@
           '';
         };
 
+        cliIntegrationTestsApp = pkgs.writeShellApplication {
+          name = "cli-integration-tests";
+          text = ''
+            set -euo pipefail
+
+            export SCE_CLI_INTEGRATION_SCE_BIN="${scePackage}/bin/sce"
+            exec "${integrationsCliPackage}/bin/cli-integration-tests" "$@"
+          '';
+        };
+
         pklParityCheck =
           pkgs.runCommand "pkl-parity-check"
             {
@@ -834,6 +890,7 @@
       {
         packages = {
           sce = scePackage;
+          cli-integration-tests = integrationsCliPackage;
           default = scePackage;
         };
 
@@ -884,6 +941,30 @@
             integrationsInstallCargoArgs
             // {
               pname = "sce-integrations-install-fmt";
+            }
+          );
+
+          integrations-cli-tests = craneLib.cargoTest (
+            integrationsCliCargoArgs
+            // {
+              pname = "sce-integrations-cli-tests";
+              cargoArtifacts = integrationsCliCargoArtifacts;
+            }
+          );
+
+          integrations-cli-clippy = craneLib.cargoClippy (
+            integrationsCliCargoArgs
+            // {
+              pname = "sce-integrations-cli-clippy";
+              cargoArtifacts = integrationsCliCargoArtifacts;
+              cargoClippyExtraArgs = "--all-targets --all-features";
+            }
+          );
+
+          integrations-cli-fmt = craneLib.cargoFmt (
+            integrationsCliCargoArgs
+            // {
+              pname = "sce-integrations-cli-fmt";
             }
           );
 
@@ -939,6 +1020,14 @@
             program = "${installChannelIntegrationTestsApp}/bin/install-channel-integration-tests";
             meta = {
               description = "Run opt-in install-channel integration entrypoint";
+            };
+          };
+
+          cli-integration-tests = {
+            type = "app";
+            program = "${cliIntegrationTestsApp}/bin/cli-integration-tests";
+            meta = {
+              description = "Run opt-in CLI help integration entrypoint";
             };
           };
         };
