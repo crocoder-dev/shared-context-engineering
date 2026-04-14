@@ -1,0 +1,13 @@
+[package]
+name = "sce-cli-integration-tests"
+version = "0.2.0-pre-alpha-v2"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "cli-integration-tests"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
