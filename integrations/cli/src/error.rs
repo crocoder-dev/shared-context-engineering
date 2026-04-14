@@ -8,8 +8,11 @@ pub(crate) enum HarnessError {
     #[error("failed to run command '{program}': {error}")]
     CommandRunFailed { program: String, error: String },
 
-    #[error("[FAIL] sce --help exited with status {status}\nstdout: {stdout}\nstderr: {stderr}")]
-    HelpCommandNonZero {
+    #[error("[FAIL] case '{case}' failed: {reason}\ncommand: {command}\nstatus: {status}\nstdout: {stdout}\nstderr: {stderr}")]
+    AssertionFailed {
+        case: &'static str,
+        reason: String,
+        command: String,
         status: i32,
         stdout: String,
         stderr: String,
