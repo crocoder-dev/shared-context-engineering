@@ -162,7 +162,7 @@ Every detected issue must map to exactly one stable problem category:
 - `repository_targeting`: repository resolution, git availability, bare-repo, or hooks-path discovery problems
 - `hook_rollout`: missing, partial, stale, non-executable, or otherwise unhealthy required SCE-managed hooks
 - `repo_assets`: missing or stale repo-local SCE-managed assets outside the hook files themselves
-- `filesystem_permissions`: missing parent directories, unwritable owned paths, rename/temp/backup barriers, or permission failures blocking safe repair
+- `filesystem_permissions`: missing parent directories, unwritable owned paths, rename/temp barriers, or permission failures blocking safe repair
 - `remediation_coverage`: gaps where doctor can diagnose an issue but does not yet own a canonical repair path
 
 Each problem record must also include stable severity and fixability classes.
@@ -228,7 +228,7 @@ The broadened contract for `sce doctor` must cover the following problem invento
 - effective hooks directory is not writable for repair
 - repo-local `.sce/` directory is not writable for repair
 - global state/config/DB parent directories are not writable
-- backup-and-replace safety cannot proceed because temp, rename, or write permissions fail
+- remove-and-replace safety cannot proceed because temp, rename, or write permissions fail
 
 ### Remediation coverage gaps
 

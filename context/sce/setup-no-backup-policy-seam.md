@@ -1,33 +1,27 @@
-# Setup no-backup policy seam
+# Setup remove-and-replace install policy
 
-`cli/src/services/setup.rs` now resolves one shared internal backup-policy decision before setup-managed write flows run.
+`cli/src/services/setup.rs` uses a unified remove-and-replace policy for all setup-managed write flows. There is no backup creation or backup-based rollback.
 
 ## Current state
 
-- `resolve_setup_backup_policy(repository_root)` is the canonical setup-layer decision point.
-- The runtime probe treats a repository as git-backed when `git rev-parse --show-toplevel` succeeds from the target repository root.
-- The decision is represented as `SetupBackupPolicy` with two current variants:
-  - `CreateAndRestoreBackups`
-  - `GitBackedRepository`
-- Both setup-managed write surfaces now receive that same policy input:
-  - config install via `install_embedded_setup_assets_with_rename(...)`
-  - required hook install via `install_required_git_hooks_in_resolved_repository(...)`
+- Both config install (`.opencode`/`.claude`) and required hook install use the same remove-and-replace choreography:
+  1. Write canonical content to a unique staging file.
+  2. Remove the existing target (if present) directly.
+  3. Swap the staged content into the final target path.
+  4. On swap failure, clean the staging artifact and return deterministic recovery guidance (recover from version control if needed).
+- No `.backup` artifacts are created during any setup write flow.
+- No backup-based rollback is attempted on swap failure.
+- Recovery guidance is generic (not git-specific wording): "Setup does not create backups. Recover '<path>' from version control if needed."
 
 ## Implemented behavior
 
-- Config install now branches on `SetupBackupPolicy`.
-- In non-git-backed repositories, `.opencode` / `.claude` installs keep the existing backup-and-restore flow.
-- In git-backed repositories, config install removes the existing target, skips `.backup` creation, and does not attempt backup-based rollback if the staged swap fails.
-- Git-backed config-install failures append deterministic recovery guidance: recover the setup target from git state instead of expecting an installer-created backup.
-- Required hook install now also branches on `SetupBackupPolicy`.
-- In non-git-backed repositories, required hook replacement keeps the existing backup-and-restore flow.
-- In git-backed repositories, hook install removes the existing hook, skips `.backup` creation, and does not attempt backup-based rollback if the staged swap fails.
-- Git-backed hook-install failures append deterministic recovery guidance: recover the hook from git state instead of expecting an installer-created backup.
-- Success output now distinguishes `backup: not created (git-backed repository)` from ordinary no-backup cases so operator-facing setup text no longer implies that git-backed replacements and first-time installs share the same reason.
+- Config install removes the existing target directory before swapping staged content. On swap failure, it cleans the staging artifact and returns recovery guidance.
+- Required hook install removes the existing hook file before swapping staged content. On swap failure, it cleans the staging artifact and returns recovery guidance.
+- Success output reports target, file count, and per-hook status (`installed`/`updated`/`skipped`) without any backup-related lines.
 
 ## Scope boundary
 
-- This file captures the shared setup-layer backup-policy seam and its current use by both config-install and required-hook install flows.
-- Future setup-managed write flows should continue to branch from the same shared seam instead of re-detecting git-backed state independently.
+- This file captures the unified remove-and-replace install policy and its use by both config-install and required-hook install flows.
+- Future setup-managed write flows should follow the same remove-and-replace pattern instead of introducing backup creation.
 
 See also: [../overview.md](../overview.md), [../context-map.md](../context-map.md), [setup-githooks-install-flow.md](setup-githooks-install-flow.md)
