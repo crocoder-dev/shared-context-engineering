@@ -222,6 +222,13 @@ pub fn prepare_setup_hooks_repository(repository_root: &Path) -> Result<PathBuf>
     resolve_git_repository_root(&normalized_repository_root)
 }
 
+/// Preflight check that verifies the given directory is inside a git repository.
+/// Returns the resolved repository root path on success.
+/// Returns an actionable error telling the operator to run `git init` on failure.
+pub fn ensure_git_repository(directory: &Path) -> Result<PathBuf> {
+    resolve_git_repository_root(directory)
+}
+
 fn normalize_user_repository_path(repository_root: &Path) -> Result<PathBuf> {
     if repository_root.as_os_str().is_empty() {
         bail!("Option '--repo' must not be empty. Try: pass a path to an existing git repository.");

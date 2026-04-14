@@ -25,6 +25,7 @@ Validation is deterministic and enforced during setup option resolution:
 - `--repo` may only be provided once and must include a value
 - `--repo` path is canonicalized and must resolve to an existing directory before hook setup runs
 - repository-required hook flows fail before config or hook writes when the target directory is not a git repository, with actionable guidance to run `git init` and rerun `sce setup`
+- all `sce setup` modes (config-only, hooks-only, combined, and interactive) require the current directory to be inside a git repository before any setup writes begin; the `ensure_git_repository` preflight check in `cli/src/app.rs` enforces this gate consistently across all invocation shapes
 
 Target-install mode contract:
 
