@@ -14,7 +14,12 @@ use crate::services::style::{
     label, prompt_label, prompt_label_with_color_policy, prompt_value_with_color_policy, success,
     value,
 };
-use crate::services::{default_paths, default_paths::InstallTargetPaths};
+use crate::services::{default_paths, default_paths::InstallTargetPaths, default_paths::RepoPaths};
+
+/// Canonical JSON payload for a newly bootstrapped repo-local `.sce/config.json`.
+/// Contains only the `$schema` declaration pointing to the SCE config JSON Schema.
+const REPO_LOCAL_CONFIG_BOOTSTRAP_PAYLOAD: &str =
+    "{\n  \"$schema\": \"https://sce.crocoder.dev/config.json\"\n}\n";
 
 pub const NAME: &str = "setup";
 
@@ -227,6 +232,36 @@ pub fn prepare_setup_hooks_repository(repository_root: &Path) -> Result<PathBuf>
 /// Returns an actionable error telling the operator to run `git init` on failure.
 pub fn ensure_git_repository(directory: &Path) -> Result<PathBuf> {
     resolve_git_repository_root(directory)
+}
+
+/// Bootstraps the repo-local `.sce/config.json` file if it does not already exist.
+///
+/// Creates the `.sce/` parent directory as needed, then writes the canonical
+/// schema-only JSON payload. If the file already exists, it is left untouched.
+pub fn bootstrap_repo_local_config(repository_root: &Path) -> Result<()> {
+    let repo_paths = RepoPaths::new(repository_root);
+    let config_file = repo_paths.sce_config_file();
+
+    if config_file.exists() {
+        return Ok(());
+    }
+
+    let sce_dir = repo_paths.sce_dir();
+    fs::create_dir_all(&sce_dir).with_context(|| {
+        format!(
+            "Failed to create repo-local config directory '{}'",
+            sce_dir.display()
+        )
+    })?;
+
+    fs::write(&config_file, REPO_LOCAL_CONFIG_BOOTSTRAP_PAYLOAD).with_context(|| {
+        format!(
+            "Failed to write repo-local config file '{}'",
+            config_file.display()
+        )
+    })?;
+
+    Ok(())
 }
 
 fn normalize_user_repository_path(repository_root: &Path) -> Result<PathBuf> {
