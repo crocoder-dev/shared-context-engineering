@@ -635,6 +635,10 @@ fn dispatch(
             services::setup::ensure_git_repository(&current_dir)
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
 
+            // Bootstrap repo-local .sce/config.json if missing.
+            services::setup::bootstrap_repo_local_config(&current_dir)
+                .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
+
             let preflight_hooks_repository = if request.install_hooks {
                 let repository_root = request
                     .hooks_repo_path
