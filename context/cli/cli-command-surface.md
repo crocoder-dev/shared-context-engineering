@@ -37,8 +37,10 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 
 ## Command surface contract
 
-`sce`, `sce help`, and `sce --help` now render a slim top-level help surface:
+`sce`, `sce help`, and `sce --help` now render a top-level help surface that starts with an ASCII art "SCE" banner followed by a slim command list:
 
+- the banner uses a per-column right-to-left color gradient (cyan on the right, magenta on the left) when stdout color is enabled, and renders as plain ASCII when color is disabled (non-TTY or `NO_COLOR`)
+- the banner is rendered by `command_surface::help_text()` calling `style::banner_with_gradient(SCE_BANNER_LINES)` before the heading
 - the visible command list is `help`, `config`, `setup`, `doctor`, `version`, and `completion`
 - top-level help omits implemented/placeholder labels
 - top-level examples cover setup plus doctor/version machine-readable or repair-intent flows (`doctor --format json`, `doctor --fix`, `version --format json`) and use the shared example-command styling when stdout color is enabled

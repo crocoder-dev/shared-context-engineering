@@ -245,3 +245,76 @@ fn is_help_placeholder(token: &str) -> bool {
         .chars()
         .any(|ch| ch.is_ascii_uppercase() || matches!(ch, '<' | '>' | '[' | ']'))
 }
+
+/// Gradient color endpoints for the ASCII art banner.
+/// Right side: cyan (0, 255, 255), Left side: magenta (255, 0, 255).
+#[allow(dead_code)]
+const GRADIENT_COLOR_RIGHT: (u8, u8, u8) = (0, 255, 255);
+#[allow(dead_code)]
+const GRADIENT_COLOR_LEFT: (u8, u8, u8) = (255, 0, 255);
+
+/// Applies a right-to-left color gradient to ASCII art banner lines.
+///
+/// When color is enabled, each non-space character is colored based on its
+/// column position using a cyan-to-magenta gradient (cyan on the right,
+/// magenta on the left). Spaces are left unstyled.
+/// When color is disabled, returns the plain ASCII art unchanged.
+#[allow(dead_code)]
+#[must_use]
+pub fn banner_with_gradient(lines: &[&str]) -> String {
+    banner_with_gradient_with_color_policy(lines, supports_color())
+}
+
+/// Internal variant of [`banner_with_gradient`] that accepts an explicit
+/// color policy flag for testability.
+#[allow(dead_code, clippy::cast_precision_loss)]
+#[must_use]
+pub(crate) fn banner_with_gradient_with_color_policy(
+    lines: &[&str],
+    color_enabled: bool,
+) -> String {
+    if !color_enabled {
+        return lines.join("\n");
+    }
+
+    let max_width = lines
+        .iter()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0);
+    if max_width == 0 {
+        return lines.join("\n");
+    }
+
+    let max_col = (max_width.saturating_sub(1) as f64).max(1.0);
+
+    lines
+        .iter()
+        .map(|line| {
+            line.chars()
+                .enumerate()
+                .map(|(col, ch)| {
+                    if ch == ' ' {
+                        ch.to_string()
+                    } else {
+                        let t = col as f64 / max_col;
+                        let r = lerp_u8(GRADIENT_COLOR_LEFT.0, GRADIENT_COLOR_RIGHT.0, t);
+                        let g = lerp_u8(GRADIENT_COLOR_LEFT.1, GRADIENT_COLOR_RIGHT.1, t);
+                        let b = lerp_u8(GRADIENT_COLOR_LEFT.2, GRADIENT_COLOR_RIGHT.2, t);
+                        ch.truecolor(r, g, b).to_string()
+                    }
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Linear interpolation between two `u8` values.
+///
+/// Returns `a + (b - a) * t`, clamped to the `u8` range by construction
+/// since `a`, `b` are `u8` and `t` is in `[0, 1]`.
+#[allow(dead_code, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn lerp_u8(a: u8, b: u8, t: f64) -> u8 {
+    (f64::from(a) + (f64::from(b) - f64::from(a)) * t).round() as u8
+}

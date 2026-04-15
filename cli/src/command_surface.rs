@@ -1,7 +1,17 @@
 use std::fmt::Write;
 
 use crate::services;
-use services::style::{command_name, heading};
+use services::style::{banner_with_gradient, command_name, heading};
+
+/// ASCII art "SCE" logo rendered as a per-column right-to-left gradient banner.
+const SCE_BANNER_LINES: &[&str] = &[
+    r"     ______     ______     ______     ",
+    r"    /      \   /      \   /      \    ",
+    r"   /   _____\ /   _____\ /   _____\   ",
+    r"  /   /  ____ /   /  ____/   /  ____   ",
+    r" /    \_____\ /    \_____\ /    \_____\ ",
+    r" \____________\____________\____________",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImplementationStatus {
@@ -172,6 +182,9 @@ fn push_section(out: &mut String, section: &str) {
 
 pub fn help_text() -> String {
     let mut output = String::new();
+
+    push_section(&mut output, &banner_with_gradient(SCE_BANNER_LINES));
+    push_blank_line(&mut output);
 
     push_section(
         &mut output,
