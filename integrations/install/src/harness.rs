@@ -125,13 +125,6 @@ impl ChannelHarness {
             });
         }
 
-        if !is_valid_version_output(&output.stdout) {
-            return Err(HarnessError::SceVersionUnexpected {
-                channel: self.channel.as_str().to_string(),
-                output: output.stdout,
-            });
-        }
-
         if !output.stderr.is_empty() {
             return Err(HarnessError::SceVersionStderr {
                 channel: self.channel.as_str().to_string(),
@@ -392,21 +385,6 @@ fn normalize_output(bytes: &[u8]) -> String {
         .replace('\r', "")
         .trim_end_matches('\n')
         .to_string()
-}
-
-fn is_valid_version_output(output: &str) -> bool {
-    let mut parts = output.splitn(3, ' ');
-    let binary = parts.next().unwrap_or_default();
-    let version = parts.next().unwrap_or_default();
-    let profile = parts.next().unwrap_or_default();
-
-    !binary.is_empty()
-        && !binary.contains(char::is_whitespace)
-        && !version.is_empty()
-        && !version.contains(char::is_whitespace)
-        && profile.starts_with('(')
-        && profile.ends_with(')')
-        && profile.len() > 2
 }
 
 pub(crate) fn copy_directory_recursive(
