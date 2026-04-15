@@ -3,14 +3,13 @@ use std::fmt::Write;
 use crate::services;
 use services::style::{banner_with_gradient, command_name, heading};
 
-/// ASCII art "SCE" logo rendered as a per-column right-to-left gradient banner.
 const SCE_BANNER_LINES: &[&str] = &[
-    r"     ______     ______     ______     ",
-    r"    /      \   /      \   /      \    ",
-    r"   /   _____\ /   _____\ /   _____\   ",
-    r"  /   /  ____ /   /  ____/   /  ____   ",
-    r" /    \_____\ /    \_____\ /    \_____\ ",
-    r" \____________\____________\____________",
+    r"  ______     ______  ________  ",
+    r".' ____ \  .' ___  ||_   __  | ",
+    r"| (___ \_|/ .'   \_|  | |_ \_| ",
+    r" _.____`. | |         |  _| _  ",
+    r"| \____) |\ `.___.'\ _| |__/ | ",
+    r" \______.' `.____ .'|________| ",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -184,6 +183,7 @@ pub fn help_text() -> String {
     let mut output = String::new();
 
     push_section(&mut output, &banner_with_gradient(SCE_BANNER_LINES));
+    push_blank_line(&mut output);
     push_blank_line(&mut output);
 
     push_section(
