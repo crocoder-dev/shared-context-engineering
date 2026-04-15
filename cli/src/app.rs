@@ -65,9 +65,14 @@ where
     StdoutW: Write,
     StderrW: Write,
 {
-    let (result, logger) = try_run_with_dependency_check(args, dependency_check);
+    let (result, logger, startup_diagnostic) =
+        try_run_with_dependency_check(args, dependency_check);
     match result {
         Ok(payload) => {
+            if let Some(diagnostic) = startup_diagnostic {
+                write_startup_diagnostic(stderr, &diagnostic);
+            }
+
             if let Err(error) = write_stdout_payload(stdout, &payload) {
                 if let Some(ref log) = logger {
                     log.log_classified_error(&error);
@@ -124,6 +129,42 @@ where
         .expect("writing error diagnostic to writer should not fail");
 }
 
+fn write_startup_diagnostic<W>(writer: &mut W, diagnostic: &str)
+where
+    W: Write,
+{
+    writeln!(writer, "{}", services::style::error_code(diagnostic))
+        .expect("writing startup diagnostic to writer should not fail");
+}
+
+fn invalid_discovered_config_guidance(
+    observability_config: &services::config::ResolvedObservabilityRuntimeConfig,
+) -> Option<String> {
+    if observability_config.validation_errors.is_empty() {
+        return None;
+    }
+
+    let has_invalid_local_config = observability_config
+        .loaded_config_paths
+        .iter()
+        .filter(|loaded_path| {
+            loaded_path.source == services::config::ConfigPathSource::DefaultDiscoveredLocal
+        })
+        .any(|loaded_path| {
+            let rendered_path = loaded_path.path.to_string_lossy();
+            observability_config
+                .validation_errors
+                .iter()
+                .any(|error| error.contains(rendered_path.as_ref()))
+        });
+
+    Some(if has_invalid_local_config {
+        String::from("Local `.sce` config is invalid. Fix `.sce` and run `sce config validate`.")
+    } else {
+        String::from("A discovered config file is invalid. Fix it and run `sce config validate`.")
+    })
+}
+
 #[allow(clippy::too_many_lines)]
 fn try_run_with_dependency_check<I, F>(
     args: I,
@@ -131,6 +172,7 @@ fn try_run_with_dependency_check<I, F>(
 ) -> (
     Result<String, ClassifiedError>,
     Option<services::observability::Logger>,
+    Option<String>,
 )
 where
     I: IntoIterator<Item = String>,
@@ -141,6 +183,7 @@ where
             Err(ClassifiedError::dependency(format!(
                 "Failed to initialize dependency checks: {error}"
             ))),
+            None,
             None,
         );
     }
@@ -153,6 +196,7 @@ where
                     "Failed to determine current directory for observability config resolution: {error}"
                 ))),
                 None,
+                None,
             );
         }
     };
@@ -164,6 +208,7 @@ where
                 Err(ClassifiedError::validation(format!(
                     "Invalid observability configuration: {error}"
                 ))),
+                None,
                 None,
             );
         }
@@ -178,9 +223,12 @@ where
                     "Invalid observability configuration: {error}"
                 ))),
                 None,
+                None,
             );
         }
     };
+
+    let startup_diagnostic = invalid_discovered_config_guidance(&observability_config);
 
     // Log discovered config files at debug level
     for loaded_path in &observability_config.loaded_config_paths {
@@ -211,6 +259,7 @@ where
                 Err(ClassifiedError::validation(format!(
                     "Invalid observability configuration: {error}"
                 ))),
+                None,
                 None,
             );
         }
@@ -265,7 +314,7 @@ where
         }
     });
 
-    (result, Some(logger))
+    (result, Some(logger), startup_diagnostic)
 }
 
 fn parse_command<I>(
@@ -795,7 +844,8 @@ mod tests {
         assert!(stdout_text.contains(env!("CARGO_PKG_VERSION")));
 
         let stderr_text = String::from_utf8(stderr).expect("stderr should be utf8");
-        assert!(stderr_text.is_empty());
+        assert!(stderr_text
+            .contains("Local `.sce` config is invalid. Fix `.sce` and run `sce config validate`."));
 
         let log_text = std::fs::read_to_string(&log_file).expect("log file should be readable");
         assert!(log_text.contains("level=warn"));
