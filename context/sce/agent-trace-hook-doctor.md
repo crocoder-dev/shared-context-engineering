@@ -32,6 +32,7 @@ The runtime in `cli/src/services/doctor.rs` exposes the approved doctor command 
 - deterministic fix-result records in fix mode with `fixed`, `skipped`, `manual`, and `failed` outcomes
 - simplified `label (path)` human rows for healthy path-backed state/config/repository/hook entries, without redundant `present` / `expected` prose
 - default global/local config-file location reporting, plus validation of existing global and repo-local `sce/config.json` readability and schema compliance
+- startup config resolution no longer blocks doctor on invalid default-discovered config files; doctor reaches its own config-validation path, reports those files as problems, and keeps invalid-config remediation manual-only
 - local DB location reporting, DB parent-directory readiness checks, and existing-DB health validation
 - local DB reporting in default doctor output
 - explicit git-unavailable, outside-repo, and bare-repo repository-targeting failures
@@ -194,6 +195,7 @@ The broadened contract for `sce doctor` must cover the following problem invento
 - global SCE state root cannot be resolved
 - expected global config path cannot be resolved
 - global config file exists but is unreadable, invalid JSON, or fails schema validation
+- invalid default-discovered config must not prevent `sce doctor` from starting; doctor still reports invalid global or repo-local config as a problem once command dispatch begins
 - local DB path cannot be resolved
 - local DB parent directories are missing or not writable
 - local DB exists but bootstrap or migration health is broken

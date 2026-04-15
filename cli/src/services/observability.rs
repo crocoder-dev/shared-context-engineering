@@ -467,6 +467,10 @@ impl Logger {
         self.log(LogLevel::Debug, event_id, message, fields);
     }
 
+    pub fn warn(&self, event_id: &str, message: &str, fields: &[(&str, &str)]) {
+        self.log_forced(LogLevel::Warn, event_id, message, fields);
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn error(&self, event_id: &str, message: &str, fields: &[(&str, &str)]) {
         self.log(LogLevel::Error, event_id, message, fields);
@@ -490,6 +494,10 @@ impl Logger {
             return;
         }
 
+        self.log_forced(level, event_id, message, fields);
+    }
+
+    fn log_forced(&self, level: LogLevel, event_id: &str, message: &str, fields: &[(&str, &str)]) {
         emit_tracing_event(level, event_id, message, fields);
 
         let line = self.render_line(level, event_id, message, fields);

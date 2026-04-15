@@ -213,6 +213,13 @@ impl ConfigPathSource {
             Self::DefaultDiscoveredLocal => "default_discovered_local",
         }
     }
+
+    const fn is_default_discovered(self) -> bool {
+        matches!(
+            self,
+            Self::DefaultDiscoveredGlobal | Self::DefaultDiscoveredLocal
+        )
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -263,6 +270,7 @@ struct RuntimeConfig {
     attribution_hooks_enabled: ResolvedValue<bool>,
     workos_client_id: ResolvedOptionalValue<String>,
     bash_policies: ResolvedOptionalValue<BashPolicyConfig>,
+    validation_errors: Vec<String>,
     validation_warnings: Vec<String>,
 }
 
@@ -287,6 +295,7 @@ pub(crate) struct ResolvedObservabilityRuntimeConfig {
     pub(crate) otel_endpoint: String,
     pub(crate) otel_protocol: OtlpProtocol,
     pub(crate) loaded_config_paths: Vec<LoadedConfigPath>,
+    pub(crate) validation_errors: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -541,6 +550,7 @@ where
         otel_endpoint: runtime.otel_endpoint.value,
         otel_protocol: runtime.otel_protocol.value,
         loaded_config_paths: runtime.loaded_config_paths,
+        validation_errors: runtime.validation_errors,
     })
 }
 
@@ -625,9 +635,17 @@ where
         bash_policy_presets: None,
         bash_policy_custom: None,
     };
+    let mut validation_errors = Vec::new();
     for loaded_path in &loaded_config_paths {
         let raw = read_file(&loaded_path.path)?;
-        let layer = parse_file_config(&raw, &loaded_path.path, loaded_path.source)?;
+        let layer = match parse_file_config(&raw, &loaded_path.path, loaded_path.source) {
+            Ok(layer) => layer,
+            Err(error) if loaded_path.source.is_default_discovered() => {
+                validation_errors.push(error.to_string());
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         if let Some(log_level) = layer.log_level {
             file_config.log_level = Some(log_level);
         }
@@ -871,6 +889,7 @@ where
         attribution_hooks_enabled: resolved_attribution_hooks_enabled,
         workos_client_id: resolved_workos_client_id,
         bash_policies: resolved_bash_policies,
+        validation_errors,
         validation_warnings,
     })
 }
@@ -1669,6 +1688,7 @@ fn parse_optional_string_key(
 }
 
 fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> String {
+    let warnings = build_show_warnings(runtime);
     match report_format {
         ReportFormat::Text => {
             let mut lines = vec![
@@ -1693,7 +1713,7 @@ fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> S
                     &runtime.workos_client_id,
                 ),
                 format_bash_policies_text(&runtime.bash_policies),
-                format_validation_warnings_text(&runtime.validation_warnings),
+                format_validation_warnings_text(&warnings),
             ];
             lines.splice(3..3, format_observability_text_lines(runtime));
             lines.join("\n")
@@ -1730,7 +1750,7 @@ fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> S
                             "bash": format_bash_policies_json(&runtime.bash_policies),
                         }
                     },
-                    "warnings": runtime.validation_warnings,
+                    "warnings": warnings,
                 }
             });
             serde_json::to_string_pretty(&payload).expect("config show payload should serialize")
@@ -1739,19 +1759,16 @@ fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> S
 }
 
 fn format_validate_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> String {
+    let valid = runtime.validation_errors.is_empty();
     match report_format {
         ReportFormat::Text => {
             let lines = [
                 format!(
                     "{}: {}",
                     style::success("SCE config validation"),
-                    style::value("valid")
+                    style::value(if valid { "valid" } else { "invalid" })
                 ),
-                format!(
-                    "{}: {}",
-                    style::label("Validation issues"),
-                    style::value("none")
-                ),
+                format_validation_issues_text(&runtime.validation_errors),
                 format_validation_warnings_text(&runtime.validation_warnings),
             ];
             lines.join("\n")
@@ -1761,8 +1778,8 @@ fn format_validate_output(runtime: &RuntimeConfig, report_format: ReportFormat) 
                 "status": "ok",
                 "result": {
                     "command": "config_validate",
-                    "valid": true,
-                    "issues": [],
+                    "valid": valid,
+                    "issues": runtime.validation_errors,
                     "warnings": runtime.validation_warnings,
                 }
             });
@@ -1860,6 +1877,32 @@ fn format_bash_policies_json(value: &ResolvedOptionalValue<BashPolicyConfig>) ->
         "source": value.source.map(ValueSource::as_str),
         "config_source": value.source.and_then(ValueSource::config_source).map(ConfigPathSource::as_str),
     })
+}
+
+fn build_show_warnings(runtime: &RuntimeConfig) -> Vec<String> {
+    let mut warnings = runtime
+        .validation_errors
+        .iter()
+        .map(|error| format!("Skipped invalid config: {error}"))
+        .collect::<Vec<_>>();
+    warnings.extend(runtime.validation_warnings.iter().cloned());
+    warnings
+}
+
+fn format_validation_issues_text(issues: &[String]) -> String {
+    if issues.is_empty() {
+        return format!(
+            "{}: {}",
+            style::label("Validation issues"),
+            style::value("none")
+        );
+    }
+
+    format!(
+        "{}: {}",
+        style::label("Validation issues"),
+        style::value(&issues.join(" | "))
+    )
 }
 
 fn format_validation_warnings_text(warnings: &[String]) -> String {

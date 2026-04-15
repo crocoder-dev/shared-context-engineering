@@ -49,12 +49,15 @@ Config file selection follows this deterministic order:
 
 When both discovered defaults exist, they are merged in memory in deterministic order `global -> local`, and local values override global values per key.
 
+When a default-discovered global or repo-local config file exists but fails JSON parsing, top-level-object validation, or schema validation, runtime resolution now skips that file, collects the failure text in `validation_errors`, and continues with remaining discovered layers plus defaults. Explicit `--config <path>` and `SCE_CONFIG_FILE` selections remain fatal on those errors. This means normal command startup still reaches dispatch for commands such as `sce version`, `sce doctor`, and `sce hooks commit-msg` even when discovered config is invalid.
+
 ## Validation contract
 
 - The canonical JSON Schema artifact for both global and repo-local `sce/config.json` files is authored in `config/pkl/base/sce-config-schema.pkl` and generated to `config/schema/sce-config.schema.json`.
 - `cli/src/services/config.rs` embeds that generated artifact at compile time as `SCE_CONFIG_SCHEMA_JSON` and uses it for runtime schema validation.
 - `sce config validate` and `sce doctor` both validate config-file structure against that shared generated schema before applying Rust-owned semantic checks such as duplicate custom `argv_prefix` detection and redundancy warnings.
 - The canonical top-level schema declaration `"$schema": "https://sce.crocoder.dev/config.json"` is a supported config key for both explicit and discovered `sce/config.json` files, including command-startup paths like `sce version` and other config-loading commands that parse config before normal command dispatch.
+- Startup/runtime config resolution now degrades gracefully only for default-discovered files: invalid discovered files are skipped and reported via collected `validation_errors`, while explicit `--config` / `SCE_CONFIG_FILE` targets still fail immediately on the same parse or validation errors.
 
 - Config file content must be valid JSON with a top-level object.
 - Allowed keys: `$schema`, `log_level`, `log_format`, `log_file`, `log_file_mode`, `timeout_ms`, `workos_client_id`, `otel`, `policies`.
@@ -95,6 +98,10 @@ When both discovered defaults exist, they are merged in memory in deterministic 
 - `show` text output renders `policies.bash` as a single deterministic line and reports `(unset)` when no policy config resolves.
 - `show` text output renders observability values as deterministic per-key lines, using `otel.` prefixes for nested OTEL keys and reporting `(unset)` for `log_file` when no value resolves.
 - `show` and `validate` both include `warnings`; this list is empty for normal valid config and carries deterministic redundancy messaging for valid-but-overlapping preset combinations such as `forbid-git-all` plus `forbid-git-commit`.
+- `validate` reports skipped invalid discovered config files through `result.valid = false` plus `result.issues`, using the collected `validation_errors` verbatim in both text and JSON output rather than hard-failing before render.
+- `validate` reaches its normal renderer for invalid discovered config; invalid discovered config is reported as a validation result rather than causing a pre-render startup failure.
+- `show` continues to report resolved values from the remaining discovered layers plus defaults when discovered config is invalid, and surfaces each skipped discovered-file failure in `warnings` with the prefix `Skipped invalid config: ...`.
+- Runtime config resolution also carries `validation_errors` for skipped invalid discovered config files; `show` maps them into user-facing warnings, while `validate` maps them into validation issues.
 - Auth-key JSON output in `show` includes `value`, text-oriented `display_value`, `source`, optional `config_source`, and a key-specific `precedence` string describing the allowed resolution chain.
 - Auth-key text output in `show` includes `auth_precedence` and abbreviates full values when they look credential-like; fully secret-bearing key classes remain redacted.
 - For the currently migrated key `workos_client_id`, `show` reports the baked default with `source: default` when env/config inputs are absent.

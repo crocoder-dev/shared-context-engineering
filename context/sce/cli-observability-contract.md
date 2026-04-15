@@ -3,9 +3,9 @@
 ## Scope
 
 This document defines the implemented structured observability baseline for `sce` runtime execution.
-It covers deterministic stderr logger controls, optional OpenTelemetry export bootstrap, config-backed runtime resolution, and event emission boundaries in `cli/src/services/observability.rs`, `cli/src/services/config.rs`, and `cli/src/app.rs`.
+It covers deterministic stderr logger controls, optional OpenTelemetry export bootstrap, config-backed runtime resolution, startup degradation behavior for invalid discovered config, and event emission boundaries in `cli/src/services/observability.rs`, `cli/src/services/config.rs`, and `cli/src/app.rs`.
 
-Runtime observability now consumes the shared resolved observability config from `cli/src/services/config.rs`: env values still win, config-file values act as fallback, and defaults apply when both are absent. Those resolved values are surfaced to operators through `sce config show`; `sce config validate` uses the same validation path but now reports only validation status plus any errors or warnings.
+Runtime observability now consumes the shared resolved observability config from `cli/src/services/config.rs`: env values still win, config-file values act as fallback, and defaults apply when both are absent. When default-discovered config files are invalid JSON, fail schema validation, or are not top-level JSON objects, observability resolution now skips those files, collects the failure text in `validation_errors`, and continues with defaults; explicit `--config` / `SCE_CONFIG_FILE` selections remain fatal. Startup therefore keeps running with degraded observability defaults instead of turning discovered invalid config into a startup failure. Those resolved values are surfaced to operators through `sce config show`; `sce config validate` uses the same validation path but now reports only validation status plus any errors or warnings.
 
 ## Runtime controls
 
@@ -16,7 +16,9 @@ Runtime observability now consumes the shared resolved observability config from
 - `SCE_LOG_FILE_MODE` requires `SCE_LOG_FILE`.
 - Defaults are deterministic: `log_level=error` and `log_format=text` when higher-precedence env/config inputs are unset.
 - When file logging is enabled and `SCE_LOG_FILE_MODE` is unset, default policy is `truncate`.
-- Invalid observability env or config-backed values fail invocation validation with actionable error text.
+- Invalid observability env values still fail invocation validation with actionable error text.
+- Invalid default-discovered observability config files no longer block runtime config resolution by themselves; they are skipped and resolution falls back to defaults.
+- After degraded observability config is constructed, startup emits one `warn`-level log per skipped discovered-file failure before command dispatch continues.
 - OpenTelemetry bootstrap is opt-in via resolved `otel.enabled` / `SCE_OTEL_ENABLED` (`true|false|1|0`, default `false`).
 - When OpenTelemetry is enabled, exporter config resolves from env first and config-file fallback second:
   - `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://127.0.0.1:4317`, must be absolute `http(s)` URL)
@@ -36,6 +38,7 @@ Runtime observability now consumes the shared resolved observability config from
 - Each emitted record includes a stable `event_id`.
 - Current app-level event identifiers:
   - `sce.app.start`
+  - `sce.config.invalid_config` (warn level - emitted once per skipped invalid discovered config file during startup)
   - `sce.config.file_discovered` (debug level - logged for each discovered config file)
   - `sce.command.raw_args` (debug level - logged at command parsing entry)
   - `sce.command.parsed`
@@ -55,6 +58,7 @@ Runtime observability now consumes the shared resolved observability config from
 - `json` format emits a single-line object with fixed top-level keys: `timestamp`, `log_format`, `level`, `event_id`, `message`, `fields`.
 - Timestamps are UTC ISO8601 with millisecond precision (e.g., `2026-03-20T14:30:00.123Z`) generated via `chrono::Utc::now()`.
 - Logger threshold behavior is deterministic and severity-based (`error < warn < info < debug`).
+- Startup invalid-config diagnostics use an explicit warn-emission path so the warning is still rendered even when degraded defaults resolve to `log_level=error`.
 - File sink writes are deterministic line-based writes with immediate flush after each record.
 
 ## File sink safety contract
@@ -68,5 +72,5 @@ Runtime observability now consumes the shared resolved observability config from
 
 - `cli/src/services/config.rs` owns shared observability value resolution, config-file discovery/merge, and env-over-config precedence for runtime inputs.
 - `cli/src/services/observability.rs` owns runtime logger construction from resolved values, level filtering, record rendering, optional file sink lifecycle/permission enforcement, and OTEL runtime setup (`TelemetryRuntime`).
-- `cli/src/app.rs` owns lifecycle event emission around parse/dispatch success and failure paths, resolves observability config before command dispatch, and wraps dispatch inside the observability subscriber context.
+- `cli/src/app.rs` owns lifecycle event emission around parse/dispatch success and failure paths, resolves observability config before command dispatch, emits startup invalid-config warning events for skipped discovered config files, and wraps dispatch inside the observability subscriber context.
 - Contract behavior is covered by `services::observability::tests` and exercised in end-to-end app command tests.
