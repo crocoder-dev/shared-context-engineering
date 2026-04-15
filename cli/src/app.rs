@@ -632,20 +632,20 @@ fn dispatch(
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
 
             // Gate all setup modes on an existing git repository before any writes.
-            services::setup::ensure_git_repository(&current_dir)
+            let repository_root = services::setup::ensure_git_repository(&current_dir)
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
 
             // Bootstrap repo-local .sce/config.json if missing.
-            services::setup::bootstrap_repo_local_config(&current_dir)
+            services::setup::bootstrap_repo_local_config(&repository_root)
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
 
             let preflight_hooks_repository = if request.install_hooks {
-                let repository_root = request
+                let hooks_repository = request
                     .hooks_repo_path
                     .as_deref()
-                    .unwrap_or(current_dir.as_path());
+                    .unwrap_or(repository_root.as_path());
                 Some(
-                    services::setup::prepare_setup_hooks_repository(repository_root)
+                    services::setup::prepare_setup_hooks_repository(hooks_repository)
                         .map_err(|error| ClassifiedError::runtime(error.to_string()))?,
                 )
             } else {
@@ -664,7 +664,7 @@ fn dispatch(
                 match dispatch {
                     services::setup::SetupDispatch::Proceed(resolved_mode) => {
                         let setup_message =
-                            services::setup::run_setup_for_mode(&current_dir, resolved_mode)
+                            services::setup::run_setup_for_mode(&repository_root, resolved_mode)
                                 .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
                         sections.push(setup_message);
                     }
