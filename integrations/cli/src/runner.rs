@@ -30,15 +30,6 @@ struct OutputExpectation {
 type OutputValidator = fn(&str) -> Result<(), String>;
 
 impl OutputExpectation {
-    const fn any() -> Self {
-        Self {
-            must_be_empty: false,
-            must_be_non_empty: false,
-            required_substrings: &[],
-            validator: None,
-        }
-    }
-
     const fn non_empty() -> Self {
         Self {
             must_be_empty: false,
@@ -66,7 +57,6 @@ impl OutputExpectation {
 struct CaseExpectation {
     status: ExpectedStatus,
     stdout: OutputExpectation,
-    stderr: OutputExpectation,
 }
 
 #[derive(Clone, Copy)]
@@ -82,7 +72,6 @@ const HELP_CASES: &[CommandCase] = &[CommandCase {
     expectation: CaseExpectation {
         status: ExpectedStatus::Success,
         stdout: OutputExpectation::non_empty().with_required_substrings(&["Usage:"]),
-        stderr: OutputExpectation::any(),
     },
 }];
 
@@ -93,7 +82,6 @@ const VERSION_CASES: &[CommandCase] = &[
         expectation: CaseExpectation {
             status: ExpectedStatus::Success,
             stdout: OutputExpectation::non_empty().with_validator(validate_version_text_output),
-            stderr: OutputExpectation::any(),
         },
     },
     CommandCase {
@@ -102,7 +90,6 @@ const VERSION_CASES: &[CommandCase] = &[
         expectation: CaseExpectation {
             status: ExpectedStatus::Success,
             stdout: OutputExpectation::non_empty().with_validator(validate_version_text_output),
-            stderr: OutputExpectation::any(),
         },
     },
     CommandCase {
@@ -111,7 +98,6 @@ const VERSION_CASES: &[CommandCase] = &[
         expectation: CaseExpectation {
             status: ExpectedStatus::Success,
             stdout: OutputExpectation::non_empty().with_validator(validate_version_json_output),
-            stderr: OutputExpectation::any(),
         },
     },
     CommandCase {
@@ -120,7 +106,6 @@ const VERSION_CASES: &[CommandCase] = &[
         expectation: CaseExpectation {
             status: ExpectedStatus::Success,
             stdout: OutputExpectation::non_empty().with_validator(validate_version_text_output),
-            stderr: OutputExpectation::any(),
         },
     },
     CommandCase {
@@ -129,7 +114,6 @@ const VERSION_CASES: &[CommandCase] = &[
         expectation: CaseExpectation {
             status: ExpectedStatus::Success,
             stdout: OutputExpectation::non_empty().with_validator(validate_version_text_output),
-            stderr: OutputExpectation::any(),
         },
     },
 ];
@@ -198,23 +182,13 @@ fn run_case(sce_binary: &PathBuf, case: CommandCase) -> Result<(), HarnessError>
     let command = render_command(sce_binary, case.argv);
 
     assert_status(case, status, &stdout, &stderr, &command)?;
-    assert_output(
-        "stdout",
+    assert_stdout_output(
         case,
         &stdout,
         &stderr,
         status,
         &command,
         case.expectation.stdout,
-    )?;
-    assert_output(
-        "stderr",
-        case,
-        &stderr,
-        &stdout,
-        status,
-        &command,
-        case.expectation.stderr,
     )?;
 
     Ok(())
@@ -269,93 +243,61 @@ fn assert_status(
     })
 }
 
-fn assert_output(
-    stream_name: &'static str,
+fn assert_stdout_output(
     case: CommandCase,
-    stream: &str,
-    other_stream: &str,
+    stdout: &str,
+    stderr: &str,
     status: i32,
     command: &str,
     expectation: OutputExpectation,
 ) -> Result<(), HarnessError> {
-    let trimmed = stream.trim();
+    let trimmed_stdout = stdout.trim();
+    let trimmed_stderr = stderr.trim();
 
-    if expectation.must_be_empty && !trimmed.is_empty() {
+    if expectation.must_be_empty && !trimmed_stdout.is_empty() {
         return Err(HarnessError::AssertionFailed {
             case: case.name,
-            reason: format!("expected {stream_name} to be empty"),
+            reason: "expected stdout to be empty".to_string(),
             command: command.to_string(),
             status,
-            stdout: if stream_name == "stdout" {
-                trimmed.to_string()
-            } else {
-                other_stream.trim().to_string()
-            },
-            stderr: if stream_name == "stderr" {
-                trimmed.to_string()
-            } else {
-                other_stream.trim().to_string()
-            },
+            stdout: trimmed_stdout.to_string(),
+            stderr: trimmed_stderr.to_string(),
         });
     }
 
-    if expectation.must_be_non_empty && trimmed.is_empty() {
+    if expectation.must_be_non_empty && trimmed_stdout.is_empty() {
         return Err(HarnessError::AssertionFailed {
             case: case.name,
-            reason: format!("expected {stream_name} to be non-empty"),
+            reason: "expected stdout to be non-empty".to_string(),
             command: command.to_string(),
             status,
-            stdout: if stream_name == "stdout" {
-                trimmed.to_string()
-            } else {
-                other_stream.trim().to_string()
-            },
-            stderr: if stream_name == "stderr" {
-                trimmed.to_string()
-            } else {
-                other_stream.trim().to_string()
-            },
+            stdout: trimmed_stdout.to_string(),
+            stderr: trimmed_stderr.to_string(),
         });
     }
 
     for required in expectation.required_substrings {
-        if !stream.contains(required) {
+        if !stdout.contains(required) {
             return Err(HarnessError::AssertionFailed {
                 case: case.name,
-                reason: format!("expected {stream_name} to contain '{required}'"),
+                reason: format!("expected stdout to contain '{required}'"),
                 command: command.to_string(),
                 status,
-                stdout: if stream_name == "stdout" {
-                    trimmed.to_string()
-                } else {
-                    other_stream.trim().to_string()
-                },
-                stderr: if stream_name == "stderr" {
-                    trimmed.to_string()
-                } else {
-                    other_stream.trim().to_string()
-                },
+                stdout: trimmed_stdout.to_string(),
+                stderr: trimmed_stderr.to_string(),
             });
         }
     }
 
     if let Some(validator) = expectation.validator {
-        if let Err(reason) = validator(stream) {
+        if let Err(reason) = validator(stdout) {
             return Err(HarnessError::AssertionFailed {
                 case: case.name,
-                reason: format!("invalid {stream_name} contract: {reason}"),
+                reason: format!("invalid stdout contract: {reason}"),
                 command: command.to_string(),
                 status,
-                stdout: if stream_name == "stdout" {
-                    trimmed.to_string()
-                } else {
-                    other_stream.trim().to_string()
-                },
-                stderr: if stream_name == "stderr" {
-                    trimmed.to_string()
-                } else {
-                    other_stream.trim().to_string()
-                },
+                stdout: trimmed_stdout.to_string(),
+                stderr: trimmed_stderr.to_string(),
             });
         }
     }
