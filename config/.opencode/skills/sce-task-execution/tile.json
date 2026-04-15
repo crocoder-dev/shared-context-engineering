@@ -1,6 +1,6 @@
 {
   "name": "crocoder-dev/opencode-sce-task-execution",
-  "version": "0.2.0-pre-alpha-v2",
+  "version": "0.2.0",
   "summary": "Execute one approved Shared Context Engineering plan task with guardrails.",
   "private": false,
   "skills": {

@@ -1,6 +1,6 @@
 {
   "name": "crocoder-dev/sce-handover-writer",
-  "version": "0.2.0-pre-alpha-v2",
+  "version": "0.2.0",
   "summary": "Create structured handover notes for Shared Context Engineering tasks.",
   "private": false,
   "skills": {

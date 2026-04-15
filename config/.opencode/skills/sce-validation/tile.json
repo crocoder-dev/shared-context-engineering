@@ -1,6 +1,6 @@
 {
   "name": "crocoder-dev/opencode-sce-validation",
-  "version": "0.2.0-pre-alpha-v2",
+  "version": "0.2.0",
   "summary": "Run final validation for a Shared Context Engineering plan.",
   "private": false,
   "skills": {

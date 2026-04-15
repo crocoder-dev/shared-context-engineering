@@ -1,6 +1,6 @@
 {
   "name": "crocoder-dev/sce-context-sync",
-  "version": "0.2.0-pre-alpha-v2",
+  "version": "0.2.0",
   "summary": "Sync Shared Context Engineering context files with implemented code changes.",
   "private": false,
   "skills": {
