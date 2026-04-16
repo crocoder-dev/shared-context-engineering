@@ -5,7 +5,7 @@ The generated-config pipeline now has one canonical Pkl-authored source for Open
 ## Source of truth
 
 - `config/pkl/base/opencode.pkl` defines canonical `CanonicalOpenCodePluginRegistration` entries.
-- The current implemented entry is `sce_bash_policy_plugin` with path `./plugins/sce-bash-policy.ts`.
+- The current canonical entries are `sce_bash_policy_plugin` (`./plugins/sce-bash-policy.ts`) and `sce_agent_trace_plugin` (`./plugins/sce-agent-trace.ts`).
 - The current registration scope is intentionally limited to SCE-generated OpenCode plugins emitted by this repository.
 
 ## Renderer handoff
@@ -18,8 +18,8 @@ The generated-config pipeline now has one canonical Pkl-authored source for Open
 
 - `config/pkl/renderers/opencode-content.pkl` and `config/pkl/renderers/opencode-automated-content.pkl` render `opencodeConfig` artifacts that include the shared plugin registration.
 - `config/pkl/generate.pkl` writes those artifacts to `config/.opencode/opencode.json` and `config/automated/.opencode/opencode.json`.
-- Both generated OpenCode profiles currently serialize `plugin: ["./plugins/sce-bash-policy.ts"]`.
-- The registered plugin file itself is generated-owned at `config/.opencode/plugins/sce-bash-policy.ts` and `config/automated/.opencode/plugins/sce-bash-policy.ts`.
+- Both generated OpenCode profiles currently serialize `plugin: ["./plugins/sce-bash-policy.ts", "./plugins/sce-agent-trace.ts"]`.
+- The generated plugin files currently registered by those manifests are `config/.opencode/plugins/sce-bash-policy.ts`, `config/.opencode/plugins/sce-agent-trace.ts`, `config/automated/.opencode/plugins/sce-bash-policy.ts`, and `config/automated/.opencode/plugins/sce-agent-trace.ts`.
 
 ## Claude boundary
 
@@ -36,7 +36,7 @@ The generated-config pipeline now has one canonical Pkl-authored source for Open
 ## Verification
 
 - Inspect `config/.opencode/opencode.json` and `config/automated/.opencode/opencode.json` for the generated `plugin` field.
-- Inspect `config/.opencode/plugins/sce-bash-policy.ts` and `config/automated/.opencode/plugins/sce-bash-policy.ts` for the generated plugin implementation.
+- Inspect `config/.opencode/plugins/sce-bash-policy.ts`, `config/.opencode/plugins/sce-agent-trace.ts`, `config/automated/.opencode/plugins/sce-bash-policy.ts`, and `config/automated/.opencode/plugins/sce-agent-trace.ts` for the generated plugin implementations.
 - Verify `config/.claude/` contains no bash-policy files (no `lib/bash-policy-*`, no `hooks/sce-bash-policy-hook.js`, no bash-policy hooks in `settings.json`).
 
 See also: [../overview.md](../overview.md), [../architecture.md](../architecture.md), [../glossary.md](../glossary.md)
