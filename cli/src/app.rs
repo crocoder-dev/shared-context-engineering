@@ -746,7 +746,7 @@ fn dispatch(
         }
         Command::Doctor(request) => services::doctor::run_doctor(*request)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
-        Command::Hooks(subcommand) => services::hooks::run_hooks_subcommand(subcommand.clone())
+        Command::Hooks(subcommand) => services::hooks::run_hooks_subcommand(subcommand)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::Version(request) => services::version::render_version(*request)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
