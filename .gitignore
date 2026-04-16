@@ -5,3 +5,4 @@ integrations/**/target/
 cli/assets/generated/
 result*
 dist/
+.sce/local.db

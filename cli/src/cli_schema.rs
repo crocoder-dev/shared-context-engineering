@@ -105,6 +105,12 @@ pub enum Commands {
         subcommand: HooksSubcommand,
     },
 
+    #[command(about = "Persist OpenCode prompt submissions to local Agent Trace DB")]
+    Trace {
+        #[command(subcommand)]
+        subcommand: TraceSubcommand,
+    },
+
     #[command(about = "Print deterministic runtime version metadata")]
     Version {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
@@ -194,6 +200,15 @@ pub enum HooksSubcommand {
 
     #[command(about = "Run post-rewrite hook (reads pairs from STDIN)")]
     PostRewrite { rewrite_method: String },
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum TraceSubcommand {
+    #[command(about = "Append a submitted prompt to local Agent Trace DB")]
+    AppendPrompt {
+        #[arg(long)]
+        prompt: String,
+    },
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]

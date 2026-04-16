@@ -17,6 +17,7 @@ enum Command {
     Setup(services::setup::SetupRequest),
     Doctor(services::doctor::DoctorRequest),
     Hooks(services::hooks::HookSubcommand),
+    Trace(services::trace::TraceSubcommand),
     Version(services::version::VersionRequest),
 }
 
@@ -31,6 +32,7 @@ impl Command {
             Self::Setup(_) => services::setup::NAME,
             Self::Doctor(_) => services::doctor::NAME,
             Self::Hooks(_) => services::hooks::NAME,
+            Self::Trace(_) => services::trace::NAME,
             Self::Version(_) => services::version::NAME,
         }
     }
@@ -518,6 +520,7 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<Command, Classi
             }))
         }
         cli_schema::Commands::Hooks { subcommand } => convert_hooks_subcommand(subcommand),
+        cli_schema::Commands::Trace { subcommand } => convert_trace_subcommand(subcommand),
         cli_schema::Commands::Version { format } => {
             Ok(Command::Version(services::version::VersionRequest {
                 format: convert_output_format(format),
@@ -673,6 +676,17 @@ fn convert_hooks_subcommand(
     }
 }
 
+#[allow(clippy::unnecessary_wraps)]
+fn convert_trace_subcommand(
+    subcommand: cli_schema::TraceSubcommand,
+) -> Result<Command, ClassifiedError> {
+    match subcommand {
+        cli_schema::TraceSubcommand::AppendPrompt { prompt } => Ok(Command::Trace(
+            services::trace::TraceSubcommand::AppendPrompt { prompt },
+        )),
+    }
+}
+
 fn dispatch(
     command: &Command,
     _logger: &services::observability::Logger,
@@ -748,6 +762,8 @@ fn dispatch(
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::Hooks(subcommand) => services::hooks::run_hooks_subcommand(subcommand.clone())
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
+        Command::Trace(subcommand) => services::trace::run_trace_subcommand(subcommand.clone())
+            .map_err(|error| ClassifiedError::runtime(error.to_string())),
         Command::Version(request) => services::version::render_version(*request)
             .map_err(|error| ClassifiedError::runtime(error.to_string())),
     }
@@ -759,6 +775,8 @@ mod tests {
 
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, OnceLock};
+
+    use rusqlite::Connection;
 
     static APP_TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -801,6 +819,14 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
         }
+    }
+
+    fn sqlite_count(connection: &Connection, table_name: &str) -> i64 {
+        connection
+            .query_row(&format!("SELECT COUNT(*) FROM {table_name}"), [], |row| {
+                row.get(0)
+            })
+            .expect("table count query should succeed")
     }
 
     #[test]
@@ -852,5 +878,60 @@ mod tests {
         assert!(log_text.contains(INVALID_CONFIG_WARNING_EVENT_ID));
         assert!(log_text.contains("Invalid discovered config skipped; using degraded defaults"));
         assert!(log_text.contains("must contain valid JSON"));
+    }
+
+    #[test]
+    fn trace_append_prompt_command_persists_prompt_without_exposing_internal_ids() {
+        let _guard = app_test_env_lock()
+            .lock()
+            .expect("app test env lock should succeed");
+        let fixture = TestDir::new();
+
+        let original_cwd = std::env::current_dir().expect("current dir should resolve");
+        std::env::set_current_dir(fixture.path()).expect("current dir should be set");
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let exit_code = run_with_dependency_check_and_streams(
+            vec![
+                String::from("sce"),
+                String::from("trace"),
+                String::from("append-prompt"),
+                String::from("--prompt"),
+                String::from("Prompt from OpenCode submit path"),
+            ],
+            || Ok(()),
+            &mut stdout,
+            &mut stderr,
+        );
+
+        std::env::set_current_dir(&original_cwd).expect("original current dir should be restored");
+
+        assert_eq!(exit_code, ExitCode::SUCCESS);
+
+        let stderr_text = String::from_utf8(stderr).expect("stderr should be utf8");
+        assert_eq!(stderr_text, "");
+
+        let stdout_text = String::from_utf8(stdout).expect("stdout should be utf8");
+        assert_eq!(
+            stdout_text.trim(),
+            "trace append-prompt persisted submitted prompt to local Agent Trace DB."
+        );
+
+        let db_path = fixture.path().join(".sce").join("local.db");
+        assert!(
+            db_path.is_file(),
+            "trace append-prompt should lazily create .sce/local.db"
+        );
+
+        let connection = Connection::open(&db_path).expect("db should be openable");
+        assert_eq!(sqlite_count(&connection, "prompts"), 1);
+
+        let prompt_text: String = connection
+            .query_row("SELECT prompt_text FROM prompts LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .expect("prompt row should be queryable");
+        assert_eq!(prompt_text, "Prompt from OpenCode submit path");
     }
 }

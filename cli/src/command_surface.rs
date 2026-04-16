@@ -63,6 +63,12 @@ pub const COMMANDS: &[CommandContract] = &[
         show_in_top_level_help: false,
     },
     CommandContract {
+        name: services::trace::NAME,
+        status: ImplementationStatus::Implemented,
+        purpose: "Persist OpenCode prompt submissions to local Agent Trace DB",
+        show_in_top_level_help: false,
+    },
+    CommandContract {
         name: services::version::NAME,
         status: ImplementationStatus::Implemented,
         purpose: "Print deterministic runtime version metadata",

@@ -7,12 +7,13 @@ compatibility: opencode
 
 ## Goal
 
-Turn a set of code changes (diff, file list, PR summary, or notes) into atomic commits with repository-style commit messages.
+Turn the current staged changes into atomic repository-style commit message proposals.
 
-Atomic means:
-- one coherent change per commit
-- minimal scope that still builds/tests logically
-- a short, technical, actionable commit message
+For this workflow:
+- analyze the staged diff to identify coherent change units
+- propose one or more commit messages when staged changes mix unrelated goals
+- keep each proposed message focused on a single coherent change
+- stay proposal-only: do not create commits automatically
 
 ## Inputs
 
@@ -22,29 +23,33 @@ Accept any of:
 - PR/task summary
 - before/after behavior notes
 
-If changes mix unrelated goals, split them.
-
 ## Output format
 
-Commit messages must follow:
+Produce commit message proposals that follow:
 - `scope: Subject`
 - imperative verb (Fix/Add/Remove/Implement/Refactor/Simplify/Rename/Update/Ensure/Allow)
 - no trailing period in subject
 - body when context is needed (why/what changed/impact)
 - issue references on their own lines (for example `Fixes #123`)
 
+When staged changes include `context/plans/*.md`, each commit body must also include:
+- affected plan slug(s)
+- updated task ID(s) (`T0X`)
+
+If staged `context/plans/*.md` changes do not expose the plan slug or updated task ID clearly enough to cite faithfully, stop and ask for clarification instead of inventing references.
+
 ## Procedure
 
-1) Identify smallest coherent units
-- Group by reason and user-visible effect, not file type.
-- Typical atomic boundaries: pure refactor, behavior change, tests, build/config, docs.
-- Avoid mixing refactor and behavior unless strictly required.
+1) Analyze the staged diff for coherent units
+- Infer the main reason(s) for the staged change from the diff first.
+- Use optional notes only to refine wording, not to override the staged truth.
+- Identify whether staged changes represent one coherent unit or multiple unrelated goals.
 
-2) Choose scope
+2) Choose scope for each unit
 - Use the smallest stable subsystem/module name recognizable in the repo.
 - If unclear, use the primary directory/package of the change.
 
-3) Write subject
+3) Write subject for each unit
 - Pattern: `<scope>: <Imperative verb> <specific technical summary>`
 - Keep concrete and targeted.
 
@@ -52,26 +57,21 @@ Commit messages must follow:
 - Explain what was wrong/missing, why it matters, what changed conceptually, and impact.
 - Add issue references on separate lines.
 
-5) Validate atomicity
-- Reverting the commit should cleanly remove one logical change.
-- Review should not require unrelated context.
-- No drive-by formatting or unrelated refactors.
+5) Apply the plan-update body rule when needed
+- Check whether staged changes include `context/plans/*.md`.
+- If yes, cite the affected plan slug(s) and updated task ID(s) in the body.
+- If the staged plan diff is ambiguous, stop with actionable guidance asking the user to stage or clarify the plan/task reference explicitly.
 
-If atomicity fails, split further.
+6) Propose split guidance when appropriate
+- If staged changes mix unrelated goals (for example: a feature change plus unrelated refactoring), propose separate commit messages for each coherent unit.
+- Explain why the split is recommended and which files belong to each proposed commit.
+- If staged changes represent one coherent unit, propose a single commit message.
 
-## Split guidance
-
-Split when you see:
-- renames with behavior changes
-- pure refactors bundled with fixes
-- formatting-only changes mixed with logic
-- multiple features shipped together
-
-Default split order:
-1. mechanical rename/refactor
-2. behavior change
-3. tests
-4. docs
+7) Validate each proposed message
+- Each message should describe its intended change faithfully.
+- The subject should stay concise and technical.
+- The body should add useful why/impact context instead of repeating the subject.
+- Do not invent plan or task references.
 
 ## Context-file guidance gating
 
@@ -83,6 +83,8 @@ Default split order:
 
 - vague subjects ("cleanup", "updates")
 - body repeats subject without adding why
-- unrelated changes in one commit
 - playful tone in serious fixes/architecture changes
 - mention `context/` sync activity in commit messages
+- inventing plan slugs or task IDs for staged plan edits
+- proposing splits for changes that are already coherent
+- forcing unrelated changes into a single commit

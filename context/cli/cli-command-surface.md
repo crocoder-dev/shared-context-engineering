@@ -10,7 +10,7 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 - Runtime shell: `cli/src/app.rs`
 - Command contract catalog: `cli/src/command_surface.rs`
 - Local Turso adapter: `cli/src/services/local_db.rs`
-- Service domains: `cli/src/services/{agent_trace,auth,auth_command,completion,config,default_paths,local_db,setup,doctor,hooks,resilience,sync,token_storage,version}.rs`
+- Service domains: `cli/src/services/{agent_trace,auth,auth_command,completion,config,default_paths,local_db,setup,doctor,hooks,trace,resilience,sync,token_storage,version}.rs`
 - Shared test temp-path helper: `cli/src/test_support.rs` (`TestTempDir`, test-only module)
 
 ## Onboarding documentation
@@ -44,11 +44,12 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 - the visible command list is `help`, `config`, `setup`, `doctor`, `version`, and `completion`
 - top-level help omits implemented/placeholder labels
 - top-level examples cover setup plus doctor/version machine-readable or repair-intent flows (`doctor --format json`, `doctor --fix`, `version --format json`) and use the shared example-command styling when stdout color is enabled
-- `auth`, `hooks`, and `sync` stay parser-valid and directly invocable, but are hidden from those top-level help surfaces
+- `auth`, `hooks`, `trace`, and `sync` stay parser-valid and directly invocable, but are hidden from those top-level help surfaces
 
 Placeholder commands currently acknowledge planned behavior and do not claim production implementation.
 `sync` routes through an explicit service-contract placeholder.
 `hooks` routes through implemented subcommand parsing/dispatch for `pre-commit`, `commit-msg`, `post-commit`, and `post-rewrite`; current behavior is attribution-only and disabled by default.
+`trace` routes through implemented subcommand parsing/dispatch for `append-prompt`; current behavior persists prompt text via Rust local DB orchestration and does not expose internal session/conversation IDs.
 `config` exposes deterministic inspect/validate entrypoints (`sce config show`, `sce config validate`) with explicit precedence (`flags > env > config file > defaults`), a shared auth-runtime resolver for supported keys that declare env/config/optional baked-default inputs starting with `workos_client_id`, first-class `policies.bash` reporting for preset/custom blocked-command rules, and deterministic text/JSON output modes where `show` reports resolved values with provenance while `validate` reports pass/fail plus validation issues and warnings only.
 `version` exposes deterministic runtime identification output in text mode by default and JSON mode via `--format json`.
 `completion` exposes deterministic shell completion generation via `sce completion --shell <bash|zsh|fish>`.
@@ -90,7 +91,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - `cli/src/services/default_paths.rs` defines the canonical per-user persisted-location seam for config/state/cache roots plus named default file paths and an explicit inventory of current default persisted artifacts (`global config`, `auth tokens`, `local DB`) used by config discovery, token storage, local DB bootstrap, and doctor diagnostics; no default cache-backed persisted artifact exists yet.
 - `cli/src/services/token_storage.rs` defines WorkOS token persistence (`save_tokens`, `load_tokens`, `delete_tokens`) with shared default-path-seam resolution for the default token file, JSON payload storage including `stored_at_unix_seconds`, graceful missing-file deletion behavior, missing/corrupted-file handling, and restrictive on-disk permissions (`0600` on Unix; Windows best-effort ACL hardening via `icacls`).
 - `cli/src/services/auth_command.rs` defines the auth command orchestration surface (`AuthRequest`, `AuthSubcommand`, `run_auth_subcommand`) for `login`, `renew`, `logout`, and `status`, including shared text/JSON rendering, token refresh/forced renewal handling for `sce auth renew`, token-storage-backed logout deletion with path-aware remediation guidance, expiry-aware status reporting, canonical credentials-file path reporting sourced from the shared default-path seam, precedence-aware client-ID guidance sourced from the shared auth-runtime resolver instead of env-only assumptions, and a lazily initialized current-thread Tokio runtime with both I/O and time enabled so the auth flows can drive the WorkOS device/refresh paths without the prior I/O-disabled panic.
-- `cli/src/app.rs` dispatches `auth`, `config`, `setup`, `doctor`, `hooks`, `sync`, `version`, and `completion` through service-level modules so runtime messages are sourced from domain modules instead of inline strings.
+- `cli/src/app.rs` dispatches `auth`, `config`, `setup`, `doctor`, `hooks`, `trace`, `sync`, `version`, and `completion` through service-level modules so runtime messages are sourced from domain modules instead of inline strings.
 
 ## Local Turso adapter behavior
 
@@ -100,7 +101,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - The smoke path creates `sce_smoke`, inserts one row, and runs a query round-trip to confirm readable results.
 - `cli/src/services/sync.rs` wraps this in a lazily initialized shared tokio current-thread runtime and applies bounded retries (3 attempts), operation timeout (2000ms), and capped backoff (100-400ms) before returning placeholder-safe messaging.
 - The same sync path now derives deferred cloud checkpoint messaging from `PlaceholderCloudSyncGateway`.
-- `cli/src/services/local_db.rs` retains a neutral empty-file local DB bootstrap seam for future runtime use without schema migrations or trace-table installation.
+- `cli/src/services/local_db.rs` is an active SQLite milestone service with schema bootstrap, typed persistence helpers, and submit-time prompt orchestration used by `sce trace append-prompt`.
 
 ## Parser-focused tests
 
