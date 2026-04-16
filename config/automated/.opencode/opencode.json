@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    "./plugins/sce-bash-policy.ts"
+    "./plugins/sce-bash-policy.ts", "./plugins/sce-agent-trace.ts"
   ]
 }

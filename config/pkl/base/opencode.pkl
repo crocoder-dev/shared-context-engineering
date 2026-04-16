@@ -9,3 +9,8 @@ sce_bash_policy_plugin = new CanonicalOpenCodePluginRegistration {
   id = "sce-bash-policy"
   path = "./plugins/sce-bash-policy.ts"
 }
+
+sce_agent_trace_plugin = new CanonicalOpenCodePluginRegistration {
+  id = "sce-agent-trace"
+  path = "./plugins/sce-agent-trace.ts"
+}
