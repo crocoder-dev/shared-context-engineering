@@ -8,6 +8,7 @@ import "base/bash-policy-presets.pkl" as bash_policy_presets
 local bashPolicyPresetCatalogSource = bash_policy_presets.output.text
 local bashPolicyRuntimeSource = read("../lib/bash-policy-plugin/bash-policy/runtime.ts").text
 local opencodeBashPolicyPluginSource = read("../lib/bash-policy-plugin/opencode-bash-policy-plugin.ts").text
+local opencodeAgentTracePluginSource = read("../lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts").text
 
 output {
   files {
@@ -82,6 +83,9 @@ output {
     ["config/.opencode/plugins/sce-bash-policy.ts"] {
       text = opencodeBashPolicyPluginSource
     }
+    ["config/.opencode/plugins/sce-agent-trace.ts"] {
+      text = opencodeAgentTracePluginSource
+    }
     ["config/.opencode/opencode.json"] {
       text = opencode.opencodeConfig.rendered
     }
@@ -93,6 +97,9 @@ output {
     }
     ["config/automated/.opencode/plugins/sce-bash-policy.ts"] {
       text = opencodeBashPolicyPluginSource
+    }
+    ["config/automated/.opencode/plugins/sce-agent-trace.ts"] {
+      text = opencodeAgentTracePluginSource
     }
     ["config/automated/.opencode/opencode.json"] {
       text = opencode_automated.opencodeConfig.rendered

@@ -17,7 +17,10 @@ class RenderedTextFile {
 tileWorkspace = "crocoder-dev"
 tileVersion = read("../../../.version").text.trim()
 
-sceGeneratedOpenCodePlugins = List(opencode.sce_bash_policy_plugin)
+sceGeneratedOpenCodePlugins = List(
+  opencode.sce_bash_policy_plugin,
+  opencode.sce_agent_trace_plugin
+)
 sceGeneratedOpenCodePluginPathsJson = sceGeneratedOpenCodePlugins
   .map((plugin) -> plugin.path_json)
   .join(", ")
