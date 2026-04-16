@@ -3,6 +3,7 @@
 [![GitHub Actions](https://img.shields.io/github/actions/workflow/status/crocoder-dev/shared-context-engineering/publish-tiles.yml?branch=main&label=github%20actions)](https://github.com/crocoder-dev/shared-context-engineering/actions/workflows/publish-tiles.yml)
 [![crates.io](https://img.shields.io/crates/v/shared-context-engineering?logo=rust)](https://crates.io/crates/shared-context-engineering)
 [![npm](https://img.shields.io/npm/v/%40crocoder-dev%2Fsce?logo=npm)](https://www.npmjs.com/package/@crocoder-dev/sce)
+[![tessl](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.tessl.io%2Fv1%2Fbadges%2Fcrocoder-dev%2Fsce-plan-authoring)](https://tessl.io/registry/crocoder-dev/sce-plan-authoring)
 
 Shared Context Engineering is AI-assisted software delivery with explicit, versioned context.
 
