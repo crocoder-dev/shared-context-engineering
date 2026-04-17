@@ -49,14 +49,7 @@ fn run_hooks_subcommand_in_repo(
 }
 
 fn run_pre_commit_subcommand_with_trace(repository_root: &Path) -> Result<String> {
-    let subcommand = HookSubcommand::PreCommit;
-    let input = build_hook_trace_input_for_pre_commit(repository_root);
-    let outcome = run_pre_commit_subcommand(repository_root);
-
-    // Trace persistence is diagnostic only; hook execution should not fail if local trace writing fails.
-    let _ = persist_hook_trace(repository_root, &subcommand, &input, &outcome);
-
-    outcome
+    run_pre_commit_subcommand(repository_root)
 }
 
 fn run_pre_commit_subcommand(repository_root: &Path) -> Result<String> {
@@ -117,16 +110,10 @@ fn run_commit_msg_subcommand_in_repo(
 
 fn run_commit_msg_subcommand_with_trace(
     repository_root: &Path,
-    subcommand: &HookSubcommand,
+    _: &HookSubcommand,
     message_file: &Path,
 ) -> Result<String> {
-    let input = build_hook_trace_input_for_commit_msg(repository_root, message_file);
-    let outcome = run_commit_msg_subcommand_in_repo(repository_root, message_file);
-
-    // Trace persistence is diagnostic only; hook execution should not fail if local trace writing fails.
-    let _ = persist_hook_trace(repository_root, subcommand, &input, &outcome);
-
-    outcome
+    run_commit_msg_subcommand_in_repo(repository_root, message_file)
 }
 
 fn run_post_commit_subcommand(repository_root: &Path) -> Result<String> {
@@ -143,7 +130,6 @@ fn run_post_commit_subcommand_with_trace(repository_root: &Path) -> Result<Strin
     let input = build_hook_trace_input_for_post_commit(repository_root);
     let outcome = run_post_commit_subcommand(repository_root);
 
-    // Trace persistence is diagnostic only; hook execution should not fail if local trace writing fails.
     let _ = persist_hook_trace(repository_root, &subcommand, &input, &outcome);
 
     outcome
@@ -161,22 +147,11 @@ fn run_post_rewrite_subcommand(repository_root: &Path, rewrite_method: &str) -> 
 
 fn run_post_rewrite_subcommand_with_trace(
     repository_root: &Path,
-    subcommand: &HookSubcommand,
+    _: &HookSubcommand,
     rewrite_method: &str,
 ) -> Result<String> {
     let stdin_payload = read_hook_stdin();
-    let input = build_hook_trace_input_for_post_rewrite(
-        repository_root,
-        rewrite_method,
-        stdin_payload.as_deref().unwrap_or_default(),
-    );
-    let outcome =
-        stdin_payload.and_then(|_| run_post_rewrite_subcommand(repository_root, rewrite_method));
-
-    // Trace persistence is diagnostic only; hook execution should not fail if local trace writing fails.
-    let _ = persist_hook_trace(repository_root, subcommand, &input, &outcome);
-
-    outcome
+    stdin_payload.and_then(|_| run_post_rewrite_subcommand(repository_root, rewrite_method))
 }
 
 fn hook_runtime_invocation_name(subcommand: &HookSubcommand) -> &'static str {
@@ -241,63 +216,9 @@ fn hook_trace_name(subcommand: &HookSubcommand) -> &'static str {
     }
 }
 
-fn build_hook_trace_input_for_pre_commit(repository_root: &Path) -> Value {
-    let mut input = build_base_hook_trace_input("pre-commit");
-    insert_staged_changes_from_git(repository_root, &mut input);
-    Value::Object(input)
-}
-
-fn build_hook_trace_input_for_commit_msg(repository_root: &Path, message_file: &Path) -> Value {
-    let mut input = build_base_hook_trace_input("commit-msg");
-    insert_staged_changes_from_git(repository_root, &mut input);
-    input.insert(
-        "message_file".to_string(),
-        Value::String(message_file.display().to_string()),
-    );
-
-    match fs::read_to_string(message_file) {
-        Ok(message_from_git) => {
-            input.insert(
-                "message_from_git".to_string(),
-                Value::String(message_from_git),
-            );
-        }
-        Err(error) => {
-            input.insert(
-                "message_from_git_read_error".to_string(),
-                Value::String(error.to_string()),
-            );
-        }
-    }
-
-    Value::Object(input)
-}
-
 fn build_hook_trace_input_for_post_commit(repository_root: &Path) -> Value {
     let mut input = build_base_hook_trace_input("post-commit");
     insert_head_commit_from_git(repository_root, &mut input);
-    Value::Object(input)
-}
-
-fn build_hook_trace_input_for_post_rewrite(
-    repository_root: &Path,
-    rewrite_method: &str,
-    stdin_payload: &str,
-) -> Value {
-    let mut input = build_base_hook_trace_input("post-rewrite");
-    input.insert(
-        "rewrite_method".to_string(),
-        Value::String(rewrite_method.trim().to_string()),
-    );
-    input.insert(
-        "stdin_from_git".to_string(),
-        Value::String(stdin_payload.to_string()),
-    );
-    input.insert(
-        "rewritten_commits_from_git".to_string(),
-        Value::Array(parse_post_rewrite_pairs(repository_root, stdin_payload)),
-    );
-
     Value::Object(input)
 }
 
@@ -328,28 +249,6 @@ fn read_hook_stdin() -> Result<String> {
         .read_to_string(&mut stdin_payload)
         .context("Failed to read hook input from STDIN.")?;
     Ok(stdin_payload)
-}
-
-fn insert_staged_changes_from_git(
-    repository_root: &Path,
-    input: &mut serde_json::Map<String, Value>,
-) {
-    insert_git_output(
-        repository_root,
-        &["diff", "--cached", "--patch", "--no-ext-diff"],
-        "Failed to capture staged patch from git.",
-        input,
-        "staged_patch_from_git",
-        "staged_patch_from_git_read_error",
-    );
-    insert_git_output(
-        repository_root,
-        &["diff", "--cached", "--name-status", "--no-ext-diff"],
-        "Failed to capture staged file list from git.",
-        input,
-        "staged_name_status_from_git",
-        "staged_name_status_from_git_read_error",
-    );
 }
 
 fn insert_head_commit_from_git(repository_root: &Path, input: &mut serde_json::Map<String, Value>) {
@@ -387,48 +286,6 @@ fn insert_git_output(
             input.insert(error_key.to_string(), Value::String(error.to_string()));
         }
     }
-}
-
-fn parse_post_rewrite_pairs(repository_root: &Path, stdin_payload: &str) -> Vec<Value> {
-    stdin_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            let mut parts = line.split_whitespace();
-            match (parts.next(), parts.next()) {
-                (Some(old_oid), Some(new_oid)) => {
-                    build_post_rewrite_pair_trace(repository_root, old_oid, new_oid)
-                }
-                _ => json!({
-                    "raw": line,
-                }),
-            }
-        })
-        .collect()
-}
-
-fn build_post_rewrite_pair_trace(repository_root: &Path, old_oid: &str, new_oid: &str) -> Value {
-    let mut pair = serde_json::Map::new();
-    pair.insert("old_oid".to_string(), Value::String(old_oid.to_string()));
-    pair.insert("new_oid".to_string(), Value::String(new_oid.to_string()));
-
-    match run_git_command_capture_stdout(
-        repository_root,
-        &["diff", "--patch", "--no-ext-diff", old_oid, new_oid],
-        "Failed to capture rewritten patch from git.",
-    ) {
-        Ok(stdout) => {
-            pair.insert("patch_from_git".to_string(), Value::String(stdout));
-        }
-        Err(error) => {
-            pair.insert(
-                "patch_from_git_read_error".to_string(),
-                Value::String(error.to_string()),
-            );
-        }
-    }
-
-    Value::Object(pair)
 }
 
 fn run_git_command_capture_stdout(
