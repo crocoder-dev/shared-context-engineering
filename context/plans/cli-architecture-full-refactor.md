@@ -36,12 +36,15 @@ Refactor the Rust CLI architecture to reduce central orchestration complexity, r
   - Evidence: `nix develop -c cargo build --manifest-path cli/Cargo.toml`; `nix flake check`
   - Notes: `cli/src/services/config.rs` is now the canonical owner for shared observability/config enums, env-key constants, and OTEL/bool parsing helpers consumed by `cli/src/services/observability.rs`; `tokio` now declares the `time` feature directly.
 
-- [ ] T02: `Split app startup into explicit phases` (status:todo)
+- [x] T02: `Split app startup into explicit phases` (status:done)
   - Task ID: T02
   - Goal: Refactor `cli/src/app.rs` into clear startup phases for dependency bootstrapping, runtime context construction, command parsing, command execution, and output rendering.
   - Boundaries (in/out of scope): In - extracting startup/context helpers or modules, introducing a named runtime/app context object, and shrinking `try_run_with_dependency_check`. Out - command behavior redesign, command addition/removal, or altering stable exit-code/error-code contracts.
   - Done when: `app.rs` no longer contains one oversized startup function coordinating all responsibilities inline; startup flow reads as ordered phases with isolated error boundaries; existing tests still cover the invalid-config degraded-startup path.
   - Verification notes (commands or checks): `nix flake check`; verify existing `app.rs` tests still pass and the exit-code/error rendering contract remains unchanged.
+  - Completed: 2026-04-20
+  - Evidence: `nix flake check`; `nix develop -c sh -c 'cd cli && cargo build'`
+  - Notes: `cli/src/app.rs` now uses `StartupContext`, `AppRuntime`, and `RunOutcome` to separate dependency bootstrapping, runtime initialization, command lifecycle execution, and output rendering without changing degraded-startup logging or exit-code behavior.
 
 - [ ] T03: `Introduce command execution seam` (status:todo)
   - Task ID: T03
