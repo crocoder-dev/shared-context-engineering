@@ -33,15 +33,15 @@ const TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
 ];
 const TOP_LEVEL_CONFIG_KEYS_DESCRIPTION: &str =
     "$schema, log_level, log_format, log_file, log_file_mode, otel, timeout_ms, workos_client_id, policies";
-const DEFAULT_OTEL_ENDPOINT: &str = "http://127.0.0.1:4317";
-const ENV_LOG_LEVEL: &str = "SCE_LOG_LEVEL";
-const ENV_LOG_FORMAT: &str = "SCE_LOG_FORMAT";
-const ENV_LOG_FILE: &str = "SCE_LOG_FILE";
-const ENV_LOG_FILE_MODE: &str = "SCE_LOG_FILE_MODE";
-const ENV_OTEL_ENABLED: &str = "SCE_OTEL_ENABLED";
-const ENV_OTEL_ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
-const ENV_OTEL_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
-const ENV_ATTRIBUTION_HOOKS_ENABLED: &str = "SCE_ATTRIBUTION_HOOKS_ENABLED";
+pub(crate) const DEFAULT_OTEL_ENDPOINT: &str = "http://127.0.0.1:4317";
+pub(crate) const ENV_LOG_LEVEL: &str = "SCE_LOG_LEVEL";
+pub(crate) const ENV_LOG_FORMAT: &str = "SCE_LOG_FORMAT";
+pub(crate) const ENV_LOG_FILE: &str = "SCE_LOG_FILE";
+pub(crate) const ENV_LOG_FILE_MODE: &str = "SCE_LOG_FILE_MODE";
+pub(crate) const ENV_OTEL_ENABLED: &str = "SCE_OTEL_ENABLED";
+pub(crate) const ENV_OTEL_ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
+pub(crate) const ENV_OTEL_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
+pub(crate) const ENV_ATTRIBUTION_HOOKS_ENABLED: &str = "SCE_ATTRIBUTION_HOOKS_ENABLED";
 const WORKOS_CLIENT_ID_ENV: &str = "WORKOS_CLIENT_ID";
 const WORKOS_CLIENT_ID_BAKED_DEFAULT: &str = "client_sce_default";
 const WORKOS_CLIENT_ID_KEY: AuthConfigKeySpec = AuthConfigKeySpec {
@@ -61,7 +61,7 @@ pub enum LogLevel {
 }
 
 impl LogLevel {
-    fn parse(raw: &str, source: &str) -> Result<Self> {
+    pub(crate) fn parse(raw: &str, source: &str) -> Result<Self> {
         match raw {
             "error" => Ok(Self::Error),
             "warn" => Ok(Self::Warn),
@@ -73,7 +73,17 @@ impl LogLevel {
         }
     }
 
-    fn as_str(self) -> &'static str {
+    pub(crate) fn parse_env(raw: &str, key: &str) -> Result<Self> {
+        match raw {
+            "error" => Ok(Self::Error),
+            "warn" => Ok(Self::Warn),
+            "info" => Ok(Self::Info),
+            "debug" => Ok(Self::Debug),
+            _ => bail!("Invalid {key} '{raw}'. Valid values: error, warn, info, debug."),
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Error => "error",
             Self::Warn => "warn",
@@ -81,16 +91,25 @@ impl LogLevel {
             Self::Debug => "debug",
         }
     }
+
+    pub(crate) fn severity(self) -> u8 {
+        match self {
+            Self::Error => 1,
+            Self::Warn => 2,
+            Self::Info => 3,
+            Self::Debug => 4,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum LogFormat {
+pub enum LogFormat {
     Text,
     Json,
 }
 
 impl LogFormat {
-    fn parse(raw: &str, source: &str) -> Result<Self> {
+    pub(crate) fn parse(raw: &str, source: &str) -> Result<Self> {
         match raw {
             "text" => Ok(Self::Text),
             "json" => Ok(Self::Json),
@@ -98,7 +117,15 @@ impl LogFormat {
         }
     }
 
-    fn as_str(self) -> &'static str {
+    pub(crate) fn parse_env(raw: &str, key: &str) -> Result<Self> {
+        match raw {
+            "text" => Ok(Self::Text),
+            "json" => Ok(Self::Json),
+            _ => bail!("Invalid {key} '{raw}'. Valid values: text, json."),
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Text => "text",
             Self::Json => "json",
@@ -107,13 +134,13 @@ impl LogFormat {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum LogFileMode {
+pub enum LogFileMode {
     Truncate,
     Append,
 }
 
 impl LogFileMode {
-    fn parse(raw: &str, source: &str) -> Result<Self> {
+    pub(crate) fn parse(raw: &str, source: &str) -> Result<Self> {
         match raw {
             "truncate" => Ok(Self::Truncate),
             "append" => Ok(Self::Append),
@@ -123,7 +150,15 @@ impl LogFileMode {
         }
     }
 
-    fn as_str(self) -> &'static str {
+    pub(crate) fn parse_env(raw: &str, key: &str) -> Result<Self> {
+        match raw {
+            "truncate" => Ok(Self::Truncate),
+            "append" => Ok(Self::Append),
+            _ => bail!("Invalid {key} '{raw}'. Valid values: truncate, append."),
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Truncate => "truncate",
             Self::Append => "append",
@@ -132,13 +167,13 @@ impl LogFileMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum OtlpProtocol {
+pub enum OtlpProtocol {
     Grpc,
     HttpProtobuf,
 }
 
 impl OtlpProtocol {
-    fn parse(raw: &str, source: &str) -> Result<Self> {
+    pub(crate) fn parse(raw: &str, source: &str) -> Result<Self> {
         match raw {
             "grpc" => Ok(Self::Grpc),
             "http/protobuf" => Ok(Self::HttpProtobuf),
@@ -148,7 +183,15 @@ impl OtlpProtocol {
         }
     }
 
-    fn as_str(self) -> &'static str {
+    pub(crate) fn parse_env(raw: &str, key: &str) -> Result<Self> {
+        match raw {
+            "grpc" => Ok(Self::Grpc),
+            "http/protobuf" => Ok(Self::HttpProtobuf),
+            _ => bail!("Invalid {key} '{raw}'. Valid values: grpc, http/protobuf."),
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Grpc => "grpc",
             Self::HttpProtobuf => "http/protobuf",
@@ -775,7 +818,7 @@ where
     }
     if let Some(raw) = env_lookup(ENV_OTEL_ENABLED) {
         resolved_otel_enabled = ResolvedValue {
-            value: parse_bool_value(ENV_OTEL_ENABLED, &raw, ENV_OTEL_ENABLED)?,
+            value: parse_bool_value_from(ENV_OTEL_ENABLED, &raw, ENV_OTEL_ENABLED)?,
             source: ValueSource::Env,
         };
     }
@@ -855,7 +898,7 @@ where
     }
     if let Some(raw) = env_lookup(ENV_ATTRIBUTION_HOOKS_ENABLED) {
         resolved_attribution_hooks_enabled = ResolvedValue {
-            value: parse_bool_value(
+            value: parse_bool_value_from(
                 ENV_ATTRIBUTION_HOOKS_ENABLED,
                 &raw,
                 ENV_ATTRIBUTION_HOOKS_ENABLED,
@@ -894,7 +937,7 @@ where
     })
 }
 
-fn parse_bool_value(key: &str, raw: &str, source: &str) -> Result<bool> {
+pub(crate) fn parse_bool_value_from(key: &str, raw: &str, source: &str) -> Result<bool> {
     match raw {
         "1" | "true" => Ok(true),
         "0" | "false" => Ok(false),
@@ -902,7 +945,15 @@ fn parse_bool_value(key: &str, raw: &str, source: &str) -> Result<bool> {
     }
 }
 
-fn validate_otlp_endpoint(endpoint: &str) -> Result<()> {
+pub(crate) fn parse_bool_env_value(key: &str, raw: &str) -> Result<bool> {
+    match raw {
+        "1" | "true" => Ok(true),
+        "0" | "false" => Ok(false),
+        _ => bail!("Invalid {key} '{raw}'. Valid values: true, false, 1, 0."),
+    }
+}
+
+pub(crate) fn validate_otlp_endpoint(endpoint: &str) -> Result<()> {
     if endpoint.is_empty() {
         bail!(
             "Invalid {ENV_OTEL_ENDPOINT} ''. Try: set it to an absolute http(s) URL, for example {DEFAULT_OTEL_ENDPOINT}."
