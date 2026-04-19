@@ -36,6 +36,23 @@ impl Command {
     }
 }
 
+struct RunOutcome {
+    result: Result<String, ClassifiedError>,
+    logger: Option<services::observability::Logger>,
+    startup_diagnostic: Option<String>,
+}
+
+struct StartupContext {
+    observability_config: services::config::ResolvedObservabilityRuntimeConfig,
+    startup_diagnostic: Option<String>,
+}
+
+struct AppRuntime {
+    logger: services::observability::Logger,
+    telemetry: services::observability::TelemetryRuntime,
+    startup_diagnostic: Option<String>,
+}
+
 pub fn run<I>(args: I) -> ExitCode
 where
     I: IntoIterator<Item = String>,
@@ -65,16 +82,27 @@ where
     StdoutW: Write,
     StderrW: Write,
 {
-    let (result, logger, startup_diagnostic) =
-        try_run_with_dependency_check(args, dependency_check);
-    match result {
+    let outcome = try_run_with_dependency_check(args, dependency_check);
+    render_run_outcome(outcome, stdout, stderr)
+}
+
+fn render_run_outcome<StdoutW, StderrW>(
+    outcome: RunOutcome,
+    stdout: &mut StdoutW,
+    stderr: &mut StderrW,
+) -> ExitCode
+where
+    StdoutW: Write,
+    StderrW: Write,
+{
+    match outcome.result {
         Ok(payload) => {
-            if let Some(diagnostic) = startup_diagnostic {
+            if let Some(diagnostic) = outcome.startup_diagnostic {
                 write_startup_diagnostic(stderr, &diagnostic);
             }
 
             if let Err(error) = write_stdout_payload(stdout, &payload) {
-                if let Some(ref log) = logger {
+                if let Some(ref log) = outcome.logger {
                     log.log_classified_error(&error);
                 }
                 write_error_diagnostic(stderr, &error);
@@ -84,7 +112,7 @@ where
             }
         }
         Err(error) => {
-            if let Some(ref log) = logger {
+            if let Some(ref log) = outcome.logger {
                 log.log_classified_error(&error);
             }
             write_error_diagnostic(stderr, &error);
@@ -165,72 +193,88 @@ fn invalid_discovered_config_guidance(
     })
 }
 
-#[allow(clippy::too_many_lines)]
-fn try_run_with_dependency_check<I, F>(
-    args: I,
-    dependency_check: F,
-) -> (
-    Result<String, ClassifiedError>,
-    Option<services::observability::Logger>,
-    Option<String>,
-)
+fn try_run_with_dependency_check<I, F>(args: I, dependency_check: F) -> RunOutcome
 where
     I: IntoIterator<Item = String>,
     F: FnOnce() -> anyhow::Result<()>,
 {
-    if let Err(error) = dependency_check() {
-        return (
-            Err(ClassifiedError::dependency(format!(
-                "Failed to initialize dependency checks: {error}"
-            ))),
-            None,
-            None,
-        );
+    let result = perform_dependency_check(dependency_check)
+        .and_then(|()| build_startup_context())
+        .and_then(initialize_runtime)
+        .map(|runtime| {
+            let logger = runtime.logger.clone();
+            let startup_diagnostic = runtime.startup_diagnostic.clone();
+            let result = run_command_lifecycle(args, &runtime);
+
+            RunOutcome {
+                result,
+                logger: Some(logger),
+                startup_diagnostic,
+            }
+        });
+
+    match result {
+        Ok(outcome) => outcome,
+        Err(error) => RunOutcome {
+            result: Err(error),
+            logger: None,
+            startup_diagnostic: None,
+        },
     }
+}
 
-    let cwd = match std::env::current_dir() {
-        Ok(dir) => dir,
-        Err(error) => {
-            return (
-                Err(ClassifiedError::runtime(format!(
-                    "Failed to determine current directory for observability config resolution: {error}"
-                ))),
-                None,
-                None,
-            );
-        }
-    };
+fn perform_dependency_check<F>(dependency_check: F) -> Result<(), ClassifiedError>
+where
+    F: FnOnce() -> anyhow::Result<()>,
+{
+    dependency_check().map_err(|error| {
+        ClassifiedError::dependency(format!("Failed to initialize dependency checks: {error}"))
+    })
+}
 
-    let observability_config = match services::config::resolve_observability_runtime_config(&cwd) {
-        Ok(config) => config,
-        Err(error) => {
-            return (
-                Err(ClassifiedError::validation(format!(
-                    "Invalid observability configuration: {error}"
-                ))),
-                None,
-                None,
-            );
-        }
-    };
+fn build_startup_context() -> Result<StartupContext, ClassifiedError> {
+    let cwd = std::env::current_dir().map_err(|error| {
+        ClassifiedError::runtime(format!(
+            "Failed to determine current directory for observability config resolution: {error}"
+        ))
+    })?;
 
-    let logger = match services::observability::Logger::from_resolved_config(&observability_config)
-    {
-        Ok(log) => log,
-        Err(error) => {
-            return (
-                Err(ClassifiedError::validation(format!(
-                    "Invalid observability configuration: {error}"
-                ))),
-                None,
-                None,
-            );
-        }
-    };
+    let observability_config = services::config::resolve_observability_runtime_config(&cwd)
+        .map_err(|error| classify_observability_configuration_error(&error))?;
 
-    let startup_diagnostic = invalid_discovered_config_guidance(&observability_config);
+    Ok(StartupContext {
+        startup_diagnostic: invalid_discovered_config_guidance(&observability_config),
+        observability_config,
+    })
+}
 
-    // Log discovered config files at debug level
+fn initialize_runtime(startup: StartupContext) -> Result<AppRuntime, ClassifiedError> {
+    let logger =
+        services::observability::Logger::from_resolved_config(&startup.observability_config)
+            .map_err(|error| classify_observability_configuration_error(&error))?;
+
+    log_startup_configuration(&logger, &startup.observability_config);
+
+    let telemetry = services::observability::TelemetryRuntime::from_resolved_config(
+        &startup.observability_config,
+    )
+    .map_err(|error| classify_observability_configuration_error(&error))?;
+
+    Ok(AppRuntime {
+        logger,
+        telemetry,
+        startup_diagnostic: startup.startup_diagnostic,
+    })
+}
+
+fn classify_observability_configuration_error(error: &anyhow::Error) -> ClassifiedError {
+    ClassifiedError::validation(format!("Invalid observability configuration: {error}"))
+}
+
+fn log_startup_configuration(
+    logger: &services::observability::Logger,
+    observability_config: &services::config::ResolvedObservabilityRuntimeConfig,
+) {
     for loaded_path in &observability_config.loaded_config_paths {
         logger.debug(
             "sce.config.file_discovered",
@@ -249,72 +293,73 @@ where
             &[("error", validation_error.as_str())],
         );
     }
+}
 
-    let telemetry = match services::observability::TelemetryRuntime::from_resolved_config(
-        &observability_config,
-    ) {
-        Ok(tel) => tel,
-        Err(error) => {
-            return (
-                Err(ClassifiedError::validation(format!(
-                    "Invalid observability configuration: {error}"
-                ))),
-                None,
-                None,
-            );
-        }
-    };
-
-    let result = telemetry.with_default_subscriber(|| {
-        logger.info(
+fn run_command_lifecycle<I>(args: I, runtime: &AppRuntime) -> Result<String, ClassifiedError>
+where
+    I: IntoIterator<Item = String>,
+{
+    runtime.telemetry.with_default_subscriber(|| {
+        runtime.logger.info(
             "sce.app.start",
             "Starting command dispatch",
             &[("component", services::observability::NAME)],
         );
 
-        let command = match parse_command(args, Some(&logger)) {
-            Ok(command) => command,
-            Err(error) => {
-                return Err(error);
-            }
-        };
+        let command = parse_command_phase(args, &runtime.logger)?;
+        execute_command_phase(&command, &runtime.logger)
+    })
+}
 
-        logger.info(
-            "sce.command.parsed",
-            "Command parsed",
-            &[("command", command.name())],
-        );
+fn parse_command_phase<I>(
+    args: I,
+    logger: &services::observability::Logger,
+) -> Result<Command, ClassifiedError>
+where
+    I: IntoIterator<Item = String>,
+{
+    let command = parse_command(args, Some(logger))?;
 
+    logger.info(
+        "sce.command.parsed",
+        "Command parsed",
+        &[("command", command.name())],
+    );
+
+    Ok(command)
+}
+
+fn execute_command_phase(
+    command: &Command,
+    logger: &services::observability::Logger,
+) -> Result<String, ClassifiedError> {
+    logger.debug(
+        "sce.command.dispatch_start",
+        "Dispatching command",
+        &[("command", command.name())],
+    );
+
+    let dispatch_result = dispatch(command, logger);
+
+    if dispatch_result.is_ok() {
         logger.debug(
-            "sce.command.dispatch_start",
-            "Dispatching command",
+            "sce.command.dispatch_end",
+            "Command dispatch completed",
             &[("command", command.name())],
         );
+    }
 
-        let dispatch_result = dispatch(&command, &logger);
-
-        if dispatch_result.is_ok() {
-            logger.debug(
-                "sce.command.dispatch_end",
-                "Command dispatch completed",
+    match dispatch_result {
+        Ok(payload) => {
+            logger.info(
+                "sce.command.completed",
+                "Command completed",
                 &[("command", command.name())],
             );
+            Ok(payload)
         }
-
-        match dispatch_result {
-            Ok(payload) => {
-                logger.info(
-                    "sce.command.completed",
-                    "Command completed",
-                    &[("command", command.name())],
-                );
-                Ok(payload)
-            }
-            Err(error) => Err(error),
-        }
-    });
-
-    (result, Some(logger), startup_diagnostic)
+        Err(error) => Err(error),
+    }
 }
 
 fn parse_command<I>(
