@@ -17,40 +17,17 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use serde_json::json;
 use tracing_subscriber::prelude::*;
 
-use crate::services::config;
+use crate::services::config::{
+    self, parse_bool_env_value, validate_otlp_endpoint, LogFileMode, LogFormat, LogLevel,
+    OtlpProtocol, DEFAULT_OTEL_ENDPOINT, ENV_LOG_FILE, ENV_LOG_FILE_MODE, ENV_LOG_FORMAT,
+    ENV_LOG_LEVEL, ENV_OTEL_ENABLED, ENV_OTEL_ENDPOINT, ENV_OTEL_PROTOCOL,
+};
 use crate::services::default_paths::{repo_dir, repo_file};
 use crate::services::error::ClassifiedError;
 use crate::services::security::redact_sensitive_text;
 use crate::services::style::{error_text, heading};
 
 pub const NAME: &str = "observability";
-
-const ENV_LOG_LEVEL: &str = "SCE_LOG_LEVEL";
-const ENV_LOG_FORMAT: &str = "SCE_LOG_FORMAT";
-const ENV_LOG_FILE: &str = "SCE_LOG_FILE";
-const ENV_LOG_FILE_MODE: &str = "SCE_LOG_FILE_MODE";
-const ENV_OTEL_ENABLED: &str = "SCE_OTEL_ENABLED";
-const ENV_OTEL_ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
-const ENV_OTEL_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
-
-const DEFAULT_OTEL_ENDPOINT: &str = "http://127.0.0.1:4317";
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum OtlpProtocol {
-    Grpc,
-    HttpProtobuf,
-}
-
-impl OtlpProtocol {
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn parse(raw: &str) -> Result<Self> {
-        match raw {
-            "grpc" => Ok(Self::Grpc),
-            "http/protobuf" => Ok(Self::HttpProtobuf),
-            _ => bail!("Invalid {ENV_OTEL_PROTOCOL} '{raw}'. Valid values: grpc, http/protobuf."),
-        }
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TelemetryConfig {
@@ -78,7 +55,7 @@ impl TelemetryConfig {
         let mut config = Self::default();
 
         if let Some(raw) = lookup(ENV_OTEL_ENABLED) {
-            config.enabled = parse_bool_env(ENV_OTEL_ENABLED, &raw)?;
+            config.enabled = parse_bool_env_value(ENV_OTEL_ENABLED, &raw)?;
         }
 
         if !config.enabled {
@@ -86,7 +63,7 @@ impl TelemetryConfig {
         }
 
         if let Some(raw) = lookup(ENV_OTEL_PROTOCOL) {
-            config.protocol = OtlpProtocol::parse(&raw)?;
+            config.protocol = OtlpProtocol::parse_env(&raw, ENV_OTEL_PROTOCOL)?;
         }
 
         if let Some(raw) = lookup(ENV_OTEL_ENDPOINT) {
@@ -111,10 +88,7 @@ impl TelemetryRuntime {
             enabled: config.otel_enabled,
             // Clone required: TelemetryConfig owns the endpoint String
             endpoint: config.otel_endpoint.clone(),
-            protocol: match config.otel_protocol {
-                config::OtlpProtocol::Grpc => OtlpProtocol::Grpc,
-                config::OtlpProtocol::HttpProtobuf => OtlpProtocol::HttpProtobuf,
-            },
+            protocol: config.otel_protocol,
         })
     }
 
@@ -182,94 +156,6 @@ impl Drop for TelemetryRuntime {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-fn parse_bool_env(key: &str, raw: &str) -> Result<bool> {
-    match raw {
-        "1" | "true" => Ok(true),
-        "0" | "false" => Ok(false),
-        _ => bail!("Invalid {key} '{raw}'. Valid values: true, false, 1, 0."),
-    }
-}
-
-fn validate_otlp_endpoint(endpoint: &str) -> Result<()> {
-    if endpoint.is_empty() {
-        bail!(
-            "Invalid {ENV_OTEL_ENDPOINT} ''. Try: set it to an absolute http(s) URL, for example {DEFAULT_OTEL_ENDPOINT}."
-        );
-    }
-
-    if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
-        return Ok(());
-    }
-
-    bail!(
-        "Invalid {ENV_OTEL_ENDPOINT} '{endpoint}'. Try: set it to an absolute http(s) URL, for example {DEFAULT_OTEL_ENDPOINT}."
-    )
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LogFormat {
-    Text,
-    Json,
-}
-
-impl LogFormat {
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn parse(raw: &str) -> Result<Self> {
-        match raw {
-            "text" => Ok(Self::Text),
-            "json" => Ok(Self::Json),
-            _ => bail!("Invalid {ENV_LOG_FORMAT} '{raw}'. Valid values: text, json."),
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Text => "text",
-            Self::Json => "json",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LogLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-}
-
-impl LogLevel {
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn parse(raw: &str) -> Result<Self> {
-        match raw {
-            "error" => Ok(Self::Error),
-            "warn" => Ok(Self::Warn),
-            "info" => Ok(Self::Info),
-            "debug" => Ok(Self::Debug),
-            _ => bail!("Invalid {ENV_LOG_LEVEL} '{raw}'. Valid values: error, warn, info, debug."),
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Error => "error",
-            Self::Warn => "warn",
-            Self::Info => "info",
-            Self::Debug => "debug",
-        }
-    }
-
-    fn severity(self) -> u8 {
-        match self {
-            Self::Error => 1,
-            Self::Warn => 2,
-            Self::Info => 3,
-            Self::Debug => 4,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ObservabilityConfig {
     pub level: LogLevel,
@@ -289,23 +175,6 @@ impl Default for ObservabilityConfig {
 pub struct Logger {
     config: ObservabilityConfig,
     file_sink: Option<LogFileSink>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum LogFileMode {
-    Truncate,
-    Append,
-}
-
-impl LogFileMode {
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn parse(raw: &str) -> Result<Self> {
-        match raw {
-            "truncate" => Ok(Self::Truncate),
-            "append" => Ok(Self::Append),
-            _ => bail!("Invalid {ENV_LOG_FILE_MODE} '{raw}'. Valid values: truncate, append."),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -393,26 +262,15 @@ impl Logger {
         let file_sink = match config.log_file.as_deref() {
             Some(path) => Some(LogFileSink::open(
                 PathBuf::from(path),
-                match config.log_file_mode {
-                    config::LogFileMode::Truncate => LogFileMode::Truncate,
-                    config::LogFileMode::Append => LogFileMode::Append,
-                },
+                config.log_file_mode,
             )?),
             None => None,
         };
 
         Ok(Self {
             config: ObservabilityConfig {
-                level: match config.log_level {
-                    config::LogLevel::Error => LogLevel::Error,
-                    config::LogLevel::Warn => LogLevel::Warn,
-                    config::LogLevel::Info => LogLevel::Info,
-                    config::LogLevel::Debug => LogLevel::Debug,
-                },
-                format: match config.log_format {
-                    config::LogFormat::Text => LogFormat::Text,
-                    config::LogFormat::Json => LogFormat::Json,
-                },
+                level: config.log_level,
+                format: config.log_format,
             },
             file_sink,
         })
@@ -429,11 +287,11 @@ impl Logger {
         let mut file_mode = LogFileMode::Truncate;
 
         if let Some(raw) = lookup(ENV_LOG_LEVEL) {
-            config.level = LogLevel::parse(&raw)?;
+            config.level = LogLevel::parse_env(&raw, ENV_LOG_LEVEL)?;
         }
 
         if let Some(raw) = lookup(ENV_LOG_FORMAT) {
-            config.format = LogFormat::parse(&raw)?;
+            config.format = LogFormat::parse_env(&raw, ENV_LOG_FORMAT)?;
         }
 
         if let Some(raw) = lookup(ENV_LOG_FILE) {
@@ -442,7 +300,7 @@ impl Logger {
 
         if let Some(raw) = lookup(ENV_LOG_FILE_MODE) {
             file_mode_raw_seen = true;
-            file_mode = LogFileMode::parse(&raw)?;
+            file_mode = LogFileMode::parse_env(&raw, ENV_LOG_FILE_MODE)?;
         }
 
         if file_path.is_none() && file_mode_raw_seen {
