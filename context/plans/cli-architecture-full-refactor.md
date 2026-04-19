@@ -46,12 +46,15 @@ Refactor the Rust CLI architecture to reduce central orchestration complexity, r
   - Evidence: `nix flake check`; `nix develop -c sh -c 'cd cli && cargo build'`
   - Notes: `cli/src/app.rs` now uses `StartupContext`, `AppRuntime`, and `RunOutcome` to separate dependency bootstrapping, runtime initialization, command lifecycle execution, and output rendering without changing degraded-startup logging or exit-code behavior.
 
-- [ ] T03: `Introduce command execution seam` (status:todo)
+- [x] T03: `Introduce command execution seam` (status:done)
   - Task ID: T03
   - Goal: Add a dedicated command execution abstraction so parse-time command conversion and run-time command handling are not centralized in one large `match`.
   - Boundaries (in/out of scope): In - introducing a command handler trait or equivalent execution seam, moving per-command conversion/execution closer to command-specific modules, and reducing `dispatch`/conversion sprawl. Out - changing the exposed command list or command semantics.
   - Done when: adding a command no longer requires expanding one monolithic dispatch match for both conversion and execution; command execution ownership is localized and coherent enough for one-command-at-a-time evolution.
   - Verification notes (commands or checks): `nix flake check`; inspect that top-level command execution no longer depends on one large central `dispatch` implementation for all commands.
+  - Completed: 2026-04-20
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo build'`; `nix run .#pkl-check-generated`; `nix flake check`
+  - Notes: `cli/src/app.rs` now routes command parsing through an internal `RuntimeCommand` seam and executes boxed command objects via `execute_command_phase`, removing the prior app-level `dispatch` match while preserving command behavior.
 
 - [ ] T04: `Unify top-level help and command catalog ownership` (status:todo)
   - Task ID: T04
