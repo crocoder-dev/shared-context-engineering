@@ -11,7 +11,7 @@ Standalone patch domain model and parser in `cli/src/services/patch.rs` for in-m
 - `TouchedLine` — a single added or removed line with `kind`, `line_number`, and `content`
 - `TouchedLineKind` — enum: `Added`, `Removed` (serialized as `snake_case`)
 
-All types derive `Clone, Debug, Deserialize, Eq, PartialEq, Serialize` and support JSON round-trip fidelity via `serde` with `snake_case` field naming.
+All types derive `Clone, Debug, Deserialize, Eq, PartialEq, Serialize` and support JSON round-trip fidelity via `serde` with `snake_case` field naming. `TouchedLineKind` additionally derives `Hash` to support set-based intersection operations.
 
 ## Parser
 
@@ -42,9 +42,21 @@ Storage-agnostic helpers for reconstructing `ParsedPatch` from serialized JSON c
 
 Both functions wrap `serde_json::from_str`/`serde_json::from_slice` and map serde errors to actionable `PatchLoadError` messages. `PatchLoadError` carries a `message` field describing why the JSON payload could not be reconstructed into a valid `ParsedPatch`.
 
+## Set operations
+
+### Intersection
+
+`intersect_patches(a: &ParsedPatch, b: &ParsedPatch) -> ParsedPatch` returns a `ParsedPatch` containing only exact overlapping touched lines present in both input patches.
+
+- **File matching**: files are matched by `new_path` (the canonical post-change path)
+- **Touched-line identity**: a touched line is considered identical when `kind`, `line_number`, and `content` all match
+- **Result structure**: only files with at least one overlapping touched line appear in the result; hunks with no overlapping lines are excluded; hunk metadata (`old_start`, `old_count`, `new_start`, `new_count`) is preserved from the first patch (`a`)
+- **Determinism**: the same inputs always produce the same output
+- **Not yet wired**: `intersect_patches` is a standalone library seam not yet wired into command dispatch or hook runtime
+
 ### Not yet wired
 
-The parser and JSON load helpers are standalone library seams not yet wired into command dispatch or hook runtime. Public types consumed by the parser or load helpers have `#[allow(dead_code)]` removed; other module internals retain `#[allow(dead_code)]` until runtime integration.
+The parser, JSON load helpers, and intersection operation are standalone library seams not yet wired into command dispatch or hook runtime. Public types consumed by the parser or load helpers have `#[allow(dead_code)]` removed; other module internals including `intersect_patches` retain `#[allow(dead_code)]` until runtime integration.
 
 ## See also
 
