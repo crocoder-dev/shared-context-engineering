@@ -52,12 +52,16 @@ Extend the standalone patch service in `cli/src/services/patch.rs` with storage-
   - Files changed: cli/src/services/patch.rs
   - Evidence: nix flake check passed (all checks: cli-tests, cli-clippy, cli-fmt, pkl-parity); nix run .#pkl-check-generated passed; added `intersect_patches(a, b)` public function with `#[allow(dead_code)]` and `Hash` derive on `TouchedLineKind`; 9 new focused tests covering identical overlap, no overlap, partial overlap, same-file different lines, multi-file partial overlap, empty patches, hunk metadata preservation, line identity requiring kind+number+content, determinism, multi-hunk same file, and file matching by new_path
 
-- [ ] T03: `Implement ordered patch combination with later-wins conflict resolution` (status:todo)
+- [x] T03: `Implement ordered patch combination with later-wins conflict resolution` (status:done)
   - Task ID: T03
   - Goal: Add a public combine operation that merges multiple `ParsedPatch` values into one deterministic result while preserving the requested later-input-wins rule for duplicate/conflicting touched-line entries, with an API signature that is intuitive for contributors to use correctly.
   - Boundaries (in/out of scope): In — combine API, deterministic ordering rules, dedupe/conflict resolution for same file/logical touched-line slot, concise docs/comments, targeted tests for duplicate and conflicting inputs. Out — patch normalization beyond what is needed for the current model, CLI/runtime consumers.
   - Done when: Combining multiple patches yields one deterministic `ParsedPatch`; duplicate/conflicting touched-line entries resolve to the later input; the combine API communicates ordering semantics clearly; tests cover repeated identical lines, conflicting later overrides, and multi-file combination behavior.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo test patch::tests::combine'`; inspect expected outputs and public API usage shape to confirm later patch order changes the result only where intended.
+  - Status: done
+  - Completed: 2026-04-20
+  - Files changed: cli/src/services/patch.rs
+  - Evidence: nix flake check passed (all checks: cli-tests, cli-clippy, cli-fmt, pkl-parity); nix run .#pkl-check-generated passed; added `combine_patches(patches: &[ParsedPatch]) -> ParsedPatch` public function with `#[allow(dead_code)]`, `LineKey` and `HunkMeta` type aliases, `FileAcc` accumulator struct, file-order-preserving merge with later-wins deduplication by `(kind, line_number, content)` identity, hunk metadata from last contributing patch, deterministic line sorting (line_number, Removed-before-Added, content); 11 new focused tests covering empty input, single patch, identical line deduplication, conflicting later-wins, multi-file merge, file metadata from last patch, determinism, hunk metadata from last contributor, multi-hunk merge, three-patch later-wins, mixed added/removed lines, and empty-patch-with-non-empty
 
 - [ ] T04: `Validation and cleanup` (status:todo)
   - Task ID: T04
