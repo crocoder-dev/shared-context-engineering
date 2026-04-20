@@ -66,12 +66,15 @@ Refactor the Rust CLI architecture to reduce central orchestration complexity, r
   - Evidence: `nix run .#pkl-check-generated`; `nix flake check`; `nix develop -c sh -c 'cd cli && cargo build'`
   - Notes: `cli/src/cli_schema.rs` now owns the canonical top-level command metadata (top-level purpose text plus help visibility), while `cli/src/command_surface.rs` consumes that catalog for help rendering and known-command classification; inline help assertions now verify visible-command output and hidden-command exclusion.
 
-- [ ] T05: `Replace config file hand-parsing with typed deserialization` (status:todo)
+- [x] T05: `Replace config file hand-parsing with typed deserialization` (status:done)
   - Task ID: T05
   - Goal: Refactor `services/config.rs` so config-file structure is parsed through typed `serde` models and focused validation/mapping stages instead of the current large manual `Value` walk.
   - Boundaries (in/out of scope): In - typed file DTOs, mapping/validation helpers, preserving schema validation and precedence behavior, and reducing repetitive per-key manual parsing. Out - changing config file shape, precedence order, warning/error wording beyond unavoidable internal refactor fallout, or removing schema validation.
   - Done when: file parsing is driven by typed deserialization for top-level/nested config structures, repetitive manual object-key traversal is substantially reduced, and existing config command/startup behavior stays aligned with the current schema contract.
   - Verification notes (commands or checks): `nix flake check`; verify existing config-focused tests pass and invalid/valid config scenarios still produce the same contract outcomes.
+  - Completed: 2026-04-20
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo build'`; `nix flake check`
+  - Notes: `cli/src/services/config.rs` now deserializes config files into typed serde DTOs for top-level, `otel`, and `policies` structures, then applies focused Rust-owned mapping/validation helpers to preserve the existing schema-backed precedence and reporting contract.
 
 - [ ] T06: `Decompose doctor into focused diagnostics units` (status:todo)
   - Task ID: T06
