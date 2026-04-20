@@ -78,7 +78,7 @@ The repository includes a new placeholder Rust binary crate at `cli/`.
 
 - The current implemented first-wave install/distribution surface for the `sce` CLI is limited to repo-flake Nix, Cargo, and npm; `Homebrew` is deferred from the active implementation stage.
 - Nix-managed build/release entrypoints are the source of truth for first-wave build outputs and release automation.
-- The root flake now also owns two opt-in integration app surfaces: `apps.install-channel-integration-tests` for npm/Bun/Cargo install verification and `apps.cli-integration-tests` for standalone `sce --help` plus `sce version` command-contract execution. Both remain outside default `checks.<system>` coverage in the current task stack.
+- The root flake now also owns two opt-in integration app surfaces: `apps.install-channel-integration-tests` for npm/Bun/Cargo install verification and `apps.cli-integration-tests` for standalone `sce --help`, `sce version`, `sce completion --shell <bash|zsh|fish>`, `sce config show|validate --format <text|json>`, and `sce doctor --format <text|json>` command-contract execution. Both remain outside default `checks.<system>` coverage in the current task stack.
 - Repo-root `.version` is the canonical checked-in release version authority across GitHub Releases, Cargo publication, and npm publication.
 - GitHub Releases are the canonical publication surface for release archives, checksums, and release-manifest assets.
 - Cargo/crates.io and npm registry publication belong to separate downstream publish stages that consume already-versioned checked-in package metadata rather than inventing release versions during workflow execution.

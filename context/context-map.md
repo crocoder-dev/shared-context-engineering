@@ -1,13 +1,16 @@
 # Context Map
 
 Primary context files:
+
 - `context/overview.md`
 - `context/architecture.md`
 - `context/patterns.md`
 - `context/glossary.md`
 
 Feature/domain context:
+
 - `context/cli/cli-command-surface.md` (CLI command surface including top-level help with ASCII art banner and gradient rendering, setup install flow, WorkOS device authorization flow + token storage behavior, attribution-only hook routing, bounded resilience-wrapped sync/local-DB smoke behavior, nested flake release package/app installability, and Cargo local install + crates.io readiness policy)
+- `context/cli/cli-help-integration-runner.md` (standalone `integrations/cli` contract for env-injected `sce --help`, `sce version`, `sce completion --shell <bash|zsh|fish>`, `sce config show|validate --format <text|json>`, and `sce doctor --format <text|json>` command suites, default run-all plus targeted `--command <name>` selection, shell-marker completion assertions, contract-style config/doctor text/json assertions, hybrid-strict no-dependency `version --format json` assertions, cross-suite text-version contract alignment, and intentional crate-local helper ownership across integration runners)
 - `context/cli/default-path-catalog.md` (canonical production CLI path-ownership contract centered on `cli/src/services/default_paths.rs`, including persisted, repo-relative, embedded-asset, install/runtime, hook, and context-path families plus the regression guard that keeps production path ownership centralized)
 - `context/cli/styling-service.md` (CLI text-mode output styling with `owo-colors` and `comfy-table`, TTY/`NO_COLOR` policy, shared helper API for human-facing surfaces, and per-column right-to-left RGB gradient banner rendering)
 - `context/cli/config-precedence-contract.md` (implemented `sce config` show/validate command contract, deterministic `flags > env > config file > defaults` resolution order, canonical `$schema` acceptance for startup-loaded `sce/config.json` files, shared auth-key env/config/optional baked-default support starting with `workos_client_id`, shared runtime resolution for flat logging plus nested `otel` observability keys, canonical Pkl-generated `sce/config.json` schema ownership plus CLI embedding/reuse contract, config-file selection order, `show` provenance output, trimmed `validate` output contract, and opt-in compiled-binary config-precedence E2E coverage contract)
@@ -48,15 +51,18 @@ Feature/domain context:
 - `context/sce/cli-cargo-distribution-contract.md` (implemented `sce` Cargo publication posture plus supported crates.io, git, and local checkout install guidance, dedicated crates.io publish workflow, and ephemeral crate-local generated-asset mirror requirement for published builds)
 
 Working areas:
+
 - `context/plans/` (active plan execution artifacts, not durable history)
 - `context/handovers/`
 - `context/decisions/`
 - `context/tmp/`
 
 Supporting repo docs:
+
 - `AGENTS.md` (repo-specific agent workflow guidance, including optional local Nix tuning recommendations for user-level `~/.config/nix/nix.conf` and the explicit system-level-only boundary for `auto-optimise-store`)
 
 Recent decision records:
+
 - `context/decisions/2026-02-28-pkl-generation-architecture.md`
 - `context/decisions/2026-03-03-plan-code-agent-separation.md`
 - `context/decisions/2026-03-09-migrate-lexopt-to-clap.md` (CLI argument parsing migration from lexopt to clap derive macros)
