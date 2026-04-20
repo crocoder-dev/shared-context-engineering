@@ -41,12 +41,16 @@ Extend the standalone patch service in `cli/src/services/patch.rs` with storage-
   - Files changed: cli/src/services/patch.rs
   - Evidence: nix flake check passed (all checks: cli-tests, cli-clippy, cli-fmt, pkl-parity); nix run .#pkl-check-generated passed; added PatchLoadError type, load_patch_from_json(&str), load_patch_from_json_bytes(&[u8]) with doc comments; 11 new focused tests covering round-trip from string, round-trip from bytes, empty patch, single file, invalid JSON syntax, valid JSON but wrong structure, missing files field, invalid UTF-8 bytes, wrong structure from bytes, all FileChangeKind variants, all TouchedLineKind variants, and end-to-end parse→serialize→load round-trip
 
-- [ ] T02: `Implement exact touched-line intersection for ParsedPatch` (status:todo)
+- [x] T02: `Implement exact touched-line intersection for ParsedPatch` (status:done)
   - Task ID: T02
   - Goal: Add a public patch-intersection operation that returns a `ParsedPatch` containing only exact overlapping changed lines present in both input patches, using an API shape that reads clearly at the call site.
   - Boundaries (in/out of scope): In — touched-line matching rules, file grouping for overlaps, deterministic output shaping, concise docs/comments and targeted tests for identical overlap and non-overlap cases. Out — fuzzy matching, file-only overlap reporting, non-exact semantic diff reconciliation.
   - Done when: Intersecting two patches yields only exact overlapping touched lines, non-overlapping lines are excluded, output remains deterministic, the operation naming/usage is developer-friendly, and tests prove the matching contract across same-file and no-overlap cases.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo test patch::tests::intersection'`; review assertions and public API call sites to confirm overlap is exact line-level identity and the surface is easy to read.
+  - Status: done
+  - Completed: 2026-04-20
+  - Files changed: cli/src/services/patch.rs
+  - Evidence: nix flake check passed (all checks: cli-tests, cli-clippy, cli-fmt, pkl-parity); nix run .#pkl-check-generated passed; added `intersect_patches(a, b)` public function with `#[allow(dead_code)]` and `Hash` derive on `TouchedLineKind`; 9 new focused tests covering identical overlap, no overlap, partial overlap, same-file different lines, multi-file partial overlap, empty patches, hunk metadata preservation, line identity requiring kind+number+content, determinism, multi-hunk same file, and file matching by new_path
 
 - [ ] T03: `Implement ordered patch combination with later-wins conflict resolution` (status:todo)
   - Task ID: T03
