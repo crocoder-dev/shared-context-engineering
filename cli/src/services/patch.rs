@@ -744,6 +744,34 @@ fn parse_range_part(s: &str, prefix: char) -> Result<(u64, u64), ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn fixture_family_two_path(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("files")
+            .join("2")
+            .join(name)
+    }
+
+    fn load_fixture_family_two_patch(name: &str) -> ParsedPatch {
+        let path = fixture_family_two_path(name);
+        let input = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("failed to read fixture {}: {error}", path.display()));
+        parse_patch(&input)
+            .unwrap_or_else(|error| panic!("failed to parse fixture {}: {error}", path.display()))
+    }
+
+    fn touched_line_signature(patch: &ParsedPatch) -> Vec<(TouchedLineKind, String)> {
+        patch
+            .files
+            .iter()
+            .flat_map(|file| file.hunks.iter())
+            .flat_map(|hunk| hunk.lines.iter())
+            .map(|line| (line.kind, line.content.clone()))
+            .collect()
+    }
 
     fn sample_added_file_change() -> PatchFileChange {
         PatchFileChange {
@@ -2033,6 +2061,53 @@ index abc1234..def5678 100644
         let json = serde_json::to_string(&patch).expect("serialize");
         let loaded = load_patch_from_json(&json).expect("load from JSON");
         assert_eq!(patch, loaded);
+    }
+
+    #[test]
+    fn fixture_family_two_represents_one_logical_change_despite_diff_shape_variation() {
+        let baseline = load_fixture_family_two_patch("diff.2");
+        let baseline_signature = touched_line_signature(&baseline);
+
+        for fixture in ["diff.1", "diff.2", "diff.3", "diff.4", "diff.5", "diff.6"] {
+            let patch = load_fixture_family_two_patch(fixture);
+            assert_eq!(
+                patch.files.len(),
+                1,
+                "{fixture} should parse as one file change"
+            );
+            assert_eq!(
+                patch.files[0].kind,
+                FileChangeKind::Modified,
+                "{fixture} should stay a modified-file patch"
+            );
+            assert_eq!(
+                touched_line_signature(&patch),
+                baseline_signature,
+                "{fixture} should carry the same logical touched lines despite different hunk shape"
+            );
+        }
+    }
+
+    #[test]
+    fn fixture_family_two_exposes_current_equivalence_gap_for_absolute_index_paths() {
+        let absolute_index_patch = load_fixture_family_two_patch("diff.1");
+        let relative_index_patch = load_fixture_family_two_patch("diff.2");
+
+        assert_eq!(
+            touched_line_signature(&absolute_index_patch),
+            touched_line_signature(&relative_index_patch),
+            "fixtures should describe the same logical line changes before intersection"
+        );
+        assert_ne!(
+            absolute_index_patch.files[0].new_path, relative_index_patch.files[0].new_path,
+            "current parser keeps different file identity for absolute vs relative Index paths"
+        );
+
+        let overlap = intersect_patches(&absolute_index_patch, &relative_index_patch);
+        assert!(
+            overlap.files.is_empty(),
+            "current exact intersection drops the logically equivalent change when file identity differs"
+        );
     }
 
     // --- T02: Intersection tests ---
