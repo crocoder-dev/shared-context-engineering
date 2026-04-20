@@ -53,12 +53,20 @@ Add a new standalone service under `cli/src/services/` that parses patch text in
 - **Evidence:** `nix flake check` passed (cli-tests, cli-clippy, cli-fmt all green); `nix run .#pkl-check-generated` passed; 17 parser unit tests covering Index-style new-file patches (absolute and relative paths), git-style new-file patches, Index-style modified-file patches with removed lines, git-style modified-file patches, multi-file Index-style patches, Index-style new-file relative-path patches, Index-style modified-file patches with added lines, empty input, error cases (missing file header, invalid hunk header, missing closing `@@`), git-style `/dev/null` old/new path handling, deleted-file detection, `\ No newline at end of file` skipping, multiple hunks in a single file, line-number tracking through mixed context/removed/added, hunk-header count defaulting to 1, git-style renamed-file detection, and parse-then-serialize round-trip fidelity.
 - **Notes:** Removed `#[allow(dead_code)]` from domain model types (ParsedPatch, PatchFileChange, FileChangeKind, PatchHunk, TouchedLine, TouchedLineKind) since they are now consumed by the parser. Added `#[allow(dead_code)]` to parser internals (parse_patch, FileBuilder, DiffPaths, determine_file_kind, parse_git_diff_header, parse_diff_path, parse_hunk_header_and_body, parse_range_part, ParseError) since they are not yet wired into command dispatch (per T02 out-of-scope boundary). Parser supports both `Index:` (SVN-style) and `diff --git` (git-style) unified-diff formats, correctly handles `/dev/null` paths for new/deleted files, `a/`/`b/` prefix stripping, trailing tab characters in `---`/`+++` lines, multi-file patches, `\ No newline at end of file` markers, and hunk headers with or without explicit counts.
 
-- [ ] T03: `Harden coverage for multi-file and deletion-oriented cases` (status:todo)
+- [x] T03: `Harden coverage for multi-file and deletion-oriented cases` (status:done)
   - Task ID: T03
   - Goal: Close the acceptance gaps around multi-file payloads and deletion semantics by adding targeted tests and any minimal parser/model refinements required for removed-line and deleted-file-style behavior.
   - Boundaries (in/out of scope): In — tests using `files/3/diff.1` and similar multi-file fixtures, explicit coverage for removed lines from `files/2/**`, and a small synthetic fixture if needed to cover deleted-file-style input absent from repo samples. Out — new runtime consumers, JSON wrapper parsing, broad parser refactors unrelated to the accepted formats.
   - Done when: The parser has explicit passing coverage for multi-file payloads, removed-line capture, and any required deleted-file-style case; any refinements remain scoped to supporting those acceptance cases only.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo test patch'`; confirm fixture-backed assertions for `files/2/` removed lines and `files/3/` multi-file parsing.
+
+### T03 completion
+
+- **Status:** done
+- **Completed:** 2026-04-20
+- **Files changed:** `cli/src/services/patch.rs` (modified — added 5 new test cases)
+- **Evidence:** `nix flake check` passed (cli-tests, cli-clippy, cli-fmt all green); `nix run .#pkl-check-generated` passed; 5 new test cases added covering: git-style multi-file patch (modified + new file), Index-style deleted file (`+++ /dev/null`), multi-file Index-style patch with deleted file, hunk with only removed lines (no additions), and git-style multi-hunk multi-file patch. No parser logic changes were needed — the existing parser handled all acceptance cases correctly.
+- **Notes:** All T03 acceptance gaps are closed. The parser already handled Index-style deleted files, multi-file git-style patches, and removal-only hunks correctly; the new tests confirm this explicitly.
 
 - [ ] T04: `Validation and cleanup` (status:todo)
   - Task ID: T04

@@ -1324,6 +1324,247 @@ rename to new_name.txt
         assert_eq!(file.hunks.len(), 1);
     }
 
+    // --- T03: Multi-file and deletion-oriented coverage tests ---
+
+    #[test]
+    fn parse_git_style_multi_file_patch() {
+        // Git-style patch with two files: one modified, one new
+        let input = "\
+diff --git a/readme.md b/readme.md
+index abc1234..def5678 100644
+--- a/readme.md
++++ b/readme.md
+@@ -1,3 +1,3 @@
+ line1
+-old line
++new line
+ line3
+diff --git a/newfile.txt b/newfile.txt
+new file mode 100644
+index 0000000..1234567
+--- /dev/null
++++ b/newfile.txt
+@@ -0,0 +1,2 @@
++first line
++second line";
+
+        let patch = parse_patch(input).expect("parse should succeed");
+        assert_eq!(patch.files.len(), 2);
+
+        // First file: modified readme.md
+        let file1 = &patch.files[0];
+        assert_eq!(file1.old_path, "readme.md");
+        assert_eq!(file1.new_path, "readme.md");
+        assert_eq!(file1.kind, FileChangeKind::Modified);
+        assert_eq!(file1.hunks.len(), 1);
+        assert_eq!(file1.hunks[0].lines.len(), 2);
+        assert_eq!(file1.hunks[0].lines[0].kind, TouchedLineKind::Removed);
+        assert_eq!(file1.hunks[0].lines[0].content, "old line");
+        assert_eq!(file1.hunks[0].lines[1].kind, TouchedLineKind::Added);
+        assert_eq!(file1.hunks[0].lines[1].content, "new line");
+
+        // Second file: new file
+        let file2 = &patch.files[1];
+        assert_eq!(file2.old_path, "/dev/null");
+        assert_eq!(file2.new_path, "newfile.txt");
+        assert_eq!(file2.kind, FileChangeKind::Added);
+        assert_eq!(file2.hunks.len(), 1);
+        assert_eq!(file2.hunks[0].lines.len(), 2);
+        assert_eq!(file2.hunks[0].lines[0].kind, TouchedLineKind::Added);
+        assert_eq!(file2.hunks[0].lines[0].content, "first line");
+        assert_eq!(file2.hunks[0].lines[1].kind, TouchedLineKind::Added);
+        assert_eq!(file2.hunks[0].lines[1].content, "second line");
+    }
+
+    #[test]
+    fn parse_index_style_deleted_file() {
+        // Index-style patch where a file is entirely deleted
+        let input = "\
+Index: obsolete.txt
+===================================================================
+--- obsolete.txt
++++ /dev/null\t
+@@ -1,4 +0,0 @@
+-line one
+-line two
+-line three
+-line four";
+
+        let patch = parse_patch(input).expect("parse should succeed");
+        assert_eq!(patch.files.len(), 1);
+        let file = &patch.files[0];
+        assert_eq!(file.old_path, "obsolete.txt");
+        assert_eq!(file.new_path, ""); // /dev/null -> empty string
+        assert_eq!(file.kind, FileChangeKind::Deleted);
+        assert_eq!(file.hunks.len(), 1);
+        let hunk = &file.hunks[0];
+        assert_eq!(hunk.old_start, 1);
+        assert_eq!(hunk.old_count, 4);
+        assert_eq!(hunk.new_start, 0);
+        assert_eq!(hunk.new_count, 0);
+        // All lines are removed, none added
+        assert_eq!(hunk.lines.len(), 4);
+        assert!(hunk
+            .lines
+            .iter()
+            .all(|l| l.kind == TouchedLineKind::Removed));
+        assert_eq!(hunk.lines[0].content, "line one");
+        assert_eq!(hunk.lines[0].line_number, 1);
+        assert_eq!(hunk.lines[3].content, "line four");
+        assert_eq!(hunk.lines[3].line_number, 4);
+    }
+
+    #[test]
+    fn parse_multi_file_with_deleted_file() {
+        // Multi-file Index-style patch including a deleted file
+        let input = "\
+Index: poem.md
+===================================================================
+--- poem.md\t
++++ poem.md\t
+@@ -1,4 +1,6 @@
++hello, nerds
++
+ Morning leans on the windowsill,
+ Dust turns slow in borrowed gold.,
+ The kettle hums, the street is still,
+ And day begins by growing bold.
+
+Index: obsolete.txt
+===================================================================
+--- obsolete.txt
++++ /dev/null\t
+@@ -1,3 +0,0 @@
+-line one
+-line two
+-line three";
+
+        let patch = parse_patch(input).expect("parse should succeed");
+        assert_eq!(patch.files.len(), 2);
+
+        // First file: modified poem.md with added lines
+        let file1 = &patch.files[0];
+        assert_eq!(file1.kind, FileChangeKind::Modified);
+        assert_eq!(file1.hunks.len(), 1);
+        assert_eq!(file1.hunks[0].lines.len(), 2);
+        assert_eq!(file1.hunks[0].lines[0].kind, TouchedLineKind::Added);
+        assert_eq!(file1.hunks[0].lines[0].content, "hello, nerds");
+
+        // Second file: deleted file
+        let file2 = &patch.files[1];
+        assert_eq!(file2.old_path, "obsolete.txt");
+        assert_eq!(file2.new_path, "");
+        assert_eq!(file2.kind, FileChangeKind::Deleted);
+        assert_eq!(file2.hunks.len(), 1);
+        assert_eq!(file2.hunks[0].lines.len(), 3);
+        assert!(file2.hunks[0]
+            .lines
+            .iter()
+            .all(|l| l.kind == TouchedLineKind::Removed));
+    }
+
+    #[test]
+    fn parse_hunk_with_only_removed_lines() {
+        // Index-style patch where a hunk has only removed lines, no additions
+        let input = "\
+Index: config.txt
+===================================================================
+--- config.txt\t
++++ config.txt\t
+@@ -2,4 +2,2 @@
+ context line
+-removed line one
+-removed line two
+ context line";
+
+        let patch = parse_patch(input).expect("parse should succeed");
+        assert_eq!(patch.files.len(), 1);
+        let file = &patch.files[0];
+        assert_eq!(file.kind, FileChangeKind::Modified);
+        assert_eq!(file.hunks.len(), 1);
+        let hunk = &file.hunks[0];
+        assert_eq!(hunk.old_start, 2);
+        assert_eq!(hunk.old_count, 4);
+        assert_eq!(hunk.new_start, 2);
+        assert_eq!(hunk.new_count, 2);
+        // Only removed lines, no added lines
+        assert_eq!(hunk.lines.len(), 2);
+        assert_eq!(hunk.lines[0].kind, TouchedLineKind::Removed);
+        assert_eq!(hunk.lines[0].content, "removed line one");
+        assert_eq!(hunk.lines[0].line_number, 3);
+        assert_eq!(hunk.lines[1].kind, TouchedLineKind::Removed);
+        assert_eq!(hunk.lines[1].content, "removed line two");
+        assert_eq!(hunk.lines[1].line_number, 4);
+    }
+
+    #[test]
+    fn parse_git_style_multi_hunk_multi_file() {
+        // Git-style patch with multiple hunks across two files
+        let input = "\
+diff --git a/file1.txt b/file1.txt
+index abc1234..def5678 100644
+--- a/file1.txt
++++ b/file1.txt
+@@ -1,3 +1,3 @@
+ line1
+-old line 1
++new line 1
+ line3
+@@ -10,3 +10,3 @@
+ line10
+-old line 10
++new line 10
+ line12
+diff --git a/file2.txt b/file2.txt
+new file mode 100644
+index 0000000..1234567
+--- /dev/null
++++ b/file2.txt
+@@ -0,0 +1,3 @@
++alpha
++beta
++gamma";
+
+        let patch = parse_patch(input).expect("parse should succeed");
+        assert_eq!(patch.files.len(), 2);
+
+        // First file: modified with two hunks
+        let file1 = &patch.files[0];
+        assert_eq!(file1.old_path, "file1.txt");
+        assert_eq!(file1.new_path, "file1.txt");
+        assert_eq!(file1.kind, FileChangeKind::Modified);
+        assert_eq!(file1.hunks.len(), 2);
+
+        let hunk1 = &file1.hunks[0];
+        assert_eq!(hunk1.old_start, 1);
+        assert_eq!(hunk1.old_count, 3);
+        assert_eq!(hunk1.new_start, 1);
+        assert_eq!(hunk1.new_count, 3);
+        assert_eq!(hunk1.lines.len(), 2);
+        assert_eq!(hunk1.lines[0].kind, TouchedLineKind::Removed);
+        assert_eq!(hunk1.lines[0].content, "old line 1");
+        assert_eq!(hunk1.lines[1].kind, TouchedLineKind::Added);
+        assert_eq!(hunk1.lines[1].content, "new line 1");
+
+        let hunk2 = &file1.hunks[1];
+        assert_eq!(hunk2.old_start, 10);
+        assert_eq!(hunk2.lines.len(), 2);
+        assert_eq!(hunk2.lines[0].kind, TouchedLineKind::Removed);
+        assert_eq!(hunk2.lines[0].content, "old line 10");
+        assert_eq!(hunk2.lines[1].kind, TouchedLineKind::Added);
+        assert_eq!(hunk2.lines[1].content, "new line 10");
+
+        // Second file: new file with one hunk
+        let file2 = &patch.files[1];
+        assert_eq!(file2.kind, FileChangeKind::Added);
+        assert_eq!(file2.hunks.len(), 1);
+        assert_eq!(file2.hunks[0].lines.len(), 3);
+        assert!(file2.hunks[0]
+            .lines
+            .iter()
+            .all(|l| l.kind == TouchedLineKind::Added));
+    }
+
     #[test]
     fn parse_roundtrip_after_parse() {
         // Parse a git-style patch, serialize to JSON, deserialize, and verify equality
