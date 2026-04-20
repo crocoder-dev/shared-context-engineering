@@ -78,7 +78,7 @@ pub struct TouchedLine {
 }
 
 /// Kind of touched line.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TouchedLineKind {
     /// Line was added.
@@ -156,6 +156,100 @@ pub fn load_patch_from_json_bytes(input: &[u8]) -> Result<ParsedPatch, PatchLoad
     serde_json::from_slice(input).map_err(|e| PatchLoadError {
         message: format!("invalid patch JSON: {e}"),
     })
+}
+
+/// Compute the exact touched-line intersection of two patches.
+///
+/// Returns a `ParsedPatch` containing only the touched lines that appear in
+/// both `a` and `b` for the same file. Files are matched by `new_path`
+/// (the canonical post-change path). Touched lines are considered identical
+/// when they share the same `kind`, `line_number`, and `content`.
+///
+/// Files with no overlapping touched lines are excluded from the result.
+/// Within matched files, hunks are reconstructed from the overlapping lines,
+/// preserving the hunk metadata (start positions and counts) from the first
+/// patch (`a`) where lines overlap. The output is deterministic: the same
+/// inputs always produce the same result.
+///
+/// # Examples
+///
+/// ```
+/// use sce::services::patch::{intersect_patches, parse_patch};
+///
+/// let a = parse_patch("...")?;
+/// let b = parse_patch("...")?;
+/// let overlap = intersect_patches(&a, &b);
+/// ```
+#[allow(dead_code)]
+pub fn intersect_patches(a: &ParsedPatch, b: &ParsedPatch) -> ParsedPatch {
+    use std::collections::HashSet;
+
+    // Index files in `b` by new_path for O(1) lookup.
+    let b_files_by_path: std::collections::HashMap<&str, &PatchFileChange> =
+        b.files.iter().map(|f| (f.new_path.as_str(), f)).collect();
+
+    let mut result_files: Vec<PatchFileChange> = Vec::new();
+
+    for a_file in &a.files {
+        // Only consider files that also appear in `b` by new_path.
+        let b_file = match b_files_by_path.get(a_file.new_path.as_str()) {
+            Some(f) => *f,
+            None => continue,
+        };
+
+        // Build a set of touched-line identities from `b` for this specific file.
+        let b_file_lines: HashSet<(TouchedLineKind, u64, &str)> = b_file
+            .hunks
+            .iter()
+            .flat_map(|h| {
+                h.lines
+                    .iter()
+                    .map(|l| (l.kind, l.line_number, l.content.as_str()))
+            })
+            .collect();
+
+        // Filter hunks in `a_file` to only include lines that also appear in `b_file`.
+        let mut result_hunks: Vec<PatchHunk> = Vec::new();
+        for a_hunk in &a_file.hunks {
+            let overlapping_lines: Vec<TouchedLine> = a_hunk
+                .lines
+                .iter()
+                .filter(|l| b_file_lines.contains(&(l.kind, l.line_number, l.content.as_str())))
+                .cloned()
+                .collect();
+
+            if overlapping_lines.is_empty() {
+                continue;
+            }
+
+            result_hunks.push(PatchHunk {
+                old_start: a_hunk.old_start,
+                old_count: a_hunk.old_count,
+                new_start: a_hunk.new_start,
+                new_count: a_hunk.new_count,
+                lines: overlapping_lines,
+            });
+        }
+
+        if result_hunks.is_empty() {
+            continue;
+        }
+
+        // Determine the file change kind for the intersection result.
+        // When both patches touch the same file, use the kind from `a` as the
+        // primary input; this keeps the result deterministic and consistent
+        // with the "first patch wins for metadata" approach.
+        result_files.push(PatchFileChange {
+            old_path: a_file.old_path.clone(),
+            new_path: a_file.new_path.clone(),
+            kind: a_file.kind,
+            hunks: result_hunks,
+        });
+    }
+
+    ParsedPatch {
+        files: result_files,
+    }
 }
 
 /// Parse raw unified-diff text into a `ParsedPatch`.
@@ -1808,5 +1902,669 @@ index abc1234..def5678 100644
         let json = serde_json::to_string(&patch).expect("serialize");
         let loaded = load_patch_from_json(&json).expect("load from JSON");
         assert_eq!(patch, loaded);
+    }
+
+    // --- T02: Intersection tests ---
+
+    #[test]
+    fn intersection_identical_patches_returns_full_overlap() {
+        // When both patches are identical, the intersection should return
+        // the same touched lines.
+        let a = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "poem.md".to_string(),
+                new_path: "poem.md".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 3,
+                    old_count: 7,
+                    new_start: 3,
+                    new_count: 7,
+                    lines: vec![
+                        TouchedLine {
+                            kind: TouchedLineKind::Removed,
+                            line_number: 5,
+                            content: "Small hours gather into name,".to_string(),
+                        },
+                        TouchedLine {
+                            kind: TouchedLineKind::Added,
+                            line_number: 5,
+                            content: "Smqll hours gather into name,".to_string(),
+                        },
+                    ],
+                }],
+            }],
+        };
+
+        let result = intersect_patches(&a, &a);
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].new_path, "poem.md");
+        assert_eq!(result.files[0].hunks.len(), 1);
+        assert_eq!(result.files[0].hunks[0].lines.len(), 2);
+        assert_eq!(
+            result.files[0].hunks[0].lines[0].kind,
+            TouchedLineKind::Removed
+        );
+        assert_eq!(
+            result.files[0].hunks[0].lines[0].content,
+            "Small hours gather into name,"
+        );
+        assert_eq!(
+            result.files[0].hunks[0].lines[1].kind,
+            TouchedLineKind::Added
+        );
+        assert_eq!(
+            result.files[0].hunks[0].lines[1].content,
+            "Smqll hours gather into name,"
+        );
+    }
+
+    #[test]
+    fn intersection_no_overlap_returns_empty() {
+        // Two patches touching different files should have no intersection.
+        let a = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "a.txt".to_string(),
+                new_path: "a.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 1,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 1,
+                        content: "hello".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let b = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "b.txt".to_string(),
+                new_path: "b.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 1,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 1,
+                        content: "world".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let result = intersect_patches(&a, &b);
+        assert!(
+            result.files.is_empty(),
+            "expected no files in intersection when patches touch different files"
+        );
+    }
+
+    #[test]
+    fn intersection_partial_overlap_returns_only_shared_lines() {
+        // Two patches touch the same file but with partially overlapping lines.
+        let a = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "poem.md".to_string(),
+                new_path: "poem.md".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 10,
+                    new_start: 1,
+                    new_count: 10,
+                    lines: vec![
+                        TouchedLine {
+                            kind: TouchedLineKind::Removed,
+                            line_number: 5,
+                            content: "Small hours gather into name,".to_string(),
+                        },
+                        TouchedLine {
+                            kind: TouchedLineKind::Added,
+                            line_number: 5,
+                            content: "Smqll hours gather into name,".to_string(),
+                        },
+                        TouchedLine {
+                            kind: TouchedLineKind::Added,
+                            line_number: 10,
+                            content: "extra line in a".to_string(),
+                        },
+                    ],
+                }],
+            }],
+        };
+
+        let b = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "poem.md".to_string(),
+                new_path: "poem.md".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 10,
+                    new_start: 1,
+                    new_count: 10,
+                    lines: vec![
+                        TouchedLine {
+                            kind: TouchedLineKind::Removed,
+                            line_number: 5,
+                            content: "Small hours gather into name,".to_string(),
+                        },
+                        TouchedLine {
+                            kind: TouchedLineKind::Added,
+                            line_number: 5,
+                            content: "Smqll hours gather into name,".to_string(),
+                        },
+                        TouchedLine {
+                            kind: TouchedLineKind::Added,
+                            line_number: 20,
+                            content: "extra line in b".to_string(),
+                        },
+                    ],
+                }],
+            }],
+        };
+
+        let result = intersect_patches(&a, &b);
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].new_path, "poem.md");
+        assert_eq!(result.files[0].hunks.len(), 1);
+        // Only the two lines that appear in both patches should be in the result.
+        assert_eq!(result.files[0].hunks[0].lines.len(), 2);
+        assert_eq!(
+            result.files[0].hunks[0].lines[0].kind,
+            TouchedLineKind::Removed
+        );
+        assert_eq!(
+            result.files[0].hunks[0].lines[0].content,
+            "Small hours gather into name,"
+        );
+        assert_eq!(
+            result.files[0].hunks[0].lines[1].kind,
+            TouchedLineKind::Added
+        );
+        assert_eq!(
+            result.files[0].hunks[0].lines[1].content,
+            "Smqll hours gather into name,"
+        );
+    }
+
+    #[test]
+    fn intersection_same_file_different_lines_returns_empty() {
+        // Two patches touch the same file but different lines — no overlap.
+        let a = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "config.txt".to_string(),
+                new_path: "config.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 3,
+                    new_start: 1,
+                    new_count: 3,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 1,
+                        content: "alpha".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let b = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "config.txt".to_string(),
+                new_path: "config.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 10,
+                    old_count: 3,
+                    new_start: 10,
+                    new_count: 3,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 10,
+                        content: "beta".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let result = intersect_patches(&a, &b);
+        // Same file but no overlapping touched lines → file excluded from result.
+        assert!(
+            result.files.is_empty(),
+            "expected no files when same file has no overlapping lines"
+        );
+    }
+
+    #[test]
+    fn intersection_multi_file_partial_overlap() {
+        // Multi-file patches where only some files overlap.
+        let a = ParsedPatch {
+            files: vec![
+                PatchFileChange {
+                    old_path: "shared.txt".to_string(),
+                    new_path: "shared.txt".to_string(),
+                    kind: FileChangeKind::Modified,
+                    hunks: vec![PatchHunk {
+                        old_start: 1,
+                        old_count: 3,
+                        new_start: 1,
+                        new_count: 3,
+                        lines: vec![
+                            TouchedLine {
+                                kind: TouchedLineKind::Removed,
+                                line_number: 2,
+                                content: "old shared".to_string(),
+                            },
+                            TouchedLine {
+                                kind: TouchedLineKind::Added,
+                                line_number: 2,
+                                content: "new shared".to_string(),
+                            },
+                        ],
+                    }],
+                },
+                PatchFileChange {
+                    old_path: "only_a.txt".to_string(),
+                    new_path: "only_a.txt".to_string(),
+                    kind: FileChangeKind::Modified,
+                    hunks: vec![PatchHunk {
+                        old_start: 5,
+                        old_count: 1,
+                        new_start: 5,
+                        new_count: 1,
+                        lines: vec![TouchedLine {
+                            kind: TouchedLineKind::Added,
+                            line_number: 5,
+                            content: "only in a".to_string(),
+                        }],
+                    }],
+                },
+            ],
+        };
+
+        let b = ParsedPatch {
+            files: vec![
+                PatchFileChange {
+                    old_path: "shared.txt".to_string(),
+                    new_path: "shared.txt".to_string(),
+                    kind: FileChangeKind::Modified,
+                    hunks: vec![PatchHunk {
+                        old_start: 1,
+                        old_count: 3,
+                        new_start: 1,
+                        new_count: 3,
+                        lines: vec![
+                            TouchedLine {
+                                kind: TouchedLineKind::Removed,
+                                line_number: 2,
+                                content: "old shared".to_string(),
+                            },
+                            TouchedLine {
+                                kind: TouchedLineKind::Added,
+                                line_number: 2,
+                                content: "new shared".to_string(),
+                            },
+                        ],
+                    }],
+                },
+                PatchFileChange {
+                    old_path: "only_b.txt".to_string(),
+                    new_path: "only_b.txt".to_string(),
+                    kind: FileChangeKind::Modified,
+                    hunks: vec![PatchHunk {
+                        old_start: 8,
+                        old_count: 1,
+                        new_start: 8,
+                        new_count: 1,
+                        lines: vec![TouchedLine {
+                            kind: TouchedLineKind::Added,
+                            line_number: 8,
+                            content: "only in b".to_string(),
+                        }],
+                    }],
+                },
+            ],
+        };
+
+        let result = intersect_patches(&a, &b);
+        // Only shared.txt should appear, with its overlapping lines.
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].new_path, "shared.txt");
+        assert_eq!(result.files[0].hunks.len(), 1);
+        assert_eq!(result.files[0].hunks[0].lines.len(), 2);
+        assert_eq!(result.files[0].hunks[0].lines[0].content, "old shared");
+        assert_eq!(result.files[0].hunks[0].lines[1].content, "new shared");
+    }
+
+    #[test]
+    fn intersection_empty_patch_returns_empty() {
+        // Intersecting with an empty patch should always return empty.
+        let a = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "test.txt".to_string(),
+                new_path: "test.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 1,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 1,
+                        content: "line".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let empty = ParsedPatch { files: vec![] };
+
+        let result = intersect_patches(&a, &empty);
+        assert!(
+            result.files.is_empty(),
+            "intersection with empty patch should be empty"
+        );
+
+        let result2 = intersect_patches(&empty, &a);
+        assert!(
+            result2.files.is_empty(),
+            "intersection of empty with non-empty should be empty"
+        );
+
+        let result3 = intersect_patches(&empty, &empty);
+        assert!(
+            result3.files.is_empty(),
+            "intersection of two empty patches should be empty"
+        );
+    }
+
+    #[test]
+    fn intersection_preserves_hunk_metadata_from_first_patch() {
+        // Hunk metadata (old_start, old_count, new_start, new_count) should
+        // come from the first patch (a) for overlapping hunks.
+        let a = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file.txt".to_string(),
+                new_path: "file.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 5,
+                    old_count: 3,
+                    new_start: 5,
+                    new_count: 3,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 6,
+                        content: "shared line".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let b = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file.txt".to_string(),
+                new_path: "file.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 10,
+                    old_count: 7,
+                    new_start: 10,
+                    new_count: 7,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 6,
+                        content: "shared line".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let result = intersect_patches(&a, &b);
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].hunks.len(), 1);
+        let hunk = &result.files[0].hunks[0];
+        // Hunk metadata comes from patch a.
+        assert_eq!(hunk.old_start, 5);
+        assert_eq!(hunk.old_count, 3);
+        assert_eq!(hunk.new_start, 5);
+        assert_eq!(hunk.new_count, 3);
+        assert_eq!(hunk.lines.len(), 1);
+        assert_eq!(hunk.lines[0].content, "shared line");
+    }
+
+    #[test]
+    fn intersection_line_identity_requires_kind_number_and_content() {
+        // Touched lines must match on kind, line_number, AND content.
+        // A line with the same content but different kind should not overlap.
+        let a = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "test.txt".to_string(),
+                new_path: "test.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 3,
+                    new_start: 1,
+                    new_count: 3,
+                    lines: vec![
+                        TouchedLine {
+                            kind: TouchedLineKind::Removed,
+                            line_number: 5,
+                            content: "same content".to_string(),
+                        },
+                        TouchedLine {
+                            kind: TouchedLineKind::Added,
+                            line_number: 5,
+                            content: "same content".to_string(),
+                        },
+                    ],
+                }],
+            }],
+        };
+
+        let b = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "test.txt".to_string(),
+                new_path: "test.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 3,
+                    new_start: 1,
+                    new_count: 3,
+                    lines: vec![TouchedLine {
+                        // Only the Added line matches — Removed is different kind
+                        kind: TouchedLineKind::Added,
+                        line_number: 5,
+                        content: "same content".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let result = intersect_patches(&a, &b);
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].hunks[0].lines.len(), 1);
+        // Only the Added line overlaps; the Removed line from a is excluded.
+        assert_eq!(
+            result.files[0].hunks[0].lines[0].kind,
+            TouchedLineKind::Added
+        );
+        assert_eq!(result.files[0].hunks[0].lines[0].content, "same content");
+    }
+
+    #[test]
+    fn intersection_is_deterministic() {
+        // Calling intersect_patches with the same inputs should always produce
+        // the same result.
+        let a = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file.txt".to_string(),
+                new_path: "file.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 2,
+                    new_start: 1,
+                    new_count: 2,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 1,
+                        content: "deterministic".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let b = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file.txt".to_string(),
+                new_path: "file.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 2,
+                    new_start: 1,
+                    new_count: 2,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 1,
+                        content: "deterministic".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let result1 = intersect_patches(&a, &b);
+        let result2 = intersect_patches(&a, &b);
+        assert_eq!(result1, result2, "intersection must be deterministic");
+    }
+
+    #[test]
+    fn intersection_with_multiple_hunks_in_same_file() {
+        // A file with multiple hunks where only some hunks have overlap.
+        let a = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "multi.txt".to_string(),
+                new_path: "multi.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![
+                    PatchHunk {
+                        old_start: 1,
+                        old_count: 3,
+                        new_start: 1,
+                        new_count: 3,
+                        lines: vec![TouchedLine {
+                            kind: TouchedLineKind::Added,
+                            line_number: 2,
+                            content: "overlap line".to_string(),
+                        }],
+                    },
+                    PatchHunk {
+                        old_start: 20,
+                        old_count: 3,
+                        new_start: 20,
+                        new_count: 3,
+                        lines: vec![TouchedLine {
+                            kind: TouchedLineKind::Added,
+                            line_number: 21,
+                            content: "no-overlap line".to_string(),
+                        }],
+                    },
+                ],
+            }],
+        };
+
+        let b = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "multi.txt".to_string(),
+                new_path: "multi.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 3,
+                    new_start: 1,
+                    new_count: 3,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 2,
+                        content: "overlap line".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let result = intersect_patches(&a, &b);
+        assert_eq!(result.files.len(), 1);
+        // Both hunks from a are present, but only the first has overlapping lines.
+        // The second hunk has no overlapping lines and should be excluded.
+        assert_eq!(result.files[0].hunks.len(), 1);
+        assert_eq!(result.files[0].hunks[0].old_start, 1);
+        assert_eq!(result.files[0].hunks[0].lines.len(), 1);
+        assert_eq!(result.files[0].hunks[0].lines[0].content, "overlap line");
+    }
+
+    #[test]
+    fn intersection_matches_files_by_new_path() {
+        // Files are matched by new_path, not old_path.
+        // A renamed file in patch a should still match by its new_path.
+        let a = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "old_name.txt".to_string(),
+                new_path: "renamed.txt".to_string(),
+                kind: FileChangeKind::Renamed,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 1,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 1,
+                        content: "shared".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let b = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "other_old.txt".to_string(),
+                new_path: "renamed.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 1,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 1,
+                        content: "shared".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let result = intersect_patches(&a, &b);
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].new_path, "renamed.txt");
+        // Result preserves old_path and kind from patch a.
+        assert_eq!(result.files[0].old_path, "old_name.txt");
+        assert_eq!(result.files[0].kind, FileChangeKind::Renamed);
+        assert_eq!(result.files[0].hunks[0].lines.len(), 1);
+        assert_eq!(result.files[0].hunks[0].lines[0].content, "shared");
     }
 }
