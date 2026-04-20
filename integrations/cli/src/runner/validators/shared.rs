@@ -1,3 +1,5 @@
+use serde_json::{Map, Value};
+
 pub(super) fn assert_non_empty_payload(stream: &str, contract_name: &str) -> Result<(), String> {
     if stream.trim().is_empty() {
         return Err(format!("expected non-empty {contract_name} payload"));
@@ -22,21 +24,6 @@ pub(super) fn assert_required_substrings(
     Ok(())
 }
 
-pub(super) fn assert_json_field_equals(
-    payload: &str,
-    field: &str,
-    expected: &str,
-) -> Result<(), String> {
-    let actual = extract_json_string_field(payload, field)?;
-    if actual == expected {
-        return Ok(());
-    }
-
-    Err(format!(
-        "expected '{field}' to equal '{expected}', got '{actual}'"
-    ))
-}
-
 pub(super) fn assert_non_empty_bounded_field(
     field: &str,
     value: &str,
@@ -56,44 +43,61 @@ pub(super) fn assert_non_empty_bounded_field(
     Ok(())
 }
 
-pub(super) fn extract_json_string_field(payload: &str, field: &str) -> Result<String, String> {
-    let field_token = format!("\"{field}\"");
-    let field_start = payload
-        .find(&field_token)
-        .ok_or_else(|| format!("missing JSON string field '{field}'"))?;
-    let after_field = &payload[field_start + field_token.len()..];
-    let colon_offset = after_field
-        .find(':')
-        .ok_or_else(|| format!("missing ':' after JSON field '{field}'"))?;
-    let after_colon = after_field[colon_offset + 1..].trim_start();
+pub(super) fn parse_json_payload(payload: &str) -> Result<Value, String> {
+    serde_json::from_str(payload).map_err(|error| format!("failed to parse JSON payload: {error}"))
+}
 
-    if !after_colon.starts_with('"') {
-        return Err(format!("expected JSON string value for field '{field}'"));
-    }
-
-    let mut value = String::new();
-    let mut escaped = false;
-
-    for character in after_colon[1..].chars() {
-        if escaped {
-            value.push(character);
-            escaped = false;
-            continue;
-        }
-
-        if character == '\\' {
-            escaped = true;
-            continue;
-        }
-
-        if character == '"' {
-            return Ok(value);
-        }
-
-        value.push(character);
+pub(super) fn assert_json_string_field_equals(
+    json: &Value,
+    field: &str,
+    expected: &str,
+) -> Result<(), String> {
+    let actual = extract_json_string_field_from_value(json, field)?;
+    if actual == expected {
+        return Ok(());
     }
 
     Err(format!(
-        "unterminated JSON string value for field '{field}'"
+        "expected '{field}' to equal '{expected}', got '{actual}'"
     ))
+}
+
+pub(super) fn extract_json_string_field_from_value<'a>(
+    json: &'a Value,
+    field: &str,
+) -> Result<&'a str, String> {
+    let value = extract_required_json_field(json, field)?;
+    value
+        .as_str()
+        .ok_or_else(|| format!("expected JSON string value for field '{field}'"))
+}
+
+pub(super) fn extract_json_bool_field_from_value(
+    json: &Value,
+    field: &str,
+) -> Result<bool, String> {
+    let value = extract_required_json_field(json, field)?;
+    value
+        .as_bool()
+        .ok_or_else(|| format!("expected JSON boolean value for field '{field}'"))
+}
+
+pub(super) fn extract_json_object_field_from_value<'a>(
+    json: &'a Value,
+    field: &str,
+) -> Result<&'a Map<String, Value>, String> {
+    let value = extract_required_json_field(json, field)?;
+    value
+        .as_object()
+        .ok_or_else(|| format!("expected JSON object value for field '{field}'"))
+}
+
+fn extract_required_json_field<'a>(json: &'a Value, field: &str) -> Result<&'a Value, String> {
+    let object = json
+        .as_object()
+        .ok_or_else(|| "expected top-level JSON object payload".to_string())?;
+
+    object
+        .get(field)
+        .ok_or_else(|| format!("missing JSON field '{field}'"))
 }

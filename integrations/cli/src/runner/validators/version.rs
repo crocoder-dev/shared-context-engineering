@@ -1,5 +1,6 @@
 use super::shared::{
-    assert_json_field_equals, assert_non_empty_bounded_field, extract_json_string_field,
+    assert_json_string_field_equals, assert_non_empty_bounded_field,
+    extract_json_string_field_from_value, parse_json_payload,
 };
 
 pub(super) fn validate_version_text_output(stream: &str) -> Result<(), String> {
@@ -42,12 +43,14 @@ pub(super) fn validate_version_json_output(stream: &str) -> Result<(), String> {
         return Err("expected non-empty JSON payload".to_string());
     }
 
-    assert_json_field_equals(payload, "status", "ok")?;
-    assert_json_field_equals(payload, "command", "version")?;
-    assert_json_field_equals(payload, "binary", "shared-context-engineering")?;
+    let json = parse_json_payload(payload)?;
 
-    let version = extract_json_string_field(payload, "version")?;
-    assert_non_empty_bounded_field("version", &version, MAX_DYNAMIC_FIELD_LENGTH)?;
+    assert_json_string_field_equals(&json, "status", "ok")?;
+    assert_json_string_field_equals(&json, "command", "version")?;
+    assert_json_string_field_equals(&json, "binary", "shared-context-engineering")?;
+
+    let version = extract_json_string_field_from_value(&json, "version")?;
+    assert_non_empty_bounded_field("version", version, MAX_DYNAMIC_FIELD_LENGTH)?;
     if !version
         .chars()
         .all(|character| character.is_ascii_alphanumeric() || ".-+".contains(character))
@@ -61,8 +64,8 @@ pub(super) fn validate_version_json_output(stream: &str) -> Result<(), String> {
         return Err("expected 'version' to contain at least one digit".to_string());
     }
 
-    let git_commit = extract_json_string_field(payload, "git_commit")?;
-    assert_non_empty_bounded_field("git_commit", &git_commit, MAX_DYNAMIC_FIELD_LENGTH)?;
+    let git_commit = extract_json_string_field_from_value(&json, "git_commit")?;
+    assert_non_empty_bounded_field("git_commit", git_commit, MAX_DYNAMIC_FIELD_LENGTH)?;
     if !git_commit
         .chars()
         .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
