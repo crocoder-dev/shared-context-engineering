@@ -362,6 +362,57 @@ struct FileConfig {
     bash_policy_custom: Option<FileConfigValue<Vec<CustomBashPolicyEntry>>>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+struct ParsedFileConfigDocument {
+    #[serde(rename = "$schema")]
+    _schema: Option<String>,
+    log_level: Option<String>,
+    log_format: Option<String>,
+    log_file: Option<String>,
+    log_file_mode: Option<String>,
+    otel: Option<ParsedOtelConfigDocument>,
+    timeout_ms: Option<u64>,
+    workos_client_id: Option<String>,
+    policies: Option<ParsedPoliciesConfigDocument>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+struct ParsedOtelConfigDocument {
+    enabled: Option<bool>,
+    exporter_otlp_endpoint: Option<String>,
+    exporter_otlp_protocol: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+struct ParsedPoliciesConfigDocument {
+    bash: Option<ParsedBashPolicyConfigDocument>,
+    attribution_hooks: Option<ParsedAttributionHooksConfigDocument>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+struct ParsedBashPolicyConfigDocument {
+    presets: Option<Vec<String>>,
+    custom: Option<Vec<ParsedCustomBashPolicyEntryDocument>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+struct ParsedAttributionHooksConfigDocument {
+    enabled: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+struct ParsedCustomBashPolicyEntryDocument {
+    id: Option<String>,
+    #[serde(rename = "match")]
+    matcher: Option<ParsedCustomBashPolicyMatchDocument>,
+    message: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+struct ParsedCustomBashPolicyMatchDocument {
+    argv_prefix: Option<Vec<String>>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct FileConfigValue<T> {
     value: T,
@@ -369,6 +420,11 @@ struct FileConfigValue<T> {
 }
 
 type ParsedBashPolicyConfig = (
+    Option<FileConfigValue<Vec<String>>>,
+    Option<FileConfigValue<Vec<CustomBashPolicyEntry>>>,
+);
+type ParsedFilePolicies = (
+    Option<FileConfigValue<bool>>,
     Option<FileConfigValue<Vec<String>>>,
     Option<FileConfigValue<Vec<CustomBashPolicyEntry>>>,
 );
@@ -1152,7 +1208,42 @@ fn validate_config_value_against_schema(value: &Value, path: &Path) -> Result<()
     );
 }
 
-#[allow(clippy::too_many_lines)]
+fn validate_object_keys(
+    object: &serde_json::Map<String, Value>,
+    path: &Path,
+    context: Option<&str>,
+    allowed_keys: &[&str],
+    allowed_keys_description: &str,
+) -> Result<()> {
+    for key in object.keys() {
+        if !allowed_keys.contains(&key.as_str()) {
+            match context {
+                Some(context) => bail!(
+                    "Config key '{context}' in '{}' contains unknown key '{}'. Allowed keys: {allowed_keys_description}.",
+                    path.display(),
+                    key
+                ),
+                None => bail!(
+                    "Config file '{}' contains unknown key '{}'. Allowed keys: {allowed_keys_description}.",
+                    path.display(),
+                    key
+                ),
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn deserialize_typed_config(parsed: Value, path: &Path) -> Result<ParsedFileConfigDocument> {
+    serde_json::from_value(parsed).with_context(|| {
+        format!(
+            "Config file '{}' could not be mapped into the typed runtime config model.",
+            path.display()
+        )
+    })
+}
+
 fn parse_file_config(raw: &str, path: &Path, source: ConfigPathSource) -> Result<FileConfig> {
     let parsed: Value = serde_json::from_str(raw)
         .with_context(|| format!("Config file '{}' must contain valid JSON.", path.display()))?;
@@ -1165,102 +1256,55 @@ fn parse_file_config(raw: &str, path: &Path, source: ConfigPathSource) -> Result
     })?;
 
     validate_config_value_against_schema(&parsed, path)?;
+    validate_object_keys(
+        object,
+        path,
+        None,
+        TOP_LEVEL_CONFIG_KEYS,
+        TOP_LEVEL_CONFIG_KEYS_DESCRIPTION,
+    )?;
 
-    for key in object.keys() {
-        if !TOP_LEVEL_CONFIG_KEYS.contains(&key.as_str()) {
-            bail!(
-                "Config file '{}' contains unknown key '{}'. Allowed keys: {TOP_LEVEL_CONFIG_KEYS_DESCRIPTION}.",
-                path.display(),
-                key
-            );
-        }
-    }
-
-    let log_level = match object.get("log_level") {
-        Some(value) => {
-            let raw = value.as_str().with_context(|| {
-                format!(
-                    "Config key 'log_level' in '{}' must be a string.",
-                    path.display()
-                )
-            })?;
-            Some(FileConfigValue {
-                value: LogLevel::parse(raw, &format!("config file '{}'", path.display()))?,
+    let typed = deserialize_typed_config(parsed.clone(), path)?;
+    let log_level = typed
+        .log_level
+        .map(|raw| -> Result<FileConfigValue<LogLevel>> {
+            Ok(FileConfigValue {
+                value: LogLevel::parse(&raw, &format!("config file '{}'", path.display()))?,
                 source,
             })
-        }
-        None => None,
-    };
-
-    let log_format = match object.get("log_format") {
-        Some(value) => {
-            let raw = value.as_str().with_context(|| {
-                format!(
-                    "Config key 'log_format' in '{}' must be a string.",
-                    path.display()
-                )
-            })?;
-            Some(FileConfigValue {
-                value: LogFormat::parse(raw, &format!("config file '{}'", path.display()))?,
+        })
+        .transpose()?;
+    let log_format = typed
+        .log_format
+        .map(|raw| -> Result<FileConfigValue<LogFormat>> {
+            Ok(FileConfigValue {
+                value: LogFormat::parse(&raw, &format!("config file '{}'", path.display()))?,
                 source,
             })
-        }
-        None => None,
-    };
-
-    let log_file = match object.get("log_file") {
-        Some(value) => {
-            let raw = value.as_str().with_context(|| {
-                format!(
-                    "Config key 'log_file' in '{}' must be a string.",
-                    path.display()
-                )
-            })?;
-            Some(FileConfigValue {
-                value: raw.to_string(),
+        })
+        .transpose()?;
+    let log_file = typed
+        .log_file
+        .map(|value| FileConfigValue { value, source });
+    let log_file_mode = typed
+        .log_file_mode
+        .map(|raw| -> Result<FileConfigValue<LogFileMode>> {
+            Ok(FileConfigValue {
+                value: LogFileMode::parse(&raw, &format!("config file '{}'", path.display()))?,
                 source,
             })
-        }
-        None => None,
-    };
-
-    let log_file_mode = match object.get("log_file_mode") {
-        Some(value) => {
-            let raw = value.as_str().with_context(|| {
-                format!(
-                    "Config key 'log_file_mode' in '{}' must be a string.",
-                    path.display()
-                )
-            })?;
-            Some(FileConfigValue {
-                value: LogFileMode::parse(raw, &format!("config file '{}'", path.display()))?,
-                source,
-            })
-        }
-        None => None,
-    };
-
-    let (otel_enabled, otel_endpoint, otel_protocol) = parse_otel_config(object, path, source)?;
-
-    let timeout_ms = match object.get("timeout_ms") {
-        Some(value) => {
-            let parsed = value.as_u64().with_context(|| {
-                format!(
-                    "Config key 'timeout_ms' in '{}' must be an unsigned integer.",
-                    path.display()
-                )
-            })?;
-            Some(FileConfigValue {
-                value: parsed,
-                source,
-            })
-        }
-        None => None,
-    };
-
-    let attribution_hooks_enabled = parse_attribution_hooks_config(object, path, source)?;
-    let workos_client_id = parse_optional_string_key(object, path, source, WORKOS_CLIENT_ID_KEY)?;
-    let (bash_policy_presets, bash_policy_custom) = parse_bash_policy_config(object, path, source)?;
+        })
+        .transpose()?;
+    let (otel_enabled, otel_endpoint, otel_protocol) =
+        map_otel_config(typed.otel.as_ref(), object, path, source)?;
+    let timeout_ms = typed
+        .timeout_ms
+        .map(|value| FileConfigValue { value, source });
+    let workos_client_id = typed
+        .workos_client_id
+        .map(|value| FileConfigValue { value, source });
+    let (attribution_hooks_enabled, bash_policy_presets, bash_policy_custom) =
+        map_policies_config(typed.policies.as_ref(), object, path, source)?;
 
     Ok(FileConfig {
         log_level,
@@ -1278,7 +1322,8 @@ fn parse_file_config(raw: &str, path: &Path, source: ConfigPathSource) -> Result
     })
 }
 
-fn parse_otel_config(
+fn map_otel_config(
+    typed: Option<&ParsedOtelConfigDocument>,
     object: &serde_json::Map<String, Value>,
     path: &Path,
     source: ConfigPathSource,
@@ -1293,72 +1338,45 @@ fn parse_otel_config(
             path.display()
         )
     })?;
+    validate_object_keys(
+        otel_object,
+        path,
+        Some("otel"),
+        &[
+            "enabled",
+            "exporter_otlp_endpoint",
+            "exporter_otlp_protocol",
+        ],
+        "enabled, exporter_otlp_endpoint, exporter_otlp_protocol",
+    )?;
 
-    for key in otel_object.keys() {
-        if key != "enabled" && key != "exporter_otlp_endpoint" && key != "exporter_otlp_protocol" {
-            bail!(
-                "Config key 'otel' in '{}' contains unknown key '{}'. Allowed keys: enabled, exporter_otlp_endpoint, exporter_otlp_protocol.",
-                path.display(),
-                key
-            );
-        }
-    }
-
-    let enabled = match otel_object.get("enabled") {
-        Some(value) => {
-            let raw = value.as_bool().with_context(|| {
-                format!(
-                    "Config key 'otel.enabled' in '{}' must be a boolean.",
-                    path.display()
-                )
-            })?;
-            Some(FileConfigValue { value: raw, source })
-        }
-        None => None,
-    };
-
-    let endpoint = match otel_object.get("exporter_otlp_endpoint") {
-        Some(value) => {
-            let raw = value.as_str().with_context(|| {
-                format!(
-                    "Config key 'otel.exporter_otlp_endpoint' in '{}' must be a string.",
-                    path.display()
-                )
-            })?;
-            Some(FileConfigValue {
-                value: raw.to_string(),
-                source,
-            })
-        }
-        None => None,
-    };
-
-    let protocol = match otel_object.get("exporter_otlp_protocol") {
-        Some(value) => {
-            let raw = value.as_str().with_context(|| {
-                format!(
-                    "Config key 'otel.exporter_otlp_protocol' in '{}' must be a string.",
-                    path.display()
-                )
-            })?;
-            Some(FileConfigValue {
+    let enabled = typed
+        .and_then(|config| config.enabled)
+        .map(|value| FileConfigValue { value, source });
+    let endpoint = typed
+        .and_then(|config| config.exporter_otlp_endpoint.clone())
+        .map(|value| FileConfigValue { value, source });
+    let protocol = typed
+        .and_then(|config| config.exporter_otlp_protocol.as_deref())
+        .map(|raw| -> Result<FileConfigValue<OtlpProtocol>> {
+            Ok(FileConfigValue {
                 value: OtlpProtocol::parse(raw, &format!("config file '{}'", path.display()))?,
                 source,
             })
-        }
-        None => None,
-    };
+        })
+        .transpose()?;
 
     Ok((enabled, endpoint, protocol))
 }
 
-fn parse_bash_policy_config(
+fn map_policies_config(
+    typed: Option<&ParsedPoliciesConfigDocument>,
     object: &serde_json::Map<String, Value>,
     path: &Path,
     source: ConfigPathSource,
-) -> Result<ParsedBashPolicyConfig> {
+) -> Result<ParsedFilePolicies> {
     let Some(policies_value) = object.get("policies") else {
-        return Ok((None, None));
+        return Ok((None, None, None));
     };
 
     let policies_object = policies_value.as_object().with_context(|| {
@@ -1368,72 +1386,37 @@ fn parse_bash_policy_config(
         )
     })?;
 
-    for key in policies_object.keys() {
-        if key != "bash" && key != "attribution_hooks" {
-            bail!(
-                "Config key 'policies' in '{}' contains unknown key '{}'. Allowed keys: bash, attribution_hooks.",
-                path.display(),
-                key
-            );
-        }
-    }
+    validate_object_keys(
+        policies_object,
+        path,
+        Some("policies"),
+        &["bash", "attribution_hooks"],
+        "bash, attribution_hooks",
+    )?;
 
-    let Some(bash_value) = policies_object.get("bash") else {
-        return Ok((None, None));
-    };
+    let bash = typed.and_then(|config| config.bash.as_ref());
+    let attribution_hooks_enabled = map_attribution_hooks_config(
+        typed.and_then(|config| config.attribution_hooks.as_ref()),
+        policies_object,
+        path,
+        source,
+    )?;
+    let (bash_policy_presets, bash_policy_custom) =
+        map_bash_policy_config(bash, policies_object, path, source)?;
 
-    let bash_object = bash_value.as_object().with_context(|| {
-        format!(
-            "Config key 'policies.bash' in '{}' must be an object.",
-            path.display()
-        )
-    })?;
-
-    for key in bash_object.keys() {
-        if key != "presets" && key != "custom" {
-            bail!(
-                "Config key 'policies.bash' in '{}' contains unknown key '{}'. Allowed keys: presets, custom.",
-                path.display(),
-                key
-            );
-        }
-    }
-
-    let presets = match bash_object.get("presets") {
-        Some(value) => Some(FileConfigValue {
-            value: parse_bash_policy_presets(value, path)?,
-            source,
-        }),
-        None => None,
-    };
-
-    let custom = match bash_object.get("custom") {
-        Some(value) => Some(FileConfigValue {
-            value: parse_custom_bash_policies(value, path)?,
-            source,
-        }),
-        None => None,
-    };
-
-    Ok((presets, custom))
+    Ok((
+        attribution_hooks_enabled,
+        bash_policy_presets,
+        bash_policy_custom,
+    ))
 }
 
-fn parse_attribution_hooks_config(
-    object: &serde_json::Map<String, Value>,
+fn map_attribution_hooks_config(
+    typed: Option<&ParsedAttributionHooksConfigDocument>,
+    policies_object: &serde_json::Map<String, Value>,
     path: &Path,
     source: ConfigPathSource,
 ) -> Result<Option<FileConfigValue<bool>>> {
-    let Some(policies_value) = object.get("policies") else {
-        return Ok(None);
-    };
-
-    let policies_object = policies_value.as_object().with_context(|| {
-        format!(
-            "Config key 'policies' in '{}' must be an object.",
-            path.display()
-        )
-    })?;
-
     let Some(attribution_hooks_value) = policies_object.get("attribution_hooks") else {
         return Ok(None);
     };
@@ -1445,50 +1428,63 @@ fn parse_attribution_hooks_config(
         )
     })?;
 
-    for key in attribution_hooks_object.keys() {
-        if key != "enabled" {
-            bail!(
-                "Config key 'policies.attribution_hooks' in '{}' contains unknown key '{}'. Allowed keys: enabled.",
-                path.display(),
-                key
-            );
-        }
-    }
+    validate_object_keys(
+        attribution_hooks_object,
+        path,
+        Some("policies.attribution_hooks"),
+        &["enabled"],
+        "enabled",
+    )?;
 
-    let Some(enabled) = attribution_hooks_object.get("enabled") else {
-        return Ok(None);
-    };
-
-    let enabled = enabled.as_bool().with_context(|| {
-        format!(
-            "Config key 'policies.attribution_hooks.enabled' in '{}' must be a boolean.",
-            path.display()
-        )
-    })?;
-
-    Ok(Some(FileConfigValue {
-        value: enabled,
-        source,
-    }))
+    Ok(typed
+        .and_then(|config| config.enabled)
+        .map(|value| FileConfigValue { value, source }))
 }
 
-fn parse_bash_policy_presets(value: &Value, path: &Path) -> Result<Vec<String>> {
-    let items = value.as_array().with_context(|| {
+fn map_bash_policy_config(
+    typed: Option<&ParsedBashPolicyConfigDocument>,
+    policies_object: &serde_json::Map<String, Value>,
+    path: &Path,
+    source: ConfigPathSource,
+) -> Result<ParsedBashPolicyConfig> {
+    let Some(bash_value) = policies_object.get("bash") else {
+        return Ok((None, None));
+    };
+
+    let bash_object = bash_value.as_object().with_context(|| {
         format!(
-            "Config key 'policies.bash.presets' in '{}' must be an array.",
+            "Config key 'policies.bash' in '{}' must be an object.",
             path.display()
         )
     })?;
 
+    validate_object_keys(
+        bash_object,
+        path,
+        Some("policies.bash"),
+        &["presets", "custom"],
+        "presets, custom",
+    )?;
+
+    let presets = typed
+        .and_then(|config| config.presets.as_ref())
+        .map(|presets| parse_bash_policy_presets(presets, path))
+        .transpose()?
+        .map(|value| FileConfigValue { value, source });
+    let custom = typed
+        .and_then(|config| config.custom.as_ref())
+        .map(|custom| parse_custom_bash_policies(custom, path))
+        .transpose()?
+        .map(|value| FileConfigValue { value, source });
+
+    Ok((presets, custom))
+}
+
+fn parse_bash_policy_presets(items: &[String], path: &Path) -> Result<Vec<String>> {
     let mut presets = Vec::with_capacity(items.len());
     let builtin_preset_ids = builtin_bash_policy_preset_ids();
     for item in items {
-        let preset = item.as_str().with_context(|| {
-            format!(
-                "Config key 'policies.bash.presets' in '{}' must contain only strings.",
-                path.display()
-            )
-        })?;
+        let preset = item.as_str();
         if !builtin_preset_ids.contains(&preset) {
             bail!(
                 "Config key 'policies.bash.presets' in '{}' contains unknown preset '{}'. Allowed presets: {}.",
@@ -1528,14 +1524,10 @@ fn parse_bash_policy_presets(value: &Value, path: &Path) -> Result<Vec<String>> 
     Ok(presets)
 }
 
-fn parse_custom_bash_policies(value: &Value, path: &Path) -> Result<Vec<CustomBashPolicyEntry>> {
-    let items = value.as_array().with_context(|| {
-        format!(
-            "Config key 'policies.bash.custom' in '{}' must be an array.",
-            path.display()
-        )
-    })?;
-
+fn parse_custom_bash_policies(
+    items: &[ParsedCustomBashPolicyEntryDocument],
+    path: &Path,
+) -> Result<Vec<CustomBashPolicyEntry>> {
     let mut policies = Vec::with_capacity(items.len());
     let mut argv_prefixes: Vec<Vec<String>> = Vec::new();
     for item in items {
@@ -1568,19 +1560,13 @@ fn parse_custom_bash_policies(value: &Value, path: &Path) -> Result<Vec<CustomBa
     Ok(policies)
 }
 
-fn parse_custom_bash_policy_entry(item: &Value, path: &Path) -> Result<CustomBashPolicyEntry> {
-    let object = item.as_object().with_context(|| {
-        format!(
-            "Config key 'policies.bash.custom' in '{}' must contain only objects.",
-            path.display()
-        )
-    })?;
-
-    validate_custom_bash_policy_fields(object, path)?;
-
-    let id = object
-        .get("id")
-        .and_then(Value::as_str)
+fn parse_custom_bash_policy_entry(
+    item: &ParsedCustomBashPolicyEntryDocument,
+    path: &Path,
+) -> Result<CustomBashPolicyEntry> {
+    let id = item
+        .id
+        .as_deref()
         .with_context(|| {
             format!(
                 "Each 'policies.bash.custom' entry in '{}' must include string field 'id'.",
@@ -1596,16 +1582,13 @@ fn parse_custom_bash_policy_entry(item: &Value, path: &Path) -> Result<CustomBas
         );
     }
 
-    let message = object
-        .get("message")
-        .and_then(Value::as_str)
-        .with_context(|| {
-            format!(
-                "Custom bash policy '{}' in '{}' must include string field 'message'.",
-                id,
-                path.display()
-            )
-        })?;
+    let message = item.message.as_deref().with_context(|| {
+        format!(
+            "Custom bash policy '{}' in '{}' must include string field 'message'.",
+            id,
+            path.display()
+        )
+    })?;
     if message.is_empty() {
         bail!(
             "Custom bash policy '{}' in '{}' must use a non-empty 'message'.",
@@ -1614,7 +1597,7 @@ fn parse_custom_bash_policy_entry(item: &Value, path: &Path) -> Result<CustomBas
         );
     }
 
-    let argv_prefix = parse_custom_bash_policy_match(&id, object, path)?;
+    let argv_prefix = parse_custom_bash_policy_match(&id, item.matcher.as_ref(), path)?;
 
     Ok(CustomBashPolicyEntry {
         id,
@@ -1623,59 +1606,25 @@ fn parse_custom_bash_policy_entry(item: &Value, path: &Path) -> Result<CustomBas
     })
 }
 
-fn validate_custom_bash_policy_fields(
-    object: &serde_json::Map<String, Value>,
-    path: &Path,
-) -> Result<()> {
-    for key in object.keys() {
-        if key != "id" && key != "match" && key != "message" {
-            bail!(
-                "Config key 'policies.bash.custom' in '{}' contains unknown field '{}'. Allowed fields: id, match, message.",
-                path.display(),
-                key
-            );
-        }
-    }
-
-    Ok(())
-}
-
 fn parse_custom_bash_policy_match(
     id: &str,
-    object: &serde_json::Map<String, Value>,
+    matcher: Option<&ParsedCustomBashPolicyMatchDocument>,
     path: &Path,
 ) -> Result<Vec<String>> {
-    let match_object = object
-        .get("match")
-        .and_then(Value::as_object)
-        .with_context(|| {
-            format!(
-                "Custom bash policy '{}' in '{}' must include object field 'match'.",
-                id,
-                path.display()
-            )
-        })?;
-    for key in match_object.keys() {
-        if key != "argv_prefix" {
-            bail!(
-                "Custom bash policy '{}' in '{}' contains unknown 'match' field '{}'. Allowed fields: argv_prefix.",
-                id,
-                path.display(),
-                key
-            );
-        }
-    }
-
-    let argv_prefix_values = match_object
-        .get("argv_prefix")
-        .and_then(Value::as_array)
-        .with_context(|| {
-            format!(
-                "Custom bash policy '{}' in '{}' must include array field 'match.argv_prefix'.",
-                id,
-                path.display()
-            )
-        })?;
+    let matcher = matcher.with_context(|| {
+        format!(
+            "Custom bash policy '{}' in '{}' must include object field 'match'.",
+            id,
+            path.display()
+        )
+    })?;
+    let argv_prefix_values = matcher.argv_prefix.as_deref().with_context(|| {
+        format!(
+            "Custom bash policy '{}' in '{}' must include array field 'match.argv_prefix'.",
+            id,
+            path.display()
+        )
+    })?;
     if argv_prefix_values.is_empty() {
         bail!(
             "Custom bash policy '{}' in '{}' must use a non-empty 'match.argv_prefix'.",
@@ -1689,18 +1638,11 @@ fn parse_custom_bash_policy_match(
 
 fn parse_custom_bash_policy_argv_prefix(
     id: &str,
-    argv_prefix_values: &[Value],
+    argv_prefix_values: &[String],
     path: &Path,
 ) -> Result<Vec<String>> {
     let mut argv_prefix = Vec::with_capacity(argv_prefix_values.len());
     for token in argv_prefix_values {
-        let token = token.as_str().with_context(|| {
-            format!(
-                "Custom bash policy '{}' in '{}' must use only string argv_prefix tokens.",
-                id,
-                path.display()
-            )
-        })?;
         if token.is_empty() {
             bail!(
                 "Custom bash policy '{}' in '{}' cannot use empty argv_prefix tokens.",
@@ -1708,34 +1650,10 @@ fn parse_custom_bash_policy_argv_prefix(
                 path.display()
             );
         }
-        argv_prefix.push(token.to_string());
+        argv_prefix.push(token.clone());
     }
 
     Ok(argv_prefix)
-}
-
-fn parse_optional_string_key(
-    object: &serde_json::Map<String, Value>,
-    path: &Path,
-    source: ConfigPathSource,
-    key: AuthConfigKeySpec,
-) -> Result<Option<FileConfigValue<String>>> {
-    let Some(value) = object.get(key.config_key) else {
-        return Ok(None);
-    };
-
-    let raw = value.as_str().with_context(|| {
-        format!(
-            "Config key '{}' in '{}' must be a string.",
-            key.config_key,
-            path.display()
-        )
-    })?;
-
-    Ok(Some(FileConfigValue {
-        value: raw.to_string(),
-        source,
-    }))
 }
 
 fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> String {

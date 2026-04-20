@@ -2,7 +2,7 @@
 
 ## Scope
 
-This contract documents the implemented `sce config` command behavior in `cli/src/services/config.rs`, the canonical Pkl-authored `sce/config.json` schema artifact generated to `config/schema/sce-config.schema.json` and embedded there as `SCE_CONFIG_SCHEMA_JSON`, and parser/dispatch wiring in `cli/src/app.rs`.
+This contract documents the implemented `sce config` command behavior in `cli/src/services/config.rs`, the canonical Pkl-authored `sce/config.json` schema artifact generated to `config/schema/sce-config.schema.json` and embedded there as `SCE_CONFIG_SCHEMA_JSON`, the typed serde DTO + mapping pipeline used for config-file parsing, and parser/dispatch wiring in `cli/src/app.rs`.
 
 The current implementation resolves flat logging keys plus nested `otel` keys with deterministic env-over-config precedence and source metadata, uses those resolved values in `cli/src/app.rs` / `cli/src/services/observability.rs` for runtime logging and OTEL bootstrap, exposes resolved-value inspection through `sce config show`, and keeps `sce config validate` focused on validation status plus errors/warnings.
 
@@ -54,8 +54,9 @@ When a default-discovered global or repo-local config file exists but fails JSON
 ## Validation contract
 
 - The canonical JSON Schema artifact for both global and repo-local `sce/config.json` files is authored in `config/pkl/base/sce-config-schema.pkl` and generated to `config/schema/sce-config.schema.json`.
-- `cli/src/services/config.rs` embeds that generated artifact at compile time as `SCE_CONFIG_SCHEMA_JSON` and uses it for runtime schema validation.
+- `cli/src/services/config.rs` embeds that generated artifact at compile time as `SCE_CONFIG_SCHEMA_JSON` and uses it for runtime schema validation before mapping parsed files into typed serde DTOs.
 - `sce config validate` and `sce doctor` both validate config-file structure against that shared generated schema before applying Rust-owned semantic checks such as duplicate custom `argv_prefix` detection and redundancy warnings.
+- After schema validation, `cli/src/services/config.rs` deserializes top-level and nested config structure (`otel`, `policies`, `policies.bash`, `policies.attribution_hooks`) into typed serde DTOs and applies focused Rust-owned mapping helpers for enum conversion, source attribution, and policy-specific semantic checks.
 - The canonical top-level schema declaration `"$schema": "https://sce.crocoder.dev/config.json"` is a supported config key for both explicit and discovered `sce/config.json` files, including command-startup paths like `sce version` and other config-loading commands that parse config before normal command dispatch.
 - Startup/runtime config resolution now degrades gracefully only for default-discovered files: invalid discovered files are skipped and reported via collected `validation_errors`, while explicit `--config` / `SCE_CONFIG_FILE` targets still fail immediately on the same parse or validation errors.
 
