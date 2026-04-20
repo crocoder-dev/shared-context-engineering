@@ -106,13 +106,41 @@ Refactor the Rust CLI architecture to reduce central orchestration complexity, r
   - Evidence: `nix run .#pkl-check-generated`; `nix develop -c sh -c 'cd cli && cargo build'`
   - Notes: Updated root/context architecture coverage to reflect the explicit `app.rs` startup lifecycle + `RuntimeCommand` seam, the split `doctor/` module ownership, the `setup.rs` install/prompt support seams, the `default_paths.rs` internal `roots` seam, and the current root-Nix verification/release posture for the CLI.
 
-- [ ] T09: `Run full validation and cleanup` (status:todo)
+- [x] T09: `Run full validation and cleanup` (status:done)
   - Task ID: T09
   - Goal: Perform final validation, remove temporary scaffolding, and confirm the refactor preserves the repository contract.
   - Boundaries (in/out of scope): In - full repo validation, cleanup of temporary compatibility shims that are no longer needed, and final review for contract drift. Out - adding new features or opportunistic follow-up refactors.
   - Done when: the full required validation passes, no temporary scaffolding remains unintentionally, and the plan is ready to close with context aligned.
   - Verification notes (commands or checks): `nix run .#pkl-check-generated`; `nix flake check`; verify no temporary TODO/shim paths remain unless intentionally documented.
+  - Completed: 2026-04-20
+  - Evidence: `nix run .#pkl-check-generated`; `nix flake check`; scoped repository search found no temporary TODO/shim markers in active repo-owned files
+  - Notes: Final validation passed without contract drift; no additional cleanup edits were required.
 
 ## Open questions
 
 - None at planning time. The plan assumes behavior-preserving internal refactors unless a later task reveals a contract-level change that must be approved before implementation.
+
+## Validation Report
+
+### Commands run
+- `nix run .#pkl-check-generated` -> exit 0 (`Generated outputs are up to date.`)
+- `nix flake check` -> exit 0 (`all checks passed!`)
+- scoped repository search for temporary markers (`TODO`, `shim`, `temporary scaffolding`, `compatibility shim`) across active repo-owned files -> no matches
+
+### Context sync result
+- Classification: verify-only
+- Verified root current-state coverage remains aligned in `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/patterns.md`, and `context/context-map.md`
+- No root context edits were required for this final validation task because the prior refactor tasks had already updated durable architecture/context files
+
+### Success-criteria verification
+- [x] Oversized orchestration hubs split into clearer seams -> represented in current-state context and prior completed tasks T01-T08
+- [x] Shared config/observability primitives unified -> completed in T01 and reflected in current-state context
+- [x] Parsing/startup/execution responsibilities separated -> completed in T02-T04 and reflected in current-state context
+- [x] Config parsing uses typed deserialization -> completed in T05 and reflected in current-state context
+- [x] Top-level command metadata has canonical ownership -> completed in T04 and reflected in current-state context
+- [x] User-facing behavior preserved -> final validation passed via `nix flake check`
+- [x] Tokio features declared directly -> completed in T01 and preserved by final validation
+- [x] Context updated for resulting architecture -> completed in T08 and re-verified during this task
+
+### Residual risks
+- None identified from the final validation pass.
