@@ -5,6 +5,10 @@ use crate::cli::Args;
 use crate::error::HarnessError;
 
 const SCE_BINARY_ENV: &str = "SCE_CLI_INTEGRATION_SCE_BIN";
+const COMPLETION_BASH_REQUIRED_MARKERS: &[&str] = &["_sce()", "complete -F _sce"];
+const COMPLETION_ZSH_REQUIRED_MARKERS: &[&str] = &["#compdef sce", "_arguments"];
+const COMPLETION_FISH_REQUIRED_MARKERS: &[&str] = &["complete -c sce"];
+const CONFIG_PRECEDENCE_TEXT: &str = "flags > env > config file > defaults";
 
 pub(crate) struct Runner;
 
@@ -118,6 +122,89 @@ const VERSION_CASES: &[CommandCase] = &[
     },
 ];
 
+const COMPLETION_CASES: &[CommandCase] = &[
+    CommandCase {
+        name: "completion-bash",
+        argv: &["completion", "--shell", "bash"],
+        expectation: CaseExpectation {
+            status: ExpectedStatus::Success,
+            stdout: OutputExpectation::non_empty().with_validator(validate_completion_bash_output),
+        },
+    },
+    CommandCase {
+        name: "completion-zsh",
+        argv: &["completion", "--shell", "zsh"],
+        expectation: CaseExpectation {
+            status: ExpectedStatus::Success,
+            stdout: OutputExpectation::non_empty().with_validator(validate_completion_zsh_output),
+        },
+    },
+    CommandCase {
+        name: "completion-fish",
+        argv: &["completion", "--shell", "fish"],
+        expectation: CaseExpectation {
+            status: ExpectedStatus::Success,
+            stdout: OutputExpectation::non_empty().with_validator(validate_completion_fish_output),
+        },
+    },
+];
+
+const CONFIG_CASES: &[CommandCase] = &[
+    CommandCase {
+        name: "config-show-text-format",
+        argv: &["config", "show", "--format", "text"],
+        expectation: CaseExpectation {
+            status: ExpectedStatus::Success,
+            stdout: OutputExpectation::non_empty().with_validator(validate_config_show_text_output),
+        },
+    },
+    CommandCase {
+        name: "config-show-json-format",
+        argv: &["config", "show", "--format", "json"],
+        expectation: CaseExpectation {
+            status: ExpectedStatus::Success,
+            stdout: OutputExpectation::non_empty().with_validator(validate_config_show_json_output),
+        },
+    },
+    CommandCase {
+        name: "config-validate-text-format",
+        argv: &["config", "validate", "--format", "text"],
+        expectation: CaseExpectation {
+            status: ExpectedStatus::Success,
+            stdout: OutputExpectation::non_empty()
+                .with_validator(validate_config_validate_text_output),
+        },
+    },
+    CommandCase {
+        name: "config-validate-json-format",
+        argv: &["config", "validate", "--format", "json"],
+        expectation: CaseExpectation {
+            status: ExpectedStatus::Success,
+            stdout: OutputExpectation::non_empty()
+                .with_validator(validate_config_validate_json_output),
+        },
+    },
+];
+
+const DOCTOR_CASES: &[CommandCase] = &[
+    CommandCase {
+        name: "doctor-text-format",
+        argv: &["doctor", "--format", "text"],
+        expectation: CaseExpectation {
+            status: ExpectedStatus::Success,
+            stdout: OutputExpectation::non_empty().with_validator(validate_doctor_text_output),
+        },
+    },
+    CommandCase {
+        name: "doctor-json-format",
+        argv: &["doctor", "--format", "json"],
+        expectation: CaseExpectation {
+            status: ExpectedStatus::Success,
+            stdout: OutputExpectation::non_empty().with_validator(validate_doctor_json_output),
+        },
+    },
+];
+
 const COMMAND_SUITES: &[CommandSuite] = &[
     CommandSuite {
         name: "help",
@@ -126,6 +213,18 @@ const COMMAND_SUITES: &[CommandSuite] = &[
     CommandSuite {
         name: "version",
         cases: VERSION_CASES,
+    },
+    CommandSuite {
+        name: "completion",
+        cases: COMPLETION_CASES,
+    },
+    CommandSuite {
+        name: "config",
+        cases: CONFIG_CASES,
+    },
+    CommandSuite {
+        name: "doctor",
+        cases: DOCTOR_CASES,
     },
 ];
 
@@ -374,6 +473,184 @@ fn validate_version_json_output(stream: &str) -> Result<(), String> {
             "expected 'git_commit' to contain only ASCII alphanumeric characters or one of: '.', '_', '-'"
                 .to_string(),
         );
+    }
+
+    Ok(())
+}
+
+fn validate_completion_bash_output(stream: &str) -> Result<(), String> {
+    assert_non_empty_payload(stream, "completion bash")?;
+    assert_required_substrings(stream, COMPLETION_BASH_REQUIRED_MARKERS, "completion bash")
+}
+
+fn validate_completion_zsh_output(stream: &str) -> Result<(), String> {
+    assert_non_empty_payload(stream, "completion zsh")?;
+    assert_required_substrings(stream, COMPLETION_ZSH_REQUIRED_MARKERS, "completion zsh")
+}
+
+fn validate_completion_fish_output(stream: &str) -> Result<(), String> {
+    assert_non_empty_payload(stream, "completion fish")?;
+    assert_required_substrings(stream, COMPLETION_FISH_REQUIRED_MARKERS, "completion fish")
+}
+
+fn validate_config_show_text_output(stream: &str) -> Result<(), String> {
+    let payload = stream.trim();
+    if payload.is_empty() {
+        return Err("expected non-empty config show text payload".to_string());
+    }
+
+    assert_required_substrings(
+        payload,
+        &[
+            "SCE config",
+            "Precedence:",
+            CONFIG_PRECEDENCE_TEXT,
+            "Config files",
+            "- log_level:",
+            "- log_format:",
+            "- log_file_mode:",
+            "- otel.enabled:",
+            "- timeout_ms:",
+            "- workos_client_id:",
+            "- policies.bash:",
+            "Validation warnings:",
+        ],
+        "config show text",
+    )
+}
+
+fn validate_config_show_json_output(stream: &str) -> Result<(), String> {
+    let payload = stream.trim();
+    if payload.is_empty() {
+        return Err("expected non-empty config show JSON payload".to_string());
+    }
+
+    assert_json_field_equals(payload, "status", "ok")?;
+    assert_json_field_equals(payload, "command", "config_show")?;
+    assert_required_substrings(
+        payload,
+        &[
+            "\"result\"",
+            "\"precedence\"",
+            "\"config_paths\"",
+            "\"resolved\"",
+            "\"log_level\"",
+            "\"log_format\"",
+            "\"log_file\"",
+            "\"log_file_mode\"",
+            "\"otel\"",
+            "\"timeout_ms\"",
+            "\"workos_client_id\"",
+            "\"policies\"",
+            "\"warnings\"",
+        ],
+        "config show json",
+    )
+}
+
+fn validate_config_validate_text_output(stream: &str) -> Result<(), String> {
+    let payload = stream.trim();
+    if payload.is_empty() {
+        return Err("expected non-empty config validate text payload".to_string());
+    }
+
+    assert_required_substrings(
+        payload,
+        &[
+            "SCE config validation",
+            "Validation issues:",
+            "none",
+            "Validation warnings:",
+        ],
+        "config validate text",
+    )
+}
+
+fn validate_config_validate_json_output(stream: &str) -> Result<(), String> {
+    let payload = stream.trim();
+    if payload.is_empty() {
+        return Err("expected non-empty config validate JSON payload".to_string());
+    }
+
+    assert_json_field_equals(payload, "status", "ok")?;
+    assert_json_field_equals(payload, "command", "config_validate")?;
+    assert_required_substrings(
+        payload,
+        &["\"valid\": true", "\"issues\": []", "\"warnings\""],
+        "config validate json",
+    )
+}
+
+fn validate_doctor_text_output(stream: &str) -> Result<(), String> {
+    let payload = stream.trim();
+    if payload.is_empty() {
+        return Err("expected non-empty doctor text payload".to_string());
+    }
+
+    assert_required_substrings(
+        payload,
+        &[
+            "SCE doctor diagnose",
+            "Environment:",
+            "Configuration:",
+            "Repository:",
+            "Git Hooks:",
+            "Integrations:",
+            "Summary:",
+        ],
+        "doctor text",
+    )
+}
+
+fn validate_doctor_json_output(stream: &str) -> Result<(), String> {
+    let payload = stream.trim();
+    if payload.is_empty() {
+        return Err("expected non-empty doctor JSON payload".to_string());
+    }
+
+    assert_json_field_equals(payload, "status", "ok")?;
+    assert_json_field_equals(payload, "command", "doctor")?;
+    assert_json_field_equals(payload, "mode", "diagnose")?;
+
+    let readiness = extract_json_string_field(payload, "readiness")?;
+    if readiness != "ready" && readiness != "not_ready" {
+        return Err(format!(
+            "expected 'readiness' to be 'ready' or 'not_ready', got '{readiness}'"
+        ));
+    }
+
+    assert_required_substrings(
+        payload,
+        &[
+            "\"hook_path_source\"",
+            "\"config_paths\"",
+            "\"hooks\"",
+            "\"problems\"",
+            "\"fix_results\": []",
+        ],
+        "doctor json",
+    )
+}
+
+fn assert_non_empty_payload(stream: &str, contract_name: &str) -> Result<(), String> {
+    if stream.trim().is_empty() {
+        return Err(format!("expected non-empty {contract_name} payload"));
+    }
+
+    Ok(())
+}
+
+fn assert_required_substrings(
+    payload: &str,
+    required_substrings: &[&str],
+    contract_name: &str,
+) -> Result<(), String> {
+    for required in required_substrings {
+        if !payload.contains(required) {
+            return Err(format!(
+                "expected {contract_name} payload to contain '{required}'"
+            ));
+        }
     }
 
     Ok(())
