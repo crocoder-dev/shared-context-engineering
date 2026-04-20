@@ -14,6 +14,8 @@
 //! unified-diff formats and produces deterministic `ParsedPatch` structs from
 //! raw patch text.
 
+use std::path::{Component, Path};
+
 use serde::{Deserialize, Serialize};
 
 /// Top-level parsed patch containing one or more file changes.
@@ -161,9 +163,11 @@ pub fn load_patch_from_json_bytes(input: &[u8]) -> Result<ParsedPatch, PatchLoad
 /// Compute the exact touched-line intersection of two patches.
 ///
 /// Returns a `ParsedPatch` containing only the touched lines that appear in
-/// both `a` and `b` for the same file. Files are matched by `new_path`
-/// (the canonical post-change path). Touched lines are considered identical
-/// when they share the same `kind`, `line_number`, and `content`.
+/// both `a` and `b` for the same logical file. Files are matched by their
+/// post-change path identity: exact `new_path` equality, or an absolute path
+/// whose normalized path segments end with the same relative path segments.
+/// Touched lines are considered identical when they share the same `kind`,
+/// `line_number`, and `content`.
 ///
 /// Files with no overlapping touched lines are excluded from the result.
 /// Within matched files, hunks are reconstructed from the overlapping lines,
@@ -184,17 +188,16 @@ pub fn load_patch_from_json_bytes(input: &[u8]) -> Result<ParsedPatch, PatchLoad
 pub fn intersect_patches(a: &ParsedPatch, b: &ParsedPatch) -> ParsedPatch {
     use std::collections::HashSet;
 
-    // Index files in `b` by new_path for O(1) lookup.
-    let b_files_by_path: std::collections::HashMap<&str, &PatchFileChange> =
-        b.files.iter().map(|f| (f.new_path.as_str(), f)).collect();
-
     let mut result_files: Vec<PatchFileChange> = Vec::new();
 
     for a_file in &a.files {
-        // Only consider files that also appear in `b` by new_path.
-        let b_file = match b_files_by_path.get(a_file.new_path.as_str()) {
-            Some(f) => *f,
-            None => continue,
+        // Only consider files that also appear in `b` by equivalent post-change path.
+        let Some(b_file) = b
+            .files
+            .iter()
+            .find(|b_file| paths_refer_to_same_file(&a_file.new_path, &b_file.new_path))
+        else {
+            continue;
         };
 
         // Build a set of touched-line identities from `b` for this specific file.
@@ -250,6 +253,38 @@ pub fn intersect_patches(a: &ParsedPatch, b: &ParsedPatch) -> ParsedPatch {
     ParsedPatch {
         files: result_files,
     }
+}
+
+fn paths_refer_to_same_file(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+
+    let a_components = normalized_path_components(a);
+    let b_components = normalized_path_components(b);
+
+    if a_components.is_empty() || b_components.is_empty() {
+        return false;
+    }
+
+    path_has_relative_suffix(&a_components, &b_components)
+        || path_has_relative_suffix(&b_components, &a_components)
+}
+
+fn normalized_path_components(path: &str) -> Vec<&str> {
+    Path::new(path)
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => part.to_str(),
+            _ => None,
+        })
+        .collect()
+}
+
+fn path_has_relative_suffix<'a>(full_path: &[&'a str], suffix_candidate: &[&'a str]) -> bool {
+    full_path.len() > suffix_candidate.len()
+        && full_path.ends_with(suffix_candidate)
+        && !suffix_candidate.is_empty()
 }
 
 /// Combine multiple patches into one deterministic result.
@@ -2089,7 +2124,7 @@ index abc1234..def5678 100644
     }
 
     #[test]
-    fn fixture_family_two_exposes_current_equivalence_gap_for_absolute_index_paths() {
+    fn fixture_family_two_intersection_matches_absolute_and_relative_index_paths() {
         let absolute_index_patch = load_fixture_family_two_patch("diff.1");
         let relative_index_patch = load_fixture_family_two_patch("diff.2");
 
@@ -2100,14 +2135,37 @@ index abc1234..def5678 100644
         );
         assert_ne!(
             absolute_index_patch.files[0].new_path, relative_index_patch.files[0].new_path,
-            "current parser keeps different file identity for absolute vs relative Index paths"
+            "parser still preserves distinct raw path strings for absolute vs relative Index paths"
         );
 
         let overlap = intersect_patches(&absolute_index_patch, &relative_index_patch);
-        assert!(
-            overlap.files.is_empty(),
-            "current exact intersection drops the logically equivalent change when file identity differs"
+        assert_eq!(overlap.files.len(), 1);
+        assert_eq!(
+            touched_line_signature(&overlap),
+            touched_line_signature(&relative_index_patch),
+            "intersection should keep the full logical touched-line overlap for equivalent hunks"
         );
+        assert_eq!(
+            overlap.files[0].new_path, absolute_index_patch.files[0].new_path,
+            "intersection should continue preserving file metadata from the first patch"
+        );
+    }
+
+    #[test]
+    fn path_identity_matches_absolute_path_suffixes_only_on_segment_boundaries() {
+        assert!(paths_refer_to_same_file(
+            "/home/davidabram/repos/shared-context-engineering/master/poem.md",
+            "poem.md"
+        ));
+        assert!(paths_refer_to_same_file(
+            "/tmp/worktrees/shared-context-engineering/master/files/poem.md",
+            "files/poem.md"
+        ));
+        assert!(!paths_refer_to_same_file("/tmp/poem.md.bak", "poem.md"));
+        assert!(!paths_refer_to_same_file(
+            "/tmp/subdir/poem.md",
+            "other/poem.md"
+        ));
     }
 
     // --- T02: Intersection tests ---
