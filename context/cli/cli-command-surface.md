@@ -8,7 +8,8 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 
 - Binary entrypoint: `cli/src/main.rs`
 - Runtime shell: `cli/src/app.rs`
-- Command contract catalog: `cli/src/command_surface.rs`
+- Top-level command metadata catalog: `cli/src/cli_schema.rs`
+- Custom top-level help renderer: `cli/src/command_surface.rs`
 - Local Turso adapter: `cli/src/services/local_db.rs`
 - Service domains: `cli/src/services/{agent_trace,auth,auth_command,completion,config,default_paths,local_db,setup,doctor,hooks,resilience,sync,token_storage,version}.rs`
 - Shared test temp-path helper: `cli/src/test_support.rs` (`TestTempDir`, test-only module)
@@ -16,6 +17,7 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 ## Onboarding documentation
 
 - `sce --help` includes a slim top-level command list and quick-start examples for `setup`, `doctor`, and `version`; `auth`, `hooks`, and `sync` remain implemented in code but are hidden from `sce`, `sce help`, and `sce --help` for this phase.
+- `cli/src/cli_schema.rs` owns the real top-level command catalog metadata for clap-backed commands (purpose text plus `show_in_top_level_help`), while `command_surface::help_text()` consumes that catalog and adds the synthetic `help` row plus the ASCII banner.
 - Command-local help is available for implemented commands including bare `sce auth`, `sce auth --help`, `sce auth login --help`, `sce setup --help`, `sce doctor --help`, and `sce completion --help`; when stdout color is enabled those help payloads now reuse the shared heading/command/placeholder styling pass while non-TTY and `NO_COLOR` flows stay plain text. Human-readable stderr diagnostics and interactive setup prompt text now follow the same shared styling policy on their respective terminal streams.
 - Current verification guidance for the CLI slice uses crate-local `cargo test --manifest-path cli/Cargo.toml`, plus release/install commands for installability (`cargo build --manifest-path cli/Cargo.toml --release`, `cargo install --path cli --locked`).
 
@@ -41,6 +43,7 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 
 - the banner uses a per-column right-to-left color gradient (cyan on the right, magenta on the left) when stdout color is enabled, and renders as plain ASCII when color is disabled (non-TTY or `NO_COLOR`)
 - the banner is rendered by `command_surface::help_text()` calling `style::banner_with_gradient(SCE_BANNER_LINES)` before the heading
+- the visible real-command rows are sourced from `cli_schema::TOP_LEVEL_COMMANDS`, so top-level purpose text and help visibility are defined once for both help rendering and known-command classification
 - the visible command list is `help`, `config`, `setup`, `doctor`, `version`, and `completion`
 - top-level help omits implemented/placeholder labels
 - top-level examples cover setup plus doctor/version machine-readable or repair-intent flows (`doctor --format json`, `doctor --fix`, `version --format json`) and use the shared example-command styling when stdout color is enabled

@@ -56,12 +56,15 @@ Refactor the Rust CLI architecture to reduce central orchestration complexity, r
   - Evidence: `nix develop -c sh -c 'cd cli && cargo build'`; `nix run .#pkl-check-generated`; `nix flake check`
   - Notes: `cli/src/app.rs` now routes command parsing through an internal `RuntimeCommand` seam and executes boxed command objects via `execute_command_phase`, removing the prior app-level `dispatch` match while preserving command behavior.
 
-- [ ] T04: `Unify top-level help and command catalog ownership` (status:todo)
+- [x] T04: `Unify top-level help and command catalog ownership` (status:done)
   - Task ID: T04
   - Goal: Eliminate the parallel help/catalog ownership split between `cli_schema.rs` and `command_surface.rs` so top-level command metadata is defined once.
   - Boundaries (in/out of scope): In - refactoring top-level help generation and command metadata ownership, preserving current hidden-vs-visible top-level help behavior, and keeping stable human-facing help content. Out - changing command names, removing hidden-command behavior, or redesigning clap subcommand help output.
   - Done when: one canonical source controls the top-level command catalog/help visibility contract, and the code no longer requires manually keeping separate command lists in sync for dispatch classification vs help rendering.
   - Verification notes (commands or checks): `nix flake check`; manually compare `sce --help` expectations via existing tests or help assertions to confirm no user-visible drift.
+  - Completed: 2026-04-20
+  - Evidence: `nix run .#pkl-check-generated`; `nix flake check`; `nix develop -c sh -c 'cd cli && cargo build'`
+  - Notes: `cli/src/cli_schema.rs` now owns the canonical top-level command metadata (top-level purpose text plus help visibility), while `cli/src/command_surface.rs` consumes that catalog for help rendering and known-command classification; inline help assertions now verify visible-command output and hidden-command exclusion.
 
 - [ ] T05: `Replace config file hand-parsing with typed deserialization` (status:todo)
   - Task ID: T05
