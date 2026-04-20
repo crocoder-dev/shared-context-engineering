@@ -94,6 +94,7 @@
 ## Placeholder CLI scaffolding
 
 - Keep production CLI path ownership centralized in `cli/src/services/default_paths.rs`; new non-test path literals or path-shape definitions should be added there as named accessors/constants instead of becoming new path owners in other modules.
+- Prefer localized `#[allow(dead_code)]` on intentionally shared path/setup helper items over file-level dead-code suppression so lint scope stays narrow while keeping catalog seams available to tests and future consumers.
 - For early CLI foundation tasks, keep the real top-level command catalog/help metadata centralized in one canonical seam (`cli/src/cli_schema.rs` in the current architecture) and let custom top-level help renderers consume that seam instead of maintaining a second parallel command list.
 - Keep top-level help intentionally curated: command visibility on `sce`, `sce help`, and `sce --help` may differ from parser availability when a command should remain directly invocable but temporarily hidden from operator-facing help.
 - Keep wrapper-only help rows or banner rendering logic outside the clap catalog, but do not duplicate the real command visibility/purpose metadata in those renderers.
@@ -111,6 +112,7 @@
 - For security-sensitive CLI UX, redact common secret-bearing token/value forms before emitting diagnostics/log lines, including app-level errors, setup git stderr diagnostics, and observability sink output.
 - For user-supplied setup repository paths (`sce setup --hooks --repo <path>`), canonicalize/validate the path as an existing directory before git command execution, and run deterministic write-permission probes on setup write targets before staging/swap operations.
 - For interactive setup flows, isolate prompt handling behind a service-layer prompter seam so selection mapping and cancellation behavior can be tested without a live TTY.
+- When setup or path-catalog modules grow dense, extract focused internal support seams (for example install-flow, prompt-flow, or root-resolution helpers) before adding new behavior so orchestration files stay navigable without changing command contracts.
 - Treat setup prompt cancellation/interrupt as a non-destructive exit path with explicit user messaging (no file mutations and no partial side effects).
 - For setup install prep, generate compile-time embedded asset manifests from `config/.opencode/**`, `config/.claude/**`, and `cli/assets/hooks/**` in `cli/build.rs`, keep relative paths normalized to forward-slash form, and expose target-scoped iterators/lookups from the setup service layer for installer wiring.
 - For setup install execution, write selected embedded assets into a per-target staging directory first, then remove the existing target and swap staged content into place; on swap failure, clean temporary staging paths and return deterministic recovery guidance (recover from version control). No backup artifacts are created.

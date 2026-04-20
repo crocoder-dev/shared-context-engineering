@@ -86,12 +86,15 @@ Refactor the Rust CLI architecture to reduce central orchestration complexity, r
   - Evidence: `nix develop -c sh -c 'cd cli && cargo build'`; `nix run .#pkl-check-generated`; `nix flake check`
   - Notes: `cli/src/services/doctor/mod.rs` is now a small module entrypoint backed by focused `doctor/{inspect,render,fixes,types}.rs` units, preserving the doctor request/report contract while moving diagnosis, rendering, and fix execution out of one sprawling file.
 
-- [ ] T07: `Tighten setup and path/service support seams` (status:todo)
+- [x] T07: `Tighten setup and path/service support seams` (status:done)
   - Task ID: T07
   - Goal: Reduce incidental architecture debt in `setup.rs`, `default_paths.rs`, and related support modules so path ownership and setup flows remain maintainable after the broader refactor.
   - Boundaries (in/out of scope): In - removing module-level `allow(dead_code)` where feasible, extracting focused helpers/modules from oversized setup/path code, and preserving staging/install/recovery behavior. Out - changing setup feature scope, hook-install semantics, or path contracts.
   - Done when: setup/path support code has clearer internal ownership boundaries, dead-code suppression is removed or narrowed to justified local cases, and support modules are easier to navigate without semantic changes.
   - Verification notes (commands or checks): `nix flake check`; inspect that setup/hook/path-related tests and compile-time asset flows still behave as before.
+  - Completed: 2026-04-20
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo build'`; `nix develop -c sh -c 'cd cli && cargo clippy --tests -- -D warnings'`; `nix run .#pkl-check-generated`; `nix flake check`
+  - Notes: `cli/src/services/setup.rs` now isolates install-flow and prompt-flow helpers into focused inline support modules instead of one uninterrupted implementation block, while `cli/src/services/default_paths.rs` moves root-resolution logic behind a dedicated `roots` seam. Broad file-level dead-code suppression was removed in favor of localized `#[allow(dead_code)]` annotations on path-catalog and setup helper items that remain intentionally available for future/test support without widening module-level lint scope.
 
 - [ ] T08: `Sync current-state architecture context` (status:todo)
   - Task ID: T08
