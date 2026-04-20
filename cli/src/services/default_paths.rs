@@ -1,71 +1,273 @@
-#![allow(dead_code)]
+use std::path::PathBuf;
 
-use std::path::{Path, PathBuf};
+pub(crate) use roots::{resolve_sce_default_locations, resolve_state_data_root};
 
-use anyhow::{anyhow, Result};
+mod roots {
+    use std::path::{Path, PathBuf};
 
-#[cfg_attr(not(test), allow(dead_code))]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PlatformFamily {
-    Linux,
-    Macos,
-    Windows,
-    Other,
-}
+    use anyhow::{anyhow, Result};
 
-#[allow(clippy::struct_field_names)]
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct SystemDirectories {
-    pub home_dir: Option<PathBuf>,
-    pub config_dir: Option<PathBuf>,
-    pub state_dir: Option<PathBuf>,
-    pub data_dir: Option<PathBuf>,
-    pub data_local_dir: Option<PathBuf>,
-    pub cache_dir: Option<PathBuf>,
-}
+    #[allow(dead_code)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(crate) enum PlatformFamily {
+        Linux,
+        Macos,
+        Windows,
+        Other,
+    }
 
-impl SystemDirectories {
-    fn from_current_system() -> Self {
-        Self {
-            home_dir: dirs::home_dir(),
-            config_dir: dirs::config_dir(),
-            state_dir: dirs::state_dir(),
-            data_dir: dirs::data_dir(),
-            data_local_dir: dirs::data_local_dir(),
-            cache_dir: dirs::cache_dir(),
+    #[allow(clippy::struct_field_names)]
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    pub(crate) struct SystemDirectories {
+        pub home_dir: Option<PathBuf>,
+        pub config_dir: Option<PathBuf>,
+        pub state_dir: Option<PathBuf>,
+        pub data_dir: Option<PathBuf>,
+        pub data_local_dir: Option<PathBuf>,
+        pub cache_dir: Option<PathBuf>,
+    }
+
+    impl SystemDirectories {
+        fn from_current_system() -> Self {
+            Self {
+                home_dir: dirs::home_dir(),
+                config_dir: dirs::config_dir(),
+                state_dir: dirs::state_dir(),
+                data_dir: dirs::data_dir(),
+                data_local_dir: dirs::data_local_dir(),
+                cache_dir: dirs::cache_dir(),
+            }
+        }
+    }
+
+    #[allow(clippy::struct_field_names)]
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub(crate) struct SceDirectoryRoots {
+        config_root: PathBuf,
+        state_root: PathBuf,
+        cache_root: PathBuf,
+    }
+
+    impl SceDirectoryRoots {
+        pub(crate) fn config_root(&self) -> &Path {
+            &self.config_root
+        }
+
+        pub(crate) fn state_root(&self) -> &Path {
+            &self.state_root
+        }
+
+        #[allow(dead_code)]
+        pub(crate) fn cache_root(&self) -> &Path {
+            &self.cache_root
+        }
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub(crate) struct SceDefaultLocations {
+        roots: SceDirectoryRoots,
+    }
+
+    impl SceDefaultLocations {
+        pub(crate) fn roots(&self) -> &SceDirectoryRoots {
+            &self.roots
+        }
+
+        pub(crate) fn global_config_file(&self) -> PathBuf {
+            self.roots.config_root().join("sce").join("config.json")
+        }
+
+        pub(crate) fn auth_tokens_file(&self) -> PathBuf {
+            self.roots
+                .state_root()
+                .join("sce")
+                .join("auth")
+                .join("tokens.json")
+        }
+
+        #[allow(dead_code)]
+        pub(crate) fn persisted_artifact_locations(&self) -> Vec<super::PersistedArtifactLocation> {
+            vec![
+                super::PersistedArtifactLocation {
+                    id: super::PersistedArtifactId::GlobalConfig,
+                    root_kind: super::PersistedArtifactRootKind::Config,
+                    path: self.global_config_file(),
+                },
+                super::PersistedArtifactLocation {
+                    id: super::PersistedArtifactId::AuthTokens,
+                    root_kind: super::PersistedArtifactRootKind::State,
+                    path: self.auth_tokens_file(),
+                },
+            ]
+        }
+    }
+
+    pub(crate) fn resolve_state_data_root() -> Result<PathBuf> {
+        Ok(resolve_sce_default_locations()?
+            .roots()
+            .state_root()
+            .to_path_buf())
+    }
+
+    pub(crate) fn resolve_sce_default_locations() -> Result<SceDefaultLocations> {
+        resolve_sce_default_locations_for(
+            current_platform_family(),
+            &SystemDirectories::from_current_system(),
+        )
+    }
+
+    pub(crate) fn resolve_sce_default_locations_for(
+        platform: PlatformFamily,
+        directories: &SystemDirectories,
+    ) -> Result<SceDefaultLocations> {
+        Ok(SceDefaultLocations {
+            roots: SceDirectoryRoots {
+                config_root: resolve_config_root(platform, directories)?,
+                state_root: resolve_state_root(platform, directories)?,
+                cache_root: resolve_cache_root(platform, directories)?,
+            },
+        })
+    }
+
+    fn resolve_config_root(
+        platform: PlatformFamily,
+        directories: &SystemDirectories,
+    ) -> Result<PathBuf> {
+        match platform {
+            PlatformFamily::Linux => directories
+                .config_dir
+                .clone()
+                .or_else(|| directories.home_dir.as_ref().map(|home| home.join(".config")))
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Unable to resolve config directory: neither XDG_CONFIG_HOME nor HOME is set"
+                    )
+                }),
+            PlatformFamily::Macos => directories
+                .config_dir
+                .clone()
+                .ok_or_else(|| anyhow!("Unable to resolve config directory for macOS")),
+            PlatformFamily::Windows => directories
+                .config_dir
+                .clone()
+                .or_else(|| directories.data_dir.clone())
+                .ok_or_else(|| anyhow!("Unable to resolve config directory for Windows")),
+            PlatformFamily::Other => directories
+                .config_dir
+                .clone()
+                .or_else(|| directories.home_dir.as_ref().map(|home| home.join(".config")))
+                .ok_or_else(|| anyhow!("Unable to resolve config directory")),
+        }
+    }
+
+    fn resolve_state_root(
+        platform: PlatformFamily,
+        directories: &SystemDirectories,
+    ) -> Result<PathBuf> {
+        match platform {
+            PlatformFamily::Linux => directories
+                .state_dir
+                .clone()
+                .or_else(|| {
+                    directories
+                        .home_dir
+                        .as_ref()
+                        .map(|home| home.join(".local").join("state"))
+                })
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Unable to resolve state directory: neither XDG_STATE_HOME nor HOME is set"
+                    )
+                }),
+            PlatformFamily::Macos => directories
+                .data_dir
+                .clone()
+                .ok_or_else(|| anyhow!("Unable to resolve data directory for macOS")),
+            PlatformFamily::Windows => directories
+                .data_local_dir
+                .clone()
+                .or_else(|| directories.data_dir.clone())
+                .ok_or_else(|| anyhow!("Unable to resolve local data directory for Windows")),
+            PlatformFamily::Other => directories
+                .state_dir
+                .clone()
+                .or_else(|| directories.data_dir.clone())
+                .or_else(|| {
+                    directories
+                        .home_dir
+                        .as_ref()
+                        .map(|home| home.join(".local").join("state"))
+                })
+                .ok_or_else(|| anyhow!("Unable to resolve state or data directory")),
+        }
+    }
+
+    fn resolve_cache_root(
+        platform: PlatformFamily,
+        directories: &SystemDirectories,
+    ) -> Result<PathBuf> {
+        match platform {
+            PlatformFamily::Linux => directories
+                .cache_dir
+                .clone()
+                .or_else(|| {
+                    directories
+                        .home_dir
+                        .as_ref()
+                        .map(|home| home.join(".cache"))
+                })
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Unable to resolve cache directory: neither XDG_CACHE_HOME nor HOME is set"
+                    )
+                }),
+            PlatformFamily::Macos => directories
+                .cache_dir
+                .clone()
+                .ok_or_else(|| anyhow!("Unable to resolve cache directory for macOS")),
+            PlatformFamily::Windows => directories
+                .cache_dir
+                .clone()
+                .or_else(|| directories.data_local_dir.clone())
+                .or_else(|| directories.data_dir.clone())
+                .ok_or_else(|| anyhow!("Unable to resolve cache directory for Windows")),
+            PlatformFamily::Other => directories
+                .cache_dir
+                .clone()
+                .or_else(|| {
+                    directories
+                        .home_dir
+                        .as_ref()
+                        .map(|home| home.join(".cache"))
+                })
+                .ok_or_else(|| anyhow!("Unable to resolve cache directory")),
+        }
+    }
+
+    fn current_platform_family() -> PlatformFamily {
+        #[cfg(target_os = "linux")]
+        {
+            PlatformFamily::Linux
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            PlatformFamily::Macos
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            PlatformFamily::Windows
+        }
+
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            PlatformFamily::Other
         }
     }
 }
 
-#[allow(clippy::struct_field_names)]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct SceDirectoryRoots {
-    config_root: PathBuf,
-    state_root: PathBuf,
-    cache_root: PathBuf,
-}
-
-impl SceDirectoryRoots {
-    pub(crate) fn config_root(&self) -> &Path {
-        &self.config_root
-    }
-
-    pub(crate) fn state_root(&self) -> &Path {
-        &self.state_root
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn cache_root(&self) -> &Path {
-        &self.cache_root
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct SceDefaultLocations {
-    roots: SceDirectoryRoots,
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PersistedArtifactRootKind {
     Config,
@@ -73,14 +275,14 @@ pub(crate) enum PersistedArtifactRootKind {
     Cache,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PersistedArtifactId {
     GlobalConfig,
     AuthTokens,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PersistedArtifactLocation {
     pub id: PersistedArtifactId,
@@ -88,41 +290,7 @@ pub(crate) struct PersistedArtifactLocation {
     pub path: PathBuf,
 }
 
-impl SceDefaultLocations {
-    pub(crate) fn roots(&self) -> &SceDirectoryRoots {
-        &self.roots
-    }
-
-    pub(crate) fn global_config_file(&self) -> PathBuf {
-        self.roots.config_root().join("sce").join("config.json")
-    }
-
-    pub(crate) fn auth_tokens_file(&self) -> PathBuf {
-        self.roots
-            .state_root()
-            .join("sce")
-            .join("auth")
-            .join("tokens.json")
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn persisted_artifact_locations(&self) -> Vec<PersistedArtifactLocation> {
-        vec![
-            PersistedArtifactLocation {
-                id: PersistedArtifactId::GlobalConfig,
-                root_kind: PersistedArtifactRootKind::Config,
-                path: self.global_config_file(),
-            },
-            PersistedArtifactLocation {
-                id: PersistedArtifactId::AuthTokens,
-                root_kind: PersistedArtifactRootKind::State,
-                path: self.auth_tokens_file(),
-            },
-        ]
-    }
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) mod repo_dir {
     pub const SCE: &str = ".sce";
     pub const OPENCODE: &str = ".opencode";
@@ -130,7 +298,7 @@ pub(crate) mod repo_dir {
     pub const GIT: &str = ".git";
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) mod repo_file {
     pub const SCE_CONFIG: &str = "config.json";
     pub const SCE_LOG: &str = "sce.log";
@@ -138,7 +306,7 @@ pub(crate) mod repo_file {
     pub const GIT_COMMIT_EDITMSG: &str = "COMMIT_EDITMSG";
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) mod hook_dir {
     pub const HOOKS: &str = "hooks";
     pub const PRE_COMMIT: &str = "pre-commit";
@@ -146,13 +314,13 @@ pub(crate) mod hook_dir {
     pub const POST_COMMIT: &str = "post-commit";
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) mod embedded_asset_root {
     pub const GENERATED_CONFIG: &str = "assets/generated/config";
     pub const HOOKS: &str = "assets/hooks";
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) mod opencode_asset {
     pub const OPENCODE_DIR: &str = "opencode";
     pub const PLUGINS_DIR: &str = "plugins";
@@ -168,14 +336,14 @@ pub(crate) mod opencode_asset {
     pub const AGENTS_DIR: &str = "agents";
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) mod claude_asset {
     pub const CLAUDE_DIR: &str = "claude";
     pub const SKILLS_DIR: &str = "skills";
     pub const AGENTS_DIR: &str = "agents";
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) mod context_dir {
     pub const CONTEXT_ROOT: &str = "context";
     pub const PLANS: &str = "plans";
@@ -184,7 +352,7 @@ pub(crate) mod context_dir {
     pub const TMP: &str = "tmp";
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) mod context_file {
     pub const OVERVIEW: &str = "overview.md";
     pub const ARCHITECTURE: &str = "architecture.md";
@@ -194,19 +362,19 @@ pub(crate) mod context_file {
     pub const SKILL_DEFINITION: &str = "SKILL.md";
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) mod schema {
     pub const SCHEMA_DIR: &str = "config/schema";
     pub const SCE_CONFIG_SCHEMA: &str = "sce-config.schema.json";
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RepoPaths {
     root: PathBuf,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 impl RepoPaths {
     pub(crate) fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
@@ -293,13 +461,13 @@ impl RepoPaths {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct EmbeddedAssetPaths {
     cli_root: PathBuf,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 impl EmbeddedAssetPaths {
     pub(crate) fn new(cli_root: impl Into<PathBuf>) -> Self {
         Self {
@@ -375,13 +543,12 @@ impl EmbeddedAssetPaths {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct InstallTargetPaths {
     repo_root: PathBuf,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 impl InstallTargetPaths {
     pub(crate) fn new(repo_root: impl Into<PathBuf>) -> Self {
         Self {
@@ -443,175 +610,5 @@ impl InstallTargetPaths {
             .join(repo_dir::GIT)
             .join(hook_dir::HOOKS)
             .join(hook_dir::POST_COMMIT)
-    }
-}
-
-pub(crate) fn resolve_state_data_root() -> Result<PathBuf> {
-    Ok(resolve_sce_default_locations()?
-        .roots()
-        .state_root()
-        .to_path_buf())
-}
-
-pub(crate) fn resolve_sce_default_locations() -> Result<SceDefaultLocations> {
-    resolve_sce_default_locations_for(
-        current_platform_family(),
-        &SystemDirectories::from_current_system(),
-    )
-}
-
-pub(crate) fn resolve_sce_default_locations_for(
-    platform: PlatformFamily,
-    directories: &SystemDirectories,
-) -> Result<SceDefaultLocations> {
-    Ok(SceDefaultLocations {
-        roots: SceDirectoryRoots {
-            config_root: resolve_config_root(platform, directories)?,
-            state_root: resolve_state_root(platform, directories)?,
-            cache_root: resolve_cache_root(platform, directories)?,
-        },
-    })
-}
-
-fn resolve_config_root(
-    platform: PlatformFamily,
-    directories: &SystemDirectories,
-) -> Result<PathBuf> {
-    match platform {
-        PlatformFamily::Linux => directories
-            .config_dir
-            .clone()
-            .or_else(|| {
-                directories
-                    .home_dir
-                    .as_ref()
-                    .map(|home| home.join(".config"))
-            })
-            .ok_or_else(|| {
-                anyhow!(
-                    "Unable to resolve config directory: neither XDG_CONFIG_HOME nor HOME is set"
-                )
-            }),
-        PlatformFamily::Macos => directories
-            .config_dir
-            .clone()
-            .ok_or_else(|| anyhow!("Unable to resolve config directory for macOS")),
-        PlatformFamily::Windows => directories
-            .config_dir
-            .clone()
-            .or_else(|| directories.data_dir.clone())
-            .ok_or_else(|| anyhow!("Unable to resolve config directory for Windows")),
-        PlatformFamily::Other => directories
-            .config_dir
-            .clone()
-            .or_else(|| {
-                directories
-                    .home_dir
-                    .as_ref()
-                    .map(|home| home.join(".config"))
-            })
-            .ok_or_else(|| anyhow!("Unable to resolve config directory")),
-    }
-}
-
-fn resolve_state_root(
-    platform: PlatformFamily,
-    directories: &SystemDirectories,
-) -> Result<PathBuf> {
-    match platform {
-        PlatformFamily::Linux => directories
-            .state_dir
-            .clone()
-            .or_else(|| {
-                directories
-                    .home_dir
-                    .as_ref()
-                    .map(|home| home.join(".local").join("state"))
-            })
-            .ok_or_else(|| {
-                anyhow!("Unable to resolve state directory: neither XDG_STATE_HOME nor HOME is set")
-            }),
-        PlatformFamily::Macos => directories
-            .data_dir
-            .clone()
-            .ok_or_else(|| anyhow!("Unable to resolve data directory for macOS")),
-        PlatformFamily::Windows => directories
-            .data_local_dir
-            .clone()
-            .or_else(|| directories.data_dir.clone())
-            .ok_or_else(|| anyhow!("Unable to resolve local data directory for Windows")),
-        PlatformFamily::Other => directories
-            .state_dir
-            .clone()
-            .or_else(|| directories.data_dir.clone())
-            .or_else(|| {
-                directories
-                    .home_dir
-                    .as_ref()
-                    .map(|home| home.join(".local").join("state"))
-            })
-            .ok_or_else(|| anyhow!("Unable to resolve state or data directory")),
-    }
-}
-
-fn resolve_cache_root(
-    platform: PlatformFamily,
-    directories: &SystemDirectories,
-) -> Result<PathBuf> {
-    match platform {
-        PlatformFamily::Linux => directories
-            .cache_dir
-            .clone()
-            .or_else(|| {
-                directories
-                    .home_dir
-                    .as_ref()
-                    .map(|home| home.join(".cache"))
-            })
-            .ok_or_else(|| {
-                anyhow!("Unable to resolve cache directory: neither XDG_CACHE_HOME nor HOME is set")
-            }),
-        PlatformFamily::Macos => directories
-            .cache_dir
-            .clone()
-            .ok_or_else(|| anyhow!("Unable to resolve cache directory for macOS")),
-        PlatformFamily::Windows => directories
-            .cache_dir
-            .clone()
-            .or_else(|| directories.data_local_dir.clone())
-            .or_else(|| directories.data_dir.clone())
-            .ok_or_else(|| anyhow!("Unable to resolve cache directory for Windows")),
-        PlatformFamily::Other => directories
-            .cache_dir
-            .clone()
-            .or_else(|| {
-                directories
-                    .home_dir
-                    .as_ref()
-                    .map(|home| home.join(".cache"))
-            })
-            .ok_or_else(|| anyhow!("Unable to resolve cache directory")),
-    }
-}
-
-fn current_platform_family() -> PlatformFamily {
-    #[cfg(target_os = "linux")]
-    {
-        PlatformFamily::Linux
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        PlatformFamily::Macos
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        PlatformFamily::Windows
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        PlatformFamily::Other
     }
 }

@@ -1,20 +1,11 @@
-#![allow(dead_code)]
-
 use anyhow::{bail, Context, Result};
-use inquire::{InquireError, Select};
 use std::{
-    fs, io,
-    path::{Component, Path, PathBuf},
-    process::Command,
-    time::{SystemTime, UNIX_EPOCH},
+    fs,
+    path::{Path, PathBuf},
 };
 
-use crate::services::security::{ensure_directory_is_writable, redact_sensitive_text};
-use crate::services::style::{
-    label, prompt_label, prompt_label_with_color_policy, prompt_value_with_color_policy, success,
-    value,
-};
-use crate::services::{default_paths, default_paths::InstallTargetPaths, default_paths::RepoPaths};
+use crate::services::style::{label, success, value};
+use crate::services::{default_paths, default_paths::RepoPaths};
 
 /// Canonical JSON payload for a newly bootstrapped repo-local `.sce/config.json`.
 /// Contains only the `$schema` declaration pointing to the SCE config JSON Schema.
@@ -37,7 +28,7 @@ pub struct EmbeddedAsset {
     pub sha256: [u8; 32],
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RequiredHookAsset {
     PreCommit,
@@ -51,7 +42,7 @@ pub fn iter_required_hook_assets() -> std::slice::Iter<'static, EmbeddedAsset> {
     HOOK_EMBEDDED_ASSETS.iter()
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub fn get_required_hook_asset(hook: RequiredHookAsset) -> Option<&'static EmbeddedAsset> {
     let hook_name = match hook {
         RequiredHookAsset::PreCommit => default_paths::hook_dir::PRE_COMMIT,
@@ -211,21 +202,20 @@ pub fn run_setup_for_mode(repository_root: &Path, mode: SetupMode) -> Result<Str
 }
 
 pub fn run_setup_hooks(repository_root: &Path) -> Result<String> {
-    let outcome = install_required_git_hooks(repository_root)
+    let outcome = install::install_required_git_hooks(repository_root)
         .context("Hook setup failed while installing required git hooks")?;
     Ok(format_required_hook_install_success_message(&outcome))
 }
 
 pub fn prepare_setup_hooks_repository(repository_root: &Path) -> Result<PathBuf> {
-    let normalized_repository_root = normalize_user_repository_path(repository_root)?;
-    resolve_git_repository_root(&normalized_repository_root)
+    install::prepare_setup_hooks_repository(repository_root)
 }
 
 /// Preflight check that verifies the given directory is inside a git repository.
 /// Returns the resolved repository root path on success.
 /// Returns an actionable error telling the operator to run `git init` on failure.
 pub fn ensure_git_repository(directory: &Path) -> Result<PathBuf> {
-    resolve_git_repository_root(directory)
+    install::ensure_git_repository(directory)
 }
 
 /// Bootstraps the repo-local `.sce/config.json` file if it does not already exist.
@@ -256,35 +246,6 @@ pub fn bootstrap_repo_local_config(repository_root: &Path) -> Result<()> {
     })?;
 
     Ok(())
-}
-
-fn normalize_user_repository_path(repository_root: &Path) -> Result<PathBuf> {
-    if repository_root.as_os_str().is_empty() {
-        bail!("Option '--repo' must not be empty. Try: pass a path to an existing git repository.");
-    }
-
-    let canonical_repository_root = fs::canonicalize(repository_root).with_context(|| {
-        format!(
-            "Failed to resolve repository path '{}'. Try: pass a path to an existing git repository.",
-            repository_root.display()
-        )
-    })?;
-
-    let metadata = fs::metadata(&canonical_repository_root).with_context(|| {
-        format!(
-            "Failed to inspect repository path '{}'.",
-            canonical_repository_root.display()
-        )
-    })?;
-
-    if !metadata.is_dir() {
-        bail!(
-            "Repository path '{}' is not a directory. Try: pass a path to an existing git repository.",
-            canonical_repository_root.display()
-        );
-    }
-
-    Ok(canonical_repository_root)
 }
 
 fn format_setup_install_success_message(outcome: &SetupInstallOutcome) -> String {
@@ -403,419 +364,20 @@ pub struct RequiredHooksInstallOutcome {
 }
 
 pub fn install_required_git_hooks(repository_root: &Path) -> Result<RequiredHooksInstallOutcome> {
-    let resolved_repository_root = prepare_setup_hooks_repository(repository_root)?;
-    install_required_git_hooks_in_resolved_repository(&resolved_repository_root, |from, to| {
-        fs::rename(from, to)
-    })
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-fn install_required_git_hooks_with_rename<F>(
-    repository_root: &Path,
-    mut rename_fn: F,
-) -> Result<RequiredHooksInstallOutcome>
-where
-    F: FnMut(&Path, &Path) -> io::Result<()>,
-{
-    let resolved_repository_root = prepare_setup_hooks_repository(repository_root)?;
-    install_required_git_hooks_in_resolved_repository(&resolved_repository_root, &mut rename_fn)
-}
-
-fn install_required_git_hooks_in_resolved_repository<F>(
-    resolved_repository_root: &Path,
-    mut rename_fn: F,
-) -> Result<RequiredHooksInstallOutcome>
-where
-    F: FnMut(&Path, &Path) -> io::Result<()>,
-{
-    ensure_directory_is_writable(resolved_repository_root, "repository root")?;
-    let hooks_directory = resolve_git_hooks_directory(resolved_repository_root)?;
-    fs::create_dir_all(&hooks_directory).with_context(|| {
-        format!(
-            "Failed to create git hooks directory '{}'",
-            hooks_directory.display()
-        )
-    })?;
-    ensure_directory_is_writable(&hooks_directory, "git hooks directory")?;
-
-    let mut hook_results = Vec::new();
-    for hook_asset in iter_required_hook_assets() {
-        let hook_result =
-            install_single_required_hook_with_rename(&hooks_directory, hook_asset, &mut rename_fn)?;
-        hook_results.push(hook_result);
-    }
-
-    Ok(RequiredHooksInstallOutcome {
-        repository_root: resolved_repository_root.to_path_buf(),
-        hooks_directory,
-        hook_results,
-    })
-}
-
-fn install_single_required_hook_with_rename<F>(
-    hooks_directory: &Path,
-    hook_asset: &EmbeddedAsset,
-    rename_fn: &mut F,
-) -> Result<RequiredHookInstallResult>
-where
-    F: FnMut(&Path, &Path) -> io::Result<()>,
-{
-    validate_embedded_relative_path(hook_asset.relative_path)?;
-
-    let hook_path = hooks_directory.join(hook_asset.relative_path);
-    let existing_metadata = fs::metadata(&hook_path).ok();
-
-    if existing_metadata
-        .as_ref()
-        .is_some_and(std::fs::Metadata::is_file)
-    {
-        let existing_bytes = fs::read(&hook_path)
-            .with_context(|| format!("Failed to read existing hook '{}'", hook_path.display()))?;
-        let executable = is_executable_file(&hook_path)?;
-
-        if existing_bytes == hook_asset.bytes && executable {
-            return Ok(RequiredHookInstallResult {
-                hook_name: hook_asset.relative_path.to_string(),
-                hook_path,
-                status: RequiredHookInstallStatus::Skipped,
-            });
-        }
-    } else if existing_metadata.is_some() {
-        bail!(
-            "Existing hook target '{}' is not a file",
-            hook_path.display()
-        );
-    }
-
-    let hook_staging_path = create_hook_staging_path(hooks_directory, hook_asset.relative_path)?;
-    if let Err(error) = write_hook_payload_to_staging(&hook_staging_path, hook_asset.bytes) {
-        cleanup_path_if_exists(&hook_staging_path);
-        return Err(error);
-    }
-
-    if existing_metadata.is_none() {
-        if let Err(error) = rename_fn(&hook_staging_path, &hook_path).with_context(|| {
-            format!(
-                "Failed to install required hook '{}' at '{}'",
-                hook_asset.relative_path,
-                hook_path.display()
-            )
-        }) {
-            cleanup_path_if_exists(&hook_staging_path);
-            return Err(error);
-        }
-
-        return Ok(RequiredHookInstallResult {
-            hook_name: hook_asset.relative_path.to_string(),
-            hook_path,
-            status: RequiredHookInstallStatus::Installed,
-        });
-    }
-
-    remove_existing_install_target(&hook_path).with_context(|| {
-        format!(
-            "Failed to replace existing hook '{}' without creating a backup",
-            hook_path.display()
-        )
-    })?;
-
-    if let Err(error) = rename_fn(&hook_staging_path, &hook_path).with_context(|| {
-        format!(
-            "Failed to update required hook '{}' at '{}'",
-            hook_asset.relative_path,
-            hook_path.display()
-        )
-    }) {
-        cleanup_path_if_exists(&hook_staging_path);
-        return Err(error.context(hook_install_recovery_guidance(&hook_path)));
-    }
-
-    Ok(RequiredHookInstallResult {
-        hook_name: hook_asset.relative_path.to_string(),
-        hook_path,
-        status: RequiredHookInstallStatus::Updated,
-    })
-}
-
-fn write_hook_payload_to_staging(staging_path: &Path, bytes: &[u8]) -> Result<()> {
-    fs::write(staging_path, bytes).with_context(|| {
-        format!(
-            "Failed to write staged hook payload '{}'",
-            staging_path.display()
-        )
-    })?;
-    ensure_executable_permissions(staging_path)?;
-    Ok(())
-}
-
-fn create_hook_staging_path(hooks_directory: &Path, hook_name: &str) -> Result<PathBuf> {
-    let epoch_nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("System clock is before UNIX_EPOCH")?
-        .as_nanos();
-    let sanitized_hook_name = hook_name.replace('/', "-");
-
-    for attempt in 0..1000_u16 {
-        let candidate = hooks_directory.join(format!(
-            ".sce-hook-staging-{sanitized_hook_name}-{epoch_nanos}-{}-{attempt}",
-            std::process::id()
-        ));
-
-        match fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&candidate)
-        {
-            Ok(_) => return Ok(candidate),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "Failed to allocate hook staging file '{}'",
-                        candidate.display()
-                    )
-                });
-            }
-        }
-    }
-
-    bail!(
-        "Could not allocate a unique hook staging file under '{}'",
-        hooks_directory.display()
-    )
-}
-
-fn resolve_git_repository_root(repository_root: &Path) -> Result<PathBuf> {
-    let repository_root_output = run_git_command_in_directory(
-        repository_root,
-        &["rev-parse", "--show-toplevel"],
-        "Failed to resolve repository root. Ensure '--repo' points to an accessible git repository.",
-    )
-    .map_err(|error| map_setup_non_git_repository_error(repository_root, error))?;
-    Ok(PathBuf::from(repository_root_output))
-}
-
-fn map_setup_non_git_repository_error(
-    repository_root: &Path,
-    error: anyhow::Error,
-) -> anyhow::Error {
-    let message = error.to_string();
-    if message.contains("not a git repository") {
-        anyhow::anyhow!(
-            "Directory '{}' is not a git repository. Try: run 'git init' in '{}', then rerun 'sce setup'.",
-            repository_root.display(),
-            repository_root.display()
-        )
-    } else {
-        error
-    }
-}
-
-fn resolve_git_hooks_directory(repository_root: &Path) -> Result<PathBuf> {
-    let hooks_directory_output = run_git_command_in_directory(
-        repository_root,
-        &["rev-parse", "--git-path", "hooks"],
-        "Failed to resolve effective git hooks path.",
-    )?;
-
-    let hooks_directory = PathBuf::from(&hooks_directory_output);
-    if hooks_directory.is_absolute() {
-        return Ok(hooks_directory);
-    }
-
-    Ok(repository_root.join(hooks_directory))
-}
-
-fn run_git_command_in_directory(
-    repository_root: &Path,
-    args: &[&str],
-    context_message: &str,
-) -> Result<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(repository_root)
-        .output()
-        .with_context(|| {
-            format!(
-                "{} (directory: '{}')",
-                context_message,
-                repository_root.display()
-            )
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let diagnostic = if stderr.is_empty() {
-            String::from("git command exited with a non-zero status")
-        } else {
-            redact_sensitive_text(&stderr)
-        };
-        bail!("{context_message} {diagnostic}");
-    }
-
-    let stdout = String::from_utf8(output.stdout)
-        .context("git command output contained invalid UTF-8")?
-        .trim()
-        .to_string();
-    if stdout.is_empty() {
-        bail!("{context_message} git command returned empty output");
-    }
-
-    Ok(stdout)
-}
-
-#[cfg(unix)]
-fn ensure_executable_permissions(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let metadata = fs::metadata(path)
-        .with_context(|| format!("Failed to read metadata for '{}'", path.display()))?;
-    let mut permissions = metadata.permissions();
-    permissions.set_mode(permissions.mode() | 0o111);
-    fs::set_permissions(path, permissions).with_context(|| {
-        format!(
-            "Failed to set executable permissions for '{}'",
-            path.display()
-        )
-    })?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn ensure_executable_permissions(_path: &Path) -> Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn is_executable_file(path: &Path) -> Result<bool> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let metadata = fs::metadata(path)
-        .with_context(|| format!("Failed to read metadata for '{}'", path.display()))?;
-    Ok(metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-}
-
-#[cfg(not(unix))]
-fn is_executable_file(path: &Path) -> Result<bool> {
-    let metadata = fs::metadata(path)
-        .with_context(|| format!("Failed to read metadata for '{}'", path.display()))?;
-    Ok(metadata.is_file())
+    install::install_required_git_hooks(repository_root)
 }
 
 pub fn install_embedded_setup_assets(
     repository_root: &Path,
     target: SetupTarget,
 ) -> Result<SetupInstallOutcome> {
-    install_embedded_setup_assets_with_rename(repository_root, target, |from, to| {
-        fs::rename(from, to)
-    })
+    install::install_embedded_setup_assets(repository_root, target)
 }
 
-fn install_embedded_setup_assets_with_rename<F>(
-    repository_root: &Path,
+pub(crate) fn setup_install_recovery_guidance(
     target: SetupTarget,
-    mut rename_fn: F,
-) -> Result<SetupInstallOutcome>
-where
-    F: FnMut(&Path, &Path) -> io::Result<()>,
-{
-    ensure_directory_is_writable(repository_root, "setup repository root")?;
-
-    let mut target_results = Vec::new();
-
-    for concrete_target in concrete_targets_for(target) {
-        let concrete_target = *concrete_target;
-        let assets: Vec<&'static EmbeddedAsset> =
-            iter_embedded_assets_for_setup_target(concrete_target).collect();
-        let result = install_assets_for_concrete_target_with_rename(
-            repository_root,
-            concrete_target,
-            &assets,
-            &mut rename_fn,
-        )?;
-        target_results.push(result);
-    }
-
-    Ok(SetupInstallOutcome { target_results })
-}
-
-fn install_assets_for_concrete_target_with_rename<F>(
-    repository_root: &Path,
-    target: SetupTarget,
-    assets: &[&'static EmbeddedAsset],
-    rename_fn: &mut F,
-) -> Result<SetupInstallTargetResult>
-where
-    F: FnMut(&Path, &Path) -> io::Result<()>,
-{
-    let install_targets = InstallTargetPaths::new(repository_root);
-    let destination_root = match target {
-        SetupTarget::OpenCode => install_targets.opencode_target_dir(),
-        SetupTarget::Claude => install_targets.claude_target_dir(),
-        SetupTarget::Both => unreachable!("both is expanded into concrete targets"),
-    };
-    let staging_root = create_staging_root(repository_root, target)?;
-
-    if let Err(error) = write_assets_to_staging(&staging_root, assets) {
-        cleanup_path_if_exists(&staging_root);
-        return Err(error);
-    }
-
-    if destination_root.exists() {
-        remove_existing_install_target(&destination_root).with_context(|| {
-            format!(
-                "Failed to replace existing setup target '{}' without creating a backup",
-                destination_root.display()
-            )
-        })?;
-    }
-
-    if let Err(error) = rename_fn(&staging_root, &destination_root).with_context(|| {
-        format!(
-            "Failed to swap staged install '{}' into destination '{}'",
-            staging_root.display(),
-            destination_root.display()
-        )
-    }) {
-        cleanup_path_if_exists(&staging_root);
-        return Err(error.context(setup_install_recovery_guidance(target, &destination_root)));
-    }
-
-    Ok(SetupInstallTargetResult {
-        target,
-        destination_root,
-        installed_file_count: assets.len(),
-    })
-}
-
-fn remove_existing_install_target(destination_root: &Path) -> Result<()> {
-    let metadata = fs::metadata(destination_root).with_context(|| {
-        format!(
-            "Failed to inspect existing setup target '{}'",
-            destination_root.display()
-        )
-    })?;
-
-    if metadata.is_dir() {
-        fs::remove_dir_all(destination_root).with_context(|| {
-            format!(
-                "Failed to remove existing setup target directory '{}'",
-                destination_root.display()
-            )
-        })?;
-    } else {
-        fs::remove_file(destination_root).with_context(|| {
-            format!(
-                "Failed to remove existing setup target file '{}'",
-                destination_root.display()
-            )
-        })?;
-    }
-
-    Ok(())
-}
-
-fn setup_install_recovery_guidance(target: SetupTarget, destination_root: &Path) -> String {
+    destination_root: &Path,
+) -> String {
     format!(
         "Setup for {} does not create backups. Recover '{}' from version control if needed.",
         setup_target_label(target),
@@ -823,110 +385,14 @@ fn setup_install_recovery_guidance(target: SetupTarget, destination_root: &Path)
     )
 }
 
-fn hook_install_recovery_guidance(hook_path: &Path) -> String {
+pub(crate) fn hook_install_recovery_guidance(hook_path: &Path) -> String {
     format!(
         "Hook setup does not create backups. Recover '{}' from version control if needed.",
         hook_path.display()
     )
 }
 
-fn write_assets_to_staging(staging_root: &Path, assets: &[&'static EmbeddedAsset]) -> Result<()> {
-    for asset in assets {
-        validate_embedded_relative_path(asset.relative_path)?;
-        let destination = staging_root.join(asset.relative_path);
-        let parent = destination
-            .parent()
-            .context("Embedded asset destination should have a parent directory")?;
-
-        fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "Failed to create staged parent directory '{}'",
-                parent.display()
-            )
-        })?;
-
-        fs::write(&destination, asset.bytes).with_context(|| {
-            format!(
-                "Failed to write staged embedded asset '{}'",
-                destination.display()
-            )
-        })?;
-    }
-
-    Ok(())
-}
-
-fn validate_embedded_relative_path(relative_path: &str) -> Result<()> {
-    let path = Path::new(relative_path);
-
-    if path.is_absolute() {
-        bail!("Embedded asset path '{relative_path}' must be relative, not absolute");
-    }
-
-    for component in path.components() {
-        match component {
-            Component::Normal(_) => {}
-            _ => {
-                bail!("Embedded asset path '{relative_path}' contains disallowed component");
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn create_staging_root(repository_root: &Path, target: SetupTarget) -> Result<PathBuf> {
-    let install_targets = InstallTargetPaths::new(repository_root);
-    let target_dir = match target {
-        SetupTarget::OpenCode => install_targets.opencode_target_dir(),
-        SetupTarget::Claude => install_targets.claude_target_dir(),
-        SetupTarget::Both => unreachable!("both is expanded into concrete targets"),
-    };
-    let target_label = target_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .context("Setup target directory should have a valid UTF-8 file name")?
-        .trim_start_matches('.');
-    let epoch_nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("System clock is before UNIX_EPOCH")?
-        .as_nanos();
-
-    for attempt in 0..1000_u16 {
-        let candidate = repository_root.join(format!(
-            ".sce-setup-staging-{target_label}-{epoch_nanos}-{}-{attempt}",
-            std::process::id()
-        ));
-
-        match fs::create_dir(&candidate) {
-            Ok(()) => return Ok(candidate),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "Failed to create staging directory '{}'",
-                        candidate.display()
-                    )
-                });
-            }
-        }
-    }
-
-    bail!(
-        "Could not allocate a unique staging directory under '{}'",
-        repository_root.display()
-    )
-}
-
-fn concrete_targets_for(target: SetupTarget) -> &'static [SetupTarget] {
-    match target {
-        SetupTarget::OpenCode => &[SetupTarget::OpenCode],
-        SetupTarget::Claude => &[SetupTarget::Claude],
-        SetupTarget::Both => &[SetupTarget::OpenCode, SetupTarget::Claude],
-    }
-}
-
-fn cleanup_path_if_exists(path: &Path) {
+pub(crate) fn cleanup_path_if_exists(path: &Path) {
     let cleanup_result = if path.is_dir() {
         fs::remove_dir_all(path)
     } else {
@@ -943,6 +409,574 @@ fn cleanup_path_if_exists(path: &Path) {
     }
 }
 
+pub(crate) fn concrete_targets_for(target: SetupTarget) -> &'static [SetupTarget] {
+    match target {
+        SetupTarget::OpenCode => &[SetupTarget::OpenCode],
+        SetupTarget::Claude => &[SetupTarget::Claude],
+        SetupTarget::Both => &[SetupTarget::OpenCode, SetupTarget::Claude],
+    }
+}
+
+mod install {
+    use anyhow::{bail, Context, Result};
+    use std::{
+        fs, io,
+        path::{Component, Path, PathBuf},
+        process::Command,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use crate::services::default_paths::InstallTargetPaths;
+    use crate::services::security::{ensure_directory_is_writable, redact_sensitive_text};
+
+    use super::{
+        cleanup_path_if_exists, concrete_targets_for, hook_install_recovery_guidance,
+        iter_embedded_assets_for_setup_target, iter_required_hook_assets,
+        setup_install_recovery_guidance, EmbeddedAsset, RequiredHookInstallResult,
+        RequiredHookInstallStatus, RequiredHooksInstallOutcome, SetupInstallOutcome,
+        SetupInstallTargetResult, SetupTarget,
+    };
+
+    pub(super) fn prepare_setup_hooks_repository(repository_root: &Path) -> Result<PathBuf> {
+        let normalized_repository_root = normalize_user_repository_path(repository_root)?;
+        resolve_git_repository_root(&normalized_repository_root)
+    }
+
+    pub(super) fn ensure_git_repository(directory: &Path) -> Result<PathBuf> {
+        resolve_git_repository_root(directory)
+    }
+
+    pub(super) fn install_required_git_hooks(
+        repository_root: &Path,
+    ) -> Result<RequiredHooksInstallOutcome> {
+        let resolved_repository_root = prepare_setup_hooks_repository(repository_root)?;
+        install_required_git_hooks_in_resolved_repository(&resolved_repository_root, |from, to| {
+            fs::rename(from, to)
+        })
+    }
+
+    pub(super) fn install_embedded_setup_assets(
+        repository_root: &Path,
+        target: SetupTarget,
+    ) -> Result<SetupInstallOutcome> {
+        install_embedded_setup_assets_with_rename(repository_root, target, |from, to| {
+            fs::rename(from, to)
+        })
+    }
+
+    fn install_required_git_hooks_in_resolved_repository<F>(
+        resolved_repository_root: &Path,
+        mut rename_fn: F,
+    ) -> Result<RequiredHooksInstallOutcome>
+    where
+        F: FnMut(&Path, &Path) -> io::Result<()>,
+    {
+        ensure_directory_is_writable(resolved_repository_root, "repository root")?;
+        let hooks_directory = resolve_git_hooks_directory(resolved_repository_root)?;
+        fs::create_dir_all(&hooks_directory).with_context(|| {
+            format!(
+                "Failed to create git hooks directory '{}'",
+                hooks_directory.display()
+            )
+        })?;
+        ensure_directory_is_writable(&hooks_directory, "git hooks directory")?;
+
+        let mut hook_results = Vec::new();
+        for hook_asset in iter_required_hook_assets() {
+            let hook_result = install_single_required_hook_with_rename(
+                &hooks_directory,
+                hook_asset,
+                &mut rename_fn,
+            )?;
+            hook_results.push(hook_result);
+        }
+
+        Ok(RequiredHooksInstallOutcome {
+            repository_root: resolved_repository_root.to_path_buf(),
+            hooks_directory,
+            hook_results,
+        })
+    }
+
+    fn install_single_required_hook_with_rename<F>(
+        hooks_directory: &Path,
+        hook_asset: &EmbeddedAsset,
+        rename_fn: &mut F,
+    ) -> Result<RequiredHookInstallResult>
+    where
+        F: FnMut(&Path, &Path) -> io::Result<()>,
+    {
+        validate_embedded_relative_path(hook_asset.relative_path)?;
+
+        let hook_path = hooks_directory.join(hook_asset.relative_path);
+        let existing_metadata = fs::metadata(&hook_path).ok();
+
+        if existing_metadata
+            .as_ref()
+            .is_some_and(std::fs::Metadata::is_file)
+        {
+            let existing_bytes = fs::read(&hook_path).with_context(|| {
+                format!("Failed to read existing hook '{}'", hook_path.display())
+            })?;
+            let executable = is_executable_file(&hook_path)?;
+
+            if existing_bytes == hook_asset.bytes && executable {
+                return Ok(RequiredHookInstallResult {
+                    hook_name: hook_asset.relative_path.to_string(),
+                    hook_path,
+                    status: RequiredHookInstallStatus::Skipped,
+                });
+            }
+        } else if existing_metadata.is_some() {
+            bail!(
+                "Existing hook target '{}' is not a file",
+                hook_path.display()
+            );
+        }
+
+        let hook_staging_path =
+            create_hook_staging_path(hooks_directory, hook_asset.relative_path)?;
+        if let Err(error) = write_hook_payload_to_staging(&hook_staging_path, hook_asset.bytes) {
+            cleanup_path_if_exists(&hook_staging_path);
+            return Err(error);
+        }
+
+        if existing_metadata.is_none() {
+            if let Err(error) = rename_fn(&hook_staging_path, &hook_path).with_context(|| {
+                format!(
+                    "Failed to install required hook '{}' at '{}'",
+                    hook_asset.relative_path,
+                    hook_path.display()
+                )
+            }) {
+                cleanup_path_if_exists(&hook_staging_path);
+                return Err(error);
+            }
+
+            return Ok(RequiredHookInstallResult {
+                hook_name: hook_asset.relative_path.to_string(),
+                hook_path,
+                status: RequiredHookInstallStatus::Installed,
+            });
+        }
+
+        remove_existing_install_target(&hook_path).with_context(|| {
+            format!(
+                "Failed to replace existing hook '{}' without creating a backup",
+                hook_path.display()
+            )
+        })?;
+
+        if let Err(error) = rename_fn(&hook_staging_path, &hook_path).with_context(|| {
+            format!(
+                "Failed to update required hook '{}' at '{}'",
+                hook_asset.relative_path,
+                hook_path.display()
+            )
+        }) {
+            cleanup_path_if_exists(&hook_staging_path);
+            return Err(error.context(hook_install_recovery_guidance(&hook_path)));
+        }
+
+        Ok(RequiredHookInstallResult {
+            hook_name: hook_asset.relative_path.to_string(),
+            hook_path,
+            status: RequiredHookInstallStatus::Updated,
+        })
+    }
+
+    fn write_hook_payload_to_staging(staging_path: &Path, bytes: &[u8]) -> Result<()> {
+        fs::write(staging_path, bytes).with_context(|| {
+            format!(
+                "Failed to write staged hook payload '{}'",
+                staging_path.display()
+            )
+        })?;
+        ensure_executable_permissions(staging_path)?;
+        Ok(())
+    }
+
+    fn create_hook_staging_path(hooks_directory: &Path, hook_name: &str) -> Result<PathBuf> {
+        let epoch_nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("System clock is before UNIX_EPOCH")?
+            .as_nanos();
+        let sanitized_hook_name = hook_name.replace('/', "-");
+
+        for attempt in 0..1000_u16 {
+            let candidate = hooks_directory.join(format!(
+                ".sce-hook-staging-{sanitized_hook_name}-{epoch_nanos}-{}-{attempt}",
+                std::process::id()
+            ));
+
+            match fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&candidate)
+            {
+                Ok(_) => return Ok(candidate),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "Failed to allocate hook staging file '{}'",
+                            candidate.display()
+                        )
+                    });
+                }
+            }
+        }
+
+        bail!(
+            "Could not allocate a unique hook staging file under '{}'",
+            hooks_directory.display()
+        )
+    }
+
+    fn normalize_user_repository_path(repository_root: &Path) -> Result<PathBuf> {
+        if repository_root.as_os_str().is_empty() {
+            bail!(
+                "Option '--repo' must not be empty. Try: pass a path to an existing git repository."
+            );
+        }
+
+        let canonical_repository_root = fs::canonicalize(repository_root).with_context(|| {
+            format!(
+                "Failed to resolve repository path '{}'. Try: pass a path to an existing git repository.",
+                repository_root.display()
+            )
+        })?;
+
+        let metadata = fs::metadata(&canonical_repository_root).with_context(|| {
+            format!(
+                "Failed to inspect repository path '{}'.",
+                canonical_repository_root.display()
+            )
+        })?;
+
+        if !metadata.is_dir() {
+            bail!(
+                "Repository path '{}' is not a directory. Try: pass a path to an existing git repository.",
+                canonical_repository_root.display()
+            );
+        }
+
+        Ok(canonical_repository_root)
+    }
+
+    fn resolve_git_repository_root(repository_root: &Path) -> Result<PathBuf> {
+        let repository_root_output = run_git_command_in_directory(
+            repository_root,
+            &["rev-parse", "--show-toplevel"],
+            "Failed to resolve repository root. Ensure '--repo' points to an accessible git repository.",
+        )
+        .map_err(|error| map_setup_non_git_repository_error(repository_root, error))?;
+        Ok(PathBuf::from(repository_root_output))
+    }
+
+    fn map_setup_non_git_repository_error(
+        repository_root: &Path,
+        error: anyhow::Error,
+    ) -> anyhow::Error {
+        let message = error.to_string();
+        if message.contains("not a git repository") {
+            anyhow::anyhow!(
+                "Directory '{}' is not a git repository. Try: run 'git init' in '{}', then rerun 'sce setup'.",
+                repository_root.display(),
+                repository_root.display()
+            )
+        } else {
+            error
+        }
+    }
+
+    fn resolve_git_hooks_directory(repository_root: &Path) -> Result<PathBuf> {
+        let hooks_directory_output = run_git_command_in_directory(
+            repository_root,
+            &["rev-parse", "--git-path", "hooks"],
+            "Failed to resolve effective git hooks path.",
+        )?;
+
+        let hooks_directory = PathBuf::from(&hooks_directory_output);
+        if hooks_directory.is_absolute() {
+            return Ok(hooks_directory);
+        }
+
+        Ok(repository_root.join(hooks_directory))
+    }
+
+    fn run_git_command_in_directory(
+        repository_root: &Path,
+        args: &[&str],
+        context_message: &str,
+    ) -> Result<String> {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repository_root)
+            .output()
+            .with_context(|| {
+                format!(
+                    "{} (directory: '{}')",
+                    context_message,
+                    repository_root.display()
+                )
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let diagnostic = if stderr.is_empty() {
+                String::from("git command exited with a non-zero status")
+            } else {
+                redact_sensitive_text(&stderr)
+            };
+            bail!("{context_message} {diagnostic}");
+        }
+
+        let stdout = String::from_utf8(output.stdout)
+            .context("git command output contained invalid UTF-8")?
+            .trim()
+            .to_string();
+        if stdout.is_empty() {
+            bail!("{context_message} git command returned empty output");
+        }
+
+        Ok(stdout)
+    }
+
+    #[cfg(unix)]
+    fn ensure_executable_permissions(path: &Path) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let metadata = fs::metadata(path)
+            .with_context(|| format!("Failed to read metadata for '{}'", path.display()))?;
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(permissions.mode() | 0o111);
+        fs::set_permissions(path, permissions).with_context(|| {
+            format!(
+                "Failed to set executable permissions for '{}'",
+                path.display()
+            )
+        })?;
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    fn ensure_executable_permissions(_path: &Path) -> Result<()> {
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn is_executable_file(path: &Path) -> Result<bool> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let metadata = fs::metadata(path)
+            .with_context(|| format!("Failed to read metadata for '{}'", path.display()))?;
+        Ok(metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    }
+
+    #[cfg(not(unix))]
+    fn is_executable_file(path: &Path) -> Result<bool> {
+        let metadata = fs::metadata(path)
+            .with_context(|| format!("Failed to read metadata for '{}'", path.display()))?;
+        Ok(metadata.is_file())
+    }
+
+    fn install_embedded_setup_assets_with_rename<F>(
+        repository_root: &Path,
+        target: SetupTarget,
+        mut rename_fn: F,
+    ) -> Result<SetupInstallOutcome>
+    where
+        F: FnMut(&Path, &Path) -> io::Result<()>,
+    {
+        ensure_directory_is_writable(repository_root, "setup repository root")?;
+
+        let mut target_results = Vec::new();
+
+        for concrete_target in concrete_targets_for(target) {
+            let concrete_target = *concrete_target;
+            let assets: Vec<&'static EmbeddedAsset> =
+                iter_embedded_assets_for_setup_target(concrete_target).collect();
+            let result = install_assets_for_concrete_target_with_rename(
+                repository_root,
+                concrete_target,
+                &assets,
+                &mut rename_fn,
+            )?;
+            target_results.push(result);
+        }
+
+        Ok(SetupInstallOutcome { target_results })
+    }
+
+    fn install_assets_for_concrete_target_with_rename<F>(
+        repository_root: &Path,
+        target: SetupTarget,
+        assets: &[&'static EmbeddedAsset],
+        rename_fn: &mut F,
+    ) -> Result<SetupInstallTargetResult>
+    where
+        F: FnMut(&Path, &Path) -> io::Result<()>,
+    {
+        let install_targets = InstallTargetPaths::new(repository_root);
+        let destination_root = match target {
+            SetupTarget::OpenCode => install_targets.opencode_target_dir(),
+            SetupTarget::Claude => install_targets.claude_target_dir(),
+            SetupTarget::Both => unreachable!("both is expanded into concrete targets"),
+        };
+        let staging_root = create_staging_root(repository_root, target)?;
+
+        if let Err(error) = write_assets_to_staging(&staging_root, assets) {
+            cleanup_path_if_exists(&staging_root);
+            return Err(error);
+        }
+
+        if destination_root.exists() {
+            remove_existing_install_target(&destination_root).with_context(|| {
+                format!(
+                    "Failed to replace existing setup target '{}' without creating a backup",
+                    destination_root.display()
+                )
+            })?;
+        }
+
+        if let Err(error) = rename_fn(&staging_root, &destination_root).with_context(|| {
+            format!(
+                "Failed to swap staged install '{}' into destination '{}'",
+                staging_root.display(),
+                destination_root.display()
+            )
+        }) {
+            cleanup_path_if_exists(&staging_root);
+            return Err(error.context(setup_install_recovery_guidance(target, &destination_root)));
+        }
+
+        Ok(SetupInstallTargetResult {
+            target,
+            destination_root,
+            installed_file_count: assets.len(),
+        })
+    }
+
+    fn remove_existing_install_target(destination_root: &Path) -> Result<()> {
+        let metadata = fs::metadata(destination_root).with_context(|| {
+            format!(
+                "Failed to inspect existing setup target '{}'",
+                destination_root.display()
+            )
+        })?;
+
+        if metadata.is_dir() {
+            fs::remove_dir_all(destination_root).with_context(|| {
+                format!(
+                    "Failed to remove existing setup target directory '{}'",
+                    destination_root.display()
+                )
+            })?;
+        } else {
+            fs::remove_file(destination_root).with_context(|| {
+                format!(
+                    "Failed to remove existing setup target file '{}'",
+                    destination_root.display()
+                )
+            })?;
+        }
+
+        Ok(())
+    }
+
+    fn write_assets_to_staging(
+        staging_root: &Path,
+        assets: &[&'static EmbeddedAsset],
+    ) -> Result<()> {
+        for asset in assets {
+            validate_embedded_relative_path(asset.relative_path)?;
+            let destination = staging_root.join(asset.relative_path);
+            let parent = destination
+                .parent()
+                .context("Embedded asset destination should have a parent directory")?;
+
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "Failed to create staged parent directory '{}'",
+                    parent.display()
+                )
+            })?;
+
+            fs::write(&destination, asset.bytes).with_context(|| {
+                format!(
+                    "Failed to write staged embedded asset '{}'",
+                    destination.display()
+                )
+            })?;
+        }
+
+        Ok(())
+    }
+
+    fn validate_embedded_relative_path(relative_path: &str) -> Result<()> {
+        let path = Path::new(relative_path);
+
+        if path.is_absolute() {
+            bail!("Embedded asset path '{relative_path}' must be relative, not absolute");
+        }
+
+        for component in path.components() {
+            match component {
+                Component::Normal(_) => {}
+                _ => {
+                    bail!("Embedded asset path '{relative_path}' contains disallowed component");
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn create_staging_root(repository_root: &Path, target: SetupTarget) -> Result<PathBuf> {
+        let install_targets = InstallTargetPaths::new(repository_root);
+        let target_dir = match target {
+            SetupTarget::OpenCode => install_targets.opencode_target_dir(),
+            SetupTarget::Claude => install_targets.claude_target_dir(),
+            SetupTarget::Both => unreachable!("both is expanded into concrete targets"),
+        };
+        let target_label = target_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("Setup target directory should have a valid UTF-8 file name")?
+            .trim_start_matches('.');
+        let epoch_nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("System clock is before UNIX_EPOCH")?
+            .as_nanos();
+
+        for attempt in 0..1000_u16 {
+            let candidate = repository_root.join(format!(
+                ".sce-setup-staging-{target_label}-{epoch_nanos}-{}-{attempt}",
+                std::process::id()
+            ));
+
+            match fs::create_dir(&candidate) {
+                Ok(()) => return Ok(candidate),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "Failed to create staging directory '{}'",
+                            candidate.display()
+                        )
+                    });
+                }
+            }
+        }
+
+        bail!(
+            "Could not allocate a unique staging directory under '{}'",
+            repository_root.display()
+        )
+    }
+}
+
 pub trait SetupTargetPrompter {
     fn prompt_target(&self) -> Result<SetupDispatch>;
 }
@@ -952,32 +986,7 @@ pub struct InquireSetupTargetPrompter;
 
 impl SetupTargetPrompter for InquireSetupTargetPrompter {
     fn prompt_target(&self) -> Result<SetupDispatch> {
-        let options = vec![
-            SetupPromptTarget::OpenCode,
-            SetupPromptTarget::Claude,
-            SetupPromptTarget::Both,
-        ];
-
-        let selection = Select::new(&setup_prompt_title(), options).prompt();
-
-        match selection {
-            Ok(SetupPromptTarget::OpenCode) => Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(
-                SetupTarget::OpenCode,
-            ))),
-            Ok(SetupPromptTarget::Claude) => Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(
-                SetupTarget::Claude,
-            ))),
-            Ok(SetupPromptTarget::Both) => {
-                Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(SetupTarget::Both)))
-            }
-            Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
-                Ok(SetupDispatch::Cancelled)
-            }
-            Err(InquireError::NotTTY) => bail!(
-                "Interactive setup requires a TTY. Re-run with '--non-interactive' and one of '--opencode', '--claude', or '--both'."
-            ),
-            Err(error) => Err(error.into()),
-        }
+        prompt::prompt_target()
     }
 }
 
@@ -994,31 +1003,90 @@ impl std::fmt::Display for SetupPromptTarget {
     }
 }
 
-fn setup_prompt_title() -> String {
-    prompt_label("Select setup target")
-}
-
 fn setup_prompt_target_label(target: SetupPromptTarget) -> String {
-    setup_prompt_target_label_with_color_policy(target, crate::services::style::supports_color())
+    prompt::setup_prompt_target_label(target)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 fn setup_prompt_target_label_with_color_policy(
     target: SetupPromptTarget,
     color_enabled: bool,
 ) -> String {
-    let label = match target {
-        SetupPromptTarget::OpenCode => "OpenCode",
-        SetupPromptTarget::Claude => "Claude",
-        SetupPromptTarget::Both => "Both",
-    };
-
-    prompt_value_with_color_policy(label, color_enabled)
+    prompt::setup_prompt_target_label_with_color_policy(target, color_enabled)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 fn setup_prompt_title_with_color_policy(color_enabled: bool) -> String {
-    prompt_label_with_color_policy("Select setup target", color_enabled)
+    prompt::setup_prompt_title_with_color_policy(color_enabled)
+}
+
+mod prompt {
+    use anyhow::{bail, Result};
+    use inquire::{InquireError, Select};
+
+    use crate::services::style::{
+        prompt_label, prompt_label_with_color_policy, prompt_value_with_color_policy,
+    };
+
+    use super::{SetupDispatch, SetupMode, SetupPromptTarget, SetupTarget};
+
+    pub(super) fn prompt_target() -> Result<SetupDispatch> {
+        let options = vec![
+            SetupPromptTarget::OpenCode,
+            SetupPromptTarget::Claude,
+            SetupPromptTarget::Both,
+        ];
+
+        let selection = Select::new(&setup_prompt_title(), options).prompt();
+
+        match selection {
+            Ok(SetupPromptTarget::OpenCode) => {
+                Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(SetupTarget::OpenCode)))
+            }
+            Ok(SetupPromptTarget::Claude) => {
+                Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(SetupTarget::Claude)))
+            }
+            Ok(SetupPromptTarget::Both) => {
+                Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(SetupTarget::Both)))
+            }
+            Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
+                Ok(SetupDispatch::Cancelled)
+            }
+            Err(InquireError::NotTTY) => bail!(
+                "Interactive setup requires a TTY. Re-run with '--non-interactive' and one of '--opencode', '--claude', or '--both'."
+            ),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub(super) fn setup_prompt_title() -> String {
+        prompt_label("Select setup target")
+    }
+
+    pub(super) fn setup_prompt_target_label(target: SetupPromptTarget) -> String {
+        setup_prompt_target_label_with_color_policy(
+            target,
+            crate::services::style::supports_color(),
+        )
+    }
+
+    pub(super) fn setup_prompt_target_label_with_color_policy(
+        target: SetupPromptTarget,
+        color_enabled: bool,
+    ) -> String {
+        let label = match target {
+            SetupPromptTarget::OpenCode => "OpenCode",
+            SetupPromptTarget::Claude => "Claude",
+            SetupPromptTarget::Both => "Both",
+        };
+
+        prompt_value_with_color_policy(label, color_enabled)
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn setup_prompt_title_with_color_policy(color_enabled: bool) -> String {
+        prompt_label_with_color_policy("Select setup target", color_enabled)
+    }
 }
 
 pub fn resolve_setup_dispatch<P>(mode: SetupMode, prompter: &P) -> Result<SetupDispatch>
