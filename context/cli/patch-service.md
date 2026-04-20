@@ -54,9 +54,20 @@ Both functions wrap `serde_json::from_str`/`serde_json::from_slice` and map serd
 - **Determinism**: the same inputs always produce the same output
 - **Not yet wired**: `intersect_patches` is a standalone library seam not yet wired into command dispatch or hook runtime
 
+### Combination
+
+`combine_patches(patches: &[ParsedPatch]) -> ParsedPatch` merges multiple `ParsedPatch` values into one deterministic result with later-input-wins semantics for duplicate/conflicting touched-line entries.
+
+- **File matching**: files are grouped by `new_path`; file metadata (`old_path`, `kind`) is taken from the last patch that contributed to each file
+- **Touched-line identity and deduplication**: touched lines are deduplicated by identity (`kind`, `line_number`, `content`); when multiple patches describe the same file and logical touched-line slot, the later input's entry is retained
+- **Hunk reconstruction**: surviving lines are grouped by their hunk metadata from the last contributing patch; hunks are ordered by `old_start`; lines within each hunk are ordered by `line_number` with `Removed` before `Added` at the same position, then by `content` for full determinism
+- **File ordering**: files appear in the result in the order they are first encountered across the input patches
+- **Determinism**: the same inputs in the same order always produce the same output
+- **Not yet wired**: `combine_patches` is a standalone library seam not yet wired into command dispatch or hook runtime
+
 ### Not yet wired
 
-The parser, JSON load helpers, and intersection operation are standalone library seams not yet wired into command dispatch or hook runtime. Public types consumed by the parser or load helpers have `#[allow(dead_code)]` removed; other module internals including `intersect_patches` retain `#[allow(dead_code)]` until runtime integration.
+The parser, JSON load helpers, intersection, and combination operations are standalone library seams not yet wired into command dispatch or hook runtime. Public types consumed by the parser or load helpers have `#[allow(dead_code)]` removed; other module internals including `intersect_patches` and `combine_patches` retain `#[allow(dead_code)]` until runtime integration.
 
 ## See also
 

@@ -252,6 +252,137 @@ pub fn intersect_patches(a: &ParsedPatch, b: &ParsedPatch) -> ParsedPatch {
     }
 }
 
+/// Combine multiple patches into one deterministic result.
+///
+/// Merges all file changes from the input patches, grouped by `new_path`.
+/// When multiple patches touch the same file, touched-line entries are
+/// deduplicated by identity (`kind`, `line_number`, `content`), with later
+/// patches winning over earlier ones for the same identity.
+///
+/// File metadata (`old_path`, `kind`) is also taken from the last patch
+/// that contributed to each file. Hunk metadata is preserved from the
+/// last patch that contributed each surviving touched line.
+///
+/// Files appear in the result in the order they are first encountered
+/// across the input patches. Within each file, hunks are ordered by
+/// `old_start` and lines within each hunk are ordered by `line_number`
+/// with `Removed` lines before `Added` lines at the same position.
+///
+/// The result is deterministic: the same inputs in the same order always
+/// produce the same output.
+///
+/// # Examples
+///
+/// ```
+/// use sce::services::patch::combine_patches;
+///
+/// let combined = combine_patches(&[patch_a, patch_b]);
+/// ```
+#[allow(dead_code)]
+pub fn combine_patches(patches: &[ParsedPatch]) -> ParsedPatch {
+    use std::collections::HashMap;
+
+    /// Touched-line identity key: (`kind`, `line_number`, `content`).
+    type LineKey = (TouchedLineKind, u64, String);
+    /// Hunk metadata key: (`old_start`, `old_count`, `new_start`, `new_count`).
+    type HunkMeta = (u64, u64, u64, u64);
+
+    #[allow(clippy::type_complexity)]
+    struct FileAcc {
+        old_path: String,
+        kind: FileChangeKind,
+        lines: HashMap<LineKey, (TouchedLine, HunkMeta)>,
+    }
+
+    let mut file_order: Vec<String> = Vec::new();
+    let mut files: HashMap<String, FileAcc> = HashMap::new();
+
+    for patch in patches {
+        for file in &patch.files {
+            let acc = files.entry(file.new_path.clone()).or_insert_with(|| {
+                file_order.push(file.new_path.clone());
+                FileAcc {
+                    old_path: file.old_path.clone(),
+                    kind: file.kind,
+                    lines: HashMap::new(),
+                }
+            });
+            // Later patch wins for file metadata.
+            acc.old_path.clone_from(&file.old_path);
+            acc.kind = file.kind;
+
+            for hunk in &file.hunks {
+                let hunk_meta: HunkMeta = (
+                    hunk.old_start,
+                    hunk.old_count,
+                    hunk.new_start,
+                    hunk.new_count,
+                );
+                for line in &hunk.lines {
+                    let line_key = (line.kind, line.line_number, line.content.clone());
+                    acc.lines.insert(line_key, (line.clone(), hunk_meta));
+                }
+            }
+        }
+    }
+
+    let mut result_files = Vec::new();
+
+    for path in file_order {
+        let acc = files.remove(&path).unwrap();
+
+        // Group surviving lines by their hunk metadata.
+        let mut hunk_groups: HashMap<HunkMeta, Vec<TouchedLine>> = HashMap::new();
+        for (_line_key, (line, hunk_meta)) in acc.lines {
+            hunk_groups.entry(hunk_meta).or_default().push(line);
+        }
+
+        // Sort hunk groups by old_start for deterministic output.
+        let mut sorted_hunks: Vec<_> = hunk_groups.into_iter().collect();
+        sorted_hunks.sort_by_key(|(meta, _)| meta.0);
+
+        let mut hunks = Vec::new();
+        for (meta, mut lines) in sorted_hunks {
+            // Sort lines within each hunk: by line_number, then Removed before
+            // Added, then by content for full determinism.
+            lines.sort_by(|a, b| {
+                a.line_number
+                    .cmp(&b.line_number)
+                    .then_with(|| {
+                        let a_order = match a.kind {
+                            TouchedLineKind::Removed => 0,
+                            TouchedLineKind::Added => 1,
+                        };
+                        let b_order = match b.kind {
+                            TouchedLineKind::Removed => 0,
+                            TouchedLineKind::Added => 1,
+                        };
+                        a_order.cmp(&b_order)
+                    })
+                    .then_with(|| a.content.cmp(&b.content))
+            });
+            hunks.push(PatchHunk {
+                old_start: meta.0,
+                old_count: meta.1,
+                new_start: meta.2,
+                new_count: meta.3,
+                lines,
+            });
+        }
+
+        result_files.push(PatchFileChange {
+            old_path: acc.old_path,
+            new_path: path,
+            kind: acc.kind,
+            hunks,
+        });
+    }
+
+    ParsedPatch {
+        files: result_files,
+    }
+}
+
 /// Parse raw unified-diff text into a `ParsedPatch`.
 ///
 /// Supports both `Index:` (SVN-style) and `diff --git` (git-style) patch
@@ -2566,5 +2697,492 @@ index abc1234..def5678 100644
         assert_eq!(result.files[0].kind, FileChangeKind::Renamed);
         assert_eq!(result.files[0].hunks[0].lines.len(), 1);
         assert_eq!(result.files[0].hunks[0].lines[0].content, "shared");
+    }
+
+    // --- T03: Combine tests ---
+
+    #[test]
+    fn combine_empty_input_returns_empty() {
+        let result = combine_patches(&[]);
+        assert!(result.files.is_empty());
+    }
+
+    #[test]
+    fn combine_single_patch_returns_same_content() {
+        let patch = sample_multi_file_patch();
+        let result = combine_patches(&[patch]);
+        assert_eq!(result.files.len(), 2);
+        // First file: poem.md modified
+        assert_eq!(result.files[0].new_path, "poem.md");
+        assert_eq!(result.files[0].hunks.len(), 1);
+        assert_eq!(result.files[0].hunks[0].lines.len(), 2);
+        // Second file: poem-2.md added
+        assert_eq!(result.files[1].new_path, "poem-2.md");
+        assert_eq!(result.files[1].hunks.len(), 1);
+        assert_eq!(result.files[1].hunks[0].lines.len(), 2);
+    }
+
+    #[test]
+    fn combine_deduplicates_identical_lines() {
+        // Two patches with the same touched line in the same file.
+        let line = TouchedLine {
+            kind: TouchedLineKind::Added,
+            line_number: 5,
+            content: "shared line".to_string(),
+        };
+        let a = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file.txt".to_string(),
+                new_path: "file.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 3,
+                    new_start: 1,
+                    new_count: 3,
+                    lines: vec![line.clone()],
+                }],
+            }],
+        };
+        let b = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file.txt".to_string(),
+                new_path: "file.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 3,
+                    new_start: 1,
+                    new_count: 3,
+                    lines: vec![line.clone()],
+                }],
+            }],
+        };
+
+        let result = combine_patches(&[a, b]);
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].hunks.len(), 1);
+        // Same line identity appears only once.
+        assert_eq!(result.files[0].hunks[0].lines.len(), 1);
+        assert_eq!(result.files[0].hunks[0].lines[0].content, "shared line");
+    }
+
+    #[test]
+    fn combine_later_wins_for_conflicting_lines() {
+        // Two patches with different content at the same (kind, line_number) slot.
+        let a = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file.txt".to_string(),
+                new_path: "file.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 3,
+                    new_start: 1,
+                    new_count: 3,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 5,
+                        content: "version from a".to_string(),
+                    }],
+                }],
+            }],
+        };
+        let b = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file.txt".to_string(),
+                new_path: "file.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 3,
+                    new_start: 1,
+                    new_count: 3,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 5,
+                        content: "version from b".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let result = combine_patches(&[a, b]);
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].hunks.len(), 1);
+        assert_eq!(result.files[0].hunks[0].lines.len(), 1);
+        // Later patch (b) wins.
+        assert_eq!(result.files[0].hunks[0].lines[0].content, "version from b");
+    }
+
+    #[test]
+    fn combine_merges_files_from_different_patches() {
+        // Patch a touches file_a, patch b touches file_b.
+        let a = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file_a.txt".to_string(),
+                new_path: "file_a.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 1,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 1,
+                        content: "change in a".to_string(),
+                    }],
+                }],
+            }],
+        };
+        let b = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file_b.txt".to_string(),
+                new_path: "file_b.txt".to_string(),
+                kind: FileChangeKind::Added,
+                hunks: vec![PatchHunk {
+                    old_start: 0,
+                    old_count: 0,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 1,
+                        content: "change in b".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let result = combine_patches(&[a, b]);
+        assert_eq!(result.files.len(), 2);
+        assert_eq!(result.files[0].new_path, "file_a.txt");
+        assert_eq!(result.files[1].new_path, "file_b.txt");
+    }
+
+    #[test]
+    fn combine_preserves_file_metadata_from_last_patch() {
+        // Patch a has Renamed kind, patch b has Modified kind for the same file.
+        let a = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "old_name.txt".to_string(),
+                new_path: "renamed.txt".to_string(),
+                kind: FileChangeKind::Renamed,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 1,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 1,
+                        content: "shared".to_string(),
+                    }],
+                }],
+            }],
+        };
+        let b = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "renamed.txt".to_string(),
+                new_path: "renamed.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 1,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 1,
+                        content: "shared".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let result = combine_patches(&[a, b]);
+        assert_eq!(result.files.len(), 1);
+        // File metadata from the last patch (b) wins.
+        assert_eq!(result.files[0].old_path, "renamed.txt");
+        assert_eq!(result.files[0].kind, FileChangeKind::Modified);
+    }
+
+    #[test]
+    fn combine_is_deterministic() {
+        let a = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file.txt".to_string(),
+                new_path: "file.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 2,
+                    new_start: 1,
+                    new_count: 2,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 1,
+                        content: "deterministic".to_string(),
+                    }],
+                }],
+            }],
+        };
+        let b = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file.txt".to_string(),
+                new_path: "file.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 5,
+                    old_count: 2,
+                    new_start: 5,
+                    new_count: 2,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Removed,
+                        line_number: 6,
+                        content: "removed line".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let result1 = combine_patches(&[a.clone(), b.clone()]);
+        let result2 = combine_patches(&[a, b]);
+        assert_eq!(result1, result2, "combine must be deterministic");
+    }
+
+    #[test]
+    fn combine_preserves_hunk_metadata_from_last_contributing_patch() {
+        // Line at (Added, 5, "x") appears in patch a with hunk (1,3,1,3)
+        // and in patch b with hunk (10,3,10,3). The surviving line should
+        // use hunk metadata from patch b (the later contributor).
+        let a = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file.txt".to_string(),
+                new_path: "file.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 3,
+                    new_start: 1,
+                    new_count: 3,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 5,
+                        content: "shared line".to_string(),
+                    }],
+                }],
+            }],
+        };
+        let b = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file.txt".to_string(),
+                new_path: "file.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 10,
+                    old_count: 3,
+                    new_start: 10,
+                    new_count: 3,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 5,
+                        content: "shared line".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let result = combine_patches(&[a, b]);
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].hunks.len(), 1);
+        // Hunk metadata from patch b.
+        assert_eq!(result.files[0].hunks[0].old_start, 10);
+        assert_eq!(result.files[0].hunks[0].old_count, 3);
+        assert_eq!(result.files[0].hunks[0].new_start, 10);
+        assert_eq!(result.files[0].hunks[0].new_count, 3);
+    }
+
+    #[test]
+    fn combine_merges_lines_from_different_hunks() {
+        // Patch a has lines in hunk 1, patch b has lines in hunk 2 of the same file.
+        // The result should have two hunks, each with its own lines.
+        let a = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file.txt".to_string(),
+                new_path: "file.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 3,
+                    new_start: 1,
+                    new_count: 3,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 2,
+                        content: "line from hunk 1".to_string(),
+                    }],
+                }],
+            }],
+        };
+        let b = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file.txt".to_string(),
+                new_path: "file.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 20,
+                    old_count: 3,
+                    new_start: 20,
+                    new_count: 3,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 21,
+                        content: "line from hunk 2".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let result = combine_patches(&[a, b]);
+        assert_eq!(result.files.len(), 1);
+        // Two hunks: one from each contributing patch.
+        assert_eq!(result.files[0].hunks.len(), 2);
+        // Hunks are sorted by old_start.
+        assert_eq!(result.files[0].hunks[0].old_start, 1);
+        assert_eq!(result.files[0].hunks[0].lines.len(), 1);
+        assert_eq!(
+            result.files[0].hunks[0].lines[0].content,
+            "line from hunk 1"
+        );
+        assert_eq!(result.files[0].hunks[1].old_start, 20);
+        assert_eq!(result.files[0].hunks[1].lines.len(), 1);
+        assert_eq!(
+            result.files[0].hunks[1].lines[0].content,
+            "line from hunk 2"
+        );
+    }
+
+    #[test]
+    fn combine_three_patches_later_wins() {
+        // Three patches touching the same line: the third patch wins.
+        let make_patch = |content: &str| ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file.txt".to_string(),
+                new_path: "file.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 1,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 5,
+                        content: content.to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let result = combine_patches(&[
+            make_patch("version 1"),
+            make_patch("version 2"),
+            make_patch("version 3"),
+        ]);
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].hunks[0].lines.len(), 1);
+        assert_eq!(result.files[0].hunks[0].lines[0].content, "version 3");
+    }
+
+    #[test]
+    fn combine_mixed_added_and_removed_lines() {
+        // Patch a removes a line, patch b adds a line at the same position.
+        // These are different identities (different kind), so both survive.
+        let a = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file.txt".to_string(),
+                new_path: "file.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 3,
+                    new_start: 1,
+                    new_count: 3,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Removed,
+                        line_number: 5,
+                        content: "old line".to_string(),
+                    }],
+                }],
+            }],
+        };
+        let b = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file.txt".to_string(),
+                new_path: "file.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 3,
+                    new_start: 1,
+                    new_count: 3,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 5,
+                        content: "new line".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let result = combine_patches(&[a, b]);
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].hunks.len(), 1);
+        // Both lines survive because they have different kinds.
+        assert_eq!(result.files[0].hunks[0].lines.len(), 2);
+        // Removed sorts before Added at the same line number.
+        assert_eq!(
+            result.files[0].hunks[0].lines[0].kind,
+            TouchedLineKind::Removed
+        );
+        assert_eq!(result.files[0].hunks[0].lines[0].content, "old line");
+        assert_eq!(
+            result.files[0].hunks[0].lines[1].kind,
+            TouchedLineKind::Added
+        );
+        assert_eq!(result.files[0].hunks[0].lines[1].content, "new line");
+    }
+
+    #[test]
+    fn combine_empty_patch_with_non_empty() {
+        let empty = ParsedPatch { files: vec![] };
+        let non_empty = ParsedPatch {
+            files: vec![PatchFileChange {
+                old_path: "file.txt".to_string(),
+                new_path: "file.txt".to_string(),
+                kind: FileChangeKind::Modified,
+                hunks: vec![PatchHunk {
+                    old_start: 1,
+                    old_count: 1,
+                    new_start: 1,
+                    new_count: 1,
+                    lines: vec![TouchedLine {
+                        kind: TouchedLineKind::Added,
+                        line_number: 1,
+                        content: "only line".to_string(),
+                    }],
+                }],
+            }],
+        };
+
+        let result = combine_patches(&[empty.clone(), non_empty.clone()]);
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].hunks[0].lines[0].content, "only line");
+
+        let result2 = combine_patches(&[non_empty, empty]);
+        assert_eq!(result2.files.len(), 1);
+        assert_eq!(result2.files[0].hunks[0].lines[0].content, "only line");
     }
 }
