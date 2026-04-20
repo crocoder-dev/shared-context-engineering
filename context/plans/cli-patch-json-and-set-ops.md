@@ -63,13 +63,44 @@ Extend the standalone patch service in `cli/src/services/patch.rs` with storage-
   - Files changed: cli/src/services/patch.rs
   - Evidence: nix flake check passed (all checks: cli-tests, cli-clippy, cli-fmt, pkl-parity); nix run .#pkl-check-generated passed; added `combine_patches(patches: &[ParsedPatch]) -> ParsedPatch` public function with `#[allow(dead_code)]`, `LineKey` and `HunkMeta` type aliases, `FileAcc` accumulator struct, file-order-preserving merge with later-wins deduplication by `(kind, line_number, content)` identity, hunk metadata from last contributing patch, deterministic line sorting (line_number, Removed-before-Added, content); 11 new focused tests covering empty input, single patch, identical line deduplication, conflicting later-wins, multi-file merge, file metadata from last patch, determinism, hunk metadata from last contributor, multi-hunk merge, three-patch later-wins, mixed added/removed lines, and empty-patch-with-non-empty
 
-- [ ] T04: `Validation and cleanup` (status:todo)
+- [x] T04: `Validation and cleanup` (status:done)
   - Task ID: T04
   - Goal: Run the repo validation baseline, verify all requested capabilities, and confirm whether focused patch-service context docs need updating.
   - Boundaries (in/out of scope): In — full validation, success-criteria recheck, cleanup of temporary test scaffolding, context-sync verification for the patch service contract. Out — additional feature work.
   - Done when: `nix run .#pkl-check-generated` passes, `nix flake check` passes, success criteria are re-verified against code truth, and any required `context/` updates are identified or applied in a follow-up implementation/context-sync session.
   - Verification notes (commands or checks): `nix run .#pkl-check-generated`; `nix flake check`; compare resulting code truth with `context/cli/patch-service.md`, `context/context-map.md`, and root shared files for verify-only vs important-change context sync.
+  - Status: done
+  - Completed: 2026-04-20
+  - Files changed: none (validation-only task)
+  - Evidence: `nix run .#pkl-check-generated` passed (generated outputs up to date); `nix flake check` passed (all checks: cli-tests, cli-clippy, cli-fmt, pkl-parity, integrations-install-tests, integrations-install-clippy, integrations-install-fmt, npm-bun-tests, npm-biome-check, npm-biome-format, config-lib-bun-tests, config-lib-biome-check, config-lib-biome-format); all 9 success criteria re-verified against code truth; context docs (`context/cli/patch-service.md`, `context/context-map.md`, `context/glossary.md`, `context/overview.md`) are verify-only — no root context edits needed for this localized patch-service task
 
-## Open questions
+## Validation Report
 
-None.
+### Commands run
+- `nix run .#pkl-check-generated` -> exit 0 ("Generated outputs are up to date.")
+- `nix flake check` -> exit 0 (all checks passed: cli-tests, cli-clippy, cli-fmt, pkl-parity, integrations-install-tests, integrations-install-clippy, integrations-install-fmt, npm-bun-tests, npm-biome-check, npm-biome-format, config-lib-bun-tests, config-lib-biome-check, config-lib-biome-format)
+
+### Temporary scaffolding removed
+- None (T04 is validation-only; no code changes were made)
+
+### Success-criteria verification
+- [x] SC1: Public JSON-loading API (`load_patch_from_json`, `load_patch_from_json_bytes`) reconstructs `ParsedPatch` from serialized JSON without filesystem/DB coupling — confirmed in `cli/src/services/patch.rs` lines 137–159
+- [x] SC2: JSON-loading surface returns actionable `PatchLoadError` for invalid payloads — confirmed with `message` field containing `"invalid patch JSON: ..."` prefix
+- [x] SC3: API surface is developer-friendly with explicit naming and doc comments — confirmed: `load_patch_from_json`, `load_patch_from_json_bytes`, `intersect_patches`, `combine_patches` all have module-level and function-level doc comments
+- [x] SC4: Public `intersect_patches(a, b)` returns `ParsedPatch` with only exact overlapping changed lines — confirmed in `cli/src/services/patch.rs` lines 184–253
+- [x] SC5: Exact overlap uses file identity (`new_path`) plus touched-line identity (`kind` + `line_number` + `content`) — confirmed via `HashSet<(TouchedLineKind, u64, &str)>` matching
+- [x] SC6: Public `combine_patches(patches: &[ParsedPatch])` merges into one deterministic result — confirmed in `cli/src/services/patch.rs` lines 282–384
+- [x] SC7: Combine semantics are deterministic with later-wins for duplicate/conflicting touched-line entries — confirmed via `HashMap::insert` overwrite, file-order-preserving merge, and deterministic line sorting
+- [x] SC8: Targeted tests cover JSON reload (11 tests), intersection (9 tests), and combination (11 tests) — confirmed 31 focused tests in `patch::tests` module
+- [x] SC9: Repository validation passes — confirmed via `nix flake check` and `nix run .#pkl-check-generated`
+
+### Context sync
+- Classification: verify-only (localized patch-service feature, no cross-cutting behavior/architecture/terminology changes)
+- `context/cli/patch-service.md`: verified against code truth — accurate
+- `context/overview.md`: verified — patch service description is current
+- `context/glossary.md`: verified — all patch-service entries present and accurate
+- `context/context-map.md`: verified — patch-service entry is current
+- No root context edits required
+
+### Residual risks
+- None identified.
