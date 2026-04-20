@@ -54,50 +54,6 @@ fn run_case(sce_binary: &PathBuf, case: CommandCase) -> Result<(), HarnessError>
     Ok(())
 }
 
-pub(super) fn validate_version_text_output(stream: &str) -> Result<(), String> {
-    validators::validate_version_text_output(stream)
-}
-
-pub(super) fn validate_version_json_output(stream: &str) -> Result<(), String> {
-    validators::validate_version_json_output(stream)
-}
-
-pub(super) fn validate_completion_bash_output(stream: &str) -> Result<(), String> {
-    validators::validate_completion_bash_output(stream)
-}
-
-pub(super) fn validate_completion_zsh_output(stream: &str) -> Result<(), String> {
-    validators::validate_completion_zsh_output(stream)
-}
-
-pub(super) fn validate_completion_fish_output(stream: &str) -> Result<(), String> {
-    validators::validate_completion_fish_output(stream)
-}
-
-pub(super) fn validate_config_show_text_output(stream: &str) -> Result<(), String> {
-    validators::validate_config_show_text_output(stream)
-}
-
-pub(super) fn validate_config_show_json_output(stream: &str) -> Result<(), String> {
-    validators::validate_config_show_json_output(stream)
-}
-
-pub(super) fn validate_config_validate_text_output(stream: &str) -> Result<(), String> {
-    validators::validate_config_validate_text_output(stream)
-}
-
-pub(super) fn validate_config_validate_json_output(stream: &str) -> Result<(), String> {
-    validators::validate_config_validate_json_output(stream)
-}
-
-pub(super) fn validate_doctor_text_output(stream: &str) -> Result<(), String> {
-    validators::validate_doctor_text_output(stream)
-}
-
-pub(super) fn validate_doctor_json_output(stream: &str) -> Result<(), String> {
-    validators::validate_doctor_json_output(stream)
-}
-
 fn resolve_sce_binary() -> Result<PathBuf, HarnessError> {
     let binary = std::env::var_os(SCE_BINARY_ENV).ok_or(HarnessError::MissingEnv {
         env: SCE_BINARY_ENV,

@@ -77,7 +77,7 @@ const VERSION_CASES: &[CommandCase] = &[
         expectation: CaseExpectation {
             status: ExpectedStatus::Success,
             stdout: OutputExpectation::non_empty()
-                .with_validator(super::validate_version_text_output),
+                .with_validator(super::validators::validate_version_text_output),
         },
     },
     CommandCase {
@@ -86,7 +86,7 @@ const VERSION_CASES: &[CommandCase] = &[
         expectation: CaseExpectation {
             status: ExpectedStatus::Success,
             stdout: OutputExpectation::non_empty()
-                .with_validator(super::validate_version_text_output),
+                .with_validator(super::validators::validate_version_text_output),
         },
     },
     CommandCase {
@@ -95,7 +95,7 @@ const VERSION_CASES: &[CommandCase] = &[
         expectation: CaseExpectation {
             status: ExpectedStatus::Success,
             stdout: OutputExpectation::non_empty()
-                .with_validator(super::validate_version_json_output),
+                .with_validator(super::validators::validate_version_json_output),
         },
     },
     CommandCase {
@@ -104,7 +104,7 @@ const VERSION_CASES: &[CommandCase] = &[
         expectation: CaseExpectation {
             status: ExpectedStatus::Success,
             stdout: OutputExpectation::non_empty()
-                .with_validator(super::validate_version_text_output),
+                .with_validator(super::validators::validate_version_text_output),
         },
     },
     CommandCase {
@@ -113,7 +113,7 @@ const VERSION_CASES: &[CommandCase] = &[
         expectation: CaseExpectation {
             status: ExpectedStatus::Success,
             stdout: OutputExpectation::non_empty()
-                .with_validator(super::validate_version_text_output),
+                .with_validator(super::validators::validate_version_text_output),
         },
     },
 ];
@@ -125,7 +125,7 @@ const COMPLETION_CASES: &[CommandCase] = &[
         expectation: CaseExpectation {
             status: ExpectedStatus::Success,
             stdout: OutputExpectation::non_empty()
-                .with_validator(super::validate_completion_bash_output),
+                .with_validator(super::validators::validate_completion_bash_output),
         },
     },
     CommandCase {
@@ -134,7 +134,7 @@ const COMPLETION_CASES: &[CommandCase] = &[
         expectation: CaseExpectation {
             status: ExpectedStatus::Success,
             stdout: OutputExpectation::non_empty()
-                .with_validator(super::validate_completion_zsh_output),
+                .with_validator(super::validators::validate_completion_zsh_output),
         },
     },
     CommandCase {
@@ -143,7 +143,7 @@ const COMPLETION_CASES: &[CommandCase] = &[
         expectation: CaseExpectation {
             status: ExpectedStatus::Success,
             stdout: OutputExpectation::non_empty()
-                .with_validator(super::validate_completion_fish_output),
+                .with_validator(super::validators::validate_completion_fish_output),
         },
     },
 ];
@@ -155,7 +155,7 @@ const CONFIG_CASES: &[CommandCase] = &[
         expectation: CaseExpectation {
             status: ExpectedStatus::Success,
             stdout: OutputExpectation::non_empty()
-                .with_validator(super::validate_config_show_text_output),
+                .with_validator(super::validators::validate_config_show_text_output),
         },
     },
     CommandCase {
@@ -164,7 +164,7 @@ const CONFIG_CASES: &[CommandCase] = &[
         expectation: CaseExpectation {
             status: ExpectedStatus::Success,
             stdout: OutputExpectation::non_empty()
-                .with_validator(super::validate_config_show_json_output),
+                .with_validator(super::validators::validate_config_show_json_output),
         },
     },
     CommandCase {
@@ -173,7 +173,7 @@ const CONFIG_CASES: &[CommandCase] = &[
         expectation: CaseExpectation {
             status: ExpectedStatus::Success,
             stdout: OutputExpectation::non_empty()
-                .with_validator(super::validate_config_validate_text_output),
+                .with_validator(super::validators::validate_config_validate_text_output),
         },
     },
     CommandCase {
@@ -182,7 +182,7 @@ const CONFIG_CASES: &[CommandCase] = &[
         expectation: CaseExpectation {
             status: ExpectedStatus::Success,
             stdout: OutputExpectation::non_empty()
-                .with_validator(super::validate_config_validate_json_output),
+                .with_validator(super::validators::validate_config_validate_json_output),
         },
     },
 ];
@@ -194,7 +194,7 @@ const DOCTOR_CASES: &[CommandCase] = &[
         expectation: CaseExpectation {
             status: ExpectedStatus::Success,
             stdout: OutputExpectation::non_empty()
-                .with_validator(super::validate_doctor_text_output),
+                .with_validator(super::validators::validate_doctor_text_output),
         },
     },
     CommandCase {
@@ -203,7 +203,7 @@ const DOCTOR_CASES: &[CommandCase] = &[
         expectation: CaseExpectation {
             status: ExpectedStatus::Success,
             stdout: OutputExpectation::non_empty()
-                .with_validator(super::validate_doctor_json_output),
+                .with_validator(super::validators::validate_doctor_json_output),
         },
     },
 ];
