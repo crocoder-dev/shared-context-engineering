@@ -38,12 +38,20 @@ Add a new standalone service under `cli/src/services/` that parses patch text in
 - **Evidence:** `nix flake check` passed (cli-tests, cli-clippy, cli-fmt all green); `nix run .#pkl-check-generated` passed; 10 round-trip unit tests covering ParsedPatch, PatchFileChange (Added/Modified/Deleted), PatchHunk, TouchedLine, FileChangeKind/TouchedLineKind enum variants, empty patch, empty hunks, and snake_case JSON field naming.
 - **Notes:** `#[allow(dead_code)]` on all public types since they are not yet consumed by command dispatch or hook runtime (per T01 out-of-scope boundary). T02 will wire the parser and reference these types, removing the allow attributes.
 
-- [ ] T02: `Implement touched-line parsing for supported patch formats` (status:todo)
+- [x] T02: `Implement touched-line parsing for supported patch formats` (status:done)
   - Task ID: T02
   - Goal: Implement parsing from raw patch text into the new domain model, supporting the observed unified-diff families from `files/1/`, `files/2/`, and git-style `diff --git` samples while ignoring headers and unchanged context lines.
   - Boundaries (in/out of scope): In — parser entrypoint(s), hunk parsing, line classification for added/removed touched lines, file boundary detection, support for single-file and multi-file patch text. Out — parsing outer JSON event payloads, runtime integration, alternate diff syntaxes not evidenced by current examples.
   - Done when: Raw patch strings from the provided fixture families parse into deterministic file/hunk/touched-line structures; added-file and modified-file cases are covered; context lines are excluded; parser failures are actionable for malformed patch input.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo test patch::tests'`; fixture-backed unit tests using examples from `files/1/`, `files/2/`, and `files/3/`.
+
+### T02 completion
+
+- **Status:** done
+- **Completed:** 2026-04-20
+- **Files changed:** `cli/src/services/patch.rs` (modified)
+- **Evidence:** `nix flake check` passed (cli-tests, cli-clippy, cli-fmt all green); `nix run .#pkl-check-generated` passed; 17 parser unit tests covering Index-style new-file patches (absolute and relative paths), git-style new-file patches, Index-style modified-file patches with removed lines, git-style modified-file patches, multi-file Index-style patches, Index-style new-file relative-path patches, Index-style modified-file patches with added lines, empty input, error cases (missing file header, invalid hunk header, missing closing `@@`), git-style `/dev/null` old/new path handling, deleted-file detection, `\ No newline at end of file` skipping, multiple hunks in a single file, line-number tracking through mixed context/removed/added, hunk-header count defaulting to 1, git-style renamed-file detection, and parse-then-serialize round-trip fidelity.
+- **Notes:** Removed `#[allow(dead_code)]` from domain model types (ParsedPatch, PatchFileChange, FileChangeKind, PatchHunk, TouchedLine, TouchedLineKind) since they are now consumed by the parser. Added `#[allow(dead_code)]` to parser internals (parse_patch, FileBuilder, DiffPaths, determine_file_kind, parse_git_diff_header, parse_diff_path, parse_hunk_header_and_body, parse_range_part, ParseError) since they are not yet wired into command dispatch (per T02 out-of-scope boundary). Parser supports both `Index:` (SVN-style) and `diff --git` (git-style) unified-diff formats, correctly handles `/dev/null` paths for new/deleted files, `a/`/`b/` prefix stripping, trailing tab characters in `---`/`+++` lines, multi-file patches, `\ No newline at end of file` markers, and hunk headers with or without explicit counts.
 
 - [ ] T03: `Harden coverage for multi-file and deletion-oriented cases` (status:todo)
   - Task ID: T03
