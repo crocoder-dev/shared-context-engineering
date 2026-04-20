@@ -101,6 +101,63 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// Error produced when loading a `ParsedPatch` from serialized JSON fails.
+///
+/// `PatchLoadError` carries an actionable message describing why the JSON
+/// payload could not be reconstructed into a valid `ParsedPatch`. Common
+/// causes include malformed JSON syntax, missing required fields, or type
+/// mismatches in the serialized structure.
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PatchLoadError {
+    pub message: String,
+}
+
+impl std::fmt::Display for PatchLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "patch load error: {}", self.message)
+    }
+}
+
+impl std::error::Error for PatchLoadError {}
+
+/// Load a `ParsedPatch` from a JSON string previously produced by
+/// serializing a `ParsedPatch`.
+///
+/// This is the primary storage-agnostic entrypoint for reconstructing a
+/// parsed patch from serialized JSON content. Callers who have already read
+/// the JSON from a database, file, or any other source can pass the string
+/// directly.
+///
+/// # Errors
+///
+/// Returns `PatchLoadError` with an actionable message when the input is
+/// not valid JSON or does not match the expected `ParsedPatch` structure.
+#[allow(dead_code)]
+pub fn load_patch_from_json(input: &str) -> Result<ParsedPatch, PatchLoadError> {
+    serde_json::from_str(input).map_err(|e| PatchLoadError {
+        message: format!("invalid patch JSON: {e}"),
+    })
+}
+
+/// Load a `ParsedPatch` from JSON bytes previously produced by serializing
+/// a `ParsedPatch`.
+///
+/// This is the bytes-oriented counterpart to [`load_patch_from_json`],
+/// convenient when the caller has raw bytes (for example, from a database
+/// BLOB column or a file read) rather than a UTF-8 string.
+///
+/// # Errors
+///
+/// Returns `PatchLoadError` with an actionable message when the input is
+/// not valid JSON or does not match the expected `ParsedPatch` structure.
+#[allow(dead_code)]
+pub fn load_patch_from_json_bytes(input: &[u8]) -> Result<ParsedPatch, PatchLoadError> {
+    serde_json::from_slice(input).map_err(|e| PatchLoadError {
+        message: format!("invalid patch JSON: {e}"),
+    })
+}
+
 /// Parse raw unified-diff text into a `ParsedPatch`.
 ///
 /// Supports both `Index:` (SVN-style) and `diff --git` (git-style) patch
@@ -1588,5 +1645,168 @@ index b827922..71b993e 100644
         let json = serde_json::to_string_pretty(&patch).expect("serialize");
         let roundtripped: ParsedPatch = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(patch, roundtripped);
+    }
+
+    // --- T01: JSON load helper tests ---
+
+    #[test]
+    fn json_load_roundtrip_from_string() {
+        let patch = sample_multi_file_patch();
+        let json = serde_json::to_string(&patch).expect("serialize");
+        let loaded = load_patch_from_json(&json).expect("load from JSON string");
+        assert_eq!(patch, loaded);
+    }
+
+    #[test]
+    fn json_load_roundtrip_from_bytes() {
+        let patch = sample_multi_file_patch();
+        let json_bytes = serde_json::to_vec(&patch).expect("serialize to bytes");
+        let loaded = load_patch_from_json_bytes(&json_bytes).expect("load from JSON bytes");
+        assert_eq!(patch, loaded);
+    }
+
+    #[test]
+    fn json_load_empty_patch() {
+        let patch = ParsedPatch { files: vec![] };
+        let json = serde_json::to_string(&patch).expect("serialize empty patch");
+        let loaded = load_patch_from_json(&json).expect("load empty patch");
+        assert!(loaded.files.is_empty());
+    }
+
+    #[test]
+    fn json_load_single_file_patch() {
+        let patch = ParsedPatch {
+            files: vec![sample_added_file_change()],
+        };
+        let json = serde_json::to_string(&patch).expect("serialize");
+        let loaded = load_patch_from_json(&json).expect("load");
+        assert_eq!(patch, loaded);
+    }
+
+    #[test]
+    fn json_load_error_on_invalid_json_syntax() {
+        let result = load_patch_from_json("not json at all");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.message.contains("invalid patch JSON"),
+            "error message should contain 'invalid patch JSON', got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn json_load_error_on_valid_json_but_wrong_structure() {
+        // Valid JSON but not a ParsedPatch shape
+        let result = load_patch_from_json("{\"not\": \"a patch\"}");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.message.contains("invalid patch JSON"),
+            "error message should contain 'invalid patch JSON', got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn json_load_error_on_missing_files_field() {
+        // Valid JSON object but missing the required "files" field
+        let result = load_patch_from_json("{}");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.message.contains("invalid patch JSON"),
+            "error message should contain 'invalid patch JSON', got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn json_load_bytes_error_on_invalid_utf8_json() {
+        // Bytes that are not valid UTF-8 and not valid JSON
+        let result = load_patch_from_json_bytes(&[0xff, 0xfe, 0x00]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.message.contains("invalid patch JSON"),
+            "error message should contain 'invalid patch JSON', got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn json_load_bytes_error_on_wrong_structure() {
+        // Valid JSON bytes but wrong structure
+        let json_bytes = b"{\"not\": \"a patch\"}";
+        let result = load_patch_from_json_bytes(json_bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn json_load_preserves_all_field_change_kinds() {
+        for kind in [
+            FileChangeKind::Added,
+            FileChangeKind::Modified,
+            FileChangeKind::Deleted,
+            FileChangeKind::Renamed,
+        ] {
+            let patch = ParsedPatch {
+                files: vec![PatchFileChange {
+                    old_path: "a.txt".to_string(),
+                    new_path: "b.txt".to_string(),
+                    kind,
+                    hunks: vec![],
+                }],
+            };
+            let json = serde_json::to_string(&patch).expect("serialize");
+            let loaded = load_patch_from_json(&json).expect("load");
+            assert_eq!(patch, loaded, "round-trip failed for {kind:?}");
+        }
+    }
+
+    #[test]
+    fn json_load_preserves_touched_line_kinds() {
+        for line_kind in [TouchedLineKind::Added, TouchedLineKind::Removed] {
+            let patch = ParsedPatch {
+                files: vec![PatchFileChange {
+                    old_path: "test.txt".to_string(),
+                    new_path: "test.txt".to_string(),
+                    kind: FileChangeKind::Modified,
+                    hunks: vec![PatchHunk {
+                        old_start: 1,
+                        old_count: 1,
+                        new_start: 1,
+                        new_count: 1,
+                        lines: vec![TouchedLine {
+                            kind: line_kind,
+                            line_number: 1,
+                            content: "test content".to_string(),
+                        }],
+                    }],
+                }],
+            };
+            let json = serde_json::to_string(&patch).expect("serialize");
+            let loaded = load_patch_from_json(&json).expect("load");
+            assert_eq!(patch, loaded, "round-trip failed for {line_kind:?}");
+        }
+    }
+
+    #[test]
+    fn json_load_after_parse_roundtrip() {
+        // End-to-end: parse raw diff text, serialize to JSON, load back via helper
+        let input = "\
+diff --git a/readme.md b/readme.md
+index abc1234..def5678 100644
+--- a/readme.md
++++ b/readme.md
+@@ -1,3 +1,3 @@
+ line1
+-old line
++new line
+ line3";
+        let patch = parse_patch(input).expect("parse should succeed");
+        let json = serde_json::to_string(&patch).expect("serialize");
+        let loaded = load_patch_from_json(&json).expect("load from JSON");
+        assert_eq!(patch, loaded);
     }
 }

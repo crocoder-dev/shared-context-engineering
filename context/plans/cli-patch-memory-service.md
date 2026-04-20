@@ -68,12 +68,47 @@ Add a new standalone service under `cli/src/services/` that parses patch text in
 - **Evidence:** `nix flake check` passed (cli-tests, cli-clippy, cli-fmt all green); `nix run .#pkl-check-generated` passed; 5 new test cases added covering: git-style multi-file patch (modified + new file), Index-style deleted file (`+++ /dev/null`), multi-file Index-style patch with deleted file, hunk with only removed lines (no additions), and git-style multi-hunk multi-file patch. No parser logic changes were needed — the existing parser handled all acceptance cases correctly.
 - **Notes:** All T03 acceptance gaps are closed. The parser already handled Index-style deleted files, multi-file git-style patches, and removal-only hunks correctly; the new tests confirm this explicitly.
 
-- [ ] T04: `Validation and cleanup` (status:todo)
+- [x] T04: `Validation and cleanup` (status:done)
   - Task ID: T04
   - Goal: Run the repo validation baseline, verify all success criteria, and confirm whether the change requires focused context updates or only a verify-only root context pass.
   - Boundaries (in/out of scope): In — full validation, cleanup of any temporary parser scaffolding/tests, and context-sync verification for the new service seam. Out — new feature work.
   - Done when: `nix run .#pkl-check-generated` passes, `nix flake check` passes, success criteria are re-checked against the implemented parser/service, and `context/` is either updated accurately or explicitly verified as unchanged where appropriate.
   - Verification notes (commands or checks): `nix run .#pkl-check-generated`; `nix flake check`; review implemented service against `context/architecture.md` / focused CLI context needs.
+
+### T04 completion
+
+- **Status:** done
+- **Completed:** 2026-04-20
+- **Files changed:** None (validation-only task)
+- **Evidence:** `nix run .#pkl-check-generated` passed ("Generated outputs are up to date."); `nix flake check` passed ("all checks passed!"); all 6 success criteria re-verified against implemented code; no temporary scaffolding found — `#[allow(dead_code)]` annotations on parser internals are intentional per out-of-scope boundary (not yet wired into command dispatch); context files already accurately document the patch service from T01–T03 completion, so a verify-only root context pass suffices.
+- **Notes:** This was the final task in the plan. All success criteria are met. The patch service is a standalone library seam in `cli/src/services/patch.rs` with `serde`-serializable domain types, a public `parse_patch` function supporting both `Index:` and `diff --git` formats, and comprehensive test coverage including round-trip fidelity, new-file/modified-file/deleted-file/rename cases, multi-file patches, removal-only hunks, and error handling.
+
+## Validation Report
+
+### Commands run
+- `nix run .#pkl-check-generated` -> exit 0 ("Generated outputs are up to date.")
+- `nix flake check` -> exit 0 ("all checks passed!" — cli-tests, cli-clippy, cli-fmt, integrations-install-tests, integrations-install-clippy, integrations-install-fmt, pkl-parity, npm-bun-tests, npm-biome-check, npm-biome-format, config-lib-bun-tests, config-lib-biome-check, config-lib-biome-format)
+
+### Temporary scaffolding removed
+- None found. `#[allow(dead_code)]` annotations on parser internals (`parse_patch`, `ParseError`, `FileBuilder`, `DiffPaths`, `determine_file_kind`, `parse_git_diff_header`, `parse_diff_path`, `parse_hunk_header_and_body`, `parse_range_part`) are intentional per the out-of-scope boundary (not yet wired into command dispatch).
+
+### Success-criteria verification
+- [x] SC1: A new standalone patch service exists in `cli/src/services/` and is not wired into command dispatch or hook runtime yet. -> Confirmed: `cli/src/services/patch.rs` exists; `#[allow(dead_code)]` on parser internals confirms no runtime wiring.
+- [x] SC2: The service parses both `Index:` and `diff --git` patch variants. -> Confirmed: 17+ parser tests covering both formats pass under `nix flake check`.
+- [x] SC3: The parsed representation drops patch headers and unchanged context lines, retaining only touched lines plus enough metadata to preserve file/hunk structure. -> Confirmed: `TouchedLine` only has `Added`/`Removed` kinds; context lines are skipped; file/hunk metadata preserved.
+- [x] SC4: The representation is `serde`-serializable/deserializable, and round-trip tests prove fidelity. -> Confirmed: All domain types derive `Serialize`/`Deserialize`; 11 round-trip tests pass.
+- [x] SC5: Tests cover at least: new-file patches, modified-file patches, multi-file patch payloads, and removed-line handling. -> Confirmed: T03 added explicit coverage for all these cases.
+- [x] SC6: Existing validation continues to pass after the service is added. -> Confirmed: `nix run .#pkl-check-generated` and `nix flake check` both pass.
+
+### Context verification
+- `context/overview.md` — verified accurate (patch service documented)
+- `context/architecture.md` — verified accurate (patch service documented at line 110)
+- `context/glossary.md` — verified accurate (patch-related glossary entries at lines 122–126)
+- `context/context-map.md` — verified accurate (patch-service reference at line 12)
+- `context/cli/patch-service.md` — verified accurate (domain model, parser behavior, and not-yet-wired status all match code truth)
+
+### Residual risks
+- None identified. The patch service is a standalone library seam with no runtime integration yet, so no cross-cutting risk exists.
 
 ## Open questions
 
