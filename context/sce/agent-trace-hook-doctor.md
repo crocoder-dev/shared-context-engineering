@@ -20,7 +20,7 @@ Out of scope for this contract task:
 
 ## Current implementation baseline
 
-The runtime in `cli/src/services/doctor.rs` exposes the approved doctor command surface and stable output-shape scaffolding, and covers the global-readiness slice plus the current repo-integrity, database-inventory, and repair slices:
+The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor command surface and stable output-shape scaffolding, with focused `doctor/{inspect,render,fixes,types}.rs` submodules separating diagnosis, rendering, fix execution, and doctor-owned domain types. Together they cover the global-readiness slice plus the current repo-integrity, database-inventory, and repair slices:
 
 - explicit mode selection through `sce doctor` (`diagnose`) and `sce doctor --fix` (`fix`)
 - command/help wiring for `--fix` plus stable text/JSON mode reporting

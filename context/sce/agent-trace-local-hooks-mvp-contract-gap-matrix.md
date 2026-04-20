@@ -69,7 +69,7 @@ Freeze one implementation-ready contract for Local Hooks MVP productionization a
 - Agent Trace payload adapter/builder/schema contract: `cli/src/services/agent_trace.rs`
 - Local DB connection/migrations/smoke helpers: `cli/src/services/local_db.rs`
 - Hook installation orchestration: `cli/src/services/setup.rs`
-- Hook readiness diagnostics: `cli/src/services/doctor.rs`
+- Hook readiness diagnostics: `cli/src/services/doctor/mod.rs` plus focused helpers under `cli/src/services/doctor/`
 
 ## Gap matrix (historical code truth at freeze time -> required runtime completion)
 
