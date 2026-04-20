@@ -96,12 +96,15 @@ Refactor the Rust CLI architecture to reduce central orchestration complexity, r
   - Evidence: `nix develop -c sh -c 'cd cli && cargo build'`; `nix develop -c sh -c 'cd cli && cargo clippy --tests -- -D warnings'`; `nix run .#pkl-check-generated`; `nix flake check`
   - Notes: `cli/src/services/setup.rs` now isolates install-flow and prompt-flow helpers into focused inline support modules instead of one uninterrupted implementation block, while `cli/src/services/default_paths.rs` moves root-resolution logic behind a dedicated `roots` seam. Broad file-level dead-code suppression was removed in favor of localized `#[allow(dead_code)]` annotations on path-catalog and setup helper items that remain intentionally available for future/test support without widening module-level lint scope.
 
-- [ ] T08: `Sync current-state architecture context` (status:todo)
+- [x] T08: `Sync current-state architecture context` (status:done)
   - Task ID: T08
   - Goal: Update `context/` so durable architecture and CLI context files reflect the new module ownership and command/runtime structure after the refactor tasks land.
   - Boundaries (in/out of scope): In - root/context updates required by the final architecture, relevant CLI domain context updates, and any needed decision record if ownership boundaries materially change. Out - leaving historical implementation notes in core context files or treating plan text as durable history.
   - Done when: current-state context files accurately describe the refactored CLI architecture and canonical ownership seams introduced by T01-T07.
   - Verification notes (commands or checks): verify context files match code truth; ensure durable files describe resulting architecture rather than implementation progress.
+  - Completed: 2026-04-20
+  - Evidence: `nix run .#pkl-check-generated`; `nix develop -c sh -c 'cd cli && cargo build'`
+  - Notes: Updated root/context architecture coverage to reflect the explicit `app.rs` startup lifecycle + `RuntimeCommand` seam, the split `doctor/` module ownership, the `setup.rs` install/prompt support seams, the `default_paths.rs` internal `roots` seam, and the current root-Nix verification/release posture for the CLI.
 
 - [ ] T09: `Run full validation and cleanup` (status:todo)
   - Task ID: T09
