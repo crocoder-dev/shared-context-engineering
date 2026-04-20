@@ -608,7 +608,7 @@ mod command_runtime {
             &self,
             _logger: &services::observability::Logger,
         ) -> Result<String, ClassifiedError> {
-            services::hooks::run_hooks_subcommand(self.subcommand.clone())
+            services::hooks::run_hooks_subcommand(&self.subcommand)
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))
         }
     }
