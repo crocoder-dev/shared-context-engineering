@@ -7,19 +7,21 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 ## Current implemented slice
 
 - Binary entrypoint: `cli/src/main.rs`
-- Runtime shell: `cli/src/app.rs`
+- Runtime shell and startup lifecycle owner: `cli/src/app.rs`
 - Top-level command metadata catalog: `cli/src/cli_schema.rs`
-- Custom top-level help renderer: `cli/src/command_surface.rs`
+- Custom top-level help renderer and known-command classifier: `cli/src/command_surface.rs`
 - Local Turso adapter: `cli/src/services/local_db.rs`
-- Service domains: `cli/src/services/{agent_trace,auth,auth_command,completion,config,default_paths,local_db,setup,doctor,hooks,resilience,sync,token_storage,version}.rs`
+- Service domains: `cli/src/services/{auth,auth_command,completion,config,default_paths,hooks,local_db,observability,output_format,resilience,security,setup,style,token_storage,version}.rs` plus the split doctor module at `cli/src/services/doctor/{mod,inspect,render,fixes,types}.rs`
 - Shared test temp-path helper: `cli/src/test_support.rs` (`TestTempDir`, test-only module)
 
 ## Onboarding documentation
 
 - `sce --help` includes a slim top-level command list and quick-start examples for `setup`, `doctor`, and `version`; `auth`, `hooks`, and `sync` remain implemented in code but are hidden from `sce`, `sce help`, and `sce --help` for this phase.
 - `cli/src/cli_schema.rs` owns the real top-level command catalog metadata for clap-backed commands (purpose text plus `show_in_top_level_help`), while `command_surface::help_text()` consumes that catalog and adds the synthetic `help` row plus the ASCII banner.
+- `cli/src/app.rs` now owns an explicit startup lifecycle (`perform_dependency_check` -> `build_startup_context` -> `initialize_runtime` -> `run_command_lifecycle` -> `render_run_outcome`) so dependency bootstrap, config-backed runtime initialization, command parsing/execution, and final stream rendering are no longer coordinated inside one monolithic startup function.
+- `cli/src/app.rs` also routes clap output through an internal `RuntimeCommand` seam so parse-time conversion and run-time command execution are separated from one central dispatch match.
 - Command-local help is available for implemented commands including bare `sce auth`, `sce auth --help`, `sce auth login --help`, `sce setup --help`, `sce doctor --help`, and `sce completion --help`; when stdout color is enabled those help payloads now reuse the shared heading/command/placeholder styling pass while non-TTY and `NO_COLOR` flows stay plain text. Human-readable stderr diagnostics and interactive setup prompt text now follow the same shared styling policy on their respective terminal streams.
-- Current verification guidance for the CLI slice uses crate-local `cargo test --manifest-path cli/Cargo.toml`, plus release/install commands for installability (`cargo build --manifest-path cli/Cargo.toml --release`, `cargo install --path cli --locked`).
+- Current repository verification guidance for this CLI slice prefers the root Nix entrypoints: `nix flake check` for routine validation, `nix build .#default` / `nix run .#sce -- --help` for packaged installability, and targeted `nix develop -c sh -c 'cd cli && <cargo command>'` only when a narrower Rust-only check is explicitly needed.
 
 ## Nix release installability surface
 
@@ -32,10 +34,10 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 
 ## Cargo release and future crates.io posture
 
-- `cli/Cargo.toml` includes crates.io-facing package metadata (`description`, `license`, `repository`, `homepage`, `documentation`, `readme`, `keywords`, `categories`) while keeping `publish = false`.
+- `cli/Cargo.toml` includes crates.io-facing package metadata (`description`, `license`, `repository`, `homepage`, `documentation`, `readme`, `keywords`, `categories`) and is aligned to the current crates.io publication posture described by the root release/publish workflows.
 - Current local install contract is `cargo install --path cli --locked`.
-- Current release build/installability check command is `cargo build --manifest-path cli/Cargo.toml --release`.
-- Future crates.io publication is readiness-only in this phase: before first publish, flip publish posture intentionally and run `cargo publish --manifest-path cli/Cargo.toml --dry-run` as a gate.
+- Current release build/installability checks run through the root flake (`nix build .#default`, `nix run .#sce -- --help`) so the packaged binary and embedded generated assets stay aligned with the canonical Nix-owned release path.
+- Crates.io publication is now a dedicated downstream publish stage (`.github/workflows/publish-crates.yml`) that validates `.version`/tag/Cargo parity before publishing the checked-in crate version.
 
 ## Command surface contract
 
@@ -67,6 +69,8 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 ## Command loop and error model
 
 - Argument parsing is handled by `clap` derive macros in `cli/src/cli_schema.rs` and dispatched from `cli/src/app.rs`.
+- `cli/src/app.rs` now runs commands through explicit phases with `StartupContext`, `AppRuntime`, and `RunOutcome` carrying startup-derived observability config, logger/telemetry state, and final render data across the lifecycle.
+- `parse_command_phase` converts clap output into boxed `RuntimeCommand` implementations, and `execute_command_phase` emits lifecycle logs around `command.execute(...)` instead of branching through one central command-dispatch match.
 - Top-level failures are classified into stable exit-code classes owned by `cli/src/app.rs`: `2` parse, `3` validation, `4` runtime, and `5` dependency.
 - User-facing diagnostics are rendered on `stderr` as `Error [SCE-ERR-<CLASS>]: ...` with class-default `Try:` remediation appended only when missing; when stderr color is enabled the heading, error code, and diagnostic body all render through shared stderr styling helpers.
 - Unknown commands/options and extra positional arguments return deterministic, actionable guidance to run `sce --help`.
@@ -83,6 +87,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 ## Service contracts
 
 - `cli/src/services/setup.rs` defines setup parsing/selection contracts plus runtime install orchestration (`run_setup_for_mode`) over the embedded asset install engine.
+- `cli/src/services/setup.rs` now keeps its larger internal responsibilities behind focused inline support modules: `install` owns repository canonicalization, staging/swap install flows, required-hook installation, and repo/writeability guards, while `prompt` owns interactive target selection and styled prompt labels.
 - `cli/src/services/config.rs` defines config parser/runtime contracts (`show`, `validate`, `--help`), strict config-file key/type validation, deterministic text/JSON rendering, repo-configured bash-policy preset/custom validation and reporting under `policies.bash`, and shared auth-key metadata that declares env key, config-file key, and optional baked-default eligibility for supported auth runtime values starting with `workos_client_id` (`WORKOS_CLIENT_ID` vs `workos_client_id`); auth-key provenance/preference metadata stays on `show`, while `validate` stays trimmed to validation status plus issues/warnings.
 - `cli/src/services/doctor/mod.rs` now defines the implemented doctor request/report contract (`DoctorRequest`, `DoctorMode`, `run_doctor`) while focused submodules under `cli/src/services/doctor/` handle diagnosis (`inspect.rs`), rendering (`render.rs`), fix execution (`fixes.rs`), and doctor-owned domain types (`types.rs`). Together they preserve explicit fix-mode parsing, stable text/JSON problem and database-record rendering, deterministic fix-result reporting, state-root/config/local-DB reporting and validation, an empty default repo-scoped database inventory, path-source detection plus required-hook presence/executable/content checks when a repository target is detected, repo-root installed OpenCode integration presence inventory for `plugins`, `agents`, `commands`, and `skills` derived from the embedded OpenCode setup asset catalog, shared-style bracketed human status token rendering (`[PASS]`, `[FAIL]`, `[MISS]`) with simplified `label (path)` text rows, repair-mode reuse of canonical setup hook installation for supported hook repairs, and a bounded doctor-owned local-DB directory bootstrap routine for the canonical missing DB parent path.
 - `cli/src/services/version.rs` defines the version parser/output contract (`parse_version_request`, `render_version`) with deterministic text/JSON output modes.
@@ -90,7 +95,7 @@ Placeholder commands currently acknowledge planned behavior and do not claim pro
 - `cli/src/services/hooks.rs` defines production local hook runtime parsing/dispatch (`HookSubcommand`, `parse_hooks_subcommand`, `run_hooks_subcommand`) for `pre-commit`, `commit-msg`, `post-commit`, and `post-rewrite`; current runtime behavior is commit-msg-only attribution behind the disabled-default attribution gate, while the other entrypoints are deterministic no-ops.
 - `cli/src/services/resilience.rs` defines shared bounded retry/timeout/backoff execution policy (`RetryPolicy`, `run_with_retry`) with deterministic failure messaging and retry observability hooks.
 - `cli/src/services/sync.rs` defines cloud-sync abstraction points (`CloudSyncGateway`, `CloudSyncRequest`, `CloudSyncPlan`) layered after the local Turso smoke gate, plus `SyncRequest` parsing/rendering for deterministic text or `--format json` placeholder output and command-local usage text (`sync_usage_text`).
-- `cli/src/services/default_paths.rs` defines the canonical per-user persisted-location seam for config/state/cache roots plus named default file paths and an explicit inventory of current default persisted artifacts (`global config`, `auth tokens`, `local DB`) used by config discovery, token storage, local DB bootstrap, and doctor diagnostics; no default cache-backed persisted artifact exists yet.
+- `cli/src/services/default_paths.rs` defines the canonical per-user persisted-location seam for config/state/cache roots plus named default file paths and an explicit inventory of current default persisted artifacts (`global config`, `auth tokens`, `local DB`) used by config discovery, token storage, local DB bootstrap, and doctor diagnostics; its internal `roots` seam now owns the platform-aware root-directory resolution so non-test production modules consume shared path accessors instead of resolving owned roots directly.
 - `cli/src/services/token_storage.rs` defines WorkOS token persistence (`save_tokens`, `load_tokens`, `delete_tokens`) with shared default-path-seam resolution for the default token file, JSON payload storage including `stored_at_unix_seconds`, graceful missing-file deletion behavior, missing/corrupted-file handling, and restrictive on-disk permissions (`0600` on Unix; Windows best-effort ACL hardening via `icacls`).
 - `cli/src/services/auth_command.rs` defines the auth command orchestration surface (`AuthRequest`, `AuthSubcommand`, `run_auth_subcommand`) for `login`, `renew`, `logout`, and `status`, including shared text/JSON rendering, token refresh/forced renewal handling for `sce auth renew`, token-storage-backed logout deletion with path-aware remediation guidance, expiry-aware status reporting, canonical credentials-file path reporting sourced from the shared default-path seam, precedence-aware client-ID guidance sourced from the shared auth-runtime resolver instead of env-only assumptions, and a lazily initialized current-thread Tokio runtime with both I/O and time enabled so the auth flows can drive the WorkOS device/refresh paths without the prior I/O-disabled panic.
 - `cli/src/app.rs` dispatches `auth`, `config`, `setup`, `doctor`, `hooks`, `sync`, `version`, and `completion` through service-level modules so runtime messages are sourced from domain modules instead of inline strings.
