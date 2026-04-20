@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use crate::services;
+use crate::{cli_schema, services};
 use services::style::{banner_with_gradient, command_name, heading};
 
 const SCE_BANNER_LINES: &[&str] = &[
@@ -12,72 +12,14 @@ const SCE_BANNER_LINES: &[&str] = &[
     r" \______.' `.____ .'|________| ",
 ];
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ImplementationStatus {
-    Implemented,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CommandContract {
-    pub name: &'static str,
-    pub status: ImplementationStatus,
-    pub purpose: &'static str,
-    pub show_in_top_level_help: bool,
-}
-
-pub const COMMANDS: &[CommandContract] = &[
-    CommandContract {
-        name: "help",
-        status: ImplementationStatus::Implemented,
-        purpose: "Show help for the current CLI surface",
-        show_in_top_level_help: true,
-    },
-    CommandContract {
-        name: services::config::NAME,
-        status: ImplementationStatus::Implemented,
-        purpose: "Inspect and validate resolved CLI configuration",
-        show_in_top_level_help: true,
-    },
-    CommandContract {
-        name: services::setup::NAME,
-        status: ImplementationStatus::Implemented,
-        purpose: "Prepare local repository/workspace prerequisites",
-        show_in_top_level_help: true,
-    },
-    CommandContract {
-        name: services::doctor::NAME,
-        status: ImplementationStatus::Implemented,
-        purpose: "Inspect SCE operator health and explicit repair readiness",
-        show_in_top_level_help: true,
-    },
-    CommandContract {
-        name: services::auth_command::NAME,
-        status: ImplementationStatus::Implemented,
-        purpose: "Authenticate with WorkOS and inspect local auth state",
-        show_in_top_level_help: false,
-    },
-    CommandContract {
-        name: services::hooks::NAME,
-        status: ImplementationStatus::Implemented,
-        purpose: "Run attribution-only git hooks (disabled by default)",
-        show_in_top_level_help: false,
-    },
-    CommandContract {
-        name: services::version::NAME,
-        status: ImplementationStatus::Implemented,
-        purpose: "Print deterministic runtime version metadata",
-        show_in_top_level_help: true,
-    },
-    CommandContract {
-        name: services::completion::NAME,
-        status: ImplementationStatus::Implemented,
-        purpose: "Generate deterministic shell completion scripts",
-        show_in_top_level_help: true,
-    },
-];
+const HELP_COMMAND_NAME: &str = "help";
+const HELP_COMMAND_PURPOSE: &str = "Show help for the current CLI surface";
 
 pub fn is_known_command(name: &str) -> bool {
-    COMMANDS.iter().any(|command| command.name == name)
+    name == HELP_COMMAND_NAME
+        || cli_schema::TOP_LEVEL_COMMANDS
+            .iter()
+            .any(|command| command.name == name)
 }
 enum HelpSectionBodyLine {
     Text(&'static str),
@@ -156,17 +98,23 @@ const HELP_SECTIONS: &[HelpSection] = &[
 fn commands_section() -> String {
     let mut out = String::new();
     writeln!(out, "{}", heading("Commands")).expect("writing to String should not fail");
-    for command in COMMANDS {
-        if !command.show_in_top_level_help {
-            continue;
+    writeln!(
+        out,
+        "  {:<10} {}",
+        command_name(HELP_COMMAND_NAME),
+        HELP_COMMAND_PURPOSE
+    )
+    .expect("writing to String should never fail");
+    for command in cli_schema::TOP_LEVEL_COMMANDS {
+        if command.show_in_top_level_help {
+            writeln!(
+                out,
+                "  {:<10} {}",
+                command_name(command.name),
+                command.purpose
+            )
+            .expect("writing to String should never fail");
         }
-        writeln!(
-            out,
-            "  {:<10} {}",
-            command_name(command.name),
-            command.purpose
-        )
-        .expect("writing to String should never fail");
     }
     out
 }
@@ -216,4 +164,34 @@ pub fn help_text() -> String {
     writeln!(output, "{}", commands_section()).expect("writing to String should not fail");
 
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn top_level_help_lists_visible_commands_only() {
+        let help = help_text();
+
+        assert!(help.contains("help       Show help for the current CLI surface"));
+        assert!(help.contains("config     Inspect and validate resolved CLI configuration"));
+        assert!(help.contains("setup      Prepare local repository/workspace prerequisites"));
+        assert!(
+            help.contains("doctor     Inspect SCE operator health and explicit repair readiness")
+        );
+        assert!(help.contains("version    Print deterministic runtime version metadata"));
+        assert!(help.contains("completion Generate deterministic shell completion scripts"));
+        assert!(!help.contains("Authenticate with WorkOS and inspect local auth state"));
+        assert!(!help.contains("Run attribution-only git hooks (disabled by default)"));
+    }
+
+    #[test]
+    fn known_command_catalog_includes_hidden_commands() {
+        assert!(is_known_command("help"));
+        assert!(is_known_command(services::auth_command::NAME));
+        assert!(is_known_command(services::hooks::NAME));
+        assert!(is_known_command(services::config::NAME));
+        assert!(!is_known_command("unknown"));
+    }
 }

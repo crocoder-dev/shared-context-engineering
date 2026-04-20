@@ -3,6 +3,80 @@ use std::path::PathBuf;
 
 use crate::services::style;
 
+pub struct TopLevelCommandMetadata {
+    pub name: &'static str,
+    pub purpose: &'static str,
+    pub show_in_top_level_help: bool,
+}
+
+pub const AUTH_CLAP_ABOUT: &str = "Authenticate with `WorkOS` device authorization flow";
+pub const AUTH_TOP_LEVEL_PURPOSE: &str = "Authenticate with WorkOS and inspect local auth state";
+pub const AUTH_SHOW_IN_TOP_LEVEL_HELP: bool = false;
+
+pub const CONFIG_CLAP_ABOUT: &str =
+    "Inspect or validate runtime config and observability resolution";
+pub const CONFIG_TOP_LEVEL_PURPOSE: &str = "Inspect and validate resolved CLI configuration";
+pub const CONFIG_SHOW_IN_TOP_LEVEL_HELP: bool = true;
+
+pub const SETUP_CLAP_ABOUT: &str = "Prepare local repository/workspace prerequisites";
+pub const SETUP_TOP_LEVEL_PURPOSE: &str = "Prepare local repository/workspace prerequisites";
+pub const SETUP_SHOW_IN_TOP_LEVEL_HELP: bool = true;
+
+pub const DOCTOR_CLAP_ABOUT: &str = "Inspect and repair SCE operator environment health";
+pub const DOCTOR_TOP_LEVEL_PURPOSE: &str =
+    "Inspect SCE operator health and explicit repair readiness";
+pub const DOCTOR_SHOW_IN_TOP_LEVEL_HELP: bool = true;
+
+pub const HOOKS_CLAP_ABOUT: &str = "Run attribution-only git hooks (disabled by default)";
+pub const HOOKS_TOP_LEVEL_PURPOSE: &str = "Run attribution-only git hooks (disabled by default)";
+pub const HOOKS_SHOW_IN_TOP_LEVEL_HELP: bool = false;
+
+pub const VERSION_CLAP_ABOUT: &str = "Print deterministic runtime version metadata";
+pub const VERSION_TOP_LEVEL_PURPOSE: &str = "Print deterministic runtime version metadata";
+pub const VERSION_SHOW_IN_TOP_LEVEL_HELP: bool = true;
+
+pub const COMPLETION_CLAP_ABOUT: &str = "Generate deterministic shell completion scripts";
+pub const COMPLETION_TOP_LEVEL_PURPOSE: &str = "Generate deterministic shell completion scripts";
+pub const COMPLETION_SHOW_IN_TOP_LEVEL_HELP: bool = true;
+
+pub const TOP_LEVEL_COMMANDS: &[TopLevelCommandMetadata] = &[
+    TopLevelCommandMetadata {
+        name: crate::services::auth_command::NAME,
+        purpose: AUTH_TOP_LEVEL_PURPOSE,
+        show_in_top_level_help: AUTH_SHOW_IN_TOP_LEVEL_HELP,
+    },
+    TopLevelCommandMetadata {
+        name: crate::services::config::NAME,
+        purpose: CONFIG_TOP_LEVEL_PURPOSE,
+        show_in_top_level_help: CONFIG_SHOW_IN_TOP_LEVEL_HELP,
+    },
+    TopLevelCommandMetadata {
+        name: crate::services::setup::NAME,
+        purpose: SETUP_TOP_LEVEL_PURPOSE,
+        show_in_top_level_help: SETUP_SHOW_IN_TOP_LEVEL_HELP,
+    },
+    TopLevelCommandMetadata {
+        name: crate::services::doctor::NAME,
+        purpose: DOCTOR_TOP_LEVEL_PURPOSE,
+        show_in_top_level_help: DOCTOR_SHOW_IN_TOP_LEVEL_HELP,
+    },
+    TopLevelCommandMetadata {
+        name: crate::services::hooks::NAME,
+        purpose: HOOKS_TOP_LEVEL_PURPOSE,
+        show_in_top_level_help: HOOKS_SHOW_IN_TOP_LEVEL_HELP,
+    },
+    TopLevelCommandMetadata {
+        name: crate::services::version::NAME,
+        purpose: VERSION_TOP_LEVEL_PURPOSE,
+        show_in_top_level_help: VERSION_SHOW_IN_TOP_LEVEL_HELP,
+    },
+    TopLevelCommandMetadata {
+        name: crate::services::completion::NAME,
+        purpose: COMPLETION_TOP_LEVEL_PURPOSE,
+        show_in_top_level_help: COMPLETION_SHOW_IN_TOP_LEVEL_HELP,
+    },
+];
+
 #[derive(Parser, Debug)]
 #[command(name = "sce", version, about, long_about = None)]
 pub struct Cli {
@@ -57,19 +131,19 @@ pub fn auth_help_text() -> String {
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum Commands {
-    #[command(about = "Authenticate with `WorkOS` device authorization flow")]
+    #[command(about = AUTH_CLAP_ABOUT, hide = !AUTH_SHOW_IN_TOP_LEVEL_HELP)]
     Auth {
         #[command(subcommand)]
         subcommand: AuthSubcommand,
     },
 
-    #[command(about = "Inspect or validate runtime config and observability resolution")]
+    #[command(about = CONFIG_CLAP_ABOUT, hide = !CONFIG_SHOW_IN_TOP_LEVEL_HELP)]
     Config {
         #[command(subcommand)]
         subcommand: ConfigSubcommand,
     },
 
-    #[command(about = "Prepare local repository/workspace prerequisites")]
+    #[command(about = SETUP_CLAP_ABOUT, hide = !SETUP_SHOW_IN_TOP_LEVEL_HELP)]
     Setup {
         #[arg(long, conflicts_with_all = ["claude", "both"])]
         opencode: bool,
@@ -90,7 +164,7 @@ pub enum Commands {
         repo: Option<PathBuf>,
     },
 
-    #[command(about = "Inspect and repair SCE operator environment health")]
+    #[command(about = DOCTOR_CLAP_ABOUT, hide = !DOCTOR_SHOW_IN_TOP_LEVEL_HELP)]
     Doctor {
         #[arg(long)]
         fix: bool,
@@ -99,19 +173,19 @@ pub enum Commands {
         format: OutputFormat,
     },
 
-    #[command(about = "Run attribution-only git hooks (disabled by default)")]
+    #[command(about = HOOKS_CLAP_ABOUT, hide = !HOOKS_SHOW_IN_TOP_LEVEL_HELP)]
     Hooks {
         #[command(subcommand)]
         subcommand: HooksSubcommand,
     },
 
-    #[command(about = "Print deterministic runtime version metadata")]
+    #[command(about = VERSION_CLAP_ABOUT, hide = !VERSION_SHOW_IN_TOP_LEVEL_HELP)]
     Version {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
 
-    #[command(about = "Generate deterministic shell completion scripts")]
+    #[command(about = COMPLETION_CLAP_ABOUT, hide = !COMPLETION_SHOW_IN_TOP_LEVEL_HELP)]
     Completion {
         #[arg(long, value_enum)]
         shell: CompletionShell,
