@@ -124,3 +124,6 @@
 - `ParseError`: Error type in `cli/src/services/patch.rs` produced when `parse_patch` encounters malformed input (missing file headers, invalid hunk headers, missing `@@` delimiters); carries an actionable `message` field
 - `FileChangeKind`: Enum in `cli/src/services/patch.rs` classifying a file change as `Added`, `Modified`, `Deleted`, or `Renamed`; serialized as `snake_case` JSON strings
 - `TouchedLineKind`: Enum in `cli/src/services/patch.rs` classifying a touched line as `Added` or `Removed`; serialized as `snake_case` JSON strings
+- `PatchLoadError`: Error type in `cli/src/services/patch.rs` produced when `load_patch_from_json` or `load_patch_from_json_bytes` encounters invalid JSON or a payload that does not match the expected `ParsedPatch` structure; carries an actionable `message` field
+- `load_patch_from_json`: Public function in `cli/src/services/patch.rs` that reconstructs a `ParsedPatch` from a JSON string; storage-agnostic entrypoint for callers who have already read serialized JSON content from a database, file, or other source
+- `load_patch_from_json_bytes`: Public function in `cli/src/services/patch.rs` that reconstructs a `ParsedPatch` from JSON bytes; bytes-oriented counterpart to `load_patch_from_json` for callers working with raw byte data

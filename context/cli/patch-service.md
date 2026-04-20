@@ -33,9 +33,18 @@ All types derive `Clone, Debug, Deserialize, Eq, PartialEq, Serialize` and suppo
 - Skips `\ No newline at end of file` markers
 - Returns `ParseError` with actionable messages for malformed input
 
+## JSON load helpers
+
+Storage-agnostic helpers for reconstructing `ParsedPatch` from serialized JSON content:
+
+- `load_patch_from_json(input: &str) -> Result<ParsedPatch, PatchLoadError>` — loads a `ParsedPatch` from a JSON string; callers who have already read JSON from a database or file can pass the string directly
+- `load_patch_from_json_bytes(input: &[u8]) -> Result<ParsedPatch, PatchLoadError>` — loads a `ParsedPatch` from JSON bytes; convenient when the caller has raw bytes (for example, from a database BLOB column or file read) rather than a UTF-8 string
+
+Both functions wrap `serde_json::from_str`/`serde_json::from_slice` and map serde errors to actionable `PatchLoadError` messages. `PatchLoadError` carries a `message` field describing why the JSON payload could not be reconstructed into a valid `ParsedPatch`.
+
 ### Not yet wired
 
-The parser is a standalone library seam not yet wired into command dispatch or hook runtime. Public types consumed by the parser have `#[allow(dead_code)]` removed; parser internals retain `#[allow(dead_code)]` until runtime integration.
+The parser and JSON load helpers are standalone library seams not yet wired into command dispatch or hook runtime. Public types consumed by the parser or load helpers have `#[allow(dead_code)]` removed; other module internals retain `#[allow(dead_code)]` until runtime integration.
 
 ## See also
 
