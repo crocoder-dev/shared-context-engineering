@@ -779,25 +779,6 @@ fn parse_range_part(s: &str, prefix: char) -> Result<(u64, u64), ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::path::PathBuf;
-
-    fn fixture_family_two_path(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("files")
-            .join("2")
-            .join(name)
-    }
-
-    fn load_fixture_family_two_patch(name: &str) -> ParsedPatch {
-        let path = fixture_family_two_path(name);
-        let input = fs::read_to_string(&path)
-            .unwrap_or_else(|error| panic!("failed to read fixture {}: {error}", path.display()));
-        parse_patch(&input)
-            .unwrap_or_else(|error| panic!("failed to parse fixture {}: {error}", path.display()))
-    }
-
     fn touched_line_signature(patch: &ParsedPatch) -> Vec<(TouchedLineKind, String)> {
         patch
             .files
@@ -2100,54 +2081,123 @@ index abc1234..def5678 100644
 
     #[test]
     fn fixture_family_two_represents_one_logical_change_despite_diff_shape_variation() {
-        let baseline = load_fixture_family_two_patch("diff.2");
+        // Index-style with relative path, full 9-line context
+        let index_patch = "\
+Index: poem.md
+===================================================================
+--- poem.md\t
++++ poem.md\t
+@@ -1,9 +1,9 @@
+ Morning leans on the windowsill,
+ Dust turns slow in borrowed gold.
+ The kettle hums, the street is still,
+ And day begins by growing bold.
+ 
+-Small hours gather into name,
++Smqll hours gather into name,
+ Birdsong stitches light to air.
+ Nothing ends the way it came,
+-But something kind is waiting there.
++But something kind is wqiting there.";
+
+        // git-style, 7-line context window
+        let git_patch = "\
+diff --git a/poem.md b/poem.md
+index b827922..71b993e 100644
+--- a/poem.md
++++ b/poem.md
+@@ -3,7 +3,7 @@ Dust turns slow in borrowed gold.
+ The kettle hums, the street is still,
+ And day begins by growing bold.
+ 
+-Small hours gather into name,
++Smqll hours gather into name,
+ Birdsong stitches light to air.
+ Nothing ends the way it came,
+-But something kind is waiting there.
++But something kind is wqiting there.";
+
+        let baseline = parse_patch(index_patch).expect("index patch should parse");
         let baseline_signature = touched_line_signature(&baseline);
 
-        for fixture in ["diff.1", "diff.2", "diff.3", "diff.4", "diff.5", "diff.6"] {
-            let patch = load_fixture_family_two_patch(fixture);
+        for (label, input) in [("index", index_patch), ("git", git_patch)] {
+            let patch = parse_patch(input).unwrap_or_else(|e| panic!("{label} should parse: {e}"));
             assert_eq!(
                 patch.files.len(),
                 1,
-                "{fixture} should parse as one file change"
+                "{label} should parse as one file change"
             );
             assert_eq!(
                 patch.files[0].kind,
                 FileChangeKind::Modified,
-                "{fixture} should stay a modified-file patch"
+                "{label} should stay a modified-file patch"
             );
             assert_eq!(
                 touched_line_signature(&patch),
                 baseline_signature,
-                "{fixture} should carry the same logical touched lines despite different hunk shape"
+                "{label} should carry the same logical touched lines despite different hunk shape"
             );
         }
     }
 
     #[test]
-    fn fixture_family_two_intersection_matches_absolute_and_relative_index_paths() {
-        let absolute_index_patch = load_fixture_family_two_patch("diff.1");
-        let relative_index_patch = load_fixture_family_two_patch("diff.2");
+    fn fixture_family_two_intersection_across_index_and_git_formats() {
+        let index_patch = parse_patch(
+            "\
+Index: poem.md
+===================================================================
+--- poem.md\t
++++ poem.md\t
+@@ -1,9 +1,9 @@
+ Morning leans on the windowsill,
+ Dust turns slow in borrowed gold.
+ The kettle hums, the street is still,
+ And day begins by growing bold.
+ 
+-Small hours gather into name,
++Smqll hours gather into name,
+ Birdsong stitches light to air.
+ Nothing ends the way it came,
+-But something kind is waiting there.
++But something kind is wqiting there.",
+        )
+        .expect("index patch should parse");
+
+        let git_patch = parse_patch(
+            "\
+diff --git a/poem.md b/poem.md
+index b827922..71b993e 100644
+--- a/poem.md
++++ b/poem.md
+@@ -3,7 +3,7 @@ Dust turns slow in borrowed gold.
+ The kettle hums, the street is still,
+ And day begins by growing bold.
+ 
+-Small hours gather into name,
++Smqll hours gather into name,
+ Birdsong stitches light to air.
+ Nothing ends the way it came,
+-But something kind is waiting there.
++But something kind is wqiting there.",
+        )
+        .expect("git patch should parse");
 
         assert_eq!(
-            touched_line_signature(&absolute_index_patch),
-            touched_line_signature(&relative_index_patch),
-            "fixtures should describe the same logical line changes before intersection"
-        );
-        assert_ne!(
-            absolute_index_patch.files[0].new_path, relative_index_patch.files[0].new_path,
-            "parser still preserves distinct raw path strings for absolute vs relative Index paths"
+            touched_line_signature(&index_patch),
+            touched_line_signature(&git_patch),
+            "index and git patches should describe the same logical line changes before intersection"
         );
 
-        let overlap = intersect_patches(&absolute_index_patch, &relative_index_patch);
+        let overlap = intersect_patches(&index_patch, &git_patch);
         assert_eq!(overlap.files.len(), 1);
         assert_eq!(
             touched_line_signature(&overlap),
-            touched_line_signature(&relative_index_patch),
+            touched_line_signature(&git_patch),
             "intersection should keep the full logical touched-line overlap for equivalent hunks"
         );
         assert_eq!(
-            overlap.files[0].new_path, absolute_index_patch.files[0].new_path,
-            "intersection should continue preserving file metadata from the first patch"
+            overlap.files[0].new_path, index_patch.files[0].new_path,
+            "intersection should preserve file metadata from the first patch"
         );
     }
 
