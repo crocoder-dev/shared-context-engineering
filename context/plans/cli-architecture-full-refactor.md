@@ -76,12 +76,15 @@ Refactor the Rust CLI architecture to reduce central orchestration complexity, r
   - Evidence: `nix develop -c sh -c 'cd cli && cargo build'`; `nix flake check`
   - Notes: `cli/src/services/config.rs` now deserializes config files into typed serde DTOs for top-level, `otel`, and `policies` structures, then applies focused Rust-owned mapping/validation helpers to preserve the existing schema-backed precedence and reporting contract.
 
-- [ ] T06: `Decompose doctor into focused diagnostics units` (status:todo)
+- [x] T06: `Decompose doctor into focused diagnostics units` (status:done)
   - Task ID: T06
   - Goal: Split `services/doctor.rs` into smaller diagnostics/reporting units with fewer sprawling enums and lower orchestration density while preserving the doctor contract.
   - Boundaries (in/out of scope): In - extracting doctor domain types, inspection helpers, rendering helpers, and fix execution seams into focused modules/files. Out - changing the doctor JSON/text contract, problem taxonomy semantics, or fix behavior.
   - Done when: `doctor` ownership is divided into coherent submodules (for example diagnosis, rendering, and fix execution), the main file is materially smaller, and the doctor contract remains stable.
   - Verification notes (commands or checks): `nix flake check`; confirm doctor text/json output tests or equivalent assertions still pass without contract drift.
+  - Completed: 2026-04-20
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo build'`; `nix run .#pkl-check-generated`; `nix flake check`
+  - Notes: `cli/src/services/doctor/mod.rs` is now a small module entrypoint backed by focused `doctor/{inspect,render,fixes,types}.rs` units, preserving the doctor request/report contract while moving diagnosis, rendering, and fix execution out of one sprawling file.
 
 - [ ] T07: `Tighten setup and path/service support seams` (status:todo)
   - Task ID: T07
