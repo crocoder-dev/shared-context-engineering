@@ -39,3 +39,14 @@ fn average_age_reconstruction_matches_post_commit() {
         golden: include_str!("fixtures/average_age_reconstruction/golden.json"),
     });
 }
+
+#[test]
+fn hello_world_reconstruction_matches_post_commit() {
+    assert_reconstructs_post_commit(PatchScenario {
+        incremental: &[include_str!(
+            "fixtures/hello_world_reconstruction/incremental_01.patch"
+        )],
+        post_commit: include_str!("fixtures/hello_world_reconstruction/post_commit.patch"),
+        golden: include_str!("fixtures/hello_world_reconstruction/golden.json"),
+    });
+}

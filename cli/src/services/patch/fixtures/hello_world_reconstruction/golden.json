@@ -1,0 +1,44 @@
+{
+  "files": [
+    {
+      "old_path": "",
+      "new_path": "hunks/hello.ts",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 5,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "function helloWorld(): void {"
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": "  console.log(\"Hello World\");"
+            },
+            {
+              "kind": "added",
+              "line_number": 3,
+              "content": "}"
+            },
+            {
+              "kind": "added",
+              "line_number": 4,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 5,
+              "content": "helloWorld();"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
