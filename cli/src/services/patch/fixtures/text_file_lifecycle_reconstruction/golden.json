@@ -1,0 +1,549 @@
+{
+  "files": [
+    {
+      "old_path": "",
+      "new_path": "animals.txt",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 3,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "fox"
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": "lynx"
+            },
+            {
+              "kind": "added",
+              "line_number": 3,
+              "content": "bear"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "old_path": "",
+      "new_path": "cleanup.txt",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 6,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "one"
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": "three"
+            },
+            {
+              "kind": "added",
+              "line_number": 3,
+              "content": "four"
+            },
+            {
+              "kind": "added",
+              "line_number": 4,
+              "content": "five"
+            },
+            {
+              "kind": "added",
+              "line_number": 5,
+              "content": "six"
+            },
+            {
+              "kind": "added",
+              "line_number": 6,
+              "content": "eight"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "old_path": "",
+      "new_path": "colors.txt",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 4,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "red"
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": "emerald"
+            },
+            {
+              "kind": "added",
+              "line_number": 3,
+              "content": "blue"
+            },
+            {
+              "kind": "added",
+              "line_number": 4,
+              "content": "yellow"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "old_path": "",
+      "new_path": "flowers.txt",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 3,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "rose"
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": "orchid"
+            },
+            {
+              "kind": "added",
+              "line_number": 3,
+              "content": "tulip"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "old_path": "",
+      "new_path": "list.txt",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 6,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "alpha"
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": "beta-updated"
+            },
+            {
+              "kind": "added",
+              "line_number": 3,
+              "content": "gamma"
+            },
+            {
+              "kind": "added",
+              "line_number": 4,
+              "content": "delta-updated"
+            },
+            {
+              "kind": "added",
+              "line_number": 5,
+              "content": "epsilon"
+            },
+            {
+              "kind": "added",
+              "line_number": 6,
+              "content": "zeta-updated"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "old_path": "",
+      "new_path": "notes.txt",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 7,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "Line 1: apples"
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": "Line 2: pears"
+            },
+            {
+              "kind": "added",
+              "line_number": 3,
+              "content": "Line 3: plums"
+            },
+            {
+              "kind": "added",
+              "line_number": 4,
+              "content": "Line 4: grapes"
+            },
+            {
+              "kind": "added",
+              "line_number": 5,
+              "content": "Line 5: oranges"
+            },
+            {
+              "kind": "added",
+              "line_number": 6,
+              "content": "Line 6: bananas"
+            },
+            {
+              "kind": "added",
+              "line_number": 7,
+              "content": "Line 7: cherries"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "old_path": "",
+      "new_path": "poem-one.txt",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 4,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "Morning light spills on the floor."
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": "A quiet bird waits by the tree."
+            },
+            {
+              "kind": "added",
+              "line_number": 3,
+              "content": "Nothing asks for more today."
+            },
+            {
+              "kind": "added",
+              "line_number": 4,
+              "content": "The world is slow and clear."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "old_path": "",
+      "new_path": "rain.txt",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 4,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "Rain taps softly on the glass."
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": "Clouds erase the distant hill."
+            },
+            {
+              "kind": "added",
+              "line_number": 3,
+              "content": "Every road becomes a mirror."
+            },
+            {
+              "kind": "added",
+              "line_number": 4,
+              "content": "Everything is calm and still."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "old_path": "",
+      "new_path": "replace-me.txt",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 3,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "New line A"
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": "New line B"
+            },
+            {
+              "kind": "added",
+              "line_number": 3,
+              "content": "New line C"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "old_path": "",
+      "new_path": "sentence.txt",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 1,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "The striped cat sleeps near the window."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "old_path": "",
+      "new_path": "single-letter.txt",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 1,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "colour"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "old_path": "",
+      "new_path": "story.txt",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 11,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "Chapter 1"
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": "The road was silent."
+            },
+            {
+              "kind": "added",
+              "line_number": 3,
+              "content": "The sun was low."
+            },
+            {
+              "kind": "added",
+              "line_number": 4,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 5,
+              "content": "Chapter 2"
+            },
+            {
+              "kind": "added",
+              "line_number": 6,
+              "content": "A cart moved slowly."
+            },
+            {
+              "kind": "added",
+              "line_number": 7,
+              "content": "The horses were tired."
+            },
+            {
+              "kind": "added",
+              "line_number": 8,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 9,
+              "content": "Chapter 3"
+            },
+            {
+              "kind": "added",
+              "line_number": 10,
+              "content": "Night came early."
+            },
+            {
+              "kind": "added",
+              "line_number": 11,
+              "content": "The village kept its lamps lit."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "old_path": "",
+      "new_path": "sun.txt",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 4,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "Sun above the empty street."
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": "Warmth arrives before the sound."
+            },
+            {
+              "kind": "added",
+              "line_number": 3,
+              "content": "Windows open one by one."
+            },
+            {
+              "kind": "added",
+              "line_number": 4,
+              "content": "Morning settles on the town."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "old_path": "",
+      "new_path": "tasks.txt",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 3,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "task-a"
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": "task-b"
+            },
+            {
+              "kind": "added",
+              "line_number": 3,
+              "content": "task-d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "old_path": "",
+      "new_path": "wind.txt",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 4,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "Wind moves lightly through the leaves."
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": "Branches bend but do not break."
+            },
+            {
+              "kind": "added",
+              "line_number": 3,
+              "content": "Air carries the scent of evening."
+            },
+            {
+              "kind": "added",
+              "line_number": 4,
+              "content": "Day prepares to fade away."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

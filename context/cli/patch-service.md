@@ -70,6 +70,16 @@ Both functions wrap `serde_json::from_str`/`serde_json::from_slice` and map serd
 
 The parser, JSON load helpers, intersection, and combination operations are standalone library seams not yet wired into command dispatch or hook runtime. Public types consumed by the parser or load helpers have `#[allow(dead_code)]` removed; other module internals including `intersect_patches` and `combine_patches` retain `#[allow(dead_code)]` until runtime integration.
 
+## Reconstruction fixture suites
+
+Patch reconstruction tests use deterministic fixture suites under `cli/src/services/patch/fixtures/`.
+
+- Existing suites remain intact (`average_age_reconstruction`, `hello_world_reconstruction`).
+- The current tmp-hunks scenario is materialized as `text_file_lifecycle_reconstruction/` with:
+  - `incremental_01.patch` .. `incremental_26.patch` reconstructed from `tmp_hunks/*-message.part.updated.json` in lexical filename order
+  - `post_commit.patch` reconstructed from `tmp_hunks/*-post-commit.json` `input.head_patch_from_git`
+- Incremental fixture patch headers are normalized to relative repo paths for parser/file matching compatibility.
+
 ## See also
 
 - [overview.md](../overview.md)
