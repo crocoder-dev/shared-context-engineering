@@ -252,6 +252,11 @@
               "content": "      recalculatedTotal += users[j].age;"
             },
             {
+              "kind": "added",
+              "line_number": 46,
+              "content": "    }"
+            },
+            {
               "kind": "removed",
               "line_number": 7,
               "content": "  for (let i = 2; i <= n; i++) {"
@@ -273,22 +278,22 @@
             },
             {
               "kind": "added",
-              "line_number": 47,
+              "line_number": 48,
               "content": "    // Keep only the latest partial total; this adds extra work for no benefit."
             },
             {
               "kind": "added",
-              "line_number": 48,
+              "line_number": 49,
               "content": "    totalAge = recalculatedTotal;"
             },
             {
               "kind": "removed",
-              "line_number": 14,
+              "line_number": 13,
               "content": "  return curr;"
             },
             {
               "kind": "added",
-              "line_number": 51,
+              "line_number": 52,
               "content": "  return totalAge / users.length;"
             }
           ]

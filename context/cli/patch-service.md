@@ -46,11 +46,11 @@ Both functions wrap `serde_json::from_str`/`serde_json::from_slice` and map serd
 
 ### Intersection
 
-`intersect_patches(a: &ParsedPatch, b: &ParsedPatch) -> ParsedPatch` returns a `ParsedPatch` containing only exact overlapping touched lines present in both input patches.
+`intersect_patches(a: &ParsedPatch, b: &ParsedPatch) -> ParsedPatch` returns a `ParsedPatch` containing only the touched lines from `b` that are also represented in `a` for the same logical file.
 
 - **File matching**: files are matched by post-change path identity — exact `new_path` equality, or absolute-vs-relative path variants whose normalized path segments share the same relative suffix
-- **Touched-line identity**: a touched line is considered identical when `kind`, `line_number`, and `content` all match
-- **Result structure**: only files with at least one overlapping touched line appear in the result; hunks with no overlapping lines are excluded; hunk metadata (`old_start`, `old_count`, `new_start`, `new_count`) is preserved from the first patch (`a`)
+- **Touched-line matching**: matching prefers exact identity (`kind`, `line_number`, and `content`); when no exact match exists, it falls back to historical reconstruction matching by `kind` and `content` only so canonical post-commit patches can still intersect with earlier incremental diffs whose line numbers drifted
+- **Result structure**: only files with at least one overlapping touched line appear in the result; hunks with no overlapping lines are excluded; hunk metadata (`old_start`, `old_count`, `new_start`, `new_count`) is preserved from the second patch (`b`) so the result keeps the target patch shape
 - **Determinism**: the same inputs always produce the same output
 - **Equivalent-hunk behavior**: semantically identical hunks still intersect when they differ only in surrounding context windows, hunk header ranges, or absolute-vs-relative `Index:` path spelling, as long as their touched-line identities match exactly
 - **Not yet wired**: `intersect_patches` is a standalone library seam not yet wired into command dispatch or hook runtime

@@ -160,20 +160,25 @@ pub fn load_patch_from_json_bytes(input: &[u8]) -> Result<ParsedPatch, PatchLoad
     })
 }
 
-/// Compute the exact touched-line intersection of two patches.
+/// Compute the touched-line intersection of two patches.
 ///
-/// Returns a `ParsedPatch` containing only the touched lines that appear in
-/// both `a` and `b` for the same logical file. Files are matched by their
-/// post-change path identity: exact `new_path` equality, or an absolute path
-/// whose normalized path segments end with the same relative path segments.
-/// Touched lines are considered identical when they share the same `kind`,
-/// `line_number`, and `content`.
+/// Returns a `ParsedPatch` containing only the touched lines from `b` that are
+/// also represented in `a` for the same logical file. Files are matched by
+/// their post-change path identity: exact `new_path` equality, or an absolute
+/// path whose normalized path segments end with the same relative path
+/// segments.
+///
+/// Matching prefers exact touched-line identity (`kind`, `line_number`, and
+/// `content`). When no exact match exists, it falls back to historical
+/// reconstruction matching by `kind` and `content` only, which lets callers
+/// compare a canonical post-commit patch against earlier incremental diffs even
+/// when line numbers drift across intermediate edits.
 ///
 /// Files with no overlapping touched lines are excluded from the result.
-/// Within matched files, hunks are reconstructed from the overlapping lines,
-/// preserving the hunk metadata (start positions and counts) from the first
-/// patch (`a`) where lines overlap. The output is deterministic: the same
-/// inputs always produce the same result.
+/// Within matched files, hunks are reconstructed from the overlapping lines in
+/// `b`, preserving `b`'s hunk metadata so the result can be compared directly
+/// to the canonical target patch. The output is deterministic: the same inputs
+/// always produce the same result.
 ///
 /// # Examples
 ///
@@ -186,38 +191,53 @@ pub fn load_patch_from_json_bytes(input: &[u8]) -> Result<ParsedPatch, PatchLoad
 /// ```
 #[allow(dead_code)]
 pub fn intersect_patches(a: &ParsedPatch, b: &ParsedPatch) -> ParsedPatch {
-    use std::collections::HashSet;
-
     let mut result_files: Vec<PatchFileChange> = Vec::new();
 
-    for a_file in &a.files {
-        // Only consider files that also appear in `b` by equivalent post-change path.
-        let Some(b_file) = b
+    for b_file in &b.files {
+        // Only consider files that also appear in `a` by equivalent post-change path.
+        let Some(a_file) = a
             .files
             .iter()
-            .find(|b_file| paths_refer_to_same_file(&a_file.new_path, &b_file.new_path))
+            .find(|a_file| paths_refer_to_same_file(&a_file.new_path, &b_file.new_path))
         else {
             continue;
         };
 
-        // Build a set of touched-line identities from `b` for this specific file.
-        let b_file_lines: HashSet<(TouchedLineKind, u64, &str)> = b_file
-            .hunks
-            .iter()
-            .flat_map(|h| {
-                h.lines
-                    .iter()
-                    .map(|l| (l.kind, l.line_number, l.content.as_str()))
-            })
-            .collect();
+        let available_lines: Vec<&TouchedLine> =
+            a_file.hunks.iter().flat_map(|h| h.lines.iter()).collect();
+        let mut used_lines = vec![false; available_lines.len()];
 
-        // Filter hunks in `a_file` to only include lines that also appear in `b_file`.
+        // Filter hunks in `b_file` to only include lines that are also represented in
+        // `a_file`, preferring exact line-number matches and falling back to
+        // same-kind/same-content historical matches when line numbers have drifted.
         let mut result_hunks: Vec<PatchHunk> = Vec::new();
-        for a_hunk in &a_file.hunks {
-            let overlapping_lines: Vec<TouchedLine> = a_hunk
+        for b_hunk in &b_file.hunks {
+            let overlapping_lines: Vec<TouchedLine> = b_hunk
                 .lines
                 .iter()
-                .filter(|l| b_file_lines.contains(&(l.kind, l.line_number, l.content.as_str())))
+                .filter(|line| {
+                    if let Some(index) = find_available_line_match(
+                        &available_lines,
+                        &used_lines,
+                        line,
+                        touched_lines_match_exact,
+                    ) {
+                        used_lines[index] = true;
+                        return true;
+                    }
+
+                    if let Some(index) = find_available_line_match(
+                        &available_lines,
+                        &used_lines,
+                        line,
+                        touched_lines_match_historical,
+                    ) {
+                        used_lines[index] = true;
+                        return true;
+                    }
+
+                    false
+                })
                 .cloned()
                 .collect();
 
@@ -226,10 +246,10 @@ pub fn intersect_patches(a: &ParsedPatch, b: &ParsedPatch) -> ParsedPatch {
             }
 
             result_hunks.push(PatchHunk {
-                old_start: a_hunk.old_start,
-                old_count: a_hunk.old_count,
-                new_start: a_hunk.new_start,
-                new_count: a_hunk.new_count,
+                old_start: b_hunk.old_start,
+                old_count: b_hunk.old_count,
+                new_start: b_hunk.new_start,
+                new_count: b_hunk.new_count,
                 lines: overlapping_lines,
             });
         }
@@ -238,14 +258,10 @@ pub fn intersect_patches(a: &ParsedPatch, b: &ParsedPatch) -> ParsedPatch {
             continue;
         }
 
-        // Determine the file change kind for the intersection result.
-        // When both patches touch the same file, use the kind from `a` as the
-        // primary input; this keeps the result deterministic and consistent
-        // with the "first patch wins for metadata" approach.
         result_files.push(PatchFileChange {
-            old_path: a_file.old_path.clone(),
-            new_path: a_file.new_path.clone(),
-            kind: a_file.kind,
+            old_path: b_file.old_path.clone(),
+            new_path: b_file.new_path.clone(),
+            kind: b_file.kind,
             hunks: result_hunks,
         });
     }
@@ -253,6 +269,30 @@ pub fn intersect_patches(a: &ParsedPatch, b: &ParsedPatch) -> ParsedPatch {
     ParsedPatch {
         files: result_files,
     }
+}
+
+fn find_available_line_match(
+    available_lines: &[&TouchedLine],
+    used_lines: &[bool],
+    target: &TouchedLine,
+    matcher: fn(&TouchedLine, &TouchedLine) -> bool,
+) -> Option<usize> {
+    available_lines
+        .iter()
+        .enumerate()
+        .find_map(|(index, candidate)| {
+            (!used_lines[index] && matcher(candidate, target)).then_some(index)
+        })
+}
+
+fn touched_lines_match_exact(candidate: &TouchedLine, target: &TouchedLine) -> bool {
+    candidate.kind == target.kind
+        && candidate.line_number == target.line_number
+        && candidate.content == target.content
+}
+
+fn touched_lines_match_historical(candidate: &TouchedLine, target: &TouchedLine) -> bool {
+    candidate.kind == target.kind && candidate.content == target.content
 }
 
 fn paths_refer_to_same_file(a: &str, b: &str) -> bool {
@@ -664,13 +704,16 @@ where
     let header_end = rest.find("@@").ok_or_else(|| ParseError {
         message: format!("invalid hunk header: missing closing '@@' in {rest:?}"),
     })?;
-    let range_part = &rest[..header_end].trim();
-
-    let (old_start, old_count) = parse_range_part(range_part, '-')?;
-    let plus_pos = range_part.find('+').ok_or_else(|| ParseError {
-        message: format!("invalid hunk header: missing '+' range in {range_part:?}"),
+    let range_part = rest[..header_end].trim();
+    let mut ranges = range_part.split_whitespace();
+    let old_range = ranges.next().ok_or_else(|| ParseError {
+        message: format!("invalid hunk header: missing old range in {range_part:?}"),
     })?;
-    let new_range = &range_part[plus_pos..];
+    let new_range = ranges.next().ok_or_else(|| ParseError {
+        message: format!("invalid hunk header: missing new range in {range_part:?}"),
+    })?;
+
+    let (old_start, old_count) = parse_range_part(old_range, '-')?;
     let (new_start, new_count) = parse_range_part(new_range, '+')?;
 
     // Consume hunk body lines until we hit a line that starts a new file
