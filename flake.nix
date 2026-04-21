@@ -946,14 +946,15 @@
         devShells.default = pkgs.mkShell {
           packages =
             with pkgs;
-            [
-              biome
-              bun
-              jq
-              pkl
-              typescript
-              nodePackages.typescript-language-server
-              scePackage
+[
+               biome
+               bun
+               jq
+               pkl
+               typescript
+               nodePackages.typescript-language-server
+               rust-analyzer
+               scePackage
             ]
             ++ [ rustToolchain ];
 
