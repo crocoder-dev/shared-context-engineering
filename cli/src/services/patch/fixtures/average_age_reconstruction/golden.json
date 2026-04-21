@@ -1,0 +1,544 @@
+{
+  "files": [
+    {
+      "old_path": "hunks/fib.ts",
+      "new_path": "hunks/fib.ts",
+      "kind": "modified",
+      "hunks": [
+        {
+          "old_start": 1,
+          "old_count": 14,
+          "new_start": 1,
+          "new_count": 53,
+          "lines": [
+            {
+              "kind": "removed",
+              "line_number": 1,
+              "content": "function fibonacci(n: number): number {"
+            },
+            {
+              "kind": "removed",
+              "line_number": 2,
+              "content": "  if (n <= 1) return n;"
+            },
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "type User = {"
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": "  age: number;"
+            },
+            {
+              "kind": "added",
+              "line_number": 3,
+              "content": "};"
+            },
+            {
+              "kind": "removed",
+              "line_number": 4,
+              "content": "  let prev = 0;"
+            },
+            {
+              "kind": "removed",
+              "line_number": 5,
+              "content": "  let curr = 1;"
+            },
+            {
+              "kind": "added",
+              "line_number": 5,
+              "content": "export function getAvarageAgeOptimized(users: User[]): number {"
+            },
+            {
+              "kind": "added",
+              "line_number": 6,
+              "content": "  if (users.length === 0) {"
+            },
+            {
+              "kind": "added",
+              "line_number": 7,
+              "content": "    return 0;"
+            },
+            {
+              "kind": "added",
+              "line_number": 8,
+              "content": "  }"
+            },
+            {
+              "kind": "added",
+              "line_number": 9,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 10,
+              "content": "  let totalAge = 0;"
+            },
+            {
+              "kind": "added",
+              "line_number": 11,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 12,
+              "content": "  for (const user of users) {"
+            },
+            {
+              "kind": "added",
+              "line_number": 13,
+              "content": "    totalAge += user.age;"
+            },
+            {
+              "kind": "added",
+              "line_number": 14,
+              "content": "  }"
+            },
+            {
+              "kind": "added",
+              "line_number": 15,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 16,
+              "content": "  return totalAge / users.length;"
+            },
+            {
+              "kind": "added",
+              "line_number": 17,
+              "content": "}"
+            },
+            {
+              "kind": "added",
+              "line_number": 18,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 19,
+              "content": "function fibonacciSequence(n: number): number[] {"
+            },
+            {
+              "kind": "added",
+              "line_number": 20,
+              "content": "  if (n <= 0) return [];"
+            },
+            {
+              "kind": "added",
+              "line_number": 21,
+              "content": "  if (n === 1) return [0];"
+            },
+            {
+              "kind": "added",
+              "line_number": 22,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 23,
+              "content": "  const sequence: number[] = [0, 1];"
+            },
+            {
+              "kind": "added",
+              "line_number": 24,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 25,
+              "content": "  for (let i = 2; i < n; i++) {"
+            },
+            {
+              "kind": "added",
+              "line_number": 26,
+              "content": "    sequence.push(sequence[i - 1] + sequence[i - 2]);"
+            },
+            {
+              "kind": "added",
+              "line_number": 27,
+              "content": "  }"
+            },
+            {
+              "kind": "added",
+              "line_number": 28,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 29,
+              "content": "  return sequence;"
+            },
+            {
+              "kind": "added",
+              "line_number": 30,
+              "content": "}"
+            },
+            {
+              "kind": "added",
+              "line_number": 31,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 32,
+              "content": "export function getAvarageAgeUnoptimized(users: User[]): number {"
+            },
+            {
+              "kind": "added",
+              "line_number": 33,
+              "content": "  if (users.length === 0) {"
+            },
+            {
+              "kind": "added",
+              "line_number": 34,
+              "content": "    // Return a safe default when there are no users."
+            },
+            {
+              "kind": "added",
+              "line_number": 35,
+              "content": "    return 0;"
+            },
+            {
+              "kind": "added",
+              "line_number": 36,
+              "content": "  }"
+            },
+            {
+              "kind": "added",
+              "line_number": 37,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 38,
+              "content": "  let totalAge = 0;"
+            },
+            {
+              "kind": "added",
+              "line_number": 39,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 40,
+              "content": "  for (let i = 0; i < users.length; i += 1) {"
+            },
+            {
+              "kind": "added",
+              "line_number": 41,
+              "content": "    // Intentionally restart summing from index 0 on every outer iteration."
+            },
+            {
+              "kind": "added",
+              "line_number": 42,
+              "content": "    let recalculatedTotal = 0;"
+            },
+            {
+              "kind": "added",
+              "line_number": 43,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 44,
+              "content": "    for (let j = 0; j <= i; j += 1) {"
+            },
+            {
+              "kind": "added",
+              "line_number": 45,
+              "content": "      recalculatedTotal += users[j].age;"
+            },
+            {
+              "kind": "removed",
+              "line_number": 7,
+              "content": "  for (let i = 2; i <= n; i++) {"
+            },
+            {
+              "kind": "removed",
+              "line_number": 8,
+              "content": "    const next = prev + curr;"
+            },
+            {
+              "kind": "removed",
+              "line_number": 9,
+              "content": "    prev = curr;"
+            },
+            {
+              "kind": "removed",
+              "line_number": 10,
+              "content": "    curr = next;"
+            },
+            {
+              "kind": "added",
+              "line_number": 47,
+              "content": "    // Keep only the latest partial total; this adds extra work for no benefit."
+            },
+            {
+              "kind": "added",
+              "line_number": 48,
+              "content": "    totalAge = recalculatedTotal;"
+            },
+            {
+              "kind": "removed",
+              "line_number": 14,
+              "content": "  return curr;"
+            },
+            {
+              "kind": "added",
+              "line_number": 51,
+              "content": "  return totalAge / users.length;"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "old_path": "",
+      "new_path": "hunks/optimized.ts",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 17,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "type User = {"
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": "  age: number;"
+            },
+            {
+              "kind": "added",
+              "line_number": 3,
+              "content": "};"
+            },
+            {
+              "kind": "added",
+              "line_number": 4,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 5,
+              "content": "export function getAvarageAgeOptimized(users: User[]): number {"
+            },
+            {
+              "kind": "added",
+              "line_number": 6,
+              "content": "  if (users.length === 0) {"
+            },
+            {
+              "kind": "added",
+              "line_number": 7,
+              "content": "    return 0;"
+            },
+            {
+              "kind": "added",
+              "line_number": 8,
+              "content": "  }"
+            },
+            {
+              "kind": "added",
+              "line_number": 9,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 10,
+              "content": "  let totalAge = 0;"
+            },
+            {
+              "kind": "added",
+              "line_number": 11,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 12,
+              "content": "  for (const user of users) {"
+            },
+            {
+              "kind": "added",
+              "line_number": 13,
+              "content": "    totalAge += user.age;"
+            },
+            {
+              "kind": "added",
+              "line_number": 14,
+              "content": "  }"
+            },
+            {
+              "kind": "added",
+              "line_number": 15,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 16,
+              "content": "  return totalAge / users.length;"
+            },
+            {
+              "kind": "added",
+              "line_number": 17,
+              "content": "}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "old_path": "",
+      "new_path": "hunks/unoptimized.ts",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 26,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "type User = {"
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": "  age: number;"
+            },
+            {
+              "kind": "added",
+              "line_number": 3,
+              "content": "};"
+            },
+            {
+              "kind": "added",
+              "line_number": 4,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 5,
+              "content": "export function getAverageAgeUnoptimized(users: User[]): number {"
+            },
+            {
+              "kind": "added",
+              "line_number": 6,
+              "content": "  if (users.length === 0) {"
+            },
+            {
+              "kind": "added",
+              "line_number": 7,
+              "content": "    // Return a safe default when there are no users."
+            },
+            {
+              "kind": "added",
+              "line_number": 8,
+              "content": "    return 0;"
+            },
+            {
+              "kind": "added",
+              "line_number": 9,
+              "content": "  }"
+            },
+            {
+              "kind": "added",
+              "line_number": 10,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 11,
+              "content": "  let totalAge = 0;"
+            },
+            {
+              "kind": "added",
+              "line_number": 12,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 13,
+              "content": "  for (let i = 0; i < users.length; i += 1) {"
+            },
+            {
+              "kind": "added",
+              "line_number": 14,
+              "content": "    // Intentionally restart summing from index 0 on every outer iteration."
+            },
+            {
+              "kind": "added",
+              "line_number": 15,
+              "content": "    let recalculatedTotal = 0;"
+            },
+            {
+              "kind": "added",
+              "line_number": 16,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 17,
+              "content": "    for (let j = 0; j <= i; j += 1) {"
+            },
+            {
+              "kind": "added",
+              "line_number": 18,
+              "content": "      recalculatedTotal += users[j].age;"
+            },
+            {
+              "kind": "added",
+              "line_number": 19,
+              "content": "    }"
+            },
+            {
+              "kind": "added",
+              "line_number": 20,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 21,
+              "content": "    // Keep only the latest partial total; this adds extra work for no benefit."
+            },
+            {
+              "kind": "added",
+              "line_number": 22,
+              "content": "    totalAge = recalculatedTotal;"
+            },
+            {
+              "kind": "added",
+              "line_number": 23,
+              "content": "  }"
+            },
+            {
+              "kind": "added",
+              "line_number": 24,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 25,
+              "content": "  return totalAge / users.length;"
+            },
+            {
+              "kind": "added",
+              "line_number": 26,
+              "content": "}"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

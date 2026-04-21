@@ -43,6 +43,7 @@
             (craneLib.fileset.commonCargoSources workspaceRoot)
             (pkgs.lib.fileset.maybeMissing ./.version)
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/default_paths.rs)
+            (pkgs.lib.fileset.maybeMissing ./cli/src/services/patch/fixtures)
             ./config
             (pkgs.lib.fileset.maybeMissing ./cli/assets/hooks)
             (pkgs.lib.fileset.maybeMissing ./scripts/prepare-cli-generated-assets.sh)
