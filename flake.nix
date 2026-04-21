@@ -844,6 +844,7 @@
             // {
               pname = "sce-cli-tests";
               inherit cargoArtifacts;
+              doCheck = true;
               nativeCheckInputs = [ pkgs.git ];
             }
           );
