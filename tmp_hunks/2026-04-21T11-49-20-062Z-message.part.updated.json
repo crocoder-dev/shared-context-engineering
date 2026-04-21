@@ -1,0 +1,51 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_ERt22eAFESsWArcEnGfCoqSg",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Add File: draft-poem.txt\n+A lamp is glowing in the hall.\n+A shadow leans against the wall.\n+No one speaks above the floor.\n+Evening waits beside the door.\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nA draft-poem.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/draft-poem.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/draft-poem.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/draft-poem.txt\n@@ -0,0 +1,4 @@\n+A lamp is glowing in the hall.\n+A shadow leans against the wall.\n+No one speaks above the floor.\n+Evening waits beside the door.\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/draft-poem.txt",
+                  "relativePath": "draft-poem.txt",
+                  "type": "add",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/draft-poem.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/draft-poem.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/draft-poem.txt\n@@ -0,0 +1,4 @@\n+A lamp is glowing in the hall.\n+A shadow leans against the wall.\n+No one speaks above the floor.\n+Evening waits beside the door.\n",
+                  "additions": 4,
+                  "deletions": 0
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nA draft-poem.txt",
+            "time": {
+              "start": 1776772160054,
+              "end": 1776772160061
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_04e2bc6ed6195ed00169e7643ed8f48191b783062c86f4724c"
+            }
+          },
+          "id": "prt_dafdf959b001MPnzdbsAFl1sug",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafdf8c570012u0lKpLFyhiaU6"
+        },
+        "time": 1776772160061
+      }
+    }
+  }
+}

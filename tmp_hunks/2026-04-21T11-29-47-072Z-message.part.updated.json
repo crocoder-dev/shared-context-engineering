@@ -1,0 +1,51 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_97wwAfm6yMLTJdbLoWTMeNem",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Add File: sentence.txt\n+The small cat sleeps near the window.\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nA sentence.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/sentence.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/sentence.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/sentence.txt\n@@ -0,0 +1,1 @@\n+The small cat sleeps near the window.\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/sentence.txt",
+                  "relativePath": "sentence.txt",
+                  "type": "add",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/sentence.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/sentence.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/sentence.txt\n@@ -0,0 +1,1 @@\n+The small cat sleeps near the window.\n",
+                  "additions": 1,
+                  "deletions": 0
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nA sentence.txt",
+            "time": {
+              "start": 1776770987060,
+              "end": 1776770987071
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0610d9ca10cafcba0169e75faa5bd881919784383779269204"
+            }
+          },
+          "id": "prt_dafcdb199001n0B2urv4p6kPQs",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafcdaa64001gEkgQBpwl1tfzI"
+        },
+        "time": 1776770987071
+      }
+    }
+  }
+}

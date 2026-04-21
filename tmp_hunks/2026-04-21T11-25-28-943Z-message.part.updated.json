@@ -1,0 +1,51 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_u9GTMFqqYtAhhVk9eBXb33LA",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Update File: notes.txt\n@@\n Line 2: pears\n Line 3: plums\n Line 4: grapes\n+Line 5: oranges\n+Line 6: bananas\n+Line 7: cherries\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nM notes.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/notes.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/notes.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/notes.txt\n@@ -1,4 +1,7 @@\n Line 1: apples\n Line 2: pears\n Line 3: plums\n Line 4: grapes\n+Line 5: oranges\n+Line 6: bananas\n+Line 7: cherries\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/notes.txt",
+                  "relativePath": "notes.txt",
+                  "type": "update",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/notes.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/notes.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/notes.txt\n@@ -1,4 +1,7 @@\n Line 1: apples\n Line 2: pears\n Line 3: plums\n Line 4: grapes\n+Line 5: oranges\n+Line 6: bananas\n+Line 7: cherries\n",
+                  "additions": 3,
+                  "deletions": 0
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nM notes.txt",
+            "time": {
+              "start": 1776770728916,
+              "end": 1776770728936
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_063abb9d45ab69b10169e75ea792bc8191aeafa0c309046e5d"
+            }
+          },
+          "id": "prt_dafc9beb4001h4YAYNDm0rTFnQ",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafc9b5a4001iSdp45q3rLjtBW"
+        },
+        "time": 1776770728937
+      }
+    }
+  }
+}

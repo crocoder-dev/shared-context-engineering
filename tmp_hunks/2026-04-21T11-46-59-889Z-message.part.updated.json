@@ -1,0 +1,51 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_QSYbeL3eEhsfawSBmrLZR901",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Add File: replace-me.txt\n+Old line 1\n+Old line 2\n+Old line 3\n+Old line 4\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nA replace-me.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/replace-me.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/replace-me.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/replace-me.txt\n@@ -0,0 +1,4 @@\n+Old line 1\n+Old line 2\n+Old line 3\n+Old line 4\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/replace-me.txt",
+                  "relativePath": "replace-me.txt",
+                  "type": "add",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/replace-me.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/replace-me.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/replace-me.txt\n@@ -0,0 +1,4 @@\n+Old line 1\n+Old line 2\n+Old line 3\n+Old line 4\n",
+                  "additions": 4,
+                  "deletions": 0
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nA replace-me.txt",
+            "time": {
+              "start": 1776772019885,
+              "end": 1776772019888
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0dad4efc650629fb0169e763b2d17c81918fda16e39f2a4693"
+            }
+          },
+          "id": "prt_dafdd7311001S07TcZcZ8Apqsb",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafdd693f001IKtp8X2UFnLXIi"
+        },
+        "time": 1776772019888
+      }
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_1dInF98BopN0LWlwLPr59vDv",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Add File: poem-one.txt\n+Morning light spills on the floor.\n+A quiet bird waits by the tree.\n+Nothing asks for more today.\n+The world is slow and clear.\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nA poem-one.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/poem-one.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/poem-one.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/poem-one.txt\n@@ -0,0 +1,4 @@\n+Morning light spills on the floor.\n+A quiet bird waits by the tree.\n+Nothing asks for more today.\n+The world is slow and clear.\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/poem-one.txt",
+                  "relativePath": "poem-one.txt",
+                  "type": "add",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/poem-one.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/poem-one.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/poem-one.txt\n@@ -0,0 +1,4 @@\n+Morning light spills on the floor.\n+A quiet bird waits by the tree.\n+Nothing asks for more today.\n+The world is slow and clear.\n",
+                  "additions": 4,
+                  "deletions": 0
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nA poem-one.txt",
+            "time": {
+              "start": 1776769835157,
+              "end": 1776769835162
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_01d94bfeffaed5d30169e75b291b688191a8548f15ac358125"
+            }
+          },
+          "id": "prt_dafbc1937001V27fkggRfjRJ53",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafbc079b001wymUpdYVvloQbd"
+        },
+        "time": 1776769835162
+      }
+    }
+  }
+}

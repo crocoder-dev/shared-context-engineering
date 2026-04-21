@@ -1,0 +1,51 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_0F444wXyoVr1IE2dHsIJhVGQ",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Update File: single-letter.txt\n@@\n-color\n+colour\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nM single-letter.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/single-letter.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/single-letter.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/single-letter.txt\n@@ -1,1 +1,1 @@\n-color\n+colour\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/single-letter.txt",
+                  "relativePath": "single-letter.txt",
+                  "type": "update",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/single-letter.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/single-letter.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/single-letter.txt\n@@ -1,1 +1,1 @@\n-color\n+colour\n",
+                  "additions": 1,
+                  "deletions": 1
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nM single-letter.txt",
+            "time": {
+              "start": 1776772488792,
+              "end": 1776772488799
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_07ef8ad996ec19d70169e7658816ac8191908934ad1a74b670"
+            }
+          },
+          "id": "prt_dafe49be1001oLJfkxKdR4Jz7i",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafe4964d001cGLv536UVlS8N3"
+        },
+        "time": 1776772488800
+      }
+    }
+  }
+}

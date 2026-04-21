@@ -1,0 +1,51 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_VrcAiEvnithO85bzwA2keYzH",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Update File: tasks.txt\n@@\n task-a\n task-b\n-task-c\n task-d\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nM tasks.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/tasks.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/tasks.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/tasks.txt\n@@ -1,4 +1,3 @@\n task-a\n task-b\n-task-c\n task-d\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/tasks.txt",
+                  "relativePath": "tasks.txt",
+                  "type": "update",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/tasks.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/tasks.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/tasks.txt\n@@ -1,4 +1,3 @@\n task-a\n task-b\n-task-c\n task-d\n",
+                  "additions": 0,
+                  "deletions": 1
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nM tasks.txt",
+            "time": {
+              "start": 1776771595549,
+              "end": 1776771595554
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0972480abec3232c0169e7620abb4081919b7ff8fa0c8f0147"
+            }
+          },
+          "id": "prt_dafd6fa39001uMgJ1EoauE1CLg",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafd6f41d001twapYok5kHWpxe"
+        },
+        "time": 1776771595554
+      }
+    }
+  }
+}

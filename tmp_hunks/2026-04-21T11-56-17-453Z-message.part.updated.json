@@ -1,0 +1,51 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_Zd8m4HvbUqf31FuzlgEBkEv0",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Delete File: temporary-note.txt\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nD temporary-note.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/temporary-note.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/temporary-note.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/temporary-note.txt\n@@ -1,2 +0,0 @@\n-This file exists only for testing.\n-It should be deleted in the next step.\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/temporary-note.txt",
+                  "relativePath": "temporary-note.txt",
+                  "type": "delete",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/temporary-note.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/temporary-note.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/temporary-note.txt\n@@ -1,2 +0,0 @@\n-This file exists only for testing.\n-It should be deleted in the next step.\n",
+                  "additions": 0,
+                  "deletions": 3
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nD temporary-note.txt",
+            "time": {
+              "start": 1776772577447,
+              "end": 1776772577451
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_072be80e4321b0fe0169e765e0dec48191940dd9cfc1a53e29"
+            }
+          },
+          "id": "prt_dafe5f682001V22dAdVBj6zpvB",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafe5eec9001O8P5ErDM4Cg50I"
+        },
+        "time": 1776772577451
+      }
+    }
+  }
+}

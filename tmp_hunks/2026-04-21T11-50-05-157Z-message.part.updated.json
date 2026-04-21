@@ -1,0 +1,52 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_vlEA8pN9rq5mFHXqcRnHq25K",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Update File: draft-poem.txt\n*** Move to: final-poem.txt\n@@\n A lamp is glowing in the hall.\n A shadow leans against the wall.\n-No one speaks above the floor.\n+No one stirs behind the door.\n Evening waits beside the door.\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nM final-poem.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/draft-poem.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/draft-poem.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/draft-poem.txt\n@@ -1,4 +1,4 @@\n A lamp is glowing in the hall.\n A shadow leans against the wall.\n-No one speaks above the floor.\n+No one stirs behind the door.\n Evening waits beside the door.\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/draft-poem.txt",
+                  "relativePath": "final-poem.txt",
+                  "type": "move",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/draft-poem.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/draft-poem.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/draft-poem.txt\n@@ -1,4 +1,4 @@\n A lamp is glowing in the hall.\n A shadow leans against the wall.\n-No one speaks above the floor.\n+No one stirs behind the door.\n Evening waits beside the door.\n",
+                  "additions": 1,
+                  "deletions": 1,
+                  "movePath": "/home/USER/Desktop/repository/shared-context-engineering/final-poem.txt"
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nM final-poem.txt",
+            "time": {
+              "start": 1776772205150,
+              "end": 1776772205156
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0081f74a29f7410d0169e7646b3ec48191b8b245b15e5974cd"
+            }
+          },
+          "id": "prt_dafe04310001wkr3y64yAoWfGJ",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafe03c3a001XanIQ9gAHwZMCz"
+        },
+        "time": 1776772205156
+      }
+    }
+  }
+}

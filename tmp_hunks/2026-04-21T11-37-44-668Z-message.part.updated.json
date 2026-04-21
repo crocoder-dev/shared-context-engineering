@@ -1,0 +1,51 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_PJNxnFGJOrh0tz9ZoAY0wS76",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Update File: story.txt\n@@\n Chapter 1\n-The road was empty.\n+The road was silent.\n The sun was low.\n@@\n Chapter 3\n Night came early.\n-The village stayed silent.\n+The village kept its lamps lit.\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nM story.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/story.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/story.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/story.txt\n@@ -1,11 +1,11 @@\n Chapter 1\n-The road was empty.\n+The road was silent.\n The sun was low.\n \n Chapter 2\n A cart moved slowly.\n The horses were tired.\n \n Chapter 3\n Night came early.\n-The village stayed silent.\n+The village kept its lamps lit.\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/story.txt",
+                  "relativePath": "story.txt",
+                  "type": "update",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/story.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/story.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/story.txt\n@@ -1,11 +1,11 @@\n Chapter 1\n-The road was empty.\n+The road was silent.\n The sun was low.\n \n Chapter 2\n A cart moved slowly.\n The horses were tired.\n \n Chapter 3\n Night came early.\n-The village stayed silent.\n+The village kept its lamps lit.\n",
+                  "additions": 2,
+                  "deletions": 2
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nM story.txt",
+            "time": {
+              "start": 1776771464664,
+              "end": 1776771464668
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0a38c1d56510102a0169e76184f5cc819189bed030c4652406"
+            }
+          },
+          "id": "prt_dafd4ef8e001qdIyFRIAjWbyij",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafd4e7b0001vp76CYkztALQye"
+        },
+        "time": 1776771464668
+      }
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_WsLhHLyG0hE6quWPwCT2rkL1",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Add File: temporary-note.txt\n+This file exists only for testing.\n+It should be deleted in the next step.\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nA temporary-note.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/temporary-note.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/temporary-note.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/temporary-note.txt\n@@ -0,0 +1,2 @@\n+This file exists only for testing.\n+It should be deleted in the next step.\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/temporary-note.txt",
+                  "relativePath": "temporary-note.txt",
+                  "type": "add",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/temporary-note.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/temporary-note.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/temporary-note.txt\n@@ -0,0 +1,2 @@\n+This file exists only for testing.\n+It should be deleted in the next step.\n",
+                  "additions": 2,
+                  "deletions": 0
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nA temporary-note.txt",
+            "time": {
+              "start": 1776772556363,
+              "end": 1776772556369
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_039211e0a30c7c560169e765cb65d48191ad917dcdb43b5c25"
+            }
+          },
+          "id": "prt_dafe5a2b3001otH6cl7XqPttpv",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafe59a2b001eSWBd1zsx7xsul"
+        },
+        "time": 1776772556369
+      }
+    }
+  }
+}

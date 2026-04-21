@@ -1,0 +1,51 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_nEutws5sLVZv6RfIgOX5526T",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Add File: list.txt\n+alpha\n+beta\n+gamma\n+delta\n+epsilon\n+zeta\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nA list.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/list.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/list.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/list.txt\n@@ -0,0 +1,6 @@\n+alpha\n+beta\n+gamma\n+delta\n+epsilon\n+zeta\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/list.txt",
+                  "relativePath": "list.txt",
+                  "type": "add",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/list.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/list.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/list.txt\n@@ -0,0 +1,6 @@\n+alpha\n+beta\n+gamma\n+delta\n+epsilon\n+zeta\n",
+                  "additions": 6,
+                  "deletions": 0
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nA list.txt",
+            "time": {
+              "start": 1776771101387,
+              "end": 1776771101390
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0a415d8ea1a46d3f0169e7601b9a8c8191ad813fdfe99126b1"
+            }
+          },
+          "id": "prt_dafcf6c36001PHARkHWr0pXor6",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafcf62d8001JhfeQGWvZ9iaQm"
+        },
+        "time": 1776771101390
+      }
+    }
+  }
+}

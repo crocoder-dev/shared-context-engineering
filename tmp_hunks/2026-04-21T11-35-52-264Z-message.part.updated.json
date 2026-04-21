@@ -1,0 +1,59 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_7XPDmn6NR7GtHfhHT4BvlNcZ",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Update File: animals.txt\n@@\n fox\n-wolf\n+lynx\n bear\n*** Update File: flowers.txt\n@@\n rose\n-lily\n+orchid\n tulip\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nM animals.txt\nM flowers.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/animals.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/animals.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/animals.txt\n@@ -1,3 +1,3 @@\n fox\n-wolf\n+lynx\n bear\n\nIndex: /home/USER/Desktop/repository/shared-context-engineering/flowers.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/flowers.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/flowers.txt\n@@ -1,3 +1,3 @@\n rose\n-lily\n+orchid\n tulip\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/animals.txt",
+                  "relativePath": "animals.txt",
+                  "type": "update",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/animals.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/animals.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/animals.txt\n@@ -1,3 +1,3 @@\n fox\n-wolf\n+lynx\n bear\n",
+                  "additions": 1,
+                  "deletions": 1
+                },
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/flowers.txt",
+                  "relativePath": "flowers.txt",
+                  "type": "update",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/flowers.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/flowers.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/flowers.txt\n@@ -1,3 +1,3 @@\n rose\n-lily\n+orchid\n tulip\n",
+                  "additions": 1,
+                  "deletions": 1
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nM animals.txt\nM flowers.txt",
+            "time": {
+              "start": 1776771352254,
+              "end": 1776771352262
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0c77b00c0369abb80169e76116f19081918fbdd2dba4f21916"
+            }
+          },
+          "id": "prt_dafd341b1001oL4GjI2VjE41sw",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafd33422001HnJ15w4S22PtlZ"
+        },
+        "time": 1776771352263
+      }
+    }
+  }
+}

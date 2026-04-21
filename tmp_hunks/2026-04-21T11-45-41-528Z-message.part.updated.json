@@ -1,0 +1,51 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_AVUG9CsRGOS2xMG2baNiexHQ",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Update File: cleanup.txt\n@@\n one\n-two\n three\n four\n five\n six\n-seven\n eight\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nM cleanup.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/cleanup.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/cleanup.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/cleanup.txt\n@@ -1,8 +1,6 @@\n one\n-two\n three\n four\n five\n six\n-seven\n eight\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/cleanup.txt",
+                  "relativePath": "cleanup.txt",
+                  "type": "update",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/cleanup.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/cleanup.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/cleanup.txt\n@@ -1,8 +1,6 @@\n one\n-two\n three\n four\n five\n six\n-seven\n eight\n",
+                  "additions": 0,
+                  "deletions": 2
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nM cleanup.txt",
+            "time": {
+              "start": 1776771941523,
+              "end": 1776771941527
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_07fd2e9e4443b49f0169e76364a0d48191afac364471d3b83c"
+            }
+          },
+          "id": "prt_dafdc41720015JlaSNPIxVTzia",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafdc3bbb001kwHOOp3UDOIfrl"
+        },
+        "time": 1776771941527
+      }
+    }
+  }
+}

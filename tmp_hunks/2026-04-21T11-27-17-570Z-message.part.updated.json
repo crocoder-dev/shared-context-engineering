@@ -1,0 +1,51 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_iP5HnQ9611oeGsGSJrIPlJnW",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Add File: colors.txt\n+red\n+green\n+blue\n+yellow\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nA colors.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/colors.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/colors.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/colors.txt\n@@ -0,0 +1,4 @@\n+red\n+green\n+blue\n+yellow\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/colors.txt",
+                  "relativePath": "colors.txt",
+                  "type": "add",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/colors.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/colors.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/colors.txt\n@@ -0,0 +1,4 @@\n+red\n+green\n+blue\n+yellow\n",
+                  "additions": 4,
+                  "deletions": 0
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nA colors.txt",
+            "time": {
+              "start": 1776770837555,
+              "end": 1776770837568
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0074f0786bc30aa30169e75f14c5e08191afe8e33ee7531037"
+            }
+          },
+          "id": "prt_dafcb69680016L1Q0o7jBwGFLk",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafcb6381001Bd9LtQ24JaLHJ1"
+        },
+        "time": 1776770837568
+      }
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_niLQOQHegE5WKOjQ5T0TDDPd",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Add File: story.txt\n+Chapter 1\n+The road was empty.\n+The sun was low.\n+\n+Chapter 2\n+A cart moved slowly.\n+The horses were tired.\n+\n+Chapter 3\n+Night came early.\n+The village stayed silent.\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nA story.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/story.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/story.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/story.txt\n@@ -0,0 +1,11 @@\n+Chapter 1\n+The road was empty.\n+The sun was low.\n+\n+Chapter 2\n+A cart moved slowly.\n+The horses were tired.\n+\n+Chapter 3\n+Night came early.\n+The village stayed silent.\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/story.txt",
+                  "relativePath": "story.txt",
+                  "type": "add",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/story.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/story.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/story.txt\n@@ -0,0 +1,11 @@\n+Chapter 1\n+The road was empty.\n+The sun was low.\n+\n+Chapter 2\n+A cart moved slowly.\n+The horses were tired.\n+\n+Chapter 3\n+Night came early.\n+The village stayed silent.\n",
+                  "additions": 11,
+                  "deletions": 0
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nA story.txt",
+            "time": {
+              "start": 1776771418276,
+              "end": 1776771418289
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_04bdedb5dea0a3a90169e761583608819198f509c10b84dfdb"
+            }
+          },
+          "id": "prt_dafd440cc0013EmqVabRnoUtxz",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafd43597001weQ36szNKnHRnp"
+        },
+        "time": 1776771418289
+      }
+    }
+  }
+}

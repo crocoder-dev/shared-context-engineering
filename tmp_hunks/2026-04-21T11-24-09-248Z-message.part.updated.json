@@ -1,0 +1,51 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_5H1dfVAveU9pYUyrER5kmNHg",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Add File: notes.txt\n+Line 1: apples\n+Line 2: pears\n+Line 3: plums\n+Line 4: grapes\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nA notes.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/notes.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/notes.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/notes.txt\n@@ -0,0 +1,4 @@\n+Line 1: apples\n+Line 2: pears\n+Line 3: plums\n+Line 4: grapes\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/notes.txt",
+                  "relativePath": "notes.txt",
+                  "type": "add",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/notes.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/notes.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/notes.txt\n@@ -0,0 +1,4 @@\n+Line 1: apples\n+Line 2: pears\n+Line 3: plums\n+Line 4: grapes\n",
+                  "additions": 4,
+                  "deletions": 0
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nA notes.txt",
+            "time": {
+              "start": 1776770649241,
+              "end": 1776770649247
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0879b2c4264e09160169e75e5836ec8191bff4b6f81a5e7cfa"
+            }
+          },
+          "id": "prt_dafc888b4001aMUzm8LQtyMPL7",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafc8812b001kVp21PPvIP531G"
+        },
+        "time": 1776770649247
+      }
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_MRf8MYx0AZr3dF1YQVbtV47b",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Update File: sentence.txt\n@@\n-The small cat sleeps near the window.\n+The striped cat sleeps near the window.\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nM sentence.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/sentence.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/sentence.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/sentence.txt\n@@ -1,1 +1,1 @@\n-The small cat sleeps near the window.\n+The striped cat sleeps near the window.\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/sentence.txt",
+                  "relativePath": "sentence.txt",
+                  "type": "update",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/sentence.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/sentence.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/sentence.txt\n@@ -1,1 +1,1 @@\n-The small cat sleeps near the window.\n+The striped cat sleeps near the window.\n",
+                  "additions": 1,
+                  "deletions": 1
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nM sentence.txt",
+            "time": {
+              "start": 1776771044519,
+              "end": 1776771044523
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0b72f082803635900169e75fe39dbc8191b965b93347c96272"
+            }
+          },
+          "id": "prt_dafce91640010ubcWlplbpWjxy",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafce8c370011i8FubtyydnifY"
+        },
+        "time": 1776771044524
+      }
+    }
+  }
+}

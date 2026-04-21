@@ -1,0 +1,51 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_hixH87prGg8MAz1u1aibBTyy",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Update File: replace-me.txt\n@@\n-Old line 1\n-Old line 2\n-Old line 3\n-Old line 4\n+New line A\n+New line B\n+New line C\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nM replace-me.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/replace-me.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/replace-me.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/replace-me.txt\n@@ -1,4 +1,3 @@\n-Old line 1\n-Old line 2\n-Old line 3\n-Old line 4\n+New line A\n+New line B\n+New line C\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/replace-me.txt",
+                  "relativePath": "replace-me.txt",
+                  "type": "update",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/replace-me.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/replace-me.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/replace-me.txt\n@@ -1,4 +1,3 @@\n-Old line 1\n-Old line 2\n-Old line 3\n-Old line 4\n+New line A\n+New line B\n+New line C\n",
+                  "additions": 3,
+                  "deletions": 4
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nM replace-me.txt",
+            "time": {
+              "start": 1776772066063,
+              "end": 1776772066067
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0bb14640dc54d7530169e763df78dc819188f9cfb81d01ae3b"
+            }
+          },
+          "id": "prt_dafde2175001hCgDEHZjM6iVfi",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafde15b1001IGmNfKHjPzcENb"
+        },
+        "time": 1776772066067
+      }
+    }
+  }
+}

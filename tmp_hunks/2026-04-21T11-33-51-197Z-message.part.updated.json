@@ -1,0 +1,51 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_hDAXCC3VrgcduneQBR3lkJGx",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Update File: list.txt\n@@\n alpha\n-beta\n+beta-updated\n gamma\n-delta\n+delta-updated\n epsilon\n-zeta\n+zeta-updated\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nM list.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/list.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/list.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/list.txt\n@@ -1,6 +1,6 @@\n alpha\n-beta\n+beta-updated\n gamma\n-delta\n+delta-updated\n epsilon\n-zeta\n+zeta-updated\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/list.txt",
+                  "relativePath": "list.txt",
+                  "type": "update",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/list.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/list.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/list.txt\n@@ -1,6 +1,6 @@\n alpha\n-beta\n+beta-updated\n gamma\n-delta\n+delta-updated\n epsilon\n-zeta\n+zeta-updated\n",
+                  "additions": 3,
+                  "deletions": 3
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nM list.txt",
+            "time": {
+              "start": 1776771231192,
+              "end": 1776771231196
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0919e192e9f5e8730169e7609e172881919dc8b5836d09488e"
+            }
+          },
+          "id": "prt_dafd169ce001TSr22qMUD3NXQv",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafd163170015oI3Pm8N7r20Wv"
+        },
+        "time": 1776771231196
+      }
+    }
+  }
+}

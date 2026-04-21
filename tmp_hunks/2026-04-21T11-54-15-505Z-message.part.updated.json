@@ -1,0 +1,51 @@
+{
+  "input": {
+    "event": {
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+        "part": {
+          "type": "tool",
+          "tool": "apply_patch",
+          "callID": "call_PdZXlsyY4OFwjF4LQil71kOn",
+          "state": {
+            "status": "completed",
+            "input": {
+              "patchText": "*** Begin Patch\n*** Add File: single-letter.txt\n+color\n*** End Patch"
+            },
+            "output": "Success. Updated the following files:\nA single-letter.txt",
+            "metadata": {
+              "diff": "Index: /home/USER/Desktop/repository/shared-context-engineering/single-letter.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/single-letter.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/single-letter.txt\n@@ -0,0 +1,1 @@\n+color\n\n",
+              "files": [
+                {
+                  "filePath": "/home/USER/Desktop/repository/shared-context-engineering/single-letter.txt",
+                  "relativePath": "single-letter.txt",
+                  "type": "add",
+                  "patch": "Index: /home/USER/Desktop/repository/shared-context-engineering/single-letter.txt\n===================================================================\n--- /home/USER/Desktop/repository/shared-context-engineering/single-letter.txt\n+++ /home/USER/Desktop/repository/shared-context-engineering/single-letter.txt\n@@ -0,0 +1,1 @@\n+color\n",
+                  "additions": 1,
+                  "deletions": 0
+                }
+              ],
+              "diagnostics": {},
+              "truncated": false
+            },
+            "title": "Success. Updated the following files:\nA single-letter.txt",
+            "time": {
+              "start": 1776772455498,
+              "end": 1776772455503
+            }
+          },
+          "metadata": {
+            "openai": {
+              "itemId": "fc_0094d65ebfe4e4310169e76566c2c481918935e889fa92fb94"
+            }
+          },
+          "id": "prt_dafe419dc001RVvtKhEW0LteOU",
+          "sessionID": "ses_25043f888ffeXoesd41t9FE1v3",
+          "messageID": "msg_dafe40ab4001KcMxuTUYVAVLQh"
+        },
+        "time": 1776772455503
+      }
+    }
+  }
+}
