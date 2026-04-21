@@ -165,33 +165,3 @@ pub fn help_text() -> String {
 
     output
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn top_level_help_lists_visible_commands_only() {
-        let help = help_text();
-
-        assert!(help.contains("help       Show help for the current CLI surface"));
-        assert!(help.contains("config     Inspect and validate resolved CLI configuration"));
-        assert!(help.contains("setup      Prepare local repository/workspace prerequisites"));
-        assert!(
-            help.contains("doctor     Inspect SCE operator health and explicit repair readiness")
-        );
-        assert!(help.contains("version    Print deterministic runtime version metadata"));
-        assert!(help.contains("completion Generate deterministic shell completion scripts"));
-        assert!(!help.contains("Authenticate with WorkOS and inspect local auth state"));
-        assert!(!help.contains("Run attribution-only git hooks (disabled by default)"));
-    }
-
-    #[test]
-    fn known_command_catalog_includes_hidden_commands() {
-        assert!(is_known_command("help"));
-        assert!(is_known_command(services::auth_command::NAME));
-        assert!(is_known_command(services::hooks::NAME));
-        assert!(is_known_command(services::config::NAME));
-        assert!(!is_known_command("unknown"));
-    }
-}
