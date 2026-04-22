@@ -162,11 +162,11 @@ pub fn load_patch_from_json_bytes(input: &[u8]) -> Result<ParsedPatch, PatchLoad
 
 /// Compute the touched-line intersection of two patches.
 ///
-/// Returns a `ParsedPatch` containing only the touched lines from `b` that are
-/// also represented in `a` for the same logical file. Files are matched by
-/// their post-change path identity: exact `new_path` equality, or an absolute
-/// path whose normalized path segments end with the same relative path
-/// segments.
+/// Returns a `ParsedPatch` containing only the touched lines from
+/// `post_commit_patch` that are also represented in `constructed_patch` for the
+/// same logical file. Files are matched by their post-change path identity:
+/// exact `new_path` equality, or an absolute path whose normalized path segments
+/// end with the same relative path segments.
 ///
 /// Matching prefers exact touched-line identity (`kind`, `line_number`, and
 /// `content`). When no exact match exists, it falls back to historical
@@ -176,43 +176,48 @@ pub fn load_patch_from_json_bytes(input: &[u8]) -> Result<ParsedPatch, PatchLoad
 ///
 /// Files with no overlapping touched lines are excluded from the result.
 /// Within matched files, hunks are reconstructed from the overlapping lines in
-/// `b`, preserving `b`'s hunk metadata so the result can be compared directly
-/// to the canonical target patch. The output is deterministic: the same inputs
-/// always produce the same result.
+/// `post_commit_patch`, preserving `post_commit_patch`'s hunk metadata so the
+/// result can be compared directly to the canonical target patch. The output is
+/// deterministic: the same inputs always produce the same result.
 ///
 /// # Examples
 ///
 /// ```
 /// use sce::services::patch::{intersect_patches, parse_patch};
 ///
-/// let a = parse_patch("...")?;
-/// let b = parse_patch("...")?;
-/// let overlap = intersect_patches(&a, &b);
+/// let constructed_patch = parse_patch("...")?;
+/// let post_commit_patch = parse_patch("...")?;
+/// let overlap = intersect_patches(&constructed_patch, &post_commit_patch);
 /// ```
 #[allow(dead_code)]
-pub fn intersect_patches(a: &ParsedPatch, b: &ParsedPatch) -> ParsedPatch {
+pub fn intersect_patches(
+    constructed_patch: &ParsedPatch,
+    post_commit_patch: &ParsedPatch,
+) -> ParsedPatch {
     let mut result_files: Vec<PatchFileChange> = Vec::new();
 
-    for b_file in &b.files {
-        // Only consider files that also appear in `a` by equivalent post-change path.
-        let Some(a_file) = a
-            .files
-            .iter()
-            .find(|a_file| paths_refer_to_same_file(&a_file.new_path, &b_file.new_path))
-        else {
+    for post_commit_file in &post_commit_patch.files {
+        // Only consider files that also appear in `constructed_patch` by equivalent post-change path.
+        let Some(constructed_file) = constructed_patch.files.iter().find(|constructed_file| {
+            paths_refer_to_same_file(&constructed_file.new_path, &post_commit_file.new_path)
+        }) else {
             continue;
         };
 
-        let available_lines: Vec<&TouchedLine> =
-            a_file.hunks.iter().flat_map(|h| h.lines.iter()).collect();
+        let available_lines: Vec<&TouchedLine> = constructed_file
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .collect();
         let mut used_lines = vec![false; available_lines.len()];
 
-        // Filter hunks in `b_file` to only include lines that are also represented in
-        // `a_file`, preferring exact line-number matches and falling back to
-        // same-kind/same-content historical matches when line numbers have drifted.
+        // Filter hunks in `post_commit_file` to only include lines that are also
+        // represented in `constructed_file`, preferring exact line-number matches
+        // and falling back to same-kind/same-content historical matches when line
+        // numbers have drifted.
         let mut result_hunks: Vec<PatchHunk> = Vec::new();
-        for b_hunk in &b_file.hunks {
-            let overlapping_lines: Vec<TouchedLine> = b_hunk
+        for post_commit_hunk in &post_commit_file.hunks {
+            let overlapping_lines: Vec<TouchedLine> = post_commit_hunk
                 .lines
                 .iter()
                 .filter(|line| {
@@ -246,10 +251,10 @@ pub fn intersect_patches(a: &ParsedPatch, b: &ParsedPatch) -> ParsedPatch {
             }
 
             result_hunks.push(PatchHunk {
-                old_start: b_hunk.old_start,
-                old_count: b_hunk.old_count,
-                new_start: b_hunk.new_start,
-                new_count: b_hunk.new_count,
+                old_start: post_commit_hunk.old_start,
+                old_count: post_commit_hunk.old_count,
+                new_start: post_commit_hunk.new_start,
+                new_count: post_commit_hunk.new_count,
                 lines: overlapping_lines,
             });
         }
@@ -259,9 +264,9 @@ pub fn intersect_patches(a: &ParsedPatch, b: &ParsedPatch) -> ParsedPatch {
         }
 
         result_files.push(PatchFileChange {
-            old_path: b_file.old_path.clone(),
-            new_path: b_file.new_path.clone(),
-            kind: b_file.kind,
+            old_path: post_commit_file.old_path.clone(),
+            new_path: post_commit_file.new_path.clone(),
+            kind: post_commit_file.kind,
             hunks: result_hunks,
         });
     }
@@ -295,13 +300,13 @@ fn touched_lines_match_historical(candidate: &TouchedLine, target: &TouchedLine)
     candidate.kind == target.kind && candidate.content == target.content
 }
 
-fn paths_refer_to_same_file(a: &str, b: &str) -> bool {
-    if a == b {
+fn paths_refer_to_same_file(path_a: &str, path_b: &str) -> bool {
+    if path_a == path_b {
         return true;
     }
 
-    let a_components = normalized_path_components(a);
-    let b_components = normalized_path_components(b);
+    let a_components = normalized_path_components(path_a);
+    let b_components = normalized_path_components(path_b);
 
     if a_components.is_empty() || b_components.is_empty() {
         return false;
