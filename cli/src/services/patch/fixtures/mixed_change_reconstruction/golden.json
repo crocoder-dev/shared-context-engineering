@@ -1,0 +1,90 @@
+{
+  "files": [
+    {
+      "old_path": ".version",
+      "new_path": "",
+      "kind": "deleted",
+      "hunks": [
+        {
+          "old_start": 1,
+          "old_count": 1,
+          "new_start": 0,
+          "new_count": 0,
+          "lines": [
+            {
+              "kind": "removed",
+              "line_number": 1,
+              "content": "0.2.0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "old_path": "",
+      "new_path": "empty_poem_ai.md",
+      "kind": "added",
+      "hunks": []
+    },
+    {
+      "old_path": "",
+      "new_path": "poem_life.md",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 4,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "Life is a road of lift and bend,"
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": "Bright starts, hard stops, and mends we send."
+            },
+            {
+              "kind": "added",
+              "line_number": 3,
+              "content": "We fall, we rise, we find our way,"
+            },
+            {
+              "kind": "added",
+              "line_number": 4,
+              "content": "And grow a little more each day."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "old_path": "poem_people.md",
+      "new_path": "poem_people.md",
+      "kind": "modified",
+      "hunks": [
+        {
+          "old_start": 1,
+          "old_count": 4,
+          "new_start": 1,
+          "new_count": 4,
+          "lines": [
+            {
+              "kind": "removed",
+              "line_number": 4,
+              "content": "Connected close, we lift and try."
+            },
+            {
+              "kind": "added",
+              "line_number": 4,
+              "content": "Conected close, we lift and try."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

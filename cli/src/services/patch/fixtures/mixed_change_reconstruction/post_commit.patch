@@ -1,0 +1,65 @@
+diff --git a/.version b/.version
+deleted file mode 100644
+index 0ea3a94..0000000
+--- a/.version
++++ /dev/null
+@@ -1 +0,0 @@
+-0.2.0
+diff --git a/cli/src/services/patch/fixtures/poem_edit_reconstruction/incremental_01.patch b/cli/src/services/patch/fixtures/poem_edit_reconstruction/incremental_01.patch
+deleted file mode 100644
+index 25fc540..0000000
+--- a/cli/src/services/patch/fixtures/poem_edit_reconstruction/incremental_01.patch
++++ /dev/null
+@@ -1,14 +0,0 @@
+-Index: poem.md
+-===================================================================
+---- poem.md
+-+++ poem.md
+-@@ -1,8 +1,8 @@
+- # Q Moment of Code
+- 
+- In circuits deep where logic flows,
+--A thousand silent processes glow,
+-+Q thousand silent processes glow,
+- Through paths of thought, both near and far,
+- We build the world the way things are.
+- 
+- Each line we write, each function named,
+diff --git a/empty_poem_ai.md b/empty_poem_ai.md
+new file mode 100644
+index 0000000..e69de29
+diff --git a/empty_poem_human.md b/empty_poem_human.md
+new file mode 100644
+index 0000000..e69de29
+diff --git a/poem_life.md b/poem_life.md
+new file mode 100644
+index 0000000..1778f01
+--- /dev/null
++++ b/poem_life.md
+@@ -0,0 +1,4 @@
++Life is a road of lift and bend,
++Bright starts, hard stops, and mends we send.
++We fall, we rise, we find our way,
++And grow a little more each day.
+diff --git a/poem_nature.md b/poem_nature.md
+index 8d72018..928c13c 100644
+--- a/poem_nature.md
++++ b/poem_nature.md
+@@ -1,4 +1,4 @@
+-Whispering pines in morning light,
++whispering pines in morning light,
+ A silver stream runs clear and bright.
+ Wildflowers sway where soft winds roam,
+ And every leaf feels close to home.
+diff --git a/poem_people.md b/poem_people.md
+index 14e921e..8dc5c7d 100644
+--- a/poem_people.md
++++ b/poem_people.md
+@@ -1,4 +1,4 @@
+ Hands that build and hearts that care,
+ Voices rising everywhere.
+ Strangers met beneath the sky,
+-Connected close, we lift and try.
+\ No newline at end of file
++Conected close, we lift and try.
+\ No newline at end of file
