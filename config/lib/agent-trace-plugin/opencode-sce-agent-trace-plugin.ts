@@ -3,8 +3,6 @@ import path from "node:path";
 import type { Plugin } from "@opencode-ai/plugin";
 
 const REQUIRED_EVENTS = new Set([
-  "session.diff",
-  "message.updated",
   "message.part.updated",
 ]);
 

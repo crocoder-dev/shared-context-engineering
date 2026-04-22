@@ -3,19 +3,10 @@ import path from "node:path";
 import type { Plugin } from "@opencode-ai/plugin";
 
 const REQUIRED_EVENTS = new Set([
-  "session.created",
-  "session.updated",
-  "session.diff",
-  "message.updated",
   "message.part.updated",
 ]);
 
-const OPTIONAL_EVENTS = new Set([
-  "file.edited",
-  "file.watcher.updated",
-]);
-
-const ALL_CAPTURED_EVENTS = new Set([...REQUIRED_EVENTS, ...OPTIONAL_EVENTS]);
+const ALL_CAPTURED_EVENTS = REQUIRED_EVENTS;
 
 type TraceInput = {
   event?: {
@@ -85,4 +76,3 @@ export const SceAgentTracePlugin: Plugin = async ({ directory, worktree }) => {
     },
   };
 };
-
