@@ -1,0 +1,34 @@
+{
+  "files": [
+    {
+      "path": "hunks/fib.ts",
+      "conversations": [
+        {
+          "contributor": "ai",
+          "new_start": 1,
+          "new_count": 53
+        }
+      ]
+    },
+    {
+      "path": "hunks/optimized.ts",
+      "conversations": [
+        {
+          "contributor": "ai",
+          "new_start": 1,
+          "new_count": 17
+        }
+      ]
+    },
+    {
+      "path": "hunks/unoptimized.ts",
+      "conversations": [
+        {
+          "contributor": "ai",
+          "new_start": 1,
+          "new_count": 26
+        }
+      ]
+    }
+  ]
+}

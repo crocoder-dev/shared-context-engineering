@@ -1,0 +1,14 @@
+{
+  "files": [
+    {
+      "path": "hunks/hello.ts",
+      "conversations": [
+        {
+          "contributor": "ai",
+          "new_start": 1,
+          "new_count": 5
+        }
+      ]
+    }
+  ]
+}

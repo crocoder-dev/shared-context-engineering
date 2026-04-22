@@ -1,0 +1,24 @@
+{
+  "files": [
+    {
+      "path": "poem.md",
+      "conversations": [
+        {
+          "contributor": "mixed",
+          "new_start": 1,
+          "new_count": 8
+        },
+        {
+          "contributor": "unknown",
+          "new_start": 10,
+          "new_count": 7
+        },
+        {
+          "contributor": "ai",
+          "new_start": 21,
+          "new_count": 4
+        }
+      ]
+    }
+  ]
+}

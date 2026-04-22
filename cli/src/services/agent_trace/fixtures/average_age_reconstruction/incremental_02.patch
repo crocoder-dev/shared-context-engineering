@@ -1,0 +1,28 @@
+Index: hunks/unoptimized.ts
+===================================================================
+--- hunks/unoptimized.ts
++++ hunks/unoptimized.ts
+@@ -3,20 +3,23 @@
+ };
+ 
+ export function getAverageAgeUnoptimized(users: User[]): number {
+   if (users.length === 0) {
++    // Return a safe default when there are no users.
+     return 0;
+   }
+ 
+   let totalAge = 0;
+ 
+   for (let i = 0; i < users.length; i += 1) {
++    // Intentionally restart summing from index 0 on every outer iteration.
+     let recalculatedTotal = 0;
+ 
+     for (let j = 0; j <= i; j += 1) {
+       recalculatedTotal += users[j].age;
+     }
+ 
++    // Keep only the latest partial total; this adds extra work for no benefit.
+     totalAge = recalculatedTotal;
+   }
+ 
+   return totalAge / users.length;

@@ -155,3 +155,6 @@ pub fn build_agent_trace(
 
     AgentTrace { files }
 }
+
+#[cfg(test)]
+mod tests;
