@@ -259,7 +259,9 @@ pub fn intersect_patches(
             });
         }
 
-        if result_hunks.is_empty() {
+        if result_hunks.is_empty()
+            && !(post_commit_file.hunks.is_empty() && constructed_file.hunks.is_empty())
+        {
             continue;
         }
 
@@ -619,16 +621,56 @@ impl FileBuilder {
     }
 
     fn build(self) -> PatchFileChange {
-        let kind = self
-            .kind
-            .unwrap_or_else(|| determine_file_kind(&self.old_path, &self.new_path));
+        let inferred_kind = self.kind.unwrap_or_else(|| {
+            infer_file_kind_from_hunks(&self.hunks)
+                .unwrap_or_else(|| determine_file_kind(&self.old_path, &self.new_path))
+        });
+        let (old_path, new_path) =
+            normalize_paths_for_kind(self.old_path, self.new_path, inferred_kind);
+
         PatchFileChange {
-            old_path: self.old_path,
-            new_path: self.new_path,
-            kind,
+            old_path,
+            new_path,
+            kind: inferred_kind,
             hunks: self.hunks,
         }
     }
+}
+
+fn infer_file_kind_from_hunks(hunks: &[PatchHunk]) -> Option<FileChangeKind> {
+    if hunks.is_empty() {
+        return None;
+    }
+
+    if hunks
+        .iter()
+        .all(|hunk| hunk.old_start == 0 && hunk.old_count == 0)
+    {
+        return Some(FileChangeKind::Added);
+    }
+
+    if hunks
+        .iter()
+        .all(|hunk| hunk.new_start == 0 && hunk.new_count == 0)
+    {
+        return Some(FileChangeKind::Deleted);
+    }
+
+    None
+}
+
+fn normalize_paths_for_kind(
+    mut old_path: String,
+    mut new_path: String,
+    kind: FileChangeKind,
+) -> (String, String) {
+    match kind {
+        FileChangeKind::Added => old_path.clear(),
+        FileChangeKind::Deleted => new_path.clear(),
+        _ => {}
+    }
+
+    (old_path, new_path)
 }
 
 /// Determine file change kind from old/new paths when no explicit metadata
