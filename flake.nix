@@ -220,6 +220,24 @@
           '';
         };
 
+        pklGenerateApp = pkgs.writeShellApplication {
+          name = "pkl-generate";
+          runtimeInputs = [
+            pkgs.git
+            pkgs.nix
+          ];
+          text = ''
+            set -euo pipefail
+
+            repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+            if [ -z "''${repo_root}" ]; then
+              repo_root="$(pwd)"
+            fi
+
+            exec nix develop "''${repo_root}" -c pkl eval -m "''${repo_root}" "''${repo_root}/config/pkl/generate.pkl"
+          '';
+        };
+
         releaseArtifactsApp = pkgs.writeShellApplication {
           name = "release-artifacts";
           runtimeInputs = [
@@ -912,6 +930,14 @@
             };
           };
 
+          pkl-generate = {
+            type = "app";
+            program = "${pklGenerateApp}/bin/pkl-generate";
+            meta = {
+              description = "Generate config outputs from Pkl sources";
+            };
+          };
+
           release-artifacts = {
             type = "app";
             program = "${releaseArtifactsApp}/bin/release-artifacts";
@@ -972,6 +998,7 @@
             echo "- tsserver-lsp: $(version_of typescript-language-server)"
             echo "- rust: $(version_of rustc)"
             echo "- sce: $(version_of sce)"
+            echo "- pkl-generate: nix run .#pkl-generate"
             echo "- pkl-check-generated: nix run .#pkl-check-generated"
             echo "- release-artifacts: nix run .#release-artifacts -- --help"
             echo "- release-manifest: nix run .#release-manifest -- --help"
