@@ -1,0 +1,28 @@
+Index: hunks/unoptimized.ts
+===================================================================
+--- hunks/unoptimized.ts
++++ hunks/unoptimized.ts
+@@ -0,0 +1,23 @@
++type User = {
++  age: number;
++};
++
++export function getAverageAgeUnoptimized(users: User[]): number {
++  if (users.length === 0) {
++    return 0;
++  }
++
++  let totalAge = 0;
++
++  for (let i = 0; i < users.length; i += 1) {
++    let recalculatedTotal = 0;
++
++    for (let j = 0; j <= i; j += 1) {
++      recalculatedTotal += users[j].age;
++    }
++
++    totalAge = recalculatedTotal;
++  }
++
++  return totalAge / users.length;
++}

@@ -1,0 +1,15 @@
+Index: list.txt
+===================================================================
+--- list.txt
++++ list.txt
+@@ -1,6 +1,6 @@
+ alpha
+-beta
++beta-updated
+ gamma
+-delta
++delta-updated
+ epsilon
+-zeta
++zeta-updated
+

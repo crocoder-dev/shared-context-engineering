@@ -1,0 +1,164 @@
+{
+  "files": [
+    {
+      "path": "animals.txt",
+      "conversations": [
+        {
+          "contributor": "ai",
+          "new_start": 1,
+          "new_count": 3
+        }
+      ]
+    },
+    {
+      "path": "cleanup.txt",
+      "conversations": [
+        {
+          "contributor": "ai",
+          "new_start": 1,
+          "new_count": 6
+        }
+      ]
+    },
+    {
+      "path": "colors.txt",
+      "conversations": [
+        {
+          "contributor": "ai",
+          "new_start": 1,
+          "new_count": 4
+        }
+      ]
+    },
+    {
+      "path": "final-poem.txt",
+      "conversations": [
+        {
+          "contributor": "unknown",
+          "new_start": 1,
+          "new_count": 4
+        }
+      ]
+    },
+    {
+      "path": "flowers.txt",
+      "conversations": [
+        {
+          "contributor": "ai",
+          "new_start": 1,
+          "new_count": 3
+        }
+      ]
+    },
+    {
+      "path": "list.txt",
+      "conversations": [
+        {
+          "contributor": "ai",
+          "new_start": 1,
+          "new_count": 6
+        }
+      ]
+    },
+    {
+      "path": "notes.txt",
+      "conversations": [
+        {
+          "contributor": "ai",
+          "new_start": 1,
+          "new_count": 7
+        }
+      ]
+    },
+    {
+      "path": "poem-one.txt",
+      "conversations": [
+        {
+          "contributor": "ai",
+          "new_start": 1,
+          "new_count": 4
+        }
+      ]
+    },
+    {
+      "path": "rain.txt",
+      "conversations": [
+        {
+          "contributor": "ai",
+          "new_start": 1,
+          "new_count": 4
+        }
+      ]
+    },
+    {
+      "path": "replace-me.txt",
+      "conversations": [
+        {
+          "contributor": "ai",
+          "new_start": 1,
+          "new_count": 3
+        }
+      ]
+    },
+    {
+      "path": "sentence.txt",
+      "conversations": [
+        {
+          "contributor": "ai",
+          "new_start": 1,
+          "new_count": 1
+        }
+      ]
+    },
+    {
+      "path": "single-letter.txt",
+      "conversations": [
+        {
+          "contributor": "ai",
+          "new_start": 1,
+          "new_count": 1
+        }
+      ]
+    },
+    {
+      "path": "story.txt",
+      "conversations": [
+        {
+          "contributor": "ai",
+          "new_start": 1,
+          "new_count": 11
+        }
+      ]
+    },
+    {
+      "path": "sun.txt",
+      "conversations": [
+        {
+          "contributor": "ai",
+          "new_start": 1,
+          "new_count": 4
+        }
+      ]
+    },
+    {
+      "path": "tasks.txt",
+      "conversations": [
+        {
+          "contributor": "ai",
+          "new_start": 1,
+          "new_count": 3
+        }
+      ]
+    },
+    {
+      "path": "wind.txt",
+      "conversations": [
+        {
+          "contributor": "ai",
+          "new_start": 1,
+          "new_count": 4
+        }
+      ]
+    }
+  ]
+}
