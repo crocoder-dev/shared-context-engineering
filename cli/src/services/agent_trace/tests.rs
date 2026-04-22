@@ -113,6 +113,20 @@ fn hello_world_reconstruction_matches_golden_agent_trace() {
 }
 
 #[test]
+fn mixed_change_reconstruction_matches_golden_agent_trace() {
+    assert_builds_expected_agent_trace(AgentTraceScenario {
+        incremental: &[
+            include_str!("fixtures/mixed_change_reconstruction/incremental_01.patch"),
+            include_str!("fixtures/mixed_change_reconstruction/incremental_02.patch"),
+            include_str!("fixtures/mixed_change_reconstruction/incremental_03.patch"),
+            include_str!("fixtures/mixed_change_reconstruction/incremental_04.patch"),
+        ],
+        post_commit: include_str!("fixtures/mixed_change_reconstruction/post_commit.patch"),
+        golden: include_str!("fixtures/mixed_change_reconstruction/golden.json"),
+    });
+}
+
+#[test]
 fn poem_edit_reconstruction_matches_golden_agent_trace() {
     assert_builds_expected_agent_trace(AgentTraceScenario {
         incremental: &[
