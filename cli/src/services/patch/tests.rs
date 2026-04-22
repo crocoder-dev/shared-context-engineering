@@ -111,3 +111,17 @@ fn poem_edit_reconstruction_matches_post_commit() {
         golden: include_str!("fixtures/poem_edit_reconstruction/golden.json"),
     });
 }
+
+#[test]
+fn mixed_change_reconstruction_matches_post_commit() {
+    assert_reconstructs_post_commit(PatchScenario {
+        incremental: &[
+            include_str!("fixtures/mixed_change_reconstruction/incremental_01.patch"),
+            include_str!("fixtures/mixed_change_reconstruction/incremental_02.patch"),
+            include_str!("fixtures/mixed_change_reconstruction/incremental_03.patch"),
+            include_str!("fixtures/mixed_change_reconstruction/incremental_04.patch"),
+        ],
+        post_commit: include_str!("fixtures/mixed_change_reconstruction/post_commit.patch"),
+        golden: include_str!("fixtures/mixed_change_reconstruction/golden.json"),
+    });
+}
