@@ -1,0 +1,92 @@
+{
+  "files": [
+    {
+      "path": "",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 0,
+              "end_line": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "mixed"
+          },
+          "ranges": [
+            {
+              "start_line": 0,
+              "end_line": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "empty_poem_ai.md",
+      "conversations": []
+    },
+    {
+      "path": "empty_poem_human.md",
+      "conversations": []
+    },
+    {
+      "path": "poem_life.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 4
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "poem_nature.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 4
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "poem_people.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 4
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
