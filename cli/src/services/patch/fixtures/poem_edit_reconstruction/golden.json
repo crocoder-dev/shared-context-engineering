@@ -1,0 +1,47 @@
+{
+  "files": [
+    {
+      "old_path": "poem.md",
+      "new_path": "poem.md",
+      "kind": "modified",
+      "hunks": [
+        {
+          "old_start": 1,
+          "old_count": 8,
+          "new_start": 1,
+          "new_count": 8,
+          "lines": [
+            {
+              "kind": "removed",
+              "line_number": 4,
+              "content": "A thousand silent processes glow,"
+            },
+            {
+              "kind": "added",
+              "line_number": 4,
+              "content": "Q thousand silent processes glow,"
+            }
+          ]
+        },
+        {
+          "old_start": 21,
+          "old_count": 4,
+          "new_start": 21,
+          "new_count": 4,
+          "lines": [
+            {
+              "kind": "removed",
+              "line_number": 24,
+              "content": "*Written with ❤️ and a touch of caffeine*"
+            },
+            {
+              "kind": "added",
+              "line_number": 24,
+              "content": "*Written with ❤️ and a touch of caffeinw*"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

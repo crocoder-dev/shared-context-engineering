@@ -1,0 +1,134 @@
+{
+  "files": [
+    {
+      "old_path": "",
+      "new_path": "poem.md",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 24,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "# A Moment of Code"
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 3,
+              "content": "In circuits deep where logic flows,"
+            },
+            {
+              "kind": "added",
+              "line_number": 4,
+              "content": "A thousand silent processes glow,"
+            },
+            {
+              "kind": "added",
+              "line_number": 5,
+              "content": "Through paths of thought, both near and far,"
+            },
+            {
+              "kind": "added",
+              "line_number": 6,
+              "content": "We build the world the way things are."
+            },
+            {
+              "kind": "added",
+              "line_number": 7,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 8,
+              "content": "Each line we write, each function named,"
+            },
+            {
+              "kind": "added",
+              "line_number": 9,
+              "content": "A story told, a problem tamed,"
+            },
+            {
+              "kind": "added",
+              "line_number": 10,
+              "content": "The compiler hums, the tests turn green,"
+            },
+            {
+              "kind": "added",
+              "line_number": 11,
+              "content": "In spaces where the code is clean."
+            },
+            {
+              "kind": "added",
+              "line_number": 12,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 13,
+              "content": "We dream in loops of endless while,"
+            },
+            {
+              "kind": "added",
+              "line_number": 14,
+              "content": "Yet find in bugs a reason to smile,"
+            },
+            {
+              "kind": "added",
+              "line_number": 16,
+              "content": "The better paths to journey through."
+            },
+            {
+              "kind": "added",
+              "line_number": 17,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 18,
+              "content": "So let us craft with care and art,"
+            },
+            {
+              "kind": "added",
+              "line_number": 19,
+              "content": "The systems that connect each heart,"
+            },
+            {
+              "kind": "added",
+              "line_number": 20,
+              "content": "And in this dance of bit and byte,"
+            },
+            {
+              "kind": "added",
+              "line_number": 21,
+              "content": "We shape tomorrow's morning light."
+            },
+            {
+              "kind": "added",
+              "line_number": 22,
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "line_number": 23,
+              "content": "---"
+            },
+            {
+              "kind": "added",
+              "line_number": 24,
+              "content": "*Written with ❤️ and a touch of caffeine*"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
