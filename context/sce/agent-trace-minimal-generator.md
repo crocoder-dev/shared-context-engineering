@@ -19,11 +19,38 @@ Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical 
 | Type | Purpose |
 |---|---|
 | `HunkContributor` | Enum: `Ai`, `Mixed`, `Unknown` |
-| `Conversation` | Per-hunk entry: contributor + `new_start`/`new_count` from `post_commit_patch` |
+| `Contributor` | Nested per-conversation object carrying `type: HunkContributor` |
+| `LineRange` | New-file line span with `start_line` + `end_line` |
+| `Conversation` | Per-hunk entry: nested contributor + `ranges` (currently exactly one range derived from `post_commit_patch`) |
 | `TraceFile` | Per-file entry: path + conversations |
 | `AgentTrace` | Top-level payload: files |
 
-All types are `serde`-serializable with `snake_case` field naming.
+All types are `serde`-serializable with `snake_case` field naming. `Conversation.contributor` serializes as a nested object with a JSON field named `type`.
+
+## Payload shape
+
+Current output remains file-only and does not include top-level `version`, `id`, or `timestamp` metadata.
+
+```json
+{
+  "files": [
+    {
+      "path": "src/example.ts",
+      "conversations": [
+        {
+          "contributor": { "type": "ai" },
+          "ranges": [
+            {
+              "start_line": 10,
+              "end_line": 14
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
 
 ## Public API
 

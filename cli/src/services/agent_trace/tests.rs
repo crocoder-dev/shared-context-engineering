@@ -1,4 +1,4 @@
-use super::{build_agent_trace, AgentTrace};
+use super::{build_agent_trace, AgentTrace, Contributor, Conversation, HunkContributor, LineRange};
 use crate::services::patch::{combine_patches, parse_patch, ParsedPatch};
 
 #[derive(Clone, Copy)]
@@ -57,6 +57,34 @@ fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
 }
 
 #[test]
+fn conversation_serializes_nested_contributor_and_ranges_shape() {
+    let conversation = Conversation {
+        contributor: Contributor {
+            kind: HunkContributor::Ai,
+        },
+        ranges: vec![LineRange {
+            start_line: 3,
+            end_line: 7,
+        }],
+    };
+
+    let serialized = serde_json::to_value(&conversation).expect("conversation should serialize");
+
+    assert_eq!(
+        serialized,
+        serde_json::json!({
+            "contributor": { "type": "ai" },
+            "ranges": [
+                {
+                    "start_line": 3,
+                    "end_line": 7
+                }
+            ]
+        })
+    );
+}
+
+#[test]
 fn average_age_reconstruction_matches_golden_agent_trace() {
     assert_builds_expected_agent_trace(AgentTraceScenario {
         incremental: &[
@@ -94,6 +122,45 @@ fn poem_edit_reconstruction_matches_golden_agent_trace() {
         post_commit: include_str!("fixtures/poem_edit_reconstruction/post_commit.patch"),
         golden: include_str!("fixtures/poem_edit_reconstruction/golden.json"),
     });
+}
+
+#[test]
+fn poem_edit_reconstruction_maps_each_hunk_to_one_range() {
+    let constructed_patch = combine_patches(&parse_fixtures(&[
+        include_str!("fixtures/poem_edit_reconstruction/incremental_01.patch"),
+        include_str!("fixtures/poem_edit_reconstruction/incremental_02.patch"),
+    ]));
+    let post_commit_patch = parse_patch(include_str!(
+        "fixtures/poem_edit_reconstruction/post_commit.patch"
+    ))
+    .expect("fixture patch should parse");
+
+    let agent_trace = build_agent_trace(&constructed_patch, &post_commit_patch);
+
+    assert_eq!(agent_trace.files.len(), 1);
+    assert_eq!(agent_trace.files[0].path, "poem.md");
+    assert_eq!(agent_trace.files[0].conversations.len(), 3);
+    assert_eq!(
+        agent_trace.files[0]
+            .conversations
+            .iter()
+            .map(|conversation| conversation.ranges.as_slice())
+            .collect::<Vec<_>>(),
+        vec![
+            &[LineRange {
+                start_line: 1,
+                end_line: 8,
+            }][..],
+            &[LineRange {
+                start_line: 10,
+                end_line: 16,
+            }][..],
+            &[LineRange {
+                start_line: 21,
+                end_line: 24,
+            }][..],
+        ]
+    );
 }
 
 #[test]

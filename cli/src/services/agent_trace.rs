@@ -36,10 +36,26 @@ pub enum HunkContributor {
 #[serde(rename_all = "snake_case")]
 pub struct Conversation {
     /// Classification of this hunk's origin.
-    pub contributor: HunkContributor,
-    /// Line range in the new file, derived from the `post_commit_patch` hunk metadata.
-    pub new_start: u64,
-    pub new_count: u64,
+    pub contributor: Contributor,
+    /// Line ranges in the new file, derived from the `post_commit_patch` hunk metadata.
+    pub ranges: Vec<LineRange>,
+}
+
+/// Nested contributor object for a conversation entry.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct Contributor {
+    /// Classification of this hunk's origin.
+    #[serde(rename = "type")]
+    pub kind: HunkContributor,
+}
+
+/// A single line range in the new file.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct LineRange {
+    pub start_line: u64,
+    pub end_line: u64,
 }
 
 /// A file-level entry in the minimal agent-trace payload.
@@ -103,6 +119,16 @@ fn hunks_match_exactly(left: &PatchHunk, right: &PatchHunk) -> bool {
     })
 }
 
+fn line_range_from_hunk(hunk: &PatchHunk) -> LineRange {
+    let start_line = hunk.new_start;
+    let end_line = start_line.saturating_add(hunk.new_count.saturating_sub(1));
+
+    LineRange {
+        start_line,
+        end_line,
+    }
+}
+
 /// Build the minimal agent-trace payload from two patches.
 ///
 /// Computes `intersection_patch = intersect_patches(constructed_patch, post_commit_patch)`,
@@ -139,9 +165,8 @@ pub fn build_agent_trace(
                         None => HunkContributor::Unknown,
                     };
                     Conversation {
-                        contributor,
-                        new_start: post_commit_hunk.new_start,
-                        new_count: post_commit_hunk.new_count,
+                        contributor: Contributor { kind: contributor },
+                        ranges: vec![line_range_from_hunk(post_commit_hunk)],
                     }
                 })
                 .collect();
