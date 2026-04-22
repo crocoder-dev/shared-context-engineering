@@ -4,9 +4,15 @@
       "path": "hunks/hello.ts",
       "conversations": [
         {
-          "contributor": "ai",
-          "new_start": 1,
-          "new_count": 5
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 5
+            }
+          ]
         }
       ]
     }

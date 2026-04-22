@@ -4,9 +4,15 @@
       "path": "hunks/fib.ts",
       "conversations": [
         {
-          "contributor": "ai",
-          "new_start": 1,
-          "new_count": 53
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 53
+            }
+          ]
         }
       ]
     },
@@ -14,9 +20,15 @@
       "path": "hunks/optimized.ts",
       "conversations": [
         {
-          "contributor": "ai",
-          "new_start": 1,
-          "new_count": 17
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 17
+            }
+          ]
         }
       ]
     },
@@ -24,9 +36,15 @@
       "path": "hunks/unoptimized.ts",
       "conversations": [
         {
-          "contributor": "ai",
-          "new_start": 1,
-          "new_count": 26
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 26
+            }
+          ]
         }
       ]
     }

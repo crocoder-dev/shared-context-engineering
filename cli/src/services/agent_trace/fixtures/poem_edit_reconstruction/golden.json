@@ -4,19 +4,37 @@
       "path": "poem.md",
       "conversations": [
         {
-          "contributor": "mixed",
-          "new_start": 1,
-          "new_count": 8
+          "contributor": {
+            "type": "mixed"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 8
+            }
+          ]
         },
         {
-          "contributor": "unknown",
-          "new_start": 10,
-          "new_count": 7
+          "contributor": {
+            "type": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 10,
+              "end_line": 16
+            }
+          ]
         },
         {
-          "contributor": "ai",
-          "new_start": 21,
-          "new_count": 4
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 21,
+              "end_line": 24
+            }
+          ]
         }
       ]
     }
