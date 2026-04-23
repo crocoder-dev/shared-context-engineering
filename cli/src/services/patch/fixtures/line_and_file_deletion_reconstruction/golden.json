@@ -1,0 +1,29 @@
+{
+  "files": [
+    {
+      "old_path": "",
+      "new_path": "first.txt",
+      "kind": "added",
+      "hunks": [
+        {
+          "old_start": 0,
+          "old_count": 0,
+          "new_start": 1,
+          "new_count": 2,
+          "lines": [
+            {
+              "kind": "added",
+              "line_number": 1,
+              "content": "one"
+            },
+            {
+              "kind": "added",
+              "line_number": 2,
+              "content": "three"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
