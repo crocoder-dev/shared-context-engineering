@@ -1,0 +1,10 @@
+{
+  "files": [
+    {
+      "old_path": ".version",
+      "new_path": ".very_cool_version_file",
+      "kind": "renamed",
+      "hunks": []
+    }
+  ]
+}

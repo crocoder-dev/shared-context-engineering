@@ -196,3 +196,14 @@ fn text_file_lifecycle_reconstruction_matches_golden_agent_trace() {
         golden: include_str!("fixtures/text_file_lifecycle_reconstruction/golden.json"),
     });
 }
+
+#[test]
+fn file_rename_reconstruction_matches_golden_agent_trace() {
+    assert_builds_expected_agent_trace(AgentTraceScenario {
+        incremental: &[include_str!(
+            "fixtures/file_rename_reconstruction/incremental_01.patch"
+        )],
+        post_commit: include_str!("fixtures/file_rename_reconstruction/post_commit.patch"),
+        golden: include_str!("fixtures/file_rename_reconstruction/golden.json"),
+    });
+}
