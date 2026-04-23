@@ -139,3 +139,14 @@ fn line_and_file_deletion_reconstruction_matches_post_commit() {
         golden: include_str!("fixtures/line_and_file_deletion_reconstruction/golden.json"),
     });
 }
+
+#[test]
+fn file_rename_reconstruction_matches_post_commit() {
+    assert_reconstructs_post_commit(PatchScenario {
+        incremental: &[include_str!(
+            "fixtures/file_rename_reconstruction/incremental_01.patch"
+        )],
+        post_commit: include_str!("fixtures/file_rename_reconstruction/post_commit.patch"),
+        golden: include_str!("fixtures/file_rename_reconstruction/golden.json"),
+    });
+}
