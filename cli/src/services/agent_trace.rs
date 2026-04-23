@@ -12,9 +12,14 @@
 //! - same hunk slot in `post_commit_patch` but not exact line-by-line match => `mixed`
 //! - hunk present in `post_commit_patch` but missing from `intersection_patch` => `unknown`
 
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 
-use super::patch::{intersect_patches, ParsedPatch, PatchHunk};
+use super::patch::{
+    intersect_patches, parse_patch, FileChangeKind, ParsedPatch, PatchFileChange, PatchHunk,
+    TouchedLineKind,
+};
 
 /// Classification of a single hunk's origin relative to the AI candidate patch.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -119,9 +124,12 @@ fn hunks_match_exactly(left: &PatchHunk, right: &PatchHunk) -> bool {
     })
 }
 
-fn line_range_from_hunk(hunk: &PatchHunk) -> LineRange {
-    let start_line = hunk.new_start;
-    let end_line = start_line.saturating_add(hunk.new_count.saturating_sub(1));
+fn line_range_from_hunk(file: &PatchFileChange, hunk: &PatchHunk) -> LineRange {
+    let (start_line, line_count) = match file.kind {
+        FileChangeKind::Deleted if hunk.new_count == 0 => (hunk.old_start, hunk.old_count),
+        _ => (hunk.new_start, hunk.new_count),
+    };
+    let end_line = start_line.saturating_add(line_count.saturating_sub(1));
 
     LineRange {
         start_line,
@@ -129,13 +137,79 @@ fn line_range_from_hunk(hunk: &PatchHunk) -> LineRange {
     }
 }
 
+fn trace_path(file: &PatchFileChange) -> &str {
+    if file.new_path.is_empty() {
+        &file.old_path
+    } else {
+        &file.new_path
+    }
+}
+
+fn parse_embedded_deleted_patch(file: &PatchFileChange) -> Option<ParsedPatch> {
+    if file.kind != FileChangeKind::Deleted
+        || !Path::new(&file.old_path)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("patch"))
+    {
+        return None;
+    }
+
+    let embedded_patch = file
+        .hunks
+        .iter()
+        .flat_map(|hunk| hunk.lines.iter())
+        .filter(|line| line.kind == TouchedLineKind::Removed)
+        .map(|line| line.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let parsed_patch = parse_patch(&embedded_patch).ok()?;
+    (!parsed_patch.files.is_empty()).then_some(parsed_patch)
+}
+
+fn build_trace_file(
+    post_commit_file: &PatchFileChange,
+    intersection_patch: &ParsedPatch,
+) -> Option<TraceFile> {
+    if post_commit_file.hunks.is_empty() {
+        return None;
+    }
+
+    let intersection_file = intersection_patch
+        .files
+        .iter()
+        .find(|ifile| ifile.new_path == post_commit_file.new_path);
+
+    let conversations = post_commit_file
+        .hunks
+        .iter()
+        .map(|post_commit_hunk| {
+            let contributor = match intersection_file {
+                Some(ifile) => classify_hunk(post_commit_hunk, &ifile.hunks),
+                None => HunkContributor::Unknown,
+            };
+            Conversation {
+                contributor: Contributor { kind: contributor },
+                ranges: vec![line_range_from_hunk(post_commit_file, post_commit_hunk)],
+            }
+        })
+        .collect();
+
+    Some(TraceFile {
+        path: trace_path(post_commit_file).to_string(),
+        conversations,
+    })
+}
+
 /// Build the minimal agent-trace payload from two patches.
 ///
 /// Computes `intersection_patch = intersect_patches(constructed_patch, post_commit_patch)`,
 /// then iterates over `post_commit_patch`'s files and hunks to classify each hunk
-/// against `intersection_patch`. The output contains one `TraceFile` per file in
-/// `post_commit_patch` and one `Conversation` per hunk in `post_commit_patch`,
-/// preserving `post_commit_patch`'s file and hunk ordering.
+/// against `intersection_patch`. Deleted `.patch` files whose removed contents are
+/// themselves valid patch text are expanded into trace entries for the embedded
+/// patch's files. Metadata-only entries with no hunks are omitted. The output
+/// preserves the surrounding `post_commit_patch` file ordering and per-file hunk
+/// ordering.
 ///
 /// Files in `post_commit_patch` that have no corresponding file in
 /// `intersection_patch` still appear in the output with all hunks classified
@@ -147,36 +221,21 @@ pub fn build_agent_trace(
 ) -> AgentTrace {
     let intersection_patch = intersect_patches(constructed_patch, post_commit_patch);
 
-    let files = post_commit_patch
-        .files
-        .iter()
-        .map(|post_commit_file| {
-            let intersection_file = intersection_patch
-                .files
-                .iter()
-                .find(|ifile| ifile.new_path == post_commit_file.new_path);
+    let mut files = Vec::new();
 
-            let conversations = post_commit_file
-                .hunks
-                .iter()
-                .map(|post_commit_hunk| {
-                    let contributor = match intersection_file {
-                        Some(ifile) => classify_hunk(post_commit_hunk, &ifile.hunks),
-                        None => HunkContributor::Unknown,
-                    };
-                    Conversation {
-                        contributor: Contributor { kind: contributor },
-                        ranges: vec![line_range_from_hunk(post_commit_hunk)],
-                    }
-                })
-                .collect();
+    for post_commit_file in &post_commit_patch.files {
+        if let Some(embedded_patch) = parse_embedded_deleted_patch(post_commit_file) {
+            let embedded_intersection = intersect_patches(constructed_patch, &embedded_patch);
+            files.extend(embedded_patch.files.iter().filter_map(|embedded_file| {
+                build_trace_file(embedded_file, &embedded_intersection)
+            }));
+            continue;
+        }
 
-            TraceFile {
-                path: post_commit_file.new_path.clone(),
-                conversations,
-            }
-        })
-        .collect();
+        if let Some(trace_file) = build_trace_file(post_commit_file, &intersection_patch) {
+            files.push(trace_file);
+        }
+    }
 
     AgentTrace { files }
 }

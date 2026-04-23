@@ -1,7 +1,7 @@
 {
   "files": [
     {
-      "path": "",
+      "path": ".version",
       "conversations": [
         {
           "contributor": {
@@ -9,36 +9,28 @@
           },
           "ranges": [
             {
-              "start_line": 0,
-              "end_line": 0
+              "start_line": 1,
+              "end_line": 1
             }
           ]
         }
       ]
     },
     {
-      "path": "",
+      "path": "poem.md",
       "conversations": [
         {
           "contributor": {
-            "type": "mixed"
+            "type": "unknown"
           },
           "ranges": [
             {
-              "start_line": 0,
-              "end_line": 0
+              "start_line": 1,
+              "end_line": 8
             }
           ]
         }
       ]
-    },
-    {
-      "path": "empty_poem_ai.md",
-      "conversations": []
-    },
-    {
-      "path": "empty_poem_human.md",
-      "conversations": []
     },
     {
       "path": "poem_life.md",
