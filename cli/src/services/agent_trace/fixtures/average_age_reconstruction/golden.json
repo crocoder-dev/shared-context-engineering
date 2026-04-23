@@ -1,4 +1,7 @@
 {
+  "version": "v0.1.0",
+  "id": "01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
+  "timestamp": "2026-04-23T10:20:30Z",
   "files": [
     {
       "path": "hunks/fib.ts",

@@ -23,16 +23,23 @@ Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical 
 | `LineRange` | New-file line span with `start_line` + `end_line` |
 | `Conversation` | Per-hunk entry: nested contributor + `ranges` (currently exactly one range derived from `post_commit_patch`) |
 | `TraceFile` | Per-file entry: path + conversations |
-| `AgentTrace` | Top-level payload: files |
+| `AgentTrace` | Top-level payload: `version`, `id`, `timestamp`, `files` |
 
 All types are `serde`-serializable with `snake_case` field naming. `Conversation.contributor` serializes as a nested object with a JSON field named `type`.
 
 ## Payload shape
 
-Current output remains file-only and does not include top-level `version`, `id`, or `timestamp` metadata.
+Current output includes top-level metadata fields with this contract:
+
+- `version` is fixed to `"v0.1.0"`
+- `id` is generated per `build_agent_trace(...)` call as a UUIDv7 string derived from the same commit-time moment used for `timestamp`
+- `timestamp` is sourced from explicit commit metadata input (`AgentTraceMetadataInput.commit_timestamp`) and must be RFC 3339
 
 ```json
 {
+  "version": "v0.1.0",
+  "id": "01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
+  "timestamp": "2026-04-23T10:20:30Z",
   "files": [
     {
       "path": "src/example.ts",
@@ -55,7 +62,12 @@ Current output remains file-only and does not include top-level `version`, `id`,
 ## Public API
 
 - `classify_hunk(post_commit_hunk, intersection_hunks) -> HunkContributor` — classify a single `post_commit_patch` hunk against `intersection_patch` hunks.
-- `build_agent_trace(constructed_patch, post_commit_patch) -> AgentTrace` — full generator entrypoint.
+- `build_agent_trace(constructed_patch, post_commit_patch, metadata) -> Result<AgentTrace>` — full generator entrypoint that validates `metadata.commit_timestamp` as RFC 3339, uses it as top-level `timestamp`, and derives a UUIDv7 `id` from that same commit-time moment.
+
+## Test fixture contract
+
+- Golden fixtures under `cli/src/services/agent_trace/fixtures/**/golden.json` pin deterministic literal values for top-level `id` and `timestamp`.
+- Tests still validate runtime metadata behavior explicitly (`id` parses as UUIDv7 and `timestamp` equals provided commit metadata), then normalize those runtime values to the deterministic fixture literals before whole-payload golden comparison.
 
 ## Relationship to existing patch service
 
@@ -63,7 +75,7 @@ Consumes `intersect_patches` and `ParsedPatch`/`PatchHunk`/`TouchedLine` types f
 
 ## Out of scope
 
-CLI command surface, hook/runtime integration, persistence, OpenCode plugin behavior, non-MVP payload enrichment.
+CLI command surface, hook/runtime integration (including post-commit wiring), persistence, OpenCode plugin behavior, non-MVP payload enrichment.
 
 ## See also
 

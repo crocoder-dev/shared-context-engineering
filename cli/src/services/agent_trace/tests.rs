@@ -1,5 +1,10 @@
-use super::{build_agent_trace, AgentTrace, Contributor, Conversation, HunkContributor, LineRange};
+use super::{
+    build_agent_trace, AgentTrace, AgentTraceMetadataInput, Contributor, Conversation,
+    HunkContributor, LineRange, AGENT_TRACE_VERSION,
+};
 use crate::services::patch::{combine_patches, parse_patch, ParsedPatch};
+use serde_json::Value;
+use uuid::Uuid;
 
 #[derive(Clone, Copy)]
 struct AgentTraceScenario {
@@ -8,11 +13,27 @@ struct AgentTraceScenario {
     golden: &'static str,
 }
 
+const GOLDEN_TEST_ID: &str = "01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1";
+const GOLDEN_TEST_TIMESTAMP: &str = "2026-04-23T10:20:30Z";
+const TEST_COMMIT_TIMESTAMP: &str = "2026-04-23T10:20:30Z";
+
+fn test_metadata_input() -> AgentTraceMetadataInput<'static> {
+    AgentTraceMetadataInput {
+        commit_timestamp: TEST_COMMIT_TIMESTAMP,
+    }
+}
+
 fn parse_fixtures(fixtures: &[&str]) -> Vec<ParsedPatch> {
     fixtures
         .iter()
         .map(|fixture| parse_patch(fixture).expect("fixture patch should parse"))
         .collect()
+}
+
+fn normalize_dynamic_metadata(mut payload: Value) -> Value {
+    payload["id"] = serde_json::json!(GOLDEN_TEST_ID);
+    payload["timestamp"] = serde_json::json!(GOLDEN_TEST_TIMESTAMP);
+    payload
 }
 
 const TEXT_FILE_LIFECYCLE_RECONSTRUCTION_INCREMENTALS: &[&str] = &[
@@ -47,13 +68,24 @@ const TEXT_FILE_LIFECYCLE_RECONSTRUCTION_INCREMENTALS: &[&str] = &[
 fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
     let constructed_patch = combine_patches(&parse_fixtures(scenario.incremental));
     let post_commit_patch = parse_patch(scenario.post_commit).expect("fixture patch should parse");
-    let golden: AgentTrace =
-        serde_json::from_str(scenario.golden).expect("golden json should load");
+    let golden: Value = serde_json::from_str(scenario.golden).expect("golden json should load");
 
-    assert_eq!(
-        build_agent_trace(&constructed_patch, &post_commit_patch),
-        golden
-    );
+    let actual = build_agent_trace(
+        &constructed_patch,
+        &post_commit_patch,
+        test_metadata_input(),
+    )
+    .expect("agent trace should build");
+
+    assert_eq!(actual.version, AGENT_TRACE_VERSION);
+    assert_eq!(actual.timestamp, TEST_COMMIT_TIMESTAMP);
+    let uuid = Uuid::parse_str(&actual.id).expect("agent trace id should be a UUID");
+    assert_eq!(uuid.get_version_num(), 7, "agent trace id should be UUIDv7");
+
+    let actual_json = serde_json::to_value(&actual).expect("agent trace should serialize");
+    let normalized_actual = normalize_dynamic_metadata(actual_json);
+
+    assert_eq!(normalized_actual, golden);
 }
 
 #[test]
@@ -81,6 +113,97 @@ fn conversation_serializes_nested_contributor_and_ranges_shape() {
                 }
             ]
         })
+    );
+}
+
+#[test]
+fn agent_trace_serializes_top_level_version_id_timestamp_and_files() {
+    let trace = AgentTrace {
+        version: AGENT_TRACE_VERSION.to_owned(),
+        id: "2c3de67f-c4f3-4f7b-a74c-42f0f9db21f1".to_owned(),
+        timestamp: "2026-04-23T10:20:30Z".to_owned(),
+        files: vec![],
+    };
+
+    let serialized = serde_json::to_value(&trace).expect("agent trace should serialize");
+
+    assert_eq!(serialized["version"], serde_json::json!("v0.1.0"));
+    assert_eq!(
+        serialized["id"],
+        serde_json::json!("2c3de67f-c4f3-4f7b-a74c-42f0f9db21f1")
+    );
+    assert_eq!(
+        serialized["timestamp"],
+        serde_json::json!("2026-04-23T10:20:30Z")
+    );
+    assert_eq!(serialized["files"], serde_json::json!([]));
+}
+
+#[test]
+fn build_agent_trace_generates_uuidv7_id_and_rfc3339_timestamp() {
+    let constructed_patch = combine_patches(&parse_fixtures(&[include_str!(
+        "fixtures/hello_world_reconstruction/incremental_01.patch"
+    )]));
+    let post_commit_patch = parse_patch(include_str!(
+        "fixtures/hello_world_reconstruction/post_commit.patch"
+    ))
+    .expect("fixture patch should parse");
+
+    let agent_trace = build_agent_trace(
+        &constructed_patch,
+        &post_commit_patch,
+        test_metadata_input(),
+    )
+    .expect("agent trace should build");
+
+    let uuid = Uuid::parse_str(&agent_trace.id).expect("id should be UUID formatted");
+    assert_eq!(uuid.get_version_num(), 7, "id should be UUIDv7");
+    assert_eq!(agent_trace.timestamp, TEST_COMMIT_TIMESTAMP);
+}
+
+#[test]
+fn build_agent_trace_uses_provided_commit_timestamp() {
+    let constructed_patch = combine_patches(&parse_fixtures(&[include_str!(
+        "fixtures/hello_world_reconstruction/incremental_01.patch"
+    )]));
+    let post_commit_patch = parse_patch(include_str!(
+        "fixtures/hello_world_reconstruction/post_commit.patch"
+    ))
+    .expect("fixture patch should parse");
+
+    let commit_timestamp = "2024-12-31T23:59:59+00:00";
+    let agent_trace = build_agent_trace(
+        &constructed_patch,
+        &post_commit_patch,
+        AgentTraceMetadataInput { commit_timestamp },
+    )
+    .expect("agent trace should build");
+
+    assert_eq!(agent_trace.timestamp, commit_timestamp);
+}
+
+#[test]
+fn build_agent_trace_rejects_non_rfc3339_commit_timestamp() {
+    let constructed_patch = combine_patches(&parse_fixtures(&[include_str!(
+        "fixtures/hello_world_reconstruction/incremental_01.patch"
+    )]));
+    let post_commit_patch = parse_patch(include_str!(
+        "fixtures/hello_world_reconstruction/post_commit.patch"
+    ))
+    .expect("fixture patch should parse");
+
+    let error = build_agent_trace(
+        &constructed_patch,
+        &post_commit_patch,
+        AgentTraceMetadataInput {
+            commit_timestamp: "not-a-timestamp",
+        },
+    )
+    .expect_err("invalid commit timestamp should fail");
+
+    assert!(
+        error.to_string().contains("expected RFC 3339 date-time"),
+        "error should mention RFC 3339 requirement"
     );
 }
 
@@ -149,7 +272,12 @@ fn poem_edit_reconstruction_maps_each_hunk_to_one_range() {
     ))
     .expect("fixture patch should parse");
 
-    let agent_trace = build_agent_trace(&constructed_patch, &post_commit_patch);
+    let agent_trace = build_agent_trace(
+        &constructed_patch,
+        &post_commit_patch,
+        test_metadata_input(),
+    )
+    .expect("agent trace should build");
 
     assert_eq!(agent_trace.files.len(), 1);
     assert_eq!(agent_trace.files[0].path, "poem.md");
