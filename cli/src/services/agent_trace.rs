@@ -14,12 +14,44 @@
 
 use std::path::Path;
 
+use anyhow::{Context, Result};
+use chrono::{DateTime, FixedOffset};
 use serde::{Deserialize, Serialize};
+use uuid::{NoContext, Timestamp, Uuid};
 
 use super::patch::{
     intersect_patches, parse_patch, FileChangeKind, ParsedPatch, PatchFileChange, PatchHunk,
     TouchedLineKind,
 };
+
+pub const AGENT_TRACE_VERSION: &str = "v0.1.0";
+
+fn default_agent_trace_version() -> String {
+    AGENT_TRACE_VERSION.to_owned()
+}
+
+fn generate_agent_trace_id(commit_time: DateTime<FixedOffset>) -> Result<String> {
+    let seconds = u64::try_from(commit_time.timestamp()).with_context(|| {
+        format!(
+            "Invalid commit timestamp '{}': unix seconds must be non-negative.",
+            commit_time.to_rfc3339()
+        )
+    })?;
+    let timestamp = Timestamp::from_unix(NoContext, seconds, commit_time.timestamp_subsec_nanos());
+
+    Ok(Uuid::new_v7(timestamp).to_string())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AgentTraceMetadataInput<'a> {
+    pub commit_timestamp: &'a str,
+}
+
+fn parse_commit_timestamp(commit_timestamp: &str) -> Result<DateTime<FixedOffset>> {
+    DateTime::parse_from_rfc3339(commit_timestamp).with_context(|| {
+        format!("Invalid commit timestamp '{commit_timestamp}': expected RFC 3339 date-time.")
+    })
+}
 
 /// Classification of a single hunk's origin relative to the AI candidate patch.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -77,6 +109,15 @@ pub struct TraceFile {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct AgentTrace {
+    /// Agent-trace payload version.
+    #[serde(default = "default_agent_trace_version")]
+    pub version: String,
+    /// Trace record identifier (`UUIDv7` generated from commit-time metadata).
+    #[serde(default)]
+    pub id: String,
+    /// RFC 3339 timestamp string sourced from caller-provided commit metadata.
+    #[serde(default)]
+    pub timestamp: String,
     /// File-level trace entries, one per file present in `post_commit_patch`.
     pub files: Vec<TraceFile>,
 }
@@ -218,7 +259,10 @@ fn build_trace_file(
 pub fn build_agent_trace(
     constructed_patch: &ParsedPatch,
     post_commit_patch: &ParsedPatch,
-) -> AgentTrace {
+    metadata: AgentTraceMetadataInput<'_>,
+) -> Result<AgentTrace> {
+    let commit_time = parse_commit_timestamp(metadata.commit_timestamp)?;
+    let timestamp = metadata.commit_timestamp.to_owned();
     let intersection_patch = intersect_patches(constructed_patch, post_commit_patch);
 
     let mut files = Vec::new();
@@ -237,7 +281,12 @@ pub fn build_agent_trace(
         }
     }
 
-    AgentTrace { files }
+    Ok(AgentTrace {
+        version: default_agent_trace_version(),
+        id: generate_agent_trace_id(commit_time)?,
+        timestamp,
+        files,
+    })
 }
 
 #[cfg(test)]
