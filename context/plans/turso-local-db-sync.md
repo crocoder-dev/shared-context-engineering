@@ -31,12 +31,15 @@ Implement a local Turso database for storing agent traces. This includes adding 
   - **Files changed:** cli/Cargo.toml, cli/Cargo.lock
   - **Evidence:** `nix flake check` passes, turso 0.1.5 in Cargo.toml and Cargo.lock
 
-- [ ] T02: Create cli/migrations/ with initial agent traces schema (status:todo)
+- [x] T02: Create cli/migrations/ with initial agent traces schema (status:done)
   - Task ID: T02
   - Goal: Create the migrations directory and initial SQL migration file for agent traces
   - Boundaries (in/out of scope): In - cli/migrations/001_create_agent_traces.sql with table definition. Out - embedding code, Rust code changes
   - Done when: cli/migrations/001_create_agent_traces.sql exists with CREATE TABLE statement for agent_traces
   - Verification notes (commands or checks): `test -f cli/migrations/001_create_agent_traces.sql`, verify SQL syntax is valid SQLite/Turso SQL
+  - **Completed:** 2026-04-24
+  - **Files changed:** cli/migrations/001_create_agent_traces.sql
+  - **Evidence:** Migration file created with agent_traces table (id INTEGER PRIMARY KEY AUTOINCREMENT, trace_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))
 
 - [ ] T03: Implement cli/src/services/local_db.rs - Turso adapter (status:todo)
   - Task ID: T03
