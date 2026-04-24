@@ -149,12 +149,21 @@
           '';
         };
 
-        cargoArtifacts = craneLib.buildDepsOnly (
-          commonCargoArgs
-          // {
-            pname = "sce-deps";
-          }
-        );
+        cargoDepsArgs = {
+          pname = "sce-deps";
+          inherit version;
+          src = craneLib.cleanCargoSource ./cli;
+          cargoToml = ./cli/Cargo.toml;
+          cargoLock = ./cli/Cargo.lock;
+          strictDeps = true;
+          doCheck = false;
+
+          nativeBuildInputs = [
+            rustToolchain
+          ];
+        };
+
+        cargoArtifacts = craneLib.buildDepsOnly cargoDepsArgs;
 
         integrationsInstallCargoArgs = {
           pname = "sce-install-channel-integration-tests";
