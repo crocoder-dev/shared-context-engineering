@@ -248,6 +248,16 @@ pub fn bootstrap_repo_local_config(repository_root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Bootstraps the canonical SCE local database for this operator environment.
+///
+/// The database path is resolved from the shared default-path catalog and
+/// migrations are applied by the local DB adapter.
+pub fn bootstrap_local_db() -> Result<()> {
+    super::local_db::LocalDb::new()
+        .context("Failed to initialize local SCE database during setup")?;
+    Ok(())
+}
+
 fn format_setup_install_success_message(outcome: &SetupInstallOutcome) -> String {
     let selected_targets = outcome
         .target_results

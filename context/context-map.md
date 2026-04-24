@@ -32,7 +32,7 @@ Feature/domain context:
 - `context/sce/setup-githooks-hook-asset-packaging.md` (T02 compile-time `sce setup --hooks` required-hook template packaging contract and setup-service accessor surface)
 - `context/sce/setup-githooks-install-flow.md` (T03 setup-service required-hook install orchestration with git-truth hooks-path resolution, per-hook installed/updated/skipped outcomes, and remove-and-replace behavior with recovery guidance)
 - `context/sce/setup-githooks-cli-ux.md` (T04 composable `sce setup` target+`--hooks` / `--repo` command-surface contract, option compatibility validation, and deterministic setup/hook output semantics)
-- `context/sce/setup-repo-local-config-bootstrap.md` (T02 repo-local `.sce/config.json` bootstrap behavior: create-if-missing with canonical schema-only payload, leave-if-present, applies to all setup modes)
+- `context/sce/setup-repo-local-config-bootstrap.md` (setup local bootstrap behavior: repo-local `.sce/config.json` create-if-missing plus setup-owned local DB initialization, both applied before config/hooks dispatch across setup modes)
 - `context/sce/cli-security-hardening-contract.md` (T06 CLI redaction contract, setup `--repo` canonicalization/validation, and setup write-permission probe behavior)
 - `context/sce/agent-trace-post-rewrite-local-remap-ingestion.md` (current post-rewrite no-op baseline plus historical remap-ingestion reference)
 - `context/sce/agent-trace-rewrite-trace-transformation.md` (current post-rewrite no-op baseline plus historical rewrite-transformation reference)
