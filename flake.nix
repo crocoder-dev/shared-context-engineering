@@ -45,6 +45,7 @@
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/default_paths.rs)
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/agent_trace/fixtures)
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/patch/fixtures)
+            (pkgs.lib.fileset.maybeMissing ./cli/migrations)
             ./config
             (pkgs.lib.fileset.maybeMissing ./cli/assets/hooks)
             (pkgs.lib.fileset.maybeMissing ./scripts/prepare-cli-generated-assets.sh)

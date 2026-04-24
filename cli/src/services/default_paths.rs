@@ -267,6 +267,19 @@ mod roots {
     }
 }
 
+/// Returns the canonical path to the local Turso database file.
+///
+/// The path is `<state_root>/sce/local.db`, where `state_root` comes
+/// from the shared default-path catalog (`XDG_STATE_HOME` or platform
+/// equivalent).
+pub fn local_db_path() -> anyhow::Result<PathBuf> {
+    Ok(resolve_sce_default_locations()?
+        .roots()
+        .state_root()
+        .join("sce")
+        .join("local.db"))
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PersistedArtifactRootKind {

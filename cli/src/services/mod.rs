@@ -7,6 +7,7 @@ pub mod default_paths;
 pub mod doctor;
 pub mod error;
 pub mod hooks;
+pub mod local_db;
 pub mod observability;
 pub mod output_format;
 pub mod patch;
