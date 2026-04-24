@@ -1,5 +1,6 @@
 {
-  "version": "v0.1.0",
+  "$schema": "https://agent-trace.dev/schemas/v1/trace-record.json",
+  "version": "0.1",
   "id": "01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
   "timestamp": "2026-04-23T10:20:30Z",
   "files": [
