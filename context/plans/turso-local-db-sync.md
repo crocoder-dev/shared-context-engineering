@@ -80,12 +80,16 @@ Implement a local Turso database for storing agent traces. This includes adding 
   - **Evidence:** `nix run .#pkl-check-generated` passes; `nix flake check` passes
   - **Notes:** Important-change context sync updated root and CLI domain docs; `sce sync` command wiring is explicitly deferred to 0.4.0.
 
-- [ ] T07: Validation and cleanup (status:todo)
+- [x] T07: Validation and cleanup (status:done)
   - Task ID: T07
   - Goal: Run full validation suite and clean up any issues
   - Boundaries (in/out of scope): In - nix flake check, build verification, context sync. Out - additional features, cloud sync
   - Done when: `nix flake check` passes, `nix run .#pkl-check-generated` passes
   - Verification notes (commands or checks): `nix flake check`, `nix run .#pkl-check-generated`
+  - **Completed:** 2026-04-24
+  - **Files changed:** context/plans/turso-local-db-sync.md
+  - **Evidence:** `nix run .#pkl-check-generated` passes; `nix flake check` passes
+  - **Notes:** Final plan task completed with no additional cleanup required from validation output.
 
 ## Open Questions
 None - all clarification questions were resolved before planning.
@@ -95,3 +99,26 @@ None - all clarification questions were resolved before planning.
 - Agent traces will be stored as JSON blobs using the existing `AgentTrace` serde serialization
 - The local DB path follows the existing default path catalog in `cli/src/services/default_paths.rs` (e.g., `$XDG_STATE_HOME/sce/local.db`)
 - Migration numbering starts at 001 and uses sequential numbering
+
+## Validation Report
+
+### Commands run
+- `nix run .#pkl-check-generated` -> exit 0 (`Generated outputs are up to date.`)
+- `nix flake check` -> exit 0 (`all checks passed!`)
+- `nix build .#default` -> exit 0 (build completed; Nix reported only a dirty-worktree warning)
+
+### Failed checks and follow-ups
+- No validation commands failed.
+- Residual scope note: original success criteria for a user-invocable `sce sync` command remain intentionally unmet because T05 was cancelled and the runtime continues to defer `sce sync` wiring to `0.4.0`.
+
+### Success-criteria verification
+- [x] `turso` is added as a dependency and compiles successfully — confirmed by `cli/Cargo.toml` and successful `nix flake check`
+- [x] SQL migrations are embedded in the CLI under `cli/migrations/` — confirmed by `cli/migrations/001_create_agent_traces.sql` and `include_str!` usage in `cli/src/services/local_db.rs`
+- [x] `cli/src/services/local_db.rs` initializes a local Turso DB and runs migrations — confirmed by `LocalDb` implementation and successful `nix flake check`
+- [ ] `cli/src/services/sync.rs` implements the `sync` command that initializes the DB — not present in current code truth; deferred after T05 cancellation
+- [ ] The `sync` command is wired up and accessible via `sce sync` — not present in current code truth; deferred after T05 cancellation
+- [x] Context files are updated to reflect the new state — confirmed by existing local DB and sync-deferral coverage in `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/context-map.md`, `context/cli/cli-command-surface.md`, and `context/sce/local-db.md`
+- [x] `nix flake check` passes — confirmed during T07 validation
+
+### Residual risks
+- The original plan-level `sce sync` deliverable was not completed in this plan revision; future work should start a new plan/task sequence rather than silently treating that scope as implemented.
