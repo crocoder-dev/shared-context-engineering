@@ -1,12 +1,14 @@
 # Context Map
 
 Primary context files:
+
 - `context/overview.md`
 - `context/architecture.md`
 - `context/patterns.md`
 - `context/glossary.md`
 
 Feature/domain context:
+
 - `context/cli/cli-command-surface.md` (CLI command surface including top-level help with ASCII art banner and gradient rendering, setup install flow, WorkOS device authorization flow + token storage behavior, attribution-only hook routing, setup-owned local DB bootstrap plus doctor local-DB health coverage, nested flake release package/app installability, and Cargo local install + crates.io readiness policy; `sce sync` command wiring is deferred to `0.4.0`)
 - `context/cli/default-path-catalog.md` (canonical production CLI path-ownership contract centered on `cli/src/services/default_paths.rs`, including persisted, repo-relative, embedded-asset, install/runtime, hook, and context-path families plus the regression guard that keeps production path ownership centralized)
 - `context/cli/patch-service.md` (standalone patch domain model, parser, JSON load helpers, and set operations in `cli/src/services/patch.rs` for in-memory parsed unified-diff representation, capturing only touched lines plus minimal per-file/per-hunk metadata, supporting both `Index:` SVN-style and `diff --git` git-style formats, with `ParseError` for actionable malformed-input diagnostics, `PatchLoadError`/`load_patch_from_json`/`load_patch_from_json_bytes` for storage-agnostic JSON reconstruction, `intersect_patches` for target-shaped overlap with exact-match-first and historical `kind`+`content` fallback semantics, and `combine_patches` for ordered patch combination with later-wins conflict resolution; `intersect_patches` is consumed by the minimal agent-trace generator seam; not yet wired into CLI command dispatch)
@@ -40,11 +42,12 @@ Feature/domain context:
 - `context/sce/agent-trace-core-schema-migrations.md` (historical reference for removed local DB schema bootstrap behavior; T03 now implements the actual local DB with migrations)
 - `context/sce/agent-trace-retry-queue-observability.md` (inactive local-hook retry path plus historical retry/metrics reference)
 - `context/sce/agent-trace-local-hooks-mvp-contract-gap-matrix.md` (T01 Local Hooks MVP production contract freeze and deterministic gap matrix for `agent-trace-local-hooks-production-mvp`)
-- `context/sce/agent-trace-hooks-command-routing.md` (implemented `sce hooks` command routing plus the current minimal runtime behavior: disabled-default commit-msg attribution and no-op `pre-commit`/`post-commit`/`post-rewrite` entrypoints)
 - `context/sce/agent-trace-minimal-generator.md` (implemented library-only minimal agent-trace generator seam at `cli/src/services/agent_trace.rs`, producing a JSON payload with top-level `version`, UUIDv7 `id` derived from commit-time metadata, caller-provided commit-time `timestamp`, and per-file trace data from patch inputs via `intersect_patches(constructed_patch, post_commit_patch)` then `post_commit_patch`-anchored hunk classification into `ai`/`mixed`/`unknown` contributor categories, serialized per conversation as nested `contributor.type` plus one derived `ranges[{start_line,end_line}]` entry per post-commit hunk)
+- `context/sce/agent-trace-hooks-command-routing.md` (implemented `sce hooks` command routing plus current runtime behavior: disabled-default commit-msg attribution, no-op `pre-commit`/`post-commit`/`post-rewrite` entrypoints, and `diff-trace` STDIN intake with required-field validation and `context/tmp/[timestamp]-diff-trace.json` persistence)
 - `context/sce/automated-profile-contract.md` (deterministic gate policy for automated OpenCode profile, including 10 gate categories, permission mappings, automated `/commit` single-commit execution behavior, and automated profile constraints)
 - `context/sce/bash-tool-policy-enforcement-contract.md` (approved bash-tool blocking contract plus the implementation target for generated OpenCode enforcement, including config schema, argv-prefix matching, fixed preset catalog/messages, and precedence rules)
 - `context/sce/generated-opencode-plugin-registration.md` (current generated OpenCode plugin-registration contract, canonical Pkl ownership, generated manifest/plugin paths including `sce-bash-policy` + `sce-agent-trace`, and TypeScript source ownership; Claude bash-policy enforcement has been removed from generated outputs)
+- `context/sce/opencode-agent-trace-plugin-runtime.md` (current OpenCode agent-trace plugin runtime behavior, including `message.part.updated` capture, full payload trace persistence, guarded `{ sessionID, diff, time }` extraction, and CLI handoff to `sce hooks diff-trace` over STDIN JSON so Rust hook runtime owns `[timestamp]-diff-trace.json` writes)
 - `context/sce/cli-first-install-channels-contract.md` (current first-wave `sce` install/distribution contract covering supported channels, canonical naming, `.version` release authority, and Nix-owned build policy)
 - `context/sce/optional-install-channel-integration-test-entrypoint.md` (current opt-in flake app contract for install-channel integration coverage, including thin flake delegation to the Rust runner, shared harness ownership, real npm+Bun+Cargo install flows, channel selector semantics, and the explicit non-default execution boundary)
 - `context/sce/cli-release-artifact-contract.md` (shared `sce` release artifact naming, checksum/manifest outputs, GitHub Releases as the canonical artifact publication surface, and the current three-target Linux/macOS release workflow topology)
@@ -52,15 +55,18 @@ Feature/domain context:
 - `context/sce/cli-cargo-distribution-contract.md` (implemented `sce` Cargo publication posture plus supported crates.io, git, and local checkout install guidance, dedicated crates.io publish workflow, and ephemeral crate-local generated-asset mirror requirement for published builds)
 
 Working areas:
+
 - `context/plans/` (active plan execution artifacts, not durable history)
 - `context/handovers/`
 - `context/decisions/`
 - `context/tmp/`
 
 Supporting repo docs:
+
 - `AGENTS.md` (repo-specific agent workflow guidance, including optional local Nix tuning recommendations for user-level `~/.config/nix/nix.conf` and the explicit system-level-only boundary for `auto-optimise-store`)
 
 Recent decision records:
+
 - `context/decisions/2026-02-28-pkl-generation-architecture.md`
 - `context/decisions/2026-03-03-plan-code-agent-separation.md`
 - `context/decisions/2026-03-09-migrate-lexopt-to-clap.md` (CLI argument parsing migration from lexopt to clap derive macros)

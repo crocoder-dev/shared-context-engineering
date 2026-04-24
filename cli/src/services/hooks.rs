@@ -4,9 +4,9 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
-use chrono::Utc;
-use serde_json::{json, Value};
+use anyhow::{anyhow, bail, Context, Result};
+use chrono::{DateTime, Utc};
+use serde_json::{json, Number, Value};
 
 use crate::services::config;
 
@@ -19,6 +19,7 @@ pub enum HookSubcommand {
     CommitMsg { message_file: PathBuf },
     PostCommit,
     PostRewrite { rewrite_method: String },
+    DiffTrace,
 }
 
 pub fn run_hooks_subcommand(subcommand: &HookSubcommand) -> Result<String> {
@@ -45,7 +46,120 @@ fn run_hooks_subcommand_in_repo(
         HookSubcommand::PostRewrite { rewrite_method } => {
             run_post_rewrite_subcommand_with_trace(repository_root, subcommand, rewrite_method)
         }
+        HookSubcommand::DiffTrace => run_diff_trace_subcommand(repository_root),
     }
+}
+
+fn run_diff_trace_subcommand(repository_root: &Path) -> Result<String> {
+    let stdin_payload = read_hook_stdin()?;
+    run_diff_trace_subcommand_from_payload(repository_root, &stdin_payload)
+}
+
+fn run_diff_trace_subcommand_from_payload(
+    repository_root: &Path,
+    stdin_payload: &str,
+) -> Result<String> {
+    let payload = parse_diff_trace_payload(stdin_payload)?;
+    persist_diff_trace_payload(repository_root, &payload)?;
+
+    Ok(String::from(
+        "diff-trace hook intake persisted payload to context/tmp.",
+    ))
+}
+
+fn parse_diff_trace_payload(stdin_payload: &str) -> Result<Value> {
+    let parsed: Value = serde_json::from_str(stdin_payload)
+        .context("Invalid diff-trace payload from STDIN: expected valid JSON.")?;
+
+    let session_id = required_non_empty_string_field(&parsed, "sessionID")?;
+    let diff = required_non_empty_string_field(&parsed, "diff")?;
+    let time = required_number_field(&parsed, "time")?;
+
+    Ok(json!({
+        "sessionID": session_id,
+        "diff": diff,
+        "time": time,
+    }))
+}
+
+fn required_non_empty_string_field(payload: &Value, field_name: &str) -> Result<String> {
+    let object = payload
+        .as_object()
+        .ok_or_else(|| anyhow!("Invalid diff-trace payload from STDIN: expected a JSON object."))?;
+
+    let raw = object.get(field_name).ok_or_else(|| {
+        anyhow!("Invalid diff-trace payload from STDIN: missing required field '{field_name}'.")
+    })?;
+
+    let value = raw.as_str().ok_or_else(|| {
+        anyhow!(
+            "Invalid diff-trace payload from STDIN: field '{field_name}' must be a non-empty string."
+        )
+    })?;
+
+    if value.trim().is_empty() {
+        bail!("Invalid diff-trace payload from STDIN: field '{field_name}' must be a non-empty string.");
+    }
+
+    Ok(value.to_string())
+}
+
+fn required_number_field(payload: &Value, field_name: &str) -> Result<Number> {
+    let object = payload
+        .as_object()
+        .ok_or_else(|| anyhow!("Invalid diff-trace payload from STDIN: expected a JSON object."))?;
+
+    let raw = object.get(field_name).ok_or_else(|| {
+        anyhow!("Invalid diff-trace payload from STDIN: missing required field '{field_name}'.")
+    })?;
+
+    raw.as_number().cloned().ok_or_else(|| {
+        anyhow!("Invalid diff-trace payload from STDIN: field '{field_name}' must be a number.")
+    })
+}
+
+fn persist_diff_trace_payload(repository_root: &Path, payload: &Value) -> Result<PathBuf> {
+    let trace_directory = repository_root.join("context").join("tmp");
+    let file_path = trace_directory.join(build_diff_trace_file_name(Utc::now()));
+
+    persist_diff_trace_payload_to_file(&trace_directory, &file_path, payload)?;
+
+    Ok(file_path)
+}
+
+fn persist_diff_trace_payload_to_file(
+    trace_directory: &Path,
+    file_path: &Path,
+    payload: &Value,
+) -> Result<()> {
+    fs::create_dir_all(trace_directory).with_context(|| {
+        format!(
+            "Failed to create diff-trace directory '{}'.",
+            trace_directory.display()
+        )
+    })?;
+
+    let serialized = format!(
+        "{}\n",
+        serde_json::to_string_pretty(payload)
+            .context("Failed to serialize diff-trace payload for persistence.")?
+    );
+    fs::write(file_path, serialized).with_context(|| {
+        format!(
+            "Failed to write diff-trace payload file '{}'.",
+            file_path.display()
+        )
+    })?;
+
+    Ok(())
+}
+
+fn build_diff_trace_file_name(timestamp: DateTime<Utc>) -> String {
+    format!("{}-diff-trace.json", format_trace_timestamp(timestamp))
+}
+
+fn format_trace_timestamp(timestamp: DateTime<Utc>) -> String {
+    timestamp.format("%Y-%m-%dT%H-%M-%S-%3fZ").to_string()
 }
 
 fn run_pre_commit_subcommand_with_trace(repository_root: &Path) -> Result<String> {
@@ -160,6 +274,7 @@ fn hook_runtime_invocation_name(subcommand: &HookSubcommand) -> &'static str {
         HookSubcommand::CommitMsg { .. } => "commit-msg runtime invocation",
         HookSubcommand::PostCommit => "post-commit runtime invocation",
         HookSubcommand::PostRewrite { .. } => "post-rewrite runtime invocation",
+        HookSubcommand::DiffTrace => "diff-trace runtime invocation",
     }
 }
 
@@ -213,6 +328,7 @@ fn hook_trace_name(subcommand: &HookSubcommand) -> &'static str {
         HookSubcommand::CommitMsg { .. } => "commit-msg",
         HookSubcommand::PostCommit => "post-commit",
         HookSubcommand::PostRewrite { .. } => "post-rewrite",
+        HookSubcommand::DiffTrace => "diff-trace",
     }
 }
 

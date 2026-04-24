@@ -930,6 +930,9 @@ mod command_runtime {
                     subcommand: services::hooks::HookSubcommand::PostRewrite { rewrite_method },
                 }))
             }
+            cli_schema::HooksSubcommand::DiffTrace => Ok(Box::new(HooksCommand {
+                subcommand: services::hooks::HookSubcommand::DiffTrace,
+            })),
         }
     }
 }
