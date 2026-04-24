@@ -29,6 +29,7 @@ categories = ["command-line-utilities", "development-tools"]
 anyhow = "1"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
+turso = "0.5.3"
 clap_complete = "4"
 dirs = "6"
 hmac = "0.12"
