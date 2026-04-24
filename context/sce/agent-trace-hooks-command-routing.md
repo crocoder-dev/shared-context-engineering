@@ -9,6 +9,7 @@
 - `sce hooks commit-msg <message-file>`
 - `sce hooks post-commit`
 - `sce hooks post-rewrite <amend|rebase|other>`
+- `sce hooks diff-trace`
 
 ## Parser and dispatch behavior
 - `cli/src/app.rs` routes `hooks` through dedicated hook-subcommand parsing.
@@ -28,6 +29,7 @@
 - `pre-commit` is a deterministic no-op entrypoint.
 - `post-commit` is a deterministic no-op entrypoint.
 - `post-rewrite` is a deterministic no-op entrypoint.
+- `diff-trace` reads STDIN JSON, validates required non-empty `sessionID`/`diff` plus required numeric `time` (Unix epoch milliseconds), and writes one payload artifact per invocation to `context/tmp/[timestamp]-diff-trace.json`.
 
 ## Explicit non-goals in the current baseline
 - No checkpoint handoff file

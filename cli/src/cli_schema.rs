@@ -268,6 +268,9 @@ pub enum HooksSubcommand {
 
     #[command(about = "Run post-rewrite hook (reads pairs from STDIN)")]
     PostRewrite { rewrite_method: String },
+
+    #[command(about = "Run diff-trace hook (reads JSON payload from STDIN)")]
+    DiffTrace,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
