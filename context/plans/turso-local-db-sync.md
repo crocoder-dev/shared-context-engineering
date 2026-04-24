@@ -61,19 +61,24 @@ Implement a local Turso database for storing agent traces. This includes adding 
   - **Files changed:** cli/src/services/setup.rs, cli/src/app.rs, context/plans/turso-local-db-sync.md
   - **Evidence:** `nix run .#pkl-check-generated` passes; `nix flake check` passes
 
-- [ ] T05: Wire up sync command in cli_schema.rs and app.rs (status:todo)
+- [ ] T05: Wire up sync command in cli_schema.rs and app.rs (status:cancelled)
   - Task ID: T05
   - Goal: Add Sync variant to Commands enum and wire up the RuntimeCommand execution
   - Boundaries (in/out of scope): In - cli_schema.rs Commands enum addition (hidden from help), app.rs convert_clap_command and SyncCommand RuntimeCommand implementation. Out - help text changes, top-level visibility changes
   - Done when: `sce sync` invokes the sync service, `sce sync --help` shows help
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo run -- sync --help'`, verify command executes
+  - **Cancelled:** 2026-04-24
 
-- [ ] T06: Update context files (status:todo)
+- [x] T06: Update context files (status:done)
   - Task ID: T06
-  - Goal: Update overview.md, glossary.md, and context-map.md to reflect the new local DB and sync command state
-  - Boundaries (in/out of scope): In - context/overview.md (update CLI dependencies, sync command description), context/glossary.md (add/modify local_db and sync entries), context/context-map.md if needed. Out - other context files, plan files
-  - Done when: Context files accurately describe the implemented local DB and sync command
+  - Goal: Update overview.md, glossary.md, and context-map.md to reflect the implemented local DB/setup bootstrap state and defer `sce sync` command wiring to 0.4.0
+  - Boundaries (in/out of scope): In - context/overview.md (update CLI dependencies and local DB/setup state), context/glossary.md (add/modify local_db and related entries), context/context-map.md if needed. Out - wiring `sce sync`, other context files, plan files
+  - Done when: Context files accurately describe the implemented local DB/setup state and note that `sce sync` command wiring is deferred to 0.4.0
   - Verification notes (commands or checks): Review updated context files for accuracy, verify glossary entries match implementation
+  - **Completed:** 2026-04-24
+  - **Files changed:** context/overview.md, context/glossary.md, context/context-map.md, context/architecture.md, context/patterns.md, context/cli/cli-command-surface.md, context/plans/turso-local-db-sync.md
+  - **Evidence:** `nix run .#pkl-check-generated` passes; `nix flake check` passes
+  - **Notes:** Important-change context sync updated root and CLI domain docs; `sce sync` command wiring is explicitly deferred to 0.4.0.
 
 - [ ] T07: Validation and cleanup (status:todo)
   - Task ID: T07
