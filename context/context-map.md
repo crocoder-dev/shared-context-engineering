@@ -20,6 +20,7 @@ Feature/domain context:
 
 - `context/sce/atomic-commit-workflow.md` (canonical manual-vs-automated `/commit` contract, including the single-message rule, the staged-plan commit-body requirement to cite affected plan slug(s) + updated task ID(s), and automated single-commit execution behavior)
 - `context/sce/agent-trace-implementation-contract.md` (historical no-git-wrapper Agent Trace design contract; not active runtime behavior)
+- `context/sce/agent-trace-embedded-schema-validation.md` (implemented internal Agent Trace JSON schema-validation seam in `cli/src/services/agent_trace.rs`, embedding `config/schema/agent-trace.schema.json` at compile time, caching the compiled validator, validating string or parsed-JSON inputs, and returning deterministic invalid-JSON vs schema-validation errors without changing the current minimal generator output)
 - `context/sce/agent-trace-schema-adapter.md` (historical Agent Trace adapter reference for the removed `cli/src/services/agent_trace.rs` surface)
 - `context/sce/agent-trace-payload-builder-validation.md` (historical Agent Trace builder/validation reference for the removed runtime surface)
 - `context/sce/agent-trace-pre-commit-staged-checkpoint.md` (historical pre-commit staged-checkpoint contract; current runtime baseline has replaced this path with a deterministic no-op)

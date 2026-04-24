@@ -1,6 +1,6 @@
 use super::{
-    build_agent_trace, AgentTrace, AgentTraceMetadataInput, Contributor, Conversation,
-    HunkContributor, LineRange, AGENT_TRACE_VERSION,
+    build_agent_trace, validate_agent_trace_value, AgentTraceMetadataInput, LineRange,
+    AGENT_TRACE_VERSION,
 };
 use crate::services::patch::{combine_patches, parse_patch, ParsedPatch};
 use serde_json::Value;
@@ -54,6 +54,7 @@ fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
     let constructed_patch = combine_patches(&parse_fixtures(scenario.incremental));
     let post_commit_patch = parse_patch(scenario.post_commit).expect("fixture patch should parse");
     let golden: Value = serde_json::from_str(scenario.golden).expect("golden json should load");
+    validate_agent_trace_value(&golden).expect("golden json should validate against schema");
     let actual = build_agent_trace(
         &constructed_patch,
         &post_commit_patch,
@@ -65,35 +66,8 @@ fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
     assert_eq!(actual.version, AGENT_TRACE_VERSION);
     assert_eq!(actual.timestamp, TEST_COMMIT_TIMESTAMP);
     let actual_json = serde_json::to_value(&actual).expect("agent trace should serialize");
+    validate_agent_trace_value(&actual_json).expect("actual json should validate against schema");
     assert_eq!(actual_json["files"], golden["files"]);
-}
-
-#[test]
-fn conversation_serializes_nested_contributor_and_ranges_shape() {
-    let conversation = Conversation {
-        contributor: Contributor {
-            kind: HunkContributor::Ai,
-        },
-        ranges: vec![LineRange {
-            start_line: 3,
-            end_line: 7,
-        }],
-    };
-
-    let serialized = serde_json::to_value(&conversation).expect("conversation should serialize");
-
-    assert_eq!(
-        serialized,
-        serde_json::json!({
-            "contributor": { "type": "ai" },
-            "ranges": [
-                {
-                    "start_line": 3,
-                    "end_line": 7
-                }
-            ]
-        })
-    );
 }
 
 #[test]
@@ -169,6 +143,9 @@ fn poem_edit_reconstruction_maps_each_hunk_to_one_range() {
         },
     )
     .expect("agent trace should build");
+
+    let actual_json = serde_json::to_value(&agent_trace).expect("agent trace should serialize");
+    validate_agent_trace_value(&actual_json).expect("actual json should validate against schema");
 
     assert_eq!(agent_trace.files.len(), 1);
     assert_eq!(agent_trace.files[0].path, "poem.md");

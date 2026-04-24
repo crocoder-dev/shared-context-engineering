@@ -12,11 +12,13 @@
 //! - same hunk slot in `post_commit_patch` but not exact line-by-line match => `mixed`
 //! - hunk present in `post_commit_patch` but missing from `intersection_patch` => `unknown`
 
-use std::path::Path;
+use std::{error::Error, fmt, path::Path, sync::OnceLock};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, FixedOffset};
+use jsonschema::{validator_for, Validator};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::{NoContext, Timestamp, Uuid};
 
 use super::patch::{
@@ -24,7 +26,7 @@ use super::patch::{
     TouchedLineKind,
 };
 
-pub const AGENT_TRACE_VERSION: &str = "v0.1.0";
+pub const AGENT_TRACE_VERSION: &str = "0.1";
 
 fn default_agent_trace_version() -> String {
     AGENT_TRACE_VERSION.to_owned()
@@ -53,6 +55,90 @@ fn parse_commit_timestamp(commit_timestamp: &str) -> Result<DateTime<FixedOffset
     })
 }
 
+#[allow(dead_code)]
+const AGENT_TRACE_SCHEMA_PATH: &str = "config/schema/agent-trace.schema.json";
+#[allow(dead_code)]
+pub(crate) const AGENT_TRACE_SCHEMA_JSON: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../config/schema/agent-trace.schema.json"
+));
+
+#[allow(dead_code)]
+static AGENT_TRACE_SCHEMA_VALIDATOR: OnceLock<Validator> = OnceLock::new();
+
+#[derive(Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub(crate) enum AgentTraceValidationError {
+    FileRead { path: String, message: String },
+    InvalidJson { message: String },
+    SchemaValidation { errors: Vec<String> },
+}
+
+impl fmt::Display for AgentTraceValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FileRead { path, message } => {
+                write!(f, "Agent Trace JSON file could not be read at '{path}': {message}")
+            }
+            Self::InvalidJson { message } => {
+                write!(f, "Agent Trace JSON must be valid JSON: {message}")
+            }
+            Self::SchemaValidation { errors } => write!(
+                f,
+                "Agent Trace JSON failed schema validation against embedded schema '{AGENT_TRACE_SCHEMA_PATH}': {}",
+                errors.join(" | ")
+            ),
+        }
+    }
+}
+
+impl Error for AgentTraceValidationError {}
+
+#[allow(dead_code)]
+fn agent_trace_schema_validator() -> &'static Validator {
+    AGENT_TRACE_SCHEMA_VALIDATOR.get_or_init(|| {
+        let schema: Value = serde_json::from_str(AGENT_TRACE_SCHEMA_JSON)
+            .expect("agent trace schema JSON should parse");
+        validator_for(&schema).expect("agent trace schema JSON should compile")
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn validate_agent_trace_value(value: &Value) -> Result<(), AgentTraceValidationError> {
+    let mut errors = agent_trace_schema_validator()
+        .iter_errors(value)
+        .map(|error| error.to_string())
+        .collect::<Vec<_>>();
+
+    if errors.is_empty() {
+        return Ok(());
+    }
+
+    errors.sort();
+
+    Err(AgentTraceValidationError::SchemaValidation { errors })
+}
+
+#[allow(dead_code)]
+pub(crate) fn validate_agent_trace_json(raw: &str) -> Result<(), AgentTraceValidationError> {
+    let value: Value =
+        serde_json::from_str(raw).map_err(|error| AgentTraceValidationError::InvalidJson {
+            message: error.to_string(),
+        })?;
+
+    validate_agent_trace_value(&value)
+}
+
+#[allow(dead_code)]
+pub(crate) fn validate_agent_trace_file(path: &Path) -> Result<(), AgentTraceValidationError> {
+    let raw =
+        std::fs::read_to_string(path).map_err(|error| AgentTraceValidationError::FileRead {
+            path: path.display().to_string(),
+            message: error.to_string(),
+        })?;
+
+    validate_agent_trace_json(&raw)
+}
 /// Classification of a single hunk's origin relative to the AI candidate patch.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
