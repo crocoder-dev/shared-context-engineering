@@ -41,12 +41,15 @@ Implement a local Turso database for storing agent traces. This includes adding 
   - **Files changed:** cli/migrations/001_create_agent_traces.sql
   - **Evidence:** Migration file created with agent_traces table (id INTEGER PRIMARY KEY AUTOINCREMENT, trace_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))
 
-- [ ] T03: Implement cli/src/services/local_db.rs - Turso adapter (status:todo)
+- [x] T03: Implement cli/src/services/local_db.rs - Turso adapter (status:done)
   - Task ID: T03
   - Goal: Create the local DB module that initializes Turso, runs embedded migrations, and provides query/execute methods
   - Boundaries (in/out of scope): In - local_db.rs with Turso Builder, migration runner using embedded SQL via `include_str!`, basic error handling with `anyhow`. Out - cloud sync, agent trace serialization/deserialization
   - Done when: local_db.rs exists, can initialize a DB at a path, runs migrations on startup, has basic query/execute methods
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo check'`, unit tests for local_db if applicable
+  - **Completed:** 2026-04-24
+  - **Files changed:** cli/src/services/local_db.rs, cli/src/services/mod.rs, cli/src/services/default_paths.rs, flake.nix
+  - **Evidence:** `nix flake check` passes, LocalDb struct with new/execute/query methods, embedded migrations from cli/migrations/, local_db_path() in default_paths.rs
 
 - [ ] T04: Implement cli/src/services/sync.rs - sync command (status:todo)
   - Task ID: T04
