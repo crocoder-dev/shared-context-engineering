@@ -42,10 +42,10 @@
           fileset = pkgs.lib.fileset.unions [
             (craneLib.fileset.commonCargoSources workspaceRoot)
             (pkgs.lib.fileset.maybeMissing ./.version)
-             (pkgs.lib.fileset.maybeMissing ./cli/src/services/default_paths.rs)
-             (pkgs.lib.fileset.maybeMissing ./cli/src/services/agent_trace/fixtures)
-             (pkgs.lib.fileset.maybeMissing ./cli/src/services/patch/fixtures)
-             ./config
+            (pkgs.lib.fileset.maybeMissing ./cli/src/services/default_paths.rs)
+            (pkgs.lib.fileset.maybeMissing ./cli/src/services/agent_trace/fixtures)
+            (pkgs.lib.fileset.maybeMissing ./cli/src/services/patch/fixtures)
+            ./config
             (pkgs.lib.fileset.maybeMissing ./cli/assets/hooks)
             (pkgs.lib.fileset.maybeMissing ./scripts/prepare-cli-generated-assets.sh)
           ];
@@ -975,15 +975,16 @@
         devShells.default = pkgs.mkShell {
           packages =
             with pkgs;
-[
-               biome
-               bun
-               jq
-               pkl
-               typescript
-               nodePackages.typescript-language-server
-               rust-analyzer
-               scePackage
+            [
+              biome
+              bun
+              jq
+              pkl
+              typescript
+              nodePackages.typescript-language-server
+              nodePackages.vscode-json-languageserver
+              rust-analyzer
+              scePackage
             ]
             ++ [ rustToolchain ];
 
