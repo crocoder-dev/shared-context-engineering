@@ -528,6 +528,9 @@ mod command_runtime {
             services::setup::bootstrap_repo_local_config(&repository_root)
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
 
+            services::setup::bootstrap_local_db()
+                .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
+
             let preflight_hooks_repository = if self.request.install_hooks {
                 let hooks_repository = self
                     .request

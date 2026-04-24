@@ -51,12 +51,15 @@ Implement a local Turso database for storing agent traces. This includes adding 
   - **Files changed:** cli/src/services/local_db.rs, cli/src/services/mod.rs, cli/src/services/default_paths.rs, flake.nix
   - **Evidence:** `nix flake check` passes, LocalDb struct with new/execute/query methods, embedded migrations from cli/migrations/, local_db_path() in default_paths.rs
 
-- [ ] T04: Implement cli/src/services/sync.rs - sync command (status:todo)
+- [x] T04: Bootstrap local DB during `sce setup` (status:done)
   - Task ID: T04
-  - Goal: Implement the sync command that initializes the local DB and reports status
-  - Boundaries (in/out of scope): In - sync.rs with SyncRequest struct, calls local_db to init/status, prints DB path and status. Out - cloud sync, agent trace insertion
-  - Done when: sync.rs exists with command implementation, `sce sync` initializes the DB and prints status
-  - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo run -- sync'`, verify DB file is created at expected path
+  - Goal: Ensure `sce setup` initializes the local Turso DB so setup fully bootstraps local prerequisites without introducing `sync` yet
+  - Boundaries (in/out of scope): In - setup bootstrap path calls local_db initialization, deterministic setup failure propagation when DB init fails. Out - `sync.rs`, cloud sync, agent trace insertion
+  - Done when: `sce setup` bootstraps repo-local config and local DB initialization path in one run; no `sync` command changes are introduced
+  - Verification notes (commands or checks): `nix run .#pkl-check-generated`, `nix flake check`
+  - **Completed:** 2026-04-24
+  - **Files changed:** cli/src/services/setup.rs, cli/src/app.rs, context/plans/turso-local-db-sync.md
+  - **Evidence:** `nix run .#pkl-check-generated` passes; `nix flake check` passes
 
 - [ ] T05: Wire up sync command in cli_schema.rs and app.rs (status:todo)
   - Task ID: T05
