@@ -11,7 +11,7 @@ Current runtime source: `config/lib/agent-trace-plugin/opencode-sce-agent-trace-
 { "input": { ...event hook input... } }
 ```
 - When diff extraction succeeds, the plugin invokes `sce hooks diff-trace` and sends `{ sessionID, diff, time }` over STDIN JSON.
-- The plugin no longer writes `[timestamp]-diff-trace.json` directly; the Rust `diff-trace` hook path owns that artifact.
+- The plugin no longer writes diff-trace artifacts directly; the Rust `diff-trace` hook path owns collision-safe timestamp+attempt artifact writes.
 
 ## Diff extraction seam
 

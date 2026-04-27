@@ -609,9 +609,9 @@ mod command_runtime {
 
         fn execute(
             &self,
-            _logger: &services::observability::Logger,
+            logger: &services::observability::Logger,
         ) -> Result<String, ClassifiedError> {
-            services::hooks::run_hooks_subcommand(&self.subcommand)
+            services::hooks::run_hooks_subcommand(&self.subcommand, Some(logger))
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))
         }
     }
