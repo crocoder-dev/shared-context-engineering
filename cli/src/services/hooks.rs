@@ -3,6 +3,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
@@ -12,6 +13,8 @@ use crate::services::config;
 
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
+
+static TRACE_FILE_NAME_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HookSubcommand {
@@ -155,11 +158,33 @@ fn persist_diff_trace_payload_to_file(
 }
 
 fn build_diff_trace_file_name(timestamp: DateTime<Utc>) -> String {
-    format!("{}-diff-trace.json", format_trace_timestamp(timestamp))
+    build_trace_file_name("diff-trace", timestamp)
 }
 
 fn format_trace_timestamp(timestamp: DateTime<Utc>) -> String {
     timestamp.format("%Y-%m-%dT%H-%M-%S-%3fZ").to_string()
+}
+
+fn build_trace_file_name(trace_name: &str, timestamp: DateTime<Utc>) -> String {
+    let safe_name = sanitize_trace_name(trace_name);
+    let sequence = TRACE_FILE_NAME_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
+
+    format!(
+        "{}-{}-{}.json",
+        format_trace_timestamp(timestamp),
+        sequence,
+        safe_name
+    )
+}
+
+fn sanitize_trace_name(trace_name: &str) -> String {
+    trace_name
+        .chars()
+        .map(|character| match character {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '-' => character,
+            _ => '_',
+        })
+        .collect()
 }
 
 fn run_pre_commit_subcommand_with_trace(repository_root: &Path) -> Result<String> {
@@ -315,11 +340,7 @@ fn persist_hook_trace(
 }
 
 fn build_hook_trace_file_name(subcommand: &HookSubcommand) -> String {
-    format!(
-        "{}-{}.json",
-        Utc::now().format("%Y-%m-%dT%H-%M-%S-%3fZ"),
-        hook_trace_name(subcommand)
-    )
+    build_trace_file_name(hook_trace_name(subcommand), Utc::now())
 }
 
 fn hook_trace_name(subcommand: &HookSubcommand) -> &'static str {
