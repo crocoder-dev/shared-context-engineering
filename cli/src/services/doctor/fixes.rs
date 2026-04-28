@@ -1,11 +1,17 @@
-use crate::services::setup::{RequiredHookInstallStatus, RequiredHooksInstallOutcome};
+use std::path::{Path, PathBuf};
+
+use anyhow::{bail, Context, Result};
+
+use crate::services::hooks_lifecycle::HOOKS_SERVICE_ID;
+use crate::services::lifecycle::{FixReport, FixRequest, LifecycleContext, LifecycleOutcome};
+use crate::services::lifecycle_registry::LifecycleRegistry;
 
 use super::types::{DoctorFixResultRecord, FixResult, ProblemCategory, ProblemFixability};
 use super::{DoctorDependencies, HookDoctorReport};
 
 pub(super) fn run_auto_fixes(
     report: &HookDoctorReport,
-    dependencies: &DoctorDependencies<'_>,
+    _dependencies: &DoctorDependencies<'_>,
 ) -> Vec<DoctorFixResultRecord> {
     let auto_fixable_problems = report
         .problems
@@ -32,8 +38,8 @@ pub(super) fn run_auto_fixes(
             return fix_results;
         };
 
-        match (dependencies.install_required_git_hooks)(repository_root) {
-            Ok(outcome) => fix_results.extend(build_hook_fix_results(&outcome)),
+        match run_hook_lifecycle_fix(repository_root) {
+            Ok(report) => fix_results.extend(build_hook_fix_results(&report)),
             Err(error) => fix_results.push(DoctorFixResultRecord {
                 category: ProblemCategory::HookRollout,
                 outcome: FixResult::Failed,
@@ -47,30 +53,62 @@ pub(super) fn run_auto_fixes(
     fix_results
 }
 
-fn build_hook_fix_results(outcome: &RequiredHooksInstallOutcome) -> Vec<DoctorFixResultRecord> {
-    outcome
-        .hook_results
+fn run_hook_lifecycle_fix(repository_root: &Path) -> Result<FixReport> {
+    let hooks_lifecycle = LifecycleRegistry::fix_lifecycle(HOOKS_SERVICE_ID)
+        .context("Hooks lifecycle fix capability is not registered")?;
+
+    hooks_lifecycle.fix(FixRequest {
+        context: LifecycleContext {
+            repository: Some(repository_root.to_path_buf()),
+            ..LifecycleContext::default()
+        },
+        problem_kinds: Vec::new(),
+    })
+}
+
+fn build_hook_fix_results(report: &FixReport) -> Vec<DoctorFixResultRecord> {
+    report
+        .actions
         .iter()
-        .map(|hook_result| DoctorFixResultRecord {
-            category: ProblemCategory::HookRollout,
-            outcome: match hook_result.status {
-                RequiredHookInstallStatus::Installed | RequiredHookInstallStatus::Updated => {
-                    FixResult::Fixed
-                }
-                RequiredHookInstallStatus::Skipped => FixResult::Skipped,
-            },
-            detail: format!(
-                "Hook '{}' {} at '{}'.",
-                hook_result.hook_name,
-                match hook_result.status {
-                    RequiredHookInstallStatus::Installed => "installed",
-                    RequiredHookInstallStatus::Updated => "updated",
-                    RequiredHookInstallStatus::Skipped => "already matched canonical content",
-                },
-                hook_result.hook_path.display()
-            ),
+        .map(|action| {
+            let hook_path = PathBuf::from(&action.target);
+            let hook_name = hook_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(action.target.as_str());
+            DoctorFixResultRecord {
+                category: ProblemCategory::HookRollout,
+                outcome: fix_result_from_lifecycle_outcome(action.outcome)
+                    .unwrap_or(FixResult::Failed),
+                detail: format!(
+                    "Hook '{}' {} at '{}'.",
+                    hook_name,
+                    hook_status_text_from_lifecycle_outcome(action.outcome)
+                        .unwrap_or("repair failed"),
+                    hook_path.display()
+                ),
+            }
         })
         .collect()
+}
+
+fn fix_result_from_lifecycle_outcome(outcome: LifecycleOutcome) -> Result<FixResult> {
+    match outcome {
+        LifecycleOutcome::Applied | LifecycleOutcome::Updated => Ok(FixResult::Fixed),
+        LifecycleOutcome::Unchanged | LifecycleOutcome::Skipped => Ok(FixResult::Skipped),
+        LifecycleOutcome::Failed => bail!("unsupported failed lifecycle fix outcome"),
+    }
+}
+
+fn hook_status_text_from_lifecycle_outcome(outcome: LifecycleOutcome) -> Result<&'static str> {
+    match outcome {
+        LifecycleOutcome::Applied => Ok("installed"),
+        LifecycleOutcome::Updated => Ok("updated"),
+        LifecycleOutcome::Unchanged | LifecycleOutcome::Skipped => {
+            Ok("already matched canonical content")
+        }
+        LifecycleOutcome::Failed => bail!("unsupported failed lifecycle fix outcome"),
+    }
 }
 
 pub(super) fn build_manual_fix_results(report: &HookDoctorReport) -> Vec<DoctorFixResultRecord> {

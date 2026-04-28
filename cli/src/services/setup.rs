@@ -4,8 +4,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::services::style::{label, success, value};
 use crate::services::{default_paths, default_paths::RepoPaths};
+use crate::services::{
+    hooks_lifecycle::HOOKS_SERVICE_ID,
+    lifecycle::{
+        LifecycleContext, LifecycleOutcome, SetupReport, SetupRequest as LifecycleSetupRequest,
+    },
+    lifecycle_registry::LifecycleRegistry,
+    style::{label, success, value},
+};
 
 /// Canonical JSON payload for a newly bootstrapped repo-local `.sce/config.json`.
 /// Contains only the `$schema` declaration pointing to the SCE config JSON Schema.
@@ -202,8 +209,17 @@ pub fn run_setup_for_mode(repository_root: &Path, mode: SetupMode) -> Result<Str
 }
 
 pub fn run_setup_hooks(repository_root: &Path) -> Result<String> {
-    let outcome = install::install_required_git_hooks(repository_root)
+    let hooks_lifecycle = LifecycleRegistry::setup_lifecycle(HOOKS_SERVICE_ID)
+        .context("Hooks lifecycle capability is not registered")?;
+    let report = hooks_lifecycle
+        .setup(LifecycleSetupRequest {
+            context: LifecycleContext {
+                repository: Some(repository_root.to_path_buf()),
+                ..LifecycleContext::default()
+            },
+        })
         .context("Hook setup failed while installing required git hooks")?;
+    let outcome = required_hooks_install_outcome_from_setup_report(repository_root, &report)?;
     Ok(format_required_hook_install_success_message(&outcome))
 }
 
@@ -332,6 +348,68 @@ fn required_hook_status_label(status: RequiredHookInstallStatus) -> &'static str
     }
 }
 
+fn required_hooks_install_outcome_from_setup_report(
+    repository_root: &Path,
+    report: &SetupReport,
+) -> Result<RequiredHooksInstallOutcome> {
+    let mut hooks_directory = None;
+    let mut hook_results = Vec::new();
+
+    for action in &report.actions {
+        if action.service_id != HOOKS_SERVICE_ID {
+            bail!(
+                "Setup lifecycle report contained unexpected service id '{}'",
+                action.service_id.0
+            );
+        }
+
+        let hook_path = PathBuf::from(&action.target);
+        let hook_name = hook_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("Hook lifecycle action target should end with a UTF-8 hook name")?
+            .to_string();
+        let action_parent = hook_path
+            .parent()
+            .context("Hook lifecycle action target should include a hooks directory")?
+            .to_path_buf();
+
+        if let Some(existing_directory) = &hooks_directory {
+            if existing_directory != &action_parent {
+                bail!("Hook lifecycle setup report contained multiple hooks directories");
+            }
+        } else {
+            hooks_directory = Some(action_parent);
+        }
+
+        hook_results.push(RequiredHookInstallResult {
+            hook_name,
+            hook_path,
+            status: required_hook_status_from_lifecycle_outcome(action.outcome)?,
+        });
+    }
+
+    Ok(RequiredHooksInstallOutcome {
+        repository_root: repository_root.to_path_buf(),
+        hooks_directory: hooks_directory
+            .context("Hook lifecycle setup report contained no actions")?,
+        hook_results,
+    })
+}
+
+fn required_hook_status_from_lifecycle_outcome(
+    outcome: LifecycleOutcome,
+) -> Result<RequiredHookInstallStatus> {
+    match outcome {
+        LifecycleOutcome::Applied => Ok(RequiredHookInstallStatus::Installed),
+        LifecycleOutcome::Updated => Ok(RequiredHookInstallStatus::Updated),
+        LifecycleOutcome::Unchanged => Ok(RequiredHookInstallStatus::Skipped),
+        LifecycleOutcome::Skipped | LifecycleOutcome::Failed => {
+            bail!("Hook lifecycle setup report contained unsupported outcome: {outcome:?}")
+        }
+    }
+}
+
 fn setup_target_label(target: SetupTarget) -> &'static str {
     match target {
         SetupTarget::OpenCode => "OpenCode",
@@ -375,6 +453,19 @@ pub struct RequiredHooksInstallOutcome {
 
 pub fn install_required_git_hooks(repository_root: &Path) -> Result<RequiredHooksInstallOutcome> {
     install::install_required_git_hooks(repository_root)
+}
+
+#[allow(dead_code)]
+pub fn preview_required_git_hooks(repository_root: &Path) -> Result<RequiredHooksInstallOutcome> {
+    install::preview_required_git_hooks(repository_root)
+}
+
+#[allow(dead_code)]
+pub(crate) fn preview_required_git_hooks_in_directory(
+    resolved_repository_root: &Path,
+    hooks_directory: &Path,
+) -> Result<RequiredHooksInstallOutcome> {
+    install::preview_required_git_hooks_in_directory(resolved_repository_root, hooks_directory)
 }
 
 pub fn install_embedded_setup_assets(
@@ -463,6 +554,65 @@ mod install {
         install_required_git_hooks_in_resolved_repository(&resolved_repository_root, |from, to| {
             fs::rename(from, to)
         })
+    }
+
+    pub(super) fn preview_required_git_hooks(
+        repository_root: &Path,
+    ) -> Result<RequiredHooksInstallOutcome> {
+        let resolved_repository_root = prepare_setup_hooks_repository(repository_root)?;
+        let hooks_directory = resolve_git_hooks_directory(&resolved_repository_root)?;
+        preview_required_git_hooks_in_directory(&resolved_repository_root, &hooks_directory)
+    }
+
+    pub(crate) fn preview_required_git_hooks_in_directory(
+        resolved_repository_root: &Path,
+        hooks_directory: &Path,
+    ) -> Result<RequiredHooksInstallOutcome> {
+        let mut hook_results = Vec::new();
+
+        for hook_asset in iter_required_hook_assets() {
+            validate_embedded_relative_path(hook_asset.relative_path)?;
+            let hook_path = hooks_directory.join(hook_asset.relative_path);
+            let status = preview_required_hook_status(&hook_path, hook_asset)?;
+
+            hook_results.push(RequiredHookInstallResult {
+                hook_name: hook_asset.relative_path.to_string(),
+                hook_path,
+                status,
+            });
+        }
+
+        Ok(RequiredHooksInstallOutcome {
+            repository_root: resolved_repository_root.to_path_buf(),
+            hooks_directory: hooks_directory.to_path_buf(),
+            hook_results,
+        })
+    }
+
+    fn preview_required_hook_status(
+        hook_path: &Path,
+        hook_asset: &EmbeddedAsset,
+    ) -> Result<RequiredHookInstallStatus> {
+        let Some(metadata) = fs::metadata(hook_path).ok() else {
+            return Ok(RequiredHookInstallStatus::Installed);
+        };
+
+        if !metadata.is_file() {
+            bail!(
+                "Existing hook target '{}' is not a file",
+                hook_path.display()
+            );
+        }
+
+        let existing_bytes = fs::read(hook_path)
+            .with_context(|| format!("Failed to read existing hook '{}'", hook_path.display()))?;
+        let executable = is_executable_file(hook_path)?;
+
+        if existing_bytes == hook_asset.bytes && executable {
+            Ok(RequiredHookInstallStatus::Skipped)
+        } else {
+            Ok(RequiredHookInstallStatus::Updated)
+        }
     }
 
     pub(super) fn install_embedded_setup_assets(
@@ -1113,4 +1263,59 @@ where
 
 pub fn setup_cancelled_text() -> String {
     value("Setup cancelled. No files were changed.")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::lifecycle::{LifecycleAction, LifecycleOperation};
+
+    #[test]
+    fn setup_report_conversion_preserves_required_hook_outcomes() {
+        let report = SetupReport {
+            service_id: HOOKS_SERVICE_ID,
+            actions: vec![
+                LifecycleAction {
+                    service_id: HOOKS_SERVICE_ID,
+                    operation: LifecycleOperation::Setup,
+                    target: "/repo/.git/hooks/pre-commit".to_string(),
+                    description: "installed required git hook 'pre-commit'".to_string(),
+                    outcome: LifecycleOutcome::Applied,
+                },
+                LifecycleAction {
+                    service_id: HOOKS_SERVICE_ID,
+                    operation: LifecycleOperation::Setup,
+                    target: "/repo/.git/hooks/commit-msg".to_string(),
+                    description: "updated required git hook 'commit-msg'".to_string(),
+                    outcome: LifecycleOutcome::Updated,
+                },
+                LifecycleAction {
+                    service_id: HOOKS_SERVICE_ID,
+                    operation: LifecycleOperation::Setup,
+                    target: "/repo/.git/hooks/post-commit".to_string(),
+                    description: "kept required git hook 'post-commit'".to_string(),
+                    outcome: LifecycleOutcome::Unchanged,
+                },
+            ],
+        };
+
+        let outcome = required_hooks_install_outcome_from_setup_report(Path::new("/repo"), &report)
+            .expect("setup report should convert to required hook outcome");
+
+        assert_eq!(outcome.repository_root, PathBuf::from("/repo"));
+        assert_eq!(outcome.hooks_directory, PathBuf::from("/repo/.git/hooks"));
+        assert_eq!(outcome.hook_results[0].hook_name, "pre-commit");
+        assert_eq!(
+            outcome.hook_results[0].status,
+            RequiredHookInstallStatus::Installed
+        );
+        assert_eq!(
+            outcome.hook_results[1].status,
+            RequiredHookInstallStatus::Updated
+        );
+        assert_eq!(
+            outcome.hook_results[2].status,
+            RequiredHookInstallStatus::Skipped
+        );
+    }
 }

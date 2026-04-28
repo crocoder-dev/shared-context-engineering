@@ -4,9 +4,13 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::services::default_paths::{opencode_asset, InstallTargetPaths, RepoPaths};
-use crate::services::setup::{
-    iter_embedded_assets_for_setup_target, iter_required_hook_assets, EmbeddedAsset, SetupTarget,
+use crate::services::hooks_lifecycle::{
+    diagnose_required_hooks, RequiredHookContentState, HOOKS_DIRECTORY_MISSING,
+    HOOKS_PATH_NOT_DIRECTORY, HOOKS_SERVICE_ID, HOOK_CONTENT_STALE, HOOK_NOT_EXECUTABLE,
+    HOOK_READ_FAILED, REQUIRED_HOOK_MISSING,
 };
+use crate::services::lifecycle_registry::LifecycleRegistry;
+use crate::services::setup::{iter_embedded_assets_for_setup_target, EmbeddedAsset, SetupTarget};
 
 use super::types::{
     DoctorProblem, FileLocationHealth, GlobalStateHealth, HookContentState, HookDoctorReport,
@@ -15,7 +19,7 @@ use super::types::{
     Readiness, OPENCODE_AGENTS_LABEL, OPENCODE_COMMANDS_LABEL, OPENCODE_PLUGINS_LABEL,
     OPENCODE_SKILLS_LABEL,
 };
-use super::{is_executable, DoctorDependencies, DoctorMode, REQUIRED_HOOKS};
+use super::{DoctorDependencies, DoctorMode};
 
 pub(super) fn build_report_with_dependencies(
     mode: DoctorMode,
@@ -304,103 +308,111 @@ fn collect_global_state_health(
 }
 
 fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> Vec<HookFileHealth> {
-    if !directory.exists() {
-        problems.push(DoctorProblem {
-            kind: ProblemKind::HooksDirectoryMissing,
-            category: ProblemCategory::HookRollout,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::AutoFixable,
-            summary: format!("Hooks directory '{}' does not exist.", directory.display()),
-            remediation: format!(
-                "Run 'sce doctor --fix' to install the canonical SCE-managed hooks into '{}', or run 'sce setup --hooks' directly.",
-                directory.display()
-            ),
-            next_action: "doctor_fix",
-        });
-    } else if !directory.is_dir() {
-        problems.push(DoctorProblem {
-            kind: ProblemKind::HooksPathNotDirectory,
-            category: ProblemCategory::HookRollout,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!("Hooks path '{}' is not a directory.", directory.display()),
-            remediation: format!(
-                "Replace '{}' with a writable hooks directory, then rerun 'sce doctor' or 'sce setup --hooks'.",
-                directory.display()
-            ),
-            next_action: "manual_steps",
-        });
-    }
+    let _hooks_diagnostic_lifecycle = LifecycleRegistry::diagnostic_lifecycle(HOOKS_SERVICE_ID)
+        .expect("hooks diagnostic lifecycle should be registered");
+    let diagnostic_report = diagnose_required_hooks(directory);
+    problems.extend(
+        diagnostic_report
+            .diagnostics
+            .diagnostics
+            .iter()
+            .map(doctor_problem_from_hook_diagnostic),
+    );
 
-    REQUIRED_HOOKS
-        .iter()
-        .map(|hook_name| {
-            let hook_path = directory.join(hook_name);
-            let metadata = fs::metadata(&hook_path).ok();
-            let exists = metadata.is_some();
-            let executable = metadata
-                .as_ref()
-                .is_some_and(|entry| entry.is_file() && is_executable(entry));
-            let content_state = inspect_hook_content_state(hook_name, &hook_path, exists, problems);
-
-            if !exists {
-                problems.push(DoctorProblem {
-                    kind: ProblemKind::RequiredHookMissing,
-                    category: ProblemCategory::HookRollout,
-                    severity: ProblemSeverity::Error,
-                    fixability: ProblemFixability::AutoFixable,
-                    summary: format!(
-                        "Missing required hook '{}' at '{}'.",
-                        hook_name,
-                        hook_path.display()
-                    ),
-                    remediation: format!(
-                        "Run 'sce doctor --fix' to install the canonical '{hook_name}' hook, or run 'sce setup --hooks' directly."
-                    ),
-                    next_action: "doctor_fix",
-                });
-            } else if !executable {
-                problems.push(DoctorProblem {
-                    kind: ProblemKind::HookNotExecutable,
-                    category: ProblemCategory::HookRollout,
-                    severity: ProblemSeverity::Error,
-                    fixability: ProblemFixability::AutoFixable,
-                    summary: format!("Hook '{hook_name}' exists but is not executable."),
-                    remediation: format!(
-                        "Run 'sce doctor --fix' to restore the canonical executable hook, or run 'sce setup --hooks' / 'chmod +x {}' manually.",
-                        hook_path.display()
-                    ),
-                    next_action: "doctor_fix",
-                });
-            }
-
-            if content_state == HookContentState::Stale {
-                problems.push(DoctorProblem {
-                    kind: ProblemKind::HookContentStale,
-                    category: ProblemCategory::HookRollout,
-                    severity: ProblemSeverity::Error,
-                    fixability: ProblemFixability::AutoFixable,
-                    summary: format!(
-                        "Hook '{}' at '{}' differs from the canonical SCE-managed content.",
-                        hook_name,
-                        hook_path.display()
-                    ),
-                    remediation: format!(
-                        "Run 'sce doctor --fix' to reinstall the canonical '{hook_name}' hook content, or run 'sce setup --hooks' directly."
-                    ),
-                    next_action: "doctor_fix",
-                });
-            }
-
-            HookFileHealth {
-                name: hook_name,
-                path: hook_path,
-                exists,
-                executable,
-                content_state,
-            }
+    diagnostic_report
+        .hooks
+        .into_iter()
+        .map(|hook| HookFileHealth {
+            name: hook.name,
+            path: hook.path,
+            exists: hook.exists,
+            executable: hook.executable,
+            content_state: hook_content_state_from_lifecycle(hook.content_state),
         })
         .collect()
+}
+
+fn doctor_problem_from_hook_diagnostic(
+    diagnostic: &crate::services::lifecycle::DiagnosticRecord,
+) -> DoctorProblem {
+    let (kind, category, next_action) = match diagnostic.kind.as_str() {
+        HOOKS_DIRECTORY_MISSING => (
+            ProblemKind::HooksDirectoryMissing,
+            ProblemCategory::HookRollout,
+            "doctor_fix",
+        ),
+        HOOKS_PATH_NOT_DIRECTORY => (
+            ProblemKind::HooksPathNotDirectory,
+            ProblemCategory::HookRollout,
+            "manual_steps",
+        ),
+        REQUIRED_HOOK_MISSING => (
+            ProblemKind::RequiredHookMissing,
+            ProblemCategory::HookRollout,
+            "doctor_fix",
+        ),
+        HOOK_NOT_EXECUTABLE => (
+            ProblemKind::HookNotExecutable,
+            ProblemCategory::HookRollout,
+            "doctor_fix",
+        ),
+        HOOK_CONTENT_STALE => (
+            ProblemKind::HookContentStale,
+            ProblemCategory::HookRollout,
+            "doctor_fix",
+        ),
+        HOOK_READ_FAILED => (
+            ProblemKind::HookReadFailed,
+            ProblemCategory::FilesystemPermissions,
+            "manual_steps",
+        ),
+        _ => (
+            ProblemKind::UnableToResolveGitHooksDirectory,
+            ProblemCategory::RepositoryTargeting,
+            "manual_steps",
+        ),
+    };
+
+    DoctorProblem {
+        kind,
+        category,
+        severity: problem_severity_from_lifecycle(diagnostic.severity),
+        fixability: problem_fixability_from_lifecycle(diagnostic.fixability),
+        summary: diagnostic.summary.clone(),
+        remediation: diagnostic.remediation.clone(),
+        next_action,
+    }
+}
+
+fn hook_content_state_from_lifecycle(content_state: RequiredHookContentState) -> HookContentState {
+    match content_state {
+        RequiredHookContentState::Current => HookContentState::Current,
+        RequiredHookContentState::Stale => HookContentState::Stale,
+        RequiredHookContentState::Missing => HookContentState::Missing,
+        RequiredHookContentState::Unknown => HookContentState::Unknown,
+    }
+}
+
+fn problem_severity_from_lifecycle(
+    severity: crate::services::lifecycle::DiagnosticSeverity,
+) -> ProblemSeverity {
+    match severity {
+        crate::services::lifecycle::DiagnosticSeverity::Error => ProblemSeverity::Error,
+        crate::services::lifecycle::DiagnosticSeverity::Warning => ProblemSeverity::Warning,
+    }
+}
+
+fn problem_fixability_from_lifecycle(
+    fixability: crate::services::lifecycle::DiagnosticFixability,
+) -> ProblemFixability {
+    match fixability {
+        crate::services::lifecycle::DiagnosticFixability::AutoFixable => {
+            ProblemFixability::AutoFixable
+        }
+        crate::services::lifecycle::DiagnosticFixability::ManualOnly => {
+            ProblemFixability::ManualOnly
+        }
+    }
 }
 
 fn inspect_opencode_integration_health(
@@ -748,50 +760,4 @@ fn inspect_opencode_asset_state(
 
 fn path_is_file(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
-}
-
-fn inspect_hook_content_state(
-    hook_name: &str,
-    hook_path: &Path,
-    exists: bool,
-    problems: &mut Vec<DoctorProblem>,
-) -> HookContentState {
-    if !exists {
-        return HookContentState::Missing;
-    }
-
-    let Some(expected_hook) =
-        iter_required_hook_assets().find(|asset| asset.relative_path == hook_name)
-    else {
-        return HookContentState::Unknown;
-    };
-
-    match fs::read(hook_path) {
-        Ok(bytes) => {
-            if bytes == expected_hook.bytes {
-                HookContentState::Current
-            } else {
-                HookContentState::Stale
-            }
-        }
-        Err(error) => {
-            problems.push(DoctorProblem {
-                kind: ProblemKind::HookReadFailed,
-                category: ProblemCategory::FilesystemPermissions,
-                severity: ProblemSeverity::Error,
-                fixability: ProblemFixability::ManualOnly,
-                summary: format!(
-                    "Unable to read hook '{}' at '{}': {error}",
-                    hook_name,
-                    hook_path.display()
-                ),
-                remediation: format!(
-                    "Verify that '{}' is readable before rerunning 'sce doctor'.",
-                    hook_path.display()
-                ),
-                next_action: "manual_steps",
-            });
-            HookContentState::Unknown
-        }
-    }
 }

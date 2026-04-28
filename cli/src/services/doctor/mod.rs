@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -6,7 +5,6 @@ use anyhow::{Context, Result};
 
 use crate::services::default_paths::{resolve_sce_default_locations, resolve_state_data_root};
 use crate::services::output_format::OutputFormat;
-use crate::services::setup::{install_required_git_hooks, RequiredHooksInstallOutcome};
 
 mod fixes;
 mod inspect;
@@ -42,7 +40,6 @@ struct DoctorDependencies<'a> {
     resolve_state_root: &'a dyn Fn() -> Result<PathBuf>,
     resolve_global_config_path: &'a dyn Fn() -> Result<PathBuf>,
     validate_config_file: &'a dyn Fn(&Path) -> Result<()>,
-    install_required_git_hooks: &'a dyn Fn(&Path) -> Result<RequiredHooksInstallOutcome>,
 }
 
 struct DoctorExecution {
@@ -69,7 +66,6 @@ fn execute_doctor(request: DoctorRequest, repository_root: &Path) -> DoctorExecu
                 Ok(resolve_sce_default_locations()?.global_config_file())
             },
             validate_config_file: &crate::services::config::validate_config_file,
-            install_required_git_hooks: &install_required_git_hooks,
         },
     )
 }
@@ -104,18 +100,6 @@ fn is_git_available() -> bool {
         .arg("--version")
         .output()
         .is_ok_and(|output| output.status.success())
-}
-
-#[cfg(unix)]
-fn is_executable(metadata: &fs::Metadata) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-
-    metadata.permissions().mode() & 0o111 != 0
-}
-
-#[cfg(not(unix))]
-fn is_executable(metadata: &fs::Metadata) -> bool {
-    metadata.is_file()
 }
 
 fn run_git_command(repository_root: &Path, args: &[&str]) -> Option<String> {
