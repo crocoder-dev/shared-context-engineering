@@ -100,7 +100,7 @@ A user-invocable `sync` command is not wired in the current CLI surface; local D
 
 ## Local Turso adapter behavior
 
-- `cli/src/services/local_db.rs` provides a `LocalDb` adapter with `new()`, `execute()`, and `query()` methods.
+- `cli/src/services/local_db.rs` provides a `LocalDb` adapter with `new()`, `execute()`, `query()`, and typed `insert_agent_trace(&AgentTrace)` methods.
 - `LocalDb::new()` resolves the canonical per-user DB path through `default_paths::local_db_path()`, creates parent directories, opens the local Turso database, and applies embedded SQL migrations from `cli/migrations/`.
 - `sce setup` uses `bootstrap_local_db()` to initialize that canonical DB as part of local prerequisite bootstrap.
 - `sce doctor` validates local DB path/health and can bootstrap the missing canonical parent directory when repair mode is appropriate.
@@ -109,14 +109,14 @@ A user-invocable `sync` command is not wired in the current CLI surface; local D
 
 - `cli/src/app.rs` unit tests cover default-help behavior, auth/config/setup/hooks routing, auth bare/help/nested-help routing, command-local `--help` routing for `doctor`/`hooks`, and failure paths for unknown commands/options and extra arguments.
 - `cli/src/app.rs` additionally validates setup contract routing for interactive default, explicit target flags, and mutually-exclusive setup flag failures.
-- `cli/src/services/local_db.rs` tests cover in-memory and file-backed local Turso initialization plus execute/query smoke checks.
+- `cli/src/services/local_db.rs` currently has no dedicated unit tests; filesystem/database regression coverage for LocalDb should be reintroduced as integration coverage rather than sandbox-sensitive unit tests.
 - `cli/src/services/resilience.rs` tests lock deterministic retry behavior for transient failures, timeout exhaustion, and actionable terminal error messaging.
 - `cli/src/services/{setup,hooks}.rs` include contract-focused tests for setup flag parsing/validation, interactive selection/cancellation dispatch, setup run messaging, and hook runtime argument/IO/finalization behavior.
 - `cli/src/services/token_storage.rs` tests cover token save/load round-trips, missing-file handling, token deletion outcomes, invalid JSON corruption handling, and Unix `0600` file-permission enforcement.
 - `cli/src/services/auth.rs` tests cover WorkOS device/token payload shape parsing, RFC 8628 device and refresh grant constant wiring, terminal OAuth error mapping with `Try:` guidance, polling decision handling for `authorization_pending`/`slow_down`/terminal outcomes, token-expiry evaluation, and refresh-token re-login guidance for terminal refresh errors.
 - `cli/src/services/auth_command.rs` tests cover auth subcommand dispatch, login/logout/status text-or-JSON report shapes (including canonical credentials-file path reporting), `Try:` guidance preservation, and runtime-I/O readiness for the login flow.
 - `cli/src/services/setup.rs` tests also verify embedded-manifest completeness against runtime `config/` trees, deterministic sorted path normalization, target-scoped iterator behavior (`OpenCode`, `Claude`, `Both`), and iterator-level omission of `skills/*/tile.json` while keeping `SKILL.md`; sandbox-sensitive filesystem install coverage has been removed from the unit-test slice for later integration-test coverage.
-- `cli/src/services/setup.rs` and `cli/src/services/local_db.rs` now share temporary path setup through `crate::test_support::TestTempDir` to keep filesystem test fixtures consistent and cleanup deterministic.
+- `cli/src/test_support.rs` provides `TestTempDir` for test code that still needs filesystem fixtures; LocalDb no longer uses it directly after sandbox-sensitive unit coverage was removed.
 - `cli/src/services/doctor/` unit coverage is intentionally limited to flake-safe output-shape assertions; filesystem, git, and real repair-flow coverage is deferred to future integration tests so `nix flake check` stays sandbox-safe.
 
 ## Dependency baseline

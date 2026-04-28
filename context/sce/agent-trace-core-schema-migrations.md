@@ -1,28 +1,30 @@
-# Local DB empty-file baseline
+# Retired Local DB Empty-File Baseline
+
+Historical reference only. The active local DB migration contract is now documented in [local-db.md](local-db.md).
 
 ## Scope
 
-- Current state after `agent-trace-removal-and-hook-noop-reset` T01.
-- Defines the minimal local DB runtime baseline for the current neutral local DB path.
-- Covers file creation/open behavior only; schema tables and migrations are not active.
+- Captures the state after `agent-trace-removal-and-hook-noop-reset` T01.
+- Defines the retired minimal local DB runtime baseline for the neutral local DB path.
+- The file creation/open-only baseline is no longer the active local DB schema state.
 
 ## Code ownership
 
-- Runtime bootstrap seam: `cli/src/services/local_db.rs` (`ensure_local_db_ready_blocking`).
-- Shared local DB connection helper: `cli/src/services/local_db.rs` (`connect_local`).
+- Retired runtime bootstrap seam: `cli/src/services/local_db.rs` (`ensure_local_db_ready_blocking`).
+- Retired shared local DB connection helper: `cli/src/services/local_db.rs` (`connect_local`).
 
 ## Current contract
 
-- `resolve_local_db_path` resolves the canonical per-user state path.
-- The retained bootstrap seam opens/creates the local Turso file and returns its path when future runtime callers invoke it.
-- No schema bootstrap runs.
-- No trace, reconciliation, retry, or prompt tables are created as part of runtime readiness.
+- Historical behavior: `resolve_local_db_path` resolved the canonical per-user state path.
+- Historical behavior: the retained bootstrap seam opened/created the local Turso file and returned its path when runtime callers invoked it.
+- Historical behavior: no schema bootstrap ran.
+- Current active behavior: `LocalDb::new()` runs embedded migrations from `cli/migrations/`.
 
 ## Observable consequences
 
-- A newly created DB file is empty until another future task introduces schema creation.
-- Doctor/runtime callers may still ensure the file exists, but they must not assume DB tables are present.
-- Local DB persistence adapters that previously wrote trace or reconciliation rows are disconnected in the current runtime.
+- This file should not be used as current-state guidance for local DB schema behavior.
+- Current local DB schema behavior is documented in [local-db.md](local-db.md).
+- Local hook runtime trace persistence remains disconnected unless explicitly documented elsewhere.
 
 ## Removed behavior
 
