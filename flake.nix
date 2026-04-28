@@ -7,6 +7,8 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
     crane.url = "github:ipetkov/crane";
+    opencode.url = "github:anomalyco/opencode/dev";
+    opencode-nixpkgs.follows = "opencode/nixpkgs";
   };
 
   outputs =
@@ -16,6 +18,8 @@
       flake-utils,
       rust-overlay,
       crane,
+      opencode,
+      opencode-nixpkgs,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -23,6 +27,10 @@
         pkgs = import nixpkgs {
           inherit system;
           overlays = [ rust-overlay.overlays.default ];
+        };
+
+        opencodePkgs = import opencode-nixpkgs {
+          inherit system;
         };
 
         rustVersion = "1.93.1";
@@ -212,6 +220,14 @@
             };
           }
         );
+
+        opencodePackage = opencode.packages.${system}.opencode.overrideAttrs (oldAttrs: {
+          postPatch = (oldAttrs.postPatch or "") + ''
+            substituteInPlace package.json \
+              --replace-fail '"packageManager": "bun@1.3.13"' \
+              '"packageManager": "bun@${opencodePkgs.bun.version}"'
+          '';
+        });
 
         pklCheckGeneratedApp = pkgs.writeShellApplication {
           name = "pkl-check-generated";
@@ -864,6 +880,7 @@
       {
         packages = {
           sce = scePackage;
+          opencode = opencodePackage;
           default = scePackage;
         };
 
@@ -993,6 +1010,7 @@
               typescript
               nodePackages.typescript-language-server
               nodePackages.vscode-json-languageserver
+              opencodePackage
               rust-analyzer
               scePackage
             ]
@@ -1010,6 +1028,7 @@
             echo "- tsserver-lsp: $(version_of typescript-language-server)"
             echo "- rust: $(version_of rustc)"
             echo "- sce: $(version_of sce)"
+            echo "- opencode: $(version_of opencode)"
             echo "- pkl-generate: nix run .#pkl-generate"
             echo "- pkl-check-generated: nix run .#pkl-check-generated"
             echo "- release-artifacts: nix run .#release-artifacts -- --help"

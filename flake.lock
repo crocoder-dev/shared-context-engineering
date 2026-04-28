@@ -49,11 +49,51 @@
         "type": "github"
       }
     },
+    "nixpkgs_2": {
+      "locked": {
+        "lastModified": 1777270315,
+        "narHash": "sha256-yKB4G6cKsQsWN7M6rZGk6gkJPDNPIzT05y4qzRyCDlI=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "6368eda62c9775c38ef7f714b2555a741c20c72d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixpkgs-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "opencode": {
+      "inputs": {
+        "nixpkgs": "nixpkgs_2"
+      },
+      "locked": {
+        "lastModified": 1777382686,
+        "narHash": "sha256-PPORV+iljsghDqiB5C9+utkna+chuaQEGoI4UC/B4KE=",
+        "owner": "anomalyco",
+        "repo": "opencode",
+        "rev": "3fa78a8b017168a8c58ad172b890bbd5191e4544",
+        "type": "github"
+      },
+      "original": {
+        "owner": "anomalyco",
+        "ref": "dev",
+        "repo": "opencode",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "crane": "crane",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs",
+        "opencode": "opencode",
+        "opencode-nixpkgs": [
+          "opencode",
+          "nixpkgs"
+        ],
         "rust-overlay": "rust-overlay"
       }
     },
