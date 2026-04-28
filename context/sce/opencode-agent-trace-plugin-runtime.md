@@ -25,7 +25,7 @@ Returns `{ sessionID, diff, time }` only when all checks pass:
 2. `input.event.properties.part.type === "tool"`
 3. `input.event.properties.part.state.status === "completed"`
 4. `input.event.properties.part.state.metadata.diff` exists and is a non-empty string
-5. `input.event.properties.part.sessionID` is read and returned as `sessionID`
+5. `input.event.properties.part.sessionID` is read and returned as `sessionID`, falling back to `"unknown"` when OpenCode omits or empties the field
 6. `input.event.properties.part.state.time.end` is read and returned as numeric `time` (Unix epoch milliseconds)
 
 Otherwise, the helper returns `undefined`.

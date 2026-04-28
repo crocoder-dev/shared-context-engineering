@@ -17,6 +17,12 @@ type DiffTracePayload = {
   time: number;
 };
 
+function extractNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : undefined;
+}
+
 function extractDiffFromFilesMetadata(
   metadata: Record<string, unknown>,
 ): string | undefined {
@@ -88,8 +94,10 @@ function extractDiffTracePayload(
     return undefined;
   }
 
+  const sessionID = extractNonEmptyString(part.sessionID) ?? "unknown";
+
   return {
-    sessionID: part.sessionID,
+    sessionID,
     diff,
     time: state.time.end,
   };
