@@ -17,6 +17,38 @@ type DiffTracePayload = {
   time: number;
 };
 
+function extractDiffFromFilesMetadata(
+  metadata: Record<string, unknown>,
+): string | undefined {
+  const files = metadata.files;
+  if (!Array.isArray(files) || files.length === 0) {
+    return undefined;
+  }
+
+  const patches: string[] = [];
+  for (const file of files) {
+    if (typeof file !== "object" || file === null) {
+      continue;
+    }
+    const fileObj = file as Record<string, unknown>;
+    const patch =
+      typeof fileObj.patch === "string"
+        ? fileObj.patch
+        : typeof fileObj.diff === "string"
+          ? fileObj.diff
+          : undefined;
+    if (patch !== undefined && patch.trim().length > 0) {
+      patches.push(patch);
+    }
+  }
+
+  if (patches.length === 0) {
+    return undefined;
+  }
+
+  return patches.join("\n");
+}
+
 function extractDiffTracePayload(
   input: TraceInput,
 ): DiffTracePayload | undefined {
@@ -35,8 +67,24 @@ function extractDiffTracePayload(
     return undefined;
   }
 
-  const diff = state.metadata.diff;
-  if (typeof diff !== "string" || diff.trim().length === 0) {
+  const metadata = state.metadata;
+  if (typeof metadata !== "object" || metadata === null) {
+    return undefined;
+  }
+
+  const metadataObj = metadata as Record<string, unknown>;
+
+  let diff: string | undefined;
+  if (
+    typeof metadataObj.diff === "string" &&
+    metadataObj.diff.trim().length > 0
+  ) {
+    diff = metadataObj.diff;
+  } else {
+    diff = extractDiffFromFilesMetadata(metadataObj);
+  }
+
+  if (diff === undefined) {
     return undefined;
   }
 
