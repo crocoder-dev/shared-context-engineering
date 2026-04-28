@@ -9,15 +9,20 @@ use crate::services::hooks_lifecycle::{
     HOOKS_PATH_NOT_DIRECTORY, HOOKS_SERVICE_ID, HOOK_CONTENT_STALE, HOOK_NOT_EXECUTABLE,
     HOOK_READ_FAILED, REQUIRED_HOOK_MISSING,
 };
+use crate::services::lifecycle::{DiagnoseRequest, LifecycleContext};
 use crate::services::lifecycle_registry::LifecycleRegistry;
+use crate::services::local_db_lifecycle::{
+    LOCAL_DB_HEALTH_CHECK_FAILED, LOCAL_DB_PARENT_MISSING, LOCAL_DB_PARENT_NOT_DIRECTORY,
+    LOCAL_DB_PARENT_NOT_WRITABLE, LOCAL_DB_PATH_UNRESOLVABLE, LOCAL_DB_SERVICE_ID,
+};
 use crate::services::setup::{iter_embedded_assets_for_setup_target, EmbeddedAsset, SetupTarget};
 
 use super::types::{
     DoctorProblem, FileLocationHealth, GlobalStateHealth, HookContentState, HookDoctorReport,
     HookFileHealth, HookPathSource, IntegrationChildHealth, IntegrationContentState,
-    IntegrationGroupHealth, ProblemCategory, ProblemFixability, ProblemKind, ProblemSeverity,
-    Readiness, OPENCODE_AGENTS_LABEL, OPENCODE_COMMANDS_LABEL, OPENCODE_PLUGINS_LABEL,
-    OPENCODE_SKILLS_LABEL,
+    IntegrationGroupHealth, LocalDbHealth, LocalDbParentStatus, LocalDbStatus, ProblemCategory,
+    ProblemFixability, ProblemKind, ProblemSeverity, Readiness, OPENCODE_AGENTS_LABEL,
+    OPENCODE_COMMANDS_LABEL, OPENCODE_PLUGINS_LABEL, OPENCODE_SKILLS_LABEL,
 };
 use super::{DoctorDependencies, DoctorMode};
 
@@ -28,6 +33,7 @@ pub(super) fn build_report_with_dependencies(
 ) -> HookDoctorReport {
     let mut problems = Vec::new();
     let global_state = collect_global_state_health(repository_root, &mut problems, dependencies);
+    let local_db = collect_local_db_health(&mut problems);
     let git_available = (dependencies.check_git_available)();
 
     let detected_repository_root = if git_available {
@@ -115,6 +121,7 @@ pub(super) fn build_report_with_dependencies(
         hook_path_source,
         hooks_directory,
         config_locations: global_state.config_locations,
+        local_db,
         hooks,
         integration_groups,
         problems,
@@ -304,6 +311,152 @@ fn collect_global_state_health(
     GlobalStateHealth {
         state_root: state_root_health,
         config_locations,
+    }
+}
+
+fn collect_local_db_health(problems: &mut Vec<DoctorProblem>) -> LocalDbHealth {
+    let Some(local_db_lifecycle) = LifecycleRegistry::diagnostic_lifecycle(LOCAL_DB_SERVICE_ID)
+    else {
+        problems.push(DoctorProblem {
+            kind: ProblemKind::LocalDbPathUnresolvable,
+            category: ProblemCategory::LocalDatabase,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: String::from("Local DB diagnostic lifecycle is not registered."),
+            remediation: String::from("This is an internal error. Please report this issue."),
+            next_action: "manual_steps",
+        });
+        return LocalDbHealth {
+            db_path: None,
+            parent_path: None,
+            db_status: LocalDbStatus::Unresolvable,
+            parent_status: LocalDbParentStatus::Unresolvable,
+        };
+    };
+
+    let Ok(diagnostic_report) = local_db_lifecycle.diagnose(DiagnoseRequest {
+        context: LifecycleContext::default(),
+    }) else {
+        problems.push(DoctorProblem {
+            kind: ProblemKind::LocalDbPathUnresolvable,
+            category: ProblemCategory::LocalDatabase,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: String::from("Local DB diagnosis failed: unable to resolve local DB path"),
+            remediation: String::from(
+                "Verify that the local DB path is resolvable and rerun 'sce doctor'.",
+            ),
+            next_action: "manual_steps",
+        });
+        return LocalDbHealth {
+            db_path: None,
+            parent_path: None,
+            db_status: LocalDbStatus::Unresolvable,
+            parent_status: LocalDbParentStatus::Unresolvable,
+        };
+    };
+
+    // Extract path information from diagnostics for the health struct.
+    // The lifecycle service resolves the DB path internally, so we derive
+    // the health struct from the diagnostic targets and kinds.
+    let mut db_path: Option<PathBuf> = None;
+    let mut parent_path: Option<PathBuf> = None;
+    let mut db_status = LocalDbStatus::Healthy;
+    let mut parent_status = LocalDbParentStatus::Healthy;
+
+    for diagnostic in &diagnostic_report.diagnostics {
+        problems.push(doctor_problem_from_local_db_diagnostic(diagnostic));
+        match diagnostic.kind.as_str() {
+            LOCAL_DB_PATH_UNRESOLVABLE => {
+                db_status = LocalDbStatus::Unresolvable;
+                parent_status = LocalDbParentStatus::Unresolvable;
+            }
+            LOCAL_DB_PARENT_MISSING => {
+                parent_status = LocalDbParentStatus::Missing;
+                parent_path = Some(PathBuf::from(&diagnostic.target));
+            }
+            LOCAL_DB_PARENT_NOT_DIRECTORY => {
+                parent_status = LocalDbParentStatus::NotDirectory;
+                parent_path = Some(PathBuf::from(&diagnostic.target));
+            }
+            LOCAL_DB_PARENT_NOT_WRITABLE => {
+                parent_status = LocalDbParentStatus::NotWritable;
+                parent_path = Some(PathBuf::from(&diagnostic.target));
+            }
+            LOCAL_DB_HEALTH_CHECK_FAILED => {
+                db_status = LocalDbStatus::Unhealthy;
+                db_path = Some(PathBuf::from(&diagnostic.target));
+            }
+            _ => {}
+        }
+    }
+
+    // If no diagnostics were produced, the DB and parent are healthy.
+    // Derive paths from the default path catalog for the health struct.
+    if diagnostic_report.diagnostics.is_empty() {
+        if let Ok(resolved_db_path) = crate::services::default_paths::local_db_path() {
+            db_path = Some(resolved_db_path.clone());
+            parent_path = resolved_db_path.parent().map(PathBuf::from);
+        }
+    } else if db_path.is_none() {
+        // If we had diagnostics but didn't extract a db_path (parent-level issues),
+        // derive it from the default path catalog.
+        if let Ok(resolved_db_path) = crate::services::default_paths::local_db_path() {
+            db_path = Some(resolved_db_path.clone());
+            if parent_path.is_none() {
+                parent_path = resolved_db_path.parent().map(PathBuf::from);
+            }
+        }
+    }
+
+    LocalDbHealth {
+        db_path,
+        parent_path,
+        db_status,
+        parent_status,
+    }
+}
+
+fn doctor_problem_from_local_db_diagnostic(
+    diagnostic: &crate::services::lifecycle::DiagnosticRecord,
+) -> DoctorProblem {
+    let (kind, category, next_action) = match diagnostic.kind.as_str() {
+        LOCAL_DB_PARENT_MISSING => (
+            ProblemKind::LocalDbParentMissing,
+            ProblemCategory::LocalDatabase,
+            "doctor_fix",
+        ),
+        LOCAL_DB_PARENT_NOT_DIRECTORY => (
+            ProblemKind::LocalDbParentNotDirectory,
+            ProblemCategory::LocalDatabase,
+            "manual_steps",
+        ),
+        LOCAL_DB_PARENT_NOT_WRITABLE => (
+            ProblemKind::LocalDbParentNotWritable,
+            ProblemCategory::LocalDatabase,
+            "manual_steps",
+        ),
+        LOCAL_DB_HEALTH_CHECK_FAILED => (
+            ProblemKind::LocalDbHealthCheckFailed,
+            ProblemCategory::LocalDatabase,
+            "manual_steps",
+        ),
+        // Covers LOCAL_DB_PATH_UNRESOLVABLE and any future unknown diagnostic kinds.
+        _ => (
+            ProblemKind::LocalDbPathUnresolvable,
+            ProblemCategory::LocalDatabase,
+            "manual_steps",
+        ),
+    };
+
+    DoctorProblem {
+        kind,
+        category,
+        severity: problem_severity_from_lifecycle(diagnostic.severity),
+        fixability: problem_fixability_from_lifecycle(diagnostic.fixability),
+        summary: diagnostic.summary.clone(),
+        remediation: diagnostic.remediation.clone(),
+        next_action,
     }
 }
 

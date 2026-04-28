@@ -11,6 +11,7 @@ pub mod hooks_lifecycle;
 pub mod lifecycle;
 pub mod lifecycle_registry;
 pub mod local_db;
+pub mod local_db_lifecycle;
 pub mod observability;
 pub mod output_format;
 pub mod patch;

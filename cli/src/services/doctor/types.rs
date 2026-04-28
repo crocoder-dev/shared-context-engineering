@@ -49,6 +49,30 @@ pub(super) struct GlobalStateHealth {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct LocalDbHealth {
+    pub(super) db_path: Option<PathBuf>,
+    pub(super) parent_path: Option<PathBuf>,
+    pub(super) db_status: LocalDbStatus,
+    pub(super) parent_status: LocalDbParentStatus,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum LocalDbStatus {
+    Healthy,
+    Unhealthy,
+    Unresolvable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum LocalDbParentStatus {
+    Healthy,
+    Missing,
+    NotDirectory,
+    NotWritable,
+    Unresolvable,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct HookDoctorReport {
     pub(super) mode: super::DoctorMode,
     pub(super) readiness: Readiness,
@@ -57,6 +81,7 @@ pub(super) struct HookDoctorReport {
     pub(super) hook_path_source: HookPathSource,
     pub(super) hooks_directory: Option<PathBuf>,
     pub(super) config_locations: Vec<FileLocationHealth>,
+    pub(super) local_db: LocalDbHealth,
     pub(super) hooks: Vec<HookFileHealth>,
     pub(super) integration_groups: Vec<IntegrationGroupHealth>,
     pub(super) problems: Vec<DoctorProblem>,
@@ -86,6 +111,7 @@ pub(super) enum IntegrationContentState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ProblemCategory {
     GlobalState,
+    LocalDatabase,
     RepositoryTargeting,
     HookRollout,
     RepoAssets,
@@ -114,6 +140,11 @@ pub(super) enum ProblemKind {
     GlobalConfigValidationFailed,
     UnableToResolveGlobalConfigPath,
     LocalConfigValidationFailed,
+    LocalDbPathUnresolvable,
+    LocalDbParentMissing,
+    LocalDbParentNotDirectory,
+    LocalDbParentNotWritable,
+    LocalDbHealthCheckFailed,
     HooksDirectoryMissing,
     HooksPathNotDirectory,
     RequiredHookMissing,
@@ -163,6 +194,7 @@ pub(super) enum HumanTextStatus {
 pub(super) fn problem_category(category: ProblemCategory) -> &'static str {
     match category {
         ProblemCategory::GlobalState => "global_state",
+        ProblemCategory::LocalDatabase => "local_database",
         ProblemCategory::RepositoryTargeting => "repository_targeting",
         ProblemCategory::HookRollout => "hook_rollout",
         ProblemCategory::RepoAssets => "repo_assets",

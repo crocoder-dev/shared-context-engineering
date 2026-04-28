@@ -5,6 +5,7 @@ use anyhow::{bail, Context, Result};
 use crate::services::hooks_lifecycle::HOOKS_SERVICE_ID;
 use crate::services::lifecycle::{FixReport, FixRequest, LifecycleContext, LifecycleOutcome};
 use crate::services::lifecycle_registry::LifecycleRegistry;
+use crate::services::local_db_lifecycle::LOCAL_DB_SERVICE_ID;
 
 use super::types::{DoctorFixResultRecord, FixResult, ProblemCategory, ProblemFixability};
 use super::{DoctorDependencies, HookDoctorReport};
@@ -50,6 +51,20 @@ pub(super) fn run_auto_fixes(
         }
     }
 
+    if auto_fixable_problems
+        .iter()
+        .any(|problem| problem.category == ProblemCategory::LocalDatabase)
+    {
+        match run_local_db_lifecycle_fix() {
+            Ok(report) => fix_results.extend(build_local_db_fix_results(&report)),
+            Err(error) => fix_results.push(DoctorFixResultRecord {
+                category: ProblemCategory::LocalDatabase,
+                outcome: FixResult::Failed,
+                detail: format!("Automatic local DB parent-directory repair failed: {error}"),
+            }),
+        }
+    }
+
     fix_results
 }
 
@@ -90,6 +105,43 @@ fn build_hook_fix_results(report: &FixReport) -> Vec<DoctorFixResultRecord> {
             }
         })
         .collect()
+}
+
+fn run_local_db_lifecycle_fix() -> Result<FixReport> {
+    let local_db_lifecycle = LifecycleRegistry::fix_lifecycle(LOCAL_DB_SERVICE_ID)
+        .context("Local DB lifecycle fix capability is not registered")?;
+
+    local_db_lifecycle.fix(FixRequest {
+        context: LifecycleContext::default(),
+        problem_kinds: Vec::new(),
+    })
+}
+
+fn build_local_db_fix_results(report: &FixReport) -> Vec<DoctorFixResultRecord> {
+    report
+        .actions
+        .iter()
+        .map(|action| DoctorFixResultRecord {
+            category: ProblemCategory::LocalDatabase,
+            outcome: fix_result_from_lifecycle_outcome(action.outcome).unwrap_or(FixResult::Failed),
+            detail: format!(
+                "Local DB parent directory '{}'.",
+                local_db_fix_detail_from_lifecycle_outcome(action),
+            ),
+        })
+        .collect()
+}
+
+fn local_db_fix_detail_from_lifecycle_outcome(
+    action: &crate::services::lifecycle::LifecycleAction,
+) -> String {
+    match action.outcome {
+        LifecycleOutcome::Applied => format!("{} was created", action.target),
+        LifecycleOutcome::Unchanged | LifecycleOutcome::Skipped => {
+            format!("{} already exists", action.target)
+        }
+        LifecycleOutcome::Updated | LifecycleOutcome::Failed => action.description.clone(),
+    }
 }
 
 fn fix_result_from_lifecycle_outcome(outcome: LifecycleOutcome) -> Result<FixResult> {

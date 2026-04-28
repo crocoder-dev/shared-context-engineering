@@ -6,9 +6,9 @@ use crate::services::style::{heading, label, supports_color, value, OwoColorize}
 use super::types::{
     fix_result_outcome, problem_category, problem_fixability, problem_severity, FileLocationHealth,
     HookContentState, HookDoctorReport, HookFileHealth, HookPathSource, HumanTextStatus,
-    IntegrationChildHealth, IntegrationContentState, IntegrationGroupHealth, ProblemKind,
-    ProblemSeverity, Readiness, OPENCODE_AGENTS_LABEL, OPENCODE_COMMANDS_LABEL,
-    OPENCODE_PLUGINS_LABEL, OPENCODE_SKILLS_LABEL,
+    IntegrationChildHealth, IntegrationContentState, IntegrationGroupHealth, LocalDbParentStatus,
+    LocalDbStatus, ProblemKind, ProblemSeverity, Readiness, OPENCODE_AGENTS_LABEL,
+    OPENCODE_COMMANDS_LABEL, OPENCODE_PLUGINS_LABEL, OPENCODE_SKILLS_LABEL,
 };
 use super::{DoctorExecution, DoctorFormat, DoctorMode, DoctorRequest, NAME, REQUIRED_HOOKS};
 
@@ -49,6 +49,7 @@ fn format_report(report: &HookDoctorReport) -> String {
     format_report_with_color_policy(report, supports_color())
 }
 
+#[allow(clippy::too_many_lines)]
 fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: bool) -> String {
     let blocking_problem_count = report
         .problems
@@ -90,6 +91,26 @@ fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: boo
             location.path.display().to_string(),
         ));
     }
+
+    lines.push(format!("\n{}:", heading("Local database")));
+    lines.push(format_human_text_row(
+        color_enabled,
+        local_db_status(report),
+        "Database",
+        report.local_db.db_path.as_ref().map_or_else(
+            || String::from("not detected"),
+            |path| path.display().to_string(),
+        ),
+    ));
+    lines.push(format_human_text_row(
+        color_enabled,
+        local_db_parent_status(report),
+        "Parent directory",
+        report.local_db.parent_path.as_ref().map_or_else(
+            || String::from("not detected"),
+            |path| path.display().to_string(),
+        ),
+    ));
 
     lines.push(format!("\n{}:", heading("Repository")));
     lines.push(format_human_text_row(
@@ -240,6 +261,23 @@ fn config_location_status(
         HumanTextStatus::Fail
     } else {
         HumanTextStatus::Pass
+    }
+}
+
+fn local_db_status(report: &HookDoctorReport) -> HumanTextStatus {
+    match report.local_db.db_status {
+        LocalDbStatus::Healthy => HumanTextStatus::Pass,
+        LocalDbStatus::Unhealthy | LocalDbStatus::Unresolvable => HumanTextStatus::Fail,
+    }
+}
+
+fn local_db_parent_status(report: &HookDoctorReport) -> HumanTextStatus {
+    match report.local_db.parent_status {
+        LocalDbParentStatus::Healthy => HumanTextStatus::Pass,
+        LocalDbParentStatus::Missing
+        | LocalDbParentStatus::NotDirectory
+        | LocalDbParentStatus::NotWritable
+        | LocalDbParentStatus::Unresolvable => HumanTextStatus::Fail,
     }
 }
 
@@ -422,6 +460,12 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
             .as_ref()
             .map(|path| path.display().to_string()),
         "config_paths": config_paths,
+        "local_db": json!({
+            "db_path": report.local_db.db_path.as_ref().map(|path| path.display().to_string()),
+            "parent_path": report.local_db.parent_path.as_ref().map(|path| path.display().to_string()),
+            "db_status": local_db_status_json(report.local_db.db_status),
+            "parent_status": local_db_parent_status_json(report.local_db.parent_status),
+        }),
         "hooks": hooks,
         "problems": report.problems.iter().map(|problem| json!({
             "category": problem_category(problem.category),
@@ -467,5 +511,23 @@ fn hook_content_state(state: HookContentState) -> &'static str {
         HookContentState::Stale => "stale",
         HookContentState::Missing => "missing",
         HookContentState::Unknown => "unknown",
+    }
+}
+
+fn local_db_status_json(status: LocalDbStatus) -> &'static str {
+    match status {
+        LocalDbStatus::Healthy => "healthy",
+        LocalDbStatus::Unhealthy => "unhealthy",
+        LocalDbStatus::Unresolvable => "unresolvable",
+    }
+}
+
+fn local_db_parent_status_json(status: LocalDbParentStatus) -> &'static str {
+    match status {
+        LocalDbParentStatus::Healthy => "healthy",
+        LocalDbParentStatus::Missing => "missing",
+        LocalDbParentStatus::NotDirectory => "not_directory",
+        LocalDbParentStatus::NotWritable => "not_writable",
+        LocalDbParentStatus::Unresolvable => "unresolvable",
     }
 }
