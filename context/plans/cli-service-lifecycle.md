@@ -63,12 +63,16 @@ Move ownership of environment health checks (`diagnose`), repairs (`fix`), and b
   - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed after `nix develop -c sh -c 'cd cli && cargo fmt'` formatting.
   - Notes: Added a config-owned `ConfigLifecycle` provider with diagnose/setup methods for global and repo-local config validation plus repo-local `.sce/config.json` bootstrap, leaving current doctor/setup orchestration unchanged for later aggregation tasks.
 
-- [ ] T04: Extract `local_db` health checks and setup into `ServiceLifecycle` impl (status:todo)
+- [x] T04: Extract `local_db` health checks and setup into `ServiceLifecycle` impl (status:done)
   - Task ID: T04
   - Goal: Move local-DB-specific doctor inspection logic (DB path health, parent directory readiness) and DB setup logic (`bootstrap_local_db`) into `services/local_db/lifecycle.rs` as a `ServiceLifecycle` implementation.
   - Boundaries (in/out of scope): In - moving DB health checks and setup into `local_db/lifecycle.rs`. Out - removing them from `doctor/inspect.rs` and `setup.rs` yet.
   - Done when: `local_db/lifecycle.rs` compiles, implements `ServiceLifecycle`, and `cargo check` passes.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo check'`
+  - Completed: 2026-04-29
+  - Files changed: `cli/src/services/local_db/lifecycle.rs`, `cli/src/services/local_db/mod.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed after `nix develop -c sh -c 'cd cli && cargo fmt'` formatting.
+  - Notes: Added a local-DB-owned `LocalDbLifecycle` provider with diagnose/fix/setup methods for canonical local DB path health, parent-directory readiness/bootstrap, and `LocalDb::new()` setup while leaving current doctor/setup orchestration unchanged for later aggregation tasks.
 
 - [ ] T05: Refactor `doctor` to aggregate `ServiceLifecycle::diagnose` and `fix` (status:todo)
   - Task ID: T05

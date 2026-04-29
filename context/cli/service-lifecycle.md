@@ -25,7 +25,10 @@
 - `cli/src/services/config/lifecycle.rs` defines `ConfigLifecycle`, the config-owned provider.
 - `ConfigLifecycle::diagnose` emits global/repo-local config validation problems with the existing doctor taxonomy.
 - `ConfigLifecycle::setup` bootstraps the repo-local `.sce/config.json` through the existing canonical setup helper and returns an empty `SetupOutcome` because config bootstrap currently has no dedicated outcome carrier.
-- The local DB lifecycle provider is still deferred.
+- `cli/src/services/local_db/lifecycle.rs` defines `LocalDbLifecycle`, the local-DB-owned provider.
+- `LocalDbLifecycle::diagnose` emits canonical local DB path and parent-directory readiness problems with the existing doctor taxonomy.
+- `LocalDbLifecycle::fix` bootstraps the canonical local DB parent directory for auto-fixable local DB parent readiness problems.
+- `LocalDbLifecycle::setup` initializes the canonical local DB through `LocalDb::new()` and returns an empty `SetupOutcome` because DB bootstrap currently has no dedicated outcome carrier.
 - `doctor` and `setup` runtime behavior is unchanged; they still use their existing orchestration paths until later lifecycle migration tasks wire aggregation.
 
 ## Related context

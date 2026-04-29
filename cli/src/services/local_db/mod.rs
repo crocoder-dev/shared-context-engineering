@@ -6,6 +6,8 @@
 
 use anyhow::{Context, Result};
 
+pub mod lifecycle;
+
 /// Embedded migration SQL files.
 ///
 /// Migrations are loaded at compile time from `cli/migrations/`.
