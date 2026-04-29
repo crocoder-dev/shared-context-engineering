@@ -90,6 +90,12 @@ pub fn build_default_registry() -> CommandRegistry {
         "config",
         crate::services::config::command::make_config_command,
     );
+    registry.register("setup", crate::services::setup::command::make_setup_command);
+    registry.register(
+        "doctor",
+        crate::services::doctor::command::make_doctor_command,
+    );
+    registry.register("hooks", crate::services::hooks::command::make_hooks_command);
     registry
 }
 

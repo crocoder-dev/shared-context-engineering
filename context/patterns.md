@@ -100,6 +100,7 @@
 - Keep wrapper-only help rows or banner rendering logic outside the clap catalog, but do not duplicate the real command visibility/purpose metadata in those renderers.
 - Keep placeholder or deferred state explicit in runtime responses and command-local docs rather than relying on top-level help status badges.
 - Parse CLI args with `clap` derive macros, classify top-level failures into stable exit-code classes (`parse`, `validation`, `runtime`, `dependency`), and keep user-facing failures deterministic/actionable.
+- Keep `RuntimeCommand` implementations in service-owned `command.rs` modules; `app.rs` should stay focused on startup lifecycle, parse conversion, command execution orchestration, and output rendering rather than owning command-specific runtime handlers.
 - Emit user-facing CLI diagnostics with stable class-based error IDs (`SCE-ERR-PARSE`, `SCE-ERR-VALIDATION`, `SCE-ERR-RUNTIME`, `SCE-ERR-DEPENDENCY`) using deterministic `Error [<code>]: ...` stderr formatting, and auto-append class-default `Try:` remediation only when the message does not already provide one.
 - Keep CLI observability separate from command payloads: emit deterministic lifecycle logs to `stderr` only with stable `event_id` values, and preserve `stdout` for command result payloads.
 - For baseline runtime observability controls, resolve logging and OTEL settings through the shared config resolver first, preserving deterministic precedence (`flags > env > config file > defaults`) and fail-fast validation on invalid env/config inputs.

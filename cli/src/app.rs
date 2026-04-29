@@ -48,7 +48,7 @@ impl AppContext {
         }
     }
 
-    fn logger(&self) -> &dyn LoggerTrait {
+    pub(crate) fn logger(&self) -> &dyn LoggerTrait {
         self.logger.as_ref()
     }
 
@@ -385,9 +385,6 @@ fn execute_command_phase(
 mod command_runtime {
     use std::path::PathBuf;
 
-    use anyhow::Context;
-
-    use crate::app::AppContext;
     use crate::{cli_schema, command_surface, services};
     use services::command_registry::RuntimeCommandHandle;
     use services::error::{ClassifiedError, FailureClass};
@@ -458,108 +455,6 @@ mod command_runtime {
         };
 
         convert_clap_command(command)
-    }
-
-    struct SetupCommand {
-        request: services::setup::SetupRequest,
-    }
-
-    impl services::command_registry::RuntimeCommand for SetupCommand {
-        fn name(&self) -> std::borrow::Cow<'_, str> {
-            std::borrow::Cow::Borrowed(services::setup::NAME)
-        }
-
-        fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
-            let current_dir = std::env::current_dir()
-                .context("Failed to determine current directory")
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
-
-            let repository_root = services::setup::ensure_git_repository(&current_dir)
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
-
-            services::setup::bootstrap_repo_local_config(&repository_root)
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
-
-            services::setup::bootstrap_local_db()
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
-
-            let preflight_hooks_repository = if self.request.install_hooks {
-                let hooks_repository = self
-                    .request
-                    .hooks_repo_path
-                    .as_deref()
-                    .unwrap_or(repository_root.as_path());
-                Some(
-                    services::setup::prepare_setup_hooks_repository(hooks_repository)
-                        .map_err(|error| ClassifiedError::runtime(error.to_string()))?,
-                )
-            } else {
-                None
-            };
-
-            let mut sections = Vec::new();
-
-            if let Some(mode) = self.request.config_mode {
-                let dispatch = services::setup::resolve_setup_dispatch(
-                    mode,
-                    &services::setup::InquireSetupTargetPrompter,
-                )
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
-
-                match dispatch {
-                    services::setup::SetupDispatch::Proceed(resolved_mode) => {
-                        let setup_message =
-                            services::setup::run_setup_for_mode(&repository_root, resolved_mode)
-                                .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
-                        sections.push(setup_message);
-                    }
-                    services::setup::SetupDispatch::Cancelled => {
-                        return Ok(services::setup::setup_cancelled_text());
-                    }
-                }
-            }
-
-            if self.request.install_hooks {
-                let repository_root = preflight_hooks_repository
-                    .as_deref()
-                    .expect("hook repository preflight should exist when install_hooks is true");
-                let hooks_message = services::setup::run_setup_hooks(repository_root)
-                    .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
-                sections.push(hooks_message);
-            }
-
-            Ok(sections.join("\n\n"))
-        }
-    }
-
-    struct DoctorCommand {
-        request: services::doctor::DoctorRequest,
-    }
-
-    impl services::command_registry::RuntimeCommand for DoctorCommand {
-        fn name(&self) -> std::borrow::Cow<'_, str> {
-            std::borrow::Cow::Borrowed(services::doctor::NAME)
-        }
-
-        fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
-            services::doctor::run_doctor(self.request)
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))
-        }
-    }
-
-    struct HooksCommand {
-        subcommand: services::hooks::HookSubcommand,
-    }
-
-    impl services::command_registry::RuntimeCommand for HooksCommand {
-        fn name(&self) -> std::borrow::Cow<'_, str> {
-            std::borrow::Cow::Borrowed(services::hooks::NAME)
-        }
-
-        fn execute(&self, context: &AppContext) -> Result<String, ClassifiedError> {
-            services::hooks::run_hooks_subcommand(&self.subcommand, Some(context.logger()))
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))
-        }
     }
 
     fn classify_clap_error(error: &clap::Error) -> ClassifiedError {
@@ -693,16 +588,18 @@ mod command_runtime {
                 hooks,
                 repo,
             } => convert_setup_command(opencode, claude, both, non_interactive, hooks, repo),
-            cli_schema::Commands::Doctor { fix, format } => Ok(Box::new(DoctorCommand {
-                request: services::doctor::DoctorRequest {
-                    mode: if fix {
-                        services::doctor::DoctorMode::Fix
-                    } else {
-                        services::doctor::DoctorMode::Diagnose
+            cli_schema::Commands::Doctor { fix, format } => {
+                Ok(Box::new(services::doctor::command::DoctorCommand {
+                    request: services::doctor::DoctorRequest {
+                        mode: if fix {
+                            services::doctor::DoctorMode::Fix
+                        } else {
+                            services::doctor::DoctorMode::Diagnose
+                        },
+                        format: convert_output_format(format),
                     },
-                    format: convert_output_format(format),
-                },
-            })),
+                }))
+            }
             cli_schema::Commands::Hooks { subcommand } => convert_hooks_subcommand(subcommand),
             cli_schema::Commands::Version { format } => {
                 Ok(Box::new(services::version::command::VersionCommand {
@@ -842,7 +739,7 @@ mod command_runtime {
         let request = services::setup::resolve_setup_request(options)
             .map_err(|error| ClassifiedError::validation(error.to_string()))?;
 
-        Ok(Box::new(SetupCommand { request }))
+        Ok(Box::new(services::setup::command::SetupCommand { request }))
     }
 
     #[allow(clippy::unnecessary_wraps)]
@@ -850,23 +747,31 @@ mod command_runtime {
         subcommand: cli_schema::HooksSubcommand,
     ) -> Result<RuntimeCommandHandle, ClassifiedError> {
         match subcommand {
-            cli_schema::HooksSubcommand::PreCommit => Ok(Box::new(HooksCommand {
-                subcommand: services::hooks::HookSubcommand::PreCommit,
-            })),
-            cli_schema::HooksSubcommand::CommitMsg { message_file } => Ok(Box::new(HooksCommand {
-                subcommand: services::hooks::HookSubcommand::CommitMsg { message_file },
-            })),
-            cli_schema::HooksSubcommand::PostCommit => Ok(Box::new(HooksCommand {
-                subcommand: services::hooks::HookSubcommand::PostCommit,
-            })),
+            cli_schema::HooksSubcommand::PreCommit => {
+                Ok(Box::new(services::hooks::command::HooksCommand {
+                    subcommand: services::hooks::HookSubcommand::PreCommit,
+                }))
+            }
+            cli_schema::HooksSubcommand::CommitMsg { message_file } => {
+                Ok(Box::new(services::hooks::command::HooksCommand {
+                    subcommand: services::hooks::HookSubcommand::CommitMsg { message_file },
+                }))
+            }
+            cli_schema::HooksSubcommand::PostCommit => {
+                Ok(Box::new(services::hooks::command::HooksCommand {
+                    subcommand: services::hooks::HookSubcommand::PostCommit,
+                }))
+            }
             cli_schema::HooksSubcommand::PostRewrite { rewrite_method } => {
-                Ok(Box::new(HooksCommand {
+                Ok(Box::new(services::hooks::command::HooksCommand {
                     subcommand: services::hooks::HookSubcommand::PostRewrite { rewrite_method },
                 }))
             }
-            cli_schema::HooksSubcommand::DiffTrace => Ok(Box::new(HooksCommand {
-                subcommand: services::hooks::HookSubcommand::DiffTrace,
-            })),
+            cli_schema::HooksSubcommand::DiffTrace => {
+                Ok(Box::new(services::hooks::command::HooksCommand {
+                    subcommand: services::hooks::HookSubcommand::DiffTrace,
+                }))
+            }
         }
     }
 }

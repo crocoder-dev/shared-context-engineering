@@ -7,6 +7,8 @@ use std::{
 use crate::services::style::{label, success, value};
 use crate::services::{default_paths, default_paths::RepoPaths};
 
+pub mod command;
+
 /// Canonical JSON payload for a newly bootstrapped repo-local `.sce/config.json`.
 /// Contains only the `$schema` declaration pointing to the SCE config JSON Schema.
 const REPO_LOCAL_CONFIG_BOOTSTRAP_PAYLOAD: &str =

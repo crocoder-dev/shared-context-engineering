@@ -13,6 +13,8 @@ mod inspect;
 mod render;
 mod types;
 
+pub mod command;
+
 use fixes::{build_manual_fix_results, run_auto_fixes};
 use inspect::build_report_with_dependencies;
 use render::render_report;

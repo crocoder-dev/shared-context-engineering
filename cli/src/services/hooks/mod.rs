@@ -12,6 +12,8 @@ use serde_json::{json, Value};
 use crate::services::config;
 use crate::services::observability::traits::Logger;
 
+pub mod command;
+
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
 
