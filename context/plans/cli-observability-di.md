@@ -51,12 +51,16 @@ Extract concrete observability types (`Logger`, `TelemetryRuntime`) into trait-b
   - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed.
   - Notes: Added the telemetry trait boundary and delegated the concrete runtime implementation to the existing inherent method without wiring call sites or changing runtime behavior.
 
-- [ ] T03: Define filesystem and git capability traits (status:todo)
+- [x] T03: Define filesystem and git capability traits (status:done)
   - Task ID: T03
   - Goal: Add broad `FsOps` and `GitOps` traits plus production implementations that wrap `std::fs` and `git` process execution.
   - Boundaries (in/out of scope): In - trait definitions, production impls, basic test stubs. Out - migrating doctor/setup/hooks/config internals to consume these traits.
   - Done when: `FsOps` and `GitOps` compile, production implementations are available to `AppContext`, and `cargo check` passes.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo check'`
+  - Completed: 2026-04-29
+  - Files changed: `cli/src/services/capabilities.rs`, `cli/src/services/mod.rs`, `context/cli/capability-traits.md`, `context/context-map.md`, `context/overview.md`, `context/architecture.md`, `context/patterns.md`, `context/glossary.md`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed.
+  - Notes: Added broad filesystem/git capability traits, std/process-backed production implementations, and test-only unimplemented stubs without migrating existing service internals or changing CLI behavior. Context sync classified this as an important cross-service architecture/terminology change and documented the new capability seam.
 
 - [ ] T04: Introduce `AppContext` and wire into command dispatch (status:todo)
   - Task ID: T04
