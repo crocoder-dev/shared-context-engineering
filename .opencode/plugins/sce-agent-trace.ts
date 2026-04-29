@@ -3,7 +3,7 @@ import type { Hooks, Plugin } from "@opencode-ai/plugin";
 
 type OpenCodeEvent = Parameters<NonNullable<Hooks["event"]>>[0]["event"];
 
-const REQUIRED_EVENTS = new Set(["message.part.updated"]);
+const REQUIRED_EVENTS = new Set(["session.diff"]);
 
 const ALL_CAPTURED_EVENTS = REQUIRED_EVENTS;
 
@@ -17,31 +17,43 @@ type DiffTracePayload = {
   time: number;
 };
 
-function extractNonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value
-    : undefined;
-}
+function extractDiffTracePayload(
+  input: TraceInput,
+): DiffTracePayload | undefined {
+  const event = input.event;
+  if (event === undefined || event.type !== "session.diff") {
+    return undefined;
+  }
 
-function extractDiffFromFilesMetadata(
-  metadata: Record<string, unknown>,
-): string | undefined {
-  const files = metadata.files;
-  if (!Array.isArray(files) || files.length === 0) {
+  const properties = event.properties;
+  if (typeof properties !== "object" || properties === null) {
+    return undefined;
+  }
+
+  const propertiesObj = properties as Record<string, unknown>;
+
+  const sessionID =
+    typeof propertiesObj.sessionID === "string" &&
+    propertiesObj.sessionID.trim().length > 0
+      ? propertiesObj.sessionID
+      : "unknown";
+
+  const diffEntries = propertiesObj.diff;
+  if (!Array.isArray(diffEntries) || diffEntries.length === 0) {
     return undefined;
   }
 
   const patches: string[] = [];
-  for (const file of files) {
-    if (typeof file !== "object" || file === null) {
+  for (const entry of diffEntries) {
+    if (typeof entry !== "object" || entry === null) {
       continue;
     }
-    const fileObj = file as Record<string, unknown>;
+    const entryObj = entry as Record<string, unknown>;
     const patch =
-      typeof fileObj.patch === "string"
-        ? fileObj.patch
-        : typeof fileObj.diff === "string"
-          ? fileObj.diff
+      typeof entryObj.patch === "string"
+        ? entryObj.patch
+        : typeof entryObj.diff === "string"
+          ? entryObj.diff
           : undefined;
     if (patch !== undefined && patch.trim().length > 0) {
       patches.push(patch);
@@ -52,54 +64,10 @@ function extractDiffFromFilesMetadata(
     return undefined;
   }
 
-  return patches.join("\n");
-}
-
-function extractDiffTracePayload(
-  input: TraceInput,
-): DiffTracePayload | undefined {
-  const event = input.event;
-  if (event === undefined || event.type !== "message.part.updated") {
-    return undefined;
-  }
-
-  const part = event.properties.part;
-  if (part.type !== "tool") {
-    return undefined;
-  }
-
-  const state = part.state;
-  if (state.status !== "completed") {
-    return undefined;
-  }
-
-  const metadata = state.metadata;
-  if (typeof metadata !== "object" || metadata === null) {
-    return undefined;
-  }
-
-  const metadataObj = metadata as Record<string, unknown>;
-
-  let diff: string | undefined;
-  if (
-    typeof metadataObj.diff === "string" &&
-    metadataObj.diff.trim().length > 0
-  ) {
-    diff = metadataObj.diff;
-  } else {
-    diff = extractDiffFromFilesMetadata(metadataObj);
-  }
-
-  if (diff === undefined) {
-    return undefined;
-  }
-
-  const sessionID = extractNonEmptyString(part.sessionID) ?? "unknown";
-
   return {
     sessionID,
-    diff,
-    time: state.time.end,
+    diff: patches.join("\n"),
+    time: Date.now(),
   };
 }
 
@@ -166,3 +134,4 @@ export const SceAgentTracePlugin: Plugin = async ({ directory, worktree }) => {
     },
   };
 };
+
