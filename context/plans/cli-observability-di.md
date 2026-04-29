@@ -29,12 +29,16 @@ Extract concrete observability types (`Logger`, `TelemetryRuntime`) into trait-b
 
 ## Task stack
 
-- [ ] T01: Extract `Logger` trait and `NoopLogger` test impl (status:todo)
+- [x] T01: Extract `Logger` trait and `NoopLogger` test impl (status:done)
   - Task ID: T01
   - Goal: Move the `Logger` public API into a `Logger` trait in `services/observability/traits.rs` and provide a `NoopLogger` for tests.
   - Boundaries (in/out of scope): In - trait definition, `impl Logger for services::observability::Logger`, `NoopLogger`. Out - changing any call sites, telemetry abstraction.
   - Done when: `services::observability::traits::Logger` compiles, concrete `Logger` implements it, `NoopLogger` exists, and `cargo check` passes.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo check'`
+  - Completed: 2026-04-29
+  - Files changed: `cli/src/services/observability.rs`, `cli/src/services/observability/traits.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed.
+  - Notes: Added the logger trait boundary and no-op test implementation without migrating call sites or changing telemetry behavior.
 
 - [ ] T02: Extract `Telemetry` trait (status:todo)
   - Task ID: T02
