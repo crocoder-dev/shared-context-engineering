@@ -30,12 +30,16 @@ Move ownership of environment health checks (`diagnose`), repairs (`fix`), and b
 
 ## Task stack
 
-- [ ] T01: Define `ServiceLifecycle` trait against `AppContext` (status:todo)
+- [x] T01: Define `ServiceLifecycle` trait against `AppContext` (status:done)
   - Task ID: T01
   - Goal: Create `services/lifecycle.rs` with a single `ServiceLifecycle` trait containing default no-op `diagnose`, `fix`, and `setup` methods that accept `&AppContext`. Define shared result types (`HealthProblem`, `FixResult`, `SetupOutcome`) if they don't already exist in `doctor/types.rs`.
   - Boundaries (in/out of scope): In - trait definition, shared result types. Out - implementing the trait for any service.
   - Done when: `services/lifecycle.rs` compiles, trait is usable, and `cargo check` passes.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo check'`
+  - Completed: 2026-04-29
+  - Files changed: `cli/src/services/lifecycle.rs`, `cli/src/services/mod.rs`, `cli/src/services/doctor/mod.rs`, `cli/src/services/doctor/types.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed.
+  - Notes: Added a default no-op `ServiceLifecycle` trait against `AppContext`, a minimal `SetupOutcome`, and crate-visible doctor result/taxonomy types for future lifecycle implementations without changing runtime behavior.
 
 - [ ] T02: Extract `hooks` health checks and setup into `ServiceLifecycle` impl (status:todo)
   - Task ID: T02

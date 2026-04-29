@@ -11,7 +11,7 @@ use crate::services::setup::{install_required_git_hooks, RequiredHooksInstallOut
 mod fixes;
 mod inspect;
 mod render;
-mod types;
+pub(crate) mod types;
 
 pub mod command;
 

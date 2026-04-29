@@ -11,6 +11,7 @@ pub mod doctor;
 pub mod error;
 pub mod help;
 pub mod hooks;
+pub mod lifecycle;
 pub mod local_db;
 pub mod observability;
 pub mod output_format;
