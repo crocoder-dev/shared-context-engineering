@@ -96,6 +96,14 @@ pub fn build_default_registry() -> CommandRegistry {
         crate::services::doctor::command::make_doctor_command,
     );
     registry.register("hooks", crate::services::hooks::command::make_hooks_command);
+    registry.register(
+        "version",
+        crate::services::version::command::make_version_command,
+    );
+    registry.register(
+        "completion",
+        crate::services::completion::command::make_completion_command,
+    );
     registry
 }
 

@@ -41,7 +41,7 @@ JSON output (`sce version --format json`):
 
 - Command parse/dispatch wiring: `cli/src/app.rs`
 - Top-level command catalog/help row: `cli/src/command_surface.rs`
-- Version parser/rendering: `cli/src/services/version.rs`
+- Version parser/rendering: `cli/src/services/version/mod.rs`
 
 ## Verification coverage
 

@@ -1,4 +1,5 @@
 pub mod agent_trace;
+pub mod app_support;
 pub mod auth;
 pub mod auth_command;
 pub mod capabilities;
@@ -13,6 +14,7 @@ pub mod hooks;
 pub mod local_db;
 pub mod observability;
 pub mod output_format;
+pub mod parse;
 pub mod patch;
 pub mod resilience;
 pub mod security;

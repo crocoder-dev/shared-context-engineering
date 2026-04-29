@@ -82,19 +82,54 @@ Replace the monolithic `app.rs` command dispatch with a lightweight command regi
   - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt && cargo check'` passed; `nix develop -c sh -c 'cd cli && cargo clippy'` passed; `nix run .#pkl-check-generated` passed.
   - Notes: `SetupCommand`, `DoctorCommand`, and `HooksCommand` now follow the T02/T03 service-owned command pattern with default constructors for registry use. The new files were staged before Nix validation so the flake's Git-filtered source could see them; no commit was created.
 
-- [ ] T05: Extract command runtime parsing and thin `app.rs` dispatcher (status:todo)
+- [x] T05: Extract command runtime parsing and thin `app.rs` dispatcher (status:done)
   - Task ID: T05
   - Goal: Move `parse_runtime_command`, clap error handling, help rendering bridges, and `convert_*` helpers into `services/parse/command_runtime.rs`; reduce `app.rs` to startup context building, parse/resolve call, command execution, and output rendering.
   - Boundaries (in/out of scope): In - parser module extraction, `app.rs` refactor, registry lookup bridge. Out - changing clap schema or user-facing parse diagnostics.
   - Done when: `app.rs` is under ~200 lines, parsing is owned by `services/parse/command_runtime.rs`, all commands are dispatched through the registry, and `cargo check` passes.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo check'` and `nix develop -c sh -c 'cd cli && cargo clippy'`
+  - Completed: 2026-04-29
+  - Files changed: `cli/src/app.rs`, `cli/src/services/app_support.rs` (new), `cli/src/services/parse/mod.rs` (new), `cli/src/services/parse/command_runtime.rs` (new), `cli/src/services/command_registry.rs`, `cli/src/services/mod.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt && cargo check'` passed; `nix develop -c sh -c 'cd cli && cargo clippy'` passed; `wc -l cli/src/app.rs` reports 197 lines.
+  - Notes: Extracted parser/clap error/help bridge/conversion logic into `services::parse::command_runtime`; moved app output/execution helper code into `services::app_support` to keep `app.rs` below the plan threshold while preserving startup, parse, execute, and render orchestration. Registered `version` and `completion` default constructors so the default registry covers the full current command catalog.
 
-- [ ] T06: Validate full behavior parity (status:todo)
+- [x] T06: Validate full behavior parity (status:done)
   - Task ID: T06
   - Goal: Run the full test suite and verify no behavioral regressions.
   - Boundaries (in/out of scope): In - `cargo test`, manual CLI spot-checks for help/version/doctor, relocation of existing `app.rs` startup tests to the parse/runtime module if they no longer belong in `app.rs`. Out - adding unrelated new coverage.
   - Done when: `cargo test` passes, `nix flake check` passes, and a manual `sce --help` / `sce version` spot-check looks correct.
   - Verification notes (commands or checks): `nix flake check`, `nix develop -c sh -c 'cd cli && cargo test'`, manual CLI smoke test.
+  - Completed: 2026-04-29
+  - Files changed: `context/plans/cli-command-registry.md`
+  - Evidence: `nix flake check` passed, including `cli-tests`, `cli-clippy`, `cli-fmt`, and `pkl-parity`; `nix run .#pkl-check-generated` passed; manual smoke checks passed for `nix develop -c sh -c 'cd cli && cargo run -- --help'`, `nix develop -c sh -c 'cd cli && cargo run -- version'`, and `nix develop -c sh -c 'cd cli && cargo run -- doctor --format json'`.
+  - Notes: Direct `nix develop -c sh -c 'cd cli && cargo test'` was blocked by the configured SCE bash-tool policy `use-nix-flake-check-over-cargo-test`; the required full-suite evidence is therefore the repo-approved `nix flake check`, whose `cli-tests` derivation covers the CLI Rust tests. No startup-test relocation was needed.
+
+## Validation Report
+
+### Commands run
+
+- `nix flake check` -> exit 0; key output: `all checks passed!` after evaluating/building `cli-tests`, `cli-clippy`, `cli-fmt`, `pkl-parity`, and repository JS/integration check derivations.
+- `nix run .#pkl-check-generated` -> exit 0; key output: `Generated outputs are up to date.`
+- `nix develop -c sh -c 'cd cli && cargo run -- --help'` -> exit 0; key output: top-level help rendered the SCE banner, usage sections, examples, and visible command list (`help`, `config`, `setup`, `doctor`, `version`, `completion`).
+- `nix develop -c sh -c 'cd cli && cargo run -- version'` -> exit 0; key output: `shared-context-engineering 0.2.0 (8ce594ddd16e)`.
+- `nix develop -c sh -c 'cd cli && cargo run -- doctor --format json'` -> exit 0; key output: JSON payload returned `status: ok`, `command: doctor`, hook records, and deterministic environment-specific `readiness: not_ready` due repo-root OpenCode plugin content drift outside this task.
+- `nix develop -c sh -c 'cd cli && cargo test'` -> blocked before execution by SCE bash-tool policy `use-nix-flake-check-over-cargo-test`; follow-up evidence is the repo-approved `nix flake check` `cli-tests` derivation.
+
+### Success-criteria verification
+
+- [x] Each CLI command has its `RuntimeCommand` implementation moved into service-owned `command.rs` files: confirmed by code structure and context sync for help/version/completion/auth/config/setup/doctor/hooks.
+- [x] `CommandRegistry` maps command names to constructors: confirmed in `cli/src/services/command_registry.rs` and full flake checks.
+- [x] `app.rs` is under ~200 lines and contains no command-specific logic: T05 evidence recorded `wc -l cli/src/app.rs` at 197 lines; T06 validation smoke checks confirm behavior still routes correctly.
+- [x] `nix flake check` passes: exit 0 with `all checks passed!`.
+- [x] No regression in CLI behavior, help text, or error messages identified by tests and manual smoke checks.
+
+### Failed checks and follow-ups
+
+- Direct Cargo test execution was intentionally blocked by the repository bash policy preferring `nix flake check`; no code failure was observed. No follow-up required unless the policy is changed.
+
+### Residual risks
+
+- `sce doctor --format json` reported environment-specific repo-root OpenCode plugin drift; this is outside the command-registry task and did not prevent the doctor command from executing successfully.
 
 ## Open questions
 
