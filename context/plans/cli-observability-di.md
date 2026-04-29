@@ -62,12 +62,16 @@ Extract concrete observability types (`Logger`, `TelemetryRuntime`) into trait-b
   - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed.
   - Notes: Added broad filesystem/git capability traits, std/process-backed production implementations, and test-only unimplemented stubs without migrating existing service internals or changing CLI behavior. Context sync classified this as an important cross-service architecture/terminology change and documented the new capability seam.
 
-- [ ] T04: Introduce `AppContext` and wire into command dispatch (status:todo)
+- [x] T04: Introduce `AppContext` and wire into command dispatch (status:done)
   - Task ID: T04
   - Goal: Create `AppContext` holding `Arc<dyn Logger>`, `Arc<dyn Telemetry>`, `Arc<dyn FsOps>`, and `Arc<dyn GitOps>`. Update `AppRuntime` to use it. Update `RuntimeCommand::execute` signature to accept `&AppContext`.
   - Boundaries (in/out of scope): In - `AppContext` struct, `AppRuntime` refactor, `RuntimeCommand` signature change, updating all command `execute` impls to accept `&AppContext`. Out - changing what commands do with the context beyond logger/telemetry access.
   - Done when: All `RuntimeCommand` impls compile with `&AppContext`, `app.rs` builds the context once and passes it through, and `cargo check` passes.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo check'`
+  - Completed: 2026-04-29
+  - Files changed: `cli/src/app.rs`, `cli/src/services/hooks/mod.rs`, `cli/src/services/observability/traits.rs`, `context/architecture.md`, `context/cli/capability-traits.md`, `context/context-map.md`, `context/glossary.md`, `context/overview.md`, `context/sce/cli-observability-contract.md`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed.
+  - Notes: Added minimal `AppContext` construction in app startup, routed `RuntimeCommand::execute` through `&AppContext`, kept command behavior unchanged, and adjusted logger/telemetry trait call sites so the context can hold trait objects. Context sync classified this as an important AppContext architecture/terminology change and updated root plus CLI/observability domain context.
 
 - [ ] T05: Update tests for trait-based observability and capabilities (status:todo)
   - Task ID: T05

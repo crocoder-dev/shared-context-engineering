@@ -10,6 +10,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::services::config;
+use crate::services::observability::traits::Logger;
 
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
@@ -35,7 +36,7 @@ struct DiffTracePayload {
 
 pub fn run_hooks_subcommand(
     subcommand: &HookSubcommand,
-    logger: Option<&crate::services::observability::Logger>,
+    logger: Option<&dyn Logger>,
 ) -> Result<String> {
     let repository_root = std::env::current_dir().with_context(|| {
         format!(
@@ -50,7 +51,7 @@ pub fn run_hooks_subcommand(
 fn run_hooks_subcommand_in_repo(
     repository_root: &Path,
     subcommand: &HookSubcommand,
-    logger: Option<&crate::services::observability::Logger>,
+    logger: Option<&dyn Logger>,
 ) -> Result<String> {
     match subcommand {
         HookSubcommand::PreCommit => run_pre_commit_subcommand_with_trace(repository_root),
@@ -67,7 +68,7 @@ fn run_hooks_subcommand_in_repo(
 
 fn run_diff_trace_subcommand(
     repository_root: &Path,
-    logger: Option<&crate::services::observability::Logger>,
+    logger: Option<&dyn Logger>,
 ) -> Result<String> {
     let stdin_payload = read_hook_stdin()?;
     let result = run_diff_trace_subcommand_from_payload(repository_root, &stdin_payload);

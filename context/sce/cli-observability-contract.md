@@ -66,9 +66,9 @@ Runtime observability now consumes the shared resolved observability config from
 - `cli/src/services/observability/traits.rs` exposes the `services::observability::traits::Logger` trait with the current logging API: `info`, `debug`, `warn`, `error`, and `log_classified_error`.
 - The concrete `services::observability::Logger` implements the trait while retaining the existing inherent methods and behavior.
 - `NoopLogger` is available from the same traits module for tests and future dependency-injected services that need a logger without side effects.
-- The same traits module exposes `services::observability::traits::Telemetry` with the current subscriber boundary: `with_default_subscriber`.
+- The same traits module exposes object-safe `services::observability::traits::Telemetry` with the current app subscriber boundary: `with_default_subscriber` for command-lifecycle execution.
 - The concrete `services::observability::TelemetryRuntime` implements the telemetry trait by delegating to its existing inherent method, preserving OTEL subscriber behavior.
-- Current production call sites still use the concrete logger and telemetry runtime directly; broader call-site migration is deferred to the app-context DI tasks.
+- `cli/src/app.rs` stores production logger and telemetry runtime instances behind `Arc<dyn Logger>` and `Arc<dyn Telemetry>` in `AppContext`, then passes that context through command execution without changing emitted events or OTEL behavior.
 
 ## File sink safety contract
 
