@@ -29,11 +29,11 @@
 - `pre-commit` is a deterministic no-op entrypoint.
 - `post-commit` is a deterministic no-op entrypoint.
 - `post-rewrite` is a deterministic no-op entrypoint.
-- `diff-trace` reads STDIN JSON, validates required non-empty `sessionID`/`diff` plus required `u64` `time` (Unix epoch milliseconds), and writes one payload artifact per invocation to `context/tmp/<timestamp>-000000-diff-trace.json` with atomic create-new retry semantics so separate short-lived processes cannot overwrite same-millisecond artifacts.
+- `diff-trace` reads STDIN JSON, validates required non-empty `sessionID`/`diff` plus required `u64` `time` (Unix epoch milliseconds), writes one payload artifact per invocation to `context/tmp/<timestamp>-000000-diff-trace.json` with atomic create-new retry semantics so separate short-lived processes cannot overwrite same-millisecond artifacts, and inserts the accepted payload into the local DB `diff_traces` table through `LocalDb::insert_diff_trace`.
 
 ## Explicit non-goals in the current baseline
 - No checkpoint handoff file
 - No git-notes persistence
-- No local DB persistence
+- No local DB persistence outside the accepted `diff-trace` intake path
 - No retry queue replay
 - No rewrite remap ingestion

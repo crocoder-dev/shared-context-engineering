@@ -1,8 +1,9 @@
-//! Local Turso database adapter for agent traces.
+//! Local Turso database adapter for SCE runtime data.
 //!
 //! Provides a `LocalDb` struct that wraps a Turso connection with a tokio
-//! runtime for blocking operations. Migrations are embedded at compile time
-//! via `include_str!` from `cli/migrations/`.
+//! runtime for blocking operations plus focused persistence helpers for local
+//! runtime data. Migrations are embedded at compile time via `include_str!`
+//! from `cli/migrations/`.
 
 use anyhow::{Context, Result};
 
@@ -11,7 +12,7 @@ use anyhow::{Context, Result};
 /// Migrations are loaded at compile time from `cli/migrations/`.
 /// The numeric prefix determines execution order.
 #[allow(dead_code)]
-const MIGRATION_001: &str = include_str!("../../migrations/001_create_agent_traces.sql");
+const MIGRATION_001: &str = include_str!("../../migrations/001_create_diff_traces.sql");
 
 /// Ordered list of embedded migrations (id, sql).
 #[allow(dead_code)]
@@ -20,10 +21,24 @@ const MIGRATIONS: &[(&str, &str)] = &[
     // Add new migrations here with sequential IDs
 ];
 
+const INSERT_DIFF_TRACE_SQL: &str =
+    "INSERT INTO diff_traces (time_ms, session_id, patch) VALUES (?1, ?2, ?3)";
+
+/// Validated diff-trace payload fields ready for local DB insertion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiffTraceInsert<'a> {
+    /// Incoming `time` value as Unix epoch milliseconds.
+    pub time_ms: u64,
+    /// Incoming `sessionID` value.
+    pub session_id: &'a str,
+    /// Incoming `diff` payload body stored as a patch.
+    pub patch: &'a str,
+}
+
 /// Local Turso database adapter.
 ///
 /// Wraps a Turso connection with a lazily-initialized tokio current-thread
-/// runtime so that callers can use synchronous `execute`/`query` methods.
+/// runtime so that callers can use synchronous local DB methods.
 #[allow(dead_code)]
 pub struct LocalDb {
     conn: turso::Connection,
@@ -121,6 +136,24 @@ impl LocalDb {
         })
     }
 
+    /// Insert one validated diff-trace payload into the local `diff_traces` table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the incoming millisecond timestamp exceeds `SQLite`'s
+    /// signed integer range or if the local DB insert fails.
+    pub fn insert_diff_trace(&self, input: DiffTraceInsert<'_>) -> Result<u64> {
+        let time_ms = diff_trace_time_ms_as_i64(input.time_ms)?;
+
+        self.execute(
+            INSERT_DIFF_TRACE_SQL,
+            (time_ms, input.session_id, input.patch),
+        )
+        .context(
+            "failed to insert diff-trace payload into local DB. Try: run 'sce doctor --fix' to verify local DB health.",
+        )
+    }
+
     /// Run all embedded migrations in order.
     ///
     /// Each migration is executed. Migrations that
@@ -135,5 +168,39 @@ impl LocalDb {
             })?;
         }
         Ok(())
+    }
+}
+
+fn diff_trace_time_ms_as_i64(time_ms: u64) -> Result<i64> {
+    i64::try_from(time_ms).with_context(|| {
+        format!(
+            "diff-trace time_ms {time_ms} exceeds SQLite INTEGER range for local DB persistence"
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::diff_trace_time_ms_as_i64;
+
+    #[test]
+    fn diff_trace_time_ms_accepts_epoch_milliseconds() {
+        assert_eq!(
+            diff_trace_time_ms_as_i64(1_777_403_999_227)
+                .expect("epoch milliseconds should fit SQLite INTEGER"),
+            1_777_403_999_227
+        );
+    }
+
+    #[test]
+    fn diff_trace_time_ms_rejects_values_outside_sqlite_integer_range() {
+        let error = diff_trace_time_ms_as_i64(i64::MAX as u64 + 1)
+            .expect_err("too-large timestamp should be rejected before insertion")
+            .to_string();
+
+        assert!(
+            error.contains("exceeds SQLite INTEGER range"),
+            "unexpected error: {error}"
+        );
     }
 }

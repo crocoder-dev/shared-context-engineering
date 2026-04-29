@@ -10,6 +10,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::services::config;
+use crate::services::local_db::{DiffTraceInsert, LocalDb};
 
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
@@ -85,9 +86,10 @@ fn run_diff_trace_subcommand_from_payload(
 ) -> Result<String> {
     let payload = parse_diff_trace_payload(stdin_payload)?;
     persist_diff_trace_payload(repository_root, &payload)?;
+    persist_diff_trace_payload_to_local_db(&payload)?;
 
     Ok(String::from(
-        "diff-trace hook intake persisted payload to context/tmp.",
+        "diff-trace hook intake persisted payload to local DB and context/tmp.",
     ))
 }
 
@@ -210,6 +212,16 @@ fn persist_diff_trace_payload(
         &serialized,
         "diff-trace payload",
     )
+}
+
+fn persist_diff_trace_payload_to_local_db(payload: &DiffTracePayload) -> Result<u64> {
+    let db = LocalDb::new().context("failed to open local DB for diff-trace persistence")?;
+
+    db.insert_diff_trace(DiffTraceInsert {
+        time_ms: payload.time,
+        session_id: &payload.session_id,
+        patch: &payload.diff,
+    })
 }
 
 fn persist_serialized_trace_payload(
