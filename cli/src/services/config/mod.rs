@@ -1,4 +1,5 @@
 pub mod command;
+pub mod lifecycle;
 
 use std::{
     path::{Path, PathBuf},

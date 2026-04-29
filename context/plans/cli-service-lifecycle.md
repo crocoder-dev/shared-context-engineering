@@ -52,12 +52,16 @@ Move ownership of environment health checks (`diagnose`), repairs (`fix`), and b
   - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed.
   - Notes: Added a hook-owned `HooksLifecycle` provider with diagnose/fix/setup methods that reuse hook rollout problem taxonomy and canonical required-hook installation while leaving current doctor/setup orchestration unchanged for later tasks.
 
-- [ ] T03: Extract `config` health checks and setup into `ServiceLifecycle` impl (status:todo)
+- [x] T03: Extract `config` health checks and setup into `ServiceLifecycle` impl (status:done)
   - Task ID: T03
   - Goal: Move config-specific doctor inspection logic (global config validation, local config validation) and config-specific setup logic (`bootstrap_repo_local_config`) into `services/config/lifecycle.rs` as a `ServiceLifecycle` implementation.
   - Boundaries (in/out of scope): In - moving config health checks and setup into `config/lifecycle.rs`. Out - removing them from `doctor/inspect.rs` yet.
   - Done when: `config/lifecycle.rs` compiles, implements `ServiceLifecycle`, and `cargo check` passes.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo check'`
+  - Completed: 2026-04-29
+  - Files changed: `cli/src/services/config/lifecycle.rs`, `cli/src/services/config/mod.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed after `nix develop -c sh -c 'cd cli && cargo fmt'` formatting.
+  - Notes: Added a config-owned `ConfigLifecycle` provider with diagnose/setup methods for global and repo-local config validation plus repo-local `.sce/config.json` bootstrap, leaving current doctor/setup orchestration unchanged for later aggregation tasks.
 
 - [ ] T04: Extract `local_db` health checks and setup into `ServiceLifecycle` impl (status:todo)
   - Task ID: T04
