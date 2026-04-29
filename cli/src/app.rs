@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -25,20 +26,23 @@ pub struct AppContext {
     fs: Arc<dyn services::capabilities::FsOps>,
     #[allow(dead_code)]
     git: Arc<dyn services::capabilities::GitOps>,
+    repo_root: Option<PathBuf>,
 }
 
 impl AppContext {
-    fn new(
+    pub(crate) fn new(
         logger: Arc<dyn LoggerTrait>,
         telemetry: Arc<dyn Telemetry>,
         fs: Arc<dyn services::capabilities::FsOps>,
         git: Arc<dyn services::capabilities::GitOps>,
+        repo_root: Option<PathBuf>,
     ) -> Self {
         Self {
             logger,
             telemetry,
             fs,
             git,
+            repo_root,
         }
     }
 
@@ -48,6 +52,14 @@ impl AppContext {
 
     fn telemetry(&self) -> &dyn Telemetry {
         self.telemetry.as_ref()
+    }
+
+    /// Returns the resolved repository root path when available.
+    ///
+    /// Lifecycle providers use this during setup to avoid re-resolving
+    /// the repository root independently.
+    pub fn repo_root(&self) -> Option<&Path> {
+        self.repo_root.as_deref()
     }
 }
 
@@ -148,6 +160,7 @@ fn initialize_runtime(startup: StartupContext) -> Result<AppRuntime, ClassifiedE
         Arc::new(telemetry),
         Arc::new(services::capabilities::StdFsOps),
         Arc::new(services::capabilities::ProcessGitOps),
+        None,
     );
     Ok(AppRuntime {
         context,

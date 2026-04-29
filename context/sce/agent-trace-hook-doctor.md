@@ -20,7 +20,7 @@ Out of scope for this contract task:
 
 ## Current implementation baseline
 
-The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor command surface and stable output-shape scaffolding, with focused `doctor/{inspect,render,fixes,types}.rs` submodules separating diagnosis, rendering, fix execution, and doctor-owned domain types. Together they cover the global-readiness slice plus the current repo-integrity, database-inventory, and repair slices:
+The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor command surface and stable output-shape scaffolding, with focused `doctor/{inspect,render,fixes,types}.rs` submodules separating diagnosis, rendering, fix execution, and doctor-owned domain types. The `doctor` command now aggregates `ServiceLifecycle::diagnose` and `ServiceLifecycle::fix` calls across registered service providers (`config`, `hooks`, `local_db`). Together they cover the global-readiness slice plus the current repo-integrity, database-inventory, and repair slices:
 
 - explicit mode selection through `sce doctor` (`diagnose`) and `sce doctor --fix` (`fix`)
 - command/help wiring for `--fix` plus stable text/JSON mode reporting
@@ -31,21 +31,20 @@ The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor comm
 - stable problem records with category, severity, fixability, and remediation metadata
 - deterministic fix-result records in fix mode with `fixed`, `skipped`, `manual`, and `failed` outcomes
 - simplified `label (path)` human rows for healthy path-backed state/config/repository/hook entries, without redundant `present` / `expected` prose
-- default global/local config-file location reporting, plus validation of existing global and repo-local `sce/config.json` readability and schema compliance
+- default global/local config-file location reporting, plus validation of existing global and repo-local `sce/config.json` readability and schema compliance (delegated to `ConfigLifecycle::diagnose`)
 - startup config resolution no longer blocks doctor on invalid default-discovered config files; doctor reaches its own config-validation path, reports those files as problems, and keeps invalid-config remediation manual-only
-- local DB location reporting, DB parent-directory readiness checks, and existing-DB health validation
+- local DB location reporting, DB parent-directory readiness checks, and existing-DB health validation (delegated to `LocalDbLifecycle::diagnose`)
 - local DB reporting in default doctor output
 - explicit git-unavailable, outside-repo, and bare-repo repository-targeting failures
 - effective hook-path source (`default`, local `core.hooksPath`, global `core.hooksPath`)
 - repository root and hooks directory resolution when a repository target is detected
 - top-level-only human text hook rows for `pre-commit`, `commit-msg`, and `post-commit`, with nested `content` / `executable` detail removed from text mode
-- required hook presence and executable permissions for `pre-commit`, `commit-msg`, and `post-commit` when repo-scoped checks apply
-- byte-for-byte stale-content detection for required hook payloads against canonical embedded SCE-managed hook assets
+- required hook presence and executable permissions for `pre-commit`, `commit-msg`, and `post-commit` when repo-scoped checks apply (delegated to `HooksLifecycle::diagnose`)
+- byte-for-byte stale-content detection for required hook payloads against canonical embedded SCE-managed hook assets (delegated to `HooksLifecycle::diagnose`)
 - repo-root installed OpenCode integration inventory for `OpenCode plugins`, `OpenCode agents`, `OpenCode commands`, and `OpenCode skills`
 - integration child-row reporting for those four groups now validates file content against embedded SHA-256; missing files render as `[MISS]`, content mismatches render as `[FAIL]`, and any affected parent group renders as `[FAIL]`
 - repo-root OpenCode plugin inventory includes the installed manifest file plus plugin/runtime/preset artifacts as required presence-only files; generated `config/.opencode/**` trees are not inspected by doctor
-- repair-mode reuse of `cli/src/services/setup/mod.rs::install_required_git_hooks` for missing hooks directories plus missing, stale, or non-executable required hooks
-- doctor-owned bootstrap of the missing canonical SCE-owned local DB parent directory, with deterministic refusal when the resolved path does not match the expected owned location
+- repair-mode delegation to `ServiceLifecycle::fix` implementations: `HooksLifecycle::fix` reuses `install_required_git_hooks` for missing hooks directories plus missing, stale, or non-executable required hooks; `LocalDbLifecycle::fix` handles bootstrap of the missing canonical SCE-owned local DB parent directory with deterministic refusal when the resolved path does not match the expected owned location
 
 ## Approved human text-mode contract
 
@@ -261,10 +260,29 @@ When an issue is `not_yet_implemented`, output must say that doctor recognizes t
 
 Repair behavior must:
 
+- delegate to `ServiceLifecycle::fix` implementations for service-owned repairs (`ConfigLifecycle`, `HooksLifecycle`, `LocalDbLifecycle`)
 - reuse existing canonical SCE repair flows when ownership already exists, especially `sce setup --hooks` semantics and shared setup/security helpers
 - add new internal doctor-owned repair routines only for safe gaps with no existing canonical repair command
 - stay idempotent across repeated `--fix` runs
 - remain bounded to SCE-owned paths/files and explicit permission normalization on those paths
+
+## ServiceLifecycle trait
+
+The `ServiceLifecycle` trait in `cli/src/services/lifecycle.rs` provides a unified interface for service health checks, repairs, and setup:
+
+- `diagnose(&self, ctx: &AppContext) -> Vec<HealthProblem>`: returns health problems detected by the service
+- `fix(&self, ctx: &AppContext) -> Vec<FixResult>`: attempts to repair issues detected by the service
+- `setup(&self, ctx: &AppContext) -> Vec<SetupOutcome>`: performs service-specific setup steps
+
+Default implementations are no-ops, allowing services to opt-in to lifecycle ownership incrementally.
+
+Services implementing `ServiceLifecycle`:
+- `ConfigLifecycle` in `cli/src/services/config/lifecycle.rs`: validates global/local config readability and schema compliance
+- `HooksLifecycle` in `cli/src/services/hooks/lifecycle.rs`: checks hook rollout integrity, required-hook presence/executability/content
+- `LocalDbLifecycle` in `cli/src/services/local_db/lifecycle.rs`: validates DB path/health, bootstraps DB parent directory
+
+The `doctor` command aggregates `diagnose` and `fix` across all registered providers.
+The `setup` command aggregates `setup` across all registered providers in order (config → local_db → hooks).
 
 ## Output shape contract
 

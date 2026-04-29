@@ -74,26 +74,38 @@ Move ownership of environment health checks (`diagnose`), repairs (`fix`), and b
   - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed after `nix develop -c sh -c 'cd cli && cargo fmt'` formatting.
   - Notes: Added a local-DB-owned `LocalDbLifecycle` provider with diagnose/fix/setup methods for canonical local DB path health, parent-directory readiness/bootstrap, and `LocalDb::new()` setup while leaving current doctor/setup orchestration unchanged for later aggregation tasks.
 
-- [ ] T05: Refactor `doctor` to aggregate `ServiceLifecycle::diagnose` and `fix` (status:todo)
+- [x] T05: Refactor `doctor` to aggregate `ServiceLifecycle::diagnose` and `fix` (status:done)
   - Task ID: T05
   - Goal: Replace direct inspection logic in `doctor/mod.rs` and `doctor/inspect.rs` with aggregation over a list of `&dyn ServiceLifecycle` providers. `doctor` calls `diagnose` on each service, collects problems, and for `--fix` calls `fix` on each service.
   - Boundaries (in/out of scope): In - refactoring doctor to use lifecycle aggregation, removing duplicated inspection logic from `doctor/inspect.rs`. Out - changing doctor output format or problem taxonomy.
   - Done when: `doctor` compiles, `cargo test` doctor tests pass, and `cargo check` is clean.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo test doctor'` and `nix develop -c sh -c 'cd cli && cargo check'`
+  - Completed: 2026-04-29
+  - Files changed: `cli/src/services/doctor/command.rs`, `cli/src/services/doctor/mod.rs`, `cli/src/services/doctor/inspect.rs`, `cli/src/services/doctor/fixes.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed; `nix flake check` passed, including `cli-tests`, `cli-clippy`, and `cli-fmt`. Targeted `nix develop -c sh -c 'cd cli && cargo test doctor'` was blocked by the repo bash policy preferring `nix flake check`.
+  - Notes: Runtime doctor execution now receives `AppContext`, gathers configured service lifecycle providers, aggregates `diagnose` problems, delegates auto-fix behavior to each provider's `fix`, and rebuilds the report after fixes while preserving doctor rendering and taxonomy.
 
-- [ ] T06: Refactor `setup` to aggregate `ServiceLifecycle::setup` (status:todo)
+- [x] T06: Refactor `setup` to aggregate `ServiceLifecycle::setup` (status:done)
   - Task ID: T06
   - Goal: Replace direct setup steps in `setup.rs` with aggregation over a list of `&dyn ServiceLifecycle` providers. `setup` calls `setup` on each service in order (config → local_db → hooks → integrations) and collects results.
   - Boundaries (in/out of scope): In - refactoring setup command to use lifecycle aggregation, removing direct calls to `bootstrap_repo_local_config`, `bootstrap_local_db`, etc. from `setup.rs`. Out - changing setup target selection or interactive prompt flow.
   - Done when: `setup` compiles, `cargo test` setup tests pass, and `cargo check` is clean.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo test setup'` and `nix develop -c sh -c 'cd cli && cargo check'`
+  - Completed: 2026-04-30
+  - Files changed: `cli/src/app.rs`, `cli/src/services/setup/command.rs`, `cli/src/services/setup/mod.rs`, `cli/src/services/config/lifecycle.rs`, `cli/src/services/hooks/lifecycle.rs`
+  - Evidence: `nix flake check` passed (cli-tests, cli-clippy, cli-fmt, pkl-parity, and all JS checks).
+  - Notes: Added optional `repo_root` field to `AppContext` with a `repo_root()` getter. Setup command now builds an `AppContext` with the resolved repository root and aggregates `setup` calls across lifecycle providers (config → local_db → hooks). Removed direct calls to `bootstrap_repo_local_config`, `bootstrap_local_db`, `run_setup_hooks`, and `prepare_setup_hooks_repository` from `setup/mod.rs`. ConfigLifecycle and HooksLifecycle now use `ctx.repo_root()` instead of resolving the repository root independently.
 
-- [ ] T07: Validate full behavior parity and sync context (status:todo)
+- [x] T07: Validate full behavior parity and sync context (status:done)
   - Task ID: T07
   - Goal: Run full test suite, verify `sce doctor` and `sce setup` behavior is unchanged, and update relevant context files (`context/cli/cli-command-surface.md`, `context/sce/agent-trace-hook-doctor.md`) to document the lifecycle ownership shift.
   - Boundaries (in/out of scope): In - `nix flake check`, manual CLI smoke tests, context sync. Out - adding new features.
   - Done when: `nix flake check` passes, manual `sce doctor` and `sce setup --help` spot-checks are clean, and context files reflect the new service lifecycle boundaries.
   - Verification notes (commands or checks): `nix flake check`, manual CLI smoke tests.
+  - Completed: 2026-04-30
+  - Files changed: `context/cli/cli-command-surface.md`, `context/sce/agent-trace-hook-doctor.md`, `context/plans/cli-service-lifecycle.md`
+  - Evidence: `nix flake check` passed; `sce doctor` and `sce setup --help` output verified unchanged; context files updated to reflect ServiceLifecycle trait and aggregation pattern.
+  - Notes: All 7 tasks in the cli-service-lifecycle plan are now complete. The `doctor` and `setup` commands now aggregate `ServiceLifecycle` calls across config, hooks, and local_db providers. Context files updated to document the new architecture.
 
 ## Open questions
 
