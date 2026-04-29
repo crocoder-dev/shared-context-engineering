@@ -18,7 +18,11 @@
 
 - The trait is registered through `cli/src/services/mod.rs`.
 - Doctor problem/fix types and relevant taxonomy enums are crate-visible so future service lifecycle implementations can construct existing doctor records.
-- No service implements `ServiceLifecycle` yet.
+- `cli/src/services/hooks/lifecycle.rs` defines `HooksLifecycle`, the initial hook-owned provider.
+- `HooksLifecycle::diagnose` emits hook rollout/repository-targeting problems with the existing doctor taxonomy and compares required hook files against canonical embedded hook assets.
+- `HooksLifecycle::fix` reuses the canonical required-hook setup flow for auto-fixable hook rollout problems.
+- `HooksLifecycle::setup` returns `SetupOutcome.required_hooks_install` from the canonical `install_required_git_hooks` flow.
+- Config and local DB lifecycle providers are still deferred.
 - `doctor` and `setup` runtime behavior is unchanged; they still use their existing orchestration paths until later lifecycle migration tasks wire aggregation.
 
 ## Related context

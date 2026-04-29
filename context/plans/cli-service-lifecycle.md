@@ -41,12 +41,16 @@ Move ownership of environment health checks (`diagnose`), repairs (`fix`), and b
   - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed.
   - Notes: Added a default no-op `ServiceLifecycle` trait against `AppContext`, a minimal `SetupOutcome`, and crate-visible doctor result/taxonomy types for future lifecycle implementations without changing runtime behavior.
 
-- [ ] T02: Extract `hooks` health checks and setup into `ServiceLifecycle` impl (status:todo)
+- [x] T02: Extract `hooks` health checks and setup into `ServiceLifecycle` impl (status:done)
   - Task ID: T02
   - Goal: Move hook-specific doctor inspection logic (from `doctor/inspect.rs`: `inspect_repository_hooks`, `collect_hook_health`, hook content state checks) and hook-specific setup logic (`install_required_git_hooks`) into `services/hooks/lifecycle.rs` as a `ServiceLifecycle` implementation.
   - Boundaries (in/out of scope): In - moving hook health checks and setup into `hooks/lifecycle.rs`, producing `DoctorProblem` / `SetupInstallOutcome` compatible results. Out - removing them from `doctor/inspect.rs` yet (that happens in T04).
   - Done when: `hooks/lifecycle.rs` compiles, implements `ServiceLifecycle`, and `cargo check` passes.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo check'`
+  - Completed: 2026-04-29
+  - Files changed: `cli/src/services/hooks/lifecycle.rs`, `cli/src/services/hooks/mod.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed.
+  - Notes: Added a hook-owned `HooksLifecycle` provider with diagnose/fix/setup methods that reuse hook rollout problem taxonomy and canonical required-hook installation while leaving current doctor/setup orchestration unchanged for later tasks.
 
 - [ ] T03: Extract `config` health checks and setup into `ServiceLifecycle` impl (status:todo)
   - Task ID: T03
