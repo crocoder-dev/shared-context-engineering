@@ -460,36 +460,6 @@ mod command_runtime {
         convert_clap_command(command)
     }
 
-    struct AuthCommand {
-        request: services::auth_command::AuthRequest,
-    }
-
-    impl services::command_registry::RuntimeCommand for AuthCommand {
-        fn name(&self) -> std::borrow::Cow<'_, str> {
-            std::borrow::Cow::Borrowed(services::auth_command::NAME)
-        }
-
-        fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
-            services::auth_command::run_auth_subcommand(self.request)
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))
-        }
-    }
-
-    struct ConfigCommand {
-        subcommand: services::config::ConfigSubcommand,
-    }
-
-    impl services::command_registry::RuntimeCommand for ConfigCommand {
-        fn name(&self) -> std::borrow::Cow<'_, str> {
-            std::borrow::Cow::Borrowed(services::config::NAME)
-        }
-
-        fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
-            services::config::run_config_subcommand(self.subcommand.clone())
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))
-        }
-    }
-
     struct SetupCommand {
         request: services::setup::SetupRequest,
     }
@@ -779,7 +749,7 @@ mod command_runtime {
             }
         };
 
-        Ok(Box::new(AuthCommand {
+        Ok(Box::new(services::auth_command::command::AuthCommand {
             request: services::auth_command::AuthRequest { subcommand },
         }))
     }
@@ -813,7 +783,7 @@ mod command_runtime {
                 config,
                 log_level,
                 timeout_ms,
-            } => Ok(Box::new(ConfigCommand {
+            } => Ok(Box::new(services::config::command::ConfigCommand {
                 subcommand: services::config::ConfigSubcommand::Show(
                     services::config::ConfigRequest {
                         report_format: convert_output_format(format),
@@ -828,7 +798,7 @@ mod command_runtime {
                 config,
                 log_level,
                 timeout_ms,
-            } => Ok(Box::new(ConfigCommand {
+            } => Ok(Box::new(services::config::command::ConfigCommand {
                 subcommand: services::config::ConfigSubcommand::Validate(
                     services::config::ConfigRequest {
                         report_format: convert_output_format(format),

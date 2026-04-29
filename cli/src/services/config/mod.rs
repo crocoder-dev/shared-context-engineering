@@ -1,3 +1,5 @@
+pub mod command;
+
 use std::{
     path::{Path, PathBuf},
     sync::OnceLock,

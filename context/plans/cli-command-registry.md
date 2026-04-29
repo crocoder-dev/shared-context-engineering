@@ -60,12 +60,16 @@ Replace the monolithic `app.rs` command dispatch with a lightweight command regi
   - Evidence: `nix flake check` passed (cli-tests, cli-clippy, cli-fmt all green); `nix run .#pkl-check-generated` passed.
   - Notes: `HelpCommand` registered in `build_default_registry()` as a zero-arg constructor. `HelpTextCommand`, `VersionCommand`, and `CompletionCommand` are stateful (carry parsed args) and remain constructed in the parse layer (`command_runtime` in `app.rs`), but their struct definitions and `RuntimeCommand` impls now live in service-owned `command.rs` files. `make_version_command()` and `make_completion_command()` default constructors are `#[allow(dead_code)]` for future registry use. `version.rs` and `completion.rs` were converted from single-file modules to directory modules (`mod.rs` + `command.rs`).
 
-- [ ] T03: Move `AuthCommand`, `ConfigCommand` to service commands (status:todo)
+- [x] T03: Move `AuthCommand`, `ConfigCommand` to service commands (status:done)
   - Task ID: T03
-  - Goal: Extract `AuthCommand` and `ConfigCommand` from `app.rs` into `services/auth/command.rs` and `services/config/command.rs`. Register them.
+  - Goal: Extract `AuthCommand` and `ConfigCommand` from `app.rs` into `services/auth_command/command.rs` and `services/config/command.rs`. Register them.
   - Boundaries (in/out of scope): In - moving structs and `RuntimeCommand` impls, registering them. Out - changing auth/config service internals.
   - Done when: Both commands live in service modules, registry includes them, `app.rs` no longer defines them, and `cargo check` passes.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo check'`
+  - Completed: 2026-04-29
+  - Files changed: `cli/src/services/auth_command.rs` → `cli/src/services/auth_command/mod.rs` (directory-module conversion), `cli/src/services/auth_command/command.rs` (new), `cli/src/services/config/command.rs` (new), `cli/src/services/config/mod.rs`, `cli/src/services/command_registry.rs`, `cli/src/app.rs`
+  - Evidence: `cargo check` passed, `cargo clippy` passed, `cargo fmt --check` passed.
+  - Notes: `auth_command.rs` was converted from a single-file module to a directory module (`auth_command/mod.rs` + `auth_command/command.rs`) following the T00 pattern. Both `AuthCommand` and `ConfigCommand` are stateful commands with `#[allow(dead_code)]` default constructors for registry use, matching the T02 pattern for `VersionCommand`/`CompletionCommand`.
 
 - [ ] T04: Move `SetupCommand`, `DoctorCommand`, `HooksCommand` to service commands (status:todo)
   - Task ID: T04

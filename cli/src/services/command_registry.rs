@@ -82,6 +82,14 @@ impl Default for CommandRegistry {
 pub fn build_default_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
     registry.register("help", crate::services::help::command::make_help_command);
+    registry.register(
+        "auth",
+        crate::services::auth_command::command::make_auth_command,
+    );
+    registry.register(
+        "config",
+        crate::services::config::command::make_config_command,
+    );
     registry
 }
 
