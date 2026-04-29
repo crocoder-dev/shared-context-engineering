@@ -383,14 +383,13 @@ fn execute_command_phase(
 }
 
 mod command_runtime {
-    use std::borrow::Cow;
     use std::path::PathBuf;
 
     use anyhow::Context;
 
     use crate::app::AppContext;
     use crate::{cli_schema, command_surface, services};
-    use services::command_registry::{RuntimeCommand, RuntimeCommandHandle};
+    use services::command_registry::RuntimeCommandHandle;
     use services::error::{ClassifiedError, FailureClass};
     use services::observability::traits::Logger as LoggerTrait;
 
@@ -417,7 +416,7 @@ mod command_runtime {
         }
 
         if args_vec.len() <= 1 {
-            return Ok(Box::new(HelpCommand));
+            return Ok(services::help::command::make_help_command());
         }
 
         let cli = match cli_schema::Cli::try_parse_from(&args_vec) {
@@ -425,10 +424,13 @@ mod command_runtime {
             Err(error) => {
                 if error.kind() == clap::error::ErrorKind::DisplayHelp {
                     if let Some((name, text)) = render_subcommand_help_from_args(&args_vec) {
-                        return Ok(Box::new(HelpTextCommand { name, text }));
+                        return Ok(Box::new(services::help::command::HelpTextCommand {
+                            name,
+                            text,
+                        }));
                     }
 
-                    return Ok(Box::new(HelpCommand));
+                    return Ok(services::help::command::make_help_command());
                 }
                 if error.kind() == clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
                 {
@@ -441,7 +443,7 @@ mod command_runtime {
                     ));
                 }
                 if error.kind() == clap::error::ErrorKind::DisplayVersion {
-                    return Ok(Box::new(VersionCommand {
+                    return Ok(Box::new(services::version::command::VersionCommand {
                         request: services::version::VersionRequest {
                             format: services::version::VersionFormat::Text,
                         },
@@ -452,46 +454,19 @@ mod command_runtime {
         };
 
         let Some(command) = cli.command else {
-            return Ok(Box::new(HelpCommand));
+            return Ok(services::help::command::make_help_command());
         };
 
         convert_clap_command(command)
-    }
-
-    struct HelpCommand;
-
-    impl RuntimeCommand for HelpCommand {
-        fn name(&self) -> Cow<'_, str> {
-            Cow::Borrowed("help")
-        }
-
-        fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
-            Ok(command_surface::help_text())
-        }
-    }
-
-    struct HelpTextCommand {
-        name: String,
-        text: String,
-    }
-
-    impl RuntimeCommand for HelpTextCommand {
-        fn name(&self) -> Cow<'_, str> {
-            Cow::Borrowed(self.name.as_str())
-        }
-
-        fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
-            Ok(self.text.clone())
-        }
     }
 
     struct AuthCommand {
         request: services::auth_command::AuthRequest,
     }
 
-    impl RuntimeCommand for AuthCommand {
-        fn name(&self) -> Cow<'_, str> {
-            Cow::Borrowed(services::auth_command::NAME)
+    impl services::command_registry::RuntimeCommand for AuthCommand {
+        fn name(&self) -> std::borrow::Cow<'_, str> {
+            std::borrow::Cow::Borrowed(services::auth_command::NAME)
         }
 
         fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
@@ -500,27 +475,13 @@ mod command_runtime {
         }
     }
 
-    struct CompletionCommand {
-        request: services::completion::CompletionRequest,
-    }
-
-    impl RuntimeCommand for CompletionCommand {
-        fn name(&self) -> Cow<'_, str> {
-            Cow::Borrowed(services::completion::NAME)
-        }
-
-        fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
-            Ok(services::completion::render_completion(self.request))
-        }
-    }
-
     struct ConfigCommand {
         subcommand: services::config::ConfigSubcommand,
     }
 
-    impl RuntimeCommand for ConfigCommand {
-        fn name(&self) -> Cow<'_, str> {
-            Cow::Borrowed(services::config::NAME)
+    impl services::command_registry::RuntimeCommand for ConfigCommand {
+        fn name(&self) -> std::borrow::Cow<'_, str> {
+            std::borrow::Cow::Borrowed(services::config::NAME)
         }
 
         fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
@@ -533,9 +494,9 @@ mod command_runtime {
         request: services::setup::SetupRequest,
     }
 
-    impl RuntimeCommand for SetupCommand {
-        fn name(&self) -> Cow<'_, str> {
-            Cow::Borrowed(services::setup::NAME)
+    impl services::command_registry::RuntimeCommand for SetupCommand {
+        fn name(&self) -> std::borrow::Cow<'_, str> {
+            std::borrow::Cow::Borrowed(services::setup::NAME)
         }
 
         fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
@@ -605,9 +566,9 @@ mod command_runtime {
         request: services::doctor::DoctorRequest,
     }
 
-    impl RuntimeCommand for DoctorCommand {
-        fn name(&self) -> Cow<'_, str> {
-            Cow::Borrowed(services::doctor::NAME)
+    impl services::command_registry::RuntimeCommand for DoctorCommand {
+        fn name(&self) -> std::borrow::Cow<'_, str> {
+            std::borrow::Cow::Borrowed(services::doctor::NAME)
         }
 
         fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
@@ -620,28 +581,13 @@ mod command_runtime {
         subcommand: services::hooks::HookSubcommand,
     }
 
-    impl RuntimeCommand for HooksCommand {
-        fn name(&self) -> Cow<'_, str> {
-            Cow::Borrowed(services::hooks::NAME)
+    impl services::command_registry::RuntimeCommand for HooksCommand {
+        fn name(&self) -> std::borrow::Cow<'_, str> {
+            std::borrow::Cow::Borrowed(services::hooks::NAME)
         }
 
         fn execute(&self, context: &AppContext) -> Result<String, ClassifiedError> {
             services::hooks::run_hooks_subcommand(&self.subcommand, Some(context.logger()))
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))
-        }
-    }
-
-    struct VersionCommand {
-        request: services::version::VersionRequest,
-    }
-
-    impl RuntimeCommand for VersionCommand {
-        fn name(&self) -> Cow<'_, str> {
-            Cow::Borrowed(services::version::NAME)
-        }
-
-        fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
-            services::version::render_version(self.request)
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))
         }
     }
@@ -689,11 +635,13 @@ mod command_runtime {
         let command_name = args.get(1)?.as_str();
 
         match command_name {
-            services::auth_command::NAME => Some(Box::new(HelpTextCommand {
-                name: services::auth_command::NAME.to_string(),
-                text: cli_schema::auth_help_text(),
-            })),
-            services::config::NAME => Some(Box::new(HelpTextCommand {
+            services::auth_command::NAME => {
+                Some(Box::new(services::help::command::HelpTextCommand {
+                    name: services::auth_command::NAME.to_string(),
+                    text: cli_schema::auth_help_text(),
+                }))
+            }
+            services::config::NAME => Some(Box::new(services::help::command::HelpTextCommand {
                 name: services::config::NAME.to_string(),
                 text: cli_schema::render_help_for_path(&[services::config::NAME])?,
             })),
@@ -786,16 +734,20 @@ mod command_runtime {
                 },
             })),
             cli_schema::Commands::Hooks { subcommand } => convert_hooks_subcommand(subcommand),
-            cli_schema::Commands::Version { format } => Ok(Box::new(VersionCommand {
-                request: services::version::VersionRequest {
-                    format: convert_output_format(format),
-                },
-            })),
-            cli_schema::Commands::Completion { shell } => Ok(Box::new(CompletionCommand {
-                request: services::completion::CompletionRequest {
-                    shell: convert_completion_shell(shell),
-                },
-            })),
+            cli_schema::Commands::Version { format } => {
+                Ok(Box::new(services::version::command::VersionCommand {
+                    request: services::version::VersionRequest {
+                        format: convert_output_format(format),
+                    },
+                }))
+            }
+            cli_schema::Commands::Completion { shell } => {
+                Ok(Box::new(services::completion::command::CompletionCommand {
+                    request: services::completion::CompletionRequest {
+                        shell: convert_completion_shell(shell),
+                    },
+                }))
+            }
         }
     }
 

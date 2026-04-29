@@ -1,7 +1,9 @@
-pub const NAME: &str = "completion";
+pub mod command;
 
 use clap::CommandFactory;
 use clap_complete::Shell;
+
+pub const NAME: &str = "completion";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CompletionShell {

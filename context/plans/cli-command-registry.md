@@ -49,12 +49,16 @@ Replace the monolithic `app.rs` command dispatch with a lightweight command regi
   - Evidence: `nix flake check` passed (cli-tests, cli-clippy, cli-fmt all green); `nix run .#pkl-check-generated` passed; `cargo check` passed.
   - Notes: Moved `RuntimeCommand` trait and `RuntimeCommandHandle` type alias from `app.rs` private `command_runtime` module to `services/command_registry.rs` so the registry can reference them. `app.rs` now imports these from `services::command_registry`. `build_default_registry()` starts empty; commands will be registered in T02–T04.
 
-- [ ] T02: Move `HelpCommand`, `HelpTextCommand`, `VersionCommand`, `CompletionCommand` to service commands (status:todo)
+- [x] T02: Move `HelpCommand`, `HelpTextCommand`, `VersionCommand`, `CompletionCommand` to service commands (status:done)
   - Task ID: T02
   - Goal: Extract simple command structs (`HelpCommand`, `HelpTextCommand`, `VersionCommand`, `CompletionCommand`) from `app.rs` into `services/{name}/command.rs` files. Register them in `build_default_registry()`.
   - Boundaries (in/out of scope): In - moving the four simple commands to their service directories, registering them. Out - moving complex commands (auth, config, setup, doctor, hooks).
   - Done when: The four simple commands live in service modules, registry includes them, `app.rs` no longer defines them, and `cargo check` passes.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo check'`
+  - Completed: 2026-04-29
+  - Files changed: `cli/src/services/help/mod.rs` (new), `cli/src/services/help/command.rs` (new), `cli/src/services/version/mod.rs` (new, replaces `version.rs`), `cli/src/services/version/command.rs` (new), `cli/src/services/completion/mod.rs` (new, replaces `completion.rs`), `cli/src/services/completion/command.rs` (new), `cli/src/services/command_registry.rs`, `cli/src/services/mod.rs`, `cli/src/app.rs`
+  - Evidence: `nix flake check` passed (cli-tests, cli-clippy, cli-fmt all green); `nix run .#pkl-check-generated` passed.
+  - Notes: `HelpCommand` registered in `build_default_registry()` as a zero-arg constructor. `HelpTextCommand`, `VersionCommand`, and `CompletionCommand` are stateful (carry parsed args) and remain constructed in the parse layer (`command_runtime` in `app.rs`), but their struct definitions and `RuntimeCommand` impls now live in service-owned `command.rs` files. `make_version_command()` and `make_completion_command()` default constructors are `#[allow(dead_code)]` for future registry use. `version.rs` and `completion.rs` were converted from single-file modules to directory modules (`mod.rs` + `command.rs`).
 
 - [ ] T03: Move `AuthCommand`, `ConfigCommand` to service commands (status:todo)
   - Task ID: T03

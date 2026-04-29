@@ -76,10 +76,13 @@ impl Default for CommandRegistry {
 /// commands are available. Individual command constructors are added
 /// here as they are migrated to service-owned `command.rs` files.
 ///
-/// During the registry rollout (T01–T04), this starts minimal and
-/// grows as commands are extracted from `app.rs`.
+/// Commands that require per-invocation data (parsed flags, subcommand
+/// selection) are still constructed in the parse layer; only stateless
+/// or default-constructible commands are registered here.
 pub fn build_default_registry() -> CommandRegistry {
-    CommandRegistry::new()
+    let mut registry = CommandRegistry::new();
+    registry.register("help", crate::services::help::command::make_help_command);
+    registry
 }
 
 #[cfg(test)]
@@ -133,8 +136,8 @@ mod tests {
     #[test]
     fn default_registry_is_build_default() {
         let registry = CommandRegistry::default();
-        // The default registry starts empty during T01; commands are added
-        // in T02–T04 as they are migrated to service-owned command files.
-        assert!(registry.command_names().is_empty());
+        // The default registry grows as commands are migrated to service-owned
+        // command files. T02 registers "help"; T03–T04 add remaining commands.
+        assert!(registry.command_names().contains(&"help"));
     }
 }

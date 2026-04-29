@@ -1,3 +1,5 @@
+pub mod command;
+
 use anyhow::{Context, Result};
 use serde_json::json;
 
