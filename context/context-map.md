@@ -38,7 +38,7 @@ Feature/domain context:
 - `context/sce/cli-security-hardening-contract.md` (T06 CLI redaction contract, setup `--repo` canonicalization/validation, and setup write-permission probe behavior)
 - `context/sce/agent-trace-post-rewrite-local-remap-ingestion.md` (current post-rewrite no-op baseline plus historical remap-ingestion reference)
 - `context/sce/agent-trace-rewrite-trace-transformation.md` (current post-rewrite no-op baseline plus historical rewrite-transformation reference)
-- `context/sce/local-db.md` (implemented `cli/src/services/local_db.rs` Turso adapter with `LocalDb` struct, embedded migrations via `include_str!`, and blocking `execute`/`query` methods using a tokio current-thread runtime)
+- `context/sce/local-db.md` (implemented `cli/src/services/local_db/mod.rs` Turso adapter with `LocalDb` struct, embedded migrations via `include_str!`, and blocking `execute`/`query` methods using a tokio current-thread runtime)
 - `context/sce/agent-trace-core-schema-migrations.md` (historical reference for removed local DB schema bootstrap behavior; T03 now implements the actual local DB with migrations)
 - `context/sce/agent-trace-retry-queue-observability.md` (inactive local-hook retry path plus historical retry/metrics reference)
 - `context/sce/agent-trace-local-hooks-mvp-contract-gap-matrix.md` (T01 Local Hooks MVP production contract freeze and deterministic gap matrix for `agent-trace-local-hooks-production-mvp`)

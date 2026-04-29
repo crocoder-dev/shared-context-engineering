@@ -15,8 +15,8 @@ Task `setup-repo-gate-and-local-config-bootstrap` T02 and `turso-local-db-sync` 
 
 ## Implementation
 
-- `cli/src/services/setup.rs` exports `bootstrap_repo_local_config(repository_root: &Path) -> Result<()>`.
-- `cli/src/services/setup.rs` exports `bootstrap_local_db() -> Result<()>`.
+- `cli/src/services/setup/mod.rs` exports `bootstrap_repo_local_config(repository_root: &Path) -> Result<()>`.
+- `cli/src/services/setup/mod.rs` exports `bootstrap_local_db() -> Result<()>`.
 - The function uses `RepoPaths::sce_config_file()` and `RepoPaths::sce_dir()` from `default_paths` for path resolution.
 - The canonical payload constant is `REPO_LOCAL_CONFIG_BOOTSTRAP_PAYLOAD`.
 - `cli/src/app.rs` calls `services::setup::bootstrap_repo_local_config(&repository_root)` and then `services::setup::bootstrap_local_db()` in `Command::Setup` dispatch, immediately after `ensure_git_repository`.

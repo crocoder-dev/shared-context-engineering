@@ -49,5 +49,5 @@ When config install and hook install run together, CLI output is deterministic: 
 ## Implementation anchors
 
 - `cli/src/app.rs`
-- `cli/src/services/setup.rs`
+- `cli/src/services/setup/mod.rs`
 - `cli/src/command_surface.rs`

@@ -8,8 +8,8 @@
 
 ## Code ownership
 
-- Runtime bootstrap seam: `cli/src/services/local_db.rs` (`ensure_local_db_ready_blocking`).
-- Shared local DB connection helper: `cli/src/services/local_db.rs` (`connect_local`).
+- Runtime bootstrap seam: `cli/src/services/local_db/mod.rs` (`ensure_local_db_ready_blocking`).
+- Shared local DB connection helper: `cli/src/services/local_db/mod.rs` (`connect_local`).
 
 ## Current contract
 
@@ -27,7 +27,7 @@
 ## Removed behavior
 
 - `apply_core_schema_migrations` is no longer part of the active runtime surface.
-- The ordered schema statement list for Agent Trace persistence is no longer present in `cli/src/services/local_db.rs`.
+- The ordered schema statement list for Agent Trace persistence is no longer present in `cli/src/services/local_db/mod.rs`.
 - Hosted reconciliation schema ingestion is also absent from the current local DB bootstrap path.
 
 ## Verification evidence

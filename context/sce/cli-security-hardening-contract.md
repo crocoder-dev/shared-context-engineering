@@ -16,7 +16,7 @@ Task `sce-cli-agent-friendly-reliability-baseline` `T06` adds baseline security 
 
 - top-level CLI error emission in `cli/src/app.rs`
 - observability stderr/file sink output in `cli/src/services/observability.rs`
-- git-command stderr diagnostics surfaced by setup hook flows in `cli/src/services/setup.rs`
+- git-command stderr diagnostics surfaced by setup hook flows in `cli/src/services/setup/mod.rs`
 
 Current redaction coverage includes:
 
@@ -26,7 +26,7 @@ Current redaction coverage includes:
 
 ## Path and permission safety contract
 
-`cli/src/services/setup.rs` enforces:
+`cli/src/services/setup/mod.rs` enforces:
 
 - `--repo` path must resolve to an existing directory
 - repository path is canonicalized before hook setup operations

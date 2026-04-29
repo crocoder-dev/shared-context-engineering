@@ -27,12 +27,16 @@ Replace the monolithic `app.rs` command dispatch with a lightweight command regi
 
 ## Task stack
 
-- [ ] T00: Pre-convert single-file services to directory modules (status:todo)
+- [x] T00: Pre-convert single-file services to directory modules (status:done)
   - Task ID: T00
   - Goal: Mechanically convert `hooks.rs`, `config.rs`, `setup.rs`, and `local_db.rs` into directory-backed modules (`hooks/mod.rs`, etc.) before command/lifecycle files are added.
   - Boundaries (in/out of scope): In - file moves, `mod.rs` re-exports, `services/mod.rs` path compatibility, no behavior changes. Out - adding `command.rs` or `lifecycle.rs`, changing public APIs.
   - Done when: The converted modules compile with equivalent public surfaces, no command behavior changes, and `cargo check` passes.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo check'`
+  - Completed: 2026-04-29
+  - Files changed: `cli/src/services/hooks/mod.rs`, `cli/src/services/config/mod.rs`, `cli/src/services/setup/mod.rs`, `cli/src/services/local_db/mod.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed.
+  - Notes: Mechanical directory-module conversion only; relative `include_str!` paths were updated for the deeper `mod.rs` locations.
 
 - [ ] T01: Define `CommandRegistry` and registry builder (status:todo)
   - Task ID: T01

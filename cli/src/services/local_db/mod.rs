@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 /// Migrations are loaded at compile time from `cli/migrations/`.
 /// The numeric prefix determines execution order.
 #[allow(dead_code)]
-const MIGRATION_001: &str = include_str!("../../migrations/001_create_agent_traces.sql");
+const MIGRATION_001: &str = include_str!("../../../migrations/001_create_agent_traces.sql");
 
 /// Ordered list of embedded migrations (id, sql).
 #[allow(dead_code)]

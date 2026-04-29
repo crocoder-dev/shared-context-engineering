@@ -3,7 +3,7 @@
 ## Current status
 
 - This contract is no longer active in runtime.
-- The current `cli/src/services/hooks.rs` keeps `sce hooks post-rewrite` as a deterministic no-op.
+- The current `cli/src/services/hooks/mod.rs` keeps `sce hooks post-rewrite` as a deterministic no-op.
 
 ## Current baseline
 

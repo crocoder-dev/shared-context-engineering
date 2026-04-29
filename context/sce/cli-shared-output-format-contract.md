@@ -10,7 +10,7 @@
 
 ## Current command integration
 
-- `cli/src/services/config.rs` uses the shared type through `ReportFormat = OutputFormat`.
+- `cli/src/services/config/mod.rs` uses the shared type through `ReportFormat = OutputFormat`.
 - `cli/src/services/version.rs` uses the shared type through `VersionFormat = OutputFormat`.
 - Both commands keep deterministic default `text` when `--format` is omitted.
 - Both commands keep stable `--format <text|json>` usage in help text and parser behavior.

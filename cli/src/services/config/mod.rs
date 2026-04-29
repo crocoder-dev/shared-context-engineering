@@ -15,7 +15,7 @@ use crate::services::style::{self};
 pub const NAME: &str = "config";
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const SCE_CONFIG_SCHEMA_JSON: &str =
-    include_str!("../../assets/generated/config/schema/sce-config.schema.json");
+    include_str!("../../../assets/generated/config/schema/sce-config.schema.json");
 
 const DEFAULT_TIMEOUT_MS: u64 = 30000;
 const PRECEDENCE_DESCRIPTION: &str = "flags > env > config file > defaults";
@@ -438,7 +438,7 @@ static BUILTIN_BASH_POLICY_CATALOG: OnceLock<BuiltinBashPolicyCatalog> = OnceLoc
 static CONFIG_SCHEMA_VALIDATOR: OnceLock<Validator> = OnceLock::new();
 
 const BASH_POLICY_PRESET_CATALOG_JSON: &str =
-    include_str!("../../assets/generated/config/opencode/lib/bash-policy-presets.json");
+    include_str!("../../../assets/generated/config/opencode/lib/bash-policy-presets.json");
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct BashPolicyConfig {

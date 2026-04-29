@@ -1,6 +1,6 @@
 # Local Turso Database Adapter
 
-Provides a `LocalDb` struct in `cli/src/services/local_db.rs` that wraps a Turso connection with a tokio current-thread runtime for blocking operations.
+Provides a `LocalDb` struct in `cli/src/services/local_db/mod.rs` that wraps a Turso connection with a tokio current-thread runtime for blocking operations.
 
 ## Module Structure
 
