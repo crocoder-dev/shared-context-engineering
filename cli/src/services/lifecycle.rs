@@ -20,11 +20,7 @@ pub trait ServiceLifecycle: Send + Sync {
         Vec::new()
     }
 
-    fn fix(
-        &self,
-        _ctx: &AppContext,
-        _problems: &[HealthProblem],
-    ) -> Vec<DoctorFixResultRecord> {
+    fn fix(&self, _ctx: &AppContext, _problems: &[HealthProblem]) -> Vec<DoctorFixResultRecord> {
         Vec::new()
     }
 
