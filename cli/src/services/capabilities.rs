@@ -31,8 +31,7 @@ impl FsOps for StdFsOps {
     }
 
     fn metadata(&self, path: &Path) -> Result<Metadata> {
-        fs::metadata(path)
-            .with_context(|| format!("Failed to inspect path '{}'", path.display()))
+        fs::metadata(path).with_context(|| format!("Failed to inspect path '{}'", path.display()))
     }
 
     fn exists(&self, path: &Path) -> bool {
@@ -109,7 +108,7 @@ fn run_git_command(current_dir: &Path, args: &[&str]) -> Result<String> {
     }
 
     String::from_utf8(output.stdout)
-        .with_context(|| format!("Git command {:?} emitted invalid UTF-8", args))
+        .with_context(|| format!("Git command {args:?} emitted invalid UTF-8"))
 }
 
 #[cfg(test)]

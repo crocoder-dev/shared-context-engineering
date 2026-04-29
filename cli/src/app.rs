@@ -963,10 +963,25 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::{Mutex, OnceLock};
 
+    use services::capabilities::test_stubs::{UnimplementedFsOps, UnimplementedGitOps};
+    use services::observability::traits::NoopLogger;
+
     static APP_TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     fn app_test_env_lock() -> &'static Mutex<()> {
         APP_TEST_ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    struct TestTelemetry;
+
+    impl Telemetry for TestTelemetry {
+        fn with_default_subscriber(
+            &self,
+            action: &mut dyn FnMut() -> Result<String, ClassifiedError>,
+        ) -> Result<String, ClassifiedError> {
+            action()
+        }
     }
 
     struct TestDir {
@@ -1004,6 +1019,24 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    fn app_context_accepts_trait_based_observability_and_capabilities() {
+        let context = AppContext::new(
+            Arc::new(NoopLogger),
+            Arc::new(TestTelemetry),
+            Arc::new(UnimplementedFsOps),
+            Arc::new(UnimplementedGitOps),
+        );
+
+        context.logger().info("test.event", "test message", &[]);
+        let result = context
+            .telemetry()
+            .with_default_subscriber(&mut || Ok(String::from("ok")))
+            .expect("test telemetry should run action");
+
+        assert_eq!(result, "ok");
     }
 
     #[test]

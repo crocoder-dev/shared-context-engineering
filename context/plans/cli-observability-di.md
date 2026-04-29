@@ -73,20 +73,53 @@ Extract concrete observability types (`Logger`, `TelemetryRuntime`) into trait-b
   - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed.
   - Notes: Added minimal `AppContext` construction in app startup, routed `RuntimeCommand::execute` through `&AppContext`, kept command behavior unchanged, and adjusted logger/telemetry trait call sites so the context can hold trait objects. Context sync classified this as an important AppContext architecture/terminology change and updated root plus CLI/observability domain context.
 
-- [ ] T05: Update tests for trait-based observability and capabilities (status:todo)
+- [x] T05: Update tests for trait-based observability and capabilities (status:done)
   - Task ID: T05
   - Goal: Replace any test code that directly constructs `Logger` or `TelemetryRuntime` with `NoopLogger` or minimal trait impls where appropriate. Ensure all existing tests still pass.
   - Boundaries (in/out of scope): In - test files under `cli/src/` that touch observability or `AppContext`; minimal test stubs for `FsOps`/`GitOps`. Out - broad lifecycle migration tests.
   - Done when: `cargo test` passes with zero failures, `cargo clippy` is clean.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo test'` and `nix develop -c sh -c 'cd cli && cargo clippy'`
+  - Completed: 2026-04-29
+  - Files changed: `cli/src/app.rs`, `cli/src/services/capabilities.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo test'` was blocked by repository bash policy preferring `nix flake check`; `nix develop -c sh -c 'cd cli && cargo clippy'` passed; `nix flake check` passed, including CLI tests, clippy, and fmt checks.
+  - Notes: Added an app-level test that constructs `AppContext` from `NoopLogger`, a minimal test telemetry implementation, and existing capability stubs. Also fixed an existing capability helper clippy diagnostic required for clean lint validation. No CLI behavior changed.
 
-- [ ] T06: Validate and sync context (status:todo)
+- [x] T06: Validate and sync context (status:done)
   - Task ID: T06
   - Goal: Run full repo validation, update `context/cli/cli-command-surface.md` or relevant context files to document the new trait boundaries.
   - Boundaries (in/out of scope): In - `nix flake check`, context sync for architecture/observability contracts. Out - modifying behavior docs.
   - Done when: `nix flake check` passes, context files reflect the new `Logger`/`Telemetry` trait boundaries.
   - Verification notes (commands or checks): `nix flake check`
+  - Completed: 2026-04-29
+  - Files changed: `context/plans/cli-observability-di.md`
+  - Evidence: `nix flake check` passed, including CLI tests, clippy, fmt, generated parity, integration runner checks, and JS checks visible in the root flake.
+  - Notes: Verified existing root and domain context already reflects the implemented `Logger`/`Telemetry` trait boundaries, `AppContext`, and `FsOps`/`GitOps` capability seams. No behavior documentation changes were needed.
 
 ## Open questions
 
 None — assumptions recorded above.
+
+## Validation Report
+
+### Commands run
+
+- `nix flake check` -> exit 0 (`all checks passed`; covered CLI tests, CLI clippy, CLI fmt, generated parity, integration runner checks, and JS checks visible in the root flake).
+- `nix run .#pkl-check-generated` -> exit 0 (`Generated outputs are up to date.`).
+
+### Success-criteria verification
+
+- [x] `Logger` and `Telemetry` are traits in `services/observability/traits.rs` -> confirmed in `cli/src/services/observability/traits.rs`.
+- [x] Concrete `Logger` and `TelemetryRuntime` implement those traits unchanged -> confirmed in `cli/src/services/observability/traits.rs`; validation passed.
+- [x] `AppContext` holds `Arc<dyn Logger>`, `Arc<dyn Telemetry>`, `Arc<dyn FsOps>`, and `Arc<dyn GitOps>` -> confirmed in `cli/src/app.rs`.
+- [x] Command `execute` methods accept `&AppContext` -> confirmed via `RuntimeCommand::execute(&AppContext)` in `cli/src/app.rs`; validation passed.
+- [x] `nix flake check` passes with zero new warnings -> command passed.
+- [x] Existing tests compile and pass without behavior changes -> covered by `nix flake check` CLI test derivation.
+
+### Context verification
+
+- Existing context already documents the implemented trait boundaries, `AppContext`, and broad capability traits in `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/cli/capability-traits.md`, `context/sce/cli-observability-contract.md`, and `context/context-map.md`.
+- No behavior documentation changes were required during final sync.
+
+### Residual risks
+
+- None identified.
