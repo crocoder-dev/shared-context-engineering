@@ -31,6 +31,4 @@ Otherwise, the helper returns `undefined`.
 
 - The extraction seam is internal preparation logic used by `buildTrace`.
 - `buildTrace` calls `extractDiffTracePayload`; if the result is `undefined` (non-`session.diff` event, empty diff array, or no patch content), no hook invocation occurs.
-- When extraction succeeds, `buildTrace` forwards the extracted payload to `sce hooks diff-trace` via STDIN JSON.
-- The write flow always persists the full-event snapshot artifact, then conditionally forwards the extracted payload to `sce hooks diff-trace` via STDIN JSON so Rust hook runtime owns accepted diff-trace artifact and local DB persistence.
-- The write flow always persists the full-event snapshot artifact, then conditionally forwards the extracted payload to `sce hooks diff-trace` via STDIN JSON so Rust hook runtime owns accepted diff-trace artifact and `agent-trace.db` persistence.
+- When extraction succeeds, `buildTrace` forwards the extracted payload to `sce hooks diff-trace` via STDIN JSON so the Rust hook runtime owns accepted diff-trace artifact writes and `agent-trace.db` persistence.
