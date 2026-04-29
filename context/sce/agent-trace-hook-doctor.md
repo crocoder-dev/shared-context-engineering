@@ -44,7 +44,7 @@ The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor comm
 - repo-root installed OpenCode integration inventory for `OpenCode plugins`, `OpenCode agents`, `OpenCode commands`, and `OpenCode skills`
 - integration child-row reporting for those four groups now validates file content against embedded SHA-256; missing files render as `[MISS]`, content mismatches render as `[FAIL]`, and any affected parent group renders as `[FAIL]`
 - repo-root OpenCode plugin inventory includes the installed manifest file plus plugin/runtime/preset artifacts as required presence-only files; generated `config/.opencode/**` trees are not inspected by doctor
-- repair-mode reuse of `cli/src/services/setup.rs::install_required_git_hooks` for missing hooks directories plus missing, stale, or non-executable required hooks
+- repair-mode reuse of `cli/src/services/setup/mod.rs::install_required_git_hooks` for missing hooks directories plus missing, stale, or non-executable required hooks
 - doctor-owned bootstrap of the missing canonical SCE-owned local DB parent directory, with deterministic refusal when the resolved path does not match the expected owned location
 
 ## Approved human text-mode contract

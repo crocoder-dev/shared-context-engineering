@@ -1,7 +1,7 @@
 # Agent Trace Hooks Command Routing
 
 ## Scope
-- Current trace-removal baseline for `cli/src/services/hooks.rs`
+- Current trace-removal baseline for `cli/src/services/hooks/mod.rs`
 - Focus: concrete `sce hooks` subcommand routing plus current minimal runtime behavior
 
 ## Implemented command surface
@@ -13,7 +13,7 @@
 
 ## Parser and dispatch behavior
 - `cli/src/app.rs` routes `hooks` through dedicated hook-subcommand parsing.
-- `cli/src/services/hooks.rs` owns deterministic runtime dispatch through `HookSubcommand` + `run_hooks_subcommand`.
+- `cli/src/services/hooks/mod.rs` owns deterministic runtime dispatch through `HookSubcommand` + `run_hooks_subcommand`.
 - Invalid and ambiguous invocations return deterministic actionable errors pointing to `sce hooks --help`.
 
 ## Current runtime behavior

@@ -6,7 +6,7 @@ Task `sce-setup-githooks-any-repo` `T03` implements the required-hook installati
 
 ## Implemented setup-service surface
 
-`cli/src/services/setup.rs` now provides:
+`cli/src/services/setup/mod.rs` now provides:
 
 - `install_required_git_hooks(repository_root: &Path)`
 - `RequiredHooksInstallOutcome`
@@ -50,7 +50,7 @@ On swap failure, setup removes the staging artifact and returns deterministic re
 
 ## Verification coverage
 
-`cli/src/services/setup.rs` includes T03-focused tests for:
+`cli/src/services/setup/mod.rs` includes T03-focused tests for:
 
 - hook update in the default hooks directory with no backup artifact creation
 - hook update in custom `core.hooksPath` with no backup artifact creation

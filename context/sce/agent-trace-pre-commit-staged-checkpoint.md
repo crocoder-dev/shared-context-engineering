@@ -2,11 +2,11 @@
 
 ## Current status
 
-This contract is no longer active. The current `cli/src/services/hooks.rs` runtime keeps `sce hooks pre-commit` as a deterministic no-op and does not persist checkpoint artifacts.
+This contract is no longer active. The current `cli/src/services/hooks/mod.rs` runtime keeps `sce hooks pre-commit` as a deterministic no-op and does not persist checkpoint artifacts.
 
 ## Current baseline
 
-- Code location: `cli/src/services/hooks.rs`
+- Code location: `cli/src/services/hooks/mod.rs`
 - Runtime entrypoint: `run_pre_commit_subcommand`
 - Current behavior: returns deterministic no-op status text
 - No checkpoint artifact is written

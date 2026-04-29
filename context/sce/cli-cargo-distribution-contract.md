@@ -7,7 +7,7 @@ This file captures the implemented Cargo distribution slice from `context/plans/
 - The published crate name is `sce`.
 - `cli/Cargo.toml` keeps crates.io-facing metadata enabled for publication.
 - `cli/README.md` is the crate-facing install guidance source referenced by Cargo/crates.io surfaces.
-- `cli/assets/generated/` is an ephemeral crate-local mirror of generated setup/config assets prepared from canonical `config/` outputs before Cargo packaging/builds; `cli/build.rs` and `cli/src/services/config.rs` consume that mirror instead of relying on committed crate snapshots or workspace-external generated paths.
+- `cli/assets/generated/` is an ephemeral crate-local mirror of generated setup/config assets prepared from canonical `config/` outputs before Cargo packaging/builds; `cli/build.rs` and `cli/src/services/config/mod.rs` consume that mirror instead of relying on committed crate snapshots or workspace-external generated paths.
 
 ## Publish workflow
 

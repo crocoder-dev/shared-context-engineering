@@ -7,8 +7,8 @@
 - Runtime hook wiring: `agent-trace-local-hooks-production-mvp` `T04` (done)
 
 ## Canonical contract
-- Policy entrypoint: `cli/src/services/hooks.rs` -> `apply_commit_msg_coauthor_policy`.
-- Runtime entrypoint: `cli/src/services/hooks.rs` -> `run_commit_msg_subcommand` / `run_commit_msg_subcommand_in_repo`.
+- Policy entrypoint: `cli/src/services/hooks/mod.rs` -> `apply_commit_msg_coauthor_policy`.
+- Runtime entrypoint: `cli/src/services/hooks/mod.rs` -> `run_commit_msg_subcommand` / `run_commit_msg_subcommand_in_repo`.
 - Canonical trailer string: `Co-authored-by: SCE <sce@crocoder.dev>`.
 - Runtime gating conditions:
   - `attribution_hooks_enabled = true`
