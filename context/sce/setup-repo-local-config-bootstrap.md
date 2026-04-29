@@ -10,19 +10,20 @@ Task `setup-repo-gate-and-local-config-bootstrap` T02 and `turso-local-db-sync` 
 - The bootstrap writes the canonical schema-only JSON payload: `{"$schema": "https://sce.crocoder.dev/config.json"}` (with trailing newline).
 - If `.sce/config.json` already exists, the bootstrap step returns `Ok(())` immediately and leaves the file untouched — no merge, no reformat, no overwrite.
 - The parent `.sce/` directory is created via `fs::create_dir_all` if missing.
-- The setup flow also bootstraps the canonical local DB by initializing `LocalDb` (which resolves the shared default local DB path and applies embedded migrations).
+- The setup flow also bootstraps the canonical local DB by initializing `LocalDb` (which resolves the shared default local DB path and applies the current no-op migration loop) and the dedicated agent-trace DB by initializing `AgentTraceDb` (which creates `agent-trace.db` and applies the `diff_traces` migration).
 - The bootstrap runs after the git-repo gate (`ensure_git_repository`) and before config/hooks dispatch, so it applies to all setup modes: config-only, hooks-only, combined, and interactive.
 
 ## Implementation
 
 - `cli/src/services/setup.rs` exports `bootstrap_repo_local_config(repository_root: &Path) -> Result<()>`.
 - `cli/src/services/setup.rs` exports `bootstrap_local_db() -> Result<()>`.
+- `cli/src/services/setup.rs` exports `bootstrap_agent_trace_db() -> Result<()>` as a setup-owned helper that initializes `AgentTraceDb`.
 - The function uses `RepoPaths::sce_config_file()` and `RepoPaths::sce_dir()` from `default_paths` for path resolution.
 - The canonical payload constant is `REPO_LOCAL_CONFIG_BOOTSTRAP_PAYLOAD`.
-- `cli/src/app.rs` calls `services::setup::bootstrap_repo_local_config(&repository_root)` and then `services::setup::bootstrap_local_db()` in `Command::Setup` dispatch, immediately after `ensure_git_repository`.
+- `cli/src/app.rs` calls `services::setup::bootstrap_repo_local_config(&repository_root)`, `services::setup::bootstrap_local_db()`, and `services::setup::bootstrap_agent_trace_db()` in setup dispatch, immediately after `ensure_git_repository`.
 
 ## Relationship to other setup contracts
 
 - The git-repo gate (`ensure_git_repository`) was introduced in T01 of the same plan.
-- Local bootstrap (repo config + local DB init) is independent of config install and hook install; it runs before both.
+- Local bootstrap (repo config + `local.db` and `agent-trace.db` init) is independent of config install and hook install; it runs before both.
 - The bootstrap payload matches the `$schema` declaration accepted by the config service's startup config loading and the Pkl-authored JSON Schema at `config/schema/sce-config.schema.json`.

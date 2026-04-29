@@ -1,28 +1,53 @@
-//! Local Turso database adapter for SCE runtime data.
+//! Agent trace local Turso database adapter.
 //!
-//! Provides a `LocalDb` struct that wraps a Turso connection with a tokio
-//! runtime for blocking operations. The database is currently tableless;
-//! future local runtime data migrations can be added to `MIGRATIONS`.
+//! Provides an `AgentTraceDb` struct that wraps a Turso connection with a tokio
+//! runtime for blocking operations plus focused persistence helpers for agent
+//! trace diff-trace payloads. Migrations are embedded at compile time via
+//! `include_str!` from `cli/migrations/agent-trace/`.
 
 use anyhow::{Context, Result};
 
+/// Embedded migration SQL files.
+///
+/// Migrations are loaded at compile time from `cli/migrations/agent-trace/`.
+/// The numeric prefix determines execution order.
+#[allow(dead_code)]
+const MIGRATION_001: &str = include_str!("../../migrations/agent-trace/001_create_diff_traces.sql");
+
 /// Ordered list of embedded migrations (id, sql).
 #[allow(dead_code)]
-const MIGRATIONS: &[(&str, &str)] = &[];
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("001", MIGRATION_001),
+    // Add new migrations here with sequential IDs
+];
 
-/// Local Turso database adapter.
+const INSERT_DIFF_TRACE_SQL: &str =
+    "INSERT INTO diff_traces (time_ms, session_id, patch) VALUES (?1, ?2, ?3)";
+
+/// Validated diff-trace payload fields ready for agent-trace DB insertion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiffTraceInsert<'a> {
+    /// Incoming `time` value as Unix epoch milliseconds (signed for `SQLite` `INTEGER` compatibility).
+    pub time_ms: i64,
+    /// Incoming `sessionID` value.
+    pub session_id: &'a str,
+    /// Incoming `diff` payload body stored as a patch.
+    pub patch: &'a str,
+}
+
+/// Agent trace local Turso database adapter.
 ///
 /// Wraps a Turso connection with a lazily-initialized tokio current-thread
 /// runtime so that callers can use synchronous local DB methods.
 #[allow(dead_code)]
-pub struct LocalDb {
+pub struct AgentTraceDb {
     conn: turso::Connection,
     runtime: tokio::runtime::Runtime,
 }
 
 #[allow(dead_code)]
-impl LocalDb {
-    /// Open or create a local Turso database at the canonical path.
+impl AgentTraceDb {
+    /// Open or create an agent-trace database at the canonical path.
     ///
     /// The path is resolved from the shared default-path catalog
     /// (`cli/src/services/default_paths.rs`). Parent directories are
@@ -30,14 +55,14 @@ impl LocalDb {
     ///
     /// Migrations are run automatically after the database is opened.
     pub fn new() -> Result<Self> {
-        let db_path =
-            super::default_paths::local_db_path().context("failed to resolve local DB path")?;
+        let db_path = super::default_paths::agent_trace_db_path()
+            .context("failed to resolve agent-trace DB path")?;
 
         // Ensure parent directory exists
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
                 format!(
-                    "failed to create local DB parent directory: {}",
+                    "failed to create agent-trace DB parent directory: {}",
                     parent.display()
                 )
             })?;
@@ -48,7 +73,7 @@ impl LocalDb {
             .enable_io()
             .enable_time()
             .build()
-            .context("failed to create local DB tokio runtime. Try: rerun the command; if the issue persists, verify the local Tokio runtime environment.")?;
+            .context("failed to create agent-trace DB tokio runtime. Try: rerun the command; if the issue persists, verify the local Tokio runtime environment.")?;
 
         // Open or create the database, then connect
         let conn = runtime.block_on(async {
@@ -60,19 +85,19 @@ impl LocalDb {
                 .await
                 .map_err(|e| {
                     anyhow::anyhow!(
-                        "failed to open local database at {}: {e}",
+                        "failed to open agent-trace database at {}: {e}",
                         db_path.display()
                     )
                 })?;
             db.connect()
-                .map_err(|e| anyhow::anyhow!("failed to connect to local database: {e}"))
+                .map_err(|e| anyhow::anyhow!("failed to connect to agent-trace database: {e}"))
         })?;
 
         let db = Self { conn, runtime };
 
         // Run migrations after connection is established
         db.run_migrations()
-            .context("failed to run local DB migrations")?;
+            .context("failed to run agent-trace DB migrations")?;
 
         Ok(db)
     }
@@ -90,7 +115,7 @@ impl LocalDb {
             self.conn
                 .execute(sql, params)
                 .await
-                .map_err(|e| anyhow::anyhow!("local DB execute failed: {sql}: {e}"))
+                .map_err(|e| anyhow::anyhow!("agent-trace DB execute failed: {sql}: {e}"))
         })
     }
 
@@ -107,8 +132,24 @@ impl LocalDb {
             self.conn
                 .query(sql, params)
                 .await
-                .map_err(|e| anyhow::anyhow!("local DB query failed: {sql}: {e}"))
+                .map_err(|e| anyhow::anyhow!("agent-trace DB query failed: {sql}: {e}"))
         })
+    }
+
+    /// Insert one validated diff-trace payload into the agent-trace `diff_traces` table.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the incoming millisecond timestamp exceeds `SQLite`'s
+    /// signed integer range or if the agent-trace DB insert fails.
+    pub fn insert_diff_trace(&self, input: DiffTraceInsert<'_>) -> Result<u64> {
+        self.execute(
+            INSERT_DIFF_TRACE_SQL,
+            (input.time_ms, input.session_id, input.patch),
+        )
+        .context(
+            "failed to insert diff-trace payload into agent-trace DB. Try: run 'sce doctor --fix' to verify agent-trace DB health.",
+        )
     }
 
     /// Run all embedded migrations in order.

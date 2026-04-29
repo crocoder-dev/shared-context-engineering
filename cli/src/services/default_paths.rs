@@ -280,6 +280,20 @@ pub fn local_db_path() -> anyhow::Result<PathBuf> {
         .join("local.db"))
 }
 
+/// Returns the canonical path to the agent-trace Turso database file.
+///
+/// The path is `<state_root>/sce/agent-trace.db`, where `state_root` comes
+/// from the shared default-path catalog (`XDG_STATE_HOME` or platform
+/// equivalent).
+#[allow(dead_code)]
+pub fn agent_trace_db_path() -> anyhow::Result<PathBuf> {
+    Ok(resolve_sce_default_locations()?
+        .roots()
+        .state_root()
+        .join("sce")
+        .join("agent-trace.db"))
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PersistedArtifactRootKind {

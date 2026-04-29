@@ -258,6 +258,17 @@ pub fn bootstrap_local_db() -> Result<()> {
     Ok(())
 }
 
+/// Bootstraps the canonical SCE agent-trace database for this operator environment.
+///
+/// The database path is resolved from the shared default-path catalog and
+/// migrations are applied by the agent-trace DB adapter.
+#[allow(dead_code)]
+pub fn bootstrap_agent_trace_db() -> Result<()> {
+    super::agent_trace_db::AgentTraceDb::new()
+        .context("Failed to initialize local SCE agent-trace database during setup")?;
+    Ok(())
+}
+
 fn format_setup_install_success_message(outcome: &SetupInstallOutcome) -> String {
     let selected_targets = outcome
         .target_results

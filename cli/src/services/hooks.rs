@@ -9,8 +9,8 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::services::agent_trace_db::{AgentTraceDb, DiffTraceInsert};
 use crate::services::config;
-use crate::services::local_db::{DiffTraceInsert, LocalDb};
 
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
@@ -215,11 +215,12 @@ fn persist_diff_trace_payload(
 }
 
 fn persist_diff_trace_payload_to_local_db(payload: &DiffTracePayload) -> Result<u64> {
-    let db = LocalDb::new().context("failed to open local DB for diff-trace persistence")?;
+    let db =
+        AgentTraceDb::new().context("failed to open agent-trace DB for diff-trace persistence")?;
 
     let time_ms = i64::try_from(payload.time).with_context(|| {
         format!(
-            "diff-trace time_ms {} exceeds SQLite INTEGER range for local DB persistence",
+            "diff-trace time_ms {} exceeds SQLite INTEGER range for agent-trace DB persistence",
             payload.time
         )
     })?;
