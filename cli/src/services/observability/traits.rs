@@ -12,6 +12,12 @@ pub trait Logger {
     fn log_classified_error(&self, error: &ClassifiedError);
 }
 
+pub trait Telemetry {
+    fn with_default_subscriber<T, F>(&self, action: F) -> T
+    where
+        F: FnOnce() -> T;
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct NoopLogger;
 
@@ -46,5 +52,14 @@ impl Logger for super::Logger {
 
     fn log_classified_error(&self, error: &ClassifiedError) {
         super::Logger::log_classified_error(self, error);
+    }
+}
+
+impl Telemetry for super::TelemetryRuntime {
+    fn with_default_subscriber<T, F>(&self, action: F) -> T
+    where
+        F: FnOnce() -> T,
+    {
+        super::TelemetryRuntime::with_default_subscriber(self, action)
     }
 }

@@ -40,12 +40,16 @@ Extract concrete observability types (`Logger`, `TelemetryRuntime`) into trait-b
   - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed.
   - Notes: Added the logger trait boundary and no-op test implementation without migrating call sites or changing telemetry behavior.
 
-- [ ] T02: Extract `Telemetry` trait (status:todo)
+- [x] T02: Extract `Telemetry` trait (status:done)
   - Task ID: T02
   - Goal: Move `TelemetryRuntime::with_default_subscriber` into a `Telemetry` trait and implement it for `TelemetryRuntime`.
   - Boundaries (in/out of scope): In - trait definition, `impl Telemetry for TelemetryRuntime`. Out - wiring traits into `AppContext` or call sites.
   - Done when: `services::observability::traits::Telemetry` compiles, concrete `TelemetryRuntime` implements it, and `cargo check` passes.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo check'`
+  - Completed: 2026-04-29
+  - Files changed: `cli/src/services/observability/traits.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed.
+  - Notes: Added the telemetry trait boundary and delegated the concrete runtime implementation to the existing inherent method without wiring call sites or changing runtime behavior.
 
 - [ ] T03: Define filesystem and git capability traits (status:todo)
   - Task ID: T03
