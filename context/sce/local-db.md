@@ -1,11 +1,11 @@
 # Local Turso Database Adapter
 
-Provides a `LocalDb` struct in `cli/src/services/local_db.rs` that wraps a Turso connection with a tokio current-thread runtime for blocking operations.
+Provides a `LocalDb` struct in `cli/src/services/local_db.rs` that wraps a Turso connection with a tokio current-thread runtime for blocking operations. `local.db` is currently tableless and reserved for future SCE runtime data; active hook diff-trace persistence uses `AgentTraceDb` and `agent-trace.db`.
 
 ## Module Structure
 
 - `LocalDb` struct: Holds a `turso::Connection` and `tokio::runtime::Runtime`
-- `LocalDb::new()`: Opens/creates a local Turso database at the canonical path, runs embedded migrations
+- `LocalDb::new()`: Opens/creates a local Turso database at the canonical path, then runs the current no-op migration loop
 - `LocalDb::execute()`: Executes SQL statements that don't return rows
 - `LocalDb::query()`: Executes SQL queries that return rows
 
@@ -17,18 +17,20 @@ The local DB path is resolved from the shared default-path catalog:
 - Linux: `$XDG_STATE_HOME/sce/local.db` (defaults to `~/.local/state/sce/local.db`)
 - Other platforms: platform-equivalent user state root
 
-## Embedded Migrations
+## Migrations
 
-Migrations are embedded at compile time via `include_str!` from `cli/migrations/`:
+The local DB migration list is intentionally empty:
 
 ```rust
-const MIGRATION_001: &str = include_str!("../../migrations/001_create_agent_traces.sql");
-const MIGRATIONS: &[(&str, &str)] = &[
-    ("001", MIGRATION_001),
-];
+const MIGRATIONS: &[(&str, &str)] = &[];
 ```
 
-Migrations run automatically when `LocalDb::new()` is called. They use `CREATE TABLE IF NOT EXISTS` for idempotency.
+`LocalDb::new()` still calls `run_migrations()`, but the loop is currently a no-op. Future SCE runtime data can add migrations here without reintroducing Agent Trace tables into `local.db`.
+
+## Current Runtime Consumers
+
+- Setup and doctor continue to use `LocalDb::new()` for bootstrap and health/repair flows; there is still no user-invocable `sce sync` command.
+- `sce hooks diff-trace` does not use `LocalDb`; it writes accepted payloads through `AgentTraceDb::insert_diff_trace()` while retaining the collision-safe `context/tmp/*-diff-trace.json` artifact.
 
 ## Usage Pattern
 
@@ -38,11 +40,8 @@ use crate::services::local_db::LocalDb;
 // Open or create the database
 let db = LocalDb::new()?;
 
-// Execute a statement
-db.execute("INSERT INTO agent_traces (trace_json) VALUES (?1)", turso::params!["{\"test\": true}"])?;
-
-// Query rows
-let mut rows = db.query("SELECT * FROM agent_traces", ())?;
+// Query through the adapter when future local runtime tables are added
+let mut rows = db.query("SELECT 1", ())?;
 ```
 
 ## Error Handling

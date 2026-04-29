@@ -6,7 +6,7 @@ Current runtime source: `config/lib/agent-trace-plugin/opencode-sce-agent-trace-
 
 - The plugin captures only `session.diff` events.
 - When diff extraction succeeds, the plugin invokes `sce hooks diff-trace` and sends `{ sessionID, diff, time }` over STDIN JSON.
-- The plugin no longer writes diff-trace artifacts directly; the Rust `diff-trace` hook path owns collision-safe timestamp+attempt artifact writes.
+- The plugin no longer writes diff-trace artifacts directly; the Rust `diff-trace` hook path owns collision-safe timestamp+attempt artifact writes plus additive `diff_traces` insertion into `agent-trace.db`.
 
 ## Diff extraction seam
 
@@ -31,4 +31,4 @@ Otherwise, the helper returns `undefined`.
 
 - The extraction seam is internal preparation logic used by `buildTrace`.
 - `buildTrace` calls `extractDiffTracePayload`; if the result is `undefined` (non-`session.diff` event, empty diff array, or no patch content), no hook invocation occurs.
-- When extraction succeeds, `buildTrace` forwards the extracted payload to `sce hooks diff-trace` via STDIN JSON.
+- When extraction succeeds, `buildTrace` forwards the extracted payload to `sce hooks diff-trace` via STDIN JSON so the Rust hook runtime owns accepted diff-trace artifact writes and `agent-trace.db` persistence.
