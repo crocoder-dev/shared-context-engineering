@@ -75,7 +75,7 @@ Lightweight post-task verification baseline (required after each completed task)
 
 ## CI contracts
 
-- `.github/workflows/pkl-generated-parity.yml` runs parity checks on pushes to `main` and pull requests targeting `main`.
+- No dedicated generated-parity workflow is currently checked in; local/generated-output parity is enforced through `nix run .#pkl-check-generated` and the root `nix flake check` `pkl-parity` derivation.
 
 ## Cross-target parity
 

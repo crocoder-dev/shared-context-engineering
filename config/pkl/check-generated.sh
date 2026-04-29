@@ -27,14 +27,23 @@ trap cleanup EXIT
 
 pkl eval -m "$tmp_dir" config/pkl/generate.pkl >/dev/null
 
+# NOTE: This paths array must stay in sync with the output.files block in
+# config/pkl/generate.pkl. Whenever generate.pkl gains or loses outputs,
+# update this array to match so parity checks remain accurate.
 paths=(
   ".github/workflows/publish-tiles.yml"
   "config/.opencode/agent"
   "config/.opencode/command"
   "config/.opencode/skills"
+  "config/.opencode/lib"
+  "config/.opencode/plugins"
+  "config/.opencode/opencode.json"
   "config/automated/.opencode/agent"
   "config/automated/.opencode/command"
   "config/automated/.opencode/skills"
+  "config/automated/.opencode/lib"
+  "config/automated/.opencode/plugins"
+  "config/automated/.opencode/opencode.json"
   "config/.claude/agents"
   "config/.claude/commands"
   "config/.claude/skills"

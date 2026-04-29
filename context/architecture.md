@@ -36,8 +36,7 @@ Current target renderer helper modules:
 - `config/pkl/renderers/metadata-coverage-check.pkl`
 - `config/pkl/generate.pkl` (single multi-file generation entrypoint)
 - `config/pkl/check-generated.sh` (dev-shell integration stale-output detection against committed generated files)
-- `nix flake check` / `checks.<system>.{cli-tests,cli-clippy,cli-fmt,integrations-install-tests,integrations-install-clippy,integrations-install-fmt,npm-bun-tests,npm-biome-check,npm-biome-format,config-lib-bun-tests,config-lib-biome-check,config-lib-biome-format}` (root-flake check derivations for the current CLI, `integrations/install` runner, and JS validation inventory)
-- `.github/workflows/pkl-generated-parity.yml` (CI wrapper that runs the parity check for pushes to `main` and pull requests targeting `main`)
+- `nix flake check` / `checks.<system>.{cli-tests,cli-clippy,cli-fmt,integrations-install-tests,integrations-install-clippy,integrations-install-fmt,pkl-parity,npm-bun-tests,npm-biome-check,npm-biome-format,config-lib-bun-tests,config-lib-biome-check,config-lib-biome-format}` (root-flake check derivations for the current CLI, `integrations/install` runner, generated-output parity, and JS validation inventory)
 
 The scaffold provides stable canonical content-unit identifiers and reusable target-agnostic text primitives for all planned authored generated classes (agents, commands, skills, shared runtime assets, OpenCode plugin entrypoints, and generated OpenCode package manifests).
 

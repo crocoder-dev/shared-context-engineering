@@ -40,7 +40,6 @@ This repository uses the Shared Context Engineering (SCE) approach for AI-assist
 - Enter dev shell: `nix develop`
 - Run all flake checks visible at root: `nix flake check`
 - Run generated-output parity check: `nix run .#pkl-check-generated`
-- Regenerate and sync `.opencode` config: `nix run .#sync-opencode-config`
 
 ### Rust CLI commands
 
@@ -199,4 +198,3 @@ Run these from `config/lib/bash-policy-plugin/` when working on the Bun-owned ba
 - `config/lib/bash-policy-plugin/package.json`
 - `config/lib/bash-policy-plugin/bash-policy-runtime.test.ts`
 - `config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts`
-- `scripts/sync-opencode-config.sh`

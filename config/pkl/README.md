@@ -56,45 +56,9 @@ Inspect resulting changes with git status --short .github/workflows/publish-tile
 
 Run the Nix dev-shell integration stale-output test with nix develop -c ./config/pkl/check-generated.sh. This test intentionally exits non-zero when run outside `nix develop`.
 
+> **Coupling note:** `config/pkl/check-generated.sh` must be kept in sync with `config/pkl/generate.pkl`. Whenever `generate.pkl` gains or loses outputs, update the `paths` array in `check-generated.sh` to match so parity checks remain accurate.
+
 GitHub CI runs this same command in `.github/workflows/pkl-generated-parity.yml` for pushes to `main` and pull requests targeting `main`.
-
----
-
-## Use destructive sync
-
-Use this flake app to regenerate `config/` and then replace repository-root `.opencode/` from regenerated output. Run nix run .#sync-opencode-config.
-
----
-
-### Understand side effects
-
-This command is intentionally destructive for exactly two targets: repository `config/` and repository-root `.opencode/`.
-
-Replacement order is fixed: stage a `config/` copy, regenerate generated-owned outputs in staging, validate expected directories and manifests, replace live `config/`, then replace root `.opencode/` from staged `config/.opencode/`.
-
-Live `config/` is never deleted before staged regeneration succeeds. Root `.opencode/` replacement uses backup-and-restore safety plus post-copy parity verification.
-
-Runtime artifacts are excluded during root sync (`node_modules/` today). Manual edits under `config/` or root `.opencode/` are not preserved.
-
----
-
-### Follow workflow
-
-Confirm you are at repository root and that any local edits under `config/` or `.opencode/` are committed or intentionally disposable.
-
-Run nix run .#sync-opencode-config -- --help to confirm command availability. Then run nix run .#sync-opencode-config.
-
-Verify result with git status --short config .opencode. For a deterministic rerun check, run nix run .#sync-opencode-config again and verify git status --short config .opencode shows no unexpected new drift.
-
----
-
-### Recover from failures
-
-If the command fails before swap completion, it restores from backup automatically.
-
-If verification fails during root `.opencode/` replacement, the command exits non-zero and cleanup restores the pre-run root state.
-
-If you need to discard post-run changes and return to committed state, use Git restore commands for `config/` and `.opencode/` only when you intentionally want to drop local edits.
 
 ---
 
