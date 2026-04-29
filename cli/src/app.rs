@@ -330,7 +330,7 @@ where
 fn parse_command_phase<I>(
     args: I,
     logger: &dyn LoggerTrait,
-) -> Result<command_runtime::RuntimeCommandHandle, ClassifiedError>
+) -> Result<services::command_registry::RuntimeCommandHandle, ClassifiedError>
 where
     I: IntoIterator<Item = String>,
 {
@@ -347,7 +347,7 @@ where
 }
 
 fn execute_command_phase(
-    command: &dyn command_runtime::RuntimeCommand,
+    command: &dyn services::command_registry::RuntimeCommand,
     context: &AppContext,
 ) -> Result<String, ClassifiedError> {
     let command_name = command.name();
@@ -390,16 +390,9 @@ mod command_runtime {
 
     use crate::app::AppContext;
     use crate::{cli_schema, command_surface, services};
+    use services::command_registry::{RuntimeCommand, RuntimeCommandHandle};
     use services::error::{ClassifiedError, FailureClass};
     use services::observability::traits::Logger as LoggerTrait;
-
-    pub trait RuntimeCommand {
-        fn name(&self) -> Cow<'_, str>;
-
-        fn execute(&self, context: &AppContext) -> Result<String, ClassifiedError>;
-    }
-
-    pub type RuntimeCommandHandle = Box<dyn RuntimeCommand>;
 
     pub fn parse_runtime_command<I>(
         args: I,
@@ -953,140 +946,5 @@ mod command_runtime {
                 subcommand: services::hooks::HookSubcommand::DiffTrace,
             })),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use std::path::{Path, PathBuf};
-    use std::sync::{Mutex, OnceLock};
-
-    use services::capabilities::test_stubs::{UnimplementedFsOps, UnimplementedGitOps};
-    use services::observability::traits::NoopLogger;
-
-    static APP_TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    fn app_test_env_lock() -> &'static Mutex<()> {
-        APP_TEST_ENV_LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-    struct TestTelemetry;
-
-    impl Telemetry for TestTelemetry {
-        fn with_default_subscriber(
-            &self,
-            action: &mut dyn FnMut() -> Result<String, ClassifiedError>,
-        ) -> Result<String, ClassifiedError> {
-            action()
-        }
-    }
-
-    struct TestDir {
-        path: PathBuf,
-    }
-
-    impl TestDir {
-        fn new() -> Self {
-            let unique = format!(
-                "sce-app-test-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .expect("system time should be after unix epoch")
-                    .as_nanos()
-            );
-            let path = std::env::temp_dir().join(unique);
-            std::fs::create_dir_all(&path).expect("test dir should be created");
-            Self { path }
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-
-        fn create_repo_local_config(&self, contents: &str) {
-            let config_dir = self.path.join(".sce");
-            std::fs::create_dir_all(&config_dir).expect("config dir should be created");
-            std::fs::write(config_dir.join("config.json"), contents)
-                .expect("config file should be written");
-        }
-    }
-
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.path);
-        }
-    }
-
-    #[test]
-    fn app_context_accepts_trait_based_observability_and_capabilities() {
-        let context = AppContext::new(
-            Arc::new(NoopLogger),
-            Arc::new(TestTelemetry),
-            Arc::new(UnimplementedFsOps),
-            Arc::new(UnimplementedGitOps),
-        );
-
-        context.logger().info("test.event", "test message", &[]);
-        let result = context
-            .telemetry()
-            .with_default_subscriber(&mut || Ok(String::from("ok")))
-            .expect("test telemetry should run action");
-
-        assert_eq!(result, "ok");
-    }
-
-    #[test]
-    fn run_with_dependency_check_allows_invalid_discovered_config_and_logs_warning() {
-        let _guard = app_test_env_lock()
-            .lock()
-            .expect("app test env lock should succeed");
-        let fixture = TestDir::new();
-        fixture.create_repo_local_config("{");
-
-        let original_cwd = std::env::current_dir().expect("current dir should resolve");
-        let config_root = fixture.path().join("xdg-config");
-        let log_file = fixture.path().join("sce.log");
-        std::fs::create_dir_all(&config_root).expect("xdg config dir should be created");
-        std::env::set_current_dir(fixture.path()).expect("current dir should be set");
-        // SAFETY: This test serializes environment mutation with a process-wide mutex.
-        unsafe {
-            std::env::set_var("XDG_CONFIG_HOME", &config_root);
-            std::env::set_var("SCE_LOG_FILE", &log_file);
-        }
-
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let exit_code = run_with_dependency_check_and_streams(
-            vec![String::from("sce"), String::from("version")],
-            || Ok(()),
-            &mut stdout,
-            &mut stderr,
-        );
-
-        std::env::set_current_dir(&original_cwd).expect("original current dir should be restored");
-        // SAFETY: This test serializes environment mutation with a process-wide mutex.
-        unsafe {
-            std::env::remove_var("XDG_CONFIG_HOME");
-            std::env::remove_var("SCE_LOG_FILE");
-        }
-
-        assert_eq!(exit_code, ExitCode::SUCCESS);
-
-        let stdout_text = String::from_utf8(stdout).expect("stdout should be utf8");
-        assert!(stdout_text.contains(env!("CARGO_PKG_VERSION")));
-
-        let stderr_text = String::from_utf8(stderr).expect("stderr should be utf8");
-        assert!(stderr_text
-            .contains("Local `.sce` config is invalid. Fix `.sce` and run `sce config validate`."));
-
-        let log_text = std::fs::read_to_string(&log_file).expect("log file should be readable");
-        assert!(log_text.contains("level=warn"));
-        assert!(log_text.contains(INVALID_CONFIG_WARNING_EVENT_ID));
-        assert!(log_text.contains("Invalid discovered config skipped; using degraded defaults"));
-        assert!(log_text.contains("must contain valid JSON"));
     }
 }

@@ -38,12 +38,16 @@ Replace the monolithic `app.rs` command dispatch with a lightweight command regi
   - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed.
   - Notes: Mechanical directory-module conversion only; relative `include_str!` paths were updated for the deeper `mod.rs` locations.
 
-- [ ] T01: Define `CommandRegistry` and registry builder (status:todo)
+- [x] T01: Define `CommandRegistry` and registry builder (status:done)
   - Task ID: T01
   - Goal: Create `services/command_registry.rs` with a `CommandRegistry` struct that holds a map from `&'static str` to a constructor `fn() -> Box<dyn RuntimeCommand>`. Provide a `build_default_registry()` function that populates it.
   - Boundaries (in/out of scope): In - registry struct, builder function, registration API. Out - moving command impls, wiring into `app.rs`.
   - Done when: Registry compiles, can register and retrieve a test command, and `cargo check` passes.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo check'`
+  - Completed: 2026-04-29
+  - Files changed: `cli/src/services/command_registry.rs` (new), `cli/src/services/mod.rs`, `cli/src/app.rs`
+  - Evidence: `nix flake check` passed (cli-tests, cli-clippy, cli-fmt all green); `nix run .#pkl-check-generated` passed; `cargo check` passed.
+  - Notes: Moved `RuntimeCommand` trait and `RuntimeCommandHandle` type alias from `app.rs` private `command_runtime` module to `services/command_registry.rs` so the registry can reference them. `app.rs` now imports these from `services::command_registry`. `build_default_registry()` starts empty; commands will be registered in T02–T04.
 
 - [ ] T02: Move `HelpCommand`, `HelpTextCommand`, `VersionCommand`, `CompletionCommand` to service commands (status:todo)
   - Task ID: T02

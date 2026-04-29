@@ -10,7 +10,7 @@ The CLI exposes broad dependency-injection capability traits in `cli/src/service
 - `ProcessGitOps` is the production git implementation and shells out to `git`, returning stdout as UTF-8 text with command/directory context on failure.
 - `resolve_repository_root` uses `git rev-parse --show-toplevel`.
 - `resolve_hooks_directory` uses `git rev-parse --git-path hooks` and resolves relative hook paths against the provided repository root.
-- `AppContext` holds `Arc<dyn FsOps>` and `Arc<dyn GitOps>` alongside observability dependencies and is passed to `RuntimeCommand::execute`.
+- `AppContext` holds `Arc<dyn FsOps>` and `Arc<dyn GitOps>` alongside observability dependencies and is passed to `RuntimeCommand::execute` (trait defined in `cli/src/services/command_registry.rs`).
 - Test-only `UnimplementedFsOps` and `UnimplementedGitOps` stubs are available under `capabilities::test_stubs` for tests that need to satisfy trait bounds before providing focused fakes.
 
 ## Boundary
