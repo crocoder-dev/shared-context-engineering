@@ -12,10 +12,11 @@ pub trait Logger {
     fn log_classified_error(&self, error: &ClassifiedError);
 }
 
-pub trait Telemetry {
-    fn with_default_subscriber<T, F>(&self, action: F) -> T
-    where
-        F: FnOnce() -> T;
+pub trait Telemetry: Send + Sync {
+    fn with_default_subscriber(
+        &self,
+        action: &mut dyn FnMut() -> Result<String, ClassifiedError>,
+    ) -> Result<String, ClassifiedError>;
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -56,10 +57,10 @@ impl Logger for super::Logger {
 }
 
 impl Telemetry for super::TelemetryRuntime {
-    fn with_default_subscriber<T, F>(&self, action: F) -> T
-    where
-        F: FnOnce() -> T,
-    {
+    fn with_default_subscriber(
+        &self,
+        action: &mut dyn FnMut() -> Result<String, ClassifiedError>,
+    ) -> Result<String, ClassifiedError> {
         super::TelemetryRuntime::with_default_subscriber(self, action)
     }
 }

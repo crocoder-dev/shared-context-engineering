@@ -1,14 +1,16 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use crate::services;
 use services::error::ClassifiedError;
+use services::observability::traits::{Logger as LoggerTrait, Telemetry};
 
 const INVALID_CONFIG_WARNING_EVENT_ID: &str = "sce.config.invalid_config";
 
 struct RunOutcome {
     result: Result<String, ClassifiedError>,
-    logger: Option<services::observability::Logger>,
+    logger: Option<Arc<dyn LoggerTrait>>,
     startup_diagnostic: Option<String>,
 }
 
@@ -18,9 +20,41 @@ struct StartupContext {
 }
 
 struct AppRuntime {
-    logger: services::observability::Logger,
-    telemetry: services::observability::TelemetryRuntime,
+    context: AppContext,
     startup_diagnostic: Option<String>,
+}
+
+pub struct AppContext {
+    logger: Arc<dyn LoggerTrait>,
+    telemetry: Arc<dyn Telemetry>,
+    #[allow(dead_code)]
+    fs: Arc<dyn services::capabilities::FsOps>,
+    #[allow(dead_code)]
+    git: Arc<dyn services::capabilities::GitOps>,
+}
+
+impl AppContext {
+    fn new(
+        logger: Arc<dyn LoggerTrait>,
+        telemetry: Arc<dyn Telemetry>,
+        fs: Arc<dyn services::capabilities::FsOps>,
+        git: Arc<dyn services::capabilities::GitOps>,
+    ) -> Self {
+        Self {
+            logger,
+            telemetry,
+            fs,
+            git,
+        }
+    }
+
+    fn logger(&self) -> &dyn LoggerTrait {
+        self.logger.as_ref()
+    }
+
+    fn telemetry(&self) -> &dyn Telemetry {
+        self.telemetry.as_ref()
+    }
 }
 
 pub fn run<I>(args: I) -> ExitCode
@@ -172,7 +206,7 @@ where
         .and_then(|()| build_startup_context())
         .and_then(initialize_runtime)
         .map(|runtime| {
-            let logger = runtime.logger.clone();
+            let logger = Arc::clone(&runtime.context.logger);
             let startup_diagnostic = runtime.startup_diagnostic.clone();
             let result = run_command_lifecycle(args, &runtime);
 
@@ -230,9 +264,15 @@ fn initialize_runtime(startup: StartupContext) -> Result<AppRuntime, ClassifiedE
     )
     .map_err(|error| classify_observability_configuration_error(&error))?;
 
+    let context = AppContext::new(
+        Arc::new(logger),
+        Arc::new(telemetry),
+        Arc::new(services::capabilities::StdFsOps),
+        Arc::new(services::capabilities::ProcessGitOps),
+    );
+
     Ok(AppRuntime {
-        logger,
-        telemetry,
+        context,
         startup_diagnostic: startup.startup_diagnostic,
     })
 }
@@ -269,21 +309,27 @@ fn run_command_lifecycle<I>(args: I, runtime: &AppRuntime) -> Result<String, Cla
 where
     I: IntoIterator<Item = String>,
 {
-    runtime.telemetry.with_default_subscriber(|| {
-        runtime.logger.info(
+    let context = &runtime.context;
+    let mut args = Some(args.into_iter().collect::<Vec<_>>());
+    context.telemetry().with_default_subscriber(&mut || {
+        context.logger().info(
             "sce.app.start",
             "Starting command dispatch",
             &[("component", services::observability::NAME)],
         );
 
-        let command = parse_command_phase(args, &runtime.logger)?;
-        execute_command_phase(command.as_ref(), &runtime.logger)
+        let command = parse_command_phase(
+            args.take()
+                .expect("command lifecycle should execute exactly once"),
+            context.logger(),
+        )?;
+        execute_command_phase(command.as_ref(), context)
     })
 }
 
 fn parse_command_phase<I>(
     args: I,
-    logger: &services::observability::Logger,
+    logger: &dyn LoggerTrait,
 ) -> Result<command_runtime::RuntimeCommandHandle, ClassifiedError>
 where
     I: IntoIterator<Item = String>,
@@ -302,9 +348,10 @@ where
 
 fn execute_command_phase(
     command: &dyn command_runtime::RuntimeCommand,
-    logger: &services::observability::Logger,
+    context: &AppContext,
 ) -> Result<String, ClassifiedError> {
     let command_name = command.name();
+    let logger = context.logger();
 
     logger.debug(
         "sce.command.dispatch_start",
@@ -312,7 +359,7 @@ fn execute_command_phase(
         &[("command", command_name.as_ref())],
     );
 
-    let dispatch_result = command.execute(logger);
+    let dispatch_result = command.execute(context);
 
     if dispatch_result.is_ok() {
         logger.debug(
@@ -341,23 +388,22 @@ mod command_runtime {
 
     use anyhow::Context;
 
+    use crate::app::AppContext;
     use crate::{cli_schema, command_surface, services};
     use services::error::{ClassifiedError, FailureClass};
+    use services::observability::traits::Logger as LoggerTrait;
 
     pub trait RuntimeCommand {
         fn name(&self) -> Cow<'_, str>;
 
-        fn execute(
-            &self,
-            logger: &services::observability::Logger,
-        ) -> Result<String, ClassifiedError>;
+        fn execute(&self, context: &AppContext) -> Result<String, ClassifiedError>;
     }
 
     pub type RuntimeCommandHandle = Box<dyn RuntimeCommand>;
 
     pub fn parse_runtime_command<I>(
         args: I,
-        logger: Option<&services::observability::Logger>,
+        logger: Option<&dyn LoggerTrait>,
     ) -> Result<RuntimeCommandHandle, ClassifiedError>
     where
         I: IntoIterator<Item = String>,
@@ -426,10 +472,7 @@ mod command_runtime {
             Cow::Borrowed("help")
         }
 
-        fn execute(
-            &self,
-            _logger: &services::observability::Logger,
-        ) -> Result<String, ClassifiedError> {
+        fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
             Ok(command_surface::help_text())
         }
     }
@@ -444,10 +487,7 @@ mod command_runtime {
             Cow::Borrowed(self.name.as_str())
         }
 
-        fn execute(
-            &self,
-            _logger: &services::observability::Logger,
-        ) -> Result<String, ClassifiedError> {
+        fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
             Ok(self.text.clone())
         }
     }
@@ -461,10 +501,7 @@ mod command_runtime {
             Cow::Borrowed(services::auth_command::NAME)
         }
 
-        fn execute(
-            &self,
-            _logger: &services::observability::Logger,
-        ) -> Result<String, ClassifiedError> {
+        fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
             services::auth_command::run_auth_subcommand(self.request)
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))
         }
@@ -479,10 +516,7 @@ mod command_runtime {
             Cow::Borrowed(services::completion::NAME)
         }
 
-        fn execute(
-            &self,
-            _logger: &services::observability::Logger,
-        ) -> Result<String, ClassifiedError> {
+        fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
             Ok(services::completion::render_completion(self.request))
         }
     }
@@ -496,10 +530,7 @@ mod command_runtime {
             Cow::Borrowed(services::config::NAME)
         }
 
-        fn execute(
-            &self,
-            _logger: &services::observability::Logger,
-        ) -> Result<String, ClassifiedError> {
+        fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
             services::config::run_config_subcommand(self.subcommand.clone())
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))
         }
@@ -514,10 +545,7 @@ mod command_runtime {
             Cow::Borrowed(services::setup::NAME)
         }
 
-        fn execute(
-            &self,
-            _logger: &services::observability::Logger,
-        ) -> Result<String, ClassifiedError> {
+        fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
             let current_dir = std::env::current_dir()
                 .context("Failed to determine current directory")
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
@@ -589,10 +617,7 @@ mod command_runtime {
             Cow::Borrowed(services::doctor::NAME)
         }
 
-        fn execute(
-            &self,
-            _logger: &services::observability::Logger,
-        ) -> Result<String, ClassifiedError> {
+        fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
             services::doctor::run_doctor(self.request)
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))
         }
@@ -607,11 +632,8 @@ mod command_runtime {
             Cow::Borrowed(services::hooks::NAME)
         }
 
-        fn execute(
-            &self,
-            logger: &services::observability::Logger,
-        ) -> Result<String, ClassifiedError> {
-            services::hooks::run_hooks_subcommand(&self.subcommand, Some(logger))
+        fn execute(&self, context: &AppContext) -> Result<String, ClassifiedError> {
+            services::hooks::run_hooks_subcommand(&self.subcommand, Some(context.logger()))
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))
         }
     }
@@ -625,10 +647,7 @@ mod command_runtime {
             Cow::Borrowed(services::version::NAME)
         }
 
-        fn execute(
-            &self,
-            _logger: &services::observability::Logger,
-        ) -> Result<String, ClassifiedError> {
+        fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
             services::version::render_version(self.request)
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))
         }
