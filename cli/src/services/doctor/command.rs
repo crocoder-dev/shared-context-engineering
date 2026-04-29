@@ -14,8 +14,8 @@ impl RuntimeCommand for DoctorCommand {
         Cow::Borrowed(doctor::NAME)
     }
 
-    fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
-        doctor::run_doctor(self.request)
+    fn execute(&self, context: &AppContext) -> Result<String, ClassifiedError> {
+        doctor::run_doctor_with_context(self.request, context)
             .map_err(|error| ClassifiedError::runtime(error.to_string()))
     }
 }

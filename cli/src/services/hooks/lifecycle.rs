@@ -84,10 +84,11 @@ impl ServiceLifecycle for HooksLifecycle {
         }
     }
 
-    fn setup(&self, _ctx: &AppContext) -> Result<SetupOutcome> {
-        let repository_root = std::env::current_dir()
-            .context("Failed to determine current directory for hook lifecycle setup")?;
-        let outcome = install_required_git_hooks(&repository_root)
+    fn setup(&self, ctx: &AppContext) -> Result<SetupOutcome> {
+        let repository_root = ctx
+            .repo_root()
+            .context("Hooks lifecycle setup requires a resolved repository root")?;
+        let outcome = install_required_git_hooks(repository_root)
             .context("Hook lifecycle setup failed while installing required git hooks")?;
 
         Ok(SetupOutcome {

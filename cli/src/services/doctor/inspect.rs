@@ -17,6 +17,7 @@ use super::types::{
 };
 use super::{is_executable, DoctorDependencies, DoctorMode, REQUIRED_HOOKS};
 
+#[allow(dead_code)]
 pub(super) fn build_report_with_dependencies(
     mode: DoctorMode,
     repository_root: &Path,
@@ -117,6 +118,220 @@ pub(super) fn build_report_with_dependencies(
     }
 }
 
+pub(super) fn build_report_with_lifecycle_problems(
+    mode: DoctorMode,
+    repository_root: &Path,
+    dependencies: &DoctorDependencies<'_>,
+    lifecycle_problems: Vec<DoctorProblem>,
+) -> HookDoctorReport {
+    let mut report = build_report_without_service_owned_problem_checks(
+        mode,
+        repository_root,
+        dependencies,
+        lifecycle_problems,
+    );
+    report.readiness = if report
+        .problems
+        .iter()
+        .any(|problem| problem.severity == ProblemSeverity::Error)
+    {
+        Readiness::NotReady
+    } else {
+        Readiness::Ready
+    };
+    report
+}
+
+fn build_report_without_service_owned_problem_checks(
+    mode: DoctorMode,
+    repository_root: &Path,
+    dependencies: &DoctorDependencies<'_>,
+    mut problems: Vec<DoctorProblem>,
+) -> HookDoctorReport {
+    let global_state = collect_global_state_locations(repository_root, dependencies);
+    let git_available = (dependencies.check_git_available)();
+
+    let detected_repository_root = if git_available {
+        (dependencies.run_git_command)(repository_root, &["rev-parse", "--show-toplevel"])
+            .map(PathBuf::from)
+    } else {
+        None
+    };
+
+    let bare_repository = if git_available {
+        (dependencies.run_git_command)(repository_root, &["rev-parse", "--is-bare-repository"])
+            .is_some_and(|value| value == "true")
+    } else {
+        false
+    };
+
+    let local_hooks_path = if git_available {
+        (dependencies.run_git_command)(
+            repository_root,
+            &["config", "--local", "--get", "core.hooksPath"],
+        )
+    } else {
+        None
+    };
+    let global_hooks_path = if git_available {
+        (dependencies.run_git_command)(
+            repository_root,
+            &["config", "--global", "--get", "core.hooksPath"],
+        )
+    } else {
+        None
+    };
+
+    let hook_path_source = if local_hooks_path.is_some() {
+        HookPathSource::LocalConfig
+    } else if global_hooks_path.is_some() {
+        HookPathSource::GlobalConfig
+    } else {
+        HookPathSource::Default
+    };
+
+    let hooks_directory = detected_repository_root.as_ref().and_then(|resolved_root| {
+        (dependencies.run_git_command)(resolved_root, &["rev-parse", "--git-path", "hooks"]).map(
+            |value| {
+                let path = PathBuf::from(value);
+                if path.is_absolute() {
+                    path
+                } else {
+                    resolved_root.join(path)
+                }
+            },
+        )
+    });
+
+    let hooks = if git_available && !bare_repository && detected_repository_root.is_some() {
+        hooks_directory
+            .as_deref()
+            .map(collect_hook_file_health)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let integration_groups = inspect_repository_integrations(
+        git_available,
+        bare_repository,
+        detected_repository_root.as_deref(),
+        &mut problems,
+    );
+
+    HookDoctorReport {
+        mode,
+        readiness: Readiness::Ready,
+        state_root: global_state.state_root,
+        repository_root: detected_repository_root,
+        hook_path_source,
+        hooks_directory,
+        config_locations: global_state.config_locations,
+        hooks,
+        integration_groups,
+        problems,
+    }
+}
+
+fn collect_global_state_locations(
+    repository_root: &Path,
+    dependencies: &DoctorDependencies<'_>,
+) -> GlobalStateHealth {
+    let state_root =
+        (dependencies.resolve_state_root)()
+            .ok()
+            .map(|state_root| FileLocationHealth {
+                label: "State root",
+                state: if state_root.exists() {
+                    "present"
+                } else {
+                    "expected"
+                },
+                path: state_root,
+            });
+
+    let mut config_locations = Vec::new();
+    if let Ok(global_path) = (dependencies.resolve_global_config_path)() {
+        config_locations.push(FileLocationHealth {
+            label: "Global config",
+            state: if global_path.exists() {
+                "present"
+            } else {
+                "expected"
+            },
+            path: global_path,
+        });
+    }
+
+    let local_path = RepoPaths::new(repository_root).sce_config_file();
+    config_locations.push(FileLocationHealth {
+        label: "Local config",
+        state: if local_path.exists() {
+            "present"
+        } else {
+            "expected"
+        },
+        path: local_path,
+    });
+
+    GlobalStateHealth {
+        state_root,
+        config_locations,
+    }
+}
+
+fn collect_hook_file_health(directory: &Path) -> Vec<HookFileHealth> {
+    REQUIRED_HOOKS
+        .iter()
+        .map(|hook_name| {
+            let hook_path = directory.join(hook_name);
+            let metadata = fs::metadata(&hook_path).ok();
+            let exists = metadata.is_some();
+            let executable = metadata
+                .as_ref()
+                .is_some_and(|entry| entry.is_file() && is_executable(entry));
+            let content_state =
+                inspect_hook_content_state_without_problem(hook_name, &hook_path, exists);
+
+            HookFileHealth {
+                name: hook_name,
+                path: hook_path,
+                exists,
+                executable,
+                content_state,
+            }
+        })
+        .collect()
+}
+
+fn inspect_hook_content_state_without_problem(
+    hook_name: &str,
+    hook_path: &Path,
+    exists: bool,
+) -> HookContentState {
+    if !exists {
+        return HookContentState::Missing;
+    }
+
+    let Some(expected_hook) =
+        iter_required_hook_assets().find(|asset| asset.relative_path == hook_name)
+    else {
+        return HookContentState::Unknown;
+    };
+
+    match fs::read(hook_path) {
+        Ok(bytes) => {
+            if bytes == expected_hook.bytes {
+                HookContentState::Current
+            } else {
+                HookContentState::Stale
+            }
+        }
+        Err(_) => HookContentState::Unknown,
+    }
+}
+
+#[allow(dead_code)]
 fn inspect_repository_hooks(
     repository_root: &Path,
     git_available: bool,
@@ -202,6 +417,7 @@ fn inspect_repository_integrations(
     integration_groups
 }
 
+#[allow(dead_code)]
 fn collect_global_state_health(
     repository_root: &Path,
     problems: &mut Vec<DoctorProblem>,
@@ -303,6 +519,7 @@ fn collect_global_state_health(
     }
 }
 
+#[allow(dead_code)]
 fn collect_hook_health(directory: &Path, problems: &mut Vec<DoctorProblem>) -> Vec<HookFileHealth> {
     if !directory.exists() {
         problems.push(DoctorProblem {
@@ -750,6 +967,7 @@ fn path_is_file(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
 }
 
+#[allow(dead_code)]
 fn inspect_hook_content_state(
     hook_name: &str,
     hook_path: &Path,

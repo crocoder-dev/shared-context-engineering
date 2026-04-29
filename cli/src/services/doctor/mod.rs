@@ -4,9 +4,10 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
+use crate::app::AppContext;
 use crate::services::default_paths::{resolve_sce_default_locations, resolve_state_data_root};
+use crate::services::lifecycle::ServiceLifecycle;
 use crate::services::output_format::OutputFormat;
-use crate::services::setup::{install_required_git_hooks, RequiredHooksInstallOutcome};
 
 mod fixes;
 mod inspect;
@@ -15,8 +16,8 @@ pub(crate) mod types;
 
 pub mod command;
 
-use fixes::{build_manual_fix_results, run_auto_fixes};
-use inspect::build_report_with_dependencies;
+use fixes::build_manual_fix_results;
+use inspect::build_report_with_lifecycle_problems;
 use render::render_report;
 use types::{DoctorFixResultRecord, HookDoctorReport};
 
@@ -44,7 +45,6 @@ struct DoctorDependencies<'a> {
     resolve_state_root: &'a dyn Fn() -> Result<PathBuf>,
     resolve_global_config_path: &'a dyn Fn() -> Result<PathBuf>,
     validate_config_file: &'a dyn Fn(&Path) -> Result<()>,
-    install_required_git_hooks: &'a dyn Fn(&Path) -> Result<RequiredHooksInstallOutcome>,
 }
 
 struct DoctorExecution {
@@ -52,17 +52,22 @@ struct DoctorExecution {
     fix_results: Vec<DoctorFixResultRecord>,
 }
 
-pub fn run_doctor(request: DoctorRequest) -> Result<String> {
+pub fn run_doctor_with_context(request: DoctorRequest, context: &AppContext) -> Result<String> {
     let repository_root =
         std::env::current_dir().context("Failed to determine current directory")?;
-    let execution = execute_doctor(request, &repository_root);
+    let execution = execute_doctor_with_context(request, &repository_root, context);
     render_report(request, &execution)
 }
 
-fn execute_doctor(request: DoctorRequest, repository_root: &Path) -> DoctorExecution {
-    execute_doctor_with_dependencies(
+fn execute_doctor_with_context(
+    request: DoctorRequest,
+    repository_root: &Path,
+    context: &AppContext,
+) -> DoctorExecution {
+    execute_doctor_with_lifecycle_providers(
         request,
         repository_root,
+        context,
         &DoctorDependencies {
             run_git_command: &run_git_command,
             check_git_available: &is_git_available,
@@ -71,18 +76,24 @@ fn execute_doctor(request: DoctorRequest, repository_root: &Path) -> DoctorExecu
                 Ok(resolve_sce_default_locations()?.global_config_file())
             },
             validate_config_file: &crate::services::config::validate_config_file,
-            install_required_git_hooks: &install_required_git_hooks,
         },
     )
 }
 
-fn execute_doctor_with_dependencies(
+fn execute_doctor_with_lifecycle_providers(
     request: DoctorRequest,
     repository_root: &Path,
+    context: &AppContext,
     dependencies: &DoctorDependencies<'_>,
 ) -> DoctorExecution {
-    let initial_report =
-        build_report_with_dependencies(request.mode, repository_root, dependencies);
+    let providers = lifecycle_providers();
+    let initial_problems = diagnose_lifecycle_providers(context, &providers);
+    let initial_report = build_report_with_lifecycle_problems(
+        request.mode,
+        repository_root,
+        dependencies,
+        initial_problems,
+    );
 
     if request.mode != DoctorMode::Fix {
         return DoctorExecution {
@@ -91,14 +102,49 @@ fn execute_doctor_with_dependencies(
         };
     }
 
-    let mut fix_results = run_auto_fixes(&initial_report, dependencies);
-    let final_report = build_report_with_dependencies(request.mode, repository_root, dependencies);
+    let mut fix_results = fix_lifecycle_providers(context, &providers, &initial_report.problems);
+    let final_problems = diagnose_lifecycle_providers(context, &providers);
+    let final_report = build_report_with_lifecycle_problems(
+        request.mode,
+        repository_root,
+        dependencies,
+        final_problems,
+    );
     fix_results.extend(build_manual_fix_results(&final_report));
 
     DoctorExecution {
         report: final_report,
         fix_results,
     }
+}
+
+fn lifecycle_providers() -> Vec<Box<dyn ServiceLifecycle>> {
+    vec![
+        Box::new(crate::services::config::lifecycle::ConfigLifecycle),
+        Box::new(crate::services::local_db::lifecycle::LocalDbLifecycle),
+        Box::new(crate::services::hooks::lifecycle::HooksLifecycle),
+    ]
+}
+
+fn diagnose_lifecycle_providers(
+    context: &AppContext,
+    providers: &[Box<dyn ServiceLifecycle>],
+) -> Vec<types::DoctorProblem> {
+    providers
+        .iter()
+        .flat_map(|provider| provider.diagnose(context))
+        .collect()
+}
+
+fn fix_lifecycle_providers(
+    context: &AppContext,
+    providers: &[Box<dyn ServiceLifecycle>],
+    problems: &[types::DoctorProblem],
+) -> Vec<DoctorFixResultRecord> {
+    providers
+        .iter()
+        .flat_map(|provider| provider.fix(context, problems))
+        .collect()
 }
 
 fn is_git_available() -> bool {

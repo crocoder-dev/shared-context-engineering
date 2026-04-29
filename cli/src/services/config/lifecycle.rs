@@ -10,7 +10,7 @@ use crate::services::doctor::types::{
     DoctorProblem, ProblemCategory, ProblemFixability, ProblemKind, ProblemSeverity,
 };
 use crate::services::lifecycle::{HealthProblem, ServiceLifecycle, SetupOutcome};
-use crate::services::setup::{bootstrap_repo_local_config, ensure_git_repository};
+use crate::services::setup::bootstrap_repo_local_config;
 
 use super::validate_config_file;
 
@@ -39,13 +39,12 @@ impl ServiceLifecycle for ConfigLifecycle {
         diagnose_config_health(&repository_root)
     }
 
-    fn setup(&self, _ctx: &AppContext) -> Result<SetupOutcome> {
-        let current_dir = std::env::current_dir()
-            .context("Failed to determine current directory for config lifecycle setup")?;
-        let repository_root = ensure_git_repository(&current_dir)
-            .context("Config lifecycle setup failed while resolving repository root")?;
+    fn setup(&self, ctx: &AppContext) -> Result<SetupOutcome> {
+        let repository_root = ctx
+            .repo_root()
+            .context("Config lifecycle setup requires a resolved repository root")?;
 
-        bootstrap_repo_local_config(&repository_root)
+        bootstrap_repo_local_config(repository_root)
             .context("Config lifecycle setup failed while bootstrapping repo-local config")?;
 
         Ok(SetupOutcome::default())

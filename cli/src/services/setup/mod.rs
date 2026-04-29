@@ -203,16 +203,6 @@ pub fn run_setup_for_mode(repository_root: &Path, mode: SetupMode) -> Result<Str
     Ok(format_setup_install_success_message(&outcome))
 }
 
-pub fn run_setup_hooks(repository_root: &Path) -> Result<String> {
-    let outcome = install::install_required_git_hooks(repository_root)
-        .context("Hook setup failed while installing required git hooks")?;
-    Ok(format_required_hook_install_success_message(&outcome))
-}
-
-pub fn prepare_setup_hooks_repository(repository_root: &Path) -> Result<PathBuf> {
-    install::prepare_setup_hooks_repository(repository_root)
-}
-
 /// Preflight check that verifies the given directory is inside a git repository.
 /// Returns the resolved repository root path on success.
 /// Returns an actionable error telling the operator to run `git init` on failure.
@@ -250,16 +240,6 @@ pub fn bootstrap_repo_local_config(repository_root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Bootstraps the canonical SCE local database for this operator environment.
-///
-/// The database path is resolved from the shared default-path catalog and
-/// migrations are applied by the local DB adapter.
-pub fn bootstrap_local_db() -> Result<()> {
-    super::local_db::LocalDb::new()
-        .context("Failed to initialize local SCE database during setup")?;
-    Ok(())
-}
-
 fn format_setup_install_success_message(outcome: &SetupInstallOutcome) -> String {
     let selected_targets = outcome
         .target_results
@@ -291,7 +271,9 @@ fn format_setup_install_success_message(outcome: &SetupInstallOutcome) -> String
     lines.join("\n")
 }
 
-fn format_required_hook_install_success_message(outcome: &RequiredHooksInstallOutcome) -> String {
+pub fn format_required_hook_install_success_message(
+    outcome: &RequiredHooksInstallOutcome,
+) -> String {
     let mut lines = vec![
         format!("{}", success("Hook setup completed successfully.")),
         format!(

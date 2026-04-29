@@ -1,10 +1,13 @@
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use anyhow::Context;
 
 use crate::app::AppContext;
 use crate::services::command_registry::{RuntimeCommand, RuntimeCommandHandle};
 use crate::services::error::ClassifiedError;
+use crate::services::lifecycle::ServiceLifecycle;
+use crate::services::observability::traits::{NoopLogger, Telemetry};
 use crate::services::setup;
 
 pub struct SetupCommand {
@@ -24,27 +27,33 @@ impl RuntimeCommand for SetupCommand {
         let repository_root = setup::ensure_git_repository(&current_dir)
             .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
 
-        setup::bootstrap_repo_local_config(&repository_root)
-            .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
+        // Build an AppContext with the resolved repository root for lifecycle providers.
+        let ctx = AppContext::new(
+            Arc::new(NoopLogger),
+            Arc::new(NullTelemetry),
+            Arc::new(crate::services::capabilities::StdFsOps),
+            Arc::new(crate::services::capabilities::ProcessGitOps),
+            Some(repository_root.clone()),
+        );
 
-        setup::bootstrap_local_db().map_err(|error| ClassifiedError::runtime(error.to_string()))?;
-
-        let preflight_hooks_repository = if self.request.install_hooks {
-            let hooks_repository = self
-                .request
-                .hooks_repo_path
-                .as_deref()
-                .unwrap_or(repository_root.as_path());
-            Some(
-                setup::prepare_setup_hooks_repository(hooks_repository)
-                    .map_err(|error| ClassifiedError::runtime(error.to_string()))?,
-            )
-        } else {
-            None
-        };
-
+        // Aggregate setup steps from lifecycle providers in order:
+        // config → local_db → hooks (when requested).
+        let providers = setup_lifecycle_providers(&self.request);
         let mut sections = Vec::new();
 
+        for provider in &providers {
+            let outcome = provider
+                .setup(&ctx)
+                .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
+
+            if let Some(ref hooks_outcome) = outcome.required_hooks_install {
+                sections.push(setup::format_required_hook_install_success_message(
+                    hooks_outcome,
+                ));
+            }
+        }
+
+        // Handle config target installation (OpenCode/Claude assets).
         if let Some(mode) = self.request.config_mode {
             let dispatch = setup::resolve_setup_dispatch(mode, &setup::InquireSetupTargetPrompter)
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
@@ -61,16 +70,35 @@ impl RuntimeCommand for SetupCommand {
             }
         }
 
-        if self.request.install_hooks {
-            let repository_root = preflight_hooks_repository
-                .as_deref()
-                .expect("hook repository preflight should exist when install_hooks is true");
-            let hooks_message = setup::run_setup_hooks(repository_root)
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
-            sections.push(hooks_message);
-        }
-
         Ok(sections.join("\n\n"))
+    }
+}
+
+/// Returns the ordered list of lifecycle providers for setup aggregation.
+///
+/// Providers are returned in execution order: config → `local_db` → hooks (when requested).
+fn setup_lifecycle_providers(request: &setup::SetupRequest) -> Vec<Box<dyn ServiceLifecycle>> {
+    let mut providers: Vec<Box<dyn ServiceLifecycle>> = vec![
+        Box::new(crate::services::config::lifecycle::ConfigLifecycle),
+        Box::new(crate::services::local_db::lifecycle::LocalDbLifecycle),
+    ];
+
+    if request.install_hooks {
+        providers.push(Box::new(crate::services::hooks::lifecycle::HooksLifecycle));
+    }
+
+    providers
+}
+
+/// Minimal telemetry used during setup lifecycle aggregation.
+struct NullTelemetry;
+
+impl Telemetry for NullTelemetry {
+    fn with_default_subscriber(
+        &self,
+        action: &mut dyn FnMut() -> Result<String, ClassifiedError>,
+    ) -> Result<String, ClassifiedError> {
+        action()
     }
 }
 
