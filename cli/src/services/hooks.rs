@@ -217,8 +217,15 @@ fn persist_diff_trace_payload(
 fn persist_diff_trace_payload_to_local_db(payload: &DiffTracePayload) -> Result<u64> {
     let db = LocalDb::new().context("failed to open local DB for diff-trace persistence")?;
 
+    let time_ms = i64::try_from(payload.time).with_context(|| {
+        format!(
+            "diff-trace time_ms {} exceeds SQLite INTEGER range for local DB persistence",
+            payload.time
+        )
+    })?;
+
     db.insert_diff_trace(DiffTraceInsert {
-        time_ms: payload.time,
+        time_ms,
         session_id: &payload.session_id,
         patch: &payload.diff,
     })

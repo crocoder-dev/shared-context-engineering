@@ -27,8 +27,8 @@ const INSERT_DIFF_TRACE_SQL: &str =
 /// Validated diff-trace payload fields ready for local DB insertion.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DiffTraceInsert<'a> {
-    /// Incoming `time` value as Unix epoch milliseconds.
-    pub time_ms: u64,
+    /// Incoming `time` value as Unix epoch milliseconds (signed for `SQLite` `INTEGER` compatibility).
+    pub time_ms: i64,
     /// Incoming `sessionID` value.
     pub session_id: &'a str,
     /// Incoming `diff` payload body stored as a patch.
@@ -143,11 +143,9 @@ impl LocalDb {
     /// Returns an error if the incoming millisecond timestamp exceeds `SQLite`'s
     /// signed integer range or if the local DB insert fails.
     pub fn insert_diff_trace(&self, input: DiffTraceInsert<'_>) -> Result<u64> {
-        let time_ms = diff_trace_time_ms_as_i64(input.time_ms)?;
-
         self.execute(
             INSERT_DIFF_TRACE_SQL,
-            (time_ms, input.session_id, input.patch),
+            (input.time_ms, input.session_id, input.patch),
         )
         .context(
             "failed to insert diff-trace payload into local DB. Try: run 'sce doctor --fix' to verify local DB health.",
@@ -168,39 +166,5 @@ impl LocalDb {
             })?;
         }
         Ok(())
-    }
-}
-
-fn diff_trace_time_ms_as_i64(time_ms: u64) -> Result<i64> {
-    i64::try_from(time_ms).with_context(|| {
-        format!(
-            "diff-trace time_ms {time_ms} exceeds SQLite INTEGER range for local DB persistence"
-        )
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::diff_trace_time_ms_as_i64;
-
-    #[test]
-    fn diff_trace_time_ms_accepts_epoch_milliseconds() {
-        assert_eq!(
-            diff_trace_time_ms_as_i64(1_777_403_999_227)
-                .expect("epoch milliseconds should fit SQLite INTEGER"),
-            1_777_403_999_227
-        );
-    }
-
-    #[test]
-    fn diff_trace_time_ms_rejects_values_outside_sqlite_integer_range() {
-        let error = diff_trace_time_ms_as_i64(i64::MAX as u64 + 1)
-            .expect_err("too-large timestamp should be rejected before insertion")
-            .to_string();
-
-        assert!(
-            error.contains("exceeds SQLite INTEGER range"),
-            "unexpected error: {error}"
-        );
     }
 }
