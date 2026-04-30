@@ -13,6 +13,8 @@
 - `SetupOutcome` is a minimal carrier for current setup result shapes:
   - optional `SetupInstallOutcome`
   - optional `RequiredHooksInstallOutcome`
+- `LifecycleProvider` aliases boxed lifecycle providers, and `lifecycle_providers(include_hooks)` is the shared provider catalog/factory used by command orchestrators.
+- Provider order is deterministic: `ConfigLifecycle` → `LocalDbLifecycle` → `HooksLifecycle` when hooks are included.
 
 ## Current boundaries
 
@@ -31,11 +33,11 @@
 - `LocalDbLifecycle::setup` initializes the canonical local DB through `LocalDb::new()` and returns an empty `SetupOutcome` because DB bootstrap currently has no dedicated outcome carrier.
 - `doctor` runtime execution now aggregates lifecycle providers for diagnosis and repair:
   - `cli/src/services/doctor/command.rs` passes `AppContext` into doctor execution.
-  - `cli/src/services/doctor/mod.rs` builds the current provider list (`ConfigLifecycle`, `LocalDbLifecycle`, `HooksLifecycle`).
+  - `cli/src/services/doctor/mod.rs` requests the full provider catalog with hooks included.
   - Diagnose mode collects `ServiceLifecycle::diagnose` problems from each provider, then `doctor/inspect.rs` builds the report facts and integration health around those service-owned problems.
   - Fix mode calls `ServiceLifecycle::fix` on each provider, rebuilds the report after fixes, and keeps manual remediation reporting through `doctor/fixes.rs`.
 - `setup` runtime execution now aggregates lifecycle providers for setup:
-  - `cli/src/services/setup/command.rs` resolves the repository root, builds an `AppContext` with the resolved root, and calls `ServiceLifecycle::setup` on each provider in order (config → local_db → hooks when requested).
+  - `cli/src/services/setup/command.rs` resolves the repository root, builds an `AppContext` with the resolved root, and requests the shared provider catalog with hooks included only when `SetupRequest.install_hooks` is true.
   - `HooksLifecycle::setup` returns `SetupOutcome.required_hooks_install` from the canonical `install_required_git_hooks` flow.
   - Config asset installation (OpenCode/Claude targets) remains handled by the setup command after lifecycle aggregation.
 

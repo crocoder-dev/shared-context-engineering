@@ -134,4 +134,3 @@ export const SceAgentTracePlugin: Plugin = async ({ directory, worktree }) => {
     },
   };
 };
-

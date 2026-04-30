@@ -6,7 +6,7 @@ use anyhow::Context;
 use crate::app::AppContext;
 use crate::services::command_registry::{RuntimeCommand, RuntimeCommandHandle};
 use crate::services::error::ClassifiedError;
-use crate::services::lifecycle::ServiceLifecycle;
+use crate::services::lifecycle::lifecycle_providers;
 use crate::services::observability::traits::{NoopLogger, Telemetry};
 use crate::services::setup;
 
@@ -38,7 +38,7 @@ impl RuntimeCommand for SetupCommand {
 
         // Aggregate setup steps from lifecycle providers in order:
         // config → local_db → hooks (when requested).
-        let providers = setup_lifecycle_providers(&self.request);
+        let providers = lifecycle_providers(self.request.install_hooks);
         let mut sections = Vec::new();
 
         for provider in &providers {
@@ -72,22 +72,6 @@ impl RuntimeCommand for SetupCommand {
 
         Ok(sections.join("\n\n"))
     }
-}
-
-/// Returns the ordered list of lifecycle providers for setup aggregation.
-///
-/// Providers are returned in execution order: config → `local_db` → hooks (when requested).
-fn setup_lifecycle_providers(request: &setup::SetupRequest) -> Vec<Box<dyn ServiceLifecycle>> {
-    let mut providers: Vec<Box<dyn ServiceLifecycle>> = vec![
-        Box::new(crate::services::config::lifecycle::ConfigLifecycle),
-        Box::new(crate::services::local_db::lifecycle::LocalDbLifecycle),
-    ];
-
-    if request.install_hooks {
-        providers.push(Box::new(crate::services::hooks::lifecycle::HooksLifecycle));
-    }
-
-    providers
 }
 
 /// Minimal telemetry used during setup lifecycle aggregation.

@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 
 use crate::app::AppContext;
 use crate::services::default_paths::{resolve_sce_default_locations, resolve_state_data_root};
-use crate::services::lifecycle::ServiceLifecycle;
+use crate::services::lifecycle::{lifecycle_providers, LifecycleProvider};
 use crate::services::output_format::OutputFormat;
 
 mod fixes;
@@ -86,7 +86,7 @@ fn execute_doctor_with_lifecycle_providers(
     context: &AppContext,
     dependencies: &DoctorDependencies<'_>,
 ) -> DoctorExecution {
-    let providers = lifecycle_providers();
+    let providers = lifecycle_providers(true);
     let initial_problems = diagnose_lifecycle_providers(context, &providers);
     let initial_report = build_report_with_lifecycle_problems(
         request.mode,
@@ -118,17 +118,9 @@ fn execute_doctor_with_lifecycle_providers(
     }
 }
 
-fn lifecycle_providers() -> Vec<Box<dyn ServiceLifecycle>> {
-    vec![
-        Box::new(crate::services::config::lifecycle::ConfigLifecycle),
-        Box::new(crate::services::local_db::lifecycle::LocalDbLifecycle),
-        Box::new(crate::services::hooks::lifecycle::HooksLifecycle),
-    ]
-}
-
 fn diagnose_lifecycle_providers(
     context: &AppContext,
-    providers: &[Box<dyn ServiceLifecycle>],
+    providers: &[LifecycleProvider],
 ) -> Vec<types::DoctorProblem> {
     providers
         .iter()
@@ -138,7 +130,7 @@ fn diagnose_lifecycle_providers(
 
 fn fix_lifecycle_providers(
     context: &AppContext,
-    providers: &[Box<dyn ServiceLifecycle>],
+    providers: &[LifecycleProvider],
     problems: &[types::DoctorProblem],
 ) -> Vec<DoctorFixResultRecord> {
     providers
