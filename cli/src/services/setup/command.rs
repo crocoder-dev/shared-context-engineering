@@ -5,7 +5,9 @@ use anyhow::Context;
 use crate::app::AppContext;
 use crate::services::command_registry::{RuntimeCommand, RuntimeCommandHandle};
 use crate::services::error::ClassifiedError;
-use crate::services::lifecycle::lifecycle_providers;
+use crate::services::lifecycle::{
+    lifecycle_providers, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
+};
 use crate::services::setup;
 
 pub struct SetupCommand {
@@ -40,7 +42,7 @@ impl RuntimeCommand for SetupCommand {
 
             if let Some(ref hooks_outcome) = outcome.required_hooks_install {
                 sections.push(setup::format_required_hook_install_success_message(
-                    hooks_outcome,
+                    &setup_required_hooks_outcome_from_lifecycle(hooks_outcome),
                 ));
             }
         }
@@ -63,6 +65,30 @@ impl RuntimeCommand for SetupCommand {
         }
 
         Ok(sections.join("\n\n"))
+    }
+}
+
+fn setup_required_hooks_outcome_from_lifecycle(
+    outcome: &RequiredHooksInstallOutcome,
+) -> setup::RequiredHooksInstallOutcome {
+    setup::RequiredHooksInstallOutcome {
+        repository_root: outcome.repository_root.clone(),
+        hooks_directory: outcome.hooks_directory.clone(),
+        hook_results: outcome
+            .hook_results
+            .iter()
+            .map(|result| setup::RequiredHookInstallResult {
+                hook_name: result.hook_name.clone(),
+                hook_path: result.hook_path.clone(),
+                status: match result.status {
+                    RequiredHookInstallStatus::Installed => {
+                        setup::RequiredHookInstallStatus::Installed
+                    }
+                    RequiredHookInstallStatus::Updated => setup::RequiredHookInstallStatus::Updated,
+                    RequiredHookInstallStatus::Skipped => setup::RequiredHookInstallStatus::Skipped,
+                },
+            })
+            .collect(),
     }
 }
 

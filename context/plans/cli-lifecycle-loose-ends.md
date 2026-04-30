@@ -69,12 +69,16 @@ Resolve the lifecycle/AppContext loose ends captured in `loose.md` after the CLI
   - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt -- --check'`; `nix develop -c sh -c 'cd cli && cargo check'`; `nix develop -c sh -c 'cd cli && cargo run -- setup --help'`; `nix run .#pkl-check-generated`; `nix flake check` (all passed)
   - Notes: `SetupCommand::execute()` now derives a repo-root-scoped `AppContext` from the runtime context via `AppContext::with_repo_root(...)`, preserving runtime logger/telemetry/capability dependencies for lifecycle setup providers and removing the setup-only `NoopLogger`/`NullTelemetry` scaffolding.
 
-- [ ] T05: Decouple `ServiceLifecycle` from doctor/setup-owned public result types (status:todo)
+- [x] T05: Decouple `ServiceLifecycle` from doctor/setup-owned public result types (status:done)
   - Task ID: T05
   - Goal: Move the lifecycle trait contract to lifecycle-owned result types or explicit adapters so lifecycle providers are not publicly defined in terms of `doctor` and `setup` module types.
   - Boundaries (in/out of scope): In - lifecycle-owned health/fix/setup result types, adapter/conversion seams used by doctor/setup, and provider migration to the new contract. Out - changing doctor taxonomy semantics, setup outcome semantics, or public CLI output.
   - Done when: `services/lifecycle.rs` no longer imports doctor/setup modules for its trait method signatures, providers compile against the lifecycle-owned contract, and doctor/setup adapt results at their orchestration boundaries.
   - Verification notes (commands or checks): Prefer `nix flake check`; pay special attention to exact doctor JSON/text output stability and setup result rendering.
+  - Completed: 2026-04-30
+  - Files changed: `cli/src/services/lifecycle.rs`, `cli/src/services/config/lifecycle.rs`, `cli/src/services/hooks/lifecycle.rs`, `cli/src/services/local_db/lifecycle.rs`, `cli/src/services/doctor/mod.rs`, `cli/src/services/setup/command.rs`, `context/overview.md`, `context/architecture.md`, `context/patterns.md`, `context/glossary.md`, `context/context-map.md`, `context/cli/service-lifecycle.md`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt -- --check'`; `nix develop -c sh -c 'cd cli && cargo check'`; `nix develop -c sh -c 'cd cli && cargo run -- doctor --format json'`; `nix develop -c sh -c 'cd cli && cargo run -- setup --help'`; `nix run .#pkl-check-generated`; `nix flake check` (all checks passed)
+  - Notes: `ServiceLifecycle` now exposes lifecycle-owned health, fix, and setup result types. Config/hooks/local_db lifecycle providers no longer import doctor result types for trait implementations; doctor and setup convert lifecycle results at orchestration boundaries while preserving existing output semantics.
 
 - [ ] T06: Remove broad lifecycle dead-code suppression (status:todo)
   - Task ID: T06

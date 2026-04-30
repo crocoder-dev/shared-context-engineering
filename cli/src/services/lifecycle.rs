@@ -1,18 +1,103 @@
+use std::path::PathBuf;
+
 use anyhow::Result;
 
 use crate::app::AppContext;
-use crate::services::doctor::types::{DoctorFixResultRecord, DoctorProblem};
-use crate::services::setup::{RequiredHooksInstallOutcome, SetupInstallOutcome};
 
 pub type LifecycleProvider = Box<dyn ServiceLifecycle>;
 
-#[allow(dead_code)]
-pub type HealthProblem = DoctorProblem;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HealthCategory {
+    GlobalState,
+    RepositoryTargeting,
+    HookRollout,
+    RepoAssets,
+    FilesystemPermissions,
+}
 
-#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HealthSeverity {
+    Error,
+    Warning,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HealthFixability {
+    AutoFixable,
+    ManualOnly,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HealthProblemKind {
+    GitUnavailable,
+    BareRepository,
+    NotInsideGitRepository,
+    UnableToResolveGitHooksDirectory,
+    UnableToResolveStateRoot,
+    GlobalConfigValidationFailed,
+    UnableToResolveGlobalConfigPath,
+    LocalConfigValidationFailed,
+    HooksDirectoryMissing,
+    HooksPathNotDirectory,
+    RequiredHookMissing,
+    HookNotExecutable,
+    HookContentStale,
+    OpenCodeIntegrationFilesMissing,
+    OpenCodeIntegrationContentMismatch,
+    OpenCodePluginRegistryInvalid,
+    OpenCodeAssetMissingOrInvalid,
+    HookReadFailed,
+    OpenCodeAssetReadFailed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HealthProblem {
+    pub kind: HealthProblemKind,
+    pub category: HealthCategory,
+    pub severity: HealthSeverity,
+    pub fixability: HealthFixability,
+    pub summary: String,
+    pub remediation: String,
+    pub next_action: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FixOutcome {
+    Fixed,
+    Skipped,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FixResultRecord {
+    pub category: HealthCategory,
+    pub outcome: FixOutcome,
+    pub detail: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequiredHookInstallStatus {
+    Installed,
+    Updated,
+    Skipped,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequiredHookInstallResult {
+    pub hook_name: String,
+    pub hook_path: PathBuf,
+    pub status: RequiredHookInstallStatus,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequiredHooksInstallOutcome {
+    pub repository_root: PathBuf,
+    pub hooks_directory: PathBuf,
+    pub hook_results: Vec<RequiredHookInstallResult>,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SetupOutcome {
-    pub setup_install: Option<SetupInstallOutcome>,
     pub required_hooks_install: Option<RequiredHooksInstallOutcome>,
 }
 
@@ -22,7 +107,7 @@ pub trait ServiceLifecycle: Send + Sync {
         Vec::new()
     }
 
-    fn fix(&self, _ctx: &AppContext, _problems: &[HealthProblem]) -> Vec<DoctorFixResultRecord> {
+    fn fix(&self, _ctx: &AppContext, _problems: &[HealthProblem]) -> Vec<FixResultRecord> {
         Vec::new()
     }
 
