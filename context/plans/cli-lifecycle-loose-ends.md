@@ -58,12 +58,16 @@ Resolve the lifecycle/AppContext loose ends captured in `loose.md` after the CLI
   - Evidence: `nix develop -c sh -c 'cd cli && cargo check'`; `nix flake check` (all checks passed)
   - Notes: Doctor now resolves repository root once and passes a repo-root-scoped `AppContext` to lifecycle providers via `AppContext::with_repo_root()`. `ConfigLifecycle::diagnose()` and `HooksLifecycle::diagnose()`/`fix()` now use `ctx.repo_root()` instead of calling `std::env::current_dir()` independently.
 
-- [ ] T04: Reuse runtime `AppContext` in setup orchestration (status:todo)
+- [x] T04: Reuse runtime `AppContext` in setup orchestration (status:done)
   - Task ID: T04
   - Goal: Replace setup's isolated `AppContext` construction with a repo-root-scoped context derived from the runtime command context.
   - Boundaries (in/out of scope): In - `SetupCommand::execute`, removal of `NoopLogger` / `NullTelemetry` setup-only scaffolding, and use of the shared provider catalog from T01. Out - setup target-selection behavior, install engine behavior, and hook/config asset changes.
   - Done when: setup lifecycle aggregation receives the runtime logger/telemetry/capability dependencies with `repo_root` populated, and setup output remains unchanged.
   - Verification notes (commands or checks): Prefer `nix flake check`; include a setup help/non-mutating smoke check where practical.
+  - Completed: 2026-04-30
+  - Files changed: `cli/src/services/setup/command.rs`, `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/cli/service-lifecycle.md`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt -- --check'`; `nix develop -c sh -c 'cd cli && cargo check'`; `nix develop -c sh -c 'cd cli && cargo run -- setup --help'`; `nix run .#pkl-check-generated`; `nix flake check` (all passed)
+  - Notes: `SetupCommand::execute()` now derives a repo-root-scoped `AppContext` from the runtime context via `AppContext::with_repo_root(...)`, preserving runtime logger/telemetry/capability dependencies for lifecycle setup providers and removing the setup-only `NoopLogger`/`NullTelemetry` scaffolding.
 
 - [ ] T05: Decouple `ServiceLifecycle` from doctor/setup-owned public result types (status:todo)
   - Task ID: T05

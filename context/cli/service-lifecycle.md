@@ -38,7 +38,8 @@
   - Diagnose mode collects `ServiceLifecycle::diagnose` problems from each provider, then `doctor/inspect.rs` builds the report facts and integration health around those service-owned problems.
   - Fix mode calls `ServiceLifecycle::fix` on each provider, rebuilds the report after fixes, and keeps manual remediation reporting through `doctor/fixes.rs`.
 - `setup` runtime execution now aggregates lifecycle providers for setup:
-  - `cli/src/services/setup/command.rs` resolves the repository root, builds an `AppContext` with the resolved root, and requests the shared provider catalog with hooks included only when `SetupRequest.install_hooks` is true.
+  - `cli/src/services/setup/command.rs` resolves the repository root, derives a repo-root-scoped `AppContext` from the runtime command context with `with_repo_root()`, and requests the shared provider catalog with hooks included only when `SetupRequest.install_hooks` is true.
+  - Setup lifecycle providers receive the runtime logger, telemetry, filesystem capability, and git capability objects with `repo_root` populated instead of a setup-local replacement context.
   - `HooksLifecycle::setup` returns `SetupOutcome.required_hooks_install` from the canonical `install_required_git_hooks` flow.
   - Config asset installation (OpenCode/Claude targets) remains handled by the setup command after lifecycle aggregation.
 
