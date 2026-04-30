@@ -20,11 +20,27 @@ impl RuntimeCommand for SetupCommand {
     }
 
     fn execute(&self, context: &AppContext) -> Result<String, ClassifiedError> {
-        let current_dir = std::env::current_dir()
-            .context("Failed to determine current directory")
-            .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
+        let setup_dispatch = if let Some(mode) = self.request.config_mode {
+            match setup::resolve_setup_dispatch(mode, &setup::InquireSetupTargetPrompter)
+                .map_err(|error| ClassifiedError::runtime(error.to_string()))?
+            {
+                setup::SetupDispatch::Proceed(resolved_mode) => Some(resolved_mode),
+                setup::SetupDispatch::Cancelled => {
+                    return Ok(setup::setup_cancelled_text());
+                }
+            }
+        } else {
+            None
+        };
 
-        let repository_root = setup::ensure_git_repository(&current_dir)
+        let setup_start_path = match &self.request.hooks_repo_path {
+            Some(path) => path.clone(),
+            None => std::env::current_dir()
+                .context("Failed to determine current directory")
+                .map_err(|error| ClassifiedError::runtime(error.to_string()))?,
+        };
+
+        let repository_root = setup::ensure_git_repository(&setup_start_path)
             .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
 
         // Scope the runtime AppContext to the resolved repository root for lifecycle providers.
@@ -48,20 +64,10 @@ impl RuntimeCommand for SetupCommand {
         }
 
         // Handle config target installation (OpenCode/Claude assets).
-        if let Some(mode) = self.request.config_mode {
-            let dispatch = setup::resolve_setup_dispatch(mode, &setup::InquireSetupTargetPrompter)
+        if let Some(resolved_mode) = setup_dispatch {
+            let setup_message = setup::run_setup_for_mode(&repository_root, resolved_mode)
                 .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
-
-            match dispatch {
-                setup::SetupDispatch::Proceed(resolved_mode) => {
-                    let setup_message = setup::run_setup_for_mode(&repository_root, resolved_mode)
-                        .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
-                    sections.push(setup_message);
-                }
-                setup::SetupDispatch::Cancelled => {
-                    return Ok(setup::setup_cancelled_text());
-                }
-            }
+            sections.push(setup_message);
         }
 
         Ok(sections.join("\n\n"))

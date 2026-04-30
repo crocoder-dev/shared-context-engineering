@@ -6,7 +6,7 @@ use crate::app::AppContext;
 use crate::services::default_paths::{resolve_sce_default_locations, RepoPaths};
 use crate::services::lifecycle::{
     HealthCategory, HealthFixability, HealthProblem, HealthProblemKind, HealthSeverity,
-    ServiceLifecycle, SetupOutcome,
+    LifecycleProviderId, ServiceLifecycle, SetupOutcome,
 };
 use crate::services::setup::bootstrap_repo_local_config;
 
@@ -16,6 +16,10 @@ use super::validate_config_file;
 pub struct ConfigLifecycle;
 
 impl ServiceLifecycle for ConfigLifecycle {
+    fn id(&self) -> LifecycleProviderId {
+        LifecycleProviderId::Config
+    }
+
     fn diagnose(&self, ctx: &AppContext) -> Vec<HealthProblem> {
         let repository_root = match ctx.repo_root() {
             Some(path) => path.to_path_buf(),
@@ -102,7 +106,7 @@ fn collect_local_config_health(repository_root: &Path, problems: &mut Vec<Health
         if let Err(error) = validate_config_file(&local_path) {
             problems.push(HealthProblem {
                 kind: HealthProblemKind::LocalConfigValidationFailed,
-                category: HealthCategory::GlobalState,
+                category: HealthCategory::RepositoryTargeting,
                 severity: HealthSeverity::Error,
                 fixability: HealthFixability::ManualOnly,
                 summary: format!(

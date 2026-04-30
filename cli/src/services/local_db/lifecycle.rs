@@ -5,7 +5,7 @@ use crate::services::db::{bootstrap_db_parent, collect_db_path_health, DbSpec};
 use crate::services::default_paths::local_db_path;
 use crate::services::lifecycle::{
     FixOutcome, FixResultRecord, HealthCategory, HealthFixability, HealthProblem,
-    HealthProblemKind, HealthSeverity, ServiceLifecycle, SetupOutcome,
+    HealthProblemKind, HealthSeverity, LifecycleProviderId, ServiceLifecycle, SetupOutcome,
 };
 
 use super::{LocalDb, LocalDbSpec};
@@ -14,6 +14,10 @@ use super::{LocalDb, LocalDbSpec};
 pub struct LocalDbLifecycle;
 
 impl ServiceLifecycle for LocalDbLifecycle {
+    fn id(&self) -> LifecycleProviderId {
+        LifecycleProviderId::LocalDb
+    }
+
     fn diagnose(&self, _ctx: &AppContext) -> Vec<HealthProblem> {
         diagnose_local_db_health()
     }

@@ -75,7 +75,7 @@ fn run_diff_trace_subcommand(
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
     let stdin_payload = read_hook_stdin()?;
-    let result = run_diff_trace_subcommand_from_payload(repository_root, &stdin_payload);
+    let result = run_diff_trace_subcommand_from_payload(repository_root, &stdin_payload, logger);
     if let Err(ref error) = result {
         if let Some(log) = logger {
             log.error("sce.hooks.diff_trace.error", &error.to_string(), &[]);
@@ -87,11 +87,20 @@ fn run_diff_trace_subcommand(
 fn run_diff_trace_subcommand_from_payload(
     repository_root: &Path,
     stdin_payload: &str,
+    logger: Option<&dyn Logger>,
 ) -> Result<String> {
     let payload = parse_diff_trace_payload(stdin_payload)?;
     diff_trace_db_time_ms(payload.time)?;
     persist_diff_trace_payload(repository_root, &payload)?;
-    persist_diff_trace_payload_to_agent_trace_db(&payload)?;
+    if let Err(error) = persist_diff_trace_payload_to_agent_trace_db(&payload) {
+        if let Some(log) = logger {
+            log.warn(
+                "sce.hooks.diff_trace.agent_trace_db_write_failed",
+                &error.to_string(),
+                &[],
+            );
+        }
+    }
 
     Ok(String::from(
         "diff-trace hook intake persisted payload to AgentTraceDb and context/tmp.",

@@ -2,13 +2,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 
 use crate::app::AppContext;
 use crate::services::lifecycle::{
     FixOutcome, FixResultRecord, HealthCategory, HealthFixability, HealthProblem,
-    HealthProblemKind, HealthSeverity, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
-    ServiceLifecycle, SetupOutcome,
+    HealthProblemKind, HealthSeverity, LifecycleProviderId, RequiredHookInstallStatus,
+    RequiredHooksInstallOutcome, ServiceLifecycle, SetupOutcome,
 };
 use crate::services::setup::{
     install_required_git_hooks, iter_required_hook_assets,
@@ -28,6 +28,10 @@ enum HookContentState {
 }
 
 impl ServiceLifecycle for HooksLifecycle {
+    fn id(&self) -> LifecycleProviderId {
+        LifecycleProviderId::Hooks
+    }
+
     fn diagnose(&self, ctx: &AppContext) -> Vec<HealthProblem> {
         let repository_root = match ctx.repo_root() {
             Some(path) => path.to_path_buf(),
@@ -46,7 +50,17 @@ impl ServiceLifecycle for HooksLifecycle {
             }
         };
 
-        diagnose_repository_hooks(&repository_root)
+        diagnose_repository_hooks(&repository_root).unwrap_or_else(|error| {
+            vec![HealthProblem {
+                kind: HealthProblemKind::UnableToResolveGitHooksDirectory,
+                category: HealthCategory::RepositoryTargeting,
+                severity: HealthSeverity::Error,
+                fixability: HealthFixability::ManualOnly,
+                summary: format!("Unable to inspect git hook health: {error}"),
+                remediation: String::from("Verify that git repository inspection succeeds and rerun 'sce doctor' inside a non-bare git repository."),
+                next_action: "manual_steps",
+            }]
+        })
     }
 
     fn fix(&self, ctx: &AppContext, problems: &[HealthProblem]) -> Vec<FixResultRecord> {
@@ -96,7 +110,7 @@ impl ServiceLifecycle for HooksLifecycle {
     }
 }
 
-pub fn diagnose_repository_hooks(repository_root: &Path) -> Vec<HealthProblem> {
+pub fn diagnose_repository_hooks(repository_root: &Path) -> Result<Vec<HealthProblem>> {
     let mut problems = Vec::new();
 
     if !is_git_available() {
@@ -109,12 +123,12 @@ pub fn diagnose_repository_hooks(repository_root: &Path) -> Vec<HealthProblem> {
             remediation: String::from("Install an accessible 'git' binary and ensure it is on PATH before rerunning 'sce doctor'."),
             next_action: "manual_steps",
         });
-        return problems;
+        return Ok(problems);
     }
 
     let detected_repository_root =
-        run_git_command(repository_root, &["rev-parse", "--show-toplevel"]).map(PathBuf::from);
-    let bare_repository = run_git_command(repository_root, &["rev-parse", "--is-bare-repository"])
+        run_git_command(repository_root, &["rev-parse", "--show-toplevel"])?;
+    let bare_repository = run_git_command(repository_root, &["rev-parse", "--is-bare-repository"])?
         .is_some_and(|value| value == "true");
 
     if bare_repository {
@@ -129,10 +143,10 @@ pub fn diagnose_repository_hooks(repository_root: &Path) -> Vec<HealthProblem> {
             remediation: String::from("Run 'sce doctor' from a non-bare working tree clone to inspect repo-scoped SCE hook health."),
             next_action: "manual_steps",
         });
-        return problems;
+        return Ok(problems);
     }
 
-    let Some(resolved_root) = detected_repository_root else {
+    let Some(resolved_root) = detected_repository_root.map(PathBuf::from) else {
         problems.push(HealthProblem {
             kind: HealthProblemKind::NotInsideGitRepository,
             category: HealthCategory::RepositoryTargeting,
@@ -142,18 +156,20 @@ pub fn diagnose_repository_hooks(repository_root: &Path) -> Vec<HealthProblem> {
             remediation: String::from("Run 'sce doctor' from inside the target repository working tree to inspect repo-scoped SCE hook health."),
             next_action: "manual_steps",
         });
-        return problems;
+        return Ok(problems);
     };
 
     let hooks_directory = run_git_command(&resolved_root, &["rev-parse", "--git-path", "hooks"])
         .map(|value| {
-            let path = PathBuf::from(value);
-            if path.is_absolute() {
-                path
-            } else {
-                resolved_root.join(path)
-            }
-        });
+            value.map(|value| {
+                let path = PathBuf::from(value);
+                if path.is_absolute() {
+                    path
+                } else {
+                    resolved_root.join(path)
+                }
+            })
+        })?;
 
     let Some(hooks_directory) = hooks_directory else {
         problems.push(HealthProblem {
@@ -165,11 +181,11 @@ pub fn diagnose_repository_hooks(repository_root: &Path) -> Vec<HealthProblem> {
             remediation: String::from("Verify that git repository inspection succeeds and rerun 'sce doctor' inside a non-bare git repository."),
             next_action: "manual_steps",
         });
-        return problems;
+        return Ok(problems);
     };
 
     collect_hook_health_problems(&hooks_directory, &mut problems);
-    problems
+    Ok(problems)
 }
 
 fn collect_hook_health_problems(directory: &Path, problems: &mut Vec<HealthProblem>) {
@@ -199,6 +215,7 @@ fn collect_hook_health_problems(directory: &Path, problems: &mut Vec<HealthProbl
             ),
             next_action: "manual_steps",
         });
+        return;
     }
 
     for hook_asset in iter_required_hook_assets() {
@@ -370,22 +387,27 @@ fn is_git_available() -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
-fn run_git_command(repository_root: &Path, args: &[&str]) -> Option<String> {
+fn run_git_command(repository_root: &Path, args: &[&str]) -> Result<Option<String>> {
     let output = Command::new("git")
         .args(args)
         .current_dir(repository_root)
         .output()
-        .ok()?;
+        .with_context(|| format!("failed to run git {args:?}"))?;
     if !output.status.success() {
-        return None;
+        return Err(anyhow!(
+            "git {:?} exited with {}: {}",
+            args,
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
 
-    let stdout = String::from_utf8(output.stdout).ok()?;
+    let stdout = String::from_utf8(output.stdout).with_context(|| "invalid UTF-8 in git output")?;
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
-        None
+        Ok(None)
     } else {
-        Some(trimmed.to_string())
+        Ok(Some(trimmed.to_string()))
     }
 }
 

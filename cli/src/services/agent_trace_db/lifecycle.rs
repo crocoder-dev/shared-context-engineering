@@ -5,7 +5,7 @@ use crate::services::db::{bootstrap_db_parent, collect_db_path_health, DbSpec};
 use crate::services::default_paths::agent_trace_db_path;
 use crate::services::lifecycle::{
     FixOutcome, FixResultRecord, HealthCategory, HealthFixability, HealthProblem,
-    HealthProblemKind, HealthSeverity, ServiceLifecycle, SetupOutcome,
+    HealthProblemKind, HealthSeverity, LifecycleProviderId, ServiceLifecycle, SetupOutcome,
 };
 
 use super::{AgentTraceDb, AgentTraceDbSpec};
@@ -14,6 +14,10 @@ use super::{AgentTraceDb, AgentTraceDbSpec};
 pub struct AgentTraceDbLifecycle;
 
 impl ServiceLifecycle for AgentTraceDbLifecycle {
+    fn id(&self) -> LifecycleProviderId {
+        LifecycleProviderId::AgentTraceDb
+    }
+
     fn diagnose(&self, _ctx: &AppContext) -> Vec<HealthProblem> {
         diagnose_agent_trace_db_health()
     }

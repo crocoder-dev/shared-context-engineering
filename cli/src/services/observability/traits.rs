@@ -1,6 +1,6 @@
 use crate::services::error::ClassifiedError;
 
-pub trait Logger {
+pub trait Logger: Send + Sync {
     fn info(&self, event_id: &str, message: &str, fields: &[(&str, &str)]);
 
     fn debug(&self, event_id: &str, message: &str, fields: &[(&str, &str)]);

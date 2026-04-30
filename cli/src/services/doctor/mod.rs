@@ -8,9 +8,10 @@ use crate::app::AppContext;
 use crate::services::default_paths::{resolve_sce_default_locations, resolve_state_data_root};
 use crate::services::lifecycle::{
     lifecycle_providers, FixOutcome, HealthCategory, HealthFixability, HealthProblem,
-    HealthProblemKind, HealthSeverity, LifecycleProvider,
+    HealthProblemKind, HealthSeverity, LifecycleProvider, LifecycleProviderId,
 };
 use crate::services::output_format::OutputFormat;
+use crate::services::setup;
 
 mod fixes;
 mod inspect;
@@ -58,9 +59,21 @@ struct DoctorExecution {
     fix_results: Vec<DoctorFixResultRecord>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProviderDoctorProblem {
+    provider_id: LifecycleProviderId,
+    problem: DoctorProblem,
+}
+
 pub fn run_doctor_with_context(request: DoctorRequest, context: &AppContext) -> Result<String> {
-    let repository_root =
-        std::env::current_dir().context("Failed to determine current directory")?;
+    let repository_root = if let Some(path) = context.repo_root() {
+        path.to_path_buf()
+    } else {
+        let current_dir =
+            std::env::current_dir().context("Failed to determine current directory")?;
+        setup::ensure_git_repository(&current_dir)
+            .context("Failed to resolve repository root for doctor diagnostics")?
+    };
     let scoped_context = context.with_repo_root(&repository_root);
     let execution = execute_doctor_with_context(request, &repository_root, &scoped_context);
     render_report(request, &execution)
@@ -95,11 +108,15 @@ fn execute_doctor_with_lifecycle_providers(
 ) -> DoctorExecution {
     let providers = lifecycle_providers(true);
     let initial_problems = diagnose_lifecycle_providers(context, &providers);
+    let initial_doctor_problems = initial_problems
+        .iter()
+        .map(|problem| problem.problem.clone())
+        .collect::<Vec<_>>();
     let initial_report = build_report_with_lifecycle_problems(
         request.mode,
         repository_root,
         dependencies,
-        initial_problems,
+        initial_doctor_problems,
     );
 
     if request.mode != DoctorMode::Fix {
@@ -109,13 +126,17 @@ fn execute_doctor_with_lifecycle_providers(
         };
     }
 
-    let mut fix_results = fix_lifecycle_providers(context, &providers, &initial_report.problems);
+    let mut fix_results = fix_lifecycle_providers(context, &providers, &initial_problems);
     let final_problems = diagnose_lifecycle_providers(context, &providers);
+    let final_doctor_problems = final_problems
+        .into_iter()
+        .map(|problem| problem.problem)
+        .collect::<Vec<_>>();
     let final_report = build_report_with_lifecycle_problems(
         request.mode,
         repository_root,
         dependencies,
-        final_problems,
+        final_doctor_problems,
     );
     fix_results.extend(build_manual_fix_results(&final_report));
 
@@ -128,28 +149,37 @@ fn execute_doctor_with_lifecycle_providers(
 fn diagnose_lifecycle_providers(
     context: &AppContext,
     providers: &[LifecycleProvider],
-) -> Vec<types::DoctorProblem> {
+) -> Vec<ProviderDoctorProblem> {
     providers
         .iter()
-        .flat_map(|provider| provider.diagnose(context))
-        .map(doctor_problem_from_health)
+        .flat_map(|provider| {
+            let provider_id = provider.id();
+            provider
+                .diagnose(context)
+                .into_iter()
+                .map(move |problem| ProviderDoctorProblem {
+                    provider_id,
+                    problem: doctor_problem_from_health(problem),
+                })
+        })
         .collect()
 }
 
 fn fix_lifecycle_providers(
     context: &AppContext,
     providers: &[LifecycleProvider],
-    problems: &[types::DoctorProblem],
+    problems: &[ProviderDoctorProblem],
 ) -> Vec<DoctorFixResultRecord> {
-    let health_problems = problems
-        .iter()
-        .cloned()
-        .map(health_problem_from_doctor)
-        .collect::<Vec<_>>();
-
     providers
         .iter()
-        .flat_map(|provider| provider.fix(context, &health_problems))
+        .flat_map(|provider| {
+            let health_problems = problems
+                .iter()
+                .filter(|problem| problem.provider_id == provider.id())
+                .map(|problem| health_problem_from_doctor(problem.problem.clone()))
+                .collect::<Vec<_>>();
+            provider.fix(context, &health_problems)
+        })
         .map(doctor_fix_result_from_lifecycle)
         .collect()
 }

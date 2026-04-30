@@ -7,6 +7,14 @@ use crate::app::AppContext;
 pub type LifecycleProvider = Box<dyn ServiceLifecycle>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LifecycleProviderId {
+    Config,
+    LocalDb,
+    AgentTraceDb,
+    Hooks,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HealthCategory {
     GlobalState,
     RepositoryTargeting,
@@ -103,6 +111,8 @@ pub struct SetupOutcome {
 
 #[allow(dead_code)]
 pub trait ServiceLifecycle: Send + Sync {
+    fn id(&self) -> LifecycleProviderId;
+
     fn diagnose(&self, _ctx: &AppContext) -> Vec<HealthProblem> {
         Vec::new()
     }
