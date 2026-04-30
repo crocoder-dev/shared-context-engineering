@@ -22,9 +22,7 @@ struct AppRuntime {
 pub struct AppContext {
     logger: Arc<dyn LoggerTrait>,
     telemetry: Arc<dyn Telemetry>,
-    #[allow(dead_code)]
     fs: Arc<dyn services::capabilities::FsOps>,
-    #[allow(dead_code)]
     git: Arc<dyn services::capabilities::GitOps>,
     repo_root: Option<PathBuf>,
 }
@@ -50,8 +48,31 @@ impl AppContext {
         self.logger.as_ref()
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn fs(&self) -> &dyn services::capabilities::FsOps {
+        self.fs.as_ref()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn git(&self) -> &dyn services::capabilities::GitOps {
+        self.git.as_ref()
+    }
+
     fn telemetry(&self) -> &dyn Telemetry {
         self.telemetry.as_ref()
+    }
+
+    /// Returns a context for a command-scoped repository root while preserving
+    /// the runtime logger, telemetry, and capability dependencies.
+    #[allow(dead_code)]
+    pub(crate) fn with_repo_root(&self, repo_root: impl Into<PathBuf>) -> Self {
+        Self {
+            logger: Arc::clone(&self.logger),
+            telemetry: Arc::clone(&self.telemetry),
+            fs: Arc::clone(&self.fs),
+            git: Arc::clone(&self.git),
+            repo_root: Some(repo_root.into()),
+        }
     }
 
     /// Returns the resolved repository root path when available.

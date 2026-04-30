@@ -36,12 +36,16 @@ Resolve the lifecycle/AppContext loose ends captured in `loose.md` after the CLI
   - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt -- --check'`; `nix develop -c sh -c 'cd cli && cargo check'`; `nix run .#pkl-check-generated`; `nix flake check` (all checks passed)
   - Notes: Lifecycle provider construction is centralized in `services::lifecycle::lifecycle_providers(include_hooks)`, preserving config → local_db → hooks ordering while letting setup omit hooks when not requested.
 
-- [ ] T02: Add scoped `AppContext` reuse helpers (status:todo)
+- [x] T02: Add scoped `AppContext` reuse helpers (status:done)
   - Task ID: T02
   - Goal: Add the minimal `AppContext` API needed for command paths to reuse runtime logger/telemetry/capability dependencies while attaching a resolved repository root.
   - Boundaries (in/out of scope): In - helper/accessor methods such as scoped repo-root cloning and capability accessors if needed by later tasks. Out - migrating setup/doctor/provider call sites and out - changing observability behavior.
   - Done when: command code can derive a repo-root-scoped context from the runtime context without constructing replacement logger/telemetry/capability objects, and unused-field allowances are narrowed where possible.
   - Verification notes (commands or checks): Prefer `nix flake check`; inspect compile warnings for dead-code allowances before proceeding to later tasks.
+  - Completed: 2026-04-30
+  - Files changed: `cli/src/app.rs`, `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/context-map.md`, `context/cli/capability-traits.md`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt -- --check'`; `nix develop -c sh -c 'cd cli && cargo check'`; `nix run .#pkl-check-generated`; `nix flake check` (all checks passed)
+  - Notes: `AppContext::with_repo_root(...)` now clones the runtime logger, telemetry, filesystem capability, and git capability while attaching a resolved repository root. Capability fields now have narrow method-level dead-code allowances on temporary accessors instead of field-level allowances.
 
 - [ ] T03: Route doctor lifecycle execution through a repo-root-scoped context (status:todo)
   - Task ID: T03
