@@ -90,21 +90,40 @@ fn run_diff_trace_subcommand_from_payload(
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
     let payload = parse_diff_trace_payload(stdin_payload)?;
-    diff_trace_db_time_ms(payload.time)?;
-    persist_diff_trace_payload(repository_root, &payload)?;
-    if let Err(error) = persist_diff_trace_payload_to_agent_trace_db(&payload) {
+    if let Err(error) = diff_trace_db_time_ms(payload.time) {
         if let Some(log) = logger {
             log.warn(
-                "sce.hooks.diff_trace.agent_trace_db_write_failed",
+                "sce.hooks.diff_trace.agent_trace_db_time_invalid",
                 &error.to_string(),
                 &[],
             );
         }
     }
+    persist_diff_trace_payload(repository_root, &payload)?;
+    let agent_trace_db_result = persist_diff_trace_payload_to_agent_trace_db(&payload);
+    let agent_trace_db_persisted = match agent_trace_db_result {
+        Ok(()) => true,
+        Err(error) => {
+            if let Some(log) = logger {
+                log.warn(
+                    "sce.hooks.diff_trace.agent_trace_db_write_failed",
+                    &error.to_string(),
+                    &[],
+                );
+            }
+            false
+        }
+    };
 
-    Ok(String::from(
-        "diff-trace hook intake persisted payload to AgentTraceDb and context/tmp.",
-    ))
+    if agent_trace_db_persisted {
+        Ok(String::from(
+            "diff-trace hook intake persisted payload to AgentTraceDb and context/tmp.",
+        ))
+    } else {
+        Ok(String::from(
+            "diff-trace hook intake persisted payload to context/tmp; AgentTraceDb persistence failed.",
+        ))
+    }
 }
 
 fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTracePayload> {

@@ -71,8 +71,7 @@ pub fn run_doctor_with_context(request: DoctorRequest, context: &AppContext) -> 
     } else {
         let current_dir =
             std::env::current_dir().context("Failed to determine current directory")?;
-        setup::ensure_git_repository(&current_dir)
-            .context("Failed to resolve repository root for doctor diagnostics")?
+        setup::ensure_git_repository(&current_dir).unwrap_or(current_dir)
     };
     let scoped_context = context.with_repo_root(&repository_root);
     let execution = execute_doctor_with_context(request, &repository_root, &scoped_context);
