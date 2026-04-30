@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::services::agent_trace_db::{AgentTraceDb, DiffTraceInsert};
 use crate::services::config;
 use crate::services::observability::traits::Logger;
 
@@ -88,10 +89,12 @@ fn run_diff_trace_subcommand_from_payload(
     stdin_payload: &str,
 ) -> Result<String> {
     let payload = parse_diff_trace_payload(stdin_payload)?;
+    diff_trace_db_time_ms(payload.time)?;
     persist_diff_trace_payload(repository_root, &payload)?;
+    persist_diff_trace_payload_to_agent_trace_db(&payload)?;
 
     Ok(String::from(
-        "diff-trace hook intake persisted payload to context/tmp.",
+        "diff-trace hook intake persisted payload to AgentTraceDb and context/tmp.",
     ))
 }
 
@@ -214,6 +217,41 @@ fn persist_diff_trace_payload(
         &serialized,
         "diff-trace payload",
     )
+}
+
+fn persist_diff_trace_payload_to_agent_trace_db(payload: &DiffTracePayload) -> Result<()> {
+    persist_diff_trace_payload_to_agent_trace_db_with(payload, |input| {
+        let db = AgentTraceDb::new()
+            .context("Failed to open Agent Trace DB for diff-trace persistence.")?;
+        db.insert_diff_trace(input)
+            .context("Failed to persist diff-trace payload to Agent Trace DB.")?;
+
+        Ok(())
+    })
+}
+
+fn persist_diff_trace_payload_to_agent_trace_db_with<F>(
+    payload: &DiffTracePayload,
+    insert_fn: F,
+) -> Result<()>
+where
+    F: FnOnce(DiffTraceInsert<'_>) -> Result<()>,
+{
+    let time_ms = diff_trace_db_time_ms(payload.time)?;
+
+    insert_fn(DiffTraceInsert {
+        time_ms,
+        session_id: &payload.session_id,
+        patch: &payload.diff,
+    })
+}
+
+fn diff_trace_db_time_ms(time: u64) -> Result<i64> {
+    i64::try_from(time).map_err(|_| {
+        anyhow!(diff_trace_validation_error(
+            "field 'time' must fit in a signed 64-bit Unix epoch millisecond value for Agent Trace DB storage"
+        ))
+    })
 }
 
 fn persist_serialized_trace_payload(

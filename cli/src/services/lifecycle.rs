@@ -118,11 +118,12 @@ pub trait ServiceLifecycle: Send + Sync {
 
 /// Returns lifecycle providers in deterministic orchestration order.
 ///
-/// Provider order is config → `local_db` → hooks when hook lifecycle behavior is requested.
+/// Provider order is config → `local_db` → `agent_trace_db` → hooks when hook lifecycle behavior is requested.
 pub fn lifecycle_providers(include_hooks: bool) -> Vec<LifecycleProvider> {
     let mut providers: Vec<LifecycleProvider> = vec![
         Box::new(crate::services::config::lifecycle::ConfigLifecycle),
         Box::new(crate::services::local_db::lifecycle::LocalDbLifecycle),
+        Box::new(crate::services::agent_trace_db::lifecycle::AgentTraceDbLifecycle),
     ];
 
     if include_hooks {

@@ -13,7 +13,7 @@
 - `SetupOutcome` is a minimal lifecycle-owned carrier for current setup result shapes:
   - optional lifecycle-owned `RequiredHooksInstallOutcome`
 - `LifecycleProvider` aliases boxed lifecycle providers, and `lifecycle_providers(include_hooks)` is the shared provider catalog/factory used by command orchestrators.
-- Provider order is deterministic: `ConfigLifecycle` → `LocalDbLifecycle` → `HooksLifecycle` when hooks are included.
+- Provider order is deterministic: `ConfigLifecycle` → `LocalDbLifecycle` → `AgentTraceDbLifecycle` → `HooksLifecycle` when hooks are included.
 
 ## Current boundaries
 
@@ -30,6 +30,10 @@
 - `LocalDbLifecycle::diagnose` emits canonical local DB path and parent-directory readiness lifecycle health problems.
 - `LocalDbLifecycle::fix` bootstraps the canonical local DB parent directory for auto-fixable local DB parent readiness problems.
 - `LocalDbLifecycle::setup` initializes the canonical local DB through `LocalDb::new()` and returns an empty `SetupOutcome` because DB bootstrap currently has no dedicated outcome carrier.
+- `cli/src/services/agent_trace_db/lifecycle.rs` defines `AgentTraceDbLifecycle`, the Agent Trace DB-owned provider.
+- `AgentTraceDbLifecycle::diagnose` emits canonical Agent Trace DB path and parent-directory readiness lifecycle health problems.
+- `AgentTraceDbLifecycle::fix` bootstraps the canonical Agent Trace DB parent directory for auto-fixable DB parent readiness problems.
+- `AgentTraceDbLifecycle::setup` initializes the Agent Trace DB through `AgentTraceDb::new()` and returns an empty `SetupOutcome` because DB bootstrap currently has no dedicated outcome carrier.
 - `doctor` runtime execution now aggregates lifecycle providers for diagnosis and repair:
   - `cli/src/services/doctor/command.rs` passes `AppContext` into doctor execution.
   - `cli/src/services/doctor/mod.rs` resolves the repository root once, creates a repo-root-scoped `AppContext` using `with_repo_root()`, and requests the full provider catalog with hooks included.

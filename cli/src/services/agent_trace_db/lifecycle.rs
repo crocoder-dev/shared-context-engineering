@@ -2,20 +2,20 @@ use anyhow::{Context, Result};
 
 use crate::app::AppContext;
 use crate::services::db::{bootstrap_db_parent, collect_db_path_health, DbSpec};
-use crate::services::default_paths::local_db_path;
+use crate::services::default_paths::agent_trace_db_path;
 use crate::services::lifecycle::{
     FixOutcome, FixResultRecord, HealthCategory, HealthFixability, HealthProblem,
     HealthProblemKind, HealthSeverity, ServiceLifecycle, SetupOutcome,
 };
 
-use super::{LocalDb, LocalDbSpec};
+use super::{AgentTraceDb, AgentTraceDbSpec};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct LocalDbLifecycle;
+pub struct AgentTraceDbLifecycle;
 
-impl ServiceLifecycle for LocalDbLifecycle {
+impl ServiceLifecycle for AgentTraceDbLifecycle {
     fn diagnose(&self, _ctx: &AppContext) -> Vec<HealthProblem> {
-        diagnose_local_db_health()
+        diagnose_agent_trace_db_health()
     }
 
     fn fix(&self, _ctx: &AppContext, problems: &[HealthProblem]) -> Vec<FixResultRecord> {
@@ -27,33 +27,36 @@ impl ServiceLifecycle for LocalDbLifecycle {
             return Vec::new();
         }
 
-        match bootstrap_local_db_parent() {
+        match bootstrap_agent_trace_db_parent() {
             Ok(parent) => vec![FixResultRecord {
                 category: HealthCategory::GlobalState,
                 outcome: FixOutcome::Fixed,
                 detail: format!(
-                    "Local DB parent directory bootstrapped at '{}'.",
+                    "Agent trace DB parent directory bootstrapped at '{}'.",
                     parent.display()
                 ),
             }],
             Err(error) => vec![FixResultRecord {
                 category: HealthCategory::GlobalState,
                 outcome: FixOutcome::Failed,
-                detail: format!("Automatic local DB parent directory bootstrap failed: {error}"),
+                detail: format!(
+                    "Automatic agent trace DB parent directory bootstrap failed: {error}"
+                ),
             }],
         }
     }
 
     fn setup(&self, _ctx: &AppContext) -> Result<SetupOutcome> {
-        LocalDb::new().context("Local DB lifecycle setup failed while initializing local DB")?;
+        AgentTraceDb::new()
+            .context("Agent trace DB lifecycle setup failed while initializing agent trace DB")?;
         Ok(SetupOutcome::default())
     }
 }
 
-pub fn diagnose_local_db_health() -> Vec<HealthProblem> {
+pub fn diagnose_agent_trace_db_health() -> Vec<HealthProblem> {
     let mut problems = Vec::new();
 
-    let db_path = match local_db_path() {
+    let db_path = match agent_trace_db_path() {
         Ok(path) => path,
         Err(error) => {
             problems.push(HealthProblem {
@@ -61,7 +64,7 @@ pub fn diagnose_local_db_health() -> Vec<HealthProblem> {
                 category: HealthCategory::GlobalState,
                 severity: HealthSeverity::Error,
                 fixability: HealthFixability::ManualOnly,
-                summary: format!("Unable to resolve expected local DB path: {error}"),
+                summary: format!("Unable to resolve expected agent trace DB path: {error}"),
                 remediation: String::from("Verify that the current platform exposes a writable SCE state directory before rerunning 'sce doctor'."),
                 next_action: "manual_steps",
             });
@@ -69,11 +72,15 @@ pub fn diagnose_local_db_health() -> Vec<HealthProblem> {
         }
     };
 
-    collect_db_path_health(<LocalDbSpec as DbSpec>::db_name(), &db_path, &mut problems);
+    collect_db_path_health(
+        <AgentTraceDbSpec as DbSpec>::db_name(),
+        &db_path,
+        &mut problems,
+    );
     problems
 }
 
-fn bootstrap_local_db_parent() -> Result<std::path::PathBuf> {
-    let db_path = local_db_path().context("failed to resolve local DB path")?;
-    bootstrap_db_parent(<LocalDbSpec as DbSpec>::db_name(), &db_path)
+fn bootstrap_agent_trace_db_parent() -> Result<std::path::PathBuf> {
+    let db_path = agent_trace_db_path().context("failed to resolve agent trace DB path")?;
+    bootstrap_db_parent(<AgentTraceDbSpec as DbSpec>::db_name(), &db_path)
 }

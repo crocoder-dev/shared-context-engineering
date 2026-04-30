@@ -44,7 +44,7 @@ The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor comm
 - repo-root installed OpenCode integration inventory for `OpenCode plugins`, `OpenCode agents`, `OpenCode commands`, and `OpenCode skills`
 - integration child-row reporting for those four groups now validates file content against embedded SHA-256; missing files render as `[MISS]`, content mismatches render as `[FAIL]`, and any affected parent group renders as `[FAIL]`
 - repo-root OpenCode plugin inventory includes the installed manifest file plus plugin/runtime/preset artifacts as required presence-only files; generated `config/.opencode/**` trees are not inspected by doctor
-- repair-mode delegation to `ServiceLifecycle::fix` implementations: `HooksLifecycle::fix` reuses `install_required_git_hooks` for missing hooks directories plus missing, stale, or non-executable required hooks; `LocalDbLifecycle::fix` handles bootstrap of the missing canonical SCE-owned local DB parent directory with deterministic refusal when the resolved path does not match the expected owned location
+- repair-mode delegation to `ServiceLifecycle::fix` implementations: `HooksLifecycle::fix` reuses `install_required_git_hooks` for missing hooks directories plus missing, stale, or non-executable required hooks; `LocalDbLifecycle::fix` and `AgentTraceDbLifecycle::fix` handle bootstrap of missing canonical SCE-owned DB parent directories
 
 ## Approved human text-mode contract
 
@@ -195,9 +195,9 @@ The broadened contract for `sce doctor` must cover the following problem invento
 - expected global config path cannot be resolved
 - global config file exists but is unreadable, invalid JSON, or fails schema validation
 - invalid default-discovered config must not prevent `sce doctor` from starting; doctor still reports invalid global or repo-local config as a problem once command dispatch begins
-- local DB path cannot be resolved
-- local DB parent directories are missing or not writable
-- local DB exists but bootstrap or migration health is broken
+- local DB or Agent Trace DB path cannot be resolved
+- DB parent directories are missing or not writable
+- DB bootstrap or migration health is broken
 
 ### Repository targeting and git readiness
 
@@ -280,9 +280,10 @@ Services implementing `ServiceLifecycle`:
 - `ConfigLifecycle` in `cli/src/services/config/lifecycle.rs`: validates global/local config readability and schema compliance
 - `HooksLifecycle` in `cli/src/services/hooks/lifecycle.rs`: checks hook rollout integrity, required-hook presence/executability/content
 - `LocalDbLifecycle` in `cli/src/services/local_db/lifecycle.rs`: validates DB path/health, bootstraps DB parent directory
+- `AgentTraceDbLifecycle` in `cli/src/services/agent_trace_db/lifecycle.rs`: validates Agent Trace DB path/health, bootstraps DB parent directory
 
 The `doctor` command aggregates `diagnose` and `fix` across all registered providers.
-The `setup` command aggregates `setup` across all registered providers in order (config → local_db → hooks).
+The `setup` command aggregates `setup` across all registered providers in order (config → local_db → agent_trace_db → hooks).
 
 ## Output shape contract
 

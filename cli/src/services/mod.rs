@@ -1,4 +1,5 @@
 pub mod agent_trace;
+pub mod agent_trace_db;
 pub mod app_support;
 pub mod auth;
 pub mod auth_command;
@@ -6,6 +7,7 @@ pub mod capabilities;
 pub mod command_registry;
 pub mod completion;
 pub mod config;
+pub mod db;
 pub mod default_paths;
 pub mod doctor;
 pub mod error;
