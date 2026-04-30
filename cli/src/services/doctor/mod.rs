@@ -6,7 +6,10 @@ use anyhow::{Context, Result};
 
 use crate::app::AppContext;
 use crate::services::default_paths::{resolve_sce_default_locations, resolve_state_data_root};
-use crate::services::lifecycle::{lifecycle_providers, LifecycleProvider};
+use crate::services::lifecycle::{
+    lifecycle_providers, FixOutcome, HealthCategory, HealthFixability, HealthProblem,
+    HealthProblemKind, HealthSeverity, LifecycleProvider,
+};
 use crate::services::output_format::OutputFormat;
 
 mod fixes;
@@ -19,7 +22,10 @@ pub mod command;
 use fixes::build_manual_fix_results;
 use inspect::build_report_with_lifecycle_problems;
 use render::render_report;
-use types::{DoctorFixResultRecord, HookDoctorReport};
+use types::{
+    DoctorFixResultRecord, DoctorProblem, FixResult, HookDoctorReport, ProblemCategory,
+    ProblemFixability, ProblemKind, ProblemSeverity,
+};
 
 pub const NAME: &str = "doctor";
 
@@ -126,6 +132,7 @@ fn diagnose_lifecycle_providers(
     providers
         .iter()
         .flat_map(|provider| provider.diagnose(context))
+        .map(doctor_problem_from_health)
         .collect()
 }
 
@@ -134,10 +141,179 @@ fn fix_lifecycle_providers(
     providers: &[LifecycleProvider],
     problems: &[types::DoctorProblem],
 ) -> Vec<DoctorFixResultRecord> {
+    let health_problems = problems
+        .iter()
+        .cloned()
+        .map(health_problem_from_doctor)
+        .collect::<Vec<_>>();
+
     providers
         .iter()
-        .flat_map(|provider| provider.fix(context, problems))
+        .flat_map(|provider| provider.fix(context, &health_problems))
+        .map(doctor_fix_result_from_lifecycle)
         .collect()
+}
+
+fn doctor_problem_from_health(problem: HealthProblem) -> DoctorProblem {
+    DoctorProblem {
+        kind: doctor_problem_kind(problem.kind),
+        category: doctor_problem_category(problem.category),
+        severity: doctor_problem_severity(problem.severity),
+        fixability: doctor_problem_fixability(problem.fixability),
+        summary: problem.summary,
+        remediation: problem.remediation,
+        next_action: problem.next_action,
+    }
+}
+
+fn health_problem_from_doctor(problem: DoctorProblem) -> HealthProblem {
+    HealthProblem {
+        kind: health_problem_kind(problem.kind),
+        category: health_problem_category(problem.category),
+        severity: health_problem_severity(problem.severity),
+        fixability: health_problem_fixability(problem.fixability),
+        summary: problem.summary,
+        remediation: problem.remediation,
+        next_action: problem.next_action,
+    }
+}
+
+fn doctor_fix_result_from_lifecycle(
+    result: crate::services::lifecycle::FixResultRecord,
+) -> DoctorFixResultRecord {
+    DoctorFixResultRecord {
+        category: doctor_problem_category(result.category),
+        outcome: match result.outcome {
+            FixOutcome::Fixed => FixResult::Fixed,
+            FixOutcome::Skipped => FixResult::Skipped,
+            FixOutcome::Failed => FixResult::Failed,
+        },
+        detail: result.detail,
+    }
+}
+
+fn doctor_problem_category(category: HealthCategory) -> ProblemCategory {
+    match category {
+        HealthCategory::GlobalState => ProblemCategory::GlobalState,
+        HealthCategory::RepositoryTargeting => ProblemCategory::RepositoryTargeting,
+        HealthCategory::HookRollout => ProblemCategory::HookRollout,
+        HealthCategory::RepoAssets => ProblemCategory::RepoAssets,
+        HealthCategory::FilesystemPermissions => ProblemCategory::FilesystemPermissions,
+    }
+}
+
+fn health_problem_category(category: ProblemCategory) -> HealthCategory {
+    match category {
+        ProblemCategory::GlobalState => HealthCategory::GlobalState,
+        ProblemCategory::RepositoryTargeting => HealthCategory::RepositoryTargeting,
+        ProblemCategory::HookRollout => HealthCategory::HookRollout,
+        ProblemCategory::RepoAssets => HealthCategory::RepoAssets,
+        ProblemCategory::FilesystemPermissions => HealthCategory::FilesystemPermissions,
+    }
+}
+
+fn doctor_problem_severity(severity: HealthSeverity) -> ProblemSeverity {
+    match severity {
+        HealthSeverity::Error => ProblemSeverity::Error,
+        HealthSeverity::Warning => ProblemSeverity::Warning,
+    }
+}
+
+fn health_problem_severity(severity: ProblemSeverity) -> HealthSeverity {
+    match severity {
+        ProblemSeverity::Error => HealthSeverity::Error,
+        ProblemSeverity::Warning => HealthSeverity::Warning,
+    }
+}
+
+fn doctor_problem_fixability(fixability: HealthFixability) -> ProblemFixability {
+    match fixability {
+        HealthFixability::AutoFixable => ProblemFixability::AutoFixable,
+        HealthFixability::ManualOnly => ProblemFixability::ManualOnly,
+    }
+}
+
+fn health_problem_fixability(fixability: ProblemFixability) -> HealthFixability {
+    match fixability {
+        ProblemFixability::AutoFixable => HealthFixability::AutoFixable,
+        ProblemFixability::ManualOnly => HealthFixability::ManualOnly,
+    }
+}
+
+fn doctor_problem_kind(kind: HealthProblemKind) -> ProblemKind {
+    match kind {
+        HealthProblemKind::GitUnavailable => ProblemKind::GitUnavailable,
+        HealthProblemKind::BareRepository => ProblemKind::BareRepository,
+        HealthProblemKind::NotInsideGitRepository => ProblemKind::NotInsideGitRepository,
+        HealthProblemKind::UnableToResolveGitHooksDirectory => {
+            ProblemKind::UnableToResolveGitHooksDirectory
+        }
+        HealthProblemKind::UnableToResolveStateRoot => ProblemKind::UnableToResolveStateRoot,
+        HealthProblemKind::GlobalConfigValidationFailed => {
+            ProblemKind::GlobalConfigValidationFailed
+        }
+        HealthProblemKind::UnableToResolveGlobalConfigPath => {
+            ProblemKind::UnableToResolveGlobalConfigPath
+        }
+        HealthProblemKind::LocalConfigValidationFailed => ProblemKind::LocalConfigValidationFailed,
+        HealthProblemKind::HooksDirectoryMissing => ProblemKind::HooksDirectoryMissing,
+        HealthProblemKind::HooksPathNotDirectory => ProblemKind::HooksPathNotDirectory,
+        HealthProblemKind::RequiredHookMissing => ProblemKind::RequiredHookMissing,
+        HealthProblemKind::HookNotExecutable => ProblemKind::HookNotExecutable,
+        HealthProblemKind::HookContentStale => ProblemKind::HookContentStale,
+        HealthProblemKind::OpenCodeIntegrationFilesMissing => {
+            ProblemKind::OpenCodeIntegrationFilesMissing
+        }
+        HealthProblemKind::OpenCodeIntegrationContentMismatch => {
+            ProblemKind::OpenCodeIntegrationContentMismatch
+        }
+        HealthProblemKind::OpenCodePluginRegistryInvalid => {
+            ProblemKind::OpenCodePluginRegistryInvalid
+        }
+        HealthProblemKind::OpenCodeAssetMissingOrInvalid => {
+            ProblemKind::OpenCodeAssetMissingOrInvalid
+        }
+        HealthProblemKind::HookReadFailed => ProblemKind::HookReadFailed,
+        HealthProblemKind::OpenCodeAssetReadFailed => ProblemKind::OpenCodeAssetReadFailed,
+    }
+}
+
+fn health_problem_kind(kind: ProblemKind) -> HealthProblemKind {
+    match kind {
+        ProblemKind::GitUnavailable => HealthProblemKind::GitUnavailable,
+        ProblemKind::BareRepository => HealthProblemKind::BareRepository,
+        ProblemKind::NotInsideGitRepository => HealthProblemKind::NotInsideGitRepository,
+        ProblemKind::UnableToResolveGitHooksDirectory => {
+            HealthProblemKind::UnableToResolveGitHooksDirectory
+        }
+        ProblemKind::UnableToResolveStateRoot => HealthProblemKind::UnableToResolveStateRoot,
+        ProblemKind::GlobalConfigValidationFailed => {
+            HealthProblemKind::GlobalConfigValidationFailed
+        }
+        ProblemKind::UnableToResolveGlobalConfigPath => {
+            HealthProblemKind::UnableToResolveGlobalConfigPath
+        }
+        ProblemKind::LocalConfigValidationFailed => HealthProblemKind::LocalConfigValidationFailed,
+        ProblemKind::HooksDirectoryMissing => HealthProblemKind::HooksDirectoryMissing,
+        ProblemKind::HooksPathNotDirectory => HealthProblemKind::HooksPathNotDirectory,
+        ProblemKind::RequiredHookMissing => HealthProblemKind::RequiredHookMissing,
+        ProblemKind::HookNotExecutable => HealthProblemKind::HookNotExecutable,
+        ProblemKind::HookContentStale => HealthProblemKind::HookContentStale,
+        ProblemKind::OpenCodeIntegrationFilesMissing => {
+            HealthProblemKind::OpenCodeIntegrationFilesMissing
+        }
+        ProblemKind::OpenCodeIntegrationContentMismatch => {
+            HealthProblemKind::OpenCodeIntegrationContentMismatch
+        }
+        ProblemKind::OpenCodePluginRegistryInvalid => {
+            HealthProblemKind::OpenCodePluginRegistryInvalid
+        }
+        ProblemKind::OpenCodeAssetMissingOrInvalid => {
+            HealthProblemKind::OpenCodeAssetMissingOrInvalid
+        }
+        ProblemKind::HookReadFailed => HealthProblemKind::HookReadFailed,
+        ProblemKind::OpenCodeAssetReadFailed => HealthProblemKind::OpenCodeAssetReadFailed,
+    }
 }
 
 fn is_git_available() -> bool {

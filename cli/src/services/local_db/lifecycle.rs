@@ -7,11 +7,10 @@ use anyhow::{Context, Result};
 
 use crate::app::AppContext;
 use crate::services::default_paths::local_db_path;
-use crate::services::doctor::types::{
-    DoctorFixResultRecord, DoctorProblem, FixResult, ProblemCategory, ProblemFixability,
-    ProblemKind, ProblemSeverity,
+use crate::services::lifecycle::{
+    FixOutcome, FixResultRecord, HealthCategory, HealthFixability, HealthProblem,
+    HealthProblemKind, HealthSeverity, ServiceLifecycle, SetupOutcome,
 };
-use crate::services::lifecycle::{HealthProblem, ServiceLifecycle, SetupOutcome};
 
 use super::LocalDb;
 
@@ -23,27 +22,27 @@ impl ServiceLifecycle for LocalDbLifecycle {
         diagnose_local_db_health()
     }
 
-    fn fix(&self, _ctx: &AppContext, problems: &[HealthProblem]) -> Vec<DoctorFixResultRecord> {
+    fn fix(&self, _ctx: &AppContext, problems: &[HealthProblem]) -> Vec<FixResultRecord> {
         let should_bootstrap_parent = problems.iter().any(|problem| {
-            problem.category == ProblemCategory::GlobalState
-                && problem.fixability == ProblemFixability::AutoFixable
+            problem.category == HealthCategory::GlobalState
+                && problem.fixability == HealthFixability::AutoFixable
         });
         if !should_bootstrap_parent {
             return Vec::new();
         }
 
         match bootstrap_local_db_parent() {
-            Ok(parent) => vec![DoctorFixResultRecord {
-                category: ProblemCategory::GlobalState,
-                outcome: FixResult::Fixed,
+            Ok(parent) => vec![FixResultRecord {
+                category: HealthCategory::GlobalState,
+                outcome: FixOutcome::Fixed,
                 detail: format!(
                     "Local DB parent directory bootstrapped at '{}'.",
                     parent.display()
                 ),
             }],
-            Err(error) => vec![DoctorFixResultRecord {
-                category: ProblemCategory::GlobalState,
-                outcome: FixResult::Failed,
+            Err(error) => vec![FixResultRecord {
+                category: HealthCategory::GlobalState,
+                outcome: FixOutcome::Failed,
                 detail: format!("Automatic local DB parent directory bootstrap failed: {error}"),
             }],
         }
@@ -55,17 +54,17 @@ impl ServiceLifecycle for LocalDbLifecycle {
     }
 }
 
-pub fn diagnose_local_db_health() -> Vec<DoctorProblem> {
+pub fn diagnose_local_db_health() -> Vec<HealthProblem> {
     let mut problems = Vec::new();
 
     let db_path = match local_db_path() {
         Ok(path) => path,
         Err(error) => {
-            problems.push(DoctorProblem {
-                kind: ProblemKind::UnableToResolveStateRoot,
-                category: ProblemCategory::GlobalState,
-                severity: ProblemSeverity::Error,
-                fixability: ProblemFixability::ManualOnly,
+            problems.push(HealthProblem {
+                kind: HealthProblemKind::UnableToResolveStateRoot,
+                category: HealthCategory::GlobalState,
+                severity: HealthSeverity::Error,
+                fixability: HealthFixability::ManualOnly,
                 summary: format!("Unable to resolve expected local DB path: {error}"),
                 remediation: String::from("Verify that the current platform exposes a writable SCE state directory before rerunning 'sce doctor'."),
                 next_action: "manual_steps",
@@ -78,13 +77,13 @@ pub fn diagnose_local_db_health() -> Vec<DoctorProblem> {
     problems
 }
 
-fn collect_local_db_path_health(db_path: &Path, problems: &mut Vec<DoctorProblem>) {
+fn collect_local_db_path_health(db_path: &Path, problems: &mut Vec<HealthProblem>) {
     let Some(parent) = db_path.parent() else {
-        problems.push(DoctorProblem {
-            kind: ProblemKind::UnableToResolveStateRoot,
-            category: ProblemCategory::GlobalState,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
+        problems.push(HealthProblem {
+            kind: HealthProblemKind::UnableToResolveStateRoot,
+            category: HealthCategory::GlobalState,
+            severity: HealthSeverity::Error,
+            fixability: HealthFixability::ManualOnly,
             summary: format!(
                 "Unable to resolve parent directory for local DB path '{}'.",
                 db_path.display()
@@ -96,11 +95,11 @@ fn collect_local_db_path_health(db_path: &Path, problems: &mut Vec<DoctorProblem
     };
 
     if !parent.exists() {
-        problems.push(DoctorProblem {
-            kind: ProblemKind::UnableToResolveStateRoot,
-            category: ProblemCategory::GlobalState,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::AutoFixable,
+        problems.push(HealthProblem {
+            kind: HealthProblemKind::UnableToResolveStateRoot,
+            category: HealthCategory::GlobalState,
+            severity: HealthSeverity::Error,
+            fixability: HealthFixability::AutoFixable,
             summary: format!(
                 "Local DB parent directory '{}' does not exist.",
                 parent.display()
@@ -112,11 +111,11 @@ fn collect_local_db_path_health(db_path: &Path, problems: &mut Vec<DoctorProblem
             next_action: "doctor_fix",
         });
     } else if !parent.is_dir() {
-        problems.push(DoctorProblem {
-            kind: ProblemKind::UnableToResolveStateRoot,
-            category: ProblemCategory::GlobalState,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
+        problems.push(HealthProblem {
+            kind: HealthProblemKind::UnableToResolveStateRoot,
+            category: HealthCategory::GlobalState,
+            severity: HealthSeverity::Error,
+            fixability: HealthFixability::ManualOnly,
             summary: format!(
                 "Local DB parent path '{}' is not a directory.",
                 parent.display()
@@ -130,11 +129,11 @@ fn collect_local_db_path_health(db_path: &Path, problems: &mut Vec<DoctorProblem
     }
 
     if db_path.exists() && !db_path.is_file() {
-        problems.push(DoctorProblem {
-            kind: ProblemKind::UnableToResolveStateRoot,
-            category: ProblemCategory::GlobalState,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
+        problems.push(HealthProblem {
+            kind: HealthProblemKind::UnableToResolveStateRoot,
+            category: HealthCategory::GlobalState,
+            severity: HealthSeverity::Error,
+            fixability: HealthFixability::ManualOnly,
             summary: format!("Local DB path '{}' is not a file.", db_path.display()),
             remediation: format!(
                 "Replace '{}' with a writable local DB file path before rerunning 'sce doctor'.",
