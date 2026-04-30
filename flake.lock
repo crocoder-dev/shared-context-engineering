@@ -94,7 +94,8 @@
           "opencode",
           "nixpkgs"
         ],
-        "rust-overlay": "rust-overlay"
+        "rust-overlay": "rust-overlay",
+        "turso": "turso"
       }
     },
     "rust-overlay": {
@@ -129,6 +130,36 @@
       "original": {
         "owner": "nix-systems",
         "repo": "default",
+        "type": "github"
+      }
+    },
+    "turso": {
+      "inputs": {
+        "crane": [
+          "crane"
+        ],
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ],
+        "rust-overlay": [
+          "rust-overlay"
+        ]
+      },
+      "locked": {
+        "lastModified": 1775112920,
+        "narHash": "sha256-URYMX3t9VSkyF1ipZYaxtNU3dxmo88CWMj2mAxmcU9w=",
+        "owner": "tursodatabase",
+        "repo": "turso",
+        "rev": "09c149a776b5140bfff3e3dee1dc786177d2615a",
+        "type": "github"
+      },
+      "original": {
+        "owner": "tursodatabase",
+        "repo": "turso",
+        "rev": "09c149a776b5140bfff3e3dee1dc786177d2615a",
         "type": "github"
       }
     }

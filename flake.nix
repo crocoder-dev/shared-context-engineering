@@ -9,6 +9,11 @@
     crane.url = "github:ipetkov/crane";
     opencode.url = "github:anomalyco/opencode/dev";
     opencode-nixpkgs.follows = "opencode/nixpkgs";
+    turso.url = "github:tursodatabase/turso/09c149a776b5140bfff3e3dee1dc786177d2615a";
+    turso.inputs.nixpkgs.follows = "nixpkgs";
+    turso.inputs.flake-utils.follows = "flake-utils";
+    turso.inputs.crane.follows = "crane";
+    turso.inputs.rust-overlay.follows = "rust-overlay";
   };
 
   outputs =
@@ -20,6 +25,7 @@
       crane,
       opencode,
       opencode-nixpkgs,
+      turso,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -42,7 +48,13 @@
           ];
         };
 
+        tursoToolchain = (pkgs.rust-bin.fromRustupToolchainFile "${turso}/rust-toolchain.toml").override {
+          targets = [ "wasm32-unknown-unknown" ];
+        };
+
         craneLib = (crane.mkLib pkgs).overrideToolchain (_: rustToolchain);
+
+        tursoCraneLib = (crane.mkLib pkgs).overrideToolchain (_: tursoToolchain);
 
         workspaceRoot = ./.;
         workspaceSrc = pkgs.lib.fileset.toSource {
@@ -228,6 +240,42 @@
               '"packageManager": "bun@${opencodePkgs.bun.version}"'
           '';
         });
+
+        tursoCargoArgs = {
+          pname = "turso";
+          version = "0.5.3";
+          src = turso;
+          strictDeps = true;
+
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            python3
+          ];
+
+          buildInputs = [ pkgs.openssl ];
+        };
+
+        tursoCargoArtifacts = tursoCraneLib.buildDepsOnly tursoCargoArgs;
+
+        tursoUpstreamPackage = tursoCraneLib.buildPackage (
+          tursoCargoArgs
+          // {
+            cargoArtifacts = tursoCargoArtifacts;
+            cargoExtraArgs = "--package turso_cli";
+            doCheck = false;
+          }
+        );
+
+        tursoPackage = pkgs.symlinkJoin {
+          name = "turso-${tursoUpstreamPackage.version}";
+          paths = [ tursoUpstreamPackage ];
+          postBuild = ''
+            ln -s "$out/bin/tursodb" "$out/bin/turso"
+          '';
+          meta = tursoUpstreamPackage.meta // {
+            mainProgram = "turso";
+          };
+        };
 
         pklCheckGeneratedApp = pkgs.writeShellApplication {
           name = "pkl-check-generated";
@@ -881,6 +929,7 @@
         packages = {
           sce = scePackage;
           opencode = opencodePackage;
+          turso = tursoPackage;
           default = scePackage;
         };
 
@@ -1013,6 +1062,7 @@
               opencodePackage
               rust-analyzer
               scePackage
+              tursoPackage
             ]
             ++ [ rustToolchain ];
 
@@ -1029,6 +1079,7 @@
             echo "- rust: $(version_of rustc)"
             echo "- sce: $(version_of sce)"
             echo "- opencode: $(version_of opencode)"
+            echo "- turso: $(version_of turso)"
             echo "- pkl-generate: nix run .#pkl-generate"
             echo "- pkl-check-generated: nix run .#pkl-check-generated"
             echo "- release-artifacts: nix run .#release-artifacts -- --help"
