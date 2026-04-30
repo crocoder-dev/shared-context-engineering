@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::sync::Arc;
 
 use anyhow::Context;
 
@@ -7,7 +6,6 @@ use crate::app::AppContext;
 use crate::services::command_registry::{RuntimeCommand, RuntimeCommandHandle};
 use crate::services::error::ClassifiedError;
 use crate::services::lifecycle::lifecycle_providers;
-use crate::services::observability::traits::{NoopLogger, Telemetry};
 use crate::services::setup;
 
 pub struct SetupCommand {
@@ -19,7 +17,7 @@ impl RuntimeCommand for SetupCommand {
         Cow::Borrowed(setup::NAME)
     }
 
-    fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
+    fn execute(&self, context: &AppContext) -> Result<String, ClassifiedError> {
         let current_dir = std::env::current_dir()
             .context("Failed to determine current directory")
             .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
@@ -27,14 +25,8 @@ impl RuntimeCommand for SetupCommand {
         let repository_root = setup::ensure_git_repository(&current_dir)
             .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
 
-        // Build an AppContext with the resolved repository root for lifecycle providers.
-        let ctx = AppContext::new(
-            Arc::new(NoopLogger),
-            Arc::new(NullTelemetry),
-            Arc::new(crate::services::capabilities::StdFsOps),
-            Arc::new(crate::services::capabilities::ProcessGitOps),
-            Some(repository_root.clone()),
-        );
+        // Scope the runtime AppContext to the resolved repository root for lifecycle providers.
+        let ctx = context.with_repo_root(repository_root.clone());
 
         // Aggregate setup steps from lifecycle providers in order:
         // config → local_db → hooks (when requested).
@@ -71,18 +63,6 @@ impl RuntimeCommand for SetupCommand {
         }
 
         Ok(sections.join("\n\n"))
-    }
-}
-
-/// Minimal telemetry used during setup lifecycle aggregation.
-struct NullTelemetry;
-
-impl Telemetry for NullTelemetry {
-    fn with_default_subscriber(
-        &self,
-        action: &mut dyn FnMut() -> Result<String, ClassifiedError>,
-    ) -> Result<String, ClassifiedError> {
-        action()
     }
 }
 
