@@ -80,19 +80,54 @@ Resolve the lifecycle/AppContext loose ends captured in `loose.md` after the CLI
   - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt -- --check'`; `nix develop -c sh -c 'cd cli && cargo check'`; `nix develop -c sh -c 'cd cli && cargo run -- doctor --format json'`; `nix develop -c sh -c 'cd cli && cargo run -- setup --help'`; `nix run .#pkl-check-generated`; `nix flake check` (all checks passed)
   - Notes: `ServiceLifecycle` now exposes lifecycle-owned health, fix, and setup result types. Config/hooks/local_db lifecycle providers no longer import doctor result types for trait implementations; doctor and setup convert lifecycle results at orchestration boundaries while preserving existing output semantics.
 
-- [ ] T06: Remove broad lifecycle dead-code suppression (status:todo)
+- [x] T06: Remove broad lifecycle dead-code suppression (status:done)
   - Task ID: T06
   - Goal: Remove file-level `#![allow(dead_code)]` from lifecycle implementation files and replace any still-required allowances with narrow item-level justification or real consumers.
   - Boundaries (in/out of scope): In - lifecycle files for config/hooks/local_db and related trait/type allowances made obsolete by T01-T05. Out - unrelated dead-code cleanup outside the lifecycle/AppContext surface.
   - Done when: lifecycle implementation files compile without broad file-level dead-code suppression, remaining allowances are item-local and justified by current extension seams, and no warnings are introduced.
   - Verification notes (commands or checks): Prefer `nix flake check`; if formatting changes are needed, use the repo's Nix-managed Rust formatting flow.
+  - Completed: 2026-04-30
+  - Files changed: `cli/src/services/config/lifecycle.rs`, `cli/src/services/hooks/lifecycle.rs`, `cli/src/services/local_db/lifecycle.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo check'`; `nix develop -c sh -c 'cd cli && cargo fmt -- --check'`; `nix run .#pkl-check-generated`; `nix flake check` (all checks passed)
+  - Notes: Removed broad file-level dead-code suppression from lifecycle implementation files. The lifecycle files compile without replacement allowances or behavior changes.
 
-- [ ] T07: Validate behavior and sync context (status:todo)
+- [x] T07: Validate behavior and sync context (status:done)
   - Task ID: T07
   - Goal: Run final validation, remove temporary scaffolding, and update durable context to reflect the cleaned-up lifecycle/AppContext architecture.
   - Boundaries (in/out of scope): In - `nix flake check`, `nix run .#pkl-check-generated`, relevant non-mutating CLI smoke checks, and context updates for current-state architecture/patterns/glossary/domain files. Out - new feature work or additional cleanup not required by this plan.
   - Done when: full validation passes, context files no longer describe stale lifecycle/AppContext behavior, and this plan records final evidence for all success criteria.
   - Verification notes (commands or checks): `nix run .#pkl-check-generated`; `nix flake check`; non-mutating smoke checks for `sce doctor` / `sce setup --help` where practical.
+  - Completed: 2026-04-30
+  - Files changed: `context/plans/cli-lifecycle-loose-ends.md`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo run -- doctor --format json'`; `nix develop -c sh -c 'cd cli && cargo run -- setup --help'`; `nix run .#pkl-check-generated`; `nix flake check` (all checks passed)
+  - Notes: Final validation completed without code changes. Durable context already reflects the cleaned-up lifecycle/AppContext architecture: lifecycle providers use lifecycle-owned result types, the shared provider catalog, and repo-root-scoped `AppContext` reuse for doctor/setup orchestration.
+
+## Validation Report
+
+### Commands run
+
+- `nix develop -c sh -c 'cd cli && cargo run -- doctor --format json'` -> exit 0; JSON rendered successfully with `status: "ok"` and existing environment readiness details.
+- `nix develop -c sh -c 'cd cli && cargo run -- setup --help'` -> exit 0; setup help rendered successfully.
+- `nix run .#pkl-check-generated` -> exit 0; `Generated outputs are up to date.`
+- `nix flake check` -> exit 0; `all checks passed!`
+
+### Temporary scaffolding
+
+- None introduced by this task; none removed.
+
+### Success-criteria verification
+
+- [x] `doctor` and lifecycle providers use repo-root-scoped `AppContext` where available -> confirmed by completed T03/T04 evidence and current context/code contracts.
+- [x] `setup` reuses runtime command `AppContext` -> confirmed by completed T04 evidence and final validation.
+- [x] AppContext/lifecycle loose-end cleanup is reflected in durable context -> confirmed by context sync verify-only pass over root and lifecycle domain context.
+- [x] Doctor/setup share one lifecycle provider catalog -> confirmed by completed T01 evidence and current `context/cli/service-lifecycle.md` contract.
+- [x] `ServiceLifecycle` exposes lifecycle-owned result types -> confirmed by completed T05 evidence and current lifecycle context.
+- [x] Existing user-facing behavior remains stable for `sce doctor`, `sce doctor --fix`, and `sce setup` flows -> confirmed by non-mutating doctor/setup smoke checks plus `nix flake check`.
+- [x] Preferred validation passes -> `nix run .#pkl-check-generated` and `nix flake check` both passed.
+
+### Residual risks
+
+- The local `sce doctor --format json` smoke output reports an environment-specific repo asset mismatch for `.opencode/opencode.json`; the command itself succeeds and this did not affect flake validation. No task-owned code or context drift remains.
 
 ## Open questions
 
