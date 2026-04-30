@@ -248,4 +248,4 @@ For a non-matching command, enforcement must allow the bash tool to continue nor
 - `config/pkl/generate.pkl`
 - `config/lib/bash-policy/bash-policy-runtime.ts`
 - `config/lib/bash-policy/opencode-bash-policy-plugin.ts`
-- `cli/src/services/config.rs`
+- `cli/src/services/config/mod.rs`

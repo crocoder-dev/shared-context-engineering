@@ -84,7 +84,7 @@ pub(super) enum IntegrationContentState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ProblemCategory {
+pub(crate) enum ProblemCategory {
     GlobalState,
     RepositoryTargeting,
     HookRollout,
@@ -93,19 +93,19 @@ pub(super) enum ProblemCategory {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ProblemSeverity {
+pub(crate) enum ProblemSeverity {
     Error,
     Warning,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ProblemFixability {
+pub(crate) enum ProblemFixability {
     AutoFixable,
     ManualOnly,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ProblemKind {
+pub(crate) enum ProblemKind {
     GitUnavailable,
     BareRepository,
     NotInsideGitRepository,
@@ -128,7 +128,7 @@ pub(super) enum ProblemKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum FixResult {
+pub(crate) enum FixResult {
     Fixed,
     Skipped,
     Manual,
@@ -136,21 +136,21 @@ pub(super) enum FixResult {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct DoctorProblem {
-    pub(super) kind: ProblemKind,
-    pub(super) category: ProblemCategory,
-    pub(super) severity: ProblemSeverity,
-    pub(super) fixability: ProblemFixability,
-    pub(super) summary: String,
-    pub(super) remediation: String,
-    pub(super) next_action: &'static str,
+pub(crate) struct DoctorProblem {
+    pub(crate) kind: ProblemKind,
+    pub(crate) category: ProblemCategory,
+    pub(crate) severity: ProblemSeverity,
+    pub(crate) fixability: ProblemFixability,
+    pub(crate) summary: String,
+    pub(crate) remediation: String,
+    pub(crate) next_action: &'static str,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct DoctorFixResultRecord {
-    pub(super) category: ProblemCategory,
-    pub(super) outcome: FixResult,
-    pub(super) detail: String,
+pub(crate) struct DoctorFixResultRecord {
+    pub(crate) category: ProblemCategory,
+    pub(crate) outcome: FixResult,
+    pub(crate) detail: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

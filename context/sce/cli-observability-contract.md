@@ -3,9 +3,9 @@
 ## Scope
 
 This document defines the implemented structured observability baseline for `sce` runtime execution.
-It covers deterministic stderr logger controls, optional OpenTelemetry export bootstrap, config-backed runtime resolution, startup degradation behavior for invalid discovered config, and event emission boundaries in `cli/src/services/observability.rs`, `cli/src/services/config.rs`, and `cli/src/app.rs`.
+It covers deterministic stderr logger controls, the current logger and telemetry trait boundaries, optional OpenTelemetry export bootstrap, config-backed runtime resolution, startup degradation behavior for invalid discovered config, and event emission boundaries in `cli/src/services/observability.rs`, `cli/src/services/config/mod.rs`, and `cli/src/app.rs`.
 
-Runtime observability now consumes the shared resolved observability config from `cli/src/services/config.rs`: env values still win, config-file values act as fallback, and defaults apply when both are absent. When default-discovered config files are invalid JSON, fail schema validation, or are not top-level JSON objects, observability resolution now skips those files, collects the failure text in `validation_errors`, and continues with defaults; explicit `--config` / `SCE_CONFIG_FILE` selections remain fatal. Startup therefore keeps running with degraded observability defaults instead of turning discovered invalid config into a startup failure. Those resolved values are surfaced to operators through `sce config show`; `sce config validate` uses the same validation path but now reports only validation status plus any errors or warnings.
+Runtime observability now consumes the shared resolved observability config from `cli/src/services/config/mod.rs`: env values still win, config-file values act as fallback, and defaults apply when both are absent. When default-discovered config files are invalid JSON, fail schema validation, or are not top-level JSON objects, observability resolution now skips those files, collects the failure text in `validation_errors`, and continues with defaults; explicit `--config` / `SCE_CONFIG_FILE` selections remain fatal. Startup therefore keeps running with degraded observability defaults instead of turning discovered invalid config into a startup failure. Those resolved values are surfaced to operators through `sce config show`; `sce config validate` uses the same validation path but now reports only validation status plus any errors or warnings.
 
 ## Runtime controls
 
@@ -61,6 +61,15 @@ Runtime observability now consumes the shared resolved observability config from
 - Startup invalid-config diagnostics use an explicit warn-emission path so the warning is still rendered even when degraded defaults resolve to `log_level=error`.
 - File sink writes are deterministic line-based writes with immediate flush after each record.
 
+## Observability trait boundaries
+
+- `cli/src/services/observability/traits.rs` exposes the `services::observability::traits::Logger` trait with the current logging API: `info`, `debug`, `warn`, `error`, and `log_classified_error`.
+- The concrete `services::observability::Logger` implements the trait while retaining the existing inherent methods and behavior.
+- `NoopLogger` is available from the same traits module for tests and future dependency-injected services that need a logger without side effects.
+- The same traits module exposes object-safe `services::observability::traits::Telemetry` with the current app subscriber boundary: `with_default_subscriber` for command-lifecycle execution.
+- The concrete `services::observability::TelemetryRuntime` implements the telemetry trait by delegating to its existing inherent method, preserving OTEL subscriber behavior.
+- `cli/src/app.rs` stores production logger and telemetry runtime instances behind `Arc<dyn Logger>` and `Arc<dyn Telemetry>` in `AppContext`, then passes that context through command execution without changing emitted events or OTEL behavior.
+
 ## File sink safety contract
 
 - On file-sink initialization, parent directories are created when missing.
@@ -70,7 +79,7 @@ Runtime observability now consumes the shared resolved observability config from
 
 ## Ownership and verification
 
-- `cli/src/services/config.rs` owns shared observability value resolution, config-file discovery/merge, and env-over-config precedence for runtime inputs.
-- `cli/src/services/observability.rs` owns runtime logger construction from resolved values, level filtering, record rendering, optional file sink lifecycle/permission enforcement, and OTEL runtime setup (`TelemetryRuntime`).
+- `cli/src/services/config/mod.rs` owns shared observability value resolution, config-file discovery/merge, and env-over-config precedence for runtime inputs.
+- `cli/src/services/observability.rs` owns runtime logger construction from resolved values, level filtering, record rendering, optional file sink lifecycle/permission enforcement, and OTEL runtime setup (`TelemetryRuntime`); `cli/src/services/observability/traits.rs` owns the logger and telemetry trait boundaries plus the no-op logger implementation.
 - `cli/src/app.rs` owns lifecycle event emission around parse/dispatch success and failure paths, resolves observability config before command dispatch, emits startup invalid-config warning events for skipped discovered config files, and wraps dispatch inside the observability subscriber context.
 - Contract behavior is covered by `services::observability::tests` and exercised in end-to-end app command tests.

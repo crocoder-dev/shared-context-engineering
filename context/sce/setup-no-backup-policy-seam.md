@@ -1,6 +1,6 @@
 # Setup remove-and-replace install policy
 
-`cli/src/services/setup.rs` uses a unified remove-and-replace policy for all setup-managed write flows. There is no backup creation or backup-based rollback.
+`cli/src/services/setup/mod.rs` uses a unified remove-and-replace policy for all setup-managed write flows. There is no backup creation or backup-based rollback.
 
 ## Current state
 

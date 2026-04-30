@@ -65,10 +65,10 @@ Freeze one implementation-ready contract for Local Hooks MVP productionization a
 ## Historical module ownership map (at freeze time)
 - CLI command parsing/dispatch: `cli/src/app.rs`
 - Command surface status/help text: `cli/src/command_surface.rs`
-- Hook-domain contracts/finalizers/retry processor: `cli/src/services/hooks.rs`
+- Hook-domain contracts/finalizers/retry processor: `cli/src/services/hooks/mod.rs`
 - Agent Trace payload adapter/builder/schema contract: `cli/src/services/agent_trace.rs`
-- Local DB connection/migrations/smoke helpers: `cli/src/services/local_db.rs`
-- Hook installation orchestration: `cli/src/services/setup.rs`
+- Local DB connection/migrations/smoke helpers: `cli/src/services/local_db/mod.rs`
+- Hook installation orchestration: `cli/src/services/setup/mod.rs`
 - Hook readiness diagnostics: `cli/src/services/doctor/mod.rs` plus focused helpers under `cli/src/services/doctor/`
 
 ## Gap matrix (historical code truth at freeze time -> required runtime completion)
@@ -76,7 +76,7 @@ Freeze one implementation-ready contract for Local Hooks MVP productionization a
 | MVP area | Current state (code truth) | Required completion target | Planned task(s) |
 | --- | --- | --- | --- |
 | `sce hooks` command routing | `hooks` command dispatches `run_placeholder_hooks()` and rejects extra args as plain subcommand extras (`cli/src/app.rs`, `cli/src/command_surface.rs`). | Implement concrete subcommand parser/dispatcher for `pre-commit`/`commit-msg`/`post-commit`/`post-rewrite` with deterministic errors and no placeholder messaging. | `T02` |
-| Pre-commit runtime wiring | Finalizer exists but has no real Git runtime data collection or persistence handoff (`cli/src/services/hooks.rs`). | Add runtime staged-data collection, anchor capture from Git state, and finalized checkpoint storage handoff for downstream commit binding. | `T03` |
+| Pre-commit runtime wiring | Finalizer exists but has no real Git runtime data collection or persistence handoff (`cli/src/services/hooks/mod.rs`). | Add runtime staged-data collection, anchor capture from Git state, and finalized checkpoint storage handoff for downstream commit binding. | `T03` |
 | Commit-msg file IO wiring | Policy transformer exists as pure string function only (`apply_commit_msg_coauthor_policy`). | Wire real commit message file read/transform/write flow with newline/idempotency guarantees and deterministic file-path failures. | `T04` |
 | Post-commit persistence adapters | Finalizer contracts exist as traits/in-memory seams; no production adapters bound to git notes/local DB/ledger queue in command runtime path. | Implement production adapters for notes write, DB write, emission ledger, queue enqueue, and runtime error-class mapping. | `T05` |
 | Local DB persistent runtime policy | DB helpers support in-memory/path targets and migrations, but no production path policy/bootstrap lifecycle wiring for hooks runtime. | Add deterministic persistent path resolution + directory creation and run schema migrations before write paths. | `T06` |

@@ -16,7 +16,7 @@ These templates are emitted into `OUT_DIR/setup_embedded_assets.rs` as `HOOK_EMB
 
 ## Setup-service accessor surface
 
-`cli/src/services/setup.rs` exposes hook-template access through:
+`cli/src/services/setup/mod.rs` exposes hook-template access through:
 
 - `iter_required_hook_assets()` for deterministic full-set iteration
 - `get_required_hook_asset(RequiredHookAsset)` for stable per-hook lookup
@@ -29,7 +29,7 @@ These templates are emitted into `OUT_DIR/setup_embedded_assets.rs` as `HOOK_EMB
 
 ## Determinism and validation
 
-Packaging determinism is enforced by setup tests in `cli/src/services/setup.rs`:
+Packaging determinism is enforced by setup tests in `cli/src/services/setup/mod.rs`:
 
 - `embedded_hook_manifest_is_complete_sorted_and_normalized`
 - `required_hook_lookup_resolves_each_canonical_hook`

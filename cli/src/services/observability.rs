@@ -27,6 +27,8 @@ use crate::services::error::ClassifiedError;
 use crate::services::security::redact_sensitive_text;
 use crate::services::style::{error_text, heading};
 
+pub mod traits;
+
 pub const NAME: &str = "observability";
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -26,7 +26,7 @@ It complements the numeric process exit-code classes documented in `context/sce/
 - Top-level unknown command/option messages include targeted retry guidance (`sce --help` and command-local `sce <command> --help`).
 - Setup invocation validation failures (`--repo` without `--hooks`, mutually exclusive target flags, unexpected args) include concrete valid alternatives.
 - Hooks invocation validation failures (missing hook subcommand, missing `commit-msg` message file, unknown subcommand) include command-form examples that are copyable for retry automation.
-- This actionable-message normalization is owned by parser/validation paths in `cli/src/app.rs`, `cli/src/services/setup.rs`, and `cli/src/services/hooks.rs`.
+- This actionable-message normalization is owned by parser/validation paths in `cli/src/app.rs`, `cli/src/services/setup/mod.rs`, and `cli/src/services/hooks/mod.rs`.
 
 ## Ownership
 

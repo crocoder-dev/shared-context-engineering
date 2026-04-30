@@ -35,7 +35,7 @@ Defines the implemented `sce completion` contract for deterministic shell comple
 
 - Command parse/dispatch wiring: `cli/src/app.rs`
 - Top-level command catalog/help row: `cli/src/command_surface.rs`
-- Completion parser/rendering and shell scripts: `cli/src/services/completion.rs`
+- Completion parser/rendering and shell scripts: `cli/src/services/completion/mod.rs`
 - Operator docs/install examples: `cli/README.md`
 
 ## Verification coverage

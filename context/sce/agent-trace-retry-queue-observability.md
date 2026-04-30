@@ -3,7 +3,7 @@
 ## Current status
 
 - This contract is no longer active in local hook runtime.
-- The current `cli/src/services/hooks.rs` no longer runs retry replay from hook entrypoints.
+- The current `cli/src/services/hooks/mod.rs` no longer runs retry replay from hook entrypoints.
 
 ## Current baseline
 
