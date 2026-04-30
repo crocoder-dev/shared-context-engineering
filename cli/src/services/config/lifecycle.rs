@@ -18,16 +18,16 @@ use super::validate_config_file;
 pub struct ConfigLifecycle;
 
 impl ServiceLifecycle for ConfigLifecycle {
-    fn diagnose(&self, _ctx: &AppContext) -> Vec<HealthProblem> {
-        let repository_root = match std::env::current_dir() {
-            Ok(path) => path,
-            Err(error) => {
+    fn diagnose(&self, ctx: &AppContext) -> Vec<HealthProblem> {
+        let repository_root = match ctx.repo_root() {
+            Some(path) => path.to_path_buf(),
+            None => {
                 return vec![DoctorProblem {
                     kind: ProblemKind::NotInsideGitRepository,
                     category: ProblemCategory::RepositoryTargeting,
                     severity: ProblemSeverity::Error,
                     fixability: ProblemFixability::ManualOnly,
-                    summary: format!("Failed to determine current directory: {error}"),
+                    summary: String::from("The current directory is not inside a git repository."),
                     remediation: String::from(
                         "Run 'sce doctor' from inside the target repository working tree to inspect repo-scoped SCE config health.",
                     ),

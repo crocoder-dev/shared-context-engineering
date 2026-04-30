@@ -29,16 +29,16 @@ enum HookContentState {
 }
 
 impl ServiceLifecycle for HooksLifecycle {
-    fn diagnose(&self, _ctx: &AppContext) -> Vec<HealthProblem> {
-        let repository_root = match std::env::current_dir() {
-            Ok(path) => path,
-            Err(error) => {
+    fn diagnose(&self, ctx: &AppContext) -> Vec<HealthProblem> {
+        let repository_root = match ctx.repo_root() {
+            Some(path) => path.to_path_buf(),
+            None => {
                 return vec![DoctorProblem {
                     kind: ProblemKind::NotInsideGitRepository,
                     category: ProblemCategory::RepositoryTargeting,
                     severity: ProblemSeverity::Error,
                     fixability: ProblemFixability::ManualOnly,
-                    summary: format!("Failed to determine current directory: {error}"),
+                    summary: String::from("The current directory is not inside a git repository."),
                     remediation: String::from(
                         "Run 'sce doctor' from inside the target repository working tree to inspect repo-scoped SCE hook health.",
                     ),
@@ -50,7 +50,7 @@ impl ServiceLifecycle for HooksLifecycle {
         diagnose_repository_hooks(&repository_root)
     }
 
-    fn fix(&self, _ctx: &AppContext, problems: &[HealthProblem]) -> Vec<DoctorFixResultRecord> {
+    fn fix(&self, ctx: &AppContext, problems: &[HealthProblem]) -> Vec<DoctorFixResultRecord> {
         let should_fix_hooks = problems.iter().any(|problem| {
             problem.category == ProblemCategory::HookRollout
                 && problem.fixability == ProblemFixability::AutoFixable
@@ -59,14 +59,14 @@ impl ServiceLifecycle for HooksLifecycle {
             return Vec::new();
         }
 
-        let repository_root = match std::env::current_dir() {
-            Ok(path) => path,
-            Err(error) => {
+        let repository_root = match ctx.repo_root() {
+            Some(path) => path.to_path_buf(),
+            None => {
                 return vec![DoctorFixResultRecord {
                     category: ProblemCategory::HookRollout,
                     outcome: FixResult::Failed,
-                    detail: format!(
-                        "Automatic hook repair could not start because the current directory was not resolved: {error}"
+                    detail: String::from(
+                        "Automatic hook repair could not start because the repository root was not resolved from context",
                     ),
                 }];
             }

@@ -47,12 +47,16 @@ Resolve the lifecycle/AppContext loose ends captured in `loose.md` after the CLI
   - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt -- --check'`; `nix develop -c sh -c 'cd cli && cargo check'`; `nix run .#pkl-check-generated`; `nix flake check` (all checks passed)
   - Notes: `AppContext::with_repo_root(...)` now clones the runtime logger, telemetry, filesystem capability, and git capability while attaching a resolved repository root. Capability fields now have narrow method-level dead-code allowances on temporary accessors instead of field-level allowances.
 
-- [ ] T03: Route doctor lifecycle execution through a repo-root-scoped context (status:todo)
+- [x] T03: Route doctor lifecycle execution through a repo-root-scoped context (status:done)
   - Task ID: T03
   - Goal: Make the doctor command resolve the repository/current working context once and pass a repo-root-aware `AppContext` into lifecycle diagnosis/fix providers.
   - Boundaries (in/out of scope): In - doctor orchestration and provider calls needed so `ConfigLifecycle` / `HooksLifecycle` consume `ctx.repo_root()` for doctor diagnosis/fix paths. Out - setup command changes and out - doctor output/taxonomy changes.
   - Done when: doctor no longer causes config/hooks lifecycle providers to call `std::env::current_dir()` independently for the same diagnosis/fix pass, and outside-repo/bare-repo behavior remains reported through the existing taxonomy.
   - Verification notes (commands or checks): Prefer `nix flake check`; include targeted doctor smoke checks during implementation if behavior could drift (`sce doctor`, `sce doctor --fix --format json` where safe).
+  - Completed: 2026-04-30
+  - Files changed: `cli/src/services/doctor/mod.rs`, `cli/src/services/config/lifecycle.rs`, `cli/src/services/hooks/lifecycle.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo check'`; `nix flake check` (all checks passed)
+  - Notes: Doctor now resolves repository root once and passes a repo-root-scoped `AppContext` to lifecycle providers via `AppContext::with_repo_root()`. `ConfigLifecycle::diagnose()` and `HooksLifecycle::diagnose()`/`fix()` now use `ctx.repo_root()` instead of calling `std::env::current_dir()` independently.
 
 - [ ] T04: Reuse runtime `AppContext` in setup orchestration (status:todo)
   - Task ID: T04

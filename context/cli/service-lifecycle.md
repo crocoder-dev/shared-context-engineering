@@ -33,7 +33,8 @@
 - `LocalDbLifecycle::setup` initializes the canonical local DB through `LocalDb::new()` and returns an empty `SetupOutcome` because DB bootstrap currently has no dedicated outcome carrier.
 - `doctor` runtime execution now aggregates lifecycle providers for diagnosis and repair:
   - `cli/src/services/doctor/command.rs` passes `AppContext` into doctor execution.
-  - `cli/src/services/doctor/mod.rs` requests the full provider catalog with hooks included.
+  - `cli/src/services/doctor/mod.rs` resolves the repository root once, creates a repo-root-scoped `AppContext` using `with_repo_root()`, and requests the full provider catalog with hooks included.
+  - `ConfigLifecycle::diagnose` and `HooksLifecycle::diagnose`/`fix` now consume `ctx.repo_root()` instead of calling `std::env::current_dir()` independently.
   - Diagnose mode collects `ServiceLifecycle::diagnose` problems from each provider, then `doctor/inspect.rs` builds the report facts and integration health around those service-owned problems.
   - Fix mode calls `ServiceLifecycle::fix` on each provider, rebuilds the report after fixes, and keeps manual remediation reporting through `doctor/fixes.rs`.
 - `setup` runtime execution now aggregates lifecycle providers for setup:

@@ -55,7 +55,8 @@ struct DoctorExecution {
 pub fn run_doctor_with_context(request: DoctorRequest, context: &AppContext) -> Result<String> {
     let repository_root =
         std::env::current_dir().context("Failed to determine current directory")?;
-    let execution = execute_doctor_with_context(request, &repository_root, context);
+    let scoped_context = context.with_repo_root(&repository_root);
+    let execution = execute_doctor_with_context(request, &repository_root, &scoped_context);
     render_report(request, &execution)
 }
 
