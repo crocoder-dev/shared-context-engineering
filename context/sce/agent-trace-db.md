@@ -36,12 +36,13 @@ The current migration creates `diff_traces` with:
 - `created_at TEXT NOT NULL DEFAULT (...)`
 
 ## Lifecycle integration
-
+ 
 `AgentTraceDbLifecycle` is registered in `cli/src/services/lifecycle.rs` after `LocalDbLifecycle` and before optional `HooksLifecycle`.
-
+ 
 - `diagnose()` reports canonical Agent Trace DB path and parent-directory readiness problems through the shared DB path-health helper.
 - `fix()` can bootstrap the canonical Agent Trace DB parent directory for auto-fixable parent-readiness problems.
 - `setup()` initializes the database with `AgentTraceDb::new()`, including the `diff_traces` migration.
+- `sce doctor` now surfaces Agent Trace DB health as a row within the `Configuration` section with `[PASS]`/`[FAIL]`/`[MISS]` status tokens (e.g., `Agent Trace DB (/path/to/agent-trace.db)`), and includes it in JSON output under the `agent_trace_db` field.
 
 ## Runtime writers
 

@@ -91,6 +91,15 @@ fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: boo
         ));
     }
 
+    if let Some(agent_trace_db) = &report.agent_trace_db {
+        lines.push(format_human_text_row(
+            color_enabled,
+            agent_trace_db_status(report),
+            agent_trace_db.label,
+            agent_trace_db.path.display().to_string(),
+        ));
+    }
+
     lines.push(format!("\n{}:", heading("Repository")));
     lines.push(format_human_text_row(
         color_enabled,
@@ -111,25 +120,7 @@ fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: boo
         ),
     ));
 
-    lines.push(format!("\n{}:", heading("Git Hooks")));
-    if report.hooks.is_empty() {
-        for hook_name in REQUIRED_HOOKS {
-            lines.push(format_human_text_row(
-                color_enabled,
-                HumanTextStatus::Fail,
-                hook_name,
-                "not inspected",
-            ));
-        }
-    }
-    for hook in &report.hooks {
-        lines.push(format_human_text_row(
-            color_enabled,
-            hook_human_text_status(hook),
-            hook.name,
-            hook.path.display().to_string(),
-        ));
-    }
+    push_git_hooks_section(report, color_enabled, &mut lines);
 
     lines.push(format!("\n{}:", heading("Integrations")));
     for group in integration_groups_for_text(report) {
@@ -157,6 +148,28 @@ fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: boo
     ));
 
     lines.join("\n")
+}
+
+fn push_git_hooks_section(report: &HookDoctorReport, color_enabled: bool, lines: &mut Vec<String>) {
+    lines.push(format!("\n{}:", heading("Git Hooks")));
+    if report.hooks.is_empty() {
+        for hook_name in REQUIRED_HOOKS {
+            lines.push(format_human_text_row(
+                color_enabled,
+                HumanTextStatus::Fail,
+                hook_name,
+                "not inspected",
+            ));
+        }
+    }
+    for hook in &report.hooks {
+        lines.push(format_human_text_row(
+            color_enabled,
+            hook_human_text_status(hook),
+            hook.name,
+            hook.path.display().to_string(),
+        ));
+    }
 }
 
 fn format_human_text_row(
@@ -240,6 +253,22 @@ fn config_location_status(
         HumanTextStatus::Fail
     } else {
         HumanTextStatus::Pass
+    }
+}
+
+fn agent_trace_db_status(report: &HookDoctorReport) -> HumanTextStatus {
+    if let Some(agent_trace_db) = &report.agent_trace_db {
+        if !agent_trace_db.path.exists() {
+            return HumanTextStatus::Miss;
+        }
+        if report.problems.iter().any(|p| {
+            p.kind == ProblemKind::UnableToResolveStateRoot && p.summary.contains("agent trace")
+        }) {
+            return HumanTextStatus::Fail;
+        }
+        HumanTextStatus::Pass
+    } else {
+        HumanTextStatus::Fail
     }
 }
 
@@ -404,6 +433,11 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
             Readiness::NotReady => "not_ready",
         },
         "state_root": report.state_root.as_ref().map(|location| json!({
+            "label": location.label,
+            "path": location.path.display().to_string(),
+            "state": location.state,
+        })),
+        "agent_trace_db": report.agent_trace_db.as_ref().map(|location| json!({
             "label": location.label,
             "path": location.path.display().to_string(),
             "state": location.state,

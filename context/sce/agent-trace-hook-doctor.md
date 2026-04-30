@@ -34,7 +34,7 @@ The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor comm
 - default global/local config-file location reporting, plus validation of existing global and repo-local `sce/config.json` readability and schema compliance (delegated to `ConfigLifecycle::diagnose`)
 - startup config resolution no longer blocks doctor on invalid default-discovered config files; doctor reaches its own config-validation path, reports those files as problems, and keeps invalid-config remediation manual-only
 - local DB location reporting, DB parent-directory readiness checks, and existing-DB health validation (delegated to `LocalDbLifecycle::diagnose`)
-- local DB reporting in default doctor output
+- local DB and Agent Trace DB reporting in default doctor output
 - explicit git-unavailable, outside-repo, and bare-repo repository-targeting failures
 - effective hook-path source (`default`, local `core.hooksPath`, global `core.hooksPath`)
 - repository root and hooks directory resolution when a repository target is detected
@@ -52,11 +52,11 @@ Plan `doctor-human-text-integration-audit` task `T01` locks the approved human-f
 This section is now implemented by the current runtime and remains normative for future changes.
 
 ### Text-mode section order
-
+  
 Human text output for `sce doctor` must render these sections in this exact order:
-
+  
 1. `Environment`
-2. `Configuration`
+2. `Configuration` (includes Agent Trace DB health row)
 3. `Repository`
 4. `Git Hooks`
 5. `Integrations`
@@ -190,14 +190,15 @@ The broadened contract for `sce doctor` must cover the following problem invento
 - required runtime directories cannot be resolved on the current platform
 
 ### Global SCE state/config readiness
-
+ 
 - global SCE state root cannot be resolved
 - expected global config path cannot be resolved
 - global config file exists but is unreadable, invalid JSON, or fails schema validation
 - invalid default-discovered config must not prevent `sce doctor` from starting; doctor still reports invalid global or repo-local config as a problem once command dispatch begins
 - local DB or Agent Trace DB path cannot be resolved
-- DB parent directories are missing or not writable
-- DB bootstrap or migration health is broken
+- local DB and Agent Trace DB parent directories are missing or not writable
+- local DB and Agent Trace DB bootstrap or health is broken
+- Agent Trace DB path and health are reported in `Configuration` section output
 
 ### Repository targeting and git readiness
 

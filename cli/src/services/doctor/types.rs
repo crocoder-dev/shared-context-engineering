@@ -53,6 +53,7 @@ pub(super) struct HookDoctorReport {
     pub(super) mode: super::DoctorMode,
     pub(super) readiness: Readiness,
     pub(super) state_root: Option<FileLocationHealth>,
+    pub(super) agent_trace_db: Option<FileLocationHealth>,
     pub(super) repository_root: Option<PathBuf>,
     pub(super) hook_path_source: HookPathSource,
     pub(super) hooks_directory: Option<PathBuf>,

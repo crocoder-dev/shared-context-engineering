@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
+use crate::services::agent_trace_db::lifecycle::diagnose_agent_trace_db_health;
 use crate::services::default_paths::{opencode_asset, InstallTargetPaths, RepoPaths};
 use crate::services::setup::{
     iter_embedded_assets_for_setup_target, iter_required_hook_assets, EmbeddedAsset, SetupTarget,
@@ -25,6 +26,7 @@ pub(super) fn build_report_with_dependencies(
 ) -> HookDoctorReport {
     let mut problems = Vec::new();
     let global_state = collect_global_state_health(repository_root, &mut problems, dependencies);
+    let agent_trace_db = collect_agent_trace_db_health(&mut problems);
     let git_available = (dependencies.check_git_available)();
 
     let detected_repository_root = if git_available {
@@ -108,6 +110,7 @@ pub(super) fn build_report_with_dependencies(
         mode,
         readiness,
         state_root: global_state.state_root,
+        agent_trace_db,
         repository_root: detected_repository_root,
         hook_path_source,
         hooks_directory,
@@ -130,6 +133,7 @@ pub(super) fn build_report_with_lifecycle_problems(
         dependencies,
         lifecycle_problems,
     );
+    report.agent_trace_db = collect_agent_trace_db_health(&mut report.problems);
     report.readiness = if report
         .problems
         .iter()
@@ -149,6 +153,7 @@ fn build_report_without_service_owned_problem_checks(
     mut problems: Vec<DoctorProblem>,
 ) -> HookDoctorReport {
     let global_state = collect_global_state_locations(repository_root, dependencies);
+    let agent_trace_db = collect_agent_trace_db_health(&mut problems);
     let git_available = (dependencies.check_git_available)();
 
     let detected_repository_root = if git_available {
@@ -223,6 +228,7 @@ fn build_report_without_service_owned_problem_checks(
         mode,
         readiness: Readiness::Ready,
         state_root: global_state.state_root,
+        agent_trace_db,
         repository_root: detected_repository_root,
         hook_path_source,
         hooks_directory,
@@ -278,6 +284,55 @@ fn collect_global_state_locations(
         state_root,
         config_locations,
     }
+}
+
+fn collect_agent_trace_db_health(problems: &mut Vec<DoctorProblem>) -> Option<FileLocationHealth> {
+    let agent_trace_problems = diagnose_agent_trace_db_health();
+    let mut agent_trace_db = None;
+
+    for problem in &agent_trace_problems {
+        if matches!(
+            problem.kind,
+            crate::services::lifecycle::HealthProblemKind::UnableToResolveStateRoot
+        ) {
+            problems.push(DoctorProblem {
+                kind: ProblemKind::UnableToResolveStateRoot,
+                category: ProblemCategory::GlobalState,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: problem.summary.clone(),
+                remediation: problem.remediation.clone(),
+                next_action: problem.next_action,
+            });
+            continue;
+        }
+
+        let db_path = crate::services::default_paths::agent_trace_db_path().ok()?;
+        agent_trace_db = Some(FileLocationHealth {
+            label: "Agent Trace DB",
+            state: if db_path.exists() {
+                "present"
+            } else {
+                "expected"
+            },
+            path: db_path,
+        });
+    }
+
+    if agent_trace_db.is_none() {
+        let db_path = crate::services::default_paths::agent_trace_db_path().ok()?;
+        agent_trace_db = Some(FileLocationHealth {
+            label: "Agent Trace DB",
+            state: if db_path.exists() {
+                "present"
+            } else {
+                "expected"
+            },
+            path: db_path,
+        });
+    }
+
+    agent_trace_db
 }
 
 fn collect_hook_file_health(directory: &Path) -> Vec<HookFileHealth> {
