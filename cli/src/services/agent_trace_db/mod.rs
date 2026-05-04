@@ -16,12 +16,18 @@ const CREATE_DIFF_TRACES_MIGRATION: &str =
     include_str!("../../../migrations/agent-trace/001_create_diff_traces.sql");
 const CREATE_POST_COMMIT_PATCH_INTERSECTIONS_MIGRATION: &str =
     include_str!("../../../migrations/agent-trace/002_create_post_commit_patch_intersections.sql");
+const ADD_DIFF_TRACES_TIME_MS_ID_INDEX_MIGRATION: &str =
+    include_str!("../../../migrations/agent-trace/003_add_diff_traces_time_ms_id_index.sql");
 
 const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
     ("001_create_diff_traces", CREATE_DIFF_TRACES_MIGRATION),
     (
         "002_create_post_commit_patch_intersections",
         CREATE_POST_COMMIT_PATCH_INTERSECTIONS_MIGRATION,
+    ),
+    (
+        "003_add_diff_traces_time_ms_id_index",
+        ADD_DIFF_TRACES_TIME_MS_ID_INDEX_MIGRATION,
     ),
 ];
 
