@@ -3,11 +3,12 @@
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::services::{
     db::{DbSpec, TursoDb},
     default_paths::agent_trace_db_path,
+    patch::{parse_patch, ParseError, ParsedPatch},
 };
 
 pub mod lifecycle;
@@ -28,6 +29,12 @@ const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
 /// Parameterized SQL for inserting a captured diff trace payload.
 pub const INSERT_DIFF_TRACE_SQL: &str =
     "INSERT INTO diff_traces (time_ms, session_id, patch) VALUES (?1, ?2, ?3)";
+
+/// Parameterized SQL for retrieving recent captured diff trace patches.
+pub const SELECT_RECENT_DIFF_TRACE_PATCHES_SQL: &str = "SELECT id, time_ms, session_id, patch
+FROM diff_traces
+WHERE time_ms >= ?1
+ORDER BY time_ms ASC, id ASC";
 
 /// Parameterized SQL for inserting a post-commit patch intersection result.
 pub const INSERT_POST_COMMIT_PATCH_INTERSECTION_SQL: &str =
@@ -69,6 +76,50 @@ pub struct DiffTraceInsert<'a> {
     pub patch: &'a str,
 }
 
+/// Raw diff trace row read from the agent trace database.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiffTracePatchRow {
+    pub id: i64,
+    pub time_ms: i64,
+    pub session_id: String,
+    pub patch: String,
+}
+
+/// Parsed recent diff trace patch ready for comparison flows.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParsedDiffTracePatch {
+    pub id: i64,
+    pub time_ms: i64,
+    pub session_id: String,
+    pub patch: ParsedPatch,
+}
+
+/// Deterministic skipped-row report for invalid recent diff trace patches.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SkippedDiffTracePatch {
+    pub id: i64,
+    pub time_ms: i64,
+    pub session_id: String,
+    pub reason: String,
+}
+
+/// Parsed recent diff trace query result with accounting for valid and skipped rows.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecentDiffTracePatches {
+    pub patches: Vec<ParsedDiffTracePatch>,
+    pub skipped: Vec<SkippedDiffTracePatch>,
+}
+
+impl RecentDiffTracePatches {
+    pub fn loaded_count(&self) -> usize {
+        self.patches.len()
+    }
+
+    pub fn skipped_count(&self) -> usize {
+        self.skipped.len()
+    }
+}
+
 /// Post-commit patch intersection result to persist in the agent trace database.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PostCommitPatchIntersectionInsert<'a> {
@@ -95,6 +146,11 @@ impl AgentTraceDb {
     ) -> Result<u64> {
         insert_post_commit_patch_intersection_with(self, input)
     }
+
+    /// Query and parse recent diff trace patches with `time_ms >= cutoff_time_ms`.
+    pub fn recent_diff_trace_patches(&self, cutoff_time_ms: i64) -> Result<RecentDiffTracePatches> {
+        recent_diff_trace_patches_with(self, cutoff_time_ms)
+    }
 }
 
 fn insert_diff_trace_with<M: DbSpec>(db: &TursoDb<M>, input: DiffTraceInsert<'_>) -> Result<u64> {
@@ -120,4 +176,56 @@ fn insert_post_commit_patch_intersection_with<M: DbSpec>(
             input.intersection_patch,
         ),
     )
+}
+
+fn recent_diff_trace_patches_with<M: DbSpec>(
+    db: &TursoDb<M>,
+    cutoff_time_ms: i64,
+) -> Result<RecentDiffTracePatches> {
+    let rows = db.query_map(
+        SELECT_RECENT_DIFF_TRACE_PATCHES_SQL,
+        (cutoff_time_ms,),
+        diff_trace_patch_row_from_turso,
+    )?;
+
+    Ok(parse_recent_diff_trace_patch_rows(rows))
+}
+
+fn diff_trace_patch_row_from_turso(row: &turso::Row) -> Result<DiffTracePatchRow> {
+    Ok(DiffTracePatchRow {
+        id: row.get(0).context("failed to read diff_traces.id")?,
+        time_ms: row.get(1).context("failed to read diff_traces.time_ms")?,
+        session_id: row
+            .get(2)
+            .context("failed to read diff_traces.session_id")?,
+        patch: row.get(3).context("failed to read diff_traces.patch")?,
+    })
+}
+
+fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDiffTracePatches {
+    let mut patches = Vec::new();
+    let mut skipped = Vec::new();
+
+    for row in rows {
+        match parse_patch(&row.patch) {
+            Ok(patch) => patches.push(ParsedDiffTracePatch {
+                id: row.id,
+                time_ms: row.time_ms,
+                session_id: row.session_id,
+                patch,
+            }),
+            Err(error) => skipped.push(SkippedDiffTracePatch {
+                id: row.id,
+                time_ms: row.time_ms,
+                session_id: row.session_id,
+                reason: skipped_diff_trace_patch_reason(&error),
+            }),
+        }
+    }
+
+    RecentDiffTracePatches { patches, skipped }
+}
+
+fn skipped_diff_trace_patch_reason(error: &ParseError) -> String {
+    error.to_string()
 }

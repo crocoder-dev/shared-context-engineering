@@ -229,6 +229,36 @@ impl<M: DbSpec> TursoDb<M> {
         })
     }
 
+    /// Execute a SQL query and synchronously map all returned rows.
+    pub fn query_map<T, F>(
+        &self,
+        sql: &str,
+        params: impl turso::params::IntoParams,
+        mut map_row: F,
+    ) -> Result<Vec<T>>
+    where
+        F: FnMut(&turso::Row) -> Result<T>,
+    {
+        self.runtime.block_on(async {
+            let mut rows = self
+                .conn
+                .query(sql, params)
+                .await
+                .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))?;
+            let mut results = Vec::new();
+
+            while let Some(row) = rows
+                .next()
+                .await
+                .map_err(|e| anyhow::anyhow!("{} row fetch failed: {sql}: {e}", M::db_name()))?
+            {
+                results.push(map_row(&row)?);
+            }
+
+            Ok(results)
+        })
+    }
+
     /// Run all embedded migrations in order.
     ///
     /// Migrations that use idempotent SQL such as `CREATE TABLE IF NOT EXISTS`

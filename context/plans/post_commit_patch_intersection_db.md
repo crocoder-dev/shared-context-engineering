@@ -54,12 +54,16 @@ The command remains under the existing `sce hooks` surface. The detailed compari
   - Evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed; `nix flake check` passed. Direct narrow `cargo test agent_trace_db` was blocked by repository bash policy favoring `nix flake check`.
   - Notes: Added ordered `002_create_post_commit_patch_intersections` migration, `PostCommitPatchIntersectionInsert<'_>`, and parameterized insert helper while preserving existing `diff_traces` insert behavior. Context sync repaired Agent Trace DB current-state docs for the new persistence-only table/API.
 
-- [ ] T02: `Query and parse recent diff-trace patches` (status:todo)
+- [x] T02: `Query and parse recent diff-trace patches` (status:done)
   - Task ID: T02
   - Goal: Add Agent Trace DB/service support for retrieving `diff_traces` patches from the previous 7 days and parsing valid rows through the patch service while skipping invalid rows deterministically.
   - Boundaries (in/out of scope): In — `time_ms >= cutoff` query helper, chronological ordering, raw `diff_traces.patch` parsing with `parse_patch`, skipped-row accounting and warning/log data, focused tests for valid/invalid recent rows. Out — post-commit git patch capture, intersection persistence, new hook UX, DB schema beyond read helpers.
   - Done when: The service can return an ordered collection of valid parsed recent patches plus loaded/skipped counts; rows outside the 7-day cutoff are excluded; unparsable recent rows are skipped without failing the operation; tests cover mixed valid/invalid rows and cutoff filtering.
   - Verification notes (commands or checks): Targeted Rust tests for the new query/parse helper if added; `nix develop -c sh -c 'cd cli && cargo check'`; review logs/output paths to ensure skipped invalid rows are deterministic and non-secret-bearing.
+  - Completed: 2026-05-04
+  - Files changed: `cli/src/services/db/mod.rs`, `cli/src/services/agent_trace_db/mod.rs`.
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo test agent_trace_db'` was blocked by repository bash policy favoring `nix flake check`; `nix develop -c sh -c 'cd cli && cargo check'` passed; `nix flake check` passed after formatting and clippy/test fixes.
+  - Notes: Added shared `TursoDb::query_map`, a cutoff-filtered chronological `diff_traces` read helper, typed parsed/skipped result structs with loaded/skipped counts, deterministic parse-error skip reasons, and focused DB-backed tests for cutoff filtering/order plus invalid-row skipping.
 
 - [ ] T03: `Capture and parse the post-commit git patch` (status:todo)
   - Task ID: T03

@@ -12,6 +12,8 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 - `AgentTraceDb`: type alias for `TursoDb<AgentTraceDbSpec>`.
 - `DiffTraceInsert<'a>`: insert payload with `time_ms: i64`, `session_id: &'a str`, and `patch: &'a str`.
 - `insert_diff_trace()`: domain-specific insert helper using parameterized SQL.
+- `RecentDiffTracePatches`: parsed recent `diff_traces` query result containing valid parsed patches plus skipped-row reports.
+- `recent_diff_trace_patches(cutoff_time_ms)`: chronological `diff_traces` read helper for rows with `time_ms >= cutoff_time_ms`; parses raw patch text through `parse_patch` and skips malformed rows without failing the query.
 - `PostCommitPatchIntersectionInsert<'a>`: insert payload for post-commit intersection results with commit metadata, window bounds, loaded/skipped counts, and serialized patch JSON.
 - `insert_post_commit_patch_intersection()`: domain-specific insert helper using parameterized SQL.
 - `lifecycle.rs`: service lifecycle provider for setup/doctor integration.
@@ -32,7 +34,7 @@ The Agent Trace DB path is resolved from the shared default-path catalog:
 - `001_create_diff_traces.sql`
 - `002_create_post_commit_patch_intersections.sql`
 
-The current migration creates `diff_traces` with:
+The `diff_traces` migration creates:
 
 - `id INTEGER PRIMARY KEY AUTOINCREMENT`
 - `time_ms INTEGER NOT NULL`
@@ -71,6 +73,16 @@ The post-commit intersection migration creates `post_commit_patch_intersections`
 - Command success requires both artifact and database persistence to succeed.
 - Existing artifact files are not backfilled into the database.
 
-Post-commit intersection rows are persistence-only in the current slice; hook wiring, recent diff-trace queries, and retrieval APIs remain follow-up scope.
+Post-commit intersection rows are persistence-only in the current slice; hook wiring, post-commit git patch capture, patch combination/intersection orchestration, and intersection-result retrieval APIs remain follow-up scope.
+
+## Recent patch reads
+
+`AgentTraceDb::recent_diff_trace_patches(cutoff_time_ms)` supports the post-commit comparison flow without changing `diff_traces` writes:
+
+- SQL reads `id`, `time_ms`, `session_id`, and `patch` from `diff_traces` where `time_ms >= cutoff_time_ms`.
+- Rows are ordered by `time_ms ASC, id ASC` for deterministic chronological processing.
+- Valid row patches are parsed through `cli/src/services/patch.rs` `parse_patch` and returned as `ParsedDiffTracePatch` records.
+- Malformed recent row patches are returned as `SkippedDiffTracePatch` records with deterministic parse-error reasons; malformed historical rows do not fail the operation.
+- `RecentDiffTracePatches::loaded_count()` and `skipped_count()` expose accounting for later hook output and persistence metadata.
 
 See also: [shared-turso-db.md](shared-turso-db.md), [local-db.md](local-db.md), [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md), [context-map.md](../context-map.md)
