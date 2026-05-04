@@ -14,13 +14,32 @@ pub mod lifecycle;
 
 const CREATE_DIFF_TRACES_MIGRATION: &str =
     include_str!("../../../migrations/agent-trace/001_create_diff_traces.sql");
+const CREATE_POST_COMMIT_PATCH_INTERSECTIONS_MIGRATION: &str =
+    include_str!("../../../migrations/agent-trace/002_create_post_commit_patch_intersections.sql");
 
-const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] =
-    &[("001_create_diff_traces", CREATE_DIFF_TRACES_MIGRATION)];
+const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
+    ("001_create_diff_traces", CREATE_DIFF_TRACES_MIGRATION),
+    (
+        "002_create_post_commit_patch_intersections",
+        CREATE_POST_COMMIT_PATCH_INTERSECTIONS_MIGRATION,
+    ),
+];
 
 /// Parameterized SQL for inserting a captured diff trace payload.
 pub const INSERT_DIFF_TRACE_SQL: &str =
     "INSERT INTO diff_traces (time_ms, session_id, patch) VALUES (?1, ?2, ?3)";
+
+/// Parameterized SQL for inserting a post-commit patch intersection result.
+pub const INSERT_POST_COMMIT_PATCH_INTERSECTION_SQL: &str =
+    "INSERT INTO post_commit_patch_intersections (
+    commit_id,
+    post_commit_time_ms,
+    recent_window_cutoff_ms,
+    recent_window_end_ms,
+    loaded_diff_trace_count,
+    skipped_diff_trace_count,
+    intersection_patch
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
 
 /// Agent trace database configuration.
 pub struct AgentTraceDbSpec;
@@ -50,12 +69,55 @@ pub struct DiffTraceInsert<'a> {
     pub patch: &'a str,
 }
 
+/// Post-commit patch intersection result to persist in the agent trace database.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PostCommitPatchIntersectionInsert<'a> {
+    pub commit_id: &'a str,
+    pub post_commit_time_ms: i64,
+    pub recent_window_cutoff_ms: i64,
+    pub recent_window_end_ms: i64,
+    pub loaded_diff_trace_count: i64,
+    pub skipped_diff_trace_count: i64,
+    pub intersection_patch: &'a str,
+}
+
 impl AgentTraceDb {
     /// Insert a diff trace payload into the `diff_traces` table.
     pub fn insert_diff_trace(&self, input: DiffTraceInsert<'_>) -> Result<u64> {
-        self.execute(
-            INSERT_DIFF_TRACE_SQL,
-            (input.time_ms, input.session_id, input.patch),
-        )
+        insert_diff_trace_with(self, input)
     }
+
+    /// Insert a post-commit patch intersection result into the
+    /// `post_commit_patch_intersections` table.
+    pub fn insert_post_commit_patch_intersection(
+        &self,
+        input: PostCommitPatchIntersectionInsert<'_>,
+    ) -> Result<u64> {
+        insert_post_commit_patch_intersection_with(self, input)
+    }
+}
+
+fn insert_diff_trace_with<M: DbSpec>(db: &TursoDb<M>, input: DiffTraceInsert<'_>) -> Result<u64> {
+    db.execute(
+        INSERT_DIFF_TRACE_SQL,
+        (input.time_ms, input.session_id, input.patch),
+    )
+}
+
+fn insert_post_commit_patch_intersection_with<M: DbSpec>(
+    db: &TursoDb<M>,
+    input: PostCommitPatchIntersectionInsert<'_>,
+) -> Result<u64> {
+    db.execute(
+        INSERT_POST_COMMIT_PATCH_INTERSECTION_SQL,
+        (
+            input.commit_id,
+            input.post_commit_time_ms,
+            input.recent_window_cutoff_ms,
+            input.recent_window_end_ms,
+            input.loaded_diff_trace_count,
+            input.skipped_diff_trace_count,
+            input.intersection_patch,
+        ),
+    )
 }
