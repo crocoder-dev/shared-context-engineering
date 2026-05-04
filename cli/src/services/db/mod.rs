@@ -141,15 +141,11 @@ pub struct TursoDb<M: DbSpec> {
 
 #[allow(dead_code)]
 impl<M: DbSpec> TursoDb<M> {
-    /// Open or create the database at the spec-provided canonical path.
-    ///
-    /// Parent directories are created automatically. Migrations are run after
-    /// the database connection is established.
-    pub fn new() -> Result<Self> {
-        let db_name = M::db_name();
-        let db_path = M::db_path().with_context(|| format!("failed to resolve {db_name} path"))?;
-
-        if let Some(parent) = db_path.parent() {
+    fn open_at_path(db_name: &str, db_path: &Path) -> Result<Self> {
+        if let Some(parent) = db_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
             std::fs::create_dir_all(parent).with_context(|| {
                 format!(
                     "failed to create {db_name} parent directory: {}",
@@ -195,6 +191,22 @@ impl<M: DbSpec> TursoDb<M> {
         Ok(db)
     }
 
+    /// Open or create the database at the spec-provided canonical path.
+    ///
+    /// Parent directories are created automatically. Migrations are run after
+    /// the database connection is established.
+    pub fn new() -> Result<Self> {
+        let db_name = M::db_name();
+        let db_path = M::db_path().with_context(|| format!("failed to resolve {db_name} path"))?;
+
+        Self::open_at_path(db_name, &db_path)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_in_memory_for_test() -> Result<Self> {
+        Self::open_at_path(M::db_name(), Path::new(":memory:"))
+    }
+
     /// Execute a SQL statement that does not return rows.
     ///
     /// # Arguments
@@ -226,6 +238,33 @@ impl<M: DbSpec> TursoDb<M> {
                 .query(sql, params)
                 .await
                 .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))
+        })
+    }
+
+    /// Execute a SQL query and map all returned rows synchronously.
+    pub fn query_map<T>(
+        &self,
+        sql: &str,
+        params: impl turso::params::IntoParams,
+        mut map: impl FnMut(&turso::Row) -> Result<T>,
+    ) -> Result<Vec<T>> {
+        self.runtime.block_on(async {
+            let mut rows = self
+                .conn
+                .query(sql, params)
+                .await
+                .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))?;
+            let mut mapped_rows = Vec::new();
+
+            while let Some(row) = rows
+                .next()
+                .await
+                .map_err(|e| anyhow::anyhow!("{} row iteration failed: {sql}: {e}", M::db_name()))?
+            {
+                mapped_rows.push(map(&row)?);
+            }
+
+            Ok(mapped_rows)
         })
     }
 

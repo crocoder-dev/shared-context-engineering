@@ -9,7 +9,10 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::services::agent_trace_db::{AgentTraceDb, DiffTraceInsert};
+use crate::services::agent_trace::{build_patch_intersection_json, IntersectionSourcePatch};
+use crate::services::agent_trace_db::{
+    AgentTraceDb, DiffTraceInsert, DiffTracePatchRow, PatchIntersectionInsert,
+};
 use crate::services::config;
 use crate::services::observability::traits::Logger;
 
@@ -427,10 +430,15 @@ fn run_commit_msg_subcommand_with_trace(
 fn run_post_commit_subcommand(repository_root: &Path) -> Result<String> {
     let runtime = resolve_runtime_state(repository_root)?;
 
-    Ok(format!(
-        "post-commit hook executed with no-op runtime state: {:?}",
-        post_commit_no_op_reason(&runtime)
-    ))
+    if runtime.sce_disabled {
+        return Ok(format!(
+            "post-commit hook executed with no-op runtime state: {:?}",
+            HookNoOpReason::Disabled
+        ));
+    }
+
+    persist_latest_session_patch_intersection(repository_root)
+        .map(|outcome| outcome.render_message())
 }
 
 fn run_post_commit_subcommand_with_trace(repository_root: &Path) -> Result<String> {
@@ -441,6 +449,147 @@ fn run_post_commit_subcommand_with_trace(repository_root: &Path) -> Result<Strin
     let _ = persist_hook_trace(repository_root, &subcommand, &input, &outcome);
 
     outcome
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct HeadCommitPatch {
+    commit_sha: String,
+    patch: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum PostCommitIntersectionOutcome {
+    NoDiffTraces,
+    EmptyLatestSession {
+        session_id: String,
+    },
+    Persisted {
+        commit_sha: String,
+        session_id: String,
+        source_count: usize,
+    },
+}
+
+impl PostCommitIntersectionOutcome {
+    fn render_message(&self) -> String {
+        match self {
+            Self::NoDiffTraces => String::from(
+                "post-commit hook found no diff-trace rows; patch intersection persistence skipped.",
+            ),
+            Self::EmptyLatestSession { session_id } => format!(
+                "post-commit hook found latest diff-trace session '{session_id}' but no patch rows; patch intersection persistence skipped."
+            ),
+            Self::Persisted {
+                commit_sha,
+                session_id,
+                source_count,
+            } => format!(
+                "post-commit hook persisted patch intersection for commit {commit_sha} from diff-trace session '{session_id}' ({source_count} source diff trace row(s))."
+            ),
+        }
+    }
+}
+
+fn persist_latest_session_patch_intersection(
+    repository_root: &Path,
+) -> Result<PostCommitIntersectionOutcome> {
+    let db = AgentTraceDb::new()
+        .context("Failed to open Agent Trace DB for post-commit patch intersection persistence.")?;
+
+    persist_latest_session_patch_intersection_with(
+        || {
+            db.latest_diff_trace_session_id().context(
+                "Failed to select latest diff-trace session for post-commit patch intersection persistence.",
+            )
+        },
+        |session_id| {
+            db.diff_trace_patches_for_session(session_id)
+                .with_context(|| {
+                    format!("Failed to load diff-trace patches for latest session '{session_id}'.")
+                })
+        },
+        || capture_head_commit_patch(repository_root),
+        |input| {
+            db.insert_patch_intersection(input).with_context(|| {
+                format!(
+                    "Failed to persist patch intersection for commit '{}'.",
+                    input.commit_sha
+                )
+            })
+        },
+    )
+}
+
+fn persist_latest_session_patch_intersection_with<L, R, H, I>(
+    mut latest_session_fn: L,
+    mut session_patches_fn: R,
+    mut head_patch_fn: H,
+    mut insert_fn: I,
+) -> Result<PostCommitIntersectionOutcome>
+where
+    L: FnMut() -> Result<Option<String>>,
+    R: FnMut(&str) -> Result<Vec<DiffTracePatchRow>>,
+    H: FnMut() -> Result<HeadCommitPatch>,
+    I: FnMut(PatchIntersectionInsert<'_>) -> Result<u64>,
+{
+    let Some(session_id) = latest_session_fn()? else {
+        return Ok(PostCommitIntersectionOutcome::NoDiffTraces);
+    };
+
+    let source_rows = session_patches_fn(&session_id)?;
+    if source_rows.is_empty() {
+        return Ok(PostCommitIntersectionOutcome::EmptyLatestSession { session_id });
+    }
+
+    let head_patch = head_patch_fn()?;
+    let source_patches = source_rows
+        .iter()
+        .map(|row| IntersectionSourcePatch {
+            id: row.id,
+            patch: row.patch.as_str(),
+        })
+        .collect::<Vec<_>>();
+    let build_result = build_patch_intersection_json(&source_patches, &head_patch.patch)
+        .with_context(|| {
+            format!(
+                "Failed to build post-commit patch intersection for latest diff-trace session '{session_id}'."
+            )
+        })?;
+    let source_diff_trace_ids = serde_json::to_string(&build_result.source_diff_trace_ids)
+        .context("Failed to serialize source diff-trace IDs for patch intersection persistence.")?;
+    let source_count = build_result.source_diff_trace_ids.len();
+
+    insert_fn(PatchIntersectionInsert {
+        commit_sha: &head_patch.commit_sha,
+        source_diff_trace_ids: &source_diff_trace_ids,
+        intersection_json: &build_result.intersection_json,
+    })?;
+
+    Ok(PostCommitIntersectionOutcome::Persisted {
+        commit_sha: head_patch.commit_sha,
+        session_id,
+        source_count,
+    })
+}
+
+fn capture_head_commit_patch(repository_root: &Path) -> Result<HeadCommitPatch> {
+    let commit_sha = run_git_command_capture_stdout(
+        repository_root,
+        &["rev-parse", "--verify", "HEAD"],
+        "Failed to capture HEAD revision from git.",
+    )?;
+    let commit_sha = commit_sha.trim().to_string();
+    if commit_sha.is_empty() {
+        bail!("Failed to capture HEAD revision from git: git returned an empty revision.");
+    }
+
+    let patch = run_git_command_capture_stdout(
+        repository_root,
+        &["show", "--format=", "--patch", "--no-ext-diff", "HEAD"],
+        "Failed to capture HEAD patch from git.",
+    )?;
+
+    Ok(HeadCommitPatch { commit_sha, patch })
 }
 
 fn run_post_rewrite_subcommand(repository_root: &Path, rewrite_method: &str) -> Result<String> {
@@ -642,14 +791,6 @@ fn commit_msg_policy_gate_passed(runtime: &HookRuntimeState) -> bool {
 }
 
 fn pre_commit_no_op_reason(runtime: &HookRuntimeState) -> HookNoOpReason {
-    if runtime.sce_disabled {
-        HookNoOpReason::Disabled
-    } else {
-        HookNoOpReason::AttributionOnlyCommitMsgMode
-    }
-}
-
-fn post_commit_no_op_reason(runtime: &HookRuntimeState) -> HookNoOpReason {
     if runtime.sce_disabled {
         HookNoOpReason::Disabled
     } else {

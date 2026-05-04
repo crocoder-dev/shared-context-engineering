@@ -22,8 +22,8 @@ use serde_json::Value;
 use uuid::{NoContext, Timestamp, Uuid};
 
 use super::patch::{
-    intersect_patches, parse_patch, FileChangeKind, ParsedPatch, PatchFileChange, PatchHunk,
-    TouchedLineKind,
+    combine_patches, intersect_patches, parse_patch, FileChangeKind, ParsedPatch, PatchFileChange,
+    PatchHunk, TouchedLineKind,
 };
 
 pub const AGENT_TRACE_VERSION: &str = "0.1";
@@ -138,6 +138,114 @@ pub(crate) fn validate_agent_trace_file(path: &Path) -> Result<(), AgentTraceVal
         })?;
 
     validate_agent_trace_json(&raw)
+}
+
+/// Raw diff trace patch input used to build a persisted patch-intersection row.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IntersectionSourcePatch<'a> {
+    /// `diff_traces.id` provenance value for the raw stored patch.
+    pub id: i64,
+    /// Raw unified-diff payload previously stored for the selected session.
+    pub patch: &'a str,
+}
+
+/// Serialized patch-intersection result plus ordered source provenance.
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PatchIntersectionBuildResult {
+    /// Source `diff_traces.id` values in the same order used for patch combination.
+    pub source_diff_trace_ids: Vec<i64>,
+    /// Serialized `ParsedPatch` JSON returned by `intersect_patches(...)`.
+    pub intersection_json: String,
+}
+
+/// Error produced while building a serialized patch intersection from raw patches.
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PatchIntersectionBuildError {
+    /// No stored raw diff patches were provided for the selected session.
+    EmptySourceDiffs,
+    /// A stored raw diff patch could not be parsed as unified diff data.
+    SourcePatchParse { id: i64, message: String },
+    /// The post-commit patch could not be parsed as unified diff data.
+    PostCommitPatchParse { message: String },
+    /// The parsed intersection could not be serialized as `ParsedPatch` JSON.
+    SerializeIntersection { message: String },
+}
+
+impl fmt::Display for PatchIntersectionBuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptySourceDiffs => write!(
+                f,
+                "cannot build patch intersection: no source diff-trace patches were provided"
+            ),
+            Self::SourcePatchParse { id, message } => write!(
+                f,
+                "cannot build patch intersection: source diff-trace patch id {id} is invalid: {message}"
+            ),
+            Self::PostCommitPatchParse { message } => write!(
+                f,
+                "cannot build patch intersection: post-commit patch is invalid: {message}"
+            ),
+            Self::SerializeIntersection { message } => write!(
+                f,
+                "cannot build patch intersection: failed to serialize ParsedPatch JSON: {message}"
+            ),
+        }
+    }
+}
+
+impl Error for PatchIntersectionBuildError {}
+
+/// Build serialized `ParsedPatch` intersection JSON from stored session diffs
+/// and the canonical post-commit patch.
+///
+/// The input source patch order is significant: raw stored patches are parsed in
+/// that order, combined with `combine_patches(...)`, and their IDs are returned
+/// unchanged in the same order for later `patch_intersections` provenance. The
+/// post-commit patch anchors the final `intersect_patches(...)` output shape.
+#[allow(dead_code)]
+pub fn build_patch_intersection_json(
+    source_patches: &[IntersectionSourcePatch<'_>],
+    post_commit_patch: &str,
+) -> Result<PatchIntersectionBuildResult, PatchIntersectionBuildError> {
+    if source_patches.is_empty() {
+        return Err(PatchIntersectionBuildError::EmptySourceDiffs);
+    }
+
+    let mut parsed_sources = Vec::with_capacity(source_patches.len());
+    let mut source_diff_trace_ids = Vec::with_capacity(source_patches.len());
+
+    for source in source_patches {
+        let parsed_patch = parse_patch(source.patch).map_err(|error| {
+            PatchIntersectionBuildError::SourcePatchParse {
+                id: source.id,
+                message: error.message,
+            }
+        })?;
+        parsed_sources.push(parsed_patch);
+        source_diff_trace_ids.push(source.id);
+    }
+
+    let post_commit_patch = parse_patch(post_commit_patch).map_err(|error| {
+        PatchIntersectionBuildError::PostCommitPatchParse {
+            message: error.message,
+        }
+    })?;
+    let constructed_patch = combine_patches(&parsed_sources);
+    let intersection_patch = intersect_patches(&constructed_patch, &post_commit_patch);
+    let intersection_json = serde_json::to_string(&intersection_patch).map_err(|error| {
+        PatchIntersectionBuildError::SerializeIntersection {
+            message: error.to_string(),
+        }
+    })?;
+
+    Ok(PatchIntersectionBuildResult {
+        source_diff_trace_ids,
+        intersection_json,
+    })
 }
 /// Classification of a single hunk's origin relative to the AI candidate patch.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

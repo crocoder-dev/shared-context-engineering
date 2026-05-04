@@ -8,7 +8,7 @@
 ## Current baseline
 
 - The local hook runtime does not replay Agent Trace retries
-- `post-commit` and `post-rewrite` no-op before any retry processing
+- `post-rewrite` remains no-op; `post-commit` has only latest-session `ParsedPatch` intersection persistence and still performs no retry processing
 - No local DB retry schema is part of the active runtime baseline
 - No local-hook retry metrics are emitted
 

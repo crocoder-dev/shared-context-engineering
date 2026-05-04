@@ -4,7 +4,7 @@
 
 - This document is retained as historical reference only.
 - The current CLI runtime does not implement the Agent Trace contract described by the original no-git-wrapper plan.
-- Local hooks are currently attribution-only: `commit-msg` may append the canonical SCE co-author trailer when the attribution gate is enabled, while `pre-commit`, `post-commit`, and `post-rewrite` are deterministic no-ops.
+- Local hooks no longer implement the original no-git-wrapper Agent Trace contract: `commit-msg` may append the canonical SCE co-author trailer when the attribution gate is enabled, `pre-commit` and `post-rewrite` are deterministic no-ops, and `post-commit` stores only latest-session `ParsedPatch` intersection JSON when source diff traces exist.
 
 ## Historical scope
 

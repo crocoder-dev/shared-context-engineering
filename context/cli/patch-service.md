@@ -53,7 +53,7 @@ Both functions wrap `serde_json::from_str`/`serde_json::from_slice` and map serd
 - **Result structure**: only files with at least one overlapping touched line appear in the result; hunks with no overlapping lines are excluded; hunk metadata (`old_start`, `old_count`, `new_start`, `new_count`) is preserved from the second patch (`b`) so the result keeps the target patch shape
 - **Determinism**: the same inputs always produce the same output
 - **Equivalent-hunk behavior**: semantically identical hunks still intersect when they differ only in surrounding context windows, hunk header ranges, or absolute-vs-relative `Index:` path spelling, as long as their touched-line identities match exactly
-- **Not yet wired**: `intersect_patches` is a standalone library seam not yet wired into command dispatch or hook runtime
+- **Consumers**: `intersect_patches` is consumed by Agent Trace library helpers for minimal trace classification and serialized patch-intersection building; the post-commit hook reaches it through `build_patch_intersection_json(...)` rather than calling the patch service directly
 
 ### Combination
 
@@ -64,11 +64,11 @@ Both functions wrap `serde_json::from_str`/`serde_json::from_slice` and map serd
 - **Hunk reconstruction**: surviving lines are grouped by their hunk metadata from the last contributing patch; hunks are ordered by `old_start`; lines within each hunk are ordered by `line_number` with `Removed` before `Added` at the same position, then by `content` for full determinism
 - **File ordering**: files appear in the result in the order they are first encountered across the input patches
 - **Determinism**: the same inputs in the same order always produce the same output
-- **Not yet wired**: `combine_patches` is a standalone library seam not yet wired into command dispatch or hook runtime
+- **Consumers**: `combine_patches` is consumed by Agent Trace library helpers for reconstruction and serialized patch-intersection building; the post-commit hook reaches it through `build_patch_intersection_json(...)` rather than calling the patch service directly
 
-### Not yet wired
+### Integration status
 
-The parser, JSON load helpers, intersection, and combination operations are standalone library seams not yet wired into command dispatch or hook runtime. Public types consumed by the parser or load helpers have `#[allow(dead_code)]` removed; other module internals including `intersect_patches` and `combine_patches` retain `#[allow(dead_code)]` until runtime integration.
+The parser, JSON load helpers, intersection, and combination operations remain standalone patch-service primitives. They are consumed by `cli/src/services/agent_trace.rs` library helpers, and `sce hooks post-commit` consumes them indirectly through `build_patch_intersection_json(...)` for `patch_intersections` persistence. Public types consumed by the parser or load helpers have `#[allow(dead_code)]` removed; other module internals retain localized `#[allow(dead_code)]` only where they remain library seams.
 
 ## Reconstruction fixture suites
 
