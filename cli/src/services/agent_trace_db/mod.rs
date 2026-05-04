@@ -1,5 +1,4 @@
 //! Agent trace Turso database adapter.
-#![allow(dead_code)]
 
 use std::path::PathBuf;
 
