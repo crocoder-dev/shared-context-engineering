@@ -76,12 +76,16 @@ The command remains under the existing `sce hooks` surface. The detailed compari
   - Evidence: `nix flake check` passed. Added `PostCommitPatchData` struct and `capture_post_commit_patch_from_git` function that captures HEAD OID, timestamp, and patch via git commands, then parses through `parse_patch`. Helper functions use existing `run_git_command_capture_stdout` pattern. Code marked `#[allow(dead_code)]` since seam will be consumed by T04.
   - Notes: Service seam created with commit OID, timestamp (Unix ms), and parsed patch return. Error messages follow existing hook error patterns. T04 will wire this into the post-commit hook flow.
 
-- [ ] T04: `Combine recent patches, intersect, and persist from post-commit` (status:todo)
+- [x] T04: `Combine recent patches, intersect, and persist from post-commit` (status:done)
   - Task ID: T04
   - Goal: Wire the Agent Trace service orchestration so `sce hooks post-commit` combines valid recent DB patches, intersects them with the parsed post-commit patch, and stores the serialized intersection patch in the new table.
   - Boundaries (in/out of scope): In — Agent Trace service function for `combine_patches` + `intersect_patches`, empty-recent-input behavior, persistence through the T01 insert helper, deterministic success/error output for `sce hooks post-commit`, and focused tests for non-empty, empty, and invalid-row-skipped scenarios. Out — DB schema changes beyond T01, recent-query mechanics beyond T02, git capture mechanics beyond T03, generated plugin changes, and broad trace payload enrichment.
   - Done when: `sce hooks post-commit` stores one intersection result per successful invocation; the intersection call uses `intersect_patches(&combined_recent_patch, &post_commit_patch)`; skipped invalid DB rows are reflected in stored metadata/output; an empty valid recent patch set produces a deterministic empty intersection result rather than a crash; existing `diff-trace`, `commit-msg`, `pre-commit`, and `post-rewrite` behavior remains unchanged.
   - Verification notes (commands or checks): Targeted Rust tests for orchestration; `nix develop -c sh -c 'cd cli && cargo check'`; inspect hook success/error text for deterministic wording and stable stream routing.
+  - Completed: 2026-05-04
+  - Files changed: `cli/src/services/hooks/mod.rs`
+  - Evidence: `nix flake check` passed. Added `run_post_commit_intersection_flow` function that wires T03 seam (capture_post_commit_patch_from_git), T02 helper (AgentTraceDb::recent_diff_trace_patches), `patch::combine_patches`, `patch::intersect_patches`, and T01 helper (insert_post_commit_patch_intersection). Handles empty recent set (produces empty intersection) and tracks loaded/skipped counts for metadata. Removed no-op behavior from post-commit hook.
+  - Notes: Empty recent patch set produces deterministic empty intersection result via `combine_patches([])`; error handling follows existing hook patterns. Requires T05 context sync to mark post-commit no longer a no-op.
 
 - [ ] T05: `Sync context for active post-commit intersection behavior` (status:todo)
   - Task ID: T05

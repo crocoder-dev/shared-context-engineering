@@ -3,16 +3,22 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{json, to_string as serialize_to_json, Value};
 
-use crate::services::agent_trace_db::{AgentTraceDb, DiffTraceInsert};
+use crate::services::agent_trace_db::{
+    AgentTraceDb, DiffTraceInsert, PostCommitPatchIntersectionInsert,
+};
 use crate::services::config;
 use crate::services::observability::traits::Logger;
-use crate::services::patch::{parse_patch as parse_patch_from_text, ParsedPatch};
+use crate::services::patch::{
+    combine_patches as combine_patches_fn, intersect_patches as intersect_patches_fn,
+    parse_patch as parse_patch_from_text, ParsedPatch,
+};
 
 pub mod command;
 pub mod lifecycle;
@@ -426,11 +432,70 @@ fn run_commit_msg_subcommand_with_trace(
 }
 
 fn run_post_commit_subcommand(repository_root: &Path) -> Result<String> {
-    let runtime = resolve_runtime_state(repository_root)?;
+    run_post_commit_intersection_flow(repository_root)
+}
+
+/// Duration for looking up recent diff traces: 7 days in milliseconds.
+const RECENT_DAYS_MILLIS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+/// Run the post-commit intersection flow that:
+/// 1. Captures the post-commit patch from git
+/// 2. Queries recent diff traces from the past 7 days
+/// 3. Combines valid recent patches
+/// 4. Intersects with the post-commit patch
+/// 5. Persists the result to the database
+fn run_post_commit_intersection_flow(repository_root: &Path) -> Result<String> {
+    let post_commit_data = capture_post_commit_patch_from_git(repository_root)?;
+
+    let now_ms = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())
+        .context("Current time exceeds i64 range for post-commit intersection.")?;
+    let cutoff_ms = now_ms - RECENT_DAYS_MILLIS;
+
+    let db = AgentTraceDb::new()
+        .context("Failed to open Agent Trace DB for post-commit intersection.")?;
+
+    let recent_patches = db
+        .recent_diff_trace_patches(cutoff_ms)
+        .context("Failed to query recent diff trace patches.")?;
+
+    #[allow(clippy::cast_possible_wrap)]
+    let loaded_count = recent_patches.loaded_count() as i64;
+    #[allow(clippy::cast_possible_wrap)]
+    let skipped_count = recent_patches.skipped_count() as i64;
+
+    let recent_patches_slice: Vec<ParsedPatch> = recent_patches
+        .patches
+        .into_iter()
+        .map(|p| p.patch)
+        .collect();
+
+    let combined_recent_patch = combine_patches_fn(&recent_patches_slice);
+
+    let intersection_patch =
+        intersect_patches_fn(&combined_recent_patch, &post_commit_data.parsed_patch);
+
+    let serialized_intersection = serialize_to_json(&intersection_patch)
+        .context("Failed to serialize intersection patch.")?;
+
+    let insert_input = PostCommitPatchIntersectionInsert {
+        commit_id: &post_commit_data.commit_oid,
+        post_commit_time_ms: post_commit_data.commit_time_ms,
+        recent_window_cutoff_ms: cutoff_ms,
+        recent_window_end_ms: now_ms,
+        loaded_diff_trace_count: loaded_count,
+        skipped_diff_trace_count: skipped_count,
+        intersection_patch: &serialized_intersection,
+    };
+
+    db.insert_post_commit_patch_intersection(insert_input)
+        .context("Failed to persist post-commit patch intersection.")?;
 
     Ok(format!(
-        "post-commit hook executed with no-op runtime state: {:?}",
-        post_commit_no_op_reason(&runtime)
+        "post-commit hook processed intersection: commit={}, loaded={}, skipped={}, intersection_files={}",
+        post_commit_data.commit_oid,
+        loaded_count,
+        skipped_count,
+        intersection_patch.files.len()
     ))
 }
 
@@ -650,6 +715,7 @@ fn pre_commit_no_op_reason(runtime: &HookRuntimeState) -> HookNoOpReason {
     }
 }
 
+#[allow(dead_code)]
 fn post_commit_no_op_reason(runtime: &HookRuntimeState) -> HookNoOpReason {
     if runtime.sce_disabled {
         HookNoOpReason::Disabled
@@ -658,6 +724,7 @@ fn post_commit_no_op_reason(runtime: &HookRuntimeState) -> HookNoOpReason {
     }
 }
 
+#[allow(dead_code)]
 fn post_rewrite_no_op_reason(runtime: &HookRuntimeState) -> HookNoOpReason {
     if runtime.sce_disabled {
         HookNoOpReason::Disabled

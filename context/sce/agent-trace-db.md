@@ -73,7 +73,7 @@ The post-commit intersection migration creates `post_commit_patch_intersections`
 - Command success requires both artifact and database persistence to succeed.
 - Existing artifact files are not backfilled into the database.
 
-Post-commit intersection rows are persistence-only in the current slice; hook wiring, post-commit git patch capture, patch combination/intersection orchestration, and intersection-result retrieval APIs remain follow-up scope.
+Post-commit intersection rows are written by the active `post-commit` hook flow (see [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md)).
 
 ## Recent patch reads
 

@@ -27,7 +27,14 @@
   - Applies exactly one canonical trailer: `Co-authored-by: SCE <sce@crocoder.dev>`.
   - Writes back only when the attribution gate is enabled, `SCE_DISABLED` is false, and the transformed content differs.
 - `pre-commit` is a deterministic no-op entrypoint.
-- `post-commit` is a deterministic no-op entrypoint.
+- **`post-commit` is an active intersection entrypoint** (see [agent-trace-db.md](agent-trace-db.md)):
+  - Captures the current commit's patch from git using `capture_post_commit_patch_from_git()`.
+  - Queries recent `diff_traces` patches from the past 7 days via `AgentTraceDb::recent_diff_trace_patches()`.
+  - Combines valid recent patches in chronological order via `patch::combine_patches`.
+  - Intersects the combined recent patch with the post-commit patch via `patch::intersect_patches`.
+  - Persists the serialized intersection result to `post_commit_patch_intersections` table with commit metadata (OID, timestamp), window bounds (cutoff_ms, end_ms), and loaded/skipped counts.
+  - Empty recent patch set produces deterministic empty intersection result (no crash).
+  - Returns structured success output: `post-commit hook processed intersection: commit=<oid>, loaded=<n>, skipped=<n>, intersection_files=<n>`.
 - `post-rewrite` is a deterministic no-op entrypoint.
 - `diff-trace` reads STDIN JSON, validates required non-empty `sessionID`/`diff` plus required `u64` `time` (Unix epoch milliseconds), rejects `time` values that cannot fit the Agent Trace DB signed `time_ms` column, writes one payload artifact per invocation to `context/tmp/<timestamp>-000000-diff-trace.json` with atomic create-new retry semantics, and inserts the same payload into AgentTraceDb via `DiffTraceInsert` + `insert_diff_trace()`.
 - `diff-trace` success requires both persistence paths to succeed; artifact write failures and AgentTraceDb open/insert failures are command-failing runtime errors logged through `sce.hooks.diff_trace.error`.
