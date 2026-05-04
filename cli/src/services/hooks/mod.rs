@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use crate::services::agent_trace_db::{AgentTraceDb, DiffTraceInsert};
 use crate::services::config;
 use crate::services::observability::traits::Logger;
+use crate::services::patch::{parse_patch as parse_patch_from_text, ParsedPatch};
 
 pub mod command;
 pub mod lifecycle;
@@ -699,4 +700,85 @@ pub struct HookRuntimeState {
 pub enum HookNoOpReason {
     Disabled,
     AttributionOnlyCommitMsgMode,
+}
+
+/// Post-commit patch data captured from git for intersection flows.
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PostCommitPatchData {
+    pub commit_oid: String,
+    pub commit_time_ms: i64,
+    pub parsed_patch: ParsedPatch,
+}
+
+/// Capture the current commit's patch from git and parse it for intersection.
+///
+/// This is the T03 seam that obtains the current commit patch from git
+/// during `sce hooks post-commit` and parses it as the intersection target patch.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - git command invocation fails
+/// - commit OID cannot be captured
+/// - commit timestamp cannot be captured or parsed
+/// - the patch text is malformed and cannot be parsed
+#[allow(dead_code)]
+pub fn capture_post_commit_patch_from_git(repository_root: &Path) -> Result<PostCommitPatchData> {
+    let commit_oid = capture_head_oid_from_git(repository_root)?;
+    let commit_time_ms = capture_head_timestamp_from_git(repository_root)?;
+    let patch_text = capture_head_patch_from_git(repository_root)?;
+    let parsed_patch = parse_patch_from_text(&patch_text).map_err(|e| {
+        anyhow!(post_commit_patch_error(
+            "failed to parse post-commit patch",
+            &e.to_string()
+        ))
+    })?;
+
+    Ok(PostCommitPatchData {
+        commit_oid,
+        commit_time_ms,
+        parsed_patch,
+    })
+}
+
+#[allow(dead_code)]
+fn capture_head_oid_from_git(repository_root: &Path) -> Result<String> {
+    let output = run_git_command_capture_stdout(
+        repository_root,
+        &["rev-parse", "HEAD"],
+        "Failed to capture HEAD commit OID from git.",
+    )?;
+    Ok(output.trim().to_string())
+}
+
+#[allow(dead_code)]
+fn capture_head_timestamp_from_git(repository_root: &Path) -> Result<i64> {
+    let output = run_git_command_capture_stdout(
+        repository_root,
+        &["show", "--format=%at", "--no-patch", "HEAD"],
+        "Failed to capture HEAD commit timestamp from git.",
+    )?;
+    let timestamp_str = output.trim();
+    let timestamp_ms: i64 = timestamp_str.parse().map_err(|_| {
+        anyhow!(post_commit_patch_error(
+            "failed to parse HEAD timestamp",
+            timestamp_str,
+        ))
+    })?;
+    Ok(timestamp_ms)
+}
+
+#[allow(dead_code)]
+fn capture_head_patch_from_git(repository_root: &Path) -> Result<String> {
+    run_git_command_capture_stdout(
+        repository_root,
+        &["show", "--format=", "--patch", "--no-ext-diff", "HEAD"],
+        "Failed to capture HEAD patch from git.",
+    )
+}
+
+#[allow(dead_code)]
+fn post_commit_patch_error(detail: &str, context: &str) -> String {
+    format!("Post-commit patch capture error: {detail} ({context}).")
 }

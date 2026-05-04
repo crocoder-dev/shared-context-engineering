@@ -65,12 +65,16 @@ The command remains under the existing `sce hooks` surface. The detailed compari
   - Evidence: `nix develop -c sh -c 'cd cli && cargo test agent_trace_db'` was blocked by repository bash policy favoring `nix flake check`; `nix develop -c sh -c 'cd cli && cargo check'` passed; `nix flake check` passed after formatting and clippy/test fixes.
   - Notes: Added shared `TursoDb::query_map`, a cutoff-filtered chronological `diff_traces` read helper, typed parsed/skipped result structs with loaded/skipped counts, deterministic parse-error skip reasons, and focused DB-backed tests for cutoff filtering/order plus invalid-row skipping.
 
-- [ ] T03: `Capture and parse the post-commit git patch` (status:todo)
+- [x] T03: `Capture and parse the post-commit git patch` (status:done)
   - Task ID: T03
   - Goal: Add a thin hook/service seam that obtains the current commit patch from git during `sce hooks post-commit` and parses it as the intersection target patch.
   - Boundaries (in/out of scope): In — git command invocation through existing CLI capability/process patterns, commit identifier and timestamp capture needed for DB metadata, post-commit patch parsing through `parse_patch`, deterministic runtime errors for missing git data or malformed current commit patches, focused tests using test seams. Out — recent DB patch combine/intersection, intersection persistence, unrelated hook subcommands, and changes to setup-installed hook templates unless needed for the existing post-commit hook to invoke the same subcommand.
   - Done when: The post-commit flow can produce a parsed `post_commit_patch` and commit metadata for the current `HEAD`; malformed or unavailable current commit patches fail with actionable runtime errors; stdout/stderr contracts remain stable.
   - Verification notes (commands or checks): Targeted Rust tests for git-output parsing/seams if introduced; `nix develop -c sh -c 'cd cli && cargo check'`; manual code review that git invocation is deterministic and does not read unrelated working tree state.
+  - Completed: 2026-05-04
+  - Files changed: `cli/src/services/hooks/mod.rs`
+  - Evidence: `nix flake check` passed. Added `PostCommitPatchData` struct and `capture_post_commit_patch_from_git` function that captures HEAD OID, timestamp, and patch via git commands, then parses through `parse_patch`. Helper functions use existing `run_git_command_capture_stdout` pattern. Code marked `#[allow(dead_code)]` since seam will be consumed by T04.
+  - Notes: Service seam created with commit OID, timestamp (Unix ms), and parsed patch return. Error messages follow existing hook error patterns. T04 will wire this into the post-commit hook flow.
 
 - [ ] T04: `Combine recent patches, intersect, and persist from post-commit` (status:todo)
   - Task ID: T04
