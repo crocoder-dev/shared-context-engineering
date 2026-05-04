@@ -715,16 +715,6 @@ fn pre_commit_no_op_reason(runtime: &HookRuntimeState) -> HookNoOpReason {
     }
 }
 
-#[allow(dead_code)]
-fn post_commit_no_op_reason(runtime: &HookRuntimeState) -> HookNoOpReason {
-    if runtime.sce_disabled {
-        HookNoOpReason::Disabled
-    } else {
-        HookNoOpReason::AttributionOnlyCommitMsgMode
-    }
-}
-
-#[allow(dead_code)]
 fn post_rewrite_no_op_reason(runtime: &HookRuntimeState) -> HookNoOpReason {
     if runtime.sce_disabled {
         HookNoOpReason::Disabled
@@ -790,7 +780,6 @@ pub struct PostCommitPatchData {
 /// - commit OID cannot be captured
 /// - commit timestamp cannot be captured or parsed
 /// - the patch text is malformed and cannot be parsed
-#[allow(dead_code)]
 pub fn capture_post_commit_patch_from_git(repository_root: &Path) -> Result<PostCommitPatchData> {
     let commit_oid = capture_head_oid_from_git(repository_root)?;
     let commit_time_ms = capture_head_timestamp_from_git(repository_root)?;
@@ -809,7 +798,6 @@ pub fn capture_post_commit_patch_from_git(repository_root: &Path) -> Result<Post
     })
 }
 
-#[allow(dead_code)]
 fn capture_head_oid_from_git(repository_root: &Path) -> Result<String> {
     let output = run_git_command_capture_stdout(
         repository_root,
@@ -819,7 +807,6 @@ fn capture_head_oid_from_git(repository_root: &Path) -> Result<String> {
     Ok(output.trim().to_string())
 }
 
-#[allow(dead_code)]
 fn capture_head_timestamp_from_git(repository_root: &Path) -> Result<i64> {
     let output = run_git_command_capture_stdout(
         repository_root,
@@ -836,7 +823,6 @@ fn capture_head_timestamp_from_git(repository_root: &Path) -> Result<i64> {
     Ok(timestamp_ms)
 }
 
-#[allow(dead_code)]
 fn capture_head_patch_from_git(repository_root: &Path) -> Result<String> {
     run_git_command_capture_stdout(
         repository_root,
@@ -845,7 +831,6 @@ fn capture_head_patch_from_git(repository_root: &Path) -> Result<String> {
     )
 }
 
-#[allow(dead_code)]
 fn post_commit_patch_error(detail: &str, context: &str) -> String {
     format!("Post-commit patch capture error: {detail} ({context}).")
 }

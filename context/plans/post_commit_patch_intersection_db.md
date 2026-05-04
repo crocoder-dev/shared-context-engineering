@@ -87,19 +87,53 @@ The command remains under the existing `sce hooks` surface. The detailed compari
   - Evidence: `nix flake check` passed. Added `run_post_commit_intersection_flow` function that wires T03 seam (capture_post_commit_patch_from_git), T02 helper (AgentTraceDb::recent_diff_trace_patches), `patch::combine_patches`, `patch::intersect_patches`, and T01 helper (insert_post_commit_patch_intersection). Handles empty recent set (produces empty intersection) and tracks loaded/skipped counts for metadata. Removed no-op behavior from post-commit hook.
   - Notes: Empty recent patch set produces deterministic empty intersection result via `combine_patches([])`; error handling follows existing hook patterns. Requires T05 context sync to mark post-commit no longer a no-op.
 
-- [ ] T05: `Sync context for active post-commit intersection behavior` (status:todo)
+- [x] T05: `Sync context for active post-commit intersection behavior` (status:done)
   - Task ID: T05
   - Goal: Update durable context so future sessions know `sce hooks post-commit` actively captures current commit patches, compares them with combined recent DB patches, and persists intersection patches in AgentTraceDb.
   - Boundaries (in/out of scope): In — focused updates to `context/sce/agent-trace-hooks-command-routing.md`, `context/sce/agent-trace-db.md`, `context/cli/patch-service.md` if wiring status changes, `context/overview.md`/`context/glossary.md`/`context/context-map.md` only if needed for current-state accuracy. Out — prose-heavy historical summaries, completed-work narration in root context, and unrelated context churn.
   - Done when: Context no longer describes `post-commit` as a no-op; Agent Trace DB docs include the new intersection-results table and runtime writer; patch-service docs mention runtime consumption of `combine_patches`/`intersect_patches` by the post-commit Agent Trace flow; root context remains current-state oriented.
   - Verification notes (commands or checks): Review the listed context files against code truth; `nix run .#pkl-check-generated` if generated-owned surfaces were touched or as parity confirmation.
+  - Completed: 2026-05-04
+  - Files changed: `context/cli/patch-service.md`, `context/context-map.md`, `context/sce/agent-trace-post-commit-dual-write.md`
+  - Evidence: `nix run .#pkl-check-generated` passed (no generated-owned surfaces touched). Verified `context/sce/agent-trace-hooks-command-routing.md` and `context/sce/agent-trace-db.md` already correct; three files updated to reflect wired runtime: patch-service.md (removed "not yet wired" for intersect_patches/combine_patches, added runtime wiring table), context-map.md (corrected post-commit from no-op to active intersection entrypoint), agent-trace-post-commit-dual-write.md (updated historical reference to reflect post-commit no longer a no-op). Root context verified: overview.md, glossary.md already describe active post-commit behavior.
+  - Notes: `context/sce/agent-trace-hooks-command-routing.md` and `context/sce/agent-trace-db.md` were already correctly updated by prior tasks and required no changes. `context/overview.md` and `context/glossary.md` root context files were verify-only (already current-state accurate).
 
-- [ ] T06: `Final validation and cleanup` (status:todo)
+- [x] T06: `Final validation and cleanup` (status:done)
   - Task ID: T06
   - Goal: Run full validation, remove temporary scaffolding, and record evidence that all success criteria are satisfied.
   - Boundaries (in/out of scope): In — full repo validation, generated-output parity check, cleanup of temporary files/artifacts introduced during implementation, final plan evidence update. Out — new behavior changes beyond fixing validation failures in the implemented scope.
   - Done when: `nix flake check` passes; `nix run .#pkl-check-generated` passes if applicable or as final parity confirmation; temporary scaffolding is removed; context accurately describes the final runtime; this plan records validation evidence for each success criterion.
   - Verification notes (commands or checks): `nix flake check`; `nix run .#pkl-check-generated`; any targeted checks needed to verify fixes for failures found during final validation.
+  - Completed: 2026-05-04
+  - Files changed: `cli/src/services/hooks/mod.rs` (removed dead `post_commit_no_op_reason` function, removed unnecessary `#[allow(dead_code)]` from T03/T04 seam functions), `cli/src/services/hooks/command.rs` (removed unnecessary `#[allow(dead_code)]`), `cli/src/services/agent_trace_db/mod.rs` (removed unnecessary `#![allow(dead_code)]`)
+  - Evidence: `nix flake check` passed (all 4 checks: cli-tests, cli-clippy, cli-fmt, pkl-parity); `nix run .#pkl-check-generated` passed ("Generated outputs are up to date"). Temporary scaffolding removed: post-commit-no-op-reason dead code eliminated, all now-wired T03/T04 seam `#[allow(dead_code)]` annotations removed, module-level dead-code allowance in agent_trace_db removed, `make_hooks_command` dead-code allowance in hooks/command.rs removed. All 10 success criteria verified: (1) post-commit captures git patch - wired T04; (2) parsed as target-shaped patch - wired T04; (3) Agent Trace DB queries last 7 days - T02; (4) unparsable rows skipped - T02; (5) recent patches combined chronologically - T04; (6) intersect_patches used - T04; (7) persisted to new table - T01; (8) metadata recorded - T01; (9) existing diff-trace unchanged - verified by passing tests; (10) nix flake check passes - confirmed.
+  - Notes: This was the final plan task. All 6 tasks complete. Context sync run follows.
+
+## Validation Report
+
+### Commands run
+- `nix flake check` -> exit 0 (all 4 checks passed: cli-tests, cli-clippy, cli-fmt, pkl-parity)
+- `nix run .#pkl-check-generated` -> exit 0 ("Generated outputs are up to date")
+- Scaffolding removed: `#[allow(dead_code)]` annotations from 9 now-wired sites in `hooks/mod.rs`, `hooks/command.rs`, and `agent_trace_db/mod.rs`; removed dead `post_commit_no_op_reason` function
+- Context drift fixed: `context/architecture.md` line 117 corrected from "post-commit is a no-op" to "post-commit is an active intersection entrypoint"
+
+### Success-criteria verification
+
+| # | Criterion | Evidence |
+|---|---|---|
+| 1 | `sce hooks post-commit` captures git patch (no longer a no-op) | T04 wired `capture_post_commit_patch_from_git` into `run_post_commit_intersection_flow`; `nix flake check` passes confirming compilation and tests |
+| 2 | Post-commit patch parsed through existing patch service | `capture_post_commit_patch_from_git` calls `parse_patch_from_text` (T03); target-shaped for intersection output (T04) |
+| 3 | Agent Trace DB queries `diff_traces` from last 7 days by `time_ms` | `recent_diff_trace_patches(cutoff_time_ms)` in `agent_trace_db/mod.rs` (T02) |
+| 4 | Unparsable recent DB rows skipped with deterministic warnings | `parse_recent_diff_trace_patch_rows` returns `SkippedDiffTracePatch` with reason (T02) |
+| 5 | Valid recent DB patches combined with `patch::combine_patches` in chronological order | `run_post_commit_intersection_flow` calls `combine_patches_fn(&recent_patches_slice)` (T04) |
+| 6 | Intersection uses `patch::intersect_patches(&combined, &post_commit)` | `run_post_commit_intersection_flow` calls `intersect_patches_fn(&combined_recent_patch, &post_commit_data.parsed_patch)` (T04) |
+| 7 | Intersection persisted to new `post_commit_patch_intersections` table | `insert_post_commit_patch_intersection` helper writes to dedicated table (T01) |
+| 8 | Metadata includes commit OID, timestamps, loaded/skipped counts, serialized patch | `PostCommitPatchIntersectionInsert` carries all fields (T01) |
+| 9 | Existing `sce hooks diff-trace` behavior unchanged | All flake checks pass including cli-tests |
+| 10 | `nix flake check` passes | Confirmed exit 0 in this task |
+
+### Residual risks
+- None identified. All 6 plan tasks are complete with passing validation.
 
 ## Open questions
 
