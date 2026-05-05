@@ -11,7 +11,7 @@ use serde::Serialize;
 use serde_json::{json, to_string as serialize_to_json, Value};
 
 use crate::services::agent_trace_db::{
-    AgentTraceDb, DiffTraceInsert, PostCommitPatchIntersectionInsert,
+    AgentTraceDb, DiffTraceInsert, PostCommitPatchIntersectionInsert, RecentDiffTracePatches,
 };
 use crate::services::config;
 use crate::services::observability::traits::Logger;
@@ -439,18 +439,45 @@ fn run_post_commit_subcommand(repository_root: &Path) -> Result<String> {
 const RECENT_DAYS_MILLIS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 fn run_post_commit_intersection_flow(repository_root: &Path) -> Result<String> {
-    let post_commit_data = capture_post_commit_patch_from_git(repository_root)?;
-
-    let now_ms = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())
-        .context("Current time exceeds i64 range for post-commit intersection.")?;
-    let cutoff_ms = now_ms - RECENT_DAYS_MILLIS;
-
     let db = AgentTraceDb::new()
         .context("Failed to open Agent Trace DB for post-commit intersection.")?;
 
-    let recent_patches = db
-        .recent_diff_trace_patches(cutoff_ms, now_ms)
-        .context("Failed to query recent diff trace patches.")?;
+    run_post_commit_intersection_flow_with(
+        repository_root,
+        capture_post_commit_patch_from_git,
+        current_unix_time_ms,
+        |cutoff_ms, end_ms| {
+            db.recent_diff_trace_patches(cutoff_ms, end_ms)
+                .context("Failed to query recent diff trace patches.")
+        },
+        |insert_input| {
+            db.insert_post_commit_patch_intersection(insert_input)
+                .context("Failed to persist post-commit patch intersection.")?;
+
+            Ok(())
+        },
+    )
+}
+
+fn run_post_commit_intersection_flow_with<C, N, Q, P>(
+    repository_root: &Path,
+    capture_post_commit_patch: C,
+    now_ms: N,
+    query_recent_patches: Q,
+    persist_intersection: P,
+) -> Result<String>
+where
+    C: FnOnce(&Path) -> Result<PostCommitPatchData>,
+    N: FnOnce() -> Result<i64>,
+    Q: FnOnce(i64, i64) -> Result<RecentDiffTracePatches>,
+    P: for<'a> FnOnce(PostCommitPatchIntersectionInsert<'a>) -> Result<()>,
+{
+    let post_commit_data = capture_post_commit_patch(repository_root)?;
+
+    let now_ms = now_ms()?;
+    let cutoff_ms = now_ms - RECENT_DAYS_MILLIS;
+
+    let recent_patches = query_recent_patches(cutoff_ms, now_ms)?;
 
     #[allow(clippy::cast_possible_wrap)]
     let loaded_count = recent_patches.loaded_count() as i64;
@@ -481,8 +508,7 @@ fn run_post_commit_intersection_flow(repository_root: &Path) -> Result<String> {
         intersection_patch: &serialized_intersection,
     };
 
-    db.insert_post_commit_patch_intersection(insert_input)
-        .context("Failed to persist post-commit patch intersection.")?;
+    persist_intersection(insert_input)?;
 
     Ok(format!(
         "post-commit hook processed intersection: commit={}, loaded={}, skipped={}, intersection_files={}",
@@ -491,6 +517,11 @@ fn run_post_commit_intersection_flow(repository_root: &Path) -> Result<String> {
         skipped_count,
         intersection_patch.files.len()
     ))
+}
+
+fn current_unix_time_ms() -> Result<i64> {
+    i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())
+        .context("Current time exceeds i64 range for post-commit intersection.")
 }
 
 fn run_post_commit_subcommand_with_trace(repository_root: &Path) -> Result<String> {
@@ -822,4 +853,114 @@ fn capture_head_patch_from_git(repository_root: &Path) -> Result<String> {
 
 fn post_commit_patch_error(detail: &str, context: &str) -> String {
     format!("Post-commit patch capture error: {detail} ({context}).")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::RefCell, path::Path};
+
+    use super::*;
+    use crate::services::agent_trace_db::{ParsedDiffTracePatch, SkippedDiffTracePatch};
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct CapturedPostCommitIntersectionInsert {
+        commit_id: String,
+        post_commit_time_ms: i64,
+        recent_window_cutoff_ms: i64,
+        recent_window_end_ms: i64,
+        loaded_diff_trace_count: i64,
+        skipped_diff_trace_count: i64,
+        intersection_patch: String,
+    }
+
+    fn valid_patch(path: &str, content: &str) -> ParsedPatch {
+        let patch_text = format!(
+            "Index: {path}\n===================================================================\n--- {path}\n+++ {path}\n@@ -0,0 +1,1 @@\n+{content}\n"
+        );
+
+        parse_patch_from_text(&patch_text).expect("test patch should parse")
+    }
+
+    #[test]
+    fn post_commit_intersection_flow_uses_same_window_end_for_query_and_persistence() {
+        let now_ms = 1_800_000_000_000_i64;
+        let commit_time_ms = now_ms - 1_000;
+        let expected_cutoff_ms = now_ms - RECENT_DAYS_MILLIS;
+        let query_window = RefCell::new(None);
+        let persisted = RefCell::new(None);
+
+        let output = run_post_commit_intersection_flow_with(
+            Path::new("/repo"),
+            |_| {
+                Ok(PostCommitPatchData {
+                    commit_oid: String::from("abc123"),
+                    commit_time_ms,
+                    parsed_patch: valid_patch("src/lib.rs", "shared line"),
+                })
+            },
+            || Ok(now_ms),
+            |cutoff_ms, end_ms| {
+                *query_window.borrow_mut() = Some((cutoff_ms, end_ms));
+
+                Ok(RecentDiffTracePatches {
+                    patches: vec![ParsedDiffTracePatch {
+                        id: 7,
+                        time_ms: now_ms - 500,
+                        session_id: String::from("valid-session"),
+                        patch: valid_patch("src/lib.rs", "shared line"),
+                    }],
+                    skipped: vec![SkippedDiffTracePatch {
+                        id: 8,
+                        time_ms: now_ms - 250,
+                        session_id: String::from("malformed-session"),
+                        reason: String::from("invalid hunk header"),
+                    }],
+                })
+            },
+            |insert_input| {
+                *persisted.borrow_mut() = Some(CapturedPostCommitIntersectionInsert {
+                    commit_id: insert_input.commit_id.to_string(),
+                    post_commit_time_ms: insert_input.post_commit_time_ms,
+                    recent_window_cutoff_ms: insert_input.recent_window_cutoff_ms,
+                    recent_window_end_ms: insert_input.recent_window_end_ms,
+                    loaded_diff_trace_count: insert_input.loaded_diff_trace_count,
+                    skipped_diff_trace_count: insert_input.skipped_diff_trace_count,
+                    intersection_patch: insert_input.intersection_patch.to_string(),
+                });
+
+                Ok(())
+            },
+        )
+        .expect("post-commit intersection flow should succeed");
+
+        assert_eq!(
+            query_window.into_inner(),
+            Some((expected_cutoff_ms, now_ms))
+        );
+
+        let persisted = persisted
+            .into_inner()
+            .expect("intersection row should be persisted");
+        assert_eq!(persisted.commit_id, "abc123");
+        assert_eq!(persisted.post_commit_time_ms, commit_time_ms);
+        assert_eq!(persisted.recent_window_cutoff_ms, expected_cutoff_ms);
+        assert_eq!(persisted.recent_window_end_ms, now_ms);
+        assert_eq!(persisted.loaded_diff_trace_count, 1);
+        assert_eq!(persisted.skipped_diff_trace_count, 1);
+
+        let intersection: ParsedPatch = serde_json::from_str(&persisted.intersection_patch)
+            .expect("persisted intersection patch should deserialize");
+        assert_eq!(intersection.files.len(), 1);
+        assert_eq!(intersection.files[0].new_path, "src/lib.rs");
+        assert_eq!(intersection.files[0].hunks[0].lines.len(), 1);
+        assert_eq!(
+            intersection.files[0].hunks[0].lines[0].content,
+            "shared line"
+        );
+
+        assert_eq!(
+            output,
+            "post-commit hook processed intersection: commit=abc123, loaded=1, skipped=1, intersection_files=1"
+        );
+    }
 }

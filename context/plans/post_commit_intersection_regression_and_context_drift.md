@@ -44,12 +44,16 @@ This plan treats the code in `cli/src/services/hooks/mod.rs` and `cli/src/servic
   - Evidence: Added DB-backed regression test `recent_diff_trace_patches_applies_bounded_window_ordering_and_parse_accounting`; direct targeted `cargo test` was blocked by the repository bash policy favoring `nix flake check`; `nix develop -c sh -c 'cd cli && cargo fmt'` passed; `nix flake check` passed after exercising the new test through `checks.x86_64-linux.cli-tests`.
   - Notes: Test uses deterministic inserted `diff_traces` rows to cover inclusive lower/upper bounds, `time_ms ASC, id ASC` ordering, raw patch parsing, malformed-row skip accounting, and loaded/skipped counts without wall-clock timing.
 
-- [ ] T02: `Cover post-commit intersection window orchestration` (status:todo)
+- [x] T02: `Cover post-commit intersection window orchestration` (status:done)
   - Task ID: T02
   - Goal: Add direct regression coverage or a minimal injectable seam for `run_post_commit_intersection_flow` so the post-commit window and persistence orchestration are tested directly.
   - Boundaries (in/out of scope): In — private/internal test seam if needed for current time, git patch capture, recent patch query, and persistence; tests that assert the same `now_ms` value is used as the query end bound and persisted `recent_window_end_ms`; tests for combine/intersect/persist count behavior on valid and skipped recent rows. Out — DB query row-handling tests already covered by T01, changing hook CLI output semantics beyond codifying current behavior, changing installed hook templates, broad dependency-injection refactors.
   - Done when: Tests would catch the prior timestamp/window bug class by failing if the query end bound and persisted window end diverge or if future rows can be included in the post-commit comparison; orchestration still reports deterministic loaded/skipped/intersection file counts.
   - Verification notes (commands or checks): Run the narrowest Nix-wrapped Rust test that covers hooks post-commit orchestration if practical, then `nix flake check`; review that new seams remain tightly scoped and do not expose unnecessary public API.
+  - Completed: 2026-05-05
+  - Files changed: `cli/src/services/hooks/mod.rs`
+  - Evidence: Added private/internal `run_post_commit_intersection_flow_with` seam and focused regression test `post_commit_intersection_flow_uses_same_window_end_for_query_and_persistence`; direct targeted `cargo test` was blocked by the repository bash policy favoring `nix flake check`; `nix develop -c sh -c 'cd cli && cargo fmt'` passed; `nix flake check` passed after exercising the new test through `checks.x86_64-linux.cli-tests`.
+  - Notes: Test injects deterministic `now_ms`, captures the queried `(cutoff_ms, end_ms)` window, captures persisted intersection metadata, and asserts loaded/skipped counts plus one intersected file without changing public hook CLI output semantics.
 
 - [ ] T03: `Repair stale Agent Trace docs and SQL comment` (status:todo)
   - Task ID: T03
