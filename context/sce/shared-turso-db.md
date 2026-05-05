@@ -13,7 +13,7 @@
   - Turso local database open/connect flow
   - parent-directory creation
   - synchronous `execute()`, `query()`, and row-mapping `query_map()` wrappers
-  - generic embedded migration execution through `run_migrations()`
+  - generic embedded migration execution through `run_migrations()` with per-database `__sce_migrations` metadata
 - Shared lifecycle helpers:
   - `collect_db_path_health()` emits common parent/path health problems for DB-backed services.
   - `bootstrap_db_parent()` creates the resolved DB parent directory for repair/setup flows.
@@ -26,5 +26,11 @@ The shared module is exported from `cli/src/services/mod.rs` and compile-checked
 - `cli/src/services/agent_trace_db/mod.rs`: `AgentTraceDb = TursoDb<AgentTraceDbSpec>`, with `AgentTraceDbSpec` resolving `agent_trace_db_path()` and loading ordered Agent Trace migrations for `diff_traces` and `post_commit_patch_intersections`.
 
 Both database wrappers now have lifecycle providers. `lifecycle_providers(include_hooks)` registers database providers in order `LocalDbLifecycle` → `AgentTraceDbLifecycle` before optional hooks, so setup initializes both databases and doctor diagnoses/fixes both canonical DB paths.
+
+## Migration metadata
+
+`TursoDb<M>::run_migrations()` creates a service-local `__sce_migrations` table before applying migrations. Each migration is skipped only when its ID is already recorded in that table; otherwise the SQL is executed and the ID is recorded after success.
+
+Existing databases created before migration metadata are upgraded by re-applying the current idempotent migration list and recording each migration ID. This lets later `sce setup` / lifecycle initialization runs apply migrations added after the database file already existed, including Agent Trace DB schema/index additions.
 
 See also: [local-db.md](local-db.md), [agent-trace-db.md](agent-trace-db.md), [overview.md](../overview.md), [architecture.md](../architecture.md), [glossary.md](../glossary.md)

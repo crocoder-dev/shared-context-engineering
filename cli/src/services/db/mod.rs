@@ -16,6 +16,13 @@ use crate::services::lifecycle::{
     HealthCategory, HealthFixability, HealthProblem, HealthProblemKind, HealthSeverity,
 };
 
+const MIGRATIONS_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS __sce_migrations (
+    id TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+)";
+const SELECT_MIGRATION_SQL: &str = "SELECT id FROM __sce_migrations WHERE id = ?1 LIMIT 1";
+const INSERT_MIGRATION_SQL: &str = "INSERT INTO __sce_migrations (id) VALUES (?1)";
+
 /// Service-specific Turso database configuration.
 #[allow(dead_code)]
 pub trait DbSpec {
@@ -264,18 +271,76 @@ impl<M: DbSpec> TursoDb<M> {
 
     /// Run all embedded migrations in order.
     ///
-    /// Migrations that use idempotent SQL such as `CREATE TABLE IF NOT EXISTS`
-    /// are safe to re-run.
+    /// Applied migration IDs are recorded in `__sce_migrations` so later
+    /// initializations apply only migrations that were not already recorded.
+    /// Existing databases without migration metadata are brought forward by
+    /// re-applying the current idempotent migration set and recording each ID.
     pub fn run_migrations(&self) -> Result<()> {
+        self.ensure_migrations_table()?;
+
         for (id, sql) in M::migrations() {
-            self.runtime.block_on(async {
-                self.conn
-                    .execute(sql, ())
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{} migration {id} failed: {e}", M::db_name()))
-            })?;
+            if self.is_migration_applied(id)? {
+                continue;
+            }
+
+            self.apply_migration(id, sql)?;
         }
 
         Ok(())
+    }
+
+    fn ensure_migrations_table(&self) -> Result<()> {
+        self.runtime.block_on(async {
+            self.conn
+                .execute(MIGRATIONS_TABLE_SQL, ())
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("{} migration metadata setup failed: {e}", M::db_name())
+                })
+        })?;
+
+        Ok(())
+    }
+
+    fn is_migration_applied(&self, id: &str) -> Result<bool> {
+        self.runtime.block_on(async {
+            let mut rows = self
+                .conn
+                .query(SELECT_MIGRATION_SQL, (id,))
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "{} migration metadata query failed for {id}: {e}",
+                        M::db_name()
+                    )
+                })?;
+
+            rows.next().await.map(|row| row.is_some()).map_err(|e| {
+                anyhow::anyhow!(
+                    "{} migration metadata row fetch failed for {id}: {e}",
+                    M::db_name()
+                )
+            })
+        })
+    }
+
+    fn apply_migration(&self, id: &str, sql: &str) -> Result<()> {
+        self.runtime.block_on(async {
+            self.conn
+                .execute(sql, ())
+                .await
+                .map_err(|e| anyhow::anyhow!("{} migration {id} failed: {e}", M::db_name()))?;
+            self.conn
+                .execute(INSERT_MIGRATION_SQL, (id,))
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "{} migration metadata record failed for {id}: {e}",
+                        M::db_name()
+                    )
+                })?;
+
+            Ok(())
+        })
     }
 }

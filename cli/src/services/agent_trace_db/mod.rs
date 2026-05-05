@@ -252,6 +252,7 @@ mod tests {
     use super::*;
 
     static TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
+    static UPGRADE_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
 
     struct TestAgentTraceDbSpec;
 
@@ -265,6 +266,44 @@ mod tests {
                 .get()
                 .cloned()
                 .context("test DB path should be initialized")
+        }
+
+        fn migrations() -> &'static [(&'static str, &'static str)] {
+            AGENT_TRACE_MIGRATIONS
+        }
+    }
+
+    struct LegacyAgentTraceDbSpec;
+
+    impl DbSpec for LegacyAgentTraceDbSpec {
+        fn db_name() -> &'static str {
+            "legacy test agent trace DB"
+        }
+
+        fn db_path() -> Result<PathBuf> {
+            UPGRADE_TEST_DB_PATH
+                .get()
+                .cloned()
+                .context("upgrade test DB path should be initialized")
+        }
+
+        fn migrations() -> &'static [(&'static str, &'static str)] {
+            &[("001_create_diff_traces", CREATE_DIFF_TRACES_MIGRATION)]
+        }
+    }
+
+    struct UpgradedAgentTraceDbSpec;
+
+    impl DbSpec for UpgradedAgentTraceDbSpec {
+        fn db_name() -> &'static str {
+            "upgraded test agent trace DB"
+        }
+
+        fn db_path() -> Result<PathBuf> {
+            UPGRADE_TEST_DB_PATH
+                .get()
+                .cloned()
+                .context("upgrade test DB path should be initialized")
         }
 
         fn migrations() -> &'static [(&'static str, &'static str)] {
@@ -306,6 +345,26 @@ mod tests {
             },
         )
         .expect("diff trace insert should succeed");
+    }
+
+    fn sqlite_object_exists<M: DbSpec>(db: &TursoDb<M>, object_type: &str, name: &str) -> bool {
+        let rows = db
+            .query_map(
+                "SELECT name FROM sqlite_master WHERE type = ?1 AND name = ?2",
+                (object_type, name),
+                |row| row.get::<String>(0).map_err(Into::into),
+            )
+            .expect("sqlite_master query should succeed");
+        !rows.is_empty()
+    }
+
+    fn applied_migration_ids<M: DbSpec>(db: &TursoDb<M>) -> Vec<String> {
+        db.query_map(
+            "SELECT id FROM __sce_migrations ORDER BY id ASC",
+            (),
+            |row| row.get::<String>(0).map_err(Into::into),
+        )
+        .expect("migration metadata query should succeed")
     }
 
     #[test]
@@ -377,6 +436,59 @@ mod tests {
         );
 
         drop(db);
+        if let Some(parent) = db_path.parent() {
+            fs::remove_dir_all(parent).expect("test DB directory should be removed");
+        }
+    }
+
+    #[test]
+    fn new_applies_later_agent_trace_migrations_to_existing_database() {
+        let db_path = unique_test_db_path();
+        UPGRADE_TEST_DB_PATH
+            .set(db_path.clone())
+            .expect("upgrade test DB path should only be initialized once");
+
+        {
+            let legacy_db =
+                TursoDb::<LegacyAgentTraceDbSpec>::new().expect("legacy DB should open");
+            assert!(sqlite_object_exists(&legacy_db, "table", "diff_traces"));
+            assert!(!sqlite_object_exists(
+                &legacy_db,
+                "table",
+                "post_commit_patch_intersections"
+            ));
+            assert!(!sqlite_object_exists(
+                &legacy_db,
+                "index",
+                "idx_diff_traces_time_ms_id"
+            ));
+        }
+
+        {
+            let upgraded_db =
+                TursoDb::<UpgradedAgentTraceDbSpec>::new().expect("upgraded DB should open");
+
+            assert!(sqlite_object_exists(&upgraded_db, "table", "diff_traces"));
+            assert!(sqlite_object_exists(
+                &upgraded_db,
+                "table",
+                "post_commit_patch_intersections"
+            ));
+            assert!(sqlite_object_exists(
+                &upgraded_db,
+                "index",
+                "idx_diff_traces_time_ms_id"
+            ));
+            assert_eq!(
+                applied_migration_ids(&upgraded_db),
+                vec![
+                    "001_create_diff_traces",
+                    "002_create_post_commit_patch_intersections",
+                    "003_add_diff_traces_time_ms_id_index",
+                ]
+            );
+        }
+
         if let Some(parent) = db_path.parent() {
             fs::remove_dir_all(parent).expect("test DB directory should be removed");
         }

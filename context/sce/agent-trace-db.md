@@ -35,6 +35,8 @@ The Agent Trace DB path is resolved from the shared default-path catalog:
 - `002_create_post_commit_patch_intersections.sql`
 - `003_add_diff_traces_time_ms_id_index.sql`
 
+The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::new()` applies later Agent Trace migrations to an already-created `~/.local/state/sce/agent-trace.db`.
+
 The `diff_traces` migration creates:
 
 - `id INTEGER PRIMARY KEY AUTOINCREMENT`
@@ -61,7 +63,7 @@ The post-commit intersection migration creates `post_commit_patch_intersections`
  
 - `diagnose()` reports canonical Agent Trace DB path and parent-directory readiness problems through the shared DB path-health helper.
 - `fix()` can bootstrap the canonical Agent Trace DB parent directory for auto-fixable parent-readiness problems.
-- `setup()` initializes the database with `AgentTraceDb::new()`, including the `diff_traces` and post-commit intersection migrations.
+- `setup()` initializes the database with `AgentTraceDb::new()`, including all ordered Agent Trace migrations and any later migrations not yet recorded in `__sce_migrations`.
 - `sce doctor` now surfaces Agent Trace DB health as a row within the `Configuration` section with `[PASS]`/`[FAIL]`/`[MISS]` status tokens (e.g., `Agent Trace DB (/path/to/agent-trace.db)`), and includes it in JSON output under the `agent_trace_db` field.
 
 ## Runtime writers
