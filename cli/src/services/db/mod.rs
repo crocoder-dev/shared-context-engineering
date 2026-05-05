@@ -252,7 +252,10 @@ impl<M: DbSpec> TursoDb<M> {
                 .await
                 .map_err(|e| anyhow::anyhow!("{} row fetch failed: {sql}: {e}", M::db_name()))?
             {
-                results.push(map_row(&row)?);
+                results.push(
+                    map_row(&row)
+                        .with_context(|| format!("{} row mapping failed: {sql}", M::db_name()))?,
+                );
             }
 
             Ok(results)

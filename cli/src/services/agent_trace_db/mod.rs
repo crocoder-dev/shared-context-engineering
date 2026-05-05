@@ -38,7 +38,7 @@ pub const INSERT_DIFF_TRACE_SQL: &str =
 /// Parameterized SQL for retrieving recent captured diff trace patches.
 pub const SELECT_RECENT_DIFF_TRACE_PATCHES_SQL: &str = "SELECT id, time_ms, session_id, patch
 FROM diff_traces
-WHERE time_ms >= ?1
+WHERE time_ms >= ?1 AND time_ms <= ?2
 ORDER BY time_ms ASC, id ASC";
 
 /// Parameterized SQL for inserting a post-commit patch intersection result.
@@ -152,9 +152,13 @@ impl AgentTraceDb {
         insert_post_commit_patch_intersection_with(self, input)
     }
 
-    /// Query and parse recent diff trace patches with `time_ms >= cutoff_time_ms`.
-    pub fn recent_diff_trace_patches(&self, cutoff_time_ms: i64) -> Result<RecentDiffTracePatches> {
-        recent_diff_trace_patches_with(self, cutoff_time_ms)
+    /// Query and parse recent diff trace patches within the inclusive time window.
+    pub fn recent_diff_trace_patches(
+        &self,
+        cutoff_time_ms: i64,
+        end_time_ms: i64,
+    ) -> Result<RecentDiffTracePatches> {
+        recent_diff_trace_patches_with(self, cutoff_time_ms, end_time_ms)
     }
 }
 
@@ -186,10 +190,11 @@ fn insert_post_commit_patch_intersection_with<M: DbSpec>(
 fn recent_diff_trace_patches_with<M: DbSpec>(
     db: &TursoDb<M>,
     cutoff_time_ms: i64,
+    end_time_ms: i64,
 ) -> Result<RecentDiffTracePatches> {
     let rows = db.query_map(
         SELECT_RECENT_DIFF_TRACE_PATCHES_SQL,
-        (cutoff_time_ms,),
+        (cutoff_time_ms, end_time_ms),
         diff_trace_patch_row_from_turso,
     )?;
 

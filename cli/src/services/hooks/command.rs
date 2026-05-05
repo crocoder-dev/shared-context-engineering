@@ -20,10 +20,7 @@ impl RuntimeCommand for HooksCommand {
     }
 }
 
-/// Construct a `HooksCommand` with a default pre-commit subcommand (used by the registry).
-///
-/// This default constructor is available for registry-based dispatch.
-/// The parse layer constructs `HooksCommand` with the user's chosen subcommand.
+/// Build the default hooks command for registry dispatch.
 pub fn make_hooks_command() -> RuntimeCommandHandle {
     Box::new(HooksCommand {
         subcommand: hooks::HookSubcommand::PreCommit,

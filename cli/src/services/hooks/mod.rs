@@ -438,12 +438,6 @@ fn run_post_commit_subcommand(repository_root: &Path) -> Result<String> {
 /// Duration for looking up recent diff traces: 7 days in milliseconds.
 const RECENT_DAYS_MILLIS: i64 = 7 * 24 * 60 * 60 * 1000;
 
-/// Run the post-commit intersection flow that:
-/// 1. Captures the post-commit patch from git
-/// 2. Queries recent diff traces from the past 7 days
-/// 3. Combines valid recent patches
-/// 4. Intersects with the post-commit patch
-/// 5. Persists the result to the database
 fn run_post_commit_intersection_flow(repository_root: &Path) -> Result<String> {
     let post_commit_data = capture_post_commit_patch_from_git(repository_root)?;
 
@@ -455,7 +449,7 @@ fn run_post_commit_intersection_flow(repository_root: &Path) -> Result<String> {
         .context("Failed to open Agent Trace DB for post-commit intersection.")?;
 
     let recent_patches = db
-        .recent_diff_trace_patches(cutoff_ms)
+        .recent_diff_trace_patches(cutoff_ms, now_ms)
         .context("Failed to query recent diff trace patches.")?;
 
     #[allow(clippy::cast_possible_wrap)]
@@ -768,18 +762,7 @@ pub struct PostCommitPatchData {
     pub parsed_patch: ParsedPatch,
 }
 
-/// Capture the current commit's patch from git and parse it for intersection.
-///
-/// This is the T03 seam that obtains the current commit patch from git
-/// during `sce hooks post-commit` and parses it as the intersection target patch.
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - git command invocation fails
-/// - commit OID cannot be captured
-/// - commit timestamp cannot be captured or parsed
-/// - the patch text is malformed and cannot be parsed
+/// Capture and parse the current commit patch.
 pub fn capture_post_commit_patch_from_git(repository_root: &Path) -> Result<PostCommitPatchData> {
     let commit_oid = capture_head_oid_from_git(repository_root)?;
     let commit_time_ms = capture_head_timestamp_from_git(repository_root)?;
@@ -810,11 +793,17 @@ fn capture_head_oid_from_git(repository_root: &Path) -> Result<String> {
 fn capture_head_timestamp_from_git(repository_root: &Path) -> Result<i64> {
     let output = run_git_command_capture_stdout(
         repository_root,
-        &["show", "--format=%at", "--no-patch", "HEAD"],
+        &["show", "--format=%ct", "--no-patch", "HEAD"],
         "Failed to capture HEAD commit timestamp from git.",
     )?;
     let timestamp_str = output.trim();
-    let timestamp_ms: i64 = timestamp_str.parse().map_err(|_| {
+    let timestamp_seconds: i64 = timestamp_str.parse().map_err(|_| {
+        anyhow!(post_commit_patch_error(
+            "failed to parse HEAD timestamp",
+            timestamp_str,
+        ))
+    })?;
+    let timestamp_ms = timestamp_seconds.checked_mul(1000).ok_or_else(|| {
         anyhow!(post_commit_patch_error(
             "failed to parse HEAD timestamp",
             timestamp_str,
