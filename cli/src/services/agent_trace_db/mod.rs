@@ -239,3 +239,146 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
 fn skipped_diff_trace_patch_reason(error: &ParseError) -> String {
     error.to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::OnceLock,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::*;
+
+    static TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+    struct TestAgentTraceDbSpec;
+
+    impl DbSpec for TestAgentTraceDbSpec {
+        fn db_name() -> &'static str {
+            "test agent trace DB"
+        }
+
+        fn db_path() -> Result<PathBuf> {
+            TEST_DB_PATH
+                .get()
+                .cloned()
+                .context("test DB path should be initialized")
+        }
+
+        fn migrations() -> &'static [(&'static str, &'static str)] {
+            AGENT_TRACE_MIGRATIONS
+        }
+    }
+
+    fn unique_test_db_path() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!(
+                "sce-agent-trace-db-test-{}-{nonce}",
+                std::process::id()
+            ))
+            .join("agent-trace.db")
+    }
+
+    fn valid_patch(path: &str, content: &str) -> String {
+        format!(
+            "Index: {path}\n===================================================================\n--- {path}\n+++ {path}\n@@ -0,0 +1,1 @@\n+{content}\n"
+        )
+    }
+
+    fn insert_test_diff_trace(
+        db: &TursoDb<TestAgentTraceDbSpec>,
+        time_ms: i64,
+        session_id: &str,
+        patch: &str,
+    ) {
+        insert_diff_trace_with(
+            db,
+            DiffTraceInsert {
+                time_ms,
+                session_id,
+                patch,
+            },
+        )
+        .expect("diff trace insert should succeed");
+    }
+
+    #[test]
+    fn recent_diff_trace_patches_applies_bounded_window_ordering_and_parse_accounting() {
+        let db_path = unique_test_db_path();
+        TEST_DB_PATH
+            .set(db_path.clone())
+            .expect("test DB path should only be initialized once");
+        let db = TursoDb::<TestAgentTraceDbSpec>::new().expect("test DB should open");
+
+        let before_cutoff_patch = valid_patch("notes/before.md", "before cutoff");
+        let cutoff_patch = valid_patch("notes/cutoff.md", "at cutoff");
+        let first_same_time_patch = valid_patch("notes/same-a.md", "same time first");
+        let second_same_time_patch = valid_patch("notes/same-b.md", "same time second");
+        let end_patch = valid_patch("notes/end.md", "at end");
+        let after_end_patch = valid_patch("notes/after.md", "after end");
+
+        insert_test_diff_trace(&db, 999, "before-cutoff", &before_cutoff_patch);
+        insert_test_diff_trace(&db, 1000, "at-cutoff", &cutoff_patch);
+        insert_test_diff_trace(
+            &db,
+            1500,
+            "malformed",
+            "Index: notes/malformed.md\n===================================================================\n--- notes/malformed.md\n+++ notes/malformed.md\n@@ malformed @@\n+bad\n",
+        );
+        insert_test_diff_trace(&db, 1500, "same-time-a", &first_same_time_patch);
+        insert_test_diff_trace(&db, 1500, "same-time-b", &second_same_time_patch);
+        insert_test_diff_trace(&db, 2000, "at-end", &end_patch);
+        insert_test_diff_trace(&db, 2001, "after-end", &after_end_patch);
+
+        let result = recent_diff_trace_patches_with(&db, 1000, 2000)
+            .expect("recent diff trace patches should load");
+
+        assert_eq!(result.loaded_count(), 4);
+        assert_eq!(result.skipped_count(), 1);
+        assert_eq!(
+            result
+                .patches
+                .iter()
+                .map(|patch| (patch.id, patch.time_ms, patch.session_id.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (2, 1000, "at-cutoff"),
+                (4, 1500, "same-time-a"),
+                (5, 1500, "same-time-b"),
+                (6, 2000, "at-end"),
+            ]
+        );
+        assert_eq!(
+            result
+                .patches
+                .iter()
+                .map(|patch| patch.patch.files[0].new_path.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "notes/cutoff.md",
+                "notes/same-a.md",
+                "notes/same-b.md",
+                "notes/end.md",
+            ]
+        );
+        assert_eq!(result.skipped[0].id, 3);
+        assert_eq!(result.skipped[0].time_ms, 1500);
+        assert_eq!(result.skipped[0].session_id, "malformed");
+        assert!(
+            result.skipped[0].reason.contains("invalid hunk header"),
+            "unexpected skipped reason: {}",
+            result.skipped[0].reason
+        );
+
+        drop(db);
+        if let Some(parent) = db_path.parent() {
+            fs::remove_dir_all(parent).expect("test DB directory should be removed");
+        }
+    }
+}
