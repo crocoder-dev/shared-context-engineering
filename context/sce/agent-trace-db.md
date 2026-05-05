@@ -13,7 +13,7 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 - `DiffTraceInsert<'a>`: insert payload with `time_ms: i64`, `session_id: &'a str`, and `patch: &'a str`.
 - `insert_diff_trace()`: domain-specific insert helper using parameterized SQL.
 - `RecentDiffTracePatches`: parsed recent `diff_traces` query result containing valid parsed patches plus skipped-row reports.
-- `recent_diff_trace_patches(cutoff_time_ms)`: chronological `diff_traces` read helper for rows with `time_ms >= cutoff_time_ms`; parses raw patch text through `parse_patch` and skips malformed rows without failing the query.
+- `recent_diff_trace_patches(cutoff_time_ms, end_time_ms)`: chronological `diff_traces` read helper for rows in the inclusive window `time_ms >= cutoff_time_ms AND time_ms <= end_time_ms`; parses raw patch text through `parse_patch` and skips malformed rows without failing the query.
 - `PostCommitPatchIntersectionInsert<'a>`: insert payload for post-commit intersection results with commit metadata, window bounds, loaded/skipped counts, and serialized patch JSON.
 - `insert_post_commit_patch_intersection()`: domain-specific insert helper using parameterized SQL.
 - `lifecycle.rs`: service lifecycle provider for setup/doctor integration.
@@ -33,6 +33,7 @@ The Agent Trace DB path is resolved from the shared default-path catalog:
 
 - `001_create_diff_traces.sql`
 - `002_create_post_commit_patch_intersections.sql`
+- `003_add_diff_traces_time_ms_id_index.sql`
 
 The `diff_traces` migration creates:
 
@@ -77,9 +78,9 @@ Post-commit intersection rows are written by the active `post-commit` hook flow 
 
 ## Recent patch reads
 
-`AgentTraceDb::recent_diff_trace_patches(cutoff_time_ms)` supports the post-commit comparison flow without changing `diff_traces` writes:
+`AgentTraceDb::recent_diff_trace_patches(cutoff_time_ms, end_time_ms)` supports the post-commit comparison flow without changing `diff_traces` writes:
 
-- SQL reads `id`, `time_ms`, `session_id`, and `patch` from `diff_traces` where `time_ms >= cutoff_time_ms`.
+- SQL reads `id`, `time_ms`, `session_id`, and `patch` from `diff_traces` where `time_ms >= cutoff_time_ms AND time_ms <= end_time_ms`.
 - Rows are ordered by `time_ms ASC, id ASC` for deterministic chronological processing.
 - Valid row patches are parsed through `cli/src/services/patch.rs` `parse_patch` and returned as `ParsedDiffTracePatch` records.
 - Malformed recent row patches are returned as `SkippedDiffTracePatch` records with deterministic parse-error reasons; malformed historical rows do not fail the operation.

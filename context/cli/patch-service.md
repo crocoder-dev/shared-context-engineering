@@ -70,8 +70,8 @@ Both functions wrap `serde_json::from_str`/`serde_json::from_slice` and map serd
 
 | Operation | Wired into | Notes |
 |-----------|-----------|-------|
-| `parse_patch` | Hook runtime, tests | Consumed by `post-commit` capture flow and `recent_diff_trace_patches` |
-| `load_patch_from_json` / `load_patch_from_json_bytes` | Agent Trace DB query/parse helpers | Used by `recent_diff_trace_patches` to reconstruct stored patch data |
+| `parse_patch` | Hook runtime, Agent Trace DB recent-row parsing, tests | Consumed by `post-commit` capture flow and `recent_diff_trace_patches` to parse stored raw `diff_traces.patch` text |
+| `load_patch_from_json` / `load_patch_from_json_bytes` | Storage-agnostic JSON reconstruction callers | Reconstructs serialized `ParsedPatch` JSON when callers already have JSON payloads; not used for raw `diff_traces.patch` text in `recent_diff_trace_patches` |
 | `intersect_patches` | Post-commit hook runtime | Combines recent patches then intersects with current commit patch |
 | `combine_patches` | Post-commit hook runtime | Combines chronological recent patches before intersection |
 
