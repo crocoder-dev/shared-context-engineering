@@ -36,8 +36,10 @@
   - Empty recent patch set produces deterministic empty intersection result (no crash).
   - Returns structured success output: `post-commit hook processed intersection: commit=<oid>, loaded=<n>, skipped=<n>, intersection_files=<n>`.
 - `post-rewrite` is a deterministic no-op entrypoint.
-- `diff-trace` reads STDIN JSON, validates required non-empty `sessionID`/`diff` plus required `u64` `time` (Unix epoch milliseconds), rejects `time` values that cannot fit the Agent Trace DB signed `time_ms` column, writes one payload artifact per invocation to `context/tmp/<timestamp>-000000-diff-trace.json` with atomic create-new retry semantics, and inserts the same payload into AgentTraceDb via `DiffTraceInsert` + `insert_diff_trace()` with `model_id` currently set to `NULL`.
-- `diff-trace` success requires both persistence paths to succeed; artifact write failures and AgentTraceDb open/insert failures are command-failing runtime errors logged through `sce.hooks.diff_trace.error`.
+- `diff-trace` reads STDIN JSON, validates required non-empty `sessionID`/`diff`, required `u64` `time` (Unix epoch milliseconds), and optional non-empty string `model_id` when present; empty or non-string `model_id` values fail validation.
+- `diff-trace` writes one payload artifact per invocation to `context/tmp/<timestamp>-000000-diff-trace.json` with atomic create-new retry semantics. Legacy payloads omit `model_id` from artifacts; accepted `model_id` values are serialized into the artifact.
+- `diff-trace` attempts to insert the same payload into AgentTraceDb via `DiffTraceInsert` + `insert_diff_trace()`, mapping absent `model_id` to `NULL` and accepted values to `diff_traces.model_id`; `time` values that cannot fit the Agent Trace DB signed `time_ms` column are logged and prevent DB insertion while leaving artifact persistence intact.
+- `diff-trace` success requires artifact persistence. AgentTraceDb open/insert failures are logged through `sce.hooks.diff_trace.agent_trace_db_write_failed` and return the alternate success text `diff-trace hook intake persisted payload to context/tmp; AgentTraceDb persistence failed.`
 
 ## Explicit non-goals in the current baseline
 - No checkpoint handoff file

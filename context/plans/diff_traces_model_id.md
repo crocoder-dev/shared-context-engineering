@@ -40,12 +40,16 @@ The implementation should send one optional `model_id` string in the diff-trace 
   - Evidence: `nix build .#checks.x86_64-linux.cli-tests` passed; `nix build .#checks.x86_64-linux.cli-clippy` passed; `nix build .#checks.x86_64-linux.cli-fmt` passed; `nix build .#default` passed; `nix run .#pkl-check-generated` passed; `nix flake check` passed.
   - Notes: Added nullable `model_id` storage/projection while preserving legacy payload insertion as `NULL`; hook intake behavior remains unchanged for T02.
 
-- [ ] T02: `Accept optional model_id in diff-trace intake` (status:todo)
+- [x] T02: `Accept optional model_id in diff-trace intake` (status:done)
   - Task ID: T02
   - Goal: Extend `sce hooks diff-trace` STDIN parsing and persistence to accept optional `model_id` while preserving old payload compatibility.
   - Boundaries (in/out of scope): In - payload type, optional string validation, artifact JSON serialization, AgentTraceDb insert mapping, and hook-runtime tests. Out - plugin extraction/correlation logic.
   - Done when: Payloads without `model_id` behave exactly as before; payloads with a non-empty string persist that value to file artifacts and DB; invalid non-string or empty `model_id` values fail with deterministic validation errors.
   - Verification notes (commands or checks): Focused hooks tests for missing, valid, and invalid `model_id`; final `nix flake check`.
+  - Completed: 2026-05-13
+  - Files changed: `cli/src/services/hooks/mod.rs`, `context/sce/agent-trace-hooks-command-routing.md`, `context/sce/agent-trace-db.md`, `context/cli/cli-command-surface.md`, root context summaries/map
+  - Evidence: `nix build .#checks.x86_64-linux.cli-tests` passed; `nix build .#checks.x86_64-linux.cli-clippy` passed; `nix build .#checks.x86_64-linux.cli-fmt` passed; `nix build .#default` passed; `nix run .#pkl-check-generated` passed; `nix flake check` passed.
+  - Notes: Added optional non-empty `model_id` validation for diff-trace STDIN, preserved legacy payload artifact shape by omitting absent `model_id`, and mapped accepted values into `DiffTraceInsert.model_id` for AgentTraceDb persistence.
 
 - [ ] T03: `Capture model_id in OpenCode agent-trace plugin` (status:todo)
   - Task ID: T03

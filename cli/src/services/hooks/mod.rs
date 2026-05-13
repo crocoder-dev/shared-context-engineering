@@ -43,6 +43,8 @@ struct DiffTracePayload {
     session_id: String,
     diff: String,
     time: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model_id: Option<String>,
 }
 
 pub fn run_hooks_subcommand(
@@ -143,12 +145,37 @@ fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTracePayload> {
     let session_id = required_non_empty_string_field(payload, "sessionID")?;
     let diff = required_non_empty_string_field(payload, "diff")?;
     let time = required_u64_millisecond_field(payload, "time")?;
+    let model_id = optional_non_empty_string_field(payload, "model_id")?;
 
     Ok(DiffTracePayload {
         session_id,
         diff,
         time,
+        model_id,
     })
+}
+
+fn optional_non_empty_string_field(
+    payload: &serde_json::Map<String, Value>,
+    field_name: &str,
+) -> Result<Option<String>> {
+    let Some(raw) = payload.get(field_name) else {
+        return Ok(None);
+    };
+
+    let value = raw.as_str().ok_or_else(|| {
+        anyhow!(diff_trace_validation_error(&format!(
+            "field '{field_name}' must be a non-empty string"
+        )))
+    })?;
+
+    if value.trim().is_empty() {
+        bail!(diff_trace_validation_error(&format!(
+            "field '{field_name}' must be a non-empty string"
+        )));
+    }
+
+    Ok(Some(value.to_string()))
 }
 
 fn required_non_empty_string_field(
@@ -278,7 +305,7 @@ where
         time_ms,
         session_id: &payload.session_id,
         patch: &payload.diff,
-        model_id: None,
+        model_id: payload.model_id.as_deref(),
     })
 }
 

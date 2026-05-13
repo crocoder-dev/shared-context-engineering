@@ -72,11 +72,11 @@ The post-commit intersection migration creates `post_commit_patch_intersections`
 
 `sce hooks diff-trace` is the current runtime writer for `diff_traces`.
 
-- The hook path validates STDIN `{ sessionID, diff, time }` before persistence.
-- `time` is accepted as a `u64` Unix epoch millisecond input and must fit the signed `i64` `time_ms` column before any persistence starts.
-- The hook writes the existing collision-safe `context/tmp/<timestamp>-000000-diff-trace.json` artifact and inserts the same payload through `AgentTraceDb::insert_diff_trace()`.
-- Current hook intake does not accept a `model_id` payload field yet; it writes `NULL` by constructing `DiffTraceInsert { model_id: None, ... }`.
-- Command success requires both artifact and database persistence to succeed.
+- The hook path validates STDIN `{ sessionID, diff, time }` before persistence and also accepts optional non-empty string `model_id`; empty or non-string `model_id` values fail validation.
+- `time` is accepted as a `u64` Unix epoch millisecond input and must fit the signed `i64` `time_ms` column for Agent Trace DB insertion.
+- The hook writes the existing collision-safe `context/tmp/<timestamp>-000000-diff-trace.json` artifact; absent `model_id` is omitted from artifact JSON, while accepted `model_id` values are preserved.
+- The hook attempts to insert the same payload through `AgentTraceDb::insert_diff_trace()`, constructing `DiffTraceInsert { model_id: None, ... }` for legacy payloads and `Some(value)` for accepted `model_id` strings.
+- Command success requires artifact persistence; AgentTraceDb insertion failures return an alternate success message after warning-level logging, leaving the artifact as the durable local record for that invocation.
 - Existing artifact files are not backfilled into the database.
 
 Post-commit intersection rows are written by the active `post-commit` hook flow (see [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md)).
