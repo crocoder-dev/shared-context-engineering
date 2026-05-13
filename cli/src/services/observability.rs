@@ -15,6 +15,7 @@ use opentelemetry::trace::TracerProvider;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use serde_json::json;
+use tokio::runtime::{Builder as TokioRuntimeBuilder, Runtime};
 use tracing_subscriber::prelude::*;
 
 use crate::services::config::{
@@ -80,6 +81,7 @@ impl TelemetryConfig {
 
 pub struct TelemetryRuntime {
     provider: Option<SdkTracerProvider>,
+    runtime: Option<Runtime>,
 }
 
 impl TelemetryRuntime {
@@ -105,8 +107,17 @@ impl TelemetryRuntime {
 
     fn from_config(config: &TelemetryConfig) -> Result<Self> {
         if !config.enabled {
-            return Ok(Self { provider: None });
+            return Ok(Self {
+                provider: None,
+                runtime: None,
+            });
         }
+
+        let runtime = TokioRuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| anyhow!("Failed to initialize telemetry runtime: {error}"))?;
+        let _runtime_guard = runtime.enter();
 
         let exporter = match config.protocol {
             OtlpProtocol::Grpc => opentelemetry_otlp::SpanExporter::builder()
@@ -129,6 +140,7 @@ impl TelemetryRuntime {
 
         Ok(Self {
             provider: Some(provider),
+            runtime: Some(runtime),
         })
     }
 
@@ -137,6 +149,7 @@ impl TelemetryRuntime {
         F: FnOnce() -> T,
     {
         if let Some(provider) = &self.provider {
+            let _runtime_guard = self.runtime.as_ref().map(Runtime::enter);
             let tracer = provider.tracer("sce-cli");
             let subscriber = tracing_subscriber::registry()
                 .with(tracing_opentelemetry::layer().with_tracer(tracer));
@@ -150,6 +163,7 @@ impl TelemetryRuntime {
 impl Drop for TelemetryRuntime {
     fn drop(&mut self) {
         if let Some(provider) = self.provider.take() {
+            let _runtime_guard = self.runtime.as_ref().map(Runtime::enter);
             // Best-effort shutdown during drop; errors are logged but not propagated
             if let Err(e) = provider.shutdown() {
                 eprintln!("Warning: Failed to shutdown telemetry provider: {e:?}");

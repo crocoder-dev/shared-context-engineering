@@ -3,6 +3,11 @@
   "log_level": "error",
   "log_file": "context/tmp/sce.log",
   "log_file_mode": "append",
+  "otel": {
+    "enabled": true,
+    "exporter_otlp_endpoint": "https://ingress.eu-west-1.aws.dash0.com:4317",
+    "exporter_otlp_protocol": "grpc"
+  },
   "policies": {
     "attribution_hooks": {
       "enabled": true
