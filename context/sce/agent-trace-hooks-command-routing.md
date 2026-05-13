@@ -36,9 +36,8 @@
   - Empty recent patch set produces deterministic empty intersection result (no crash).
   - Internal orchestration now returns a typed `PostCommitIntersectionFlowResult` (`combined_recent_patch`, `post_commit_data`) from `run_post_commit_intersection_flow_with()`.
   - `run_post_commit_subcommand(...)` passes that typed flow result through `run_post_commit_agent_trace_flow(...)` (run-flow naming), which maps commit-time metadata to RFC3339 and calls `agent_trace::build_agent_trace(...)`.
-  - The built Agent Trace payload is serialized and persisted to `context/tmp/<timestamp>-<attempt>-post-commit-agent-trace.json` using the same collision-safe create-new retry semantics as other hook artifacts.
-  - The same serialized payload is inserted into Agent Trace DB `agent_traces` using `commit_id` from flow-result commit metadata and `commit_time_ms` from flow-result post-commit timestamp metadata.
-  - Post-commit Agent Trace success requires both persistence paths (artifact + `agent_traces` row) to succeed.
+  - The built Agent Trace payload is serialized and inserted into Agent Trace DB `agent_traces` using `commit_id` from flow-result commit metadata and `commit_time_ms` from flow-result post-commit timestamp metadata.
+  - Post-commit Agent Trace success requires Agent Trace DB `agent_traces` persistence to succeed.
   - Current command-surface success output is: `post-commit hook processed intersection: commit=<oid>, intersection_files=<n>`.
 - `post-rewrite` is a deterministic no-op entrypoint.
 - `diff-trace` reads STDIN JSON, validates required non-empty `sessionID`/`diff` plus required `u64` `time` (Unix epoch milliseconds), rejects `time` values that cannot fit the Agent Trace DB signed `time_ms` column, writes one payload artifact per invocation to `context/tmp/<timestamp>-000000-diff-trace.json` with atomic create-new retry semantics, and inserts the same payload into AgentTraceDb via `DiffTraceInsert` + `insert_diff_trace()`.

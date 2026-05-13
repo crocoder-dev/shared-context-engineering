@@ -461,39 +461,24 @@ where
 }
 
 fn run_post_commit_agent_trace_flow(
-    repository_root: &Path,
+    _repository_root: &Path,
     flow_result: &PostCommitIntersectionFlowResult,
 ) -> Result<AgentTrace> {
     let db = AgentTraceDb::new().context("Failed to open Agent Trace DB for post-commit trace.")?;
 
-    run_post_commit_agent_trace_flow_with(
-        repository_root,
-        flow_result,
-        |trace_directory, serialized| {
-            persist_serialized_trace_payload(
-                trace_directory,
-                "post-commit-agent-trace",
-                serialized,
-                "post-commit agent-trace payload",
-            )
-        },
-        |insert_input| {
-            db.insert_agent_trace(insert_input)
-                .context("Failed to persist built post-commit Agent Trace payload.")?;
+    run_post_commit_agent_trace_flow_with(flow_result, |insert_input| {
+        db.insert_agent_trace(insert_input)
+            .context("Failed to persist built post-commit Agent Trace payload.")?;
 
-            Ok(())
-        },
-    )
+        Ok(())
+    })
 }
 
-fn run_post_commit_agent_trace_flow_with<P, I>(
-    repository_root: &Path,
+fn run_post_commit_agent_trace_flow_with<I>(
     flow_result: &PostCommitIntersectionFlowResult,
-    persist_payload: P,
     persist_agent_trace: I,
 ) -> Result<AgentTrace>
 where
-    P: FnOnce(&Path, &str) -> Result<PathBuf>,
     I: for<'a> FnOnce(AgentTraceInsert<'a>) -> Result<()>,
 {
     let commit_timestamp =
@@ -520,10 +505,6 @@ where
         serde_json::to_string_pretty(&agent_trace)
             .context("Failed to serialize post-commit Agent Trace payload for persistence.")?
     );
-
-    let trace_directory = repository_root.join("context").join("tmp");
-    persist_payload(&trace_directory, &serialized)
-        .context("Failed to persist post-commit Agent Trace payload to context/tmp.")?;
 
     let insert_input = AgentTraceInsert {
         commit_id: &flow_result.post_commit_data.commit_oid,
@@ -884,7 +865,6 @@ pub enum HookNoOpReason {
 }
 
 /// Post-commit patch data captured from git for intersection flows.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PostCommitPatchData {
     pub commit_oid: String,
@@ -893,7 +873,6 @@ pub struct PostCommitPatchData {
 }
 
 /// Structured post-commit intersection flow result.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PostCommitIntersectionFlowResult {
     pub combined_recent_patch: ParsedPatch,
@@ -1069,198 +1048,5 @@ mod tests {
         assert_eq!(output.post_commit_data.commit_time_ms, commit_time_ms);
         assert_eq!(output.combined_recent_patch.files.len(), 1);
         assert_eq!(output.combined_recent_patch.files[0].new_path, "src/lib.rs");
-    }
-
-    #[test]
-    fn run_post_commit_agent_trace_flow_with_builds_trace_and_persists_payload() {
-        let patch = valid_patch("src/lib.rs", "shared line");
-        let flow_result = PostCommitIntersectionFlowResult {
-            combined_recent_patch: patch.clone(),
-            post_commit_data: PostCommitPatchData {
-                commit_oid: String::from("abc123"),
-                commit_time_ms: 1_800_000_000_000,
-                parsed_patch: patch,
-            },
-        };
-        let persisted = RefCell::new(None);
-        let persisted_insert = RefCell::new(None);
-
-        let agent_trace = run_post_commit_agent_trace_flow_with(
-            Path::new("/repo"),
-            &flow_result,
-            |trace_directory, serialized| {
-                *persisted.borrow_mut() =
-                    Some((trace_directory.to_path_buf(), serialized.to_string()));
-                Ok(trace_directory.join("persisted.json"))
-            },
-            |insert_input| {
-                *persisted_insert.borrow_mut() = Some((
-                    insert_input.commit_id.to_string(),
-                    insert_input.commit_time_ms,
-                    insert_input.trace_json.to_string(),
-                ));
-                Ok(())
-            },
-        )
-        .expect("agent trace should be built");
-
-        assert_eq!(agent_trace.version, "0.1");
-        assert_eq!(agent_trace.timestamp, "2027-01-15T08:00:00+00:00");
-        assert_eq!(agent_trace.files.len(), 1);
-        assert_eq!(agent_trace.files[0].path, "src/lib.rs");
-
-        let (persisted_directory, serialized) =
-            persisted.into_inner().expect("payload should be persisted");
-        assert_eq!(persisted_directory, Path::new("/repo/context/tmp"));
-        let persisted_trace: AgentTrace = serde_json::from_str(serialized.trim_end())
-            .expect("persisted payload should deserialize");
-        assert_eq!(persisted_trace, agent_trace);
-
-        let (commit_id, commit_time_ms, trace_json) = persisted_insert
-            .into_inner()
-            .expect("agent_traces row should be persisted");
-        assert_eq!(commit_id, flow_result.post_commit_data.commit_oid);
-        assert_eq!(commit_time_ms, flow_result.post_commit_data.commit_time_ms,);
-        assert_eq!(trace_json, serialized);
-    }
-
-    #[test]
-    fn run_post_commit_agent_trace_flow_with_fails_for_invalid_timestamp() {
-        let patch = valid_patch("src/lib.rs", "shared line");
-        let flow_result = PostCommitIntersectionFlowResult {
-            combined_recent_patch: patch.clone(),
-            post_commit_data: PostCommitPatchData {
-                commit_oid: String::from("abc123"),
-                commit_time_ms: i64::MAX,
-                parsed_patch: patch,
-            },
-        };
-
-        let error = run_post_commit_agent_trace_flow_with(
-            Path::new("/repo"),
-            &flow_result,
-            |trace_directory, _| Ok(trace_directory.join("persisted.json")),
-            |_| Ok(()),
-        )
-        .expect_err("invalid timestamp should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("Invalid post-commit timestamp '9223372036854775807'"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn run_post_commit_agent_trace_flow_with_propagates_persist_error() {
-        let patch = valid_patch("src/lib.rs", "shared line");
-        let flow_result = PostCommitIntersectionFlowResult {
-            combined_recent_patch: patch.clone(),
-            post_commit_data: PostCommitPatchData {
-                commit_oid: String::from("abc123"),
-                commit_time_ms: 1_800_000_000_000,
-                parsed_patch: patch,
-            },
-        };
-
-        let error = run_post_commit_agent_trace_flow_with(
-            Path::new("/repo"),
-            &flow_result,
-            |_, _| Err(anyhow!("persist failed")),
-            |_| Ok(()),
-        )
-        .expect_err("persist failure should propagate");
-
-        assert!(
-            error
-                .to_string()
-                .contains("Failed to persist post-commit Agent Trace payload to context/tmp."),
-            "unexpected error: {error}"
-        );
-        assert!(
-            format!("{error:#}").contains("persist failed"),
-            "unexpected error chain: {error:#}"
-        );
-    }
-
-    #[test]
-    fn run_post_commit_agent_trace_flow_with_propagates_db_persist_error() {
-        let patch = valid_patch("src/lib.rs", "shared line");
-        let flow_result = PostCommitIntersectionFlowResult {
-            combined_recent_patch: patch.clone(),
-            post_commit_data: PostCommitPatchData {
-                commit_oid: String::from("abc123"),
-                commit_time_ms: 1_800_000_000_000,
-                parsed_patch: patch,
-            },
-        };
-
-        let error = run_post_commit_agent_trace_flow_with(
-            Path::new("/repo"),
-            &flow_result,
-            |trace_directory, _| Ok(trace_directory.join("persisted.json")),
-            |_| Err(anyhow!("db persist failed")),
-        )
-        .expect_err("db persist failure should propagate");
-
-        assert!(
-            error.to_string().contains("db persist failed"),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn run_post_commit_subcommand_with_returns_stable_success_summary() {
-        let patch = valid_patch("src/lib.rs", "shared line");
-        let status = run_post_commit_subcommand_with(
-            Path::new("/repo"),
-            |_| {
-                Ok(PostCommitIntersectionFlowResult {
-                    combined_recent_patch: patch.clone(),
-                    post_commit_data: PostCommitPatchData {
-                        commit_oid: String::from("abc123"),
-                        commit_time_ms: 1_800_000_000_000,
-                        parsed_patch: patch,
-                    },
-                })
-            },
-            |_, _| {
-                Ok(AgentTrace {
-                    version: String::from("0.1"),
-                    id: String::from("agent-trace-id"),
-                    timestamp: String::from("2027-01-15T08:00:00+00:00"),
-                    files: Vec::new(),
-                })
-            },
-        )
-        .expect("post-commit wiring should succeed");
-
-        assert_eq!(
-            status,
-            "post-commit hook processed intersection: commit=abc123, intersection_files=1"
-        );
-    }
-
-    #[test]
-    fn run_post_commit_subcommand_with_propagates_agent_trace_builder_error() {
-        let patch = valid_patch("src/lib.rs", "shared line");
-        let error = run_post_commit_subcommand_with(
-            Path::new("/repo"),
-            |_| {
-                Ok(PostCommitIntersectionFlowResult {
-                    combined_recent_patch: patch.clone(),
-                    post_commit_data: PostCommitPatchData {
-                        commit_oid: String::from("abc123"),
-                        commit_time_ms: 1_800_000_000_000,
-                        parsed_patch: patch,
-                    },
-                })
-            },
-            |_, _| Err(anyhow!("builder failed")),
-        )
-        .expect_err("builder failure should propagate");
-
-        assert!(error.to_string().contains("builder failed"));
     }
 }
