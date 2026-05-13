@@ -4,7 +4,7 @@ Current runtime source: `config/lib/agent-trace-plugin/opencode-sce-agent-trace-
 
 ## Event capture baseline
 
-- The plugin captures only `session.diff` events.
+- The plugin treats `session.diff` as the diff-only event source for patch capture; model metadata is not sourced from the `session.diff` event.
 - The plugin also observes `chat.message` and `chat.params` hooks only to cache model metadata by `sessionID`; those hooks do not invoke `sce` or persist data directly.
 - When diff extraction succeeds, the plugin invokes `sce hooks diff-trace` and sends `{ sessionID, diff, time, model_id? }` over STDIN JSON.
 - The plugin no longer writes diff-trace artifacts or database rows directly; the Rust `diff-trace` hook path owns AgentTraceDb insertion plus collision-safe timestamp+attempt artifact writes.

@@ -62,19 +62,55 @@ The implementation should send one optional `model_id` string in the diff-trace 
   - Evidence: `bun test` in `config/lib/agent-trace-plugin` passed (4 tests, 7 assertions); `nix develop -c tsc -p config/lib/agent-trace-plugin/tsconfig.json` passed; `nix run .#pkl-check-generated` passed; `nix flake check` passed.
   - Notes: Added an in-memory `sessionID -> model_id` cache populated from `chat.message` and `chat.params`; `session.diff` payloads include `model_id` only when known and otherwise preserve the legacy payload shape.
 
-- [ ] T04: `Sync current-state context for model_id diff traces` (status:todo)
+- [x] T04: `Sync current-state context for model_id diff traces` (status:done)
   - Task ID: T04
   - Goal: Update current-state SCE context to document the new optional model metadata flow.
   - Boundaries (in/out of scope): In - `context/sce/opencode-agent-trace-plugin-runtime.md`, `context/sce/agent-trace-hooks-command-routing.md`, `context/sce/agent-trace-db.md`, context map/glossary entries if needed. Out - broad historical rewrites of inactive Agent Trace docs.
   - Done when: Context says `session.diff` itself is diff-only, model metadata is correlated from OpenCode chat hooks, diff-trace payload may include `model_id`, and `diff_traces.model_id` is nullable.
   - Verification notes (commands or checks): Manual context consistency check plus final generated-output parity and flake validation.
+  - Completed: 2026-05-13
+  - Files changed: `context/sce/opencode-agent-trace-plugin-runtime.md`, `context/context-map.md`, `context/glossary.md`
+  - Evidence: Manual context consistency check passed for `session.diff` diff-only wording, OpenCode chat-hook model correlation, optional `model_id` payload handoff, and nullable `diff_traces.model_id`; `git diff --check` passed; `nix run .#pkl-check-generated` passed; `nix flake check` passed.
+  - Notes: Context-sync classification is an important current-state documentation update; root glossary was updated, with no code or generated output changes.
 
-- [ ] T05: `Validate and cleanup model_id diff-trace rollout` (status:todo)
+- [x] T05: `Validate and cleanup model_id diff-trace rollout` (status:done)
   - Task ID: T05
   - Goal: Run full validation and remove temporary scaffolding after the implementation tasks land.
   - Boundaries (in/out of scope): In - full repo checks, generated-output parity, temporary test fixture cleanup, plan evidence updates. Out - additional feature work beyond `model_id` capture/persistence.
   - Done when: `nix run .#pkl-check-generated` and `nix flake check` pass; no temporary debugging artifacts remain; plan status/evidence is updated; context sync is verified.
   - Verification notes (commands or checks): `nix run .#pkl-check-generated`; `nix flake check`.
+  - Completed: 2026-05-13
+  - Files changed: `context/plans/diff_traces_model_id.md`
+  - Evidence: Worktree/temporary artifact inspection found no tracked temporary debugging artifacts requiring cleanup; ignored runtime scratch artifacts under `context/tmp/` were left untouched; `git diff --check` passed; `nix run .#pkl-check-generated` passed; `nix flake check` passed; context-sync verify-only pass confirmed current-state coverage in root and domain context.
+  - Notes: Final validation task only; context-sync classification is verify-only with no root context edits needed.
+
+## Validation Report
+
+### Commands run
+
+- `git status --short` -> exit 0; reported only expected modified context/plan files from the rollout.
+- `git status --short --ignored context/tmp` -> exit 0; confirmed `context/tmp/` contents are ignored runtime scratch artifacts, not tracked temporary scaffolding.
+- `git diff --check` -> exit 0; no whitespace errors.
+- `nix run .#pkl-check-generated` -> exit 0; key output: `Generated outputs are up to date.`
+- `nix flake check` -> exit 0; key output: `all checks passed!`
+
+### Success-criteria verification
+
+- [x] `diff_traces` has nullable `model_id TEXT`; existing rows remain valid with `NULL` model IDs -> T01 completed with migration/adapter evidence and full repo checks.
+- [x] `sce hooks diff-trace` accepts existing payloads without `model_id` unchanged -> T02 completed with compatibility tests and full repo checks.
+- [x] `sce hooks diff-trace` accepts and persists non-empty optional `model_id` -> T02 completed with artifact/DB mapping evidence.
+- [x] OpenCode agent-trace plugin correlates model metadata by `sessionID` and forwards `model_id` when known -> T03 completed with plugin tests, typecheck, generated-output parity, and full repo checks.
+- [x] `session.diff` records persist to both `context/tmp/*-diff-trace.json` and AgentTraceDb -> T02/T03 completed; final context sync verified the current Rust hook and plugin handoff documentation.
+- [x] Generated OpenCode plugin outputs remain in sync with canonical sources -> final `nix run .#pkl-check-generated` passed.
+- [x] Validation passes through repo-standard checks -> final `nix flake check` passed.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- None identified.
 
 ## Open questions
 
