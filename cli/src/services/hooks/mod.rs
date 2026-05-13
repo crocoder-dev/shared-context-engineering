@@ -10,7 +10,9 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{json, to_string as serialize_to_json, Value};
 
-use crate::services::agent_trace::{build_agent_trace, AgentTrace, AgentTraceMetadataInput};
+use crate::services::agent_trace::{
+    build_agent_trace, validate_agent_trace_value, AgentTrace, AgentTraceMetadataInput,
+};
 use crate::services::agent_trace_db::{
     AgentTraceDb, AgentTraceInsert, DiffTraceInsert, PostCommitPatchIntersectionInsert,
     RecentDiffTracePatches,
@@ -466,19 +468,31 @@ fn run_post_commit_agent_trace_flow(
 ) -> Result<AgentTrace> {
     let db = AgentTraceDb::new().context("Failed to open Agent Trace DB for post-commit trace.")?;
 
-    run_post_commit_agent_trace_flow_with(flow_result, |insert_input| {
-        db.insert_agent_trace(insert_input)
-            .context("Failed to persist built post-commit Agent Trace payload.")?;
+    run_post_commit_agent_trace_flow_with(
+        flow_result,
+        |trace_value| {
+            validate_agent_trace_value(trace_value)
+                .map_err(|error| anyhow!(error.to_string()))
+                .context("Failed to persist built post-commit Agent Trace payload.")?;
 
-        Ok(())
-    })
+            Ok(())
+        },
+        |insert_input| {
+            db.insert_agent_trace(insert_input)
+                .context("Failed to persist built post-commit Agent Trace payload.")?;
+
+            Ok(())
+        },
+    )
 }
 
-fn run_post_commit_agent_trace_flow_with<I>(
+fn run_post_commit_agent_trace_flow_with<V, I>(
     flow_result: &PostCommitIntersectionFlowResult,
+    validate_agent_trace: V,
     persist_agent_trace: I,
 ) -> Result<AgentTrace>
 where
+    V: FnOnce(&Value) -> Result<()>,
     I: for<'a> FnOnce(AgentTraceInsert<'a>) -> Result<()>,
 {
     let commit_timestamp =
@@ -499,6 +513,11 @@ where
         },
     )
     .context("Failed to build Agent Trace payload from post-commit intersection flow result.")?;
+
+    let agent_trace_value = serde_json::to_value(&agent_trace)
+        .context("Failed to serialize post-commit Agent Trace payload for validation.")?;
+    validate_agent_trace(&agent_trace_value)
+        .context("Failed to persist built post-commit Agent Trace payload.")?;
 
     let serialized = format!(
         "{}\n",

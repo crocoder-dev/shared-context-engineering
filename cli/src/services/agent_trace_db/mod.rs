@@ -279,7 +279,6 @@ mod tests {
 
     static TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
     static UPGRADE_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
-    static INSERT_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
     static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     struct TestAgentTraceDbSpec;
@@ -332,25 +331,6 @@ mod tests {
                 .get()
                 .cloned()
                 .context("upgrade test DB path should be initialized")
-        }
-
-        fn migrations() -> &'static [(&'static str, &'static str)] {
-            AGENT_TRACE_MIGRATIONS
-        }
-    }
-
-    struct InsertAgentTraceDbSpec;
-
-    impl DbSpec for InsertAgentTraceDbSpec {
-        fn db_name() -> &'static str {
-            "insert test agent trace DB"
-        }
-
-        fn db_path() -> Result<PathBuf> {
-            INSERT_TEST_DB_PATH
-                .get()
-                .cloned()
-                .context("insert test DB path should be initialized")
         }
 
         fn migrations() -> &'static [(&'static str, &'static str)] {
