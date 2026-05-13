@@ -432,13 +432,21 @@ fn run_commit_msg_subcommand_with_trace(
 }
 
 fn run_post_commit_subcommand(repository_root: &Path) -> Result<String> {
-    run_post_commit_intersection_flow(repository_root)
+    let result = run_post_commit_intersection_flow(repository_root)?;
+
+    Ok(format!(
+        "post-commit hook processed intersection: commit={}, intersection_files={}",
+        result.post_commit_data.commit_oid,
+        result.combined_recent_patch.files.len()
+    ))
 }
 
 /// Duration for looking up recent diff traces: 7 days in milliseconds.
 const RECENT_DAYS_MILLIS: i64 = 7 * 24 * 60 * 60 * 1000;
 
-fn run_post_commit_intersection_flow(repository_root: &Path) -> Result<String> {
+fn run_post_commit_intersection_flow(
+    repository_root: &Path,
+) -> Result<PostCommitIntersectionFlowResult> {
     let db = AgentTraceDb::new()
         .context("Failed to open Agent Trace DB for post-commit intersection.")?;
 
@@ -465,7 +473,7 @@ fn run_post_commit_intersection_flow_with<C, N, Q, P>(
     now_ms: N,
     query_recent_patches: Q,
     persist_intersection: P,
-) -> Result<String>
+) -> Result<PostCommitIntersectionFlowResult>
 where
     C: FnOnce(&Path) -> Result<PostCommitPatchData>,
     N: FnOnce() -> Result<i64>,
@@ -510,13 +518,10 @@ where
 
     persist_intersection(insert_input)?;
 
-    Ok(format!(
-        "post-commit hook processed intersection: commit={}, loaded={}, skipped={}, intersection_files={}",
-        post_commit_data.commit_oid,
-        loaded_count,
-        skipped_count,
-        intersection_patch.files.len()
-    ))
+    Ok(PostCommitIntersectionFlowResult {
+        combined_recent_patch,
+        post_commit_data,
+    })
 }
 
 fn current_unix_time_ms() -> Result<i64> {
@@ -793,6 +798,14 @@ pub struct PostCommitPatchData {
     pub parsed_patch: ParsedPatch,
 }
 
+/// Structured post-commit intersection flow result.
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PostCommitIntersectionFlowResult {
+    pub combined_recent_patch: ParsedPatch,
+    pub post_commit_data: PostCommitPatchData,
+}
+
 /// Capture and parse the current commit patch.
 pub fn capture_post_commit_patch_from_git(repository_root: &Path) -> Result<PostCommitPatchData> {
     let commit_oid = capture_head_oid_from_git(repository_root)?;
@@ -958,9 +971,9 @@ mod tests {
             "shared line"
         );
 
-        assert_eq!(
-            output,
-            "post-commit hook processed intersection: commit=abc123, loaded=1, skipped=1, intersection_files=1"
-        );
+        assert_eq!(output.post_commit_data.commit_oid, "abc123");
+        assert_eq!(output.post_commit_data.commit_time_ms, commit_time_ms);
+        assert_eq!(output.combined_recent_patch.files.len(), 1);
+        assert_eq!(output.combined_recent_patch.files[0].new_path, "src/lib.rs");
     }
 }
