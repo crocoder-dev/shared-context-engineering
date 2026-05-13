@@ -278,6 +278,7 @@ where
         time_ms,
         session_id: &payload.session_id,
         patch: &payload.diff,
+        model_id: None,
     })
 }
 
@@ -907,12 +908,14 @@ mod tests {
                         id: 7,
                         time_ms: now_ms - 500,
                         session_id: String::from("valid-session"),
+                        model_id: None,
                         patch: valid_patch("src/lib.rs", "shared line"),
                     }],
                     skipped: vec![SkippedDiffTracePatch {
                         id: 8,
                         time_ms: now_ms - 250,
                         session_id: String::from("malformed-session"),
+                        model_id: None,
                         reason: String::from("invalid hunk header"),
                     }],
                 })

@@ -10,7 +10,7 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 
 - `AgentTraceDbSpec`: `DbSpec` implementation for Agent Trace persistence.
 - `AgentTraceDb`: type alias for `TursoDb<AgentTraceDbSpec>`.
-- `DiffTraceInsert<'a>`: insert payload with `time_ms: i64`, `session_id: &'a str`, and `patch: &'a str`.
+- `DiffTraceInsert<'a>`: insert payload with `time_ms: i64`, `session_id: &'a str`, `patch: &'a str`, and optional `model_id: Option<&'a str>`.
 - `insert_diff_trace()`: domain-specific insert helper using parameterized SQL.
 - `RecentDiffTracePatches`: parsed recent `diff_traces` query result containing valid parsed patches plus skipped-row reports.
 - `recent_diff_trace_patches(cutoff_time_ms, end_time_ms)`: chronological `diff_traces` read helper for rows in the inclusive window `time_ms >= cutoff_time_ms AND time_ms <= end_time_ms`; parses raw patch text through `parse_patch` and skips malformed rows without failing the query.
@@ -34,6 +34,7 @@ The Agent Trace DB path is resolved from the shared default-path catalog:
 - `001_create_diff_traces.sql`
 - `002_create_post_commit_patch_intersections.sql`
 - `003_add_diff_traces_time_ms_id_index.sql`
+- `004_add_diff_traces_model_id.sql`
 
 The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::new()` applies later Agent Trace migrations to an already-created `~/.local/state/sce/agent-trace.db`.
 
@@ -43,6 +44,7 @@ The `diff_traces` migration creates:
 - `time_ms INTEGER NOT NULL`
 - `session_id TEXT NOT NULL`
 - `patch TEXT NOT NULL`
+- `model_id TEXT` (nullable; no historical backfill)
 - `created_at TEXT NOT NULL DEFAULT (...)`
 
 The post-commit intersection migration creates `post_commit_patch_intersections` with:
@@ -73,6 +75,7 @@ The post-commit intersection migration creates `post_commit_patch_intersections`
 - The hook path validates STDIN `{ sessionID, diff, time }` before persistence.
 - `time` is accepted as a `u64` Unix epoch millisecond input and must fit the signed `i64` `time_ms` column before any persistence starts.
 - The hook writes the existing collision-safe `context/tmp/<timestamp>-000000-diff-trace.json` artifact and inserts the same payload through `AgentTraceDb::insert_diff_trace()`.
+- Current hook intake does not accept a `model_id` payload field yet; it writes `NULL` by constructing `DiffTraceInsert { model_id: None, ... }`.
 - Command success requires both artifact and database persistence to succeed.
 - Existing artifact files are not backfilled into the database.
 
@@ -82,10 +85,10 @@ Post-commit intersection rows are written by the active `post-commit` hook flow 
 
 `AgentTraceDb::recent_diff_trace_patches(cutoff_time_ms, end_time_ms)` supports the post-commit comparison flow without changing `diff_traces` writes:
 
-- SQL reads `id`, `time_ms`, `session_id`, and `patch` from `diff_traces` where `time_ms >= cutoff_time_ms AND time_ms <= end_time_ms`.
+- SQL reads `id`, `time_ms`, `session_id`, `patch`, and nullable `model_id` from `diff_traces` where `time_ms >= cutoff_time_ms AND time_ms <= end_time_ms`.
 - Rows are ordered by `time_ms ASC, id ASC` for deterministic chronological processing.
-- Valid row patches are parsed through `cli/src/services/patch.rs` `parse_patch` and returned as `ParsedDiffTracePatch` records.
-- Malformed recent row patches are returned as `SkippedDiffTracePatch` records with deterministic parse-error reasons; malformed historical rows do not fail the operation.
+- Valid row patches are parsed through `cli/src/services/patch.rs` `parse_patch` and returned as `ParsedDiffTracePatch` records carrying `model_id: Option<String>`.
+- Malformed recent row patches are returned as `SkippedDiffTracePatch` records carrying `model_id: Option<String>` plus deterministic parse-error reasons; malformed historical rows do not fail the operation.
 - `RecentDiffTracePatches::loaded_count()` and `skipped_count()` expose accounting for later hook output and persistence metadata.
 
 See also: [shared-turso-db.md](shared-turso-db.md), [local-db.md](local-db.md), [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md), [context-map.md](../context-map.md)

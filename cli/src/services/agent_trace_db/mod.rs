@@ -18,6 +18,8 @@ const CREATE_POST_COMMIT_PATCH_INTERSECTIONS_MIGRATION: &str =
     include_str!("../../../migrations/agent-trace/002_create_post_commit_patch_intersections.sql");
 const ADD_DIFF_TRACES_TIME_MS_ID_INDEX_MIGRATION: &str =
     include_str!("../../../migrations/agent-trace/003_add_diff_traces_time_ms_id_index.sql");
+const ADD_DIFF_TRACES_MODEL_ID_MIGRATION: &str =
+    include_str!("../../../migrations/agent-trace/004_add_diff_traces_model_id.sql");
 
 const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
     ("001_create_diff_traces", CREATE_DIFF_TRACES_MIGRATION),
@@ -29,14 +31,19 @@ const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
         "003_add_diff_traces_time_ms_id_index",
         ADD_DIFF_TRACES_TIME_MS_ID_INDEX_MIGRATION,
     ),
+    (
+        "004_add_diff_traces_model_id",
+        ADD_DIFF_TRACES_MODEL_ID_MIGRATION,
+    ),
 ];
 
 /// Parameterized SQL for inserting a captured diff trace payload.
 pub const INSERT_DIFF_TRACE_SQL: &str =
-    "INSERT INTO diff_traces (time_ms, session_id, patch) VALUES (?1, ?2, ?3)";
+    "INSERT INTO diff_traces (time_ms, session_id, patch, model_id) VALUES (?1, ?2, ?3, ?4)";
 
 /// Parameterized SQL for retrieving recent captured diff trace patches.
-pub const SELECT_RECENT_DIFF_TRACE_PATCHES_SQL: &str = "SELECT id, time_ms, session_id, patch
+pub const SELECT_RECENT_DIFF_TRACE_PATCHES_SQL: &str =
+    "SELECT id, time_ms, session_id, patch, model_id
 FROM diff_traces
 WHERE time_ms >= ?1 AND time_ms <= ?2
 ORDER BY time_ms ASC, id ASC";
@@ -79,6 +86,7 @@ pub struct DiffTraceInsert<'a> {
     pub time_ms: i64,
     pub session_id: &'a str,
     pub patch: &'a str,
+    pub model_id: Option<&'a str>,
 }
 
 /// Raw diff trace row read from the agent trace database.
@@ -88,6 +96,7 @@ pub struct DiffTracePatchRow {
     pub time_ms: i64,
     pub session_id: String,
     pub patch: String,
+    pub model_id: Option<String>,
 }
 
 /// Parsed recent diff trace patch ready for comparison flows.
@@ -96,6 +105,7 @@ pub struct ParsedDiffTracePatch {
     pub id: i64,
     pub time_ms: i64,
     pub session_id: String,
+    pub model_id: Option<String>,
     pub patch: ParsedPatch,
 }
 
@@ -105,6 +115,7 @@ pub struct SkippedDiffTracePatch {
     pub id: i64,
     pub time_ms: i64,
     pub session_id: String,
+    pub model_id: Option<String>,
     pub reason: String,
 }
 
@@ -165,7 +176,7 @@ impl AgentTraceDb {
 fn insert_diff_trace_with<M: DbSpec>(db: &TursoDb<M>, input: DiffTraceInsert<'_>) -> Result<u64> {
     db.execute(
         INSERT_DIFF_TRACE_SQL,
-        (input.time_ms, input.session_id, input.patch),
+        (input.time_ms, input.session_id, input.patch, input.model_id),
     )
 }
 
@@ -209,6 +220,7 @@ fn diff_trace_patch_row_from_turso(row: &turso::Row) -> Result<DiffTracePatchRow
             .get(2)
             .context("failed to read diff_traces.session_id")?,
         patch: row.get(3).context("failed to read diff_traces.patch")?,
+        model_id: row.get(4).context("failed to read diff_traces.model_id")?,
     })
 }
 
@@ -222,12 +234,14 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
                 id: row.id,
                 time_ms: row.time_ms,
                 session_id: row.session_id,
+                model_id: row.model_id,
                 patch,
             }),
             Err(error) => skipped.push(SkippedDiffTracePatch {
                 id: row.id,
                 time_ms: row.time_ms,
                 session_id: row.session_id,
+                model_id: row.model_id,
                 reason: skipped_diff_trace_patch_reason(&error),
             }),
         }
@@ -336,15 +350,50 @@ mod tests {
         session_id: &str,
         patch: &str,
     ) {
+        insert_test_diff_trace_with_model_id(db, time_ms, session_id, patch, None);
+    }
+
+    fn insert_test_diff_trace_with_model_id(
+        db: &TursoDb<TestAgentTraceDbSpec>,
+        time_ms: i64,
+        session_id: &str,
+        patch: &str,
+        model_id: Option<&str>,
+    ) {
         insert_diff_trace_with(
             db,
             DiffTraceInsert {
                 time_ms,
                 session_id,
                 patch,
+                model_id,
             },
         )
         .expect("diff trace insert should succeed");
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct DiffTraceColumn {
+        name: String,
+        column_type: String,
+        not_null: i64,
+    }
+
+    fn diff_trace_columns<M: DbSpec>(db: &TursoDb<M>) -> Vec<DiffTraceColumn> {
+        db.query_map("PRAGMA table_info(diff_traces)", (), |row| {
+            Ok(DiffTraceColumn {
+                name: row.get(1).context("failed to read column name")?,
+                column_type: row.get(2).context("failed to read column type")?,
+                not_null: row.get(3).context("failed to read not-null flag")?,
+            })
+        })
+        .expect("diff_traces table info query should succeed")
+    }
+
+    fn diff_trace_column<M: DbSpec>(db: &TursoDb<M>, column_name: &str) -> Option<DiffTraceColumn> {
+        diff_trace_columns(db)
+            .into_iter()
+            .find(|column| column.name == column_name)
     }
 
     fn sqlite_object_exists<M: DbSpec>(db: &TursoDb<M>, object_type: &str, name: &str) -> bool {
@@ -374,6 +423,14 @@ mod tests {
             .set(db_path.clone())
             .expect("test DB path should only be initialized once");
         let db = TursoDb::<TestAgentTraceDbSpec>::new().expect("test DB should open");
+        assert_eq!(
+            diff_trace_column(&db, "model_id"),
+            Some(DiffTraceColumn {
+                name: String::from("model_id"),
+                column_type: String::from("TEXT"),
+                not_null: 0,
+            })
+        );
 
         let before_cutoff_patch = valid_patch("notes/before.md", "before cutoff");
         let cutoff_patch = valid_patch("notes/cutoff.md", "at cutoff");
@@ -391,7 +448,13 @@ mod tests {
             "Index: notes/malformed.md\n===================================================================\n--- notes/malformed.md\n+++ notes/malformed.md\n@@ malformed @@\n+bad\n",
         );
         insert_test_diff_trace(&db, 1500, "same-time-a", &first_same_time_patch);
-        insert_test_diff_trace(&db, 1500, "same-time-b", &second_same_time_patch);
+        insert_test_diff_trace_with_model_id(
+            &db,
+            1500,
+            "same-time-b",
+            &second_same_time_patch,
+            Some("openai/gpt-5.5"),
+        );
         insert_test_diff_trace(&db, 2000, "at-end", &end_patch);
         insert_test_diff_trace(&db, 2001, "after-end", &after_end_patch);
 
@@ -404,13 +467,20 @@ mod tests {
             result
                 .patches
                 .iter()
-                .map(|patch| (patch.id, patch.time_ms, patch.session_id.as_str()))
+                .map(|patch| {
+                    (
+                        patch.id,
+                        patch.time_ms,
+                        patch.session_id.as_str(),
+                        patch.model_id.as_deref(),
+                    )
+                })
                 .collect::<Vec<_>>(),
             vec![
-                (2, 1000, "at-cutoff"),
-                (4, 1500, "same-time-a"),
-                (5, 1500, "same-time-b"),
-                (6, 2000, "at-end"),
+                (2, 1000, "at-cutoff", None),
+                (4, 1500, "same-time-a", None),
+                (5, 1500, "same-time-b", Some("openai/gpt-5.5")),
+                (6, 2000, "at-end", None),
             ]
         );
         assert_eq!(
@@ -429,6 +499,7 @@ mod tests {
         assert_eq!(result.skipped[0].id, 3);
         assert_eq!(result.skipped[0].time_ms, 1500);
         assert_eq!(result.skipped[0].session_id, "malformed");
+        assert_eq!(result.skipped[0].model_id, None);
         assert!(
             result.skipped[0].reason.contains("invalid hunk header"),
             "unexpected skipped reason: {}",
@@ -452,6 +523,7 @@ mod tests {
             let legacy_db =
                 TursoDb::<LegacyAgentTraceDbSpec>::new().expect("legacy DB should open");
             assert!(sqlite_object_exists(&legacy_db, "table", "diff_traces"));
+            assert_eq!(diff_trace_column(&legacy_db, "model_id"), None);
             assert!(!sqlite_object_exists(
                 &legacy_db,
                 "table",
@@ -462,6 +534,16 @@ mod tests {
                 "index",
                 "idx_diff_traces_time_ms_id"
             ));
+            legacy_db
+                .execute(
+                    "INSERT INTO diff_traces (time_ms, session_id, patch) VALUES (?1, ?2, ?3)",
+                    (
+                        1234_i64,
+                        "legacy-session",
+                        valid_patch("notes/legacy.md", "legacy"),
+                    ),
+                )
+                .expect("legacy diff trace insert should succeed");
         }
 
         {
@@ -469,6 +551,14 @@ mod tests {
                 TursoDb::<UpgradedAgentTraceDbSpec>::new().expect("upgraded DB should open");
 
             assert!(sqlite_object_exists(&upgraded_db, "table", "diff_traces"));
+            assert_eq!(
+                diff_trace_column(&upgraded_db, "model_id"),
+                Some(DiffTraceColumn {
+                    name: String::from("model_id"),
+                    column_type: String::from("TEXT"),
+                    not_null: 0,
+                })
+            );
             assert!(sqlite_object_exists(
                 &upgraded_db,
                 "table",
@@ -485,8 +575,17 @@ mod tests {
                     "001_create_diff_traces",
                     "002_create_post_commit_patch_intersections",
                     "003_add_diff_traces_time_ms_id_index",
+                    "004_add_diff_traces_model_id",
                 ]
             );
+            let legacy_model_ids = upgraded_db
+                .query_map(
+                    "SELECT model_id FROM diff_traces WHERE session_id = ?1",
+                    ("legacy-session",),
+                    |row| row.get::<Option<String>>(0).map_err(Into::into),
+                )
+                .expect("legacy model_id query should succeed");
+            assert_eq!(legacy_model_ids, vec![None]);
         }
 
         if let Some(parent) = db_path.parent() {
