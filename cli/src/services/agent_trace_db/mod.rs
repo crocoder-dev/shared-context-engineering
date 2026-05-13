@@ -146,7 +146,6 @@ pub struct PostCommitPatchIntersectionInsert<'a> {
 
 /// Built agent trace payload to persist in the agent trace database.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub struct AgentTraceInsert<'a> {
     pub commit_id: &'a str,
     pub commit_time_ms: i64,
@@ -169,7 +168,6 @@ impl AgentTraceDb {
     }
 
     /// Insert a built agent trace payload into the `agent_traces` table.
-    #[allow(dead_code)]
     pub fn insert_agent_trace(&self, input: AgentTraceInsert<'_>) -> Result<u64> {
         self.execute(
             INSERT_AGENT_TRACE_SQL,
@@ -270,7 +268,6 @@ mod tests {
     use std::{
         fs,
         path::PathBuf,
-        sync::atomic::{AtomicU64, Ordering},
         sync::OnceLock,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -279,7 +276,6 @@ mod tests {
 
     static TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
     static UPGRADE_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
-    static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     struct TestAgentTraceDbSpec;
 
@@ -343,11 +339,10 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after Unix epoch")
             .as_nanos();
-        let counter = TEST_DB_COUNTER.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir()
             .join(format!(
-                "sce-agent-trace-db-test-{}-{nonce}-{counter}",
-                std::process::id(),
+                "sce-agent-trace-db-test-{}-{nonce}",
+                std::process::id()
             ))
             .join("agent-trace.db")
     }
