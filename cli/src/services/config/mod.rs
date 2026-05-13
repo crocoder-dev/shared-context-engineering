@@ -2,6 +2,7 @@ pub mod command;
 pub mod lifecycle;
 
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     sync::OnceLock,
 };
@@ -44,6 +45,7 @@ pub(crate) const ENV_LOG_FILE_MODE: &str = "SCE_LOG_FILE_MODE";
 pub(crate) const ENV_OTEL_ENABLED: &str = "SCE_OTEL_ENABLED";
 pub(crate) const ENV_OTEL_ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
 pub(crate) const ENV_OTEL_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
+pub(crate) const ENV_OTEL_HEADERS: &str = "OTEL_EXPORTER_OTLP_HEADERS";
 pub(crate) const ENV_ATTRIBUTION_HOOKS_ENABLED: &str = "SCE_ATTRIBUTION_HOOKS_ENABLED";
 const WORKOS_CLIENT_ID_ENV: &str = "WORKOS_CLIENT_ID";
 const WORKOS_CLIENT_ID_BAKED_DEFAULT: &str = "client_sce_default";
@@ -312,6 +314,8 @@ struct RuntimeConfig {
     otel_enabled: ResolvedValue<bool>,
     otel_endpoint: ResolvedValue<String>,
     otel_protocol: ResolvedValue<OtlpProtocol>,
+    otel_headers: ResolvedSecretStatus,
+    otel_header_values: Vec<OtlpHeader>,
     timeout_ms: ResolvedValue<u64>,
     attribution_hooks_enabled: ResolvedValue<bool>,
     workos_client_id: ResolvedOptionalValue<String>,
@@ -340,8 +344,22 @@ pub(crate) struct ResolvedObservabilityRuntimeConfig {
     pub(crate) otel_enabled: bool,
     pub(crate) otel_endpoint: String,
     pub(crate) otel_protocol: OtlpProtocol,
+    pub(crate) otel_headers: ResolvedSecretStatus,
+    pub(crate) otel_header_values: Vec<OtlpHeader>,
     pub(crate) loaded_config_paths: Vec<LoadedConfigPath>,
     pub(crate) validation_errors: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OtlpHeader {
+    pub(crate) key: String,
+    pub(crate) value: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedSecretStatus {
+    pub(crate) configured: bool,
+    source: Option<ValueSource>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -651,6 +669,8 @@ where
         otel_enabled: runtime.otel_enabled.value,
         otel_endpoint: runtime.otel_endpoint.value,
         otel_protocol: runtime.otel_protocol.value,
+        otel_headers: runtime.otel_headers,
+        otel_header_values: runtime.otel_header_values,
         loaded_config_paths: runtime.loaded_config_paths,
         validation_errors: runtime.validation_errors,
     })
@@ -918,6 +938,15 @@ where
     if resolved_otel_enabled.value {
         validate_otlp_endpoint(&resolved_otel_endpoint.value)?;
     }
+    let resolved_otel_headers = resolve_env_secret_status(&env_lookup, ENV_OTEL_HEADERS);
+    let resolved_otel_header_values = if resolved_otel_enabled.value {
+        match env_lookup(ENV_OTEL_HEADERS) {
+            Some(raw) => parse_otlp_headers(&raw)?,
+            None => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
 
     let mut resolved_timeout_ms = ResolvedValue {
         value: DEFAULT_TIMEOUT_MS,
@@ -987,6 +1016,8 @@ where
         otel_enabled: resolved_otel_enabled,
         otel_endpoint: resolved_otel_endpoint,
         otel_protocol: resolved_otel_protocol,
+        otel_headers: resolved_otel_headers,
+        otel_header_values: resolved_otel_header_values,
         timeout_ms: resolved_timeout_ms,
         attribution_hooks_enabled: resolved_attribution_hooks_enabled,
         workos_client_id: resolved_workos_client_id,
@@ -994,6 +1025,47 @@ where
         validation_errors,
         validation_warnings,
     })
+}
+
+pub(crate) fn parse_otlp_headers(raw: &str) -> Result<Vec<OtlpHeader>> {
+    let mut headers = Vec::new();
+    let mut keys = HashSet::new();
+
+    for pair in raw.split(',') {
+        let Some((key, value)) = pair.split_once('=') else {
+            bail!(otlp_header_validation_message());
+        };
+        if key.is_empty() {
+            bail!(otlp_header_validation_message());
+        }
+
+        let normalized_key = key.to_ascii_lowercase();
+        if !keys.insert(normalized_key) {
+            bail!(otlp_header_validation_message());
+        }
+
+        headers.push(OtlpHeader {
+            key: key.to_string(),
+            value: value.to_string(),
+        });
+    }
+
+    Ok(headers)
+}
+
+fn otlp_header_validation_message() -> &'static str {
+    "Invalid OTEL_EXPORTER_OTLP_HEADERS. Try: use comma-separated key=value pairs, for example Authorization=Bearer <token>. Header values are redacted and were not printed."
+}
+
+fn resolve_env_secret_status<FEnv>(env_lookup: &FEnv, key: &'static str) -> ResolvedSecretStatus
+where
+    FEnv: Fn(&str) -> Option<String>,
+{
+    let configured = env_lookup(key).is_some();
+    ResolvedSecretStatus {
+        configured,
+        source: configured.then_some(ValueSource::Env),
+    }
 }
 
 pub(crate) fn parse_bool_value_from(key: &str, raw: &str, source: &str) -> Result<bool> {
@@ -1926,6 +1998,7 @@ fn format_observability_text_lines(runtime: &RuntimeConfig) -> Vec<String> {
             runtime.otel_protocol.value.as_str(),
             runtime.otel_protocol.source,
         ),
+        format_secret_status_text("otel.exporter_otlp_headers", runtime.otel_headers),
     ]
 }
 
@@ -1943,6 +2016,7 @@ fn format_otel_resolved_json(runtime: &RuntimeConfig) -> Value {
             runtime.otel_protocol.value.as_str(),
             runtime.otel_protocol.source,
         ),
+        "exporter_otlp_headers": format_secret_status_json(runtime.otel_headers),
     })
 }
 
@@ -2014,6 +2088,35 @@ fn format_optional_resolved_value_json(value: &ResolvedOptionalValue<String>) ->
         "value": value.value,
         "source": value.source.map(ValueSource::as_str),
         "config_source": value.source.and_then(ValueSource::config_source).map(ConfigPathSource::as_str),
+    })
+}
+
+fn format_secret_status_text(key: &str, status: ResolvedSecretStatus) -> String {
+    let display_value = if status.configured {
+        "[REDACTED]"
+    } else {
+        "(unset)"
+    };
+    let source = status.source.unwrap_or(ValueSource::Default);
+
+    if status.configured {
+        format_resolved_value_text(key, display_value, source)
+    } else {
+        format!(
+            "- {}: {} (source: {})",
+            style::label(key),
+            style::value(display_value),
+            style::label("none")
+        )
+    }
+}
+
+fn format_secret_status_json(status: ResolvedSecretStatus) -> Value {
+    json!({
+        "configured": status.configured,
+        "display_value": status.configured.then_some("[REDACTED]"),
+        "source": status.source.map(ValueSource::as_str),
+        "config_source": status.source.and_then(ValueSource::config_source).map(ConfigPathSource::as_str),
     })
 }
 
@@ -2108,4 +2211,126 @@ fn abbreviate_text_value(value: &str) -> String {
         .rev()
         .collect();
     format!("{prefix}...{suffix}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn no_config_path_exists(_: &Path) -> bool {
+        false
+    }
+
+    fn env_lookup<'a>(items: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |key| {
+            items
+                .iter()
+                .find_map(|(candidate, value)| (*candidate == key).then(|| (*value).to_string()))
+        }
+    }
+
+    #[test]
+    fn parse_otlp_headers_accepts_standard_pairs_and_values_with_equals() {
+        let headers = parse_otlp_headers("Authorization=Bearer placeholder,tenant=alpha=beta")
+            .expect("headers should parse");
+
+        assert_eq!(
+            headers,
+            vec![
+                OtlpHeader {
+                    key: "Authorization".to_string(),
+                    value: "Bearer placeholder".to_string(),
+                },
+                OtlpHeader {
+                    key: "tenant".to_string(),
+                    value: "alpha=beta".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_otlp_headers_rejects_malformed_pairs_without_echoing_input() {
+        let error = parse_otlp_headers("Authorization Bearer placeholder").unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("comma-separated key=value pairs"));
+        assert!(!message.contains("Authorization Bearer placeholder"));
+        assert!(!message.contains("placeholder"));
+    }
+
+    #[test]
+    fn parse_otlp_headers_rejects_empty_and_duplicate_keys() {
+        let empty_key = parse_otlp_headers("=placeholder").unwrap_err().to_string();
+        let duplicate = parse_otlp_headers("tenant=one,Tenant=two")
+            .unwrap_err()
+            .to_string();
+
+        assert!(empty_key.contains("comma-separated key=value pairs"));
+        assert!(duplicate.contains("comma-separated key=value pairs"));
+        assert!(!duplicate.contains("tenant=one"));
+        assert!(!duplicate.contains("Tenant=two"));
+    }
+
+    #[test]
+    fn resolve_observability_ignores_malformed_headers_when_otel_disabled() {
+        let runtime = resolve_observability_runtime_config_with(
+            Path::new("/workspace"),
+            env_lookup(&[(ENV_OTEL_HEADERS, "Authorization Bearer placeholder")]),
+            |_| Ok(String::new()),
+            no_config_path_exists,
+            || Ok(PathBuf::from("/tmp/sce-test-unused-config.json")),
+        )
+        .expect("disabled OTEL should not parse header env input");
+
+        assert!(!runtime.otel_enabled);
+        assert!(runtime.otel_headers.configured);
+        assert!(runtime.otel_header_values.is_empty());
+    }
+
+    #[test]
+    fn resolve_observability_rejects_malformed_headers_when_otel_enabled_without_secret_leak() {
+        let error = resolve_observability_runtime_config_with(
+            Path::new("/workspace"),
+            env_lookup(&[
+                (ENV_OTEL_ENABLED, "true"),
+                (ENV_OTEL_HEADERS, "Authorization Bearer placeholder"),
+            ]),
+            |_| Ok(String::new()),
+            no_config_path_exists,
+            || Ok(PathBuf::from("/tmp/sce-test-unused-config.json")),
+        )
+        .unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains(ENV_OTEL_HEADERS));
+        assert!(message.contains("comma-separated key=value pairs"));
+        assert!(!message.contains("Authorization Bearer placeholder"));
+        assert!(!message.contains("placeholder"));
+    }
+
+    #[test]
+    fn resolve_observability_parses_headers_when_otel_enabled() {
+        let runtime = resolve_observability_runtime_config_with(
+            Path::new("/workspace"),
+            env_lookup(&[
+                (ENV_OTEL_ENABLED, "true"),
+                (ENV_OTEL_HEADERS, "Authorization=Bearer placeholder"),
+            ]),
+            |_| Ok(String::new()),
+            no_config_path_exists,
+            || Ok(PathBuf::from("/tmp/sce-test-unused-config.json")),
+        )
+        .expect("enabled OTEL should parse valid header env input");
+
+        assert!(runtime.otel_enabled);
+        assert!(runtime.otel_headers.configured);
+        assert_eq!(
+            runtime.otel_header_values,
+            vec![OtlpHeader {
+                key: "Authorization".to_string(),
+                value: "Bearer placeholder".to_string(),
+            }]
+        );
+    }
 }

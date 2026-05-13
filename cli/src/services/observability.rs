@@ -11,17 +11,19 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Result};
 use chrono::Utc;
+use http::{HeaderMap, HeaderName, HeaderValue};
 use opentelemetry::trace::TracerProvider;
-use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_otlp::{WithExportConfig, WithHttpConfig, WithTonicConfig};
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use serde_json::json;
 use tokio::runtime::{Builder as TokioRuntimeBuilder, Runtime};
 use tracing_subscriber::prelude::*;
 
 use crate::services::config::{
-    self, parse_bool_env_value, validate_otlp_endpoint, LogFileMode, LogFormat, LogLevel,
-    OtlpProtocol, DEFAULT_OTEL_ENDPOINT, ENV_LOG_FILE, ENV_LOG_FILE_MODE, ENV_LOG_FORMAT,
-    ENV_LOG_LEVEL, ENV_OTEL_ENABLED, ENV_OTEL_ENDPOINT, ENV_OTEL_PROTOCOL,
+    self, parse_bool_env_value, parse_otlp_headers, validate_otlp_endpoint, LogFileMode, LogFormat,
+    LogLevel, OtlpHeader, OtlpProtocol, DEFAULT_OTEL_ENDPOINT, ENV_LOG_FILE, ENV_LOG_FILE_MODE,
+    ENV_LOG_FORMAT, ENV_LOG_LEVEL, ENV_OTEL_ENABLED, ENV_OTEL_ENDPOINT, ENV_OTEL_HEADERS,
+    ENV_OTEL_PROTOCOL,
 };
 use crate::services::default_paths::{repo_dir, repo_file};
 use crate::services::error::ClassifiedError;
@@ -37,6 +39,7 @@ struct TelemetryConfig {
     enabled: bool,
     endpoint: String,
     protocol: OtlpProtocol,
+    headers: Vec<OtlpHeader>,
 }
 
 impl Default for TelemetryConfig {
@@ -45,6 +48,7 @@ impl Default for TelemetryConfig {
             enabled: false,
             endpoint: DEFAULT_OTEL_ENDPOINT.to_string(),
             protocol: OtlpProtocol::Grpc,
+            headers: Vec::new(),
         }
     }
 }
@@ -73,6 +77,10 @@ impl TelemetryConfig {
             config.endpoint = raw;
         }
 
+        if let Some(raw) = lookup(ENV_OTEL_HEADERS) {
+            config.headers = parse_otlp_headers(&raw)?;
+        }
+
         validate_otlp_endpoint(&config.endpoint)?;
 
         Ok(config)
@@ -93,6 +101,7 @@ impl TelemetryRuntime {
             // Clone required: TelemetryConfig owns the endpoint String
             endpoint: config.otel_endpoint.clone(),
             protocol: config.otel_protocol,
+            headers: config.otel_header_values.clone(),
         })
     }
 
@@ -120,18 +129,8 @@ impl TelemetryRuntime {
         let _runtime_guard = runtime.enter();
 
         let exporter = match config.protocol {
-            OtlpProtocol::Grpc => opentelemetry_otlp::SpanExporter::builder()
-                .with_tonic()
-                // Clone required: with_endpoint takes ownership of the endpoint String
-                .with_endpoint(config.endpoint.clone())
-                .build()
-                .map_err(|error| anyhow!("Failed to initialize OTLP gRPC exporter: {error}"))?,
-            OtlpProtocol::HttpProtobuf => opentelemetry_otlp::SpanExporter::builder()
-                .with_http()
-                // Clone required: with_endpoint takes ownership of the endpoint String
-                .with_endpoint(config.endpoint.clone())
-                .build()
-                .map_err(|error| anyhow!("Failed to initialize OTLP HTTP exporter: {error}"))?,
+            OtlpProtocol::Grpc => build_grpc_span_exporter(config)?,
+            OtlpProtocol::HttpProtobuf => build_http_span_exporter(config)?,
         };
 
         let provider = SdkTracerProvider::builder()
@@ -158,6 +157,62 @@ impl TelemetryRuntime {
 
         action()
     }
+}
+
+fn build_grpc_span_exporter(config: &TelemetryConfig) -> Result<opentelemetry_otlp::SpanExporter> {
+    let mut builder = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        // Clone required: with_endpoint takes ownership of the endpoint String
+        .with_endpoint(config.endpoint.clone());
+
+    if !config.headers.is_empty() {
+        builder = builder.with_metadata(otlp_headers_to_metadata(&config.headers)?);
+    }
+
+    builder
+        .build()
+        .map_err(|error| anyhow!("Failed to initialize OTLP gRPC exporter: {error}"))
+}
+
+fn build_http_span_exporter(config: &TelemetryConfig) -> Result<opentelemetry_otlp::SpanExporter> {
+    let mut builder = opentelemetry_otlp::SpanExporter::builder()
+        .with_http()
+        // Clone required: with_endpoint takes ownership of the endpoint String
+        .with_endpoint(config.endpoint.clone());
+
+    if !config.headers.is_empty() {
+        builder = builder.with_headers(otlp_headers_to_hash_map(&config.headers));
+    }
+
+    builder
+        .build()
+        .map_err(|error| anyhow!("Failed to initialize OTLP HTTP exporter: {error}"))
+}
+
+fn otlp_headers_to_hash_map(headers: &[OtlpHeader]) -> std::collections::HashMap<String, String> {
+    headers
+        .iter()
+        .map(|header| (header.key.clone(), header.value.clone()))
+        .collect()
+}
+
+fn otlp_headers_to_metadata(headers: &[OtlpHeader]) -> Result<tonic::metadata::MetadataMap> {
+    let mut header_map = HeaderMap::new();
+    for header in headers {
+        let name = HeaderName::from_bytes(header.key.as_bytes()).map_err(|_| {
+            anyhow!(
+                "Invalid OTEL_EXPORTER_OTLP_HEADERS. Try: use comma-separated key=value pairs with valid HTTP header names. Header values are redacted and were not printed."
+            )
+        })?;
+        let value = HeaderValue::from_str(&header.value).map_err(|_| {
+            anyhow!(
+                "Invalid OTEL_EXPORTER_OTLP_HEADERS. Try: use comma-separated key=value pairs with valid HTTP header values. Header values are redacted and were not printed."
+            )
+        })?;
+        header_map.insert(name, value);
+    }
+
+    Ok(tonic::metadata::MetadataMap::from_headers(header_map))
 }
 
 impl Drop for TelemetryRuntime {
@@ -514,4 +569,76 @@ fn enforce_unix_log_file_permissions(path: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn placeholder_headers() -> Vec<OtlpHeader> {
+        vec![
+            OtlpHeader {
+                key: "Authorization".to_string(),
+                value: "Bearer placeholder".to_string(),
+            },
+            OtlpHeader {
+                key: "tenant".to_string(),
+                value: "alpha=beta".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn otlp_headers_to_hash_map_preserves_values_for_http_exporter() {
+        let headers = otlp_headers_to_hash_map(&placeholder_headers());
+
+        assert_eq!(
+            headers.get("Authorization").map(String::as_str),
+            Some("Bearer placeholder")
+        );
+        assert_eq!(
+            headers.get("tenant").map(String::as_str),
+            Some("alpha=beta")
+        );
+    }
+
+    #[test]
+    fn otlp_headers_to_metadata_preserves_values_for_grpc_exporter() {
+        let metadata = otlp_headers_to_metadata(&placeholder_headers())
+            .expect("headers should convert to gRPC metadata");
+
+        assert_eq!(
+            metadata
+                .get("authorization")
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer placeholder")
+        );
+        assert_eq!(
+            metadata.get("tenant").and_then(|value| value.to_str().ok()),
+            Some("alpha=beta")
+        );
+    }
+
+    #[test]
+    fn telemetry_config_from_env_lookup_rejects_headers_only_when_enabled() {
+        let disabled = TelemetryConfig::from_env_lookup(|key| match key {
+            ENV_OTEL_HEADERS => Some("Authorization Bearer placeholder".to_string()),
+            _ => None,
+        })
+        .expect("disabled telemetry should ignore malformed headers");
+        assert!(!disabled.enabled);
+        assert!(disabled.headers.is_empty());
+
+        let error = TelemetryConfig::from_env_lookup(|key| match key {
+            ENV_OTEL_ENABLED => Some("true".to_string()),
+            ENV_OTEL_HEADERS => Some("Authorization Bearer placeholder".to_string()),
+            _ => None,
+        })
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("comma-separated key=value pairs"));
+        assert!(!error.contains("Authorization Bearer placeholder"));
+        assert!(!error.contains("placeholder"));
+    }
 }

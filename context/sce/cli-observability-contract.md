@@ -3,7 +3,7 @@
 ## Scope
 
 This document defines the structured observability baseline and in-scope event contract for `sce` runtime execution.
-It covers deterministic stderr logger controls, the current logger and telemetry trait boundaries, optional OpenTelemetry export bootstrap, config-backed runtime resolution, startup degradation behavior for invalid discovered config, and event emission boundaries in `cli/src/services/observability.rs`, `cli/src/services/config/mod.rs`, `cli/src/app.rs`, `cli/src/services/hooks/mod.rs`, and `cli/src/services/agent_trace_db/mod.rs`.
+It covers deterministic stderr logger controls, the current logger and telemetry trait boundaries, optional OpenTelemetry export bootstrap, config-backed runtime resolution, the approved env-only OTLP header-auth contract, startup degradation behavior for invalid discovered config, and event emission boundaries in `cli/src/services/observability.rs`, `cli/src/services/config/mod.rs`, `cli/src/app.rs`, `cli/src/services/hooks/mod.rs`, and `cli/src/services/agent_trace_db/mod.rs`.
 
 Runtime observability now consumes the shared resolved observability config from `cli/src/services/config/mod.rs`: env values still win, config-file values act as fallback, and defaults apply when both are absent. When default-discovered config files are invalid JSON, fail schema validation, or are not top-level JSON objects, observability resolution now skips those files, collects the failure text in `validation_errors`, and continues with defaults; explicit `--config` / `SCE_CONFIG_FILE` selections remain fatal. Startup therefore keeps running with degraded observability defaults instead of turning discovered invalid config into a startup failure. Those resolved values are surfaced to operators through `sce config show`; `sce config validate` uses the same validation path but now reports only validation status plus any errors or warnings.
 
@@ -23,7 +23,21 @@ Runtime observability now consumes the shared resolved observability config from
 - When OpenTelemetry is enabled, exporter config resolves from env first and config-file fallback second:
   - `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://127.0.0.1:4317`, must be absolute `http(s)` URL)
   - `OTEL_EXPORTER_OTLP_PROTOCOL` (`grpc` or `http/protobuf`, default `grpc`)
+- `OTEL_EXPORTER_OTLP_HEADERS` is the approved first OTLP authentication input. It is env-only, optional, secret-bearing, and has no config-file key or generated-schema entry.
 - Invalid OTEL env values fail invocation validation with explicit remediation guidance.
+
+## OTLP header authentication contract
+
+- `OTEL_EXPORTER_OTLP_HEADERS` is read only from the process environment. It must not be accepted from `.sce/config.json`, the generated `sce/config.json` schema, repo-local defaults, context files, or test fixtures containing real credentials.
+- Header syntax follows the standard OTLP environment variable format: comma-separated `key=value` pairs. A hosted-collector bearer-token example is `Authorization=Bearer <token>`; examples must use placeholders only.
+- Empty header keys, missing `=`, malformed pairs, and duplicate header keys are invalid. The parser should preserve non-empty values after the first `=` so values such as `Authorization=Bearer <token>` remain valid.
+- Header resolution is independent of endpoint/protocol precedence: `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_PROTOCOL` keep their existing env-over-config-file-over-default behavior, while `OTEL_EXPORTER_OTLP_HEADERS` has env-only presence or absence.
+- Header validation is required only when OTEL export is enabled through `SCE_OTEL_ENABLED` / `otel.enabled`. When OTEL remains disabled, a malformed header env var should not block non-telemetry command execution.
+- When OTEL is enabled and header syntax is invalid, startup/config resolution must fail before command dispatch with deterministic remediation guidance that identifies the expected comma-separated `key=value` syntax without echoing raw header values.
+- Parsed headers must be applied to both supported span exporter protocols: `grpc` and `http/protobuf`.
+- `sce config show` reports only safe presence/provenance for OTLP headers: source `env` plus `[REDACTED]`/`configured=true` when set, or unset/null fields when absent. It must not render raw header names or values because names can reveal auth mechanisms and values can contain credentials.
+- Observability events, user-facing stderr diagnostics, file sinks, JSON/text config output, and tests must not expose raw header strings, bearer tokens, API keys, or realistic secret values.
+- Dash0 and other hosted collectors are examples of why this auth channel exists, but the runtime contract remains collector-neutral and does not add vendor-specific config keys.
 
 ## Repository-local default in this repo
 
@@ -124,16 +138,17 @@ Events below are the stable target contract for hook and Agent Trace observabili
 
 ## Operator verification contract
 
-- `sce config show` is the canonical operator surface for resolved observability settings and provenance: `log_level`, `log_format`, `log_file`, `log_file_mode`, `otel.enabled`, `otel.exporter_otlp_endpoint`, and `otel.exporter_otlp_protocol`.
+- `sce config show` is the canonical operator surface for resolved observability settings and provenance: `log_level`, `log_format`, `log_file`, `log_file_mode`, `otel.enabled`, `otel.exporter_otlp_endpoint`, `otel.exporter_otlp_protocol`, and safe OTLP header-auth presence/provenance without raw header material.
 - `sce config validate` confirms observability config validity without duplicating the full provenance display.
 - `sce doctor` is the canonical operator surface for Agent Trace DB readiness and health, including path resolution, parent-directory readiness, DB initialization health, and fix-mode bootstrap where supported.
 - Configured log-file output verifies the same `event_id` records that are emitted on stderr; file logging must preserve stdout payload separation and line-oriented deterministic rendering.
 - Optional OTEL export verifies that logger events are mirrored into tracing events under the app subscriber context; tests should validate bootstrap/config behavior without requiring a real external collector.
+- Placeholder-only operator examples and no-secret safeguards live in `context/sce/otel-auth-operator-usage.md`.
 - Operators should be able to verify hook and Agent Trace observability by enabling debug-level logging with a file sink, running hook/diff-trace/post-commit paths in a disposable repository, and checking for event IDs plus safe metadata without raw patch or secret leakage.
 
 ## Sensitive-field exclusion contract
 
-- Never log raw patch contents, serialized patch/intersection JSON, complete diff-trace stdin payloads, commit-message contents, tokens, config secrets, or private signing keys.
+- Never log raw patch contents, serialized patch/intersection JSON, complete diff-trace stdin payloads, commit-message contents, OTLP header strings, tokens, API keys, config secrets, or private signing keys.
 - Do not log raw `sessionID` values unless a future decision explicitly classifies them as operator-safe.
 - Avoid absolute filesystem paths in hook/Agent Trace events unless they pass through the existing redaction policy or are represented as path categories.
 - Prefer counts, booleans, enum-like status values, millisecond timestamps/window bounds, command names, hook subcommand names, and safe outcome categories.
@@ -166,7 +181,7 @@ Events below are the stable target contract for hook and Agent Trace observabili
 
 ## Ownership and verification
 
-- `cli/src/services/config/mod.rs` owns shared observability value resolution, config-file discovery/merge, and env-over-config precedence for runtime inputs.
-- `cli/src/services/observability.rs` owns runtime logger construction from resolved values, level filtering, record rendering, optional file sink lifecycle/permission enforcement, and OTEL runtime setup (`TelemetryRuntime`); `cli/src/services/observability/traits.rs` owns the logger and telemetry trait boundaries plus the no-op logger implementation.
+- `cli/src/services/config/mod.rs` owns shared observability value resolution, config-file discovery/merge, env-over-config precedence for runtime inputs, env-only `OTEL_EXPORTER_OTLP_HEADERS` presence/provenance plus redacted inspection semantics, and enabled-OTEL header parsing/validation without raw header echoing.
+- `cli/src/services/observability.rs` owns runtime logger construction from resolved values, level filtering, record rendering, optional file sink lifecycle/permission enforcement, OTEL runtime setup (`TelemetryRuntime`), and parsed header application to gRPC metadata plus HTTP/protobuf exporter headers; `cli/src/services/observability/traits.rs` owns the logger and telemetry trait boundaries plus the no-op logger implementation.
 - `cli/src/app.rs` owns lifecycle event emission around parse/dispatch success and failure paths, resolves observability config before command dispatch, emits startup invalid-config warning events for skipped discovered config files, and wraps dispatch inside the observability subscriber context.
 - Contract behavior is covered by `services::observability::tests` and exercised in end-to-end app command tests.

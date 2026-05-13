@@ -4,7 +4,7 @@
 
 This contract documents the implemented `sce config` command behavior in `cli/src/services/config/mod.rs`, the canonical Pkl-authored `sce/config.json` schema artifact generated to `config/schema/sce-config.schema.json` and embedded there as `SCE_CONFIG_SCHEMA_JSON`, the typed serde DTO + mapping pipeline used for config-file parsing, and parser/dispatch wiring in `cli/src/app.rs`.
 
-The current implementation resolves flat logging keys plus nested `otel` keys with deterministic env-over-config precedence and source metadata, uses those resolved values in `cli/src/app.rs` / `cli/src/services/observability.rs` for runtime logging and OTEL bootstrap, exposes resolved-value inspection through `sce config show`, and keeps `sce config validate` focused on validation status plus errors/warnings.
+The current implementation resolves flat logging keys plus nested `otel` keys with deterministic env-over-config precedence and source metadata, uses those resolved values in `cli/src/app.rs` / `cli/src/services/observability.rs` for runtime logging and OTEL bootstrap, exposes resolved-value inspection through `sce config show`, and keeps `sce config validate` focused on validation status plus errors/warnings. `OTEL_EXPORTER_OTLP_HEADERS` is recognized as an env-only secret-bearing input with no config-file fallback and only redacted `sce config show` inspection.
 
 ## Command surface
 
@@ -30,6 +30,8 @@ Resolved observability values that currently have no CLI flag layer follow the s
 1. environment values (`SCE_LOG_FORMAT`, `SCE_LOG_FILE`, `SCE_LOG_FILE_MODE`, `SCE_OTEL_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`)
 2. config file values (`log_format`, `log_file`, `log_file_mode`, `otel.enabled`, `otel.exporter_otlp_endpoint`, `otel.exporter_otlp_protocol`)
 3. defaults where defined (`log_format=text`, `log_file_mode=truncate`, `otel.enabled=false`, `otel.exporter_otlp_endpoint=http://127.0.0.1:4317`, `otel.exporter_otlp_protocol=grpc`); `log_file` remains unset when no env/config value is present
+
+`OTEL_EXPORTER_OTLP_HEADERS` is intentionally excluded from the config-file/default chain. It resolves only from the environment, is optional, and must be treated as secret-bearing. No `.sce/config.json` key, generated schema key, or baked default is allowed for header values.
 
 Supported auth-adjacent runtime keys can participate in one shared key-declared precedence path without defining CLI flags. Each key declares its config-file name, environment variable name, and whether a baked default is allowed. The shared resolver supports keys that allow a baked default and keys that intentionally omit one. The first implemented migrated key is `workos_client_id`, which resolves as:
 
@@ -74,6 +76,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `otel.enabled` must be a boolean when present.
 - `otel.exporter_otlp_endpoint` must be an absolute `http(s)` URL when present.
 - `otel.exporter_otlp_protocol` must be `grpc` or `http/protobuf` when present.
+- Secret OTLP header values are not valid config-file content. `OTEL_EXPORTER_OTLP_HEADERS` is env-only and must not be added to the allowed `otel` keys or generated schema.
 - `policies` must be an object when present and currently allows only `bash`.
 - `policies.bash` must be an object when present and currently allows only `presets` and `custom`.
 - `policies.bash.presets` must be an array of unique built-in preset IDs: `forbid-git-all`, `forbid-git-commit`, `use-pnpm-over-npm`, `use-bun-over-npm`, `use-nix-flake-over-cargo`.
@@ -91,7 +94,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `show` reports discovered config files as `config_paths` (JSON) / `Config files:` (text).
 - Resolved values in `show` continue to report `source`; when source is `config_file`, output also reports a deterministic `config_source` value (`flag`, `env`, `default_discovered_global`, `default_discovered_local`).
 - `show` includes migrated supported auth keys in `result.resolved`.
-- `show` includes resolved observability values directly in `result.resolved`, preserving flat logging keys (`log_level`, `log_format`, `log_file`, `log_file_mode`) plus nested `otel.{enabled,exporter_otlp_endpoint,exporter_otlp_protocol}`.
+- `show` includes resolved observability values directly in `result.resolved`, preserving flat logging keys (`log_level`, `log_format`, `log_file`, `log_file_mode`) plus nested `otel.{enabled,exporter_otlp_endpoint,exporter_otlp_protocol,exporter_otlp_headers}`. The header field carries only configured/unset state, redacted display text, and source metadata.
 - `validate` text output is limited to `SCE config validation`, `Validation issues`, and `Validation warnings` lines.
 - `validate` JSON output is limited to `result.command`, `result.valid`, `result.issues`, and `result.warnings`.
 - `show` includes resolved bash-tool policies under `result.resolved.policies.bash`.
@@ -106,6 +109,16 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - Auth-key JSON output in `show` includes `value`, text-oriented `display_value`, `source`, optional `config_source`, and a key-specific `precedence` string describing the allowed resolution chain.
 - Auth-key text output in `show` includes `auth_precedence` and abbreviates full values when they look credential-like; fully secret-bearing key classes remain redacted.
 - For the currently migrated key `workos_client_id`, `show` reports the baked default with `source: default` when env/config inputs are absent.
+
+## OTLP header-auth inspection contract
+
+- `OTEL_EXPORTER_OTLP_HEADERS` uses standard OTLP syntax: comma-separated `key=value` pairs. Values may contain additional `=` characters after the first separator.
+- When OTEL export is enabled, malformed header syntax fails startup/config resolution before command dispatch with deterministic guidance to use comma-separated `key=value` pairs.
+- Validation errors must not echo the raw env var value, individual header names, bearer tokens, API keys, or other credential material.
+- When OTEL export is disabled, malformed header env input should not block unrelated command execution.
+- `sce config show` exposes only safe header-auth presence/provenance: text output includes `otel.exporter_otlp_headers` with `[REDACTED]` when configured or `(unset)` when absent, and JSON output includes `configured`, `display_value`, `source`, and `config_source` without raw header names or values.
+- `sce config show` JSON must not include raw header names or values; safe fields are limited to redacted display text, source/provenance, and configured boolean.
+- `sce config validate` remains config-file focused and must not encourage storing OTLP auth headers in `.sce/config.json`.
 
 ## Auth diagnostics contract
 
