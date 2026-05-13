@@ -51,12 +51,16 @@ The implementation should send one optional `model_id` string in the diff-trace 
   - Evidence: `nix build .#checks.x86_64-linux.cli-tests` passed; `nix build .#checks.x86_64-linux.cli-clippy` passed; `nix build .#checks.x86_64-linux.cli-fmt` passed; `nix build .#default` passed; `nix run .#pkl-check-generated` passed; `nix flake check` passed.
   - Notes: Added optional non-empty `model_id` validation for diff-trace STDIN, preserved legacy payload artifact shape by omitting absent `model_id`, and mapped accepted values into `DiffTraceInsert.model_id` for AgentTraceDb persistence.
 
-- [ ] T03: `Capture model_id in OpenCode agent-trace plugin` (status:todo)
+- [x] T03: `Capture model_id in OpenCode agent-trace plugin` (status:done)
   - Task ID: T03
   - Goal: Correlate OpenCode model metadata by `sessionID` and include `model_id` in diff-trace payloads when known.
   - Boundaries (in/out of scope): In - canonical plugin source under `config/lib/agent-trace-plugin/`, in-memory `sessionID -> model_id` cache, primary extraction from `chat.message`, fallback from `chat.params` if practical in the existing plugin type surface, generated OpenCode plugin output updates, and focused plugin tests if a test harness exists or is added locally to that package. Out - durable cache, DB access from plugin, and changing `session.diff` extraction semantics for patches.
   - Done when: The plugin records `<providerID>/<modelID>` for a session before diff capture; `session.diff` payloads include `model_id` when the cache has a value; sessions without known model still emit valid legacy-compatible payloads; generated plugin files match canonical source.
   - Verification notes (commands or checks): Plugin/runtime tests for model cache and payload shape; `nix run .#pkl-check-generated` to verify generated outputs.
+  - Completed: 2026-05-13
+  - Files changed: `config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts`, `config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.test.ts`, `config/.opencode/plugins/sce-agent-trace.ts`, `config/automated/.opencode/plugins/sce-agent-trace.ts`, `context/sce/opencode-agent-trace-plugin-runtime.md`, `context/context-map.md`, `context/glossary.md`
+  - Evidence: `bun test` in `config/lib/agent-trace-plugin` passed (4 tests, 7 assertions); `nix develop -c tsc -p config/lib/agent-trace-plugin/tsconfig.json` passed; `nix run .#pkl-check-generated` passed; `nix flake check` passed.
+  - Notes: Added an in-memory `sessionID -> model_id` cache populated from `chat.message` and `chat.params`; `session.diff` payloads include `model_id` only when known and otherwise preserve the legacy payload shape.
 
 - [ ] T04: `Sync current-state context for model_id diff traces` (status:todo)
   - Task ID: T04
