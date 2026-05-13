@@ -16,6 +16,8 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 - `recent_diff_trace_patches(cutoff_time_ms, end_time_ms)`: chronological `diff_traces` read helper for rows in the inclusive window `time_ms >= cutoff_time_ms AND time_ms <= end_time_ms`; parses raw patch text through `parse_patch` and skips malformed rows without failing the query.
 - `PostCommitPatchIntersectionInsert<'a>`: insert payload for post-commit intersection results with commit metadata, window bounds, loaded/skipped counts, and serialized patch JSON.
 - `insert_post_commit_patch_intersection()`: domain-specific insert helper using parameterized SQL.
+- `AgentTraceInsert<'a>`: insert payload for built Agent Trace rows with `commit_id`, `commit_time_ms`, and serialized `trace_json`.
+- `insert_agent_trace()`: domain-specific insert helper for `agent_traces` using parameterized SQL.
 - `lifecycle.rs`: service lifecycle provider for setup/doctor integration.
 
 ## Database path
@@ -34,6 +36,7 @@ The Agent Trace DB path is resolved from the shared default-path catalog:
 - `001_create_diff_traces.sql`
 - `002_create_post_commit_patch_intersections.sql`
 - `003_add_diff_traces_time_ms_id_index.sql`
+- `004_create_agent_traces.sql`
 
 The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::new()` applies later Agent Trace migrations to an already-created `~/.local/state/sce/agent-trace.db`.
 
@@ -57,6 +60,14 @@ The post-commit intersection migration creates `post_commit_patch_intersections`
 - `intersection_patch TEXT NOT NULL`
 - `created_at TEXT NOT NULL DEFAULT (...)`
 
+The `agent_traces` migration creates:
+
+- `id INTEGER PRIMARY KEY AUTOINCREMENT`
+- `commit_id TEXT NOT NULL`
+- `commit_time_ms INTEGER NOT NULL`
+- `trace_json TEXT NOT NULL`
+- `created_at TEXT NOT NULL DEFAULT (...)`
+
 ## Lifecycle integration
  
 `AgentTraceDbLifecycle` is registered in `cli/src/services/lifecycle.rs` after `LocalDbLifecycle` and before optional `HooksLifecycle`.
@@ -76,7 +87,7 @@ The post-commit intersection migration creates `post_commit_patch_intersections`
 - Command success requires both artifact and database persistence to succeed.
 - Existing artifact files are not backfilled into the database.
 
-Post-commit intersection rows are written by the active `post-commit` hook flow (see [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md)).
+Post-commit intersection rows are written by the active `post-commit` hook flow, and the same flow now also inserts built Agent Trace payloads into `agent_traces` via `AgentTraceDb::insert_agent_trace()` (see [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md)).
 
 ## Recent patch reads
 

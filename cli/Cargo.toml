@@ -20,6 +20,7 @@ include = [
   "build.rs",
   "assets/hooks/**",
   "assets/generated/**",
+  "migrations/**",
   "src/**",
 ]
 keywords = ["cli", "automation", "developer-tools"]

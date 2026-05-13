@@ -18,6 +18,8 @@ const CREATE_POST_COMMIT_PATCH_INTERSECTIONS_MIGRATION: &str =
     include_str!("../../../migrations/agent-trace/002_create_post_commit_patch_intersections.sql");
 const ADD_DIFF_TRACES_TIME_MS_ID_INDEX_MIGRATION: &str =
     include_str!("../../../migrations/agent-trace/003_add_diff_traces_time_ms_id_index.sql");
+const CREATE_AGENT_TRACES_MIGRATION: &str =
+    include_str!("../../../migrations/agent-trace/004_create_agent_traces.sql");
 
 const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
     ("001_create_diff_traces", CREATE_DIFF_TRACES_MIGRATION),
@@ -29,6 +31,7 @@ const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
         "003_add_diff_traces_time_ms_id_index",
         ADD_DIFF_TRACES_TIME_MS_ID_INDEX_MIGRATION,
     ),
+    ("004_create_agent_traces", CREATE_AGENT_TRACES_MIGRATION),
 ];
 
 /// Parameterized SQL for inserting a captured diff trace payload.
@@ -52,6 +55,10 @@ pub const INSERT_POST_COMMIT_PATCH_INTERSECTION_SQL: &str =
     skipped_diff_trace_count,
     intersection_patch
 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
+
+/// Parameterized SQL for inserting a built agent trace payload.
+pub const INSERT_AGENT_TRACE_SQL: &str =
+    "INSERT INTO agent_traces (commit_id, commit_time_ms, trace_json) VALUES (?1, ?2, ?3)";
 
 /// Agent trace database configuration.
 pub struct AgentTraceDbSpec;
@@ -137,6 +144,15 @@ pub struct PostCommitPatchIntersectionInsert<'a> {
     pub intersection_patch: &'a str,
 }
 
+/// Built agent trace payload to persist in the agent trace database.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub struct AgentTraceInsert<'a> {
+    pub commit_id: &'a str,
+    pub commit_time_ms: i64,
+    pub trace_json: &'a str,
+}
+
 impl AgentTraceDb {
     /// Insert a diff trace payload into the `diff_traces` table.
     pub fn insert_diff_trace(&self, input: DiffTraceInsert<'_>) -> Result<u64> {
@@ -150,6 +166,15 @@ impl AgentTraceDb {
         input: PostCommitPatchIntersectionInsert<'_>,
     ) -> Result<u64> {
         insert_post_commit_patch_intersection_with(self, input)
+    }
+
+    /// Insert a built agent trace payload into the `agent_traces` table.
+    #[allow(dead_code)]
+    pub fn insert_agent_trace(&self, input: AgentTraceInsert<'_>) -> Result<u64> {
+        self.execute(
+            INSERT_AGENT_TRACE_SQL,
+            (input.commit_id, input.commit_time_ms, input.trace_json),
+        )
     }
 
     /// Query and parse recent diff trace patches within the inclusive time window.
@@ -245,6 +270,7 @@ mod tests {
     use std::{
         fs,
         path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
         sync::OnceLock,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -253,6 +279,8 @@ mod tests {
 
     static TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
     static UPGRADE_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
+    static INSERT_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
+    static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     struct TestAgentTraceDbSpec;
 
@@ -311,15 +339,35 @@ mod tests {
         }
     }
 
+    struct InsertAgentTraceDbSpec;
+
+    impl DbSpec for InsertAgentTraceDbSpec {
+        fn db_name() -> &'static str {
+            "insert test agent trace DB"
+        }
+
+        fn db_path() -> Result<PathBuf> {
+            INSERT_TEST_DB_PATH
+                .get()
+                .cloned()
+                .context("insert test DB path should be initialized")
+        }
+
+        fn migrations() -> &'static [(&'static str, &'static str)] {
+            AGENT_TRACE_MIGRATIONS
+        }
+    }
+
     fn unique_test_db_path() -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after Unix epoch")
             .as_nanos();
+        let counter = TEST_DB_COUNTER.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir()
             .join(format!(
-                "sce-agent-trace-db-test-{}-{nonce}",
-                std::process::id()
+                "sce-agent-trace-db-test-{}-{nonce}-{counter}",
+                std::process::id(),
             ))
             .join("agent-trace.db")
     }
@@ -479,15 +527,70 @@ mod tests {
                 "index",
                 "idx_diff_traces_time_ms_id"
             ));
+            assert!(sqlite_object_exists(&upgraded_db, "table", "agent_traces"));
             assert_eq!(
                 applied_migration_ids(&upgraded_db),
                 vec![
                     "001_create_diff_traces",
                     "002_create_post_commit_patch_intersections",
                     "003_add_diff_traces_time_ms_id_index",
+                    "004_create_agent_traces",
                 ]
             );
         }
+
+        if let Some(parent) = db_path.parent() {
+            fs::remove_dir_all(parent).expect("test DB directory should be removed");
+        }
+    }
+
+    #[test]
+    fn insert_agent_trace_persists_commit_metadata_and_trace_payload() {
+        let db_path = unique_test_db_path();
+        INSERT_TEST_DB_PATH
+            .set(db_path.clone())
+            .expect("insert test DB path should only be initialized once");
+        let db = TursoDb::<InsertAgentTraceDbSpec>::new().expect("test DB should open");
+
+        let insert = AgentTraceInsert {
+            commit_id: "abc123",
+            commit_time_ms: 1_710_000_000_123,
+            trace_json: "{\"version\":1,\"id\":\"trace-1\"}",
+        };
+        let insert_result = db
+            .execute(
+                INSERT_AGENT_TRACE_SQL,
+                (insert.commit_id, insert.commit_time_ms, insert.trace_json),
+            )
+            .expect("agent trace insert should succeed");
+
+        assert_eq!(insert_result, 1);
+
+        let rows = db
+            .query_map(
+                "SELECT commit_id, commit_time_ms, trace_json FROM agent_traces",
+                (),
+                |row: &turso::Row| -> Result<(String, i64, String)> {
+                    Ok((
+                        row.get(0)
+                            .context("failed to read agent_traces.commit_id")?,
+                        row.get(1)
+                            .context("failed to read agent_traces.commit_time_ms")?,
+                        row.get(2)
+                            .context("failed to read agent_traces.trace_json")?,
+                    ))
+                },
+            )
+            .expect("agent_traces query should succeed");
+
+        assert_eq!(
+            rows,
+            vec![(
+                "abc123".to_string(),
+                1_710_000_000_123,
+                "{\"version\":1,\"id\":\"trace-1\"}".to_string(),
+            )]
+        );
 
         if let Some(parent) = db_path.parent() {
             fs::remove_dir_all(parent).expect("test DB directory should be removed");
