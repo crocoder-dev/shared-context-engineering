@@ -473,7 +473,7 @@ fn run_post_commit_agent_trace_flow(
         |trace_value| {
             validate_agent_trace_value(trace_value)
                 .map_err(|error| anyhow!(error.to_string()))
-                .context("Failed to persist built post-commit Agent Trace payload.")?;
+                .context("Failed to verify built post-commit Agent Trace payload.")?;
 
             Ok(())
         },
