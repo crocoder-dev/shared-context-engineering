@@ -45,6 +45,7 @@
           extensions = [
             "rustfmt"
             "clippy"
+            "rust-src"
           ];
         };
 
