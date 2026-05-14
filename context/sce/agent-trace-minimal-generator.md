@@ -32,7 +32,7 @@ All types are `serde`-serializable with `snake_case` field naming. `Conversation
 
 Current output includes top-level metadata fields with this contract:
 
-- `version` is fixed to `"0.1"`
+- `version` is fixed to `"0.1.0"` and follows strict numeric `x.y.z`
 - `id` is generated per `build_agent_trace(...)` call as a UUIDv7 string derived from the same commit-time moment used for `timestamp`
 - `timestamp` is sourced from explicit commit metadata input (`AgentTraceMetadataInput.commit_timestamp`) and must be RFC 3339
 - `vcs.type` is fixed to `"git"`
@@ -40,7 +40,7 @@ Current output includes top-level metadata fields with this contract:
 
 ```json
 {
-  "version": "0.1",
+  "version": "0.1.0",
   "id": "01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
   "timestamp": "2026-04-23T10:20:30Z",
   "vcs": {

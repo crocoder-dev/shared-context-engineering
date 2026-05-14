@@ -26,7 +26,7 @@ use super::patch::{
     TouchedLineKind,
 };
 
-pub const AGENT_TRACE_VERSION: &str = "0.1";
+pub const AGENT_TRACE_VERSION: &str = "0.1.0";
 
 fn default_agent_trace_version() -> String {
     AGENT_TRACE_VERSION.to_owned()
