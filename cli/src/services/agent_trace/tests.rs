@@ -3,7 +3,7 @@ use super::{
     AGENT_TRACE_VERSION,
 };
 use crate::services::patch::{combine_patches, parse_patch, ParsedPatch};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 #[derive(Clone, Copy)]
 struct AgentTraceScenario {
@@ -13,6 +13,7 @@ struct AgentTraceScenario {
 }
 
 const TEST_COMMIT_TIMESTAMP: &str = "2026-04-23T10:20:30Z";
+const TEST_COMMIT_REVISION: &str = "a0b1c2d3e4f5a6b7c8d9e0f11223344556677889";
 
 fn parse_fixtures(fixtures: &[&str]) -> Vec<ParsedPatch> {
     fixtures
@@ -60,13 +61,17 @@ fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
         &post_commit_patch,
         AgentTraceMetadataInput {
             commit_timestamp: TEST_COMMIT_TIMESTAMP,
+            commit_revision: TEST_COMMIT_REVISION,
         },
     )
     .expect("agent trace should build");
     assert_eq!(actual.version, AGENT_TRACE_VERSION);
     assert_eq!(actual.timestamp, TEST_COMMIT_TIMESTAMP);
+    assert_eq!(actual.vcs.kind, "git");
+    assert_eq!(actual.vcs.revision, TEST_COMMIT_REVISION);
     let actual_json = serde_json::to_value(&actual).expect("agent trace should serialize");
     validate_agent_trace_value(&actual_json).expect("actual json should validate against schema");
+    assert_eq!(actual_json["vcs"], golden["vcs"]);
     assert_eq!(actual_json["files"], golden["files"]);
 }
 
@@ -140,6 +145,7 @@ fn poem_edit_reconstruction_maps_each_hunk_to_one_range() {
         &post_commit_patch,
         AgentTraceMetadataInput {
             commit_timestamp: TEST_COMMIT_TIMESTAMP,
+            commit_revision: TEST_COMMIT_REVISION,
         },
     )
     .expect("agent trace should build");
@@ -202,4 +208,38 @@ fn file_rename_reconstruction_matches_golden_agent_trace() {
         post_commit: include_str!("fixtures/file_rename_reconstruction/post_commit.patch"),
         golden: include_str!("fixtures/file_rename_reconstruction/golden.json"),
     });
+}
+
+#[test]
+fn schema_validation_allows_agent_trace_without_vcs() {
+    let value = json!({
+        "version": AGENT_TRACE_VERSION,
+        "id": "0196f25d-cf7f-7ca8-a652-8562c8a9f1d5",
+        "timestamp": TEST_COMMIT_TIMESTAMP,
+        "files": []
+    });
+
+    validate_agent_trace_value(&value)
+        .expect("agent trace without vcs should validate against schema");
+}
+
+#[test]
+fn schema_validation_rejects_vcs_missing_revision() {
+    let value = json!({
+        "version": AGENT_TRACE_VERSION,
+        "id": "0196f25d-cf7f-7ca8-a652-8562c8a9f1d5",
+        "timestamp": TEST_COMMIT_TIMESTAMP,
+        "vcs": {
+            "type": "git"
+        },
+        "files": []
+    });
+
+    let error = validate_agent_trace_value(&value)
+        .expect_err("agent trace with vcs missing revision should fail validation");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("\"revision\" is a required property"),
+        "expected vcs/revision validation failure, got: {rendered}"
+    );
 }

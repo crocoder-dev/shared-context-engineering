@@ -47,6 +47,15 @@ fn generate_agent_trace_id(commit_time: DateTime<FixedOffset>) -> Result<String>
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AgentTraceMetadataInput<'a> {
     pub commit_timestamp: &'a str,
+    pub commit_revision: &'a str,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentTraceVcs {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub revision: String,
 }
 
 fn parse_commit_timestamp(commit_timestamp: &str) -> Result<DateTime<FixedOffset>> {
@@ -204,6 +213,8 @@ pub struct AgentTrace {
     /// RFC 3339 timestamp string sourced from caller-provided commit metadata.
     #[serde(default)]
     pub timestamp: String,
+    /// Version control metadata sourced from caller-provided commit metadata.
+    pub vcs: AgentTraceVcs,
     /// File-level trace entries, one per file present in `post_commit_patch`.
     pub files: Vec<TraceFile>,
 }
@@ -371,6 +382,10 @@ pub fn build_agent_trace(
         version: default_agent_trace_version(),
         id: generate_agent_trace_id(commit_time)?,
         timestamp,
+        vcs: AgentTraceVcs {
+            kind: "git".to_owned(),
+            revision: metadata.commit_revision.to_owned(),
+        },
         files,
     })
 }

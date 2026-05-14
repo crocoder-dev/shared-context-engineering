@@ -510,6 +510,7 @@ where
         &flow_result.post_commit_data.parsed_patch,
         AgentTraceMetadataInput {
             commit_timestamp: &commit_timestamp,
+            commit_revision: &flow_result.post_commit_data.commit_oid,
         },
     )
     .context("Failed to build Agent Trace payload from post-commit intersection flow result.")?;

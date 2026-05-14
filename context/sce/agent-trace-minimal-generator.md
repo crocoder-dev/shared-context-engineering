@@ -23,7 +23,8 @@ Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical 
 | `LineRange` | New-file line span with `start_line` + `end_line` |
 | `Conversation` | Per-hunk entry: nested contributor + `ranges` (currently exactly one range derived from `post_commit_patch`) |
 | `TraceFile` | Per-file entry: path + conversations |
-| `AgentTrace` | Top-level payload: `version`, `id`, `timestamp`, `files` |
+| `AgentTraceVcs` | Top-level VCS metadata object carrying `type` + `revision` |
+| `AgentTrace` | Top-level payload: `version`, `id`, `timestamp`, `vcs`, `files` |
 
 All types are `serde`-serializable with `snake_case` field naming. `Conversation.contributor` serializes as a nested object with a JSON field named `type`.
 
@@ -31,15 +32,21 @@ All types are `serde`-serializable with `snake_case` field naming. `Conversation
 
 Current output includes top-level metadata fields with this contract:
 
-- `version` is fixed to `"v0.1.0"`
+- `version` is fixed to `"0.1"`
 - `id` is generated per `build_agent_trace(...)` call as a UUIDv7 string derived from the same commit-time moment used for `timestamp`
 - `timestamp` is sourced from explicit commit metadata input (`AgentTraceMetadataInput.commit_timestamp`) and must be RFC 3339
+- `vcs.type` is fixed to `"git"`
+- `vcs.revision` is sourced from explicit commit metadata input (`AgentTraceMetadataInput.commit_revision`)
 
 ```json
 {
-  "version": "v0.1.0",
+  "version": "0.1",
   "id": "01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
   "timestamp": "2026-04-23T10:20:30Z",
+  "vcs": {
+    "type": "git",
+    "revision": "a0b1c2d3e4f5a6b7c8d9e0f11223344556677889"
+  },
   "files": [
     {
       "path": "src/example.ts",
@@ -62,7 +69,7 @@ Current output includes top-level metadata fields with this contract:
 ## Public API
 
 - `classify_hunk(post_commit_hunk, intersection_hunks) -> HunkContributor` — classify a single `post_commit_patch` hunk against `intersection_patch` hunks.
-- `build_agent_trace(constructed_patch, post_commit_patch, metadata) -> Result<AgentTrace>` — full generator entrypoint that validates `metadata.commit_timestamp` as RFC 3339, uses it as top-level `timestamp`, and derives a UUIDv7 `id` from that same commit-time moment.
+- `build_agent_trace(constructed_patch, post_commit_patch, metadata) -> Result<AgentTrace>` — full generator entrypoint that validates `metadata.commit_timestamp` as RFC 3339, uses it as top-level `timestamp`, derives a UUIDv7 `id` from that same commit-time moment, sets `vcs.type = "git"`, and maps `metadata.commit_revision` to `vcs.revision`.
 
 ## Test fixture contract
 
