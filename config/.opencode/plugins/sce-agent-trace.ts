@@ -18,7 +18,7 @@ type DiffTracePayload = {
   model_id: string;
 };
 
-export function extractDiffTracePayload(
+function extractDiffTracePayload(
   input: TraceInput,
 ): DiffTracePayload | undefined {
   const event = input.event;
