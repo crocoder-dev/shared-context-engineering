@@ -68,7 +68,7 @@ Three layers need updating:
     - Evidence: migration file read successfully; `test -f "cli/migrations/agent-trace/005_add_diff_traces_model_id.sql" && test "$(tr -d '\n' < "cli/migrations/agent-trace/005_add_diff_traces_model_id.sql")" = "ALTER TABLE diff_traces ADD COLUMN model_id TEXT;"` passed
     - Context sync classification: localized migration artifact change; root shared context verify-only; synced `context/sce/agent-trace-db.md` and `context/context-map.md` to document the checked-in but not-yet-registered migration file
 
-- [ ] T03: `Update Rust SQL constants, DiffTraceInsert, and insert logic` (status:todo)
+- [x] T03: `Update Rust SQL constants, DiffTraceInsert, and insert logic` (status:done)
   - Task ID: T03
   - Goal: Update `agent_trace_db/mod.rs` to wire the new `model_id` column through the insert path.
   - Boundaries (in/out of scope):
@@ -82,6 +82,13 @@ Three layers need updating:
   - Verification notes (commands or checks):
     - `nix develop -c sh -c 'cd cli && cargo check'`
     - `nix flake check`
+  - Execution record:
+    - Status: done
+    - Completed: 2026-05-15
+    - Files changed: `cli/src/services/agent_trace_db/mod.rs`
+    - Evidence: `git diff -- cli/src/services/agent_trace_db/mod.rs` confirms migration `005_add_diff_traces_model_id` is registered, `DiffTraceInsert` includes `model_id`, `INSERT_DIFF_TRACE_SQL` writes `model_id` as `?4`, and `insert_diff_trace_with` passes the 4th parameter.
+    - Check evidence: `nix develop -c sh -c 'cd cli && cargo check'` attempted and failed before completing because `hooks/mod.rs` still constructs `DiffTraceInsert` without `model_id`; `nix run .#pkl-check-generated` also failed at the same Nix package build dependency for the same compile error; user approved stopping at the T03 boundary because that call-site/payload parsing work is T04 scope.
+    - Context sync classification: localized Rust DB insert-path change; root shared context expected verify-only, with Agent Trace DB context checked for drift.
 
 - [ ] T04: `Update Rust DiffTracePayload struct and parsing in hooks/mod.rs` (status:todo)
   - Task ID: T04
