@@ -38,6 +38,8 @@ The Agent Trace DB path is resolved from the shared default-path catalog:
 - `003_add_diff_traces_time_ms_id_index.sql`
 - `004_create_agent_traces.sql`
 
+The migrations directory also contains `005_add_diff_traces_model_id.sql`, which adds nullable `diff_traces.model_id`. That file is not yet registered in `AgentTraceDbSpec::migrations()`, so current runtime setup/doctor flows still apply only the registered 001-004 migration set until the Rust migration-registration task lands.
+
 The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::new()` applies later Agent Trace migrations to an already-created `~/.local/state/sce/agent-trace.db`.
 
 The `diff_traces` migration creates:
@@ -81,9 +83,9 @@ The `agent_traces` migration creates:
 
 `sce hooks diff-trace` is the current runtime writer for `diff_traces`.
 
-- The hook path validates STDIN `{ sessionID, diff, time }` before persistence.
+- The hook path currently validates required STDIN `{ sessionID, diff, time }` before persistence; extra STDIN fields such as plugin-emitted `model_id` are ignored until the downstream Rust payload/storage tasks add first-class support.
 - `time` is accepted as a `u64` Unix epoch millisecond input and must fit the signed `i64` `time_ms` column before any persistence starts.
-- The hook writes the existing collision-safe `context/tmp/<timestamp>-000000-diff-trace.json` artifact and inserts the same payload through `AgentTraceDb::insert_diff_trace()`.
+- The hook writes the existing collision-safe `context/tmp/<timestamp>-000000-diff-trace.json` parsed-payload artifact and inserts the parsed payload fields through `AgentTraceDb::insert_diff_trace()`.
 - Command success requires both artifact and database persistence to succeed.
 - Existing artifact files are not backfilled into the database.
 

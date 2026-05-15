@@ -42,7 +42,7 @@
   - Post-commit Agent Trace success requires both schema validation and Agent Trace DB `agent_traces` persistence to succeed.
   - Current command-surface success output is: `post-commit hook processed intersection: commit=<oid>, intersection_files=<n>`.
 - `post-rewrite` is a deterministic no-op entrypoint.
-- `diff-trace` reads STDIN JSON, validates required non-empty `sessionID`/`diff` plus required `u64` `time` (Unix epoch milliseconds), rejects `time` values that cannot fit the Agent Trace DB signed `time_ms` column, writes one payload artifact per invocation to `context/tmp/<timestamp>-000000-diff-trace.json` with atomic create-new retry semantics, and inserts the same payload into AgentTraceDb via `DiffTraceInsert` + `insert_diff_trace()`.
+- `diff-trace` reads STDIN JSON, validates required non-empty `sessionID`/`diff` plus required `u64` `time` (Unix epoch milliseconds), rejects `time` values that cannot fit the Agent Trace DB signed `time_ms` column, writes one parsed-payload artifact per invocation to `context/tmp/<timestamp>-000000-diff-trace.json` with atomic create-new retry semantics, and inserts the parsed payload fields into AgentTraceDb via `DiffTraceInsert` + `insert_diff_trace()`. Extra STDIN fields such as the plugin-emitted `model_id` are not yet validated or persisted by the Rust hook path.
 - `diff-trace` success requires both persistence paths to succeed; artifact write failures and AgentTraceDb open/insert failures are command-failing runtime errors logged through `sce.hooks.diff_trace.error`.
 
 ## Explicit non-goals in the current baseline

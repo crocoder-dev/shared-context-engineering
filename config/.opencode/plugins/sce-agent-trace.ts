@@ -15,9 +15,10 @@ type DiffTracePayload = {
   sessionID: string;
   diff: string;
   time: number;
+  model_id: string;
 };
 
-function extractDiffTracePayload(
+export function extractDiffTracePayload(
   input: TraceInput,
 ): DiffTracePayload | undefined {
   const event = input.event;
@@ -51,6 +52,8 @@ function extractDiffTracePayload(
       ? infoObj.sessionID
       : "unknown";
 
+  const model = infoObj.model;
+
   // Access info.summary?.diffs via explicit checks
   const summary = infoObj.summary;
   const diffEntries =
@@ -81,6 +84,7 @@ function extractDiffTracePayload(
     sessionID,
     diff: patches.join("\n"),
     time: Date.now(),
+    model_id: `${model.providerID}/${model.modelID}`,
   };
 }
 
