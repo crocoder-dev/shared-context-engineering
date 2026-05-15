@@ -3,7 +3,7 @@ import type { Hooks, Plugin } from "@opencode-ai/plugin";
 
 type OpenCodeEvent = Parameters<NonNullable<Hooks["event"]>>[0]["event"];
 
-const REQUIRED_EVENTS = new Set(["session.diff"]);
+const REQUIRED_EVENTS = new Set(["message.updated"]);
 
 const ALL_CAPTURED_EVENTS = REQUIRED_EVENTS;
 
@@ -21,7 +21,7 @@ function extractDiffTracePayload(
   input: TraceInput,
 ): DiffTracePayload | undefined {
   const event = input.event;
-  if (event === undefined || event.type !== "session.diff") {
+  if (event === undefined || event.type !== "message.updated") {
     return undefined;
   }
 
@@ -30,15 +30,34 @@ function extractDiffTracePayload(
     return undefined;
   }
 
-  const propertiesObj = properties as Record<string, unknown>;
+  const propertiesObj = properties;
+
+  // Access properties.info (the Message object)
+  const info = propertiesObj.info;
+  if (typeof info !== "object" || info === null) {
+    return undefined;
+  }
+
+  const infoObj = info;
+
+  // Only capture user messages (filter out assistant, system, etc.)
+  if (infoObj.role !== "user") {
+    return undefined;
+  }
 
   const sessionID =
-    typeof propertiesObj.sessionID === "string" &&
-    propertiesObj.sessionID.trim().length > 0
-      ? propertiesObj.sessionID
+    typeof infoObj.sessionID === "string" &&
+    infoObj.sessionID.trim().length > 0
+      ? infoObj.sessionID
       : "unknown";
 
-  const diffEntries = propertiesObj.diff;
+  // Access info.summary?.diffs via explicit checks
+  const summary = infoObj.summary;
+  const diffEntries =
+    typeof summary === "object" && summary !== null
+      ? (summary).diffs
+      : undefined;
+
   if (!Array.isArray(diffEntries) || diffEntries.length === 0) {
     return undefined;
   }
@@ -48,16 +67,10 @@ function extractDiffTracePayload(
     if (typeof entry !== "object" || entry === null) {
       continue;
     }
-    const entryObj = entry as Record<string, unknown>;
-    const patch =
-      typeof entryObj.patch === "string"
-        ? entryObj.patch
-        : typeof entryObj.diff === "string"
-          ? entryObj.diff
-          : undefined;
-    if (patch !== undefined && patch.trim().length > 0) {
-      patches.push(patch);
-    }
+    const entryObj = entry as {patch?:string};
+    const patch = entryObj.patch || "";
+  
+    patches.push(patch);  
   }
 
   if (patches.length === 0) {
