@@ -20,6 +20,8 @@ const ADD_DIFF_TRACES_TIME_MS_ID_INDEX_MIGRATION: &str =
     include_str!("../../../migrations/agent-trace/003_add_diff_traces_time_ms_id_index.sql");
 const CREATE_AGENT_TRACES_MIGRATION: &str =
     include_str!("../../../migrations/agent-trace/004_create_agent_traces.sql");
+const ADD_DIFF_TRACES_MODEL_ID_MIGRATION: &str =
+    include_str!("../../../migrations/agent-trace/005_add_diff_traces_model_id.sql");
 
 const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
     ("001_create_diff_traces", CREATE_DIFF_TRACES_MIGRATION),
@@ -32,11 +34,15 @@ const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
         ADD_DIFF_TRACES_TIME_MS_ID_INDEX_MIGRATION,
     ),
     ("004_create_agent_traces", CREATE_AGENT_TRACES_MIGRATION),
+    (
+        "005_add_diff_traces_model_id",
+        ADD_DIFF_TRACES_MODEL_ID_MIGRATION,
+    ),
 ];
 
 /// Parameterized SQL for inserting a captured diff trace payload.
 pub const INSERT_DIFF_TRACE_SQL: &str =
-    "INSERT INTO diff_traces (time_ms, session_id, patch) VALUES (?1, ?2, ?3)";
+    "INSERT INTO diff_traces (time_ms, session_id, patch, model_id) VALUES (?1, ?2, ?3, ?4)";
 
 /// Parameterized SQL for retrieving recent captured diff trace patches.
 pub const SELECT_RECENT_DIFF_TRACE_PATCHES_SQL: &str = "SELECT id, time_ms, session_id, patch
@@ -86,6 +92,7 @@ pub struct DiffTraceInsert<'a> {
     pub time_ms: i64,
     pub session_id: &'a str,
     pub patch: &'a str,
+    pub model_id: &'a str,
 }
 
 /// Raw diff trace row read from the agent trace database.
@@ -188,7 +195,7 @@ impl AgentTraceDb {
 fn insert_diff_trace_with<M: DbSpec>(db: &TursoDb<M>, input: DiffTraceInsert<'_>) -> Result<u64> {
     db.execute(
         INSERT_DIFF_TRACE_SQL,
-        (input.time_ms, input.session_id, input.patch),
+        (input.time_ms, input.session_id, input.patch, input.model_id),
     )
 }
 
@@ -365,6 +372,7 @@ mod tests {
                 time_ms,
                 session_id,
                 patch,
+                model_id: "test-provider/test-model",
             },
         )
         .expect("diff trace insert should succeed");
@@ -510,6 +518,7 @@ mod tests {
                     "002_create_post_commit_patch_intersections",
                     "003_add_diff_traces_time_ms_id_index",
                     "004_create_agent_traces",
+                    "005_add_diff_traces_model_id",
                 ]
             );
         }

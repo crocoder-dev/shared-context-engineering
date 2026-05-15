@@ -103,8 +103,8 @@ A user-invocable `sync` command is not wired in the current CLI surface; local D
 
 - `cli/src/services/local_db/mod.rs` provides `LocalDb = TursoDb<LocalDbSpec>` with `new()`, `execute()`, and `query()` inherited from the shared Turso adapter.
 - `LocalDb::new()` resolves the canonical per-user DB path through `default_paths::local_db_path()`, creates parent directories, opens the local Turso database, and currently runs zero local migrations.
-- `cli/src/services/agent_trace_db/mod.rs` provides `AgentTraceDb = TursoDb<AgentTraceDbSpec>` plus `DiffTraceInsert<'_>` and `insert_diff_trace()` for parameterized writes to `diff_traces`.
-- `AgentTraceDb::new()` resolves `<state_root>/sce/agent-trace.db` through `default_paths::agent_trace_db_path()`, creates parent directories through `TursoDb`, opens the Turso database, and runs the embedded `cli/migrations/agent-trace/001_create_diff_traces.sql` migration.
+- `cli/src/services/agent_trace_db/mod.rs` provides `AgentTraceDb = TursoDb<AgentTraceDbSpec>` plus `DiffTraceInsert<'_>` and `insert_diff_trace()` for parameterized writes to `diff_traces`, including nullable `model_id` storage.
+- `AgentTraceDb::new()` resolves `<state_root>/sce/agent-trace.db` through `default_paths::agent_trace_db_path()`, creates parent directories through `TursoDb`, opens the Turso database, and runs the ordered embedded `cli/migrations/agent-trace/*.sql` migration set.
 - `cli/src/services/local_db/lifecycle.rs` implements `ServiceLifecycle` for local DB health checks and setup (DB path/health validation and DB bootstrap).
 - `cli/src/services/agent_trace_db/lifecycle.rs` implements `ServiceLifecycle` for Agent Trace DB health checks and setup (DB path/health validation and DB bootstrap).
 - `sce setup` aggregates `ServiceLifecycle::setup` calls, which includes `LocalDbLifecycle::setup()` and `AgentTraceDbLifecycle::setup()` for DB initialization as part of local prerequisite bootstrap.
