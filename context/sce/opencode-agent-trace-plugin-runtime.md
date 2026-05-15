@@ -34,4 +34,4 @@ Otherwise, the helper returns `undefined`.
 
 - The extraction seam is exported from the source module for focused Bun unit coverage and is used by `buildTrace` at runtime.
 - `buildTrace` calls `extractDiffTracePayload`; if the result is `undefined` (non-`message.updated` event, non-user role, empty diffs, or no patch content), no hook invocation occurs.
-- When extraction succeeds, `buildTrace` forwards the extracted payload to `sce hooks diff-trace` via STDIN JSON; the current Rust hook runtime still validates and persists only the existing required `sessionID`/`diff`/`time` fields until the downstream Rust payload/storage tasks are implemented.
+- When extraction succeeds, `buildTrace` forwards the extracted payload to `sce hooks diff-trace` via STDIN JSON; the Rust hook runtime validates required `sessionID`/`diff`/`model_id` plus `time` and persists those fields through AgentTraceDb `diff_traces` insertion.

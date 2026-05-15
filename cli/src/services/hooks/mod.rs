@@ -47,6 +47,7 @@ struct DiffTracePayload {
     session_id: String,
     diff: String,
     time: u64,
+    model_id: String,
 }
 
 pub fn run_hooks_subcommand(
@@ -147,11 +148,13 @@ fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTracePayload> {
     let session_id = required_non_empty_string_field(payload, "sessionID")?;
     let diff = required_non_empty_string_field(payload, "diff")?;
     let time = required_u64_millisecond_field(payload, "time")?;
+    let model_id = required_non_empty_string_field(payload, "model_id")?;
 
     Ok(DiffTracePayload {
         session_id,
         diff,
         time,
+        model_id,
     })
 }
 
@@ -282,6 +285,7 @@ where
         time_ms,
         session_id: &payload.session_id,
         patch: &payload.diff,
+        model_id: &payload.model_id,
     })
 }
 

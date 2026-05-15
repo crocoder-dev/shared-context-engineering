@@ -90,7 +90,7 @@ Three layers need updating:
     - Check evidence: `nix develop -c sh -c 'cd cli && cargo check'` attempted and failed before completing because `hooks/mod.rs` still constructs `DiffTraceInsert` without `model_id`; `nix run .#pkl-check-generated` also failed at the same Nix package build dependency for the same compile error; user approved stopping at the T03 boundary because that call-site/payload parsing work is T04 scope.
     - Context sync classification: localized Rust DB insert-path change; root shared context expected verify-only, with Agent Trace DB context checked for drift.
 
-- [ ] T04: `Update Rust DiffTracePayload struct and parsing in hooks/mod.rs` (status:todo)
+- [x] T04: `Update Rust DiffTracePayload struct and parsing in hooks/mod.rs` (status:done)
   - Task ID: T04
   - Goal: Parse `model_id` from the STDIN payload and pass it through to the DB insert.
   - Boundaries (in/out of scope):
@@ -103,6 +103,13 @@ Three layers need updating:
   - Verification notes (commands or checks):
     - `nix develop -c sh -c 'cd cli && cargo check'`
     - `nix flake check`
+  - Execution record:
+    - Status: done
+    - Completed: 2026-05-15
+    - Files changed: `cli/src/services/hooks/mod.rs`
+    - Evidence: `DiffTracePayload` now includes `model_id`; `parse_diff_trace_payload` reads required non-empty `model_id`; `persist_diff_trace_payload_to_agent_trace_db_with` passes `&payload.model_id` into `DiffTraceInsert`.
+    - Check evidence: `nix develop -c sh -c 'cd cli && cargo check'` passed; `nix run .#pkl-check-generated` passed; `nix flake check` passed.
+    - Context sync classification: important localized hook runtime-contract change; root shared context and Agent Trace hook/runtime docs require drift check/update so `diff-trace` no longer documents ignored `model_id` payload fields.
 
 - [ ] T05: `Validation and cleanup` (status:todo)
   - Task ID: T05
