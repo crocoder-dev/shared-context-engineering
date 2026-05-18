@@ -1,6 +1,6 @@
 # Minimal agent-trace generator seam
 
-Library-only Rust seam at `cli/src/services/agent_trace.rs` that produces the minimal agent-trace JSON shape from patch data.
+Rust library seam at `cli/src/services/agent_trace.rs` that produces the minimal agent-trace JSON shape from patch data and is consumed by the active post-commit hook flow before AgentTraceDb persistence.
 
 ## Contract
 
@@ -84,7 +84,7 @@ Consumes `intersect_patches` and `ParsedPatch`/`PatchHunk`/`TouchedLine` types f
 
 ## Out of scope
 
-CLI command surface, hook/runtime integration (including post-commit wiring), persistence, OpenCode plugin behavior, non-MVP payload enrichment.
+Standalone CLI command surface, OpenCode plugin behavior, non-MVP payload enrichment. Post-commit hook/runtime integration and persistence are owned by [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md) and [agent-trace-db.md](agent-trace-db.md).
 
 ## See also
 
