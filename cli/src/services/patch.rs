@@ -62,6 +62,9 @@ pub struct PatchHunk {
     pub new_start: u64,
     /// Number of lines in the new file context for this hunk (0 for deleted-file hunks).
     pub new_count: u64,
+    /// Optional model provenance associated with this hunk.
+    #[serde(default)]
+    pub model_id: Option<String>,
     /// Touched lines within this hunk (added and removed lines only;
     /// unchanged context lines are excluded).
     pub lines: Vec<TouchedLine>,
@@ -176,9 +179,11 @@ pub fn load_patch_from_json_bytes(input: &[u8]) -> Result<ParsedPatch, PatchLoad
 ///
 /// Files with no overlapping touched lines are excluded from the result.
 /// Within matched files, hunks are reconstructed from the overlapping lines in
-/// `post_commit_patch`, preserving `post_commit_patch`'s hunk metadata so the
-/// result can be compared directly to the canonical target patch. The output is
-/// deterministic: the same inputs always produce the same result.
+/// `post_commit_patch`, preserving `post_commit_patch` hunk range metadata
+/// (`old_start`, `old_count`, `new_start`, `new_count`) so the result can be
+/// compared directly to the canonical target patch. Hunk `model_id` provenance
+/// is inherited from the matched `constructed_patch` hunk when available. The
+/// output is deterministic: the same inputs always produce the same result.
 ///
 /// # Examples
 ///
@@ -204,10 +209,15 @@ pub fn intersect_patches(
             continue;
         };
 
-        let available_lines: Vec<&TouchedLine> = constructed_file
+        let available_lines: Vec<AvailableTouchedLine<'_>> = constructed_file
             .hunks
             .iter()
-            .flat_map(|h| h.lines.iter())
+            .flat_map(|hunk| {
+                hunk.lines.iter().map(move |line| AvailableTouchedLine {
+                    line,
+                    model_id: hunk.model_id.as_deref(),
+                })
+            })
             .collect();
         let mut used_lines = vec![false; available_lines.len()];
 
@@ -217,6 +227,7 @@ pub fn intersect_patches(
         // numbers have drifted.
         let mut result_hunks: Vec<PatchHunk> = Vec::new();
         for post_commit_hunk in &post_commit_file.hunks {
+            let mut matched_model_id: Option<String> = None;
             let overlapping_lines: Vec<TouchedLine> = post_commit_hunk
                 .lines
                 .iter()
@@ -227,6 +238,9 @@ pub fn intersect_patches(
                         line,
                         touched_lines_match_exact,
                     ) {
+                        if matched_model_id.is_none() {
+                            matched_model_id = available_lines[index].model_id.map(str::to_string);
+                        }
                         used_lines[index] = true;
                         return true;
                     }
@@ -237,6 +251,9 @@ pub fn intersect_patches(
                         line,
                         touched_lines_match_historical,
                     ) {
+                        if matched_model_id.is_none() {
+                            matched_model_id = available_lines[index].model_id.map(str::to_string);
+                        }
                         used_lines[index] = true;
                         return true;
                     }
@@ -255,6 +272,7 @@ pub fn intersect_patches(
                 old_count: post_commit_hunk.old_count,
                 new_start: post_commit_hunk.new_start,
                 new_count: post_commit_hunk.new_count,
+                model_id: matched_model_id,
                 lines: overlapping_lines,
             });
         }
@@ -278,8 +296,13 @@ pub fn intersect_patches(
     }
 }
 
+struct AvailableTouchedLine<'a> {
+    line: &'a TouchedLine,
+    model_id: Option<&'a str>,
+}
+
 fn find_available_line_match(
-    available_lines: &[&TouchedLine],
+    available_lines: &[AvailableTouchedLine<'_>],
     used_lines: &[bool],
     target: &TouchedLine,
     matcher: fn(&TouchedLine, &TouchedLine) -> bool,
@@ -288,7 +311,7 @@ fn find_available_line_match(
         .iter()
         .enumerate()
         .find_map(|(index, candidate)| {
-            (!used_lines[index] && matcher(candidate, target)).then_some(index)
+            (!used_lines[index] && matcher(candidate.line, target)).then_some(index)
         })
 }
 
@@ -368,12 +391,14 @@ pub fn combine_patches(patches: &[ParsedPatch]) -> ParsedPatch {
     type LineKey = (TouchedLineKind, u64, String);
     /// Hunk metadata key: (`old_start`, `old_count`, `new_start`, `new_count`).
     type HunkMeta = (u64, u64, u64, u64);
+    /// Hunk provenance key: hunk metadata + source `model_id`.
+    type HunkGroupKey = (HunkMeta, Option<String>);
 
     #[allow(clippy::type_complexity)]
     struct FileAcc {
         old_path: String,
         kind: FileChangeKind,
-        lines: HashMap<LineKey, (TouchedLine, HunkMeta)>,
+        lines: HashMap<LineKey, (TouchedLine, HunkGroupKey)>,
     }
 
     let mut file_order: Vec<String> = Vec::new();
@@ -400,9 +425,11 @@ pub fn combine_patches(patches: &[ParsedPatch]) -> ParsedPatch {
                     hunk.new_start,
                     hunk.new_count,
                 );
+                let hunk_group_key: HunkGroupKey = (hunk_meta, hunk.model_id.clone());
                 for line in &hunk.lines {
                     let line_key = (line.kind, line.line_number, line.content.clone());
-                    acc.lines.insert(line_key, (line.clone(), hunk_meta));
+                    acc.lines
+                        .insert(line_key, (line.clone(), hunk_group_key.clone()));
                 }
             }
         }
@@ -414,17 +441,19 @@ pub fn combine_patches(patches: &[ParsedPatch]) -> ParsedPatch {
         let acc = files.remove(&path).unwrap();
 
         // Group surviving lines by their hunk metadata.
-        let mut hunk_groups: HashMap<HunkMeta, Vec<TouchedLine>> = HashMap::new();
-        for (_line_key, (line, hunk_meta)) in acc.lines {
-            hunk_groups.entry(hunk_meta).or_default().push(line);
+        let mut hunk_groups: HashMap<HunkGroupKey, Vec<TouchedLine>> = HashMap::new();
+        for (_line_key, (line, hunk_group_key)) in acc.lines {
+            hunk_groups.entry(hunk_group_key).or_default().push(line);
         }
 
         // Sort hunk groups by old_start for deterministic output.
         let mut sorted_hunks: Vec<_> = hunk_groups.into_iter().collect();
-        sorted_hunks.sort_by_key(|(meta, _)| meta.0);
+        sorted_hunks.sort_by_key(|((meta, model_id), _)| {
+            (meta.0, meta.1, meta.2, meta.3, model_id.clone())
+        });
 
         let mut hunks = Vec::new();
-        for (meta, mut lines) in sorted_hunks {
+        for ((meta, model_id), mut lines) in sorted_hunks {
             // Sort lines within each hunk: by line_number, then Removed before
             // Added, then by content for full determinism.
             lines.sort_by(|a, b| {
@@ -448,6 +477,7 @@ pub fn combine_patches(patches: &[ParsedPatch]) -> ParsedPatch {
                 old_count: meta.1,
                 new_start: meta.2,
                 new_count: meta.3,
+                model_id,
                 lines,
             });
         }
@@ -838,6 +868,7 @@ where
         old_count,
         new_start,
         new_count,
+        model_id: None,
         lines: touched_lines,
     })
 }

@@ -522,7 +522,7 @@ where
     let agent_trace_value = serde_json::to_value(&agent_trace)
         .context("Failed to serialize post-commit Agent Trace payload for validation.")?;
     validate_agent_trace(&agent_trace_value)
-        .context("Failed to persist built post-commit Agent Trace payload.")?;
+        .context("Failed to validate built post-commit Agent Trace payload.")?;
 
     let serialized = format!(
         "{}\n",

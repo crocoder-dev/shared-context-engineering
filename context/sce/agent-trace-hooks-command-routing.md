@@ -30,6 +30,7 @@
 - **`post-commit` is an active intersection entrypoint** (see [agent-trace-db.md](agent-trace-db.md)):
   - Captures the current commit's patch from git using `capture_post_commit_patch_from_git()`.
   - Queries recent `diff_traces` patches from the past 7 days via `AgentTraceDb::recent_diff_trace_patches()`.
+  - Recent-row patch parsing carries nullable row `model_id` into each produced `PatchHunk`, so combined/intersection patch inputs retain per-hunk model provenance for downstream Agent Trace attribution building.
   - Combines valid recent patches in chronological order via `patch::combine_patches`.
   - Intersects the combined recent patch with the post-commit patch via `patch::intersect_patches`.
   - Persists the serialized intersection result to `post_commit_patch_intersections` table with commit metadata (OID, timestamp), window bounds (cutoff_ms, end_ms), and loaded/skipped counts.

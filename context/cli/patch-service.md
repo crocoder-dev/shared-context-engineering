@@ -50,7 +50,7 @@ Both functions wrap `serde_json::from_str`/`serde_json::from_slice` and map serd
 
 - **File matching**: files are matched by post-change path identity — exact `new_path` equality, or absolute-vs-relative path variants whose normalized path segments share the same relative suffix
 - **Touched-line matching**: matching prefers exact identity (`kind`, `line_number`, and `content`); when no exact match exists, it falls back to historical reconstruction matching by `kind` and `content` only so canonical post-commit patches can still intersect with earlier incremental diffs whose line numbers drifted
-- **Result structure**: only files with at least one overlapping touched line appear in the result; hunks with no overlapping lines are excluded; hunk metadata (`old_start`, `old_count`, `new_start`, `new_count`) is preserved from the second patch (`b`) so the result keeps the target patch shape
+- **Result structure**: only files with at least one overlapping touched line appear in the result; hunks with no overlapping lines are excluded; hunk range metadata (`old_start`, `old_count`, `new_start`, `new_count`) is preserved from the second patch (`b`) so the result keeps the target patch shape, while hunk `model_id` provenance is inherited from the matched hunk in the first patch (`a`) when available (and remains `None` when matched constructed provenance is absent)
 - **Determinism**: the same inputs always produce the same output
 - **Equivalent-hunk behavior**: semantically identical hunks still intersect when they differ only in surrounding context windows, hunk header ranges, or absolute-vs-relative `Index:` path spelling, as long as their touched-line identities match exactly
 - **Consumed by**: the post-commit hook runtime combines recent DB diff-trace patches and then intersects with the current commit patch (see `agent-trace-hooks-command-routing.md`). Previously listed as "not yet wired" before T04.
@@ -61,7 +61,7 @@ Both functions wrap `serde_json::from_str`/`serde_json::from_slice` and map serd
 
 - **File matching**: files are grouped by `new_path`; file metadata (`old_path`, `kind`) is taken from the last patch that contributed to each file
 - **Touched-line identity and deduplication**: touched lines are deduplicated by identity (`kind`, `line_number`, `content`); when multiple patches describe the same file and logical touched-line slot, the later input's entry is retained
-- **Hunk reconstruction**: surviving lines are grouped by their hunk metadata from the last contributing patch; hunks are ordered by `old_start`; lines within each hunk are ordered by `line_number` with `Removed` before `Added` at the same position, then by `content` for full determinism
+- **Hunk reconstruction and provenance**: surviving lines are grouped by their hunk metadata from the last contributing patch; each reconstructed hunk preserves that winning hunk's `model_id` provenance; hunks are ordered by `old_start`; lines within each hunk are ordered by `line_number` with `Removed` before `Added` at the same position, then by `content` for full determinism
 - **File ordering**: files appear in the result in the order they are first encountered across the input patches
 - **Determinism**: the same inputs in the same order always produce the same output
 - **Consumed by**: the post-commit hook runtime combines recent DB diff-trace patches before intersecting (see `agent-trace-hooks-command-routing.md`). Previously listed as "not yet wired" before T04.

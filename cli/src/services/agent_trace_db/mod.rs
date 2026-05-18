@@ -45,7 +45,8 @@ pub const INSERT_DIFF_TRACE_SQL: &str =
     "INSERT INTO diff_traces (time_ms, session_id, patch, model_id) VALUES (?1, ?2, ?3, ?4)";
 
 /// Parameterized SQL for retrieving recent captured diff trace patches.
-pub const SELECT_RECENT_DIFF_TRACE_PATCHES_SQL: &str = "SELECT id, time_ms, session_id, patch
+pub const SELECT_RECENT_DIFF_TRACE_PATCHES_SQL: &str =
+    "SELECT id, time_ms, session_id, patch, model_id
 FROM diff_traces
 WHERE time_ms >= ?1 AND time_ms <= ?2
 ORDER BY time_ms ASC, id ASC";
@@ -102,6 +103,7 @@ pub struct DiffTracePatchRow {
     pub time_ms: i64,
     pub session_id: String,
     pub patch: String,
+    pub model_id: Option<String>,
 }
 
 /// Parsed recent diff trace patch ready for comparison flows.
@@ -239,6 +241,7 @@ fn diff_trace_patch_row_from_turso(row: &turso::Row) -> Result<DiffTracePatchRow
             .get(2)
             .context("failed to read diff_traces.session_id")?,
         patch: row.get(3).context("failed to read diff_traces.patch")?,
+        model_id: row.get(4).context("failed to read diff_traces.model_id")?,
     })
 }
 
@@ -248,12 +251,20 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
 
     for row in rows {
         match parse_patch(&row.patch) {
-            Ok(patch) => patches.push(ParsedDiffTracePatch {
-                id: row.id,
-                time_ms: row.time_ms,
-                session_id: row.session_id,
-                patch,
-            }),
+            Ok(mut patch) => {
+                for file in &mut patch.files {
+                    for hunk in &mut file.hunks {
+                        hunk.model_id.clone_from(&row.model_id);
+                    }
+                }
+
+                patches.push(ParsedDiffTracePatch {
+                    id: row.id,
+                    time_ms: row.time_ms,
+                    session_id: row.session_id,
+                    patch,
+                });
+            }
             Err(error) => skipped.push(SkippedDiffTracePatch {
                 id: row.id,
                 time_ms: row.time_ms,

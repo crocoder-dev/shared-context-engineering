@@ -12,27 +12,28 @@ Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical 
    - **`ai`** — `intersection_patch` hunk exists with identical touched lines (same count, kind, `line_number`, content, order).
    - **`mixed`** — `intersection_patch` hunk exists at the same slot but content differs.
    - **`unknown`** — no `intersection_patch` hunk at the same `old_start` slot.
-4. Emit one `Conversation` per `post_commit_patch` hunk, one `TraceFile` per `post_commit_patch` file.
+4. Map `Conversation.contributor.model_id` from the matched `intersection_patch` hunk when contributor type is `ai` or `mixed`; omit `model_id` when provenance is missing (`None`).
+5. Emit one `Conversation` per `post_commit_patch` hunk, one `TraceFile` per `post_commit_patch` file.
 
 ## Domain types
 
 | Type | Purpose |
 |---|---|
 | `HunkContributor` | Enum: `Ai`, `Mixed`, `Unknown` |
-| `Contributor` | Nested per-conversation object carrying `type: HunkContributor` |
+| `Contributor` | Nested per-conversation object carrying `type: HunkContributor` and optional `model_id` omitted when absent |
 | `LineRange` | New-file line span with `start_line` + `end_line` |
 | `Conversation` | Per-hunk entry: nested contributor + `ranges` (currently exactly one range derived from `post_commit_patch`) |
 | `TraceFile` | Per-file entry: path + conversations |
 | `AgentTraceVcs` | Top-level VCS metadata object carrying `type` + `revision` |
 | `AgentTrace` | Top-level payload: `version`, `id`, `timestamp`, `vcs`, `files` |
 
-All types are `serde`-serializable with `snake_case` field naming. `Conversation.contributor` serializes as a nested object with a JSON field named `type`.
+All types are `serde`-serializable with `snake_case` field naming. `Conversation.contributor` serializes as a nested object with a JSON field named `type`; `model_id` is present only when a concrete value exists.
 
 ## Payload shape
 
 Current output includes top-level metadata fields with this contract:
 
-- `version` is fixed to `"0.1.0"` and follows strict numeric `x.y.z`
+- `version` is fixed to `"0.1"`
 - `id` is generated per `build_agent_trace(...)` call as a UUIDv7 string derived from the same commit-time moment used for `timestamp`
 - `timestamp` is sourced from explicit commit metadata input (`AgentTraceMetadataInput.commit_timestamp`) and must be RFC 3339
 - `vcs.type` is fixed to `"git"`
@@ -40,7 +41,7 @@ Current output includes top-level metadata fields with this contract:
 
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.1",
   "id": "01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
   "timestamp": "2026-04-23T10:20:30Z",
   "vcs": {
@@ -52,7 +53,7 @@ Current output includes top-level metadata fields with this contract:
       "path": "src/example.ts",
       "conversations": [
         {
-          "contributor": { "type": "ai" },
+          "contributor": { "type": "ai", "model_id": "model-ai" },
           "ranges": [
             {
               "start_line": 10,
@@ -74,7 +75,8 @@ Current output includes top-level metadata fields with this contract:
 ## Test fixture contract
 
 - Golden fixtures under `cli/src/services/agent_trace/fixtures/**/golden.json` pin deterministic literal values for top-level `id` and `timestamp`.
-- Tests still validate runtime metadata behavior explicitly (`id` parses as UUIDv7 and `timestamp` equals provided commit metadata), then normalize those runtime values to the deterministic fixture literals before whole-payload golden comparison.
+- Tests still validate runtime metadata behavior explicitly (`id` parses as UUIDv7 and `timestamp` equals provided commit metadata), then normalize those runtime values to the deterministic fixture literals before payload comparison.
+- Because the embedded schema currently expects `contributor.model_id` as a string when present, golden/schema checks operate on a model-id-stripped comparison view, while dedicated assertions validate contributor `model_id` mapping semantics (`ai`/`mixed` populated when provenance exists, omitted when absent).
 
 ## Relationship to existing patch service
 

@@ -180,6 +180,9 @@ pub struct Contributor {
     /// Classification of this hunk's origin.
     #[serde(rename = "type")]
     pub kind: HunkContributor,
+    /// Model provenance for this contributor; omitted when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
 }
 
 /// A single line range in the new file.
@@ -322,12 +325,28 @@ fn build_trace_file(
         .hunks
         .iter()
         .map(|post_commit_hunk| {
-            let contributor = match intersection_file {
-                Some(ifile) => classify_hunk(post_commit_hunk, &ifile.hunks),
-                None => HunkContributor::Unknown,
+            let (contributor_kind, contributor_model_id) = match intersection_file {
+                Some(ifile) => {
+                    let contributor_kind = classify_hunk(post_commit_hunk, &ifile.hunks);
+                    let matched_intersection_hunk = ifile
+                        .hunks
+                        .iter()
+                        .find(|h| h.old_start == post_commit_hunk.old_start);
+                    let contributor_model_id = match contributor_kind {
+                        HunkContributor::Ai | HunkContributor::Mixed => {
+                            matched_intersection_hunk.and_then(|hunk| hunk.model_id.clone())
+                        }
+                        HunkContributor::Unknown => None,
+                    };
+                    (contributor_kind, contributor_model_id)
+                }
+                None => (HunkContributor::Unknown, None),
             };
             Conversation {
-                contributor: Contributor { kind: contributor },
+                contributor: Contributor {
+                    kind: contributor_kind,
+                    model_id: contributor_model_id,
+                },
                 ranges: vec![line_range_from_hunk(post_commit_file, post_commit_hunk)],
             }
         })

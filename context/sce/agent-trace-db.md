@@ -97,9 +97,9 @@ Post-commit intersection rows are written by the active `post-commit` hook flow,
 
 `AgentTraceDb::recent_diff_trace_patches(cutoff_time_ms, end_time_ms)` supports the post-commit comparison flow without changing `diff_traces` writes:
 
-- SQL reads `id`, `time_ms`, `session_id`, and `patch` from `diff_traces` where `time_ms >= cutoff_time_ms AND time_ms <= end_time_ms`.
+- SQL reads `id`, `time_ms`, `session_id`, `patch`, and nullable `model_id` from `diff_traces` where `time_ms >= cutoff_time_ms AND time_ms <= end_time_ms`.
 - Rows are ordered by `time_ms ASC, id ASC` for deterministic chronological processing.
-- Valid row patches are parsed through `cli/src/services/patch.rs` `parse_patch` and returned as `ParsedDiffTracePatch` records.
+- Valid row patches are parsed through `cli/src/services/patch.rs` `parse_patch`, then each produced `PatchHunk` is annotated with the originating row `model_id` (`Some(value)` propagated verbatim, `NULL` propagated as `None`), and returned as `ParsedDiffTracePatch` records.
 - Malformed recent row patches are returned as `SkippedDiffTracePatch` records with deterministic parse-error reasons; malformed historical rows do not fail the operation.
 - `RecentDiffTracePatches::loaded_count()` and `skipped_count()` expose accounting for later hook output and persistence metadata.
 
