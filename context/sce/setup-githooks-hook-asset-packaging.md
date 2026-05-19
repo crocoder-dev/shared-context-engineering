@@ -14,6 +14,10 @@ Task `sce-setup-githooks-any-repo` `T02` defines how required git-hook templates
 
 These templates are emitted into `OUT_DIR/setup_embedded_assets.rs` as `HOOK_EMBEDDED_ASSETS` with deterministic sorted relative paths.
 
+Current `post-commit` template invocation is:
+
+- `exec sce hooks post-commit --vcs git "$@"`
+
 ## Setup-service accessor surface
 
 `cli/src/services/setup/mod.rs` exposes hook-template access through:

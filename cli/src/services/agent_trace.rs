@@ -48,13 +48,23 @@ fn generate_agent_trace_id(commit_time: DateTime<FixedOffset>) -> Result<String>
 pub struct AgentTraceMetadataInput<'a> {
     pub commit_timestamp: &'a str,
     pub commit_revision: &'a str,
+    pub vcs_type: Option<AgentTraceVcsType>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTraceVcsType {
+    Git,
+    Jj,
+    Hg,
+    Svn,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct AgentTraceVcs {
     #[serde(rename = "type")]
-    pub kind: String,
+    pub r#type: AgentTraceVcsType,
     pub revision: String,
 }
 
@@ -217,7 +227,8 @@ pub struct AgentTrace {
     #[serde(default)]
     pub timestamp: String,
     /// Version control metadata sourced from caller-provided commit metadata.
-    pub vcs: AgentTraceVcs,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vcs: Option<AgentTraceVcs>,
     /// File-level trace entries, one per file present in `post_commit_patch`.
     pub files: Vec<TraceFile>,
 }
@@ -401,10 +412,10 @@ pub fn build_agent_trace(
         version: default_agent_trace_version(),
         id: generate_agent_trace_id(commit_time)?,
         timestamp,
-        vcs: AgentTraceVcs {
-            kind: "git".to_owned(),
+        vcs: metadata.vcs_type.map(|vcs_type| AgentTraceVcs {
+            r#type: vcs_type,
             revision: metadata.commit_revision.to_owned(),
-        },
+        }),
         files,
     })
 }

@@ -12,6 +12,7 @@ use serde_json::{json, to_string as serialize_to_json, Value};
 
 use crate::services::agent_trace::{
     build_agent_trace, validate_agent_trace_value, AgentTrace, AgentTraceMetadataInput,
+    AgentTraceVcsType,
 };
 use crate::services::agent_trace_db::{
     AgentTraceDb, AgentTraceInsert, DiffTraceInsert, PostCommitPatchIntersectionInsert,
@@ -36,7 +37,7 @@ const MAX_TRACE_FILE_CREATE_ATTEMPTS: u64 = 1_000_000;
 pub enum HookSubcommand {
     PreCommit,
     CommitMsg { message_file: PathBuf },
-    PostCommit,
+    PostCommit { vcs_type: Option<AgentTraceVcsType> },
     PostRewrite { rewrite_method: String },
     DiffTrace,
 }
@@ -74,7 +75,9 @@ fn run_hooks_subcommand_in_repo(
         HookSubcommand::CommitMsg { message_file } => {
             run_commit_msg_subcommand_with_trace(repository_root, subcommand, message_file)
         }
-        HookSubcommand::PostCommit => run_post_commit_subcommand_with_trace(repository_root),
+        HookSubcommand::PostCommit { vcs_type } => {
+            run_post_commit_subcommand_with_trace(repository_root, *vcs_type)
+        }
         HookSubcommand::PostRewrite { rewrite_method } => {
             run_post_rewrite_subcommand_with_trace(repository_root, subcommand, rewrite_method)
         }
@@ -439,9 +442,13 @@ fn run_commit_msg_subcommand_with_trace(
     run_commit_msg_subcommand_in_repo(repository_root, message_file)
 }
 
-fn run_post_commit_subcommand(repository_root: &Path) -> Result<String> {
+fn run_post_commit_subcommand(
+    repository_root: &Path,
+    vcs_type: Option<AgentTraceVcsType>,
+) -> Result<String> {
     run_post_commit_subcommand_with(
         repository_root,
+        vcs_type,
         run_post_commit_intersection_flow,
         run_post_commit_agent_trace_flow,
     )
@@ -449,15 +456,20 @@ fn run_post_commit_subcommand(repository_root: &Path) -> Result<String> {
 
 fn run_post_commit_subcommand_with<F, B>(
     repository_root: &Path,
+    vcs_type: Option<AgentTraceVcsType>,
     run_intersection_flow: F,
     run_agent_trace_flow: B,
 ) -> Result<String>
 where
     F: FnOnce(&Path) -> Result<PostCommitIntersectionFlowResult>,
-    B: FnOnce(&Path, &PostCommitIntersectionFlowResult) -> Result<AgentTrace>,
+    B: FnOnce(
+        &Path,
+        &PostCommitIntersectionFlowResult,
+        Option<AgentTraceVcsType>,
+    ) -> Result<AgentTrace>,
 {
     let result = run_intersection_flow(repository_root)?;
-    let _agent_trace = run_agent_trace_flow(repository_root, &result)?;
+    let _agent_trace = run_agent_trace_flow(repository_root, &result, vcs_type)?;
 
     Ok(format!(
         "post-commit hook processed intersection: commit={}, intersection_files={}",
@@ -469,11 +481,13 @@ where
 fn run_post_commit_agent_trace_flow(
     _repository_root: &Path,
     flow_result: &PostCommitIntersectionFlowResult,
+    vcs_type: Option<AgentTraceVcsType>,
 ) -> Result<AgentTrace> {
     let db = AgentTraceDb::new().context("Failed to open Agent Trace DB for post-commit trace.")?;
 
     run_post_commit_agent_trace_flow_with(
         flow_result,
+        vcs_type,
         |trace_value| {
             validate_agent_trace_value(trace_value)
                 .map_err(|error| anyhow!(error.to_string()))
@@ -492,6 +506,7 @@ fn run_post_commit_agent_trace_flow(
 
 fn run_post_commit_agent_trace_flow_with<V, I>(
     flow_result: &PostCommitIntersectionFlowResult,
+    vcs_type: Option<AgentTraceVcsType>,
     validate_agent_trace: V,
     persist_agent_trace: I,
 ) -> Result<AgentTrace>
@@ -515,6 +530,7 @@ where
         AgentTraceMetadataInput {
             commit_timestamp: &commit_timestamp,
             commit_revision: &flow_result.post_commit_data.commit_oid,
+            vcs_type,
         },
     )
     .context("Failed to build Agent Trace payload from post-commit intersection flow result.")?;
@@ -629,10 +645,13 @@ fn current_unix_time_ms() -> Result<i64> {
         .context("Current time exceeds i64 range for post-commit intersection.")
 }
 
-fn run_post_commit_subcommand_with_trace(repository_root: &Path) -> Result<String> {
-    let subcommand = HookSubcommand::PostCommit;
+fn run_post_commit_subcommand_with_trace(
+    repository_root: &Path,
+    vcs_type: Option<AgentTraceVcsType>,
+) -> Result<String> {
+    let subcommand = HookSubcommand::PostCommit { vcs_type };
     let input = build_hook_trace_input_for_post_commit(repository_root);
-    let outcome = run_post_commit_subcommand(repository_root);
+    let outcome = run_post_commit_subcommand(repository_root, vcs_type);
 
     let _ = persist_hook_trace(repository_root, &subcommand, &input, &outcome);
 
@@ -662,7 +681,7 @@ fn hook_runtime_invocation_name(subcommand: &HookSubcommand) -> &'static str {
     match subcommand {
         HookSubcommand::PreCommit => "pre-commit runtime invocation",
         HookSubcommand::CommitMsg { .. } => "commit-msg runtime invocation",
-        HookSubcommand::PostCommit => "post-commit runtime invocation",
+        HookSubcommand::PostCommit { .. } => "post-commit runtime invocation",
         HookSubcommand::PostRewrite { .. } => "post-rewrite runtime invocation",
         HookSubcommand::DiffTrace => "diff-trace runtime invocation",
     }
@@ -704,7 +723,7 @@ fn hook_trace_name(subcommand: &HookSubcommand) -> &'static str {
     match subcommand {
         HookSubcommand::PreCommit => "pre-commit",
         HookSubcommand::CommitMsg { .. } => "commit-msg",
-        HookSubcommand::PostCommit => "post-commit",
+        HookSubcommand::PostCommit { .. } => "post-commit",
         HookSubcommand::PostRewrite { .. } => "post-rewrite",
         HookSubcommand::DiffTrace => "diff-trace",
     }

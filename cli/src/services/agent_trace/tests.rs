@@ -1,6 +1,6 @@
 use super::{
-    build_agent_trace, validate_agent_trace_value, AgentTraceMetadataInput, LineRange,
-    AGENT_TRACE_VERSION,
+    build_agent_trace, validate_agent_trace_value, AgentTraceMetadataInput, AgentTraceVcsType,
+    LineRange, AGENT_TRACE_VERSION,
 };
 use crate::services::patch::{combine_patches, parse_patch, ParsedPatch};
 use serde_json::{json, Value};
@@ -62,13 +62,19 @@ fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
         AgentTraceMetadataInput {
             commit_timestamp: TEST_COMMIT_TIMESTAMP,
             commit_revision: TEST_COMMIT_REVISION,
+            vcs_type: Some(AgentTraceVcsType::Git),
         },
     )
     .expect("agent trace should build");
     assert_eq!(actual.version, AGENT_TRACE_VERSION);
     assert_eq!(actual.timestamp, TEST_COMMIT_TIMESTAMP);
-    assert_eq!(actual.vcs.kind, "git");
-    assert_eq!(actual.vcs.revision, TEST_COMMIT_REVISION);
+    assert_eq!(
+        actual.vcs,
+        Some(super::AgentTraceVcs {
+            r#type: AgentTraceVcsType::Git,
+            revision: TEST_COMMIT_REVISION.to_string(),
+        })
+    );
     let actual_json = serde_json::to_value(&actual).expect("agent trace should serialize");
     validate_agent_trace_value(&actual_json).expect("actual json should validate against schema");
     assert_eq!(actual_json["vcs"], golden["vcs"]);
@@ -146,6 +152,7 @@ fn poem_edit_reconstruction_maps_each_hunk_to_one_range() {
         AgentTraceMetadataInput {
             commit_timestamp: TEST_COMMIT_TIMESTAMP,
             commit_revision: TEST_COMMIT_REVISION,
+            vcs_type: Some(AgentTraceVcsType::Git),
         },
     )
     .expect("agent trace should build");

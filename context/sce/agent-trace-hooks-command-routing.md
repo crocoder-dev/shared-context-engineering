@@ -7,13 +7,14 @@
 ## Implemented command surface
 - `sce hooks pre-commit`
 - `sce hooks commit-msg <message-file>`
-- `sce hooks post-commit`
+- `sce hooks post-commit [--vcs <value>]`
 - `sce hooks post-rewrite <amend|rebase|other>`
 - `sce hooks diff-trace`
 
 ## Parser and dispatch behavior
 - `cli/src/app.rs` routes `hooks` through dedicated hook-subcommand parsing.
 - `cli/src/services/hooks/mod.rs` owns deterministic runtime dispatch through `HookSubcommand` + `run_hooks_subcommand`.
+- `post-commit` now parses optional `--vcs` input tolerantly at the command boundary: recognized values (`git|jj|hg|svn`) map to `Some(AgentTraceVcsType)`, while unknown values map to `None` without parse failure.
 - Invalid and ambiguous invocations return deterministic actionable errors pointing to `sce hooks --help`.
 
 ## Current runtime behavior
@@ -36,7 +37,9 @@
   - Persists the serialized intersection result to `post_commit_patch_intersections` table with commit metadata (OID, timestamp), window bounds (cutoff_ms, end_ms), and loaded/skipped counts.
   - Empty recent patch set produces deterministic empty intersection result (no crash).
   - Internal orchestration now returns a typed `PostCommitIntersectionFlowResult` (`combined_recent_patch`, `post_commit_data`) from `run_post_commit_intersection_flow_with()`.
-  - `run_post_commit_subcommand(...)` passes that typed flow result through `run_post_commit_agent_trace_flow(...)` (run-flow naming), which maps commit-time metadata to RFC3339 and calls `agent_trace::build_agent_trace(...)`.
+  - `run_post_commit_subcommand(...)` now threads the parsed optional `vcs_type` through `run_post_commit_agent_trace_flow(...)` into `run_post_commit_agent_trace_flow_with(...)`.
+- At the current runtime boundary, optional parsed `vcs_type` is forwarded unchanged into `agent_trace::build_agent_trace(...)`; when absent, the built payload omits top-level `vcs`.
+  - The run-flow path maps commit-time metadata to RFC3339 and calls `agent_trace::build_agent_trace(...)`.
   - The built Agent Trace payload is converted to JSON `Value` and validated via `agent_trace::validate_agent_trace_value(...)` before persistence.
   - Validation failures are returned through the same post-commit runtime failure path/class used for Agent Trace DB insertion failures (no silent fallback).
   - When validation passes, the payload is serialized and inserted into Agent Trace DB `agent_traces` using `commit_id` from flow-result commit metadata and `commit_time_ms` from flow-result post-commit timestamp metadata.

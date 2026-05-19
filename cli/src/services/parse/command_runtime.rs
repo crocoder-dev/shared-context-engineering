@@ -384,9 +384,11 @@ fn convert_hooks_subcommand(
                 subcommand: services::hooks::HookSubcommand::CommitMsg { message_file },
             }))
         }
-        cli_schema::HooksSubcommand::PostCommit => {
+        cli_schema::HooksSubcommand::PostCommit { vcs } => {
             Ok(Box::new(services::hooks::command::HooksCommand {
-                subcommand: services::hooks::HookSubcommand::PostCommit,
+                subcommand: services::hooks::HookSubcommand::PostCommit {
+                    vcs_type: parse_optional_hook_vcs_type(vcs.as_deref()),
+                },
             }))
         }
         cli_schema::HooksSubcommand::PostRewrite { rewrite_method } => {
@@ -399,5 +401,19 @@ fn convert_hooks_subcommand(
                 subcommand: services::hooks::HookSubcommand::DiffTrace,
             }))
         }
+    }
+}
+
+fn parse_optional_hook_vcs_type(
+    vcs: Option<&str>,
+) -> Option<services::agent_trace::AgentTraceVcsType> {
+    let normalized = vcs?.trim().to_ascii_lowercase();
+
+    match normalized.as_str() {
+        "git" => Some(services::agent_trace::AgentTraceVcsType::Git),
+        "jj" => Some(services::agent_trace::AgentTraceVcsType::Jj),
+        "hg" => Some(services::agent_trace::AgentTraceVcsType::Hg),
+        "svn" => Some(services::agent_trace::AgentTraceVcsType::Svn),
+        _ => None,
     }
 }

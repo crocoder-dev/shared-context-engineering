@@ -264,7 +264,10 @@ pub enum HooksSubcommand {
     CommitMsg { message_file: PathBuf },
 
     #[command(about = "Run post-commit hook")]
-    PostCommit,
+    PostCommit {
+        #[arg(long = "vcs")]
+        vcs: Option<String>,
+    },
 
     #[command(about = "Run post-rewrite hook (reads pairs from STDIN)")]
     PostRewrite { rewrite_method: String },
