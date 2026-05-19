@@ -51,8 +51,15 @@ impl ServiceLifecycle for AgentTraceDbLifecycle {
     }
 
     fn setup(&self, _ctx: &AppContext) -> Result<SetupOutcome> {
-        AgentTraceDb::new()
+        let db = AgentTraceDb::new()
             .context("Agent trace DB lifecycle setup failed while initializing agent trace DB")?;
+
+        if db.is_sync_mode() {
+            if let Err(e) = db.pull() {
+                tracing::warn!("Agent trace DB initial sync pull failed (setup continues): {e}");
+            }
+        }
+
         Ok(SetupOutcome::default())
     }
 }
