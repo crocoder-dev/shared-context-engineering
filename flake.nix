@@ -89,10 +89,10 @@
         };
 
         configLibBashPolicySrc = pkgs.lib.fileset.toSource {
-          root = ./config/lib/bash-policy-plugin;
+          root = ./config/lib;
           fileset = pkgs.lib.fileset.unions [
-            ./config/lib/bash-policy-plugin/package.json
-            ./config/lib/bash-policy-plugin/bun.lock
+            ./config/lib/package.json
+            ./config/lib/bun.lock
             ./config/lib/bash-policy-plugin/bash-policy/runtime.ts
             ./config/lib/bash-policy-plugin/bash-policy-runtime.test.ts
             ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
@@ -114,10 +114,10 @@
           pname = "config-lib-bash-policy-deps";
           version = "0.1.0";
           src = pkgs.lib.fileset.toSource {
-            root = ./config/lib/bash-policy-plugin;
+            root = ./config/lib;
             fileset = pkgs.lib.fileset.unions [
-              ./config/lib/bash-policy-plugin/package.json
-              ./config/lib/bash-policy-plugin/bun.lock
+              ./config/lib/package.json
+              ./config/lib/bun.lock
             ];
           };
           nativeBuildInputs = [ pkgs.bun ];
@@ -820,9 +820,9 @@
               set -euo pipefail
 
               # Copy source files
-              cp -r "${configLibBashPolicySrc}" ./bash-policy
-              chmod -R u+w ./bash-policy
-              cd ./bash-policy
+              cp -r "${configLibBashPolicySrc}" ./config-lib
+              chmod -R u+w ./config-lib
+              cd ./config-lib
 
               # Use pre-fetched dependencies from FOD
               cp -r "${configLibBashPolicyDeps}/node_modules" ./
@@ -841,9 +841,9 @@
             ''
               set -euo pipefail
 
-              cp -r "${configLibBashPolicySrc}" ./bash-policy
-              chmod -R u+w ./bash-policy
-              cd ./bash-policy
+              cp -r "${configLibBashPolicySrc}" ./config-lib
+              chmod -R u+w ./config-lib
+              cd ./config-lib
 
               biome check --formatter-enabled=false .
 
@@ -858,9 +858,9 @@
             ''
               set -euo pipefail
 
-              cp -r "${configLibBashPolicySrc}" ./bash-policy
-              chmod -R u+w ./bash-policy
-              cd ./bash-policy
+              cp -r "${configLibBashPolicySrc}" ./config-lib
+              chmod -R u+w ./config-lib
+              cd ./config-lib
 
               biome check --linter-enabled=false .
 

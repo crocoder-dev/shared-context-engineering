@@ -14,8 +14,9 @@
 ## Root Biome scoping
 
 - Keep Biome configuration at the repository root when one formatter/linter contract spans multiple JS package areas.
-- Scope root `biome.json` explicitly to the approved JS surfaces only; the current approved scope is `npm/**` and `config/lib/bash-policy-plugin/**`.
+- Scope root `biome.json` explicitly to the approved JS surfaces only; the current approved scope is `npm/**` and the shared `config/lib/**` plugin package root.
 - Exclude package-local install artifacts such as `node_modules/**` from root Biome coverage.
+- Keep repository-owned OpenCode plugin support code under one shared `config/lib/` Bun/TypeScript package root; package metadata and lockfile ownership live at `config/lib/package.json` and `config/lib/bun.lock`, not under individual plugin subdirectories.
 - Provide Biome through the root Nix dev shell so contributors can run `nix develop -c biome ...` without a host-installed binary or package-local setup.
 - When exposing JS validation through `nix flake check`, split Bun test, Biome lint/check, and Biome format verification into separately named derivations per target directory so failures stay tool- and surface-specific.
 

@@ -241,11 +241,10 @@ For a non-matching command, enforcement must allow the bash tool to continue nor
 - redundancy reporting for `forbid-git-all` plus `forbid-git-commit` without treating that pair as invalid
 
 ## Related files
-
 - `context/plans/bash-tool-policy-enforcement.md`
 - `context/cli/config-precedence-contract.md`
 - `config/pkl/base/bash-policy-presets.pkl`
 - `config/pkl/generate.pkl`
-- `config/lib/bash-policy/bash-policy-runtime.ts`
-- `config/lib/bash-policy/opencode-bash-policy-plugin.ts`
+- `config/lib/bash-policy-plugin/bash-policy/runtime.ts`
+- `config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts`
 - `cli/src/services/config/mod.rs`
