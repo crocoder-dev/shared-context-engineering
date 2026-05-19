@@ -35,6 +35,10 @@ pub const VERSION_CLAP_ABOUT: &str = "Print deterministic runtime version metada
 pub const VERSION_TOP_LEVEL_PURPOSE: &str = "Print deterministic runtime version metadata";
 pub const VERSION_SHOW_IN_TOP_LEVEL_HELP: bool = true;
 
+pub const SYNC_CLAP_ABOUT: &str = "Push or pull changes to/from Turso Cloud";
+pub const SYNC_TOP_LEVEL_PURPOSE: &str = "Sync local database with Turso Cloud (push/pull)";
+pub const SYNC_SHOW_IN_TOP_LEVEL_HELP: bool = true;
+
 pub const COMPLETION_CLAP_ABOUT: &str = "Generate deterministic shell completion scripts";
 pub const COMPLETION_TOP_LEVEL_PURPOSE: &str = "Generate deterministic shell completion scripts";
 pub const COMPLETION_SHOW_IN_TOP_LEVEL_HELP: bool = true;
@@ -74,6 +78,11 @@ pub const TOP_LEVEL_COMMANDS: &[TopLevelCommandMetadata] = &[
         name: crate::services::completion::NAME,
         purpose: COMPLETION_TOP_LEVEL_PURPOSE,
         show_in_top_level_help: COMPLETION_SHOW_IN_TOP_LEVEL_HELP,
+    },
+    TopLevelCommandMetadata {
+        name: crate::services::sync::NAME,
+        purpose: SYNC_TOP_LEVEL_PURPOSE,
+        show_in_top_level_help: SYNC_SHOW_IN_TOP_LEVEL_HELP,
     },
 ];
 
@@ -190,6 +199,12 @@ pub enum Commands {
         #[arg(long, value_enum)]
         shell: CompletionShell,
     },
+
+    #[command(about = SYNC_CLAP_ABOUT, hide = !SYNC_SHOW_IN_TOP_LEVEL_HELP)]
+    Sync {
+        #[command(subcommand)]
+        subcommand: SyncSubcommand,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
@@ -274,6 +289,15 @@ pub enum HooksSubcommand {
 
     #[command(about = "Run diff-trace hook (reads JSON payload from STDIN)")]
     DiffTrace,
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum SyncSubcommand {
+    #[command(about = "Push local changes to Turso Cloud")]
+    Push,
+
+    #[command(about = "Pull remote changes from Turso Cloud")]
+    Pull,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]

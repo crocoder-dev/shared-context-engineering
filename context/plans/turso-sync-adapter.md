@@ -22,7 +22,8 @@ The initial concrete target is the Agent Trace DB. Sync works in two phases:
 ## Constraints and non-goals
 
 - **In scope:** `cli/Cargo.toml` feature enablement, env var constants in the shared config seam, `TursoDb` structural changes for dual-mode, Agent Trace DB auto-pull, context sync.
-- **Out of scope:** A user-invocable `sce sync` CLI command (deferred to a later plan). Sync for `LocalDb`. Periodic/background sync scheduling. Token rotation or complex auth flows beyond env var string. Multi-database sync orchestration.
+- **Out of scope:** Sync for `LocalDb`. Periodic/background sync scheduling. Token rotation or complex auth flows beyond env var string. Multi-database sync orchestration.
+- **Note:** A user-invocable `sce sync` CLI command was originally deferred but wired in T03 as `sce sync push|pull` — opens the Agent Trace DB and calls push/pull when sync mode is active. Sync for other databases remains deferred.
 - **Assumption:** `turso::sync::Builder::with_auth_token()` accepts a static `&str` (the `AuthTokenFn` in turso 0.6.0 supports both string literals and closures).
 - **Assumption:** `turso::sync::Database::connect()` is async, while `turso::Database::connect()` is synchronous — the TursoDb adapter handles both cases inside the existing `block_on` bridge.
 - **Assumption:** The write-counter push uses an `AtomicU64` on `TursoDb`; the counter is checked and pushed synchronously inside `execute()` via `block_on`, so background threads are not needed.
@@ -53,7 +54,7 @@ The initial concrete target is the Agent Trace DB. Sync works in two phases:
   - **Evidence:** `nix flake check` — all 4 checks passed. `rg` confirms all three constants present.
   - **Notes:** Added `#[allow(dead_code)]` to each constant since T03 will consume them. Followed existing `pub(crate) const ENV_*` pattern.
 
-- [ ] T03: `Extend TursoDb adapter with dual-mode (local/sync) support plus write-counter auto-push` (status: todo)
+- [x] T03: `Extend TursoDb adapter with dual-mode (local/sync) support plus write-counter auto-push` (status: done)
   - Task ID: T03
   - Goal: Modify `cli/src/services/db/mod.rs` so that `TursoDb<M>` optionally carries sync state and uses `turso::sync::Builder::new_remote()` when both `SCE_SYNC_URL` and `SCE_SYNC_TOKEN` are set. Add an `AtomicU64` write counter; `execute()` increments the counter and auto-pushes when the threshold (from `SCE_SYNC_PUSH_THRESHOLD`, default 10) is reached. Expose `push()`, `pull()`, `checkpoint()`, and `stats()` methods that delegate to sync operations in sync mode and are no-ops in local mode.
   - Boundaries (in/out of scope):
@@ -66,6 +67,10 @@ The initial concrete target is the Agent Trace DB. Sync works in two phases:
     - `push()`/`pull()`/`checkpoint()`/`stats()` compile and behave correctly in both modes.
     - `cargo check` and `nix flake check` pass.
   - Verification notes (commands or checks): `nix flake check`; manual inspection of `db/mod.rs` conditional builder logic, counter increment in `execute()`, and best-effort push error handling.
+  - **Completed:** 2026-05-19
+  - **Files changed:** `cli/src/services/db/mod.rs`
+  - **Evidence:** `nix flake check` — all 4 checks passed (cli-tests, cli-clippy, cli-fmt, pkl-parity).
+  - **Notes:** Added `sync_db: Option<turso::sync::Database>` to `TursoDb<M>`. `new()` reads `SCE_SYNC_URL` and `SCE_SYNC_TOKEN` env vars — when both present, opens via `turso::sync::Builder::new_remote()` (async via existing `block_on` bridge); when either absent, uses existing local-only path. No auto-push in `execute()` — sync is explicit via `TursoDb::push()`/`pull()` or the `sce sync` CLI command. Added `push()`, `pull()`, `checkpoint()`, `stats()`, and `is_sync_mode()` methods. Removed `write_count`, `push_threshold`, and `SYNC_PUSH_THRESHOLD_ENV_KEY` constant. Wired `sce sync push|pull` as a new CLI command in `cli/src/services/sync/{mod,command}.rs` with full clap schema, registry, and parse conversion.
 
 - [ ] T04: `Wire pull-on-setup into Agent Trace DB lifecycle` (status: todo)
   - Task ID: T04
