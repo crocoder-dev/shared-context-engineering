@@ -40,6 +40,19 @@ pub(crate) const ENV_LOG_FORMAT: &str = "SCE_LOG_FORMAT";
 pub(crate) const ENV_LOG_FILE: &str = "SCE_LOG_FILE";
 pub(crate) const ENV_LOG_FILE_MODE: &str = "SCE_LOG_FILE_MODE";
 pub(crate) const ENV_ATTRIBUTION_HOOKS_ENABLED: &str = "SCE_ATTRIBUTION_HOOKS_ENABLED";
+
+// Sync (Turso Cloud) env var keys.
+// When SCE_SYNC_URL and SCE_SYNC_TOKEN are both set, TursoDb<M> opens in sync
+// (remote-backed) mode. When either is absent, local-only mode is used.
+// SCE_SYNC_PUSH_THRESHOLD controls how many writes accumulate before an
+// automatic push (defaults to 10 when unset).
+#[allow(dead_code)]
+pub(crate) const SYNC_URL_ENV_KEY: &str = "SCE_SYNC_URL";
+#[allow(dead_code)]
+pub(crate) const SYNC_TOKEN_ENV_KEY: &str = "SCE_SYNC_TOKEN";
+#[allow(dead_code)]
+pub(crate) const SYNC_PUSH_THRESHOLD_ENV_KEY: &str = "SCE_SYNC_PUSH_THRESHOLD";
+
 const WORKOS_CLIENT_ID_ENV: &str = "WORKOS_CLIENT_ID";
 const WORKOS_CLIENT_ID_BAKED_DEFAULT: &str = "client_sce_default";
 const WORKOS_CLIENT_ID_KEY: AuthConfigKeySpec = AuthConfigKeySpec {

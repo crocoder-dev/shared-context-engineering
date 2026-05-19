@@ -42,12 +42,16 @@ The initial concrete target is the Agent Trace DB. Sync works in two phases:
   - **Evidence:** `nix flake check` — all 5 checks passed. `rg 'turso' cli/Cargo.toml` confirms `features = ["sync"]`.
   - **Notes:** Enabling the `sync` feature pulled in `hyper-tls` as a transitive dep (via turso's `sync` feature), which required adding `pkg-config` + `openssl` to `nativeBuildInputs`/`buildInputs` in `flake.nix` for both `commonCargoArgs` and `cargoDepsArgs`. The `Cargo.lock` was also updated to include the new transitive deps.
 
-- [ ] T02: `Add SCE_SYNC_URL, SCE_SYNC_TOKEN, and SCE_SYNC_PUSH_THRESHOLD env var constants` (status: todo)
+- [x] T02: `Add SCE_SYNC_URL, SCE_SYNC_TOKEN, and SCE_SYNC_PUSH_THRESHOLD env var constants` (status: done)
   - Task ID: T02
   - Goal: Add `SYNC_URL_ENV_KEY`, `SYNC_TOKEN_ENV_KEY`, and `SYNC_PUSH_THRESHOLD_ENV_KEY` constants to the shared runtime/config primitive seam in `cli/src/services/config/mod.rs`, following the existing pattern for observability env keys (`LOG_LEVEL_ENV_KEY`, `LOG_FORMAT_ENV_KEY`, etc.).
   - Boundaries (in/out of scope): In — adding three pub consts and a doc comment block in `cli/src/services/config/mod.rs`. Out — changing `TursoDb`, `DbSpec`, or any other source file.
   - Done when: The three constants are defined, exported from the config module, and `cargo check` succeeds.
   - Verification notes (commands or checks): `nix flake check`; `rg 'SYNC_(URL|TOKEN|PUSH_THRESHOLD)_ENV_KEY' cli/src/services/config/mod.rs` confirms all three exist.
+  - **Completed:** 2026-05-19
+  - **Files changed:** `cli/src/services/config/mod.rs`
+  - **Evidence:** `nix flake check` — all 4 checks passed. `rg` confirms all three constants present.
+  - **Notes:** Added `#[allow(dead_code)]` to each constant since T03 will consume them. Followed existing `pub(crate) const ENV_*` pattern.
 
 - [ ] T03: `Extend TursoDb adapter with dual-mode (local/sync) support plus write-counter auto-push` (status: todo)
   - Task ID: T03
