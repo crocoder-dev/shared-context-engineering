@@ -3,9 +3,9 @@
 	"files": {
 		"includes": [
 			"npm/**",
-			"config/lib/bash-policy-plugin/**",
+			"config/lib/**",
 			"!npm/node_modules",
-			"!config/lib/bash-policy-plugin/node_modules"
+			"!config/lib/node_modules"
 		]
 	},
 	"formatter": {
