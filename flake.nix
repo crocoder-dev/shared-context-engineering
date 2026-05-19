@@ -154,8 +154,13 @@
           doCheck = false;
           SCE_GIT_COMMIT = shortGitCommit;
 
-          nativeBuildInputs = [
+          nativeBuildInputs = with pkgs; [
             rustToolchain
+            pkg-config
+          ];
+
+          buildInputs = with pkgs; [
+            openssl
           ];
 
           postUnpack = ''
@@ -179,8 +184,13 @@
           strictDeps = true;
           doCheck = false;
 
-          nativeBuildInputs = [
+          nativeBuildInputs = with pkgs; [
             rustToolchain
+            pkg-config
+          ];
+
+          buildInputs = with pkgs; [
+            openssl
           ];
         };
 
