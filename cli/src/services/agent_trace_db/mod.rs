@@ -22,6 +22,8 @@ const CREATE_AGENT_TRACES_MIGRATION: &str =
     include_str!("../../../migrations/agent-trace/004_create_agent_traces.sql");
 const ADD_DIFF_TRACES_MODEL_ID_MIGRATION: &str =
     include_str!("../../../migrations/agent-trace/005_add_diff_traces_model_id.sql");
+const ADD_AGENT_TRACES_AGENT_TRACE_ID_MIGRATION: &str =
+    include_str!("../../../migrations/agent-trace/006_add_agent_traces_agent_trace_id.sql");
 
 const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
     ("001_create_diff_traces", CREATE_DIFF_TRACES_MIGRATION),
@@ -37,6 +39,10 @@ const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
     (
         "005_add_diff_traces_model_id",
         ADD_DIFF_TRACES_MODEL_ID_MIGRATION,
+    ),
+    (
+        "006_add_agent_traces_agent_trace_id",
+        ADD_AGENT_TRACES_AGENT_TRACE_ID_MIGRATION,
     ),
 ];
 
@@ -65,7 +71,7 @@ pub const INSERT_POST_COMMIT_PATCH_INTERSECTION_SQL: &str =
 
 /// Parameterized SQL for inserting a built agent trace payload.
 pub const INSERT_AGENT_TRACE_SQL: &str =
-    "INSERT INTO agent_traces (commit_id, commit_time_ms, trace_json) VALUES (?1, ?2, ?3)";
+    "INSERT INTO agent_traces (commit_id, commit_time_ms, trace_json, agent_trace_id) VALUES (?1, ?2, ?3, ?4)";
 
 /// Agent trace database configuration.
 pub struct AgentTraceDbSpec;
@@ -159,6 +165,7 @@ pub struct AgentTraceInsert<'a> {
     pub commit_id: &'a str,
     pub commit_time_ms: i64,
     pub trace_json: &'a str,
+    pub agent_trace_id: &'a str,
 }
 
 impl AgentTraceDb {
@@ -180,7 +187,12 @@ impl AgentTraceDb {
     pub fn insert_agent_trace(&self, input: AgentTraceInsert<'_>) -> Result<u64> {
         self.execute(
             INSERT_AGENT_TRACE_SQL,
-            (input.commit_id, input.commit_time_ms, input.trace_json),
+            (
+                input.commit_id,
+                input.commit_time_ms,
+                input.trace_json,
+                input.agent_trace_id,
+            ),
         )
     }
 
@@ -530,6 +542,7 @@ mod tests {
                     "003_add_diff_traces_time_ms_id_index",
                     "004_create_agent_traces",
                     "005_add_diff_traces_model_id",
+                    "006_add_agent_traces_agent_trace_id",
                 ]
             );
         }
