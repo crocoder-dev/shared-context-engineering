@@ -16,7 +16,7 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 - `recent_diff_trace_patches(cutoff_time_ms, end_time_ms)`: chronological `diff_traces` read helper for rows in the inclusive window `time_ms >= cutoff_time_ms AND time_ms <= end_time_ms`; parses raw patch text through `parse_patch` and skips malformed rows without failing the query.
 - `PostCommitPatchIntersectionInsert<'a>`: insert payload for post-commit intersection results with commit metadata, window bounds, loaded/skipped counts, and serialized patch JSON.
 - `insert_post_commit_patch_intersection()`: domain-specific insert helper using parameterized SQL.
-- `AgentTraceInsert<'a>`: insert payload for built Agent Trace rows with `commit_id`, `commit_time_ms`, and serialized `trace_json`.
+- `AgentTraceInsert<'a>`: insert payload for built Agent Trace rows with `commit_id`, `commit_time_ms`, serialized `trace_json`, and `agent_trace_id`.
 - `insert_agent_trace()`: domain-specific insert helper for `agent_traces` using parameterized SQL.
 - `lifecycle.rs`: service lifecycle provider for setup/doctor integration.
 
@@ -38,8 +38,9 @@ The Agent Trace DB path is resolved from the shared default-path catalog:
 - `003_add_diff_traces_time_ms_id_index.sql`
 - `004_create_agent_traces.sql`
 - `005_add_diff_traces_model_id.sql`
+- `006_add_agent_traces_agent_trace_id.sql`
 
-`005_add_diff_traces_model_id.sql` adds nullable `diff_traces.model_id`. `AgentTraceDbSpec::migrations()` registers it after the `agent_traces` table migration, so setup/doctor initialization applies the model-id column migration through the shared migration runner.
+`005_add_diff_traces_model_id.sql` adds nullable `diff_traces.model_id`. `006_add_agent_traces_agent_trace_id.sql` adds nullable `agent_trace_id` to `agent_traces`. `AgentTraceDbSpec::migrations()` registers both after the `agent_traces` table migration, so setup/doctor initialization applies later column migrations through the shared migration runner.
 
 The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::new()` applies later Agent Trace migrations to an already-created `~/.local/state/sce/agent-trace.db`.
 
@@ -70,6 +71,7 @@ The `agent_traces` migration creates:
 - `commit_id TEXT NOT NULL`
 - `commit_time_ms INTEGER NOT NULL`
 - `trace_json TEXT NOT NULL`
+- `agent_trace_id TEXT` (added by migration 006; nullable so existing rows remain valid)
 - `created_at TEXT NOT NULL DEFAULT (...)`
 
 ## Lifecycle integration

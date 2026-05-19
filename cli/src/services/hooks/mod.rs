@@ -534,6 +534,7 @@ where
         commit_id: &flow_result.post_commit_data.commit_oid,
         commit_time_ms: flow_result.post_commit_data.commit_time_ms,
         trace_json: &serialized,
+        agent_trace_id: &agent_trace.id,
     };
     persist_agent_trace(insert_input)?;
 
