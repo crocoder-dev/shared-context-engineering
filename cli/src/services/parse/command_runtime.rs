@@ -385,10 +385,11 @@ fn convert_hooks_subcommand(
             }))
         }
         cli_schema::HooksSubcommand::PostCommit { vcs } => {
+            let vcs_type = parse_optional_hook_vcs_type(vcs.as_deref())
+                .map_err(ClassifiedError::validation)?;
+
             Ok(Box::new(services::hooks::command::HooksCommand {
-                subcommand: services::hooks::HookSubcommand::PostCommit {
-                    vcs_type: parse_optional_hook_vcs_type(vcs.as_deref()),
-                },
+                subcommand: services::hooks::HookSubcommand::PostCommit { vcs_type },
             }))
         }
         cli_schema::HooksSubcommand::PostRewrite { rewrite_method } => {
@@ -406,14 +407,20 @@ fn convert_hooks_subcommand(
 
 fn parse_optional_hook_vcs_type(
     vcs: Option<&str>,
-) -> Option<services::agent_trace::AgentTraceVcsType> {
-    let normalized = vcs?.trim().to_ascii_lowercase();
+) -> Result<Option<services::agent_trace::AgentTraceVcsType>, String> {
+    let Some(vcs) = vcs else {
+        return Ok(None);
+    };
+
+    let normalized = vcs.trim().to_ascii_lowercase();
 
     match normalized.as_str() {
-        "git" => Some(services::agent_trace::AgentTraceVcsType::Git),
-        "jj" => Some(services::agent_trace::AgentTraceVcsType::Jj),
-        "hg" => Some(services::agent_trace::AgentTraceVcsType::Hg),
-        "svn" => Some(services::agent_trace::AgentTraceVcsType::Svn),
-        _ => None,
+        "git" => Ok(Some(services::agent_trace::AgentTraceVcsType::Git)),
+        "jj" => Ok(Some(services::agent_trace::AgentTraceVcsType::Jj)),
+        "hg" => Ok(Some(services::agent_trace::AgentTraceVcsType::Hg)),
+        "svn" => Ok(Some(services::agent_trace::AgentTraceVcsType::Svn)),
+        _ => Err(format!(
+            "Unsupported value for '--vcs': '{vcs}'. Supported values: git, jj, hg, svn."
+        )),
     }
 }
