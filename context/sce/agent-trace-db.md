@@ -87,7 +87,7 @@ The `agent_traces` migration creates:
 
 `sce hooks diff-trace` is the current runtime writer for `diff_traces`.
 
-- The hook path validates required STDIN `{ sessionID, diff, time, model_id }` before persistence and passes parsed `model_id` into `DiffTraceInsert`.
+- The hook path validates required STDIN `{ sessionID, diff, time, model_id, tool_name, tool_version }` before persistence (`tool_name` non-empty; `tool_version` present and either `null` or non-empty string) and passes parsed `model_id` into `DiffTraceInsert`.
 - `time` is accepted as a `u64` Unix epoch millisecond input and must fit the signed `i64` `time_ms` column before any persistence starts.
 - The hook writes the existing collision-safe `context/tmp/<timestamp>-000000-diff-trace.json` parsed-payload artifact and inserts the parsed payload fields through `AgentTraceDb::insert_diff_trace()`.
 - Command success requires both artifact and database persistence to succeed.
