@@ -36,10 +36,11 @@
   - Intersects the combined recent patch with the post-commit patch via `patch::intersect_patches`.
   - Persists the serialized intersection result to `post_commit_patch_intersections` table with commit metadata (OID, timestamp), window bounds (cutoff_ms, end_ms), and loaded/skipped counts.
   - Empty recent patch set produces deterministic empty intersection result (no crash).
-  - Internal orchestration now returns a typed `PostCommitIntersectionFlowResult` (`combined_recent_patch`, `post_commit_data`) from `run_post_commit_intersection_flow_with()`.
+  - Internal orchestration now returns a typed `PostCommitIntersectionFlowResult` (`combined_recent_patch`, `post_commit_data`, optional `tool_name`, optional `tool_version`) from `run_post_commit_intersection_flow_with()`, where tool metadata comes from the most recent ordered parsed recent-patch row and falls back to `None` when the recent set is empty.
   - `run_post_commit_subcommand(...)` now threads the parsed optional `vcs_type` through `run_post_commit_agent_trace_flow(...)` into `run_post_commit_agent_trace_flow_with(...)`.
 - At the current runtime boundary, optional parsed `vcs_type` is forwarded unchanged into `agent_trace::build_agent_trace(...)`; when absent, the built payload omits top-level `vcs`.
   - The run-flow path maps commit-time metadata to RFC3339 and calls `agent_trace::build_agent_trace(...)`.
+  - The same run-flow call now also forwards optional `tool_name` / `tool_version` from `PostCommitIntersectionFlowResult` into `AgentTraceMetadataInput`, so built post-commit payloads preserve tool metadata derived from recent parsed diff-trace rows.
   - The built Agent Trace payload is converted to JSON `Value` and validated via `agent_trace::validate_agent_trace_value(...)` before persistence.
   - Validation failures are returned through the same post-commit runtime failure path/class used for Agent Trace DB insertion failures (no silent fallback).
   - When validation passes, the payload is serialized and inserted into Agent Trace DB `agent_traces` using `commit_id` from flow-result commit metadata and `commit_time_ms` from flow-result post-commit timestamp metadata.

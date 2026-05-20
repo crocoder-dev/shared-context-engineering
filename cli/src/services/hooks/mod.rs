@@ -571,6 +571,8 @@ where
             commit_timestamp: &commit_timestamp,
             commit_revision: &flow_result.post_commit_data.commit_oid,
             vcs_type,
+            tool_name: flow_result.tool_name.as_deref(),
+            tool_version: flow_result.tool_version.as_deref(),
         },
     )
     .context("Failed to build Agent Trace payload from post-commit intersection flow result.")?;
@@ -648,6 +650,10 @@ where
     #[allow(clippy::cast_possible_wrap)]
     let skipped_count = recent_patches.skipped_count() as i64;
 
+    let last_patch = recent_patches.patches.last();
+    let tool_name = last_patch.and_then(|patch| patch.tool_name.clone());
+    let tool_version = last_patch.and_then(|patch| patch.tool_version.clone());
+
     let recent_patches_slice: Vec<ParsedPatch> = recent_patches
         .patches
         .into_iter()
@@ -677,6 +683,8 @@ where
     Ok(PostCommitIntersectionFlowResult {
         combined_recent_patch,
         post_commit_data,
+        tool_name,
+        tool_version,
     })
 }
 
@@ -961,6 +969,8 @@ pub struct PostCommitPatchData {
 pub struct PostCommitIntersectionFlowResult {
     pub combined_recent_patch: ParsedPatch,
     pub post_commit_data: PostCommitPatchData,
+    pub tool_name: Option<String>,
+    pub tool_version: Option<String>,
 }
 
 /// Capture and parse the current commit patch.
@@ -1078,6 +1088,8 @@ mod tests {
                         time_ms: now_ms - 500,
                         session_id: String::from("valid-session"),
                         patch: valid_patch("src/lib.rs", "shared line"),
+                        tool_name: Some(String::from("opencode")),
+                        tool_version: Some(String::from("1.2.3")),
                     }],
                     skipped: vec![SkippedDiffTracePatch {
                         id: 8,
@@ -1132,5 +1144,7 @@ mod tests {
         assert_eq!(output.post_commit_data.commit_time_ms, commit_time_ms);
         assert_eq!(output.combined_recent_patch.files.len(), 1);
         assert_eq!(output.combined_recent_patch.files[0].new_path, "src/lib.rs");
+        assert_eq!(output.tool_name, Some(String::from("opencode")));
+        assert_eq!(output.tool_version, Some(String::from("1.2.3")));
     }
 }

@@ -64,7 +64,7 @@ pub const INSERT_DIFF_TRACE_SQL: &str =
 
 /// Parameterized SQL for retrieving recent captured diff trace patches.
 pub const SELECT_RECENT_DIFF_TRACE_PATCHES_SQL: &str =
-    "SELECT id, time_ms, session_id, patch, model_id
+    "SELECT id, time_ms, session_id, patch, model_id, tool_name, tool_version
 FROM diff_traces
 WHERE time_ms >= ?1 AND time_ms <= ?2
 ORDER BY time_ms ASC, id ASC";
@@ -124,6 +124,8 @@ pub struct DiffTracePatchRow {
     pub session_id: String,
     pub patch: String,
     pub model_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub tool_version: Option<String>,
 }
 
 /// Parsed recent diff trace patch ready for comparison flows.
@@ -133,6 +135,8 @@ pub struct ParsedDiffTracePatch {
     pub time_ms: i64,
     pub session_id: String,
     pub patch: ParsedPatch,
+    pub tool_name: Option<String>,
+    pub tool_version: Option<String>,
 }
 
 /// Deterministic skipped-row report for invalid recent diff trace patches.
@@ -275,6 +279,10 @@ fn diff_trace_patch_row_from_turso(row: &turso::Row) -> Result<DiffTracePatchRow
             .context("failed to read diff_traces.session_id")?,
         patch: row.get(3).context("failed to read diff_traces.patch")?,
         model_id: row.get(4).context("failed to read diff_traces.model_id")?,
+        tool_name: row.get(5).context("failed to read diff_traces.tool_name")?,
+        tool_version: row
+            .get(6)
+            .context("failed to read diff_traces.tool_version")?,
     })
 }
 
@@ -296,6 +304,8 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
                     time_ms: row.time_ms,
                     session_id: row.session_id,
                     patch,
+                    tool_name: row.tool_name,
+                    tool_version: row.tool_version,
                 });
             }
             Err(error) => skipped.push(SkippedDiffTracePatch {
@@ -488,6 +498,19 @@ mod tests {
                 (4, 1500, "same-time-a"),
                 (5, 1500, "same-time-b"),
                 (6, 2000, "at-end"),
+            ]
+        );
+        assert_eq!(
+            result
+                .patches
+                .iter()
+                .map(|patch| { (patch.tool_name.as_deref(), patch.tool_version.as_deref(),) })
+                .collect::<Vec<_>>(),
+            vec![
+                (Some("opencode"), Some("1.2.3")),
+                (Some("opencode"), Some("1.2.3")),
+                (Some("opencode"), Some("1.2.3")),
+                (Some("opencode"), Some("1.2.3")),
             ]
         );
         assert_eq!(

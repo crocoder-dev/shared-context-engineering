@@ -63,6 +63,8 @@ fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
             commit_timestamp: TEST_COMMIT_TIMESTAMP,
             commit_revision: TEST_COMMIT_REVISION,
             vcs_type: Some(AgentTraceVcsType::Git),
+            tool_name: None,
+            tool_version: None,
         },
     )
     .expect("agent trace should build");
@@ -153,6 +155,8 @@ fn poem_edit_reconstruction_maps_each_hunk_to_one_range() {
             commit_timestamp: TEST_COMMIT_TIMESTAMP,
             commit_revision: TEST_COMMIT_REVISION,
             vcs_type: Some(AgentTraceVcsType::Git),
+            tool_name: None,
+            tool_version: None,
         },
     )
     .expect("agent trace should build");
