@@ -49,6 +49,8 @@ pub struct AgentTraceMetadataInput<'a> {
     pub commit_timestamp: &'a str,
     pub commit_revision: &'a str,
     pub vcs_type: Option<AgentTraceVcsType>,
+    pub tool_name: Option<&'a str>,
+    pub tool_version: Option<&'a str>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -66,6 +68,15 @@ pub struct AgentTraceVcs {
     #[serde(rename = "type")]
     pub r#type: AgentTraceVcsType,
     pub revision: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentTraceTool {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 fn parse_commit_timestamp(commit_timestamp: &str) -> Result<DateTime<FixedOffset>> {
@@ -229,6 +240,9 @@ pub struct AgentTrace {
     /// Version control metadata sourced from caller-provided commit metadata.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vcs: Option<AgentTraceVcs>,
+    /// Optional tool metadata sourced from caller-provided metadata input.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<AgentTraceTool>,
     /// File-level trace entries, one per file present in `post_commit_patch`.
     pub files: Vec<TraceFile>,
 }
@@ -408,6 +422,17 @@ pub fn build_agent_trace(
         }
     }
 
+    let tool = if !intersection_patch.files.is_empty()
+        && (metadata.tool_name.is_some() || metadata.tool_version.is_some())
+    {
+        Some(AgentTraceTool {
+            name: metadata.tool_name.map(ToOwned::to_owned),
+            version: metadata.tool_version.map(ToOwned::to_owned),
+        })
+    } else {
+        None
+    };
+
     Ok(AgentTrace {
         version: default_agent_trace_version(),
         id: generate_agent_trace_id(commit_time)?,
@@ -416,6 +441,7 @@ pub fn build_agent_trace(
             r#type: vcs_type,
             revision: metadata.commit_revision.to_owned(),
         }),
+        tool,
         files,
     })
 }
