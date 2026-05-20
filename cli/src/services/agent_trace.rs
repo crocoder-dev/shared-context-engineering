@@ -27,9 +27,18 @@ use super::patch::{
 };
 
 pub const AGENT_TRACE_VERSION: &str = "0.1.0";
+pub const SCE_METADATA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn default_agent_trace_version() -> String {
     AGENT_TRACE_VERSION.to_owned()
+}
+
+fn default_agent_trace_metadata() -> AgentTraceMetadata {
+    AgentTraceMetadata {
+        sce: AgentTraceSceMetadata {
+            version: SCE_METADATA_VERSION.to_owned(),
+        },
+    }
 }
 
 fn generate_agent_trace_id(commit_time: DateTime<FixedOffset>) -> Result<String> {
@@ -77,6 +86,15 @@ pub struct AgentTraceTool {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+}
+pub struct AgentTraceMetadata {
+    pub sce: AgentTraceSceMetadata,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentTraceSceMetadata {
+    pub version: String,
 }
 
 fn parse_commit_timestamp(commit_timestamp: &str) -> Result<DateTime<FixedOffset>> {
@@ -243,6 +261,9 @@ pub struct AgentTrace {
     /// Optional tool metadata sourced from caller-provided metadata input.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<AgentTraceTool>,
+    /// Implementation-specific metadata for SCE-generated traces.
+    #[serde(default = "default_agent_trace_metadata")]
+    pub metadata: AgentTraceMetadata,
     /// File-level trace entries, one per file present in `post_commit_patch`.
     pub files: Vec<TraceFile>,
 }
@@ -442,6 +463,7 @@ pub fn build_agent_trace(
             revision: metadata.commit_revision.to_owned(),
         }),
         tool,
+        metadata: default_agent_trace_metadata(),
         files,
     })
 }

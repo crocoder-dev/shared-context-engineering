@@ -1,10 +1,12 @@
 # Agent Trace Hooks Command Routing
 
 ## Scope
+
 - Current trace-removal baseline for `cli/src/services/hooks/mod.rs`
 - Focus: concrete `sce hooks` subcommand routing plus current minimal runtime behavior
 
 ## Implemented command surface
+
 - `sce hooks pre-commit`
 - `sce hooks commit-msg <message-file>`
 - `sce hooks post-commit [--vcs <value>]`
@@ -12,12 +14,14 @@
 - `sce hooks diff-trace`
 
 ## Parser and dispatch behavior
+
 - `cli/src/app.rs` routes `hooks` through dedicated hook-subcommand parsing.
 - `cli/src/services/hooks/mod.rs` owns deterministic runtime dispatch through `HookSubcommand` + `run_hooks_subcommand`.
 - `post-commit` now parses optional `--vcs` input tolerantly at the command boundary: recognized values (`git|jj|hg|svn`) map to `Some(AgentTraceVcsType)`, while unknown values map to `None` without parse failure.
 - Invalid and ambiguous invocations return deterministic actionable errors pointing to `sce hooks --help`.
 
 ## Current runtime behavior
+
 - Shared enablement gate:
   - env `SCE_ATTRIBUTION_HOOKS_ENABLED`
   - config `policies.attribution_hooks.enabled`
@@ -41,6 +45,7 @@
 - At the current runtime boundary, optional parsed `vcs_type` is forwarded unchanged into `agent_trace::build_agent_trace(...)`; when absent, the built payload omits top-level `vcs`.
   - The run-flow path maps commit-time metadata to RFC3339 and calls `agent_trace::build_agent_trace(...)`.
   - The same run-flow call now also forwards optional `tool_name` / `tool_version` from `PostCommitIntersectionFlowResult` into `AgentTraceMetadataInput`, so built post-commit payloads preserve tool metadata derived from recent parsed diff-trace rows.
+  - The built Agent Trace payload includes top-level `metadata.sce.version` from the compiled `sce` CLI package version before conversion to JSON.
   - The built Agent Trace payload is converted to JSON `Value` and validated via `agent_trace::validate_agent_trace_value(...)` before persistence.
   - Validation failures are returned through the same post-commit runtime failure path/class used for Agent Trace DB insertion failures (no silent fallback).
   - When validation passes, the payload is serialized and inserted into Agent Trace DB `agent_traces` using `commit_id` from flow-result commit metadata and `commit_time_ms` from flow-result post-commit timestamp metadata.
@@ -51,6 +56,7 @@
 - `diff-trace` success requires both persistence paths to succeed; artifact write failures and AgentTraceDb open/insert failures are command-failing runtime errors logged through `sce.hooks.diff_trace.error`.
 
 ## Explicit non-goals in the current baseline
+
 - No checkpoint handoff file
 - No git-notes persistence
 - No backfill/import of existing `context/tmp/*-diff-trace.json` artifacts into AgentTraceDb

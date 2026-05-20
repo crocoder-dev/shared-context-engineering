@@ -7,6 +7,11 @@
     "type": "git",
     "revision": "a0b1c2d3e4f5a6b7c8d9e0f11223344556677889"
   },
+  "metadata": {
+    "sce": {
+      "version": "0.2.0"
+    }
+  },
   "files": [
     {
       "path": "animals.txt",
