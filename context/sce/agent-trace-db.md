@@ -10,7 +10,7 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 
 - `AgentTraceDbSpec`: `DbSpec` implementation for Agent Trace persistence.
 - `AgentTraceDb`: type alias for `TursoDb<AgentTraceDbSpec>`.
-- `DiffTraceInsert<'a>`: insert payload with `time_ms: i64`, `session_id: &'a str`, `patch: &'a str`, and `model_id: &'a str`.
+- `DiffTraceInsert<'a>`: insert payload with `time_ms: i64`, `session_id: &'a str`, `patch: &'a str`, `model_id: &'a str`, `tool_name: &'a str`, and nullable `tool_version: Option<&'a str>`.
 - `insert_diff_trace()`: domain-specific insert helper using parameterized SQL.
 - `RecentDiffTracePatches`: parsed recent `diff_traces` query result containing valid parsed patches plus skipped-row reports.
 - `recent_diff_trace_patches(cutoff_time_ms, end_time_ms)`: chronological `diff_traces` read helper for rows in the inclusive window `time_ms >= cutoff_time_ms AND time_ms <= end_time_ms`; parses raw patch text through `parse_patch` and skips malformed rows without failing the query.
@@ -39,8 +39,10 @@ The Agent Trace DB path is resolved from the shared default-path catalog:
 - `004_create_agent_traces.sql`
 - `005_add_diff_traces_model_id.sql`
 - `006_add_agent_traces_agent_trace_id.sql`
+- `007_add_diff_traces_tool_metadata_columns.sql`
+- `008_add_diff_traces_tool_version_column.sql`
 
-`005_add_diff_traces_model_id.sql` adds nullable `diff_traces.model_id`. `006_add_agent_traces_agent_trace_id.sql` adds nullable `agent_trace_id` to `agent_traces`. `AgentTraceDbSpec::migrations()` registers both after the `agent_traces` table migration, so setup/doctor initialization applies later column migrations through the shared migration runner.
+`005_add_diff_traces_model_id.sql` adds nullable `diff_traces.model_id`. `006_add_agent_traces_agent_trace_id.sql` adds nullable `agent_trace_id` to `agent_traces`. `007_add_diff_traces_tool_metadata_columns.sql` adds nullable `diff_traces.tool_name`. `008_add_diff_traces_tool_version_column.sql` adds nullable `diff_traces.tool_version`. `AgentTraceDbSpec::migrations()` registers these after the base table migrations so setup/doctor initialization applies later column migrations through the shared migration runner.
 
 The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::new()` applies later Agent Trace migrations to an already-created `~/.local/state/sce/agent-trace.db`.
 
@@ -52,6 +54,8 @@ The `diff_traces` migration creates:
 - `patch TEXT NOT NULL`
 - `created_at TEXT NOT NULL DEFAULT (...)`
 - `model_id TEXT` (added by migration 005; nullable so existing rows remain valid)
+- `tool_name TEXT` (added by migration 007; nullable for backward compatibility)
+- `tool_version TEXT` (added by migration 008; nullable for backward compatibility)
 
 The post-commit intersection migration creates `post_commit_patch_intersections` with:
 
@@ -87,7 +91,7 @@ The `agent_traces` migration creates:
 
 `sce hooks diff-trace` is the current runtime writer for `diff_traces`.
 
-- The hook path validates required STDIN `{ sessionID, diff, time, model_id, tool_name, tool_version }` before persistence (`tool_name` non-empty; `tool_version` present and either `null` or non-empty string) and passes parsed `model_id` into `DiffTraceInsert`.
+- The hook path validates required STDIN `{ sessionID, diff, time, model_id, tool_name, tool_version }` before persistence (`tool_name` non-empty; `tool_version` present and either `null` or non-empty string) and passes parsed `model_id`, `tool_name`, and nullable `tool_version` into `DiffTraceInsert`.
 - `time` is accepted as a `u64` Unix epoch millisecond input and must fit the signed `i64` `time_ms` column before any persistence starts.
 - The hook writes the existing collision-safe `context/tmp/<timestamp>-000000-diff-trace.json` parsed-payload artifact and inserts the parsed payload fields through `AgentTraceDb::insert_diff_trace()`.
 - Command success requires both artifact and database persistence to succeed.

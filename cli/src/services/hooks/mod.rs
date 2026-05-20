@@ -327,6 +327,8 @@ where
         session_id: &payload.session_id,
         patch: &payload.diff,
         model_id: &payload.model_id,
+        tool_name: &payload.tool_name,
+        tool_version: payload.tool_version.as_deref(),
     })
 }
 

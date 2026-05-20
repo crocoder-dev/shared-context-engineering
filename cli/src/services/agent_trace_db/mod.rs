@@ -24,6 +24,10 @@ const ADD_DIFF_TRACES_MODEL_ID_MIGRATION: &str =
     include_str!("../../../migrations/agent-trace/005_add_diff_traces_model_id.sql");
 const ADD_AGENT_TRACES_AGENT_TRACE_ID_MIGRATION: &str =
     include_str!("../../../migrations/agent-trace/006_add_agent_traces_agent_trace_id.sql");
+const ADD_DIFF_TRACES_TOOL_METADATA_COLUMNS_MIGRATION: &str =
+    include_str!("../../../migrations/agent-trace/007_add_diff_traces_tool_metadata_columns.sql");
+const ADD_DIFF_TRACES_TOOL_VERSION_COLUMN_MIGRATION: &str =
+    include_str!("../../../migrations/agent-trace/008_add_diff_traces_tool_version_column.sql");
 
 const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
     ("001_create_diff_traces", CREATE_DIFF_TRACES_MIGRATION),
@@ -44,11 +48,19 @@ const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
         "006_add_agent_traces_agent_trace_id",
         ADD_AGENT_TRACES_AGENT_TRACE_ID_MIGRATION,
     ),
+    (
+        "007_add_diff_traces_tool_metadata_columns",
+        ADD_DIFF_TRACES_TOOL_METADATA_COLUMNS_MIGRATION,
+    ),
+    (
+        "008_add_diff_traces_tool_version_column",
+        ADD_DIFF_TRACES_TOOL_VERSION_COLUMN_MIGRATION,
+    ),
 ];
 
 /// Parameterized SQL for inserting a captured diff trace payload.
 pub const INSERT_DIFF_TRACE_SQL: &str =
-    "INSERT INTO diff_traces (time_ms, session_id, patch, model_id) VALUES (?1, ?2, ?3, ?4)";
+    "INSERT INTO diff_traces (time_ms, session_id, patch, model_id, tool_name, tool_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
 
 /// Parameterized SQL for retrieving recent captured diff trace patches.
 pub const SELECT_RECENT_DIFF_TRACE_PATCHES_SQL: &str =
@@ -100,6 +112,8 @@ pub struct DiffTraceInsert<'a> {
     pub session_id: &'a str,
     pub patch: &'a str,
     pub model_id: &'a str,
+    pub tool_name: &'a str,
+    pub tool_version: Option<&'a str>,
 }
 
 /// Raw diff trace row read from the agent trace database.
@@ -209,7 +223,14 @@ impl AgentTraceDb {
 fn insert_diff_trace_with<M: DbSpec>(db: &TursoDb<M>, input: DiffTraceInsert<'_>) -> Result<u64> {
     db.execute(
         INSERT_DIFF_TRACE_SQL,
-        (input.time_ms, input.session_id, input.patch, input.model_id),
+        (
+            input.time_ms,
+            input.session_id,
+            input.patch,
+            input.model_id,
+            input.tool_name,
+            input.tool_version,
+        ),
     )
 }
 
@@ -396,6 +417,8 @@ mod tests {
                 session_id,
                 patch,
                 model_id: "test-provider/test-model",
+                tool_name: "opencode",
+                tool_version: Some("1.2.3"),
             },
         )
         .expect("diff trace insert should succeed");
@@ -543,6 +566,8 @@ mod tests {
                     "004_create_agent_traces",
                     "005_add_diff_traces_model_id",
                     "006_add_agent_traces_agent_trace_id",
+                    "007_add_diff_traces_tool_metadata_columns",
+                    "008_add_diff_traces_tool_version_column",
                 ]
             );
         }
