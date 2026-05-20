@@ -1,6 +1,6 @@
 use super::{
     build_agent_trace, validate_agent_trace_value, AgentTraceMetadataInput, AgentTraceVcsType,
-    LineRange, AGENT_TRACE_VERSION,
+    LineRange, AGENT_TRACE_VERSION, SCE_METADATA_VERSION,
 };
 use crate::services::patch::{combine_patches, parse_patch, ParsedPatch};
 use serde_json::{json, Value};
@@ -77,9 +77,11 @@ fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
             revision: TEST_COMMIT_REVISION.to_string(),
         })
     );
+    assert_eq!(actual.metadata.sce.version, SCE_METADATA_VERSION);
     let actual_json = serde_json::to_value(&actual).expect("agent trace should serialize");
     validate_agent_trace_value(&actual_json).expect("actual json should validate against schema");
     assert_eq!(actual_json["vcs"], golden["vcs"]);
+    assert_eq!(actual_json["metadata"], golden["metadata"]);
     assert_eq!(actual_json["files"], golden["files"]);
 }
 

@@ -17,16 +17,18 @@ Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical 
 
 ## Domain types
 
-| Type | Purpose |
-|---|---|
-| `HunkContributor` | Enum: `Ai`, `Mixed`, `Unknown` |
-| `Contributor` | Nested per-conversation object carrying `type: HunkContributor` and optional `model_id` omitted when absent |
-| `LineRange` | New-file line span with `start_line` + `end_line` |
-| `Conversation` | Per-hunk entry: nested contributor + `ranges` (currently exactly one range derived from `post_commit_patch`) |
-| `TraceFile` | Per-file entry: path + conversations |
-| `AgentTraceVcs` | Optional top-level VCS metadata object carrying `type` + `revision` when present |
-| `AgentTraceTool` | Optional top-level tool metadata object carrying optional `name` + optional `version` |
-| `AgentTrace` | Top-level payload: `version`, `id`, `timestamp`, optional `vcs`, optional `tool`, `files` |
+| Type                    | Purpose                                                                                                      |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `HunkContributor`       | Enum: `Ai`, `Mixed`, `Unknown`                                                                               |
+| `Contributor`           | Nested per-conversation object carrying `type: HunkContributor` and optional `model_id` omitted when absent  |
+| `LineRange`             | New-file line span with `start_line` + `end_line`                                                            |
+| `Conversation`          | Per-hunk entry: nested contributor + `ranges` (currently exactly one range derived from `post_commit_patch`) |
+| `TraceFile`             | Per-file entry: path + conversations                                                                         |
+| `AgentTraceVcs`         | Optional top-level VCS metadata object carrying `type` + `revision` when present                             |
+| `AgentTraceTool`        | Optional top-level tool metadata object carrying optional `name` + optional `version`                        |
+| `AgentTraceMetadata`    | Top-level implementation metadata object carrying SCE-owned metadata                                         |
+| `AgentTraceSceMetadata` | Nested `metadata.sce` object carrying the compiled SCE CLI package `version`                                 |
+| `AgentTrace`            | Top-level payload: `version`, `id`, `timestamp`, optional `vcs`, optional `tool`, `metadata`, `files`        |
 
 All types are `serde`-serializable with `snake_case` field naming. `Conversation.contributor` serializes as a nested object with a JSON field named `type`; `model_id` is present only when a concrete value exists.
 
@@ -34,21 +36,27 @@ All types are `serde`-serializable with `snake_case` field naming. `Conversation
 
 Current output includes top-level metadata fields with this contract:
 
-- `version` is fixed to `"0.1.0"`
+- `version` is fixed to `"0.1.0"` and remains the Agent Trace payload/schema version
 - `id` is generated per `build_agent_trace(...)` call as a UUIDv7 string derived from the same commit-time moment used for `timestamp`
 - `timestamp` is sourced from explicit commit metadata input (`AgentTraceMetadataInput.commit_timestamp`) and must be RFC 3339
 - `vcs` is emitted only when explicit commit metadata input includes `AgentTraceMetadataInput.vcs_type`
 - when `vcs` is emitted, `vcs.type` is sourced from the schema-aligned enum (`git | jj | hg | svn`) and `vcs.revision` is sourced from `AgentTraceMetadataInput.commit_revision`
 - `tool` is omitted when `intersection_patch.files` is empty (no AI content overlapped with the post-commit patch) or when both `AgentTraceMetadataInput.tool_name` and `AgentTraceMetadataInput.tool_version` are `None`; when `intersection_patch.files` is non-empty and either metadata value is present, builder construction sets `AgentTrace.tool` and it serializes as `{ "name"?: string, "version"?: string }` with each nested field omitted when absent
+- `metadata.sce.version` is always emitted and is sourced from `env!("CARGO_PKG_VERSION")`, the compiled `sce` CLI package version; it is implementation metadata and does not change top-level Agent Trace `version` semantics
 
 ```json
 {
-  "version": "0.1",
+  "version": "0.1.0",
   "id": "01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
   "timestamp": "2026-04-23T10:20:30Z",
   "vcs": {
     "type": "git",
     "revision": "a0b1c2d3e4f5a6b7c8d9e0f11223344556677889"
+  },
+  "metadata": {
+    "sce": {
+      "version": "0.2.0"
+    }
   },
   "files": [
     {
@@ -72,13 +80,12 @@ Current output includes top-level metadata fields with this contract:
 ## Public API
 
 - `classify_hunk(post_commit_hunk, intersection_hunks) -> HunkContributor` — classify a single `post_commit_patch` hunk against `intersection_patch` hunks.
-- `build_agent_trace(constructed_patch, post_commit_patch, metadata) -> Result<AgentTrace>` — full generator entrypoint that validates `metadata.commit_timestamp` as RFC 3339, uses it as top-level `timestamp`, derives a UUIDv7 `id` from that same commit-time moment, conditionally emits `vcs` when `metadata.vcs_type` is present (mapping `vcs.type` from metadata and `vcs.revision` from `metadata.commit_revision`), and carries optional tool metadata inputs (`metadata.tool_name`, `metadata.tool_version`) for top-level `tool` mapping. When `intersection_patch.files` is empty, `tool` is always `None` regardless of metadata values.
+- `build_agent_trace(constructed_patch, post_commit_patch, metadata) -> Result<AgentTrace>` — full generator entrypoint that validates `metadata.commit_timestamp` as RFC 3339, uses it as top-level `timestamp`, derives a UUIDv7 `id` from that same commit-time moment, conditionally emits `vcs` only when `metadata.vcs_type` is present (mapping `vcs.type` from metadata and `vcs.revision` from `metadata.commit_revision`), carries optional tool metadata inputs (`metadata.tool_name`, `metadata.tool_version`) for top-level `tool` mapping, and always emits `metadata.sce.version` from the compiled package version. When `intersection_patch.files` is empty, `tool` is always `None` regardless of metadata values.
 
 ## Test fixture contract
 
-- Golden fixtures under `cli/src/services/agent_trace/fixtures/**/golden.json` pin deterministic literal values for top-level `id` and `timestamp`.
-- Tests still validate runtime metadata behavior explicitly (`id` parses as UUIDv7 and `timestamp` equals provided commit metadata), then normalize those runtime values to the deterministic fixture literals before payload comparison.
-- Because the embedded schema currently expects `contributor.model_id` as a string when present, golden/schema checks operate on a model-id-stripped comparison view, while dedicated assertions validate contributor `model_id` mapping semantics (`ai`/`mixed` populated when provenance exists, omitted when absent).
+- Golden fixtures under `cli/src/services/agent_trace/fixtures/**/golden.json` pin deterministic literal values for top-level `id`, `timestamp`, optional `vcs`, `metadata.sce.version`, and expected file/conversation shapes.
+- Tests validate golden fixtures and built payloads against the embedded schema, assert core runtime metadata directly (`version`, `timestamp`, optional `vcs`, and `metadata.sce.version`), and compare `vcs`, `metadata`, and `files` against fixture truth.
 
 ## Relationship to existing patch service
 
