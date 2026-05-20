@@ -1,9 +1,13 @@
-import { spawn } from "node:child_process";
 import type { Hooks, Plugin } from "@opencode-ai/plugin";
+import { spawn } from "node:child_process";
 
 type OpenCodeEvent = Parameters<NonNullable<Hooks["event"]>>[0]["event"];
 
-const REQUIRED_EVENTS = new Set(["message.updated"]);
+const REQUIRED_EVENTS: Set<OpenCodeEvent["type"]> = new Set([
+	"message.updated",
+	"session.created",
+	"session.updated",
+]);
 
 const ALL_CAPTURED_EVENTS = REQUIRED_EVENTS;
 
@@ -62,19 +66,16 @@ function extractDiffTracePayload(
 	};
 }
 
-function shouldCaptureEvent(eventType: string): boolean {
+function shouldCaptureEvent(eventType: OpenCodeEvent["type"]): boolean {
 	return ALL_CAPTURED_EVENTS.has(eventType);
 }
 
 async function buildTrace(
 	repoRoot: string,
-	input: TraceInput,
+	event: EventMessageUpdated,
 	clientVersion: string | null,
 ): Promise<void> {
-	if (input.event?.type !== "message.updated") {
-		return;
-	}
-	const diffTracePayload = extractDiffTracePayload(input.event);
+	const diffTracePayload = extractDiffTracePayload(event);
 
 	if (diffTracePayload === undefined) {
 		return;
@@ -125,40 +126,27 @@ export const SceAgentTracePlugin: Plugin = async ({ directory, worktree }) => {
 
 	return {
 		event: async (input) => {
-			const eventType =
-				typeof input.event === "object" &&
-				input.event !== null &&
-				typeof input.event.type === "string"
-					? input.event.type
-					: undefined;
-
-			if (eventType === undefined) {
+			if (!shouldCaptureEvent(input.event.type)) {
 				return;
 			}
-
-			let clientVersion: string | null = null;
 
 			if (
 				input.event.type === "session.created" ||
 				input.event.type === "session.updated"
 			) {
-				clientVersion =
-					clientVersionsBySessionId.get(input.event.properties.info.id) || null;
-
-				if (!clientVersion) {
-					clientVersion = input.event.properties.info.version;
-					clientVersionsBySessionId.set(
-						input.event.properties.info.id,
-						clientVersion,
-					);
-				}
+				clientVersionsBySessionId.set(
+					input.event.properties.info.id,
+					input.event.properties.info.version,
+				);
 			}
 
-			if (!shouldCaptureEvent(eventType)) {
-				return;
+			if (input.event.type === "message.updated") {
+				const clientVersion =
+					clientVersionsBySessionId.get(
+						input.event.properties.info.sessionID,
+					) || null;
+				await buildTrace(repoRoot, input.event, clientVersion);
 			}
-
-			await buildTrace(repoRoot, input, clientVersion);
 		},
 	};
 };

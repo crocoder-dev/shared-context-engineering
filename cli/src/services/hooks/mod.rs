@@ -49,8 +49,17 @@ struct DiffTracePayload {
     diff: String,
     time: u64,
     model_id: String,
+    tool_name: String,
+    tool_version: Option<String>,
 }
 
+/// Required `sce hooks diff-trace` STDIN payload shape:
+/// `{ sessionID, diff, time, model_id, tool_name, tool_version }`.
+///
+/// Validation contract:
+/// - `sessionID`, `diff`, `model_id`, and `tool_name` must be non-empty strings.
+/// - `time` must be a `u64` Unix epoch millisecond value.
+/// - `tool_version` must be present and either `null` or a non-empty string.
 pub fn run_hooks_subcommand(
     subcommand: &HookSubcommand,
     logger: Option<&dyn Logger>,
@@ -152,13 +161,42 @@ fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTracePayload> {
     let diff = required_non_empty_string_field(payload, "diff")?;
     let time = required_u64_millisecond_field(payload, "time")?;
     let model_id = required_non_empty_string_field(payload, "model_id")?;
+    let tool_name = required_non_empty_string_field(payload, "tool_name")?;
+    let tool_version = required_nullable_or_non_empty_string_field(payload, "tool_version")?;
 
     Ok(DiffTracePayload {
         session_id,
         diff,
         time,
         model_id,
+        tool_name,
+        tool_version,
     })
+}
+
+fn required_nullable_or_non_empty_string_field(
+    payload: &serde_json::Map<String, Value>,
+    field_name: &str,
+) -> Result<Option<String>> {
+    let raw = required_field(payload, field_name)?;
+
+    if raw.is_null() {
+        return Ok(None);
+    }
+
+    let value = raw.as_str().ok_or_else(|| {
+        anyhow!(diff_trace_validation_error(&format!(
+            "field '{field_name}' must be null or a non-empty string"
+        )))
+    })?;
+
+    if value.trim().is_empty() {
+        bail!(diff_trace_validation_error(&format!(
+            "field '{field_name}' must be null or a non-empty string"
+        )));
+    }
+
+    Ok(Some(value.to_string()))
 }
 
 fn required_non_empty_string_field(
