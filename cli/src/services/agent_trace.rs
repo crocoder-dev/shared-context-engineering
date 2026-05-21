@@ -87,6 +87,8 @@ pub struct AgentTraceTool {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 }
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct AgentTraceMetadata {
     pub sce: AgentTraceSceMetadata,
 }
