@@ -60,12 +60,16 @@ The hash is a deterministic fingerprint of the attributed range content so downs
   - Evidence: `nix develop -c sh -c 'cd cli && cargo test agent_trace'` was blocked by repo bash policy preferring `nix flake check`; `nix develop -c sh -c 'cd cli && cargo fmt'` completed; `nix flake check` passed; `nix run .#pkl-check-generated` passed; `sce-context-sync` repaired current-state Agent Trace context drift.
   - Notes: `LineRange` now serializes `content_hash` from the post-commit or embedded-patch hunk used to emit the range; golden fixtures preserve existing file/conversation/range boundaries while adding deterministic `sha256:<lowercase-hex>` hashes; no DB schema or Agent Trace schema changes were made.
 
-- [ ] T03: `Add trace_json persistence regression coverage` (status:todo)
+- [x] T03: `Add trace_json persistence regression coverage` (status:done)
   - Task ID: T03
   - Goal: Cover the persisted post-commit Agent Trace JSON path so `agent_traces.trace_json` stores schema-valid ranges with `content_hash`.
   - Boundaries (in/out of scope): In - narrow Rust test coverage around the post-commit Agent Trace flow or AgentTraceDb insert boundary, asserting the serialized JSON contains range-level `content_hash` after schema validation. Out - new database columns, broader hook behavior changes, CLI output text changes unless existing tests require fixture updates.
   - Done when: A regression test fails if future code drops `content_hash` before persistence and passes without changing the DB schema.
   - Verification notes (commands or checks): Run the narrow hooks/AgentTraceDb test filter selected during implementation, then the generator test filter from T02 if needed.
+  - Completed: 2026-05-21
+  - Files changed: `cli/src/services/hooks/mod.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo test post_commit_agent_trace_flow_persists_schema_valid_trace_json_with_range_content_hash -- --exact'` was blocked by repo bash policy preferring `nix flake check`; `nix develop -c sh -c 'cd cli && cargo fmt'` completed; `nix flake check` passed; `nix run .#pkl-check-generated` passed.
+  - Notes: Added a focused post-commit Agent Trace flow regression test that validates the built payload against the embedded schema before persistence, parses the captured `trace_json`, validates persisted JSON again, and asserts the persisted range includes a lowercase `sha256:<hex>` `content_hash`; no DB schema or CLI output changes were made. Context sync classification: localized test coverage / verify-only root context pass.
 
 - [ ] T04: `Sync Agent Trace context documentation` (status:todo)
   - Task ID: T04

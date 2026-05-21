@@ -1057,12 +1057,37 @@ mod tests {
         intersection_patch: String,
     }
 
+    #[derive(Debug, Eq, PartialEq)]
+    struct CapturedAgentTraceInsert {
+        commit_id: String,
+        commit_time_ms: i64,
+        trace_json: String,
+        agent_trace_id: String,
+    }
+
     fn valid_patch(path: &str, content: &str) -> ParsedPatch {
         let patch_text = format!(
             "Index: {path}\n===================================================================\n--- {path}\n+++ {path}\n@@ -0,0 +1,1 @@\n+{content}\n"
         );
 
         parse_patch_from_text(&patch_text).expect("test patch should parse")
+    }
+
+    fn assert_content_hash_format(content_hash: &str) {
+        let Some(hex) = content_hash.strip_prefix("sha256:") else {
+            panic!("content hash should use sha256 prefix: {content_hash}");
+        };
+
+        assert_eq!(
+            hex.len(),
+            64,
+            "content hash should contain a SHA-256 hex digest"
+        );
+        assert!(
+            hex.chars()
+                .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+            "content hash should be lowercase hex: {content_hash}"
+        );
     }
 
     #[test]
@@ -1150,5 +1175,73 @@ mod tests {
         assert_eq!(output.combined_recent_patch.files[0].new_path, "src/lib.rs");
         assert_eq!(output.tool_name, Some(String::from("opencode")));
         assert_eq!(output.tool_version, Some(String::from("1.2.3")));
+    }
+
+    #[test]
+    fn post_commit_agent_trace_flow_persists_schema_valid_trace_json_with_range_content_hash() {
+        let commit_time_ms = 1_800_000_000_000_i64;
+        let validated = RefCell::new(false);
+        let persisted = RefCell::new(None);
+        let flow_result = PostCommitIntersectionFlowResult {
+            combined_recent_patch: valid_patch("src/lib.rs", "shared line"),
+            post_commit_data: PostCommitPatchData {
+                commit_oid: String::from("abc123"),
+                commit_time_ms,
+                parsed_patch: valid_patch("src/lib.rs", "shared line"),
+            },
+            tool_name: Some(String::from("opencode")),
+            tool_version: Some(String::from("1.2.3")),
+        };
+
+        let agent_trace = run_post_commit_agent_trace_flow_with(
+            &flow_result,
+            Some(AgentTraceVcsType::Git),
+            |trace_value| {
+                validate_agent_trace_value(trace_value)
+                    .expect("built post-commit Agent Trace should validate against schema");
+                *validated.borrow_mut() = true;
+                Ok(())
+            },
+            |insert_input| {
+                *persisted.borrow_mut() = Some(CapturedAgentTraceInsert {
+                    commit_id: insert_input.commit_id.to_string(),
+                    commit_time_ms: insert_input.commit_time_ms,
+                    trace_json: insert_input.trace_json.to_string(),
+                    agent_trace_id: insert_input.agent_trace_id.to_string(),
+                });
+
+                Ok(())
+            },
+        )
+        .expect("post-commit Agent Trace flow should succeed");
+
+        assert!(
+            validated.into_inner(),
+            "Agent Trace payload should be schema-validated before persistence"
+        );
+
+        let persisted = persisted
+            .into_inner()
+            .expect("Agent Trace row should be persisted");
+        assert_eq!(persisted.commit_id, "abc123");
+        assert_eq!(persisted.commit_time_ms, commit_time_ms);
+        assert_eq!(persisted.agent_trace_id, agent_trace.id);
+
+        let persisted_trace: Value = serde_json::from_str(&persisted.trace_json)
+            .expect("persisted trace_json should be valid JSON");
+        validate_agent_trace_value(&persisted_trace)
+            .expect("persisted trace_json should validate against schema");
+
+        let range = &persisted_trace["files"][0]["conversations"][0]["ranges"][0];
+        assert_eq!(range["start_line"], 1);
+        assert_eq!(range["end_line"], 1);
+        let content_hash = range["content_hash"]
+            .as_str()
+            .expect("persisted range should include content_hash");
+        assert_content_hash_format(content_hash);
+        assert_eq!(
+            content_hash,
+            agent_trace.files[0].conversations[0].ranges[0].content_hash
+        );
     }
 }
