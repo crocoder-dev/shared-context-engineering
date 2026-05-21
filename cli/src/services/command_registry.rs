@@ -104,6 +104,7 @@ pub fn build_default_registry() -> CommandRegistry {
         "completion",
         crate::services::completion::command::make_completion_command,
     );
+    registry.register("sync", crate::services::sync::command::make_sync_command);
     registry
 }
 

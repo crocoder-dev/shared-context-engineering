@@ -54,7 +54,7 @@ impl RuntimeCommand for SetupCommand {
         for provider in &providers {
             let outcome = provider
                 .setup(&ctx)
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
+                .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
 
             if let Some(ref hooks_outcome) = outcome.required_hooks_install {
                 sections.push(setup::format_required_hook_install_success_message(

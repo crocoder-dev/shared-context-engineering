@@ -83,6 +83,10 @@ impl DbSpec for AgentTraceDbSpec {
     fn migrations() -> &'static [(&'static str, &'static str)] {
         AGENT_TRACE_MIGRATIONS
     }
+
+    fn sync_enabled() -> bool {
+        true
+    }
 }
 
 /// Agent trace Turso database adapter.

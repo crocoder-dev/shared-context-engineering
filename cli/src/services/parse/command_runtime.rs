@@ -139,6 +139,10 @@ fn render_missing_subcommand_help(args: &[String]) -> Option<RuntimeCommandHandl
             name: services::config::NAME.to_string(),
             text: cli_schema::render_help_for_path(&[services::config::NAME])?,
         })),
+        services::sync::NAME => Some(Box::new(services::help::command::HelpTextCommand {
+            name: services::sync::NAME.to_string(),
+            text: cli_schema::render_help_for_path(&[services::sync::NAME])?,
+        })),
         _ => None,
     }
 }
@@ -244,7 +248,22 @@ fn convert_clap_command(
                 },
             }))
         }
+        cli_schema::Commands::Sync { ref subcommand } => convert_sync_subcommand(subcommand),
     }
+}
+
+#[allow(clippy::unnecessary_wraps)]
+fn convert_sync_subcommand(
+    subcommand: &cli_schema::SyncSubcommand,
+) -> Result<RuntimeCommandHandle, ClassifiedError> {
+    let subcommand = match subcommand {
+        cli_schema::SyncSubcommand::Push => services::sync::SyncSubcommand::Push,
+        cli_schema::SyncSubcommand::Pull => services::sync::SyncSubcommand::Pull,
+    };
+
+    Ok(Box::new(services::sync::command::SyncCommand {
+        subcommand,
+    }))
 }
 
 #[allow(clippy::unnecessary_wraps, clippy::needless_pass_by_value)]

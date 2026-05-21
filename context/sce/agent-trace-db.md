@@ -85,7 +85,7 @@ Lookup indexes created by the baseline migration set:
  
 - `diagnose()` reports canonical Agent Trace DB path and parent-directory readiness problems through the shared DB path-health helper.
 - `fix()` can bootstrap the canonical Agent Trace DB parent directory for auto-fixable parent-readiness problems.
-- `setup()` initializes the database with `AgentTraceDb::new()`, including all ordered Agent Trace migrations and any later migrations not yet recorded in `__sce_migrations`.
+- `setup()` initializes the database with `AgentTraceDb::new()`, including all ordered Agent Trace migrations and any later migrations not yet recorded in `__sce_migrations`. When sync mode is active (both `SCE_SYNC_URL` and `SCE_SYNC_TOKEN` set), it also performs a best-effort `pull()` to bring the local DB up to date — remote failure is logged with `tracing::warn!` and setup continues without error.
 - `sce doctor` now surfaces Agent Trace DB health as a row within the `Configuration` section with `[PASS]`/`[FAIL]`/`[MISS]` status tokens (e.g., `Agent Trace DB (/path/to/agent-trace.db)`), and includes it in JSON output under the `agent_trace_db` field.
 
 ## Runtime writers
