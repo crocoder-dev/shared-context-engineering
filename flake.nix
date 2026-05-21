@@ -1071,6 +1071,8 @@
               typescript-language-server
               vscode-json-languageserver
               opencodePackage
+              openssl
+              pkg-config
               rust-analyzer
               scePackage
               tursoPackage

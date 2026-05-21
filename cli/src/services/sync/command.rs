@@ -15,7 +15,8 @@ impl RuntimeCommand for SyncCommand {
     }
 
     fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
-        sync::run_sync(self.subcommand).map_err(|error| ClassifiedError::runtime(error.to_string()))
+        sync::run_sync(self.subcommand)
+            .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))
     }
 }
 

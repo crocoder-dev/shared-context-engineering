@@ -34,6 +34,12 @@ pub trait DbSpec {
 
     /// Ordered embedded migration SQL files as `(id, sql)` pairs.
     fn migrations() -> &'static [(&'static str, &'static str)];
+
+    /// Whether this database may use Turso Cloud sync mode when sync env vars
+    /// are configured.
+    fn sync_enabled() -> bool {
+        false
+    }
 }
 
 /// Collect common filesystem health problems for a Turso database path.
@@ -186,8 +192,12 @@ impl<M: DbSpec> TursoDb<M> {
                 format!("failed to create {db_name} tokio runtime. Try: rerun the command; if the issue persists, verify the local Tokio runtime environment.")
             })?;
 
-        let sync_url = std::env::var(crate::services::config::SYNC_URL_ENV_KEY).ok();
-        let sync_token = std::env::var(crate::services::config::SYNC_TOKEN_ENV_KEY).ok();
+        let sync_url = M::sync_enabled()
+            .then(|| std::env::var(crate::services::config::SYNC_URL_ENV_KEY).ok())
+            .flatten();
+        let sync_token = M::sync_enabled()
+            .then(|| std::env::var(crate::services::config::SYNC_TOKEN_ENV_KEY).ok())
+            .flatten();
 
         let path_str = db_path.to_str().ok_or_else(|| {
             anyhow::anyhow!("invalid UTF-8 in database path: {}", db_path.display())
@@ -198,6 +208,7 @@ impl<M: DbSpec> TursoDb<M> {
                 let sync_db = turso::sync::Builder::new_remote(path_str)
                     .with_remote_url(url)
                     .with_auth_token(token)
+                    .bootstrap_if_empty(false)
                     .build()
                     .await
                     .map_err(|e| {
