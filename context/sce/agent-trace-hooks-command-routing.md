@@ -48,7 +48,7 @@
   - The built Agent Trace payload includes top-level `metadata.sce.version` from the compiled `sce` CLI package version before conversion to JSON.
   - The built Agent Trace payload is converted to JSON `Value` and validated via `agent_trace::validate_agent_trace_value(...)` before persistence.
   - Validation failures are returned through the same post-commit runtime failure path/class used for Agent Trace DB insertion failures (no silent fallback).
-  - When validation passes, the payload is serialized and inserted into Agent Trace DB `agent_traces` using `commit_id` from flow-result commit metadata and `commit_time_ms` from flow-result post-commit timestamp metadata.
+  - When validation passes, the payload is serialized and inserted into Agent Trace DB `agent_traces` using `commit_id` from flow-result commit metadata, `commit_time_ms` from flow-result post-commit timestamp metadata, and a derived non-null `url` value formatted as `sce.crocoder.dev/trace/<agent_trace.id>`.
   - Post-commit Agent Trace success requires both schema validation and Agent Trace DB `agent_traces` persistence to succeed.
   - Current command-surface success output is: `post-commit hook processed intersection: commit=<oid>, intersection_files=<n>`.
 - `post-rewrite` is a deterministic no-op entrypoint.

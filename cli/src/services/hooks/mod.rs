@@ -30,6 +30,7 @@ pub mod lifecycle;
 
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
+const AGENT_TRACE_URL_PREFIX: &str = "sce.crocoder.dev/trace/";
 
 const MAX_TRACE_FILE_CREATE_ATTEMPTS: u64 = 1_000_000;
 
@@ -588,11 +589,14 @@ where
             .context("Failed to serialize post-commit Agent Trace payload for persistence.")?
     );
 
+    let constructed_url = format!("{}{}", AGENT_TRACE_URL_PREFIX, agent_trace.id);
+
     let insert_input = AgentTraceInsert {
         commit_id: &flow_result.post_commit_data.commit_oid,
         commit_time_ms: flow_result.post_commit_data.commit_time_ms,
         trace_json: &serialized,
         agent_trace_id: &agent_trace.id,
+        url: &constructed_url,
     };
     persist_agent_trace(insert_input)?;
 

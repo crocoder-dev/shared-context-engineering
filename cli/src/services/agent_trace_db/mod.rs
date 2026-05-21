@@ -16,18 +16,13 @@ const CREATE_DIFF_TRACES_MIGRATION: &str =
     include_str!("../../../migrations/agent-trace/001_create_diff_traces.sql");
 const CREATE_POST_COMMIT_PATCH_INTERSECTIONS_MIGRATION: &str =
     include_str!("../../../migrations/agent-trace/002_create_post_commit_patch_intersections.sql");
-const ADD_DIFF_TRACES_TIME_MS_ID_INDEX_MIGRATION: &str =
-    include_str!("../../../migrations/agent-trace/003_add_diff_traces_time_ms_id_index.sql");
 const CREATE_AGENT_TRACES_MIGRATION: &str =
-    include_str!("../../../migrations/agent-trace/004_create_agent_traces.sql");
-const ADD_DIFF_TRACES_MODEL_ID_MIGRATION: &str =
-    include_str!("../../../migrations/agent-trace/005_add_diff_traces_model_id.sql");
-const ADD_AGENT_TRACES_AGENT_TRACE_ID_MIGRATION: &str =
-    include_str!("../../../migrations/agent-trace/006_add_agent_traces_agent_trace_id.sql");
-const ADD_DIFF_TRACES_TOOL_METADATA_COLUMNS_MIGRATION: &str =
-    include_str!("../../../migrations/agent-trace/007_add_diff_traces_tool_metadata_columns.sql");
-const ADD_DIFF_TRACES_TOOL_VERSION_COLUMN_MIGRATION: &str =
-    include_str!("../../../migrations/agent-trace/008_add_diff_traces_tool_version_column.sql");
+    include_str!("../../../migrations/agent-trace/003_create_agent_traces.sql");
+const CREATE_DIFF_TRACES_TIME_MS_ID_INDEX_MIGRATION: &str =
+    include_str!("../../../migrations/agent-trace/004_create_diff_traces_time_ms_id_index.sql");
+const CREATE_AGENT_TRACES_AGENT_TRACE_ID_INDEX_MIGRATION: &str = include_str!(
+    "../../../migrations/agent-trace/005_create_agent_traces_agent_trace_id_index.sql"
+);
 
 const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
     ("001_create_diff_traces", CREATE_DIFF_TRACES_MIGRATION),
@@ -35,26 +30,14 @@ const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
         "002_create_post_commit_patch_intersections",
         CREATE_POST_COMMIT_PATCH_INTERSECTIONS_MIGRATION,
     ),
+    ("003_create_agent_traces", CREATE_AGENT_TRACES_MIGRATION),
     (
-        "003_add_diff_traces_time_ms_id_index",
-        ADD_DIFF_TRACES_TIME_MS_ID_INDEX_MIGRATION,
-    ),
-    ("004_create_agent_traces", CREATE_AGENT_TRACES_MIGRATION),
-    (
-        "005_add_diff_traces_model_id",
-        ADD_DIFF_TRACES_MODEL_ID_MIGRATION,
+        "004_create_diff_traces_time_ms_id_index",
+        CREATE_DIFF_TRACES_TIME_MS_ID_INDEX_MIGRATION,
     ),
     (
-        "006_add_agent_traces_agent_trace_id",
-        ADD_AGENT_TRACES_AGENT_TRACE_ID_MIGRATION,
-    ),
-    (
-        "007_add_diff_traces_tool_metadata_columns",
-        ADD_DIFF_TRACES_TOOL_METADATA_COLUMNS_MIGRATION,
-    ),
-    (
-        "008_add_diff_traces_tool_version_column",
-        ADD_DIFF_TRACES_TOOL_VERSION_COLUMN_MIGRATION,
+        "005_create_agent_traces_agent_trace_id_index",
+        CREATE_AGENT_TRACES_AGENT_TRACE_ID_INDEX_MIGRATION,
     ),
 ];
 
@@ -83,7 +66,7 @@ pub const INSERT_POST_COMMIT_PATCH_INTERSECTION_SQL: &str =
 
 /// Parameterized SQL for inserting a built agent trace payload.
 pub const INSERT_AGENT_TRACE_SQL: &str =
-    "INSERT INTO agent_traces (commit_id, commit_time_ms, trace_json, agent_trace_id) VALUES (?1, ?2, ?3, ?4)";
+    "INSERT INTO agent_traces (commit_id, commit_time_ms, trace_json, agent_trace_id, url) VALUES (?1, ?2, ?3, ?4, ?5)";
 
 /// Agent trace database configuration.
 pub struct AgentTraceDbSpec;
@@ -184,6 +167,7 @@ pub struct AgentTraceInsert<'a> {
     pub commit_time_ms: i64,
     pub trace_json: &'a str,
     pub agent_trace_id: &'a str,
+    pub url: &'a str,
 }
 
 impl AgentTraceDb {
@@ -203,15 +187,7 @@ impl AgentTraceDb {
 
     /// Insert a built agent trace payload into the `agent_traces` table.
     pub fn insert_agent_trace(&self, input: AgentTraceInsert<'_>) -> Result<u64> {
-        self.execute(
-            INSERT_AGENT_TRACE_SQL,
-            (
-                input.commit_id,
-                input.commit_time_ms,
-                input.trace_json,
-                input.agent_trace_id,
-            ),
-        )
+        insert_agent_trace_with(self, input)
     }
 
     /// Query and parse recent diff trace patches within the inclusive time window.
@@ -252,6 +228,19 @@ fn insert_post_commit_patch_intersection_with<M: DbSpec>(
             input.loaded_diff_trace_count,
             input.skipped_diff_trace_count,
             input.intersection_patch,
+        ),
+    )
+}
+
+fn insert_agent_trace_with<M: DbSpec>(db: &TursoDb<M>, input: AgentTraceInsert<'_>) -> Result<u64> {
+    db.execute(
+        INSERT_AGENT_TRACE_SQL,
+        (
+            input.commit_id,
+            input.commit_time_ms,
+            input.trace_json,
+            input.agent_trace_id,
+            input.url,
         ),
     )
 }
@@ -336,7 +325,7 @@ mod tests {
     use super::*;
 
     static TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
-    static UPGRADE_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
+    static BASELINE_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
 
     struct TestAgentTraceDbSpec;
 
@@ -357,37 +346,18 @@ mod tests {
         }
     }
 
-    struct LegacyAgentTraceDbSpec;
+    struct BaselineAgentTraceDbSpec;
 
-    impl DbSpec for LegacyAgentTraceDbSpec {
+    impl DbSpec for BaselineAgentTraceDbSpec {
         fn db_name() -> &'static str {
-            "legacy test agent trace DB"
+            "baseline test agent trace DB"
         }
 
         fn db_path() -> Result<PathBuf> {
-            UPGRADE_TEST_DB_PATH
+            BASELINE_TEST_DB_PATH
                 .get()
                 .cloned()
-                .context("upgrade test DB path should be initialized")
-        }
-
-        fn migrations() -> &'static [(&'static str, &'static str)] {
-            &[("001_create_diff_traces", CREATE_DIFF_TRACES_MIGRATION)]
-        }
-    }
-
-    struct UpgradedAgentTraceDbSpec;
-
-    impl DbSpec for UpgradedAgentTraceDbSpec {
-        fn db_name() -> &'static str {
-            "upgraded test agent trace DB"
-        }
-
-        fn db_path() -> Result<PathBuf> {
-            UPGRADE_TEST_DB_PATH
-                .get()
-                .cloned()
-                .context("upgrade test DB path should be initialized")
+                .context("baseline test DB path should be initialized")
         }
 
         fn migrations() -> &'static [(&'static str, &'static str)] {
@@ -542,58 +512,65 @@ mod tests {
     }
 
     #[test]
-    fn new_applies_later_agent_trace_migrations_to_existing_database() {
+    fn new_applies_baseline_agent_trace_migration_and_indexes() {
         let db_path = unique_test_db_path();
-        UPGRADE_TEST_DB_PATH
+        BASELINE_TEST_DB_PATH
             .set(db_path.clone())
-            .expect("upgrade test DB path should only be initialized once");
+            .expect("baseline test DB path should only be initialized once");
 
-        {
-            let legacy_db =
-                TursoDb::<LegacyAgentTraceDbSpec>::new().expect("legacy DB should open");
-            assert!(sqlite_object_exists(&legacy_db, "table", "diff_traces"));
-            assert!(!sqlite_object_exists(
-                &legacy_db,
-                "table",
-                "post_commit_patch_intersections"
-            ));
-            assert!(!sqlite_object_exists(
-                &legacy_db,
-                "index",
-                "idx_diff_traces_time_ms_id"
-            ));
-        }
+        let db = TursoDb::<BaselineAgentTraceDbSpec>::new().expect("baseline test DB should open");
 
-        {
-            let upgraded_db =
-                TursoDb::<UpgradedAgentTraceDbSpec>::new().expect("upgraded DB should open");
+        assert!(sqlite_object_exists(&db, "table", "diff_traces"));
+        assert!(sqlite_object_exists(
+            &db,
+            "table",
+            "post_commit_patch_intersections"
+        ));
+        assert!(sqlite_object_exists(&db, "table", "agent_traces"));
+        assert!(sqlite_object_exists(
+            &db,
+            "index",
+            "idx_diff_traces_time_ms_id"
+        ));
+        assert!(sqlite_object_exists(
+            &db,
+            "index",
+            "idx_agent_traces_agent_trace_id"
+        ));
+        assert_eq!(
+            applied_migration_ids(&db),
+            vec![
+                "001_create_diff_traces",
+                "002_create_post_commit_patch_intersections",
+                "003_create_agent_traces",
+                "004_create_diff_traces_time_ms_id_index",
+                "005_create_agent_traces_agent_trace_id_index",
+            ]
+        );
 
-            assert!(sqlite_object_exists(&upgraded_db, "table", "diff_traces"));
-            assert!(sqlite_object_exists(
-                &upgraded_db,
-                "table",
-                "post_commit_patch_intersections"
-            ));
-            assert!(sqlite_object_exists(
-                &upgraded_db,
-                "index",
-                "idx_diff_traces_time_ms_id"
-            ));
-            assert!(sqlite_object_exists(&upgraded_db, "table", "agent_traces"));
-            assert_eq!(
-                applied_migration_ids(&upgraded_db),
-                vec![
-                    "001_create_diff_traces",
-                    "002_create_post_commit_patch_intersections",
-                    "003_add_diff_traces_time_ms_id_index",
-                    "004_create_agent_traces",
-                    "005_add_diff_traces_model_id",
-                    "006_add_agent_traces_agent_trace_id",
-                    "007_add_diff_traces_tool_metadata_columns",
-                    "008_add_diff_traces_tool_version_column",
-                ]
-            );
-        }
+        let duplicate_insert = insert_agent_trace_with(
+            &db,
+            AgentTraceInsert {
+                commit_id: "abc123",
+                commit_time_ms: 123,
+                trace_json: r#"{"id":"trace-1"}"#,
+                agent_trace_id: "trace-1",
+                url: "sce.crocoder.dev/trace/trace-1",
+            },
+        );
+        assert!(duplicate_insert.is_ok());
+
+        let duplicate_insert = insert_agent_trace_with(
+            &db,
+            AgentTraceInsert {
+                commit_id: "abc124",
+                commit_time_ms: 124,
+                trace_json: r#"{"id":"trace-1"}"#,
+                agent_trace_id: "trace-1",
+                url: "sce.crocoder.dev/trace/trace-1",
+            },
+        );
+        assert!(duplicate_insert.is_err());
 
         if let Some(parent) = db_path.parent() {
             fs::remove_dir_all(parent).expect("test DB directory should be removed");

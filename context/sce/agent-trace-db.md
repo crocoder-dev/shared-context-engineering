@@ -16,7 +16,7 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 - `recent_diff_trace_patches(cutoff_time_ms, end_time_ms)`: chronological `diff_traces` read helper for rows in the inclusive window `time_ms >= cutoff_time_ms AND time_ms <= end_time_ms`; parses raw patch text through `parse_patch` and skips malformed rows without failing the query.
 - `PostCommitPatchIntersectionInsert<'a>`: insert payload for post-commit intersection results with commit metadata, window bounds, loaded/skipped counts, and serialized patch JSON.
 - `insert_post_commit_patch_intersection()`: domain-specific insert helper using parameterized SQL.
-- `AgentTraceInsert<'a>`: insert payload for built Agent Trace rows with `commit_id`, `commit_time_ms`, serialized `trace_json`, and `agent_trace_id`.
+- `AgentTraceInsert<'a>`: insert payload for built Agent Trace rows with `commit_id`, `commit_time_ms`, serialized `trace_json`, `agent_trace_id`, and non-null `url`.
 - `insert_agent_trace()`: domain-specific insert helper for `agent_traces` using parameterized SQL.
 - `lifecycle.rs`: service lifecycle provider for setup/doctor integration.
 
@@ -31,35 +31,30 @@ The Agent Trace DB path is resolved from the shared default-path catalog:
 
 ## Migrations
 
-`AgentTraceDbSpec::migrations()` embeds ordered migrations from `cli/migrations/agent-trace/`:
+`AgentTraceDbSpec::migrations()` embeds an ordered split fresh-start baseline migration set from `cli/migrations/agent-trace/`:
 
 - `001_create_diff_traces.sql`
 - `002_create_post_commit_patch_intersections.sql`
-- `003_add_diff_traces_time_ms_id_index.sql`
-- `004_create_agent_traces.sql`
-- `005_add_diff_traces_model_id.sql`
-- `006_add_agent_traces_agent_trace_id.sql`
-- `007_add_diff_traces_tool_metadata_columns.sql`
-- `008_add_diff_traces_tool_version_column.sql`
-
-`005_add_diff_traces_model_id.sql` adds nullable `diff_traces.model_id`. `006_add_agent_traces_agent_trace_id.sql` adds nullable `agent_trace_id` to `agent_traces`. `007_add_diff_traces_tool_metadata_columns.sql` adds nullable `diff_traces.tool_name`. `008_add_diff_traces_tool_version_column.sql` adds nullable `diff_traces.tool_version`. `AgentTraceDbSpec::migrations()` registers these after the base table migrations so setup/doctor initialization applies later column migrations through the shared migration runner.
+- `003_create_agent_traces.sql`
+- `004_create_diff_traces_time_ms_id_index.sql`
+- `005_create_agent_traces_agent_trace_id_index.sql`
 
 The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::new()` applies later Agent Trace migrations to an already-created `~/.local/state/sce/agent-trace.db`.
 
-The `diff_traces` migration creates:
+The `diff_traces` baseline migration creates:
 
-- `id INTEGER PRIMARY KEY AUTOINCREMENT`
+- `id INTEGER PRIMARY KEY`
 - `time_ms INTEGER NOT NULL`
 - `session_id TEXT NOT NULL`
 - `patch TEXT NOT NULL`
 - `created_at TEXT NOT NULL DEFAULT (...)`
-- `model_id TEXT` (added by migration 005; nullable so existing rows remain valid)
-- `tool_name TEXT` (added by migration 007; nullable for backward compatibility)
-- `tool_version TEXT` (added by migration 008; nullable for backward compatibility)
+- `model_id TEXT`
+- `tool_name TEXT`
+- `tool_version TEXT`
 
-The post-commit intersection migration creates `post_commit_patch_intersections` with:
+The `post_commit_patch_intersections` baseline migration creates:
 
-- `id INTEGER PRIMARY KEY AUTOINCREMENT`
+- `id INTEGER PRIMARY KEY`
 - `commit_id TEXT NOT NULL`
 - `post_commit_time_ms INTEGER NOT NULL`
 - `recent_window_cutoff_ms INTEGER NOT NULL`
@@ -69,14 +64,20 @@ The post-commit intersection migration creates `post_commit_patch_intersections`
 - `intersection_patch TEXT NOT NULL`
 - `created_at TEXT NOT NULL DEFAULT (...)`
 
-The `agent_traces` migration creates:
+The `agent_traces` baseline migration creates:
 
-- `id INTEGER PRIMARY KEY AUTOINCREMENT`
+- `id INTEGER PRIMARY KEY`
 - `commit_id TEXT NOT NULL`
 - `commit_time_ms INTEGER NOT NULL`
+- `url TEXT NOT NULL`
 - `trace_json TEXT NOT NULL`
-- `agent_trace_id TEXT` (added by migration 006; nullable so existing rows remain valid)
+- `agent_trace_id TEXT NOT NULL UNIQUE`
 - `created_at TEXT NOT NULL DEFAULT (...)`
+
+Lookup indexes created by the baseline migration set:
+
+- `idx_diff_traces_time_ms_id` on `(time_ms, id)`
+- `idx_agent_traces_agent_trace_id` on `(agent_trace_id)`
 
 ## Lifecycle integration
  

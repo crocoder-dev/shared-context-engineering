@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS post_commit_patch_intersections (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY,
     commit_id TEXT NOT NULL,
     post_commit_time_ms INTEGER NOT NULL,
     recent_window_cutoff_ms INTEGER NOT NULL,
