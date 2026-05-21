@@ -45,7 +45,7 @@
 - At the current runtime boundary, optional parsed `vcs_type` is forwarded unchanged into `agent_trace::build_agent_trace(...)`; when absent, the built payload omits top-level `vcs`.
   - The run-flow path maps commit-time metadata to RFC3339 and calls `agent_trace::build_agent_trace(...)`.
   - The same run-flow call now also forwards optional `tool_name` / `tool_version` from `PostCommitIntersectionFlowResult` into `AgentTraceMetadataInput`, so built post-commit payloads preserve tool metadata derived from recent parsed diff-trace rows.
-  - The built Agent Trace payload includes top-level `metadata.sce.version` from the compiled `sce` CLI package version and range-level `content_hash` values before conversion to JSON.
+  - The built Agent Trace payload includes top-level `metadata.sce.version` from the compiled `sce` CLI package version and range-level `content_hash` values computed from touched post-commit hunk content before conversion to JSON.
   - The built Agent Trace payload is converted to JSON `Value` and validated via `agent_trace::validate_agent_trace_value(...)` before persistence.
   - Validation failures are returned through the same post-commit runtime failure path/class used for Agent Trace DB insertion failures (no silent fallback).
   - When validation passes, the payload is serialized and inserted into Agent Trace DB `agent_traces` using `commit_id` from flow-result commit metadata, `commit_time_ms` from flow-result post-commit timestamp metadata, and a derived non-null `url` value formatted as `sce.crocoder.dev/trace/<agent_trace.id>`.

@@ -71,12 +71,16 @@ The hash is a deterministic fingerprint of the attributed range content so downs
   - Evidence: `nix develop -c sh -c 'cd cli && cargo test post_commit_agent_trace_flow_persists_schema_valid_trace_json_with_range_content_hash -- --exact'` was blocked by repo bash policy preferring `nix flake check`; `nix develop -c sh -c 'cd cli && cargo fmt'` completed; `nix flake check` passed; `nix run .#pkl-check-generated` passed.
   - Notes: Added a focused post-commit Agent Trace flow regression test that validates the built payload against the embedded schema before persistence, parses the captured `trace_json`, validates persisted JSON again, and asserts the persisted range includes a lowercase `sha256:<hex>` `content_hash`; no DB schema or CLI output changes were made. Context sync classification: localized test coverage / verify-only root context pass.
 
-- [ ] T04: `Sync Agent Trace context documentation` (status:todo)
+- [x] T04: `Sync Agent Trace context documentation` (status:done)
   - Task ID: T04
   - Goal: Update current-state context docs to describe range-level `content_hash` emission and its hash contract.
   - Boundaries (in/out of scope): In - focused updates to Agent Trace context files such as `context/sce/agent-trace-minimal-generator.md`, `context/sce/agent-trace-hooks-command-routing.md`, and context-map/overview/glossary entries only if current-state summaries need adjustment. Out - historical reference docs unless they explicitly claim current runtime behavior, broad prose rewrites, completed-work narration.
   - Done when: Context accurately states that built Agent Trace payloads persisted in `trace_json` include per-range `content_hash` values computed from touched post-commit hunk content.
   - Verification notes (commands or checks): Manual context consistency review against implemented code; no application-code edits in this task except documentation/context updates.
+  - Completed: 2026-05-21
+  - Files changed: `context/sce/agent-trace-minimal-generator.md`, `context/sce/agent-trace-hooks-command-routing.md`, `context/sce/agent-trace-db.md`
+  - Evidence: Manual context consistency review against `cli/src/services/agent_trace.rs` and `cli/src/services/hooks/mod.rs`; `nix run .#pkl-check-generated` passed; `nix flake check` passed.
+  - Notes: Current-state Agent Trace docs now explicitly state that persisted `trace_json` ranges include `content_hash` values computed from touched post-commit hunk kind/content and exclude DB IDs, paths, line positions, and runtime metadata. Context sync classification: localized Agent Trace context documentation / verify-only root context pass.
 
 - [ ] T05: `Final validation and cleanup` (status:todo)
   - Task ID: T05
