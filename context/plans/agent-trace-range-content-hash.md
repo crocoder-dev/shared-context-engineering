@@ -82,13 +82,47 @@ The hash is a deterministic fingerprint of the attributed range content so downs
   - Evidence: Manual context consistency review against `cli/src/services/agent_trace.rs` and `cli/src/services/hooks/mod.rs`; `nix run .#pkl-check-generated` passed; `nix flake check` passed.
   - Notes: Current-state Agent Trace docs now explicitly state that persisted `trace_json` ranges include `content_hash` values computed from touched post-commit hunk kind/content and exclude DB IDs, paths, line positions, and runtime metadata. Context sync classification: localized Agent Trace context documentation / verify-only root context pass.
 
-- [ ] T05: `Final validation and cleanup` (status:todo)
+- [x] T05: `Final validation and cleanup` (status:done)
   - Task ID: T05
   - Goal: Run final repository validation and remove any temporary scaffolding from the implementation.
   - Boundaries (in/out of scope): In - full validation, generated-output parity check, formatting/lint/test surface, cleanup of temporary debug artifacts, final plan status/evidence updates. Out - new feature work or additional Agent Trace payload fields.
   - Done when: Required checks pass or any failures are documented with actionable follow-up; no temporary files remain; plan evidence is updated.
   - Verification notes (commands or checks): Preferred repo validation from root: `nix run .#pkl-check-generated` and `nix flake check`.
+  - Completed: 2026-05-21
+  - Files changed: `context/plans/agent-trace-range-content-hash.md`; removed ignored temporary artifacts under `context/tmp/` while preserving `context/tmp/.gitignore`
+  - Evidence: `nix run .#pkl-check-generated` passed; `nix flake check` passed; `context/tmp/` contains only `.gitignore` after cleanup.
+  - Notes: Final validation completed without application-code changes. Context sync classification: localized plan/status update and cleanup / verify-only root context pass.
 
 ## Open questions
 
 - None blocking. If implementation finds that deleted-file or embedded-patch ranges require a different canonical hash input than normal hunks, stop and confirm before changing the hash contract.
+
+## Validation Report
+
+### Commands run
+
+- `nix run .#pkl-check-generated` -> exit 0; key output: `Generated outputs are up to date.`
+- `nix flake check` -> exit 0; key output: `all checks passed!`
+
+### Cleanup
+
+- Removed ignored JSON/log artifacts from `context/tmp/`.
+- Confirmed `context/tmp/` contains only `.gitignore` after cleanup.
+
+### Success-criteria verification
+
+- [x] Every generated range includes `content_hash` -> covered by Agent Trace generator fixtures/tests in `nix flake check` and persisted-path regression coverage from T03.
+- [x] Hash format is `sha256:<lowercase-hex>` -> covered by helper/generator/regression tests in `nix flake check`.
+- [x] Hash input is deterministic and position-independent -> covered by T01 helper tests and current context/code contract in `context/sce/agent-trace-minimal-generator.md`.
+- [x] Identical touched content hashes consistently and different touched content differs -> covered by T01 helper tests in the flake test surface.
+- [x] Agent Trace schema validation continues to pass -> covered by generator fixture validation and T03 persisted JSON validation in `nix flake check`.
+- [x] `agent_traces.trace_json` stores the enriched payload without DB schema migration -> covered by T03 persisted-path regression and unchanged Agent Trace DB migration list documented in `context/sce/agent-trace-db.md`.
+- [x] Golden fixtures and relevant tests cover the new field -> covered by committed fixture updates from T02 and full repository validation.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- None identified.
