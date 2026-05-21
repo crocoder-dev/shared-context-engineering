@@ -1074,14 +1074,14 @@ mod tests {
     }
 
     fn assert_content_hash_format(content_hash: &str) {
-        let Some(hex) = content_hash.strip_prefix("sha256:") else {
-            panic!("content hash should use sha256 prefix: {content_hash}");
+        let Some(hex) = content_hash.strip_prefix("murmur3:") else {
+            panic!("content hash should use murmur3 prefix: {content_hash}");
         };
 
         assert_eq!(
             hex.len(),
-            64,
-            "content hash should contain a SHA-256 hex digest"
+            32,
+            "content hash should contain a Murmur3 hex digest"
         );
         assert!(
             hex.chars()

@@ -68,7 +68,7 @@ Current output includes top-level metadata fields with this contract:
             {
               "start_line": 10,
               "end_line": 14,
-              "content_hash": "sha256:4fcf831bf708ee1fc052f7a6c210f5fda98e63cd50e047acdd4c2bf667b446ef"
+              "content_hash": "murmur3:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
             }
           ]
         }
@@ -81,7 +81,7 @@ Current output includes top-level metadata fields with this contract:
 ## Public API
 
 - `classify_hunk(post_commit_hunk, intersection_hunks) -> HunkContributor` — classify a single `post_commit_patch` hunk against `intersection_patch` hunks.
-- `range_content_hash(hunk) -> String` — internal helper that computes the serialized range-level `sha256:<lowercase-hex>` content fingerprint from `PatchHunk.lines` using versioned, length-delimited touched-line serialization in patch order. The hash input includes touched-line kind and content, and excludes hunk positions, line numbers, file paths, trace metadata, contributor/model metadata, VCS metadata, tool metadata, and database IDs.
+- `range_content_hash(hunk) -> String` — internal helper that computes the serialized range-level `murmur3:<lowercase-hex>` content fingerprint from `PatchHunk.lines` using versioned, length-delimited touched-line serialization in patch order. The hash input includes touched-line kind and content, and excludes hunk positions, line numbers, file paths, trace metadata, contributor/model metadata, VCS metadata, tool metadata, and database IDs.
 - `build_agent_trace(constructed_patch, post_commit_patch, metadata) -> Result<AgentTrace>` — full generator entrypoint that validates `metadata.commit_timestamp` as RFC 3339, uses it as top-level `timestamp`, derives a UUIDv7 `id` from that same commit-time moment, conditionally emits `vcs` only when `metadata.vcs_type` is present (mapping `vcs.type` from metadata and `vcs.revision` from `metadata.commit_revision`), carries optional tool metadata inputs (`metadata.tool_name`, `metadata.tool_version`) for top-level `tool` mapping, and always emits `metadata.sce.version` from the compiled package version. When `intersection_patch.files` is empty, `tool` is always `None` regardless of metadata values.
 
 ## Test fixture contract

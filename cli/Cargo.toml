@@ -45,6 +45,7 @@ tokio = { version = "1", default-features = false, features = ["rt", "io-util", 
 tracing = "0.1"
 
 uuid = { version = "1", features = ["v4", "v7"] }
+murmur3 = "0.5.2"
 
 [build-dependencies]
 sha2 = "0.11"
