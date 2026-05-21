@@ -19,6 +19,7 @@ use chrono::{DateTime, FixedOffset};
 use jsonschema::{validator_for, Validator};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use uuid::{NoContext, Timestamp, Uuid};
 
 use super::patch::{
@@ -28,6 +29,11 @@ use super::patch::{
 
 pub const AGENT_TRACE_VERSION: &str = "0.1.0";
 pub const SCE_METADATA_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+const RANGE_CONTENT_HASH_PREFIX: &str = "sha256:";
+const RANGE_CONTENT_HASH_INPUT_VERSION: &[u8] = b"sce-agent-trace-range-content-hash-v1\0";
+const TOUCHED_LINE_ADDED_TAG: &[u8] = b"added\0";
+const TOUCHED_LINE_REMOVED_TAG: &[u8] = b"removed\0";
 
 fn default_agent_trace_version() -> String {
     AGENT_TRACE_VERSION.to_owned()
@@ -311,6 +317,39 @@ fn hunks_match_exactly(left: &PatchHunk, right: &PatchHunk) -> bool {
     left.lines.iter().zip(right.lines.iter()).all(|(ll, rl)| {
         ll.kind == rl.kind && ll.line_number == rl.line_number && ll.content == rl.content
     })
+}
+
+#[allow(dead_code)]
+pub(crate) fn range_content_hash(hunk: &PatchHunk) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(RANGE_CONTENT_HASH_INPUT_VERSION);
+
+    for line in &hunk.lines {
+        let kind_tag = match line.kind {
+            TouchedLineKind::Added => TOUCHED_LINE_ADDED_TAG,
+            TouchedLineKind::Removed => TOUCHED_LINE_REMOVED_TAG,
+        };
+        let content = line.content.as_bytes();
+
+        hasher.update(kind_tag);
+        hasher.update((content.len() as u64).to_be_bytes());
+        hasher.update(content);
+        hasher.update(b"\0");
+    }
+
+    let digest = hasher.finalize();
+    format!("{RANGE_CONTENT_HASH_PREFIX}{}", hex_lowercase(&digest))
+}
+
+fn hex_lowercase(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 fn line_range_from_hunk(file: &PatchFileChange, hunk: &PatchHunk) -> LineRange {

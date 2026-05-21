@@ -1,8 +1,10 @@
 use super::{
-    build_agent_trace, validate_agent_trace_value, AgentTraceMetadataInput, AgentTraceVcsType,
-    LineRange, AGENT_TRACE_VERSION,
+    build_agent_trace, range_content_hash, validate_agent_trace_value, AgentTraceMetadataInput,
+    AgentTraceVcsType, LineRange, AGENT_TRACE_VERSION,
 };
-use crate::services::patch::{combine_patches, parse_patch, ParsedPatch};
+use crate::services::patch::{
+    combine_patches, parse_patch, ParsedPatch, PatchHunk, TouchedLine, TouchedLineKind,
+};
 use serde_json::{json, Value};
 
 #[derive(Clone, Copy)]
@@ -20,6 +22,83 @@ fn parse_fixtures(fixtures: &[&str]) -> Vec<ParsedPatch> {
         .iter()
         .map(|fixture| parse_patch(fixture).expect("fixture patch should parse"))
         .collect()
+}
+
+fn content_hash_test_hunk(
+    old_start: u64,
+    new_start: u64,
+    first_line_number: u64,
+    first_content: &str,
+    model_id: Option<&str>,
+) -> PatchHunk {
+    PatchHunk {
+        old_start,
+        old_count: 2,
+        new_start,
+        new_count: 2,
+        model_id: model_id.map(ToOwned::to_owned),
+        lines: vec![
+            TouchedLine {
+                kind: TouchedLineKind::Removed,
+                line_number: first_line_number,
+                content: first_content.to_string(),
+            },
+            TouchedLine {
+                kind: TouchedLineKind::Added,
+                line_number: first_line_number + 10,
+                content: "replacement line".to_string(),
+            },
+        ],
+    }
+}
+
+#[test]
+fn content_hash_is_sha256_lowercase_hex() {
+    let hash = range_content_hash(&content_hash_test_hunk(
+        1,
+        5,
+        9,
+        "original line",
+        Some("claude-sonnet-4"),
+    ));
+
+    let Some(hex) = hash.strip_prefix("sha256:") else {
+        panic!("content hash should use sha256 prefix: {hash}");
+    };
+    assert_eq!(hex.len(), 64);
+    assert!(
+        hex.chars()
+            .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase()),
+        "content hash should use lowercase hex: {hash}"
+    );
+}
+
+#[test]
+fn content_hash_ignores_hunk_positions_and_model_metadata() {
+    let baseline = range_content_hash(&content_hash_test_hunk(
+        1,
+        5,
+        9,
+        "original line",
+        Some("claude-sonnet-4"),
+    ));
+    let shifted = range_content_hash(&content_hash_test_hunk(
+        100,
+        500,
+        900,
+        "original line",
+        Some("gpt-5.5"),
+    ));
+
+    assert_eq!(baseline, shifted);
+}
+
+#[test]
+fn content_hash_changes_when_touched_content_changes() {
+    let baseline = range_content_hash(&content_hash_test_hunk(1, 5, 9, "original line", None));
+    let changed = range_content_hash(&content_hash_test_hunk(1, 5, 9, "different line", None));
+
+    assert_ne!(baseline, changed);
 }
 
 const TEXT_FILE_LIFECYCLE_RECONSTRUCTION_INCREMENTALS: &[&str] = &[
