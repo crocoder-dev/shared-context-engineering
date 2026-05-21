@@ -263,14 +263,23 @@ fn poem_edit_reconstruction_maps_each_hunk_to_one_range() {
             &[LineRange {
                 start_line: 1,
                 end_line: 8,
+                content_hash:
+                    "sha256:2e0cf6fa175c4d8996c8287ee1fddc903237259095b9866535d041eddfb5c8d5"
+                        .to_string(),
             }][..],
             &[LineRange {
                 start_line: 10,
                 end_line: 16,
+                content_hash:
+                    "sha256:d44aa81c288ed4de51086d8901feed36e7d8aa71d3e73459187bf85b58739d18"
+                        .to_string(),
             }][..],
             &[LineRange {
                 start_line: 21,
                 end_line: 24,
+                content_hash:
+                    "sha256:06f3e19300055684087bae5358f7f6d2caf3afb5d9a836442a1de9fe6a8da147"
+                        .to_string(),
             }][..],
         ]
     );

@@ -23,7 +23,8 @@
           "ranges": [
             {
               "start_line": 1,
-              "end_line": 53
+              "end_line": 53,
+              "content_hash": "sha256:cb2604c69ba73810d364563e47b7b4e65636099d61ec7d044d02e2c302b505c3"
             }
           ]
         }
@@ -39,7 +40,8 @@
           "ranges": [
             {
               "start_line": 1,
-              "end_line": 17
+              "end_line": 17,
+              "content_hash": "sha256:92348b82769d1339d45d41db1499caaf22691b35dccb2ac37d35e58c7ade3d9b"
             }
           ]
         }
@@ -55,7 +57,8 @@
           "ranges": [
             {
               "start_line": 1,
-              "end_line": 26
+              "end_line": 26,
+              "content_hash": "sha256:1b54886006ca1c7ec307bcb0387ab3c7150b1e0214a53ff71f403575d184f7fe"
             }
           ]
         }

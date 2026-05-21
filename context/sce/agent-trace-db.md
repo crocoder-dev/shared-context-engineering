@@ -98,7 +98,7 @@ Lookup indexes created by the baseline migration set:
 - Command success requires both artifact and database persistence to succeed.
 - Existing artifact files are not backfilled into the database.
 
-Post-commit intersection rows are written by the active `post-commit` hook flow, and the same flow now also inserts built Agent Trace payloads into `agent_traces` via `AgentTraceDb::insert_agent_trace()` (see [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md)). The persisted `trace_json` is the schema-validated `build_agent_trace(...)` output and includes top-level `metadata.sce.version` from the compiled `sce` CLI package version.
+Post-commit intersection rows are written by the active `post-commit` hook flow, and the same flow now also inserts built Agent Trace payloads into `agent_traces` via `AgentTraceDb::insert_agent_trace()` (see [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md)). The persisted `trace_json` is the schema-validated `build_agent_trace(...)` output and includes top-level `metadata.sce.version` from the compiled `sce` CLI package version plus `content_hash` on every emitted range.
 
 ## Recent patch reads
 

@@ -23,7 +23,8 @@
           "ranges": [
             {
               "start_line": 1,
-              "end_line": 5
+              "end_line": 5,
+              "content_hash": "sha256:4fcf831bf708ee1fc052f7a6c210f5fda98e63cd50e047acdd4c2bf667b446ef"
             }
           ]
         }

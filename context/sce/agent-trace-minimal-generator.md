@@ -13,7 +13,7 @@ Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical 
    - **`mixed`** — `intersection_patch` hunk exists at the same slot but content differs.
    - **`unknown`** — no `intersection_patch` hunk at the same `old_start` slot.
 4. Map `Conversation.contributor.model_id` from the matched `intersection_patch` hunk when contributor type is `ai` or `mixed`; omit `model_id` when provenance is missing (`None`).
-5. Emit one `Conversation` per `post_commit_patch` hunk, one `TraceFile` per `post_commit_patch` file.
+5. Emit one `Conversation` per `post_commit_patch` hunk, one `TraceFile` per `post_commit_patch` file, and one range per hunk with a deterministic `content_hash` sourced from the same hunk.
 
 ## Domain types
 
@@ -21,7 +21,7 @@ Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical 
 | ----------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `HunkContributor`       | Enum: `Ai`, `Mixed`, `Unknown`                                                                               |
 | `Contributor`           | Nested per-conversation object carrying `type: HunkContributor` and optional `model_id` omitted when absent  |
-| `LineRange`             | New-file line span with `start_line` + `end_line`                                                            |
+| `LineRange`             | New-file line span with `start_line` + `end_line` + `content_hash`                                           |
 | `Conversation`          | Per-hunk entry: nested contributor + `ranges` (currently exactly one range derived from `post_commit_patch`) |
 | `TraceFile`             | Per-file entry: path + conversations                                                                         |
 | `AgentTraceVcs`         | Optional top-level VCS metadata object carrying `type` + `revision` when present                             |
@@ -67,7 +67,8 @@ Current output includes top-level metadata fields with this contract:
           "ranges": [
             {
               "start_line": 10,
-              "end_line": 14
+              "end_line": 14,
+              "content_hash": "sha256:4fcf831bf708ee1fc052f7a6c210f5fda98e63cd50e047acdd4c2bf667b446ef"
             }
           ]
         }
@@ -80,12 +81,12 @@ Current output includes top-level metadata fields with this contract:
 ## Public API
 
 - `classify_hunk(post_commit_hunk, intersection_hunks) -> HunkContributor` — classify a single `post_commit_patch` hunk against `intersection_patch` hunks.
-- `range_content_hash(hunk) -> String` — internal helper that computes a planned range-level `sha256:<lowercase-hex>` content fingerprint from `PatchHunk.lines` using versioned, length-delimited touched-line serialization in patch order. The hash input includes touched-line kind and content, and excludes hunk positions, line numbers, file paths, trace metadata, contributor/model metadata, VCS metadata, tool metadata, and database IDs. The helper is not yet serialized into emitted `LineRange` payloads.
+- `range_content_hash(hunk) -> String` — internal helper that computes the serialized range-level `sha256:<lowercase-hex>` content fingerprint from `PatchHunk.lines` using versioned, length-delimited touched-line serialization in patch order. The hash input includes touched-line kind and content, and excludes hunk positions, line numbers, file paths, trace metadata, contributor/model metadata, VCS metadata, tool metadata, and database IDs.
 - `build_agent_trace(constructed_patch, post_commit_patch, metadata) -> Result<AgentTrace>` — full generator entrypoint that validates `metadata.commit_timestamp` as RFC 3339, uses it as top-level `timestamp`, derives a UUIDv7 `id` from that same commit-time moment, conditionally emits `vcs` only when `metadata.vcs_type` is present (mapping `vcs.type` from metadata and `vcs.revision` from `metadata.commit_revision`), carries optional tool metadata inputs (`metadata.tool_name`, `metadata.tool_version`) for top-level `tool` mapping, and always emits `metadata.sce.version` from the compiled package version. When `intersection_patch.files` is empty, `tool` is always `None` regardless of metadata values.
 
 ## Test fixture contract
 
-- Golden fixtures under `cli/src/services/agent_trace/fixtures/**/golden.json` pin deterministic literal values for top-level `id`, `timestamp`, optional `vcs`, `metadata.sce.version`, and expected file/conversation shapes.
+- Golden fixtures under `cli/src/services/agent_trace/fixtures/**/golden.json` pin deterministic literal values for top-level `id`, `timestamp`, optional `vcs`, `metadata.sce.version`, range-level `content_hash`, and expected file/conversation shapes.
 - Tests validate golden fixtures and built payloads against the embedded schema, assert core runtime metadata directly (`version`, `timestamp`, optional `vcs`, and `metadata.sce.version`), and compare `vcs`, `metadata`, and `files` against fixture truth.
 
 ## Relationship to existing patch service

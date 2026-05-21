@@ -238,6 +238,7 @@ pub struct Contributor {
 pub struct LineRange {
     pub start_line: u64,
     pub end_line: u64,
+    pub content_hash: String,
 }
 
 /// A file-level entry in the minimal agent-trace payload.
@@ -362,6 +363,7 @@ fn line_range_from_hunk(file: &PatchFileChange, hunk: &PatchHunk) -> LineRange {
     LineRange {
         start_line,
         end_line,
+        content_hash: range_content_hash(hunk),
     }
 }
 
