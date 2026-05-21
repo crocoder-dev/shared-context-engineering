@@ -13,7 +13,7 @@ Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical 
    - **`mixed`** — `intersection_patch` hunk exists at the same slot but content differs.
    - **`unknown`** — no `intersection_patch` hunk at the same `old_start` slot.
 4. Map `Conversation.contributor.model_id` from the matched `intersection_patch` hunk when contributor type is `ai` or `mixed`; omit `model_id` when provenance is missing (`None`).
-5. Emit one `Conversation` per `post_commit_patch` hunk, one `TraceFile` per `post_commit_patch` file, and one range per hunk with a deterministic `content_hash` sourced from the same hunk.
+5. Emit one `Conversation` per `post_commit_patch` hunk, one `TraceFile` per `post_commit_patch` file, and one range per hunk with a deterministic `content_hash` computed from that hunk's touched-line kind/content.
 
 ## Domain types
 
