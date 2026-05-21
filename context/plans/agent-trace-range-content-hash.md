@@ -49,12 +49,16 @@ The hash is a deterministic fingerprint of the attributed range content so downs
   - Evidence: `nix develop -c sh -c 'cd cli && cargo test content_hash'` was blocked by repo bash policy preferring `nix flake check`; `nix develop -c sh -c 'cd cli && cargo fmt'` completed; `nix flake check` passed.
   - Notes: Added `range_content_hash(...)` using versioned, length-delimited touched-line serialization plus `sha256:<lowercase-hex>` formatting; tests cover format, content sensitivity, and line-number/model metadata independence.
 
-- [ ] T02: `Emit content_hash on Agent Trace ranges` (status:todo)
+- [x] T02: `Emit content_hash on Agent Trace ranges` (status:done)
   - Task ID: T02
   - Goal: Extend `LineRange` serialization and `build_agent_trace(...)` range construction so each emitted range includes the computed `content_hash`.
   - Boundaries (in/out of scope): In - `LineRange` model update, hunk-to-range construction update, deleted embedded patch path behavior, golden fixture updates under `cli/src/services/agent_trace/fixtures/**/golden.json`, generator tests. Out - post-commit command routing changes beyond consuming the enriched existing payload, DB migrations, schema tightening.
   - Done when: All Agent Trace golden fixtures validate against the embedded schema and include `content_hash` on every range; generated payloads preserve existing contributor/range boundaries while adding the new field.
   - Verification notes (commands or checks): Run the Agent Trace generator tests through Nix, e.g. `nix develop -c sh -c 'cd cli && cargo test agent_trace'`; ensure schema-validation tests still pass.
+  - Completed: 2026-05-21
+  - Files changed: `cli/src/services/agent_trace.rs`, `cli/src/services/agent_trace/tests.rs`, `cli/src/services/agent_trace/fixtures/**/golden.json`, Agent Trace context files under `context/`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo test agent_trace'` was blocked by repo bash policy preferring `nix flake check`; `nix develop -c sh -c 'cd cli && cargo fmt'` completed; `nix flake check` passed; `nix run .#pkl-check-generated` passed; `sce-context-sync` repaired current-state Agent Trace context drift.
+  - Notes: `LineRange` now serializes `content_hash` from the post-commit or embedded-patch hunk used to emit the range; golden fixtures preserve existing file/conversation/range boundaries while adding deterministic `sha256:<lowercase-hex>` hashes; no DB schema or Agent Trace schema changes were made.
 
 - [ ] T03: `Add trace_json persistence regression coverage` (status:todo)
   - Task ID: T03
