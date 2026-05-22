@@ -42,7 +42,7 @@ pub enum HookSubcommand {
     },
     PostCommit {
         vcs_type: Option<AgentTraceVcsType>,
-        vcs_remote_url: Option<String>,
+        remote_url: Option<String>,
     },
     PostRewrite {
         rewrite_method: String,
@@ -94,12 +94,8 @@ fn run_hooks_subcommand_in_repo(
         }
         HookSubcommand::PostCommit {
             vcs_type,
-            vcs_remote_url,
-        } => run_post_commit_subcommand_with_trace(
-            repository_root,
-            *vcs_type,
-            vcs_remote_url.clone(),
-        ),
+            remote_url,
+        } => run_post_commit_subcommand_with_trace(repository_root, *vcs_type, remote_url.clone()),
         HookSubcommand::PostRewrite { rewrite_method } => {
             run_post_rewrite_subcommand_with_trace(repository_root, subcommand, rewrite_method)
         }
@@ -498,12 +494,12 @@ fn run_commit_msg_subcommand_with_trace(
 fn run_post_commit_subcommand(
     repository_root: &Path,
     vcs_type: Option<AgentTraceVcsType>,
-    vcs_remote_url: &str,
+    remote_url: &str,
 ) -> Result<String> {
     run_post_commit_subcommand_with(
         repository_root,
         vcs_type,
-        vcs_remote_url,
+        remote_url,
         run_post_commit_intersection_flow,
         run_post_commit_agent_trace_flow,
     )
@@ -512,7 +508,7 @@ fn run_post_commit_subcommand(
 fn run_post_commit_subcommand_with<F, B>(
     repository_root: &Path,
     vcs_type: Option<AgentTraceVcsType>,
-    vcs_remote_url: &str,
+    remote_url: &str,
     run_intersection_flow: F,
     run_agent_trace_flow: B,
 ) -> Result<String>
@@ -526,7 +522,7 @@ where
     ) -> Result<AgentTrace>,
 {
     let result = run_intersection_flow(repository_root)?;
-    let _agent_trace = run_agent_trace_flow(repository_root, &result, vcs_type, vcs_remote_url)?;
+    let _agent_trace = run_agent_trace_flow(repository_root, &result, vcs_type, remote_url)?;
 
     Ok(format!(
         "post-commit hook processed intersection: commit={}, intersection_files={}",
@@ -539,14 +535,14 @@ fn run_post_commit_agent_trace_flow(
     _repository_root: &Path,
     flow_result: &PostCommitIntersectionFlowResult,
     vcs_type: Option<AgentTraceVcsType>,
-    vcs_remote_url: &str,
+    remote_url: &str,
 ) -> Result<AgentTrace> {
     let db = AgentTraceDb::new().context("Failed to open Agent Trace DB for post-commit trace.")?;
 
     run_post_commit_agent_trace_flow_with(
         flow_result,
         vcs_type,
-        vcs_remote_url,
+        remote_url,
         |trace_value| {
             validate_agent_trace_value(trace_value)
                 .map_err(|error| anyhow!(error.to_string()))
@@ -566,7 +562,7 @@ fn run_post_commit_agent_trace_flow(
 fn run_post_commit_agent_trace_flow_with<V, I>(
     flow_result: &PostCommitIntersectionFlowResult,
     vcs_type: Option<AgentTraceVcsType>,
-    vcs_remote_url: &str,
+    remote_url: &str,
     validate_agent_trace: V,
     persist_agent_trace: I,
 ) -> Result<AgentTrace>
@@ -616,7 +612,7 @@ where
         trace_json: &serialized,
         agent_trace_id: &agent_trace.id,
         url: &constructed_url,
-        vcs_remote_url,
+        remote_url,
     };
     persist_agent_trace(insert_input)?;
 
@@ -720,15 +716,15 @@ fn current_unix_time_ms() -> Result<i64> {
 fn run_post_commit_subcommand_with_trace(
     repository_root: &Path,
     vcs_type: Option<AgentTraceVcsType>,
-    vcs_remote_url: Option<String>,
+    remote_url: Option<String>,
 ) -> Result<String> {
-    let vcs_remote_url_value = vcs_remote_url.clone().unwrap_or_default();
+    let remote_url_value = remote_url.clone().unwrap_or_default();
     let subcommand = HookSubcommand::PostCommit {
         vcs_type,
-        vcs_remote_url,
+        remote_url,
     };
     let input = build_hook_trace_input_for_post_commit(repository_root);
-    let outcome = run_post_commit_subcommand(repository_root, vcs_type, &vcs_remote_url_value);
+    let outcome = run_post_commit_subcommand(repository_root, vcs_type, &remote_url_value);
 
     let _ = persist_hook_trace(repository_root, &subcommand, &input, &outcome);
 

@@ -16,7 +16,7 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 - `recent_diff_trace_patches(cutoff_time_ms, end_time_ms)`: chronological `diff_traces` read helper for rows in the inclusive window `time_ms >= cutoff_time_ms AND time_ms <= end_time_ms`; parses raw patch text through `parse_patch` and skips malformed rows without failing the query.
 - `PostCommitPatchIntersectionInsert<'a>`: insert payload for post-commit intersection results with commit metadata, window bounds, loaded/skipped counts, and serialized patch JSON.
 - `insert_post_commit_patch_intersection()`: domain-specific insert helper using parameterized SQL.
-- `AgentTraceInsert<'a>`: insert payload for built Agent Trace rows with `commit_id`, `commit_time_ms`, serialized `trace_json`, `agent_trace_id`, non-null `url`, and required `vcs_remote_url: &'a str` (Rust-API-only; DB column stays nullable).
+- `AgentTraceInsert<'a>`: insert payload for built Agent Trace rows with `commit_id`, `commit_time_ms`, serialized `trace_json`, `agent_trace_id`, non-null `url`, and required `remote_url: &'a str` (Rust-API-only; DB column stays nullable).
 - `insert_agent_trace()`: domain-specific insert helper for `agent_traces` using parameterized SQL.
 - `lifecycle.rs`: service lifecycle provider for setup/doctor integration.
 
@@ -38,8 +38,8 @@ The Agent Trace DB path is resolved from the shared default-path catalog:
 - `003_create_agent_traces.sql`
 - `004_create_diff_traces_time_ms_id_index.sql`
 - `005_create_agent_traces_agent_trace_id_index.sql`
-- `006_add_agent_traces_vcs_remote_url.sql`
-- `007_create_agent_traces_vcs_remote_url_index.sql`
+- `006_add_agent_traces_vcs_remote_url.sql` (historical filename; migration ID `006_add_agent_traces_remote_url` adds the `remote_url` column)
+- `007_create_agent_traces_vcs_remote_url_index.sql` (historical filename; migration ID `007_create_agent_traces_remote_url_index` creates `idx_agent_traces_remote_url`)
 
 The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::new()` applies later Agent Trace migrations to an already-created `~/.local/state/sce/agent-trace.db`.
 
@@ -72,7 +72,7 @@ The `agent_traces` baseline migration creates:
 - `commit_id TEXT NOT NULL`
 - `commit_time_ms INTEGER NOT NULL`
 - `url TEXT NOT NULL`
-- `vcs_remote_url TEXT` (nullable)
+- `remote_url TEXT` (nullable)
 - `trace_json TEXT NOT NULL`
 - `agent_trace_id TEXT NOT NULL UNIQUE`
 - `created_at TEXT NOT NULL DEFAULT (...)`
@@ -81,7 +81,7 @@ Lookup indexes created by the baseline migration set:
 
 - `idx_diff_traces_time_ms_id` on `(time_ms, id)`
 - `idx_agent_traces_agent_trace_id` on `(agent_trace_id)`
-- `idx_agent_traces_vcs_remote_url` on `(vcs_remote_url)`
+- `idx_agent_traces_remote_url` on `(remote_url)`
 
 ## Lifecycle integration
  

@@ -9,7 +9,7 @@
 
 - `sce hooks pre-commit`
 - `sce hooks commit-msg <message-file>`
-- `sce hooks post-commit [--vcs <value>] --vcs-remote-url <url>`
+- `sce hooks post-commit [--vcs <value>] --remote-url <url>`
 - `sce hooks post-rewrite <amend|rebase|other>`
 - `sce hooks diff-trace`
 
@@ -17,9 +17,9 @@
 
 - `cli/src/app.rs` routes `hooks` through dedicated hook-subcommand parsing.
 - `cli/src/services/hooks/mod.rs` owns deterministic runtime dispatch through `HookSubcommand` + `run_hooks_subcommand`.
-- `post-commit` now enforces required parse-time validation for `--vcs-remote-url` in `cli/src/services/parse/command_runtime.rs`.
+- `post-commit` now enforces required parse-time validation for `--remote-url` in `cli/src/services/parse/command_runtime.rs`.
 - `--vcs` remains optional and, when provided, must be one of `git|jj|hg|svn`; unsupported values fail with a validation-classified error.
-- Missing or blank `--vcs-remote-url` fails with a validation-classified error before runtime dispatch.
+- Missing or blank `--remote-url` fails with a validation-classified error before runtime dispatch.
 - Invalid and ambiguous invocations return deterministic actionable errors pointing to `sce hooks --help`.
 
 ## Current runtime behavior
@@ -43,15 +43,15 @@
   - Persists the serialized intersection result to `post_commit_patch_intersections` table with commit metadata (OID, timestamp), window bounds (cutoff_ms, end_ms), and loaded/skipped counts.
   - Empty recent patch set produces deterministic empty intersection result (no crash).
   - Internal orchestration now returns a typed `PostCommitIntersectionFlowResult` (`combined_recent_patch`, `post_commit_data`, optional `tool_name`, optional `tool_version`) from `run_post_commit_intersection_flow_with()`, where tool metadata comes from the most recent ordered parsed recent-patch row and falls back to `None` when the recent set is empty.
-- `run_post_commit_subcommand(...)` now threads parsed optional `vcs_type` and validated `vcs_remote_url` through post-commit runtime flow into `run_post_commit_agent_trace_flow_with(...)`.
-- `run_post_commit_agent_trace_flow_with(...)` prints the received remote URL to stderr as `post-commit vcs_remote_url=<url>` before building/validating/persisting the Agent Trace payload.
+- `run_post_commit_subcommand(...)` now threads parsed optional `vcs_type` and validated `remote_url` through post-commit runtime flow into `run_post_commit_agent_trace_flow_with(...)`.
+- `run_post_commit_agent_trace_flow_with(...)` prints the received remote URL to stderr as `post-commit remote_url=<url>` before building/validating/persisting the Agent Trace payload.
 - At the current runtime boundary, parsed optional `vcs_type` is forwarded into `agent_trace::build_agent_trace(...)`; when absent, top-level `vcs` metadata is omitted.
   - The run-flow path maps commit-time metadata to RFC3339 and calls `agent_trace::build_agent_trace(...)`.
   - The same run-flow call now also forwards optional `tool_name` / `tool_version` from `PostCommitIntersectionFlowResult` into `AgentTraceMetadataInput`, so built post-commit payloads preserve tool metadata derived from recent parsed diff-trace rows.
   - The built Agent Trace payload includes top-level `metadata.sce.version` from the compiled `sce` CLI package version and range-level `content_hash` values computed from touched post-commit hunk content before conversion to JSON.
   - The built Agent Trace payload is converted to JSON `Value` and validated via `agent_trace::validate_agent_trace_value(...)` before persistence.
   - Validation failures are returned through the same post-commit runtime failure path/class used for Agent Trace DB insertion failures (no silent fallback).
-  - When validation passes, the payload is serialized and inserted into Agent Trace DB `agent_traces` using `commit_id` from flow-result commit metadata, `commit_time_ms` from flow-result post-commit timestamp metadata, a derived non-null `url` value formatted as `sce.crocoder.dev/trace/<agent_trace.id>`, and the validated runtime `--vcs-remote-url` value persisted to nullable `agent_traces.vcs_remote_url`.
+  - When validation passes, the payload is serialized and inserted into Agent Trace DB `agent_traces` using `commit_id` from flow-result commit metadata, `commit_time_ms` from flow-result post-commit timestamp metadata, a derived non-null `url` value formatted as `sce.crocoder.dev/trace/<agent_trace.id>`, and the validated runtime `--remote-url` value persisted to nullable `agent_traces.remote_url`.
   - Post-commit Agent Trace success requires both schema validation and Agent Trace DB `agent_traces` persistence to succeed.
   - Current command-surface success output is: `post-commit hook processed intersection: commit=<oid>, intersection_files=<n>`.
 - `post-rewrite` is a deterministic no-op entrypoint.
