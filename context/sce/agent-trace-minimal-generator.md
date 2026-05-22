@@ -68,7 +68,7 @@ Current output includes top-level metadata fields with this contract:
             {
               "start_line": 10,
               "end_line": 14,
-              "content_hash": "murmur3:a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
+              "content_hash": "murmur3:a1b2c3d4"
             }
           ]
         }
