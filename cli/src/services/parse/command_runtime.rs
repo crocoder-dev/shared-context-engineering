@@ -384,12 +384,20 @@ fn convert_hooks_subcommand(
                 subcommand: services::hooks::HookSubcommand::CommitMsg { message_file },
             }))
         }
-        cli_schema::HooksSubcommand::PostCommit { vcs } => {
+        cli_schema::HooksSubcommand::PostCommit {
+            vcs,
+            vcs_remote_url,
+        } => {
             let vcs_type = parse_optional_hook_vcs_type(vcs.as_deref())
+                .map_err(ClassifiedError::validation)?;
+            let vcs_remote_url = parse_optional_hook_vcs_remote_url(vcs_remote_url)
                 .map_err(ClassifiedError::validation)?;
 
             Ok(Box::new(services::hooks::command::HooksCommand {
-                subcommand: services::hooks::HookSubcommand::PostCommit { vcs_type },
+                subcommand: services::hooks::HookSubcommand::PostCommit {
+                    vcs_type,
+                    vcs_remote_url: Some(vcs_remote_url),
+                },
             }))
         }
         cli_schema::HooksSubcommand::PostRewrite { rewrite_method } => {
@@ -422,5 +430,14 @@ fn parse_optional_hook_vcs_type(
         _ => Err(format!(
             "Unsupported value for '--vcs': '{vcs}'. Supported values: git, jj, hg, svn."
         )),
+    }
+}
+
+fn parse_optional_hook_vcs_remote_url(vcs_remote_url: Option<String>) -> Result<String, String> {
+    match vcs_remote_url {
+        Some(url) if !url.trim().is_empty() => Ok(url),
+        _ => Err(
+            "Missing required option '--vcs-remote-url' for 'sce hooks post-commit'.".to_string(),
+        ),
     }
 }

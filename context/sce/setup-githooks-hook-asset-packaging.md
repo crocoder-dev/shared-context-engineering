@@ -14,9 +14,10 @@ Task `sce-setup-githooks-any-repo` `T02` defines how required git-hook templates
 
 These templates are emitted into `OUT_DIR/setup_embedded_assets.rs` as `HOOK_EMBEDDED_ASSETS` with deterministic sorted relative paths.
 
-Current `post-commit` template invocation is:
+Current `post-commit` template behavior is:
 
-- `exec sce hooks post-commit --vcs git "$@"`
+- set `remote_name` to `origin`; if `git remote get-url "$remote_name"` returns a non-empty URL, invoke `sce hooks post-commit --vcs git --vcs-remote-url "$remote_url" "$@"`
+- otherwise still invoke `sce hooks post-commit --vcs git "$@"`; Rust-side validation fails this missing-URL path without blocking git commit completion under the hook script policy.
 
 ## Setup-service accessor surface
 
