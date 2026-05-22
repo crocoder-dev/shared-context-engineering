@@ -16,7 +16,7 @@ These templates are emitted into `OUT_DIR/setup_embedded_assets.rs` as `HOOK_EMB
 
 Current `post-commit` template behavior is:
 
-- set `remote_name` to `origin`; if `git remote get-url "$remote_name"` returns a non-empty URL, invoke `sce hooks post-commit --vcs git --vcs-remote-url "$remote_url" "$@"`
+- set `remote_name` to `origin`; if `git remote get-url "$remote_name"` returns a non-empty URL, invoke `sce hooks post-commit --vcs git --remote-url "$remote_url" "$@"`
 - otherwise still invoke `sce hooks post-commit --vcs git "$@"`; Rust-side validation fails this missing-URL path without blocking git commit completion under the hook script policy.
 
 ## Setup-service accessor surface

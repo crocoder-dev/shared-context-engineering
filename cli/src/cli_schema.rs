@@ -268,8 +268,8 @@ pub enum HooksSubcommand {
         #[arg(long = "vcs")]
         vcs: Option<String>,
 
-        #[arg(long = "vcs-remote-url")]
-        vcs_remote_url: Option<String>,
+        #[arg(long = "remote-url")]
+        remote_url: Option<String>,
     },
 
     #[command(about = "Run post-rewrite hook (reads pairs from STDIN)")]
