@@ -65,7 +65,7 @@ fn content_hash_is_murmur3_lowercase_hex() {
     let Some(hex) = hash.strip_prefix("murmur3:") else {
         panic!("content hash should use murmur3 prefix: {hash}");
     };
-    assert_eq!(hex.len(), 32);
+    assert_eq!(hex.len(), 8);
     assert!(
         hex.chars()
             .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase()),
@@ -263,17 +263,17 @@ fn poem_edit_reconstruction_maps_each_hunk_to_one_range() {
             &[LineRange {
                 start_line: 1,
                 end_line: 8,
-                content_hash: "murmur3:25ccc32aa6747441fccf39e42c5d26a2".to_string(),
+                content_hash: "murmur3:25e05a40".to_string(),
             }][..],
             &[LineRange {
                 start_line: 10,
                 end_line: 16,
-                content_hash: "murmur3:96eca88b556472eb0ca402007580d8af".to_string(),
+                content_hash: "murmur3:bc5d346b".to_string(),
             }][..],
             &[LineRange {
                 start_line: 21,
                 end_line: 24,
-                content_hash: "murmur3:43499f893624471014c97d9084deab50".to_string(),
+                content_hash: "murmur3:c8621bcb".to_string(),
             }][..],
         ]
     );

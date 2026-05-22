@@ -17,7 +17,7 @@ use std::{error::Error, fmt, io::Cursor, path::Path, sync::OnceLock};
 use anyhow::{Context, Result};
 use chrono::{DateTime, FixedOffset};
 use jsonschema::{validator_for, Validator};
-use murmur3::murmur3_x64_128;
+use murmur3::murmur3_32;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::{NoContext, Timestamp, Uuid};
@@ -338,9 +338,9 @@ pub(crate) fn range_content_hash(hunk: &PatchHunk) -> String {
         input.push(0);
     }
 
-    let hash = murmur3_x64_128(&mut Cursor::new(input), 0)
+    let hash = murmur3_32(&mut Cursor::new(input), 0)
         .expect("murmur3 hashing from in-memory cursor should not fail");
-    format!("{RANGE_CONTENT_HASH_PREFIX}{hash:032x}")
+    format!("{RANGE_CONTENT_HASH_PREFIX}{hash:08x}")
 }
 
 fn line_range_from_hunk(file: &PatchFileChange, hunk: &PatchHunk) -> LineRange {
