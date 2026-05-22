@@ -23,6 +23,11 @@ const CREATE_DIFF_TRACES_TIME_MS_ID_INDEX_MIGRATION: &str =
 const CREATE_AGENT_TRACES_AGENT_TRACE_ID_INDEX_MIGRATION: &str = include_str!(
     "../../../migrations/agent-trace/005_create_agent_traces_agent_trace_id_index.sql"
 );
+const ADD_AGENT_TRACES_VCS_REMOTE_URL_MIGRATION: &str =
+    include_str!("../../../migrations/agent-trace/006_add_agent_traces_vcs_remote_url.sql");
+const CREATE_AGENT_TRACES_VCS_REMOTE_URL_INDEX_MIGRATION: &str = include_str!(
+    "../../../migrations/agent-trace/007_create_agent_traces_vcs_remote_url_index.sql"
+);
 
 const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
     ("001_create_diff_traces", CREATE_DIFF_TRACES_MIGRATION),
@@ -38,6 +43,14 @@ const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
     (
         "005_create_agent_traces_agent_trace_id_index",
         CREATE_AGENT_TRACES_AGENT_TRACE_ID_INDEX_MIGRATION,
+    ),
+    (
+        "006_add_agent_traces_vcs_remote_url",
+        ADD_AGENT_TRACES_VCS_REMOTE_URL_MIGRATION,
+    ),
+    (
+        "007_create_agent_traces_vcs_remote_url_index",
+        CREATE_AGENT_TRACES_VCS_REMOTE_URL_INDEX_MIGRATION,
     ),
 ];
 
@@ -66,7 +79,7 @@ pub const INSERT_POST_COMMIT_PATCH_INTERSECTION_SQL: &str =
 
 /// Parameterized SQL for inserting a built agent trace payload.
 pub const INSERT_AGENT_TRACE_SQL: &str =
-    "INSERT INTO agent_traces (commit_id, commit_time_ms, trace_json, agent_trace_id, url) VALUES (?1, ?2, ?3, ?4, ?5)";
+    "INSERT INTO agent_traces (commit_id, commit_time_ms, trace_json, agent_trace_id, url, vcs_remote_url) VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
 
 /// Agent trace database configuration.
 pub struct AgentTraceDbSpec;
@@ -168,6 +181,7 @@ pub struct AgentTraceInsert<'a> {
     pub trace_json: &'a str,
     pub agent_trace_id: &'a str,
     pub url: &'a str,
+    pub vcs_remote_url: &'a str,
 }
 
 impl AgentTraceDb {
@@ -241,6 +255,7 @@ fn insert_agent_trace_with<M: DbSpec>(db: &TursoDb<M>, input: AgentTraceInsert<'
             input.trace_json,
             input.agent_trace_id,
             input.url,
+            input.vcs_remote_url,
         ),
     )
 }
@@ -537,6 +552,11 @@ mod tests {
             "index",
             "idx_agent_traces_agent_trace_id"
         ));
+        assert!(sqlite_object_exists(
+            &db,
+            "index",
+            "idx_agent_traces_vcs_remote_url"
+        ));
         assert_eq!(
             applied_migration_ids(&db),
             vec![
@@ -545,6 +565,8 @@ mod tests {
                 "003_create_agent_traces",
                 "004_create_diff_traces_time_ms_id_index",
                 "005_create_agent_traces_agent_trace_id_index",
+                "006_add_agent_traces_vcs_remote_url",
+                "007_create_agent_traces_vcs_remote_url_index",
             ]
         );
 
@@ -556,6 +578,7 @@ mod tests {
                 trace_json: r#"{"id":"trace-1"}"#,
                 agent_trace_id: "trace-1",
                 url: "sce.crocoder.dev/trace/trace-1",
+                vcs_remote_url: "https://github.com/test/repo",
             },
         );
         assert!(duplicate_insert.is_ok());
@@ -568,6 +591,7 @@ mod tests {
                 trace_json: r#"{"id":"trace-1"}"#,
                 agent_trace_id: "trace-1",
                 url: "sce.crocoder.dev/trace/trace-1",
+                vcs_remote_url: "https://github.com/test/repo",
             },
         );
         assert!(duplicate_insert.is_err());

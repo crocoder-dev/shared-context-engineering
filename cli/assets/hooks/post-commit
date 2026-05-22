@@ -1,4 +1,10 @@
 #!/bin/sh
 set -eu
 
+remote_url="$(git remote get-url origin 2>/dev/null || true)"
+
+if [ -n "$remote_url" ]; then
+  exec sce hooks post-commit --vcs git --vcs-remote-url "$remote_url" "$@"
+fi
+
 exec sce hooks post-commit --vcs git "$@"

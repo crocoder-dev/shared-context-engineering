@@ -267,6 +267,9 @@ pub enum HooksSubcommand {
     PostCommit {
         #[arg(long = "vcs")]
         vcs: Option<String>,
+
+        #[arg(long = "vcs-remote-url")]
+        vcs_remote_url: Option<String>,
     },
 
     #[command(about = "Run post-rewrite hook (reads pairs from STDIN)")]
