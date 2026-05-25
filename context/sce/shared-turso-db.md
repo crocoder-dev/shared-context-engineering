@@ -26,7 +26,7 @@ The shared module is exported from `cli/src/services/mod.rs` and compile-checked
 
 - `cli/src/services/local_db/mod.rs`: `LocalDb = TursoDb<LocalDbSpec>`, with `LocalDbSpec` resolving `local_db_path()` and declaring zero migrations.
 - `cli/src/services/agent_trace_db/mod.rs`: `AgentTraceDb = TursoDb<AgentTraceDbSpec>`, with `AgentTraceDbSpec` resolving `agent_trace_db_path()` and loading ordered Agent Trace migrations for `diff_traces` and `post_commit_patch_intersections`.
-- `cli/src/services/auth_db/mod.rs`: `AuthDb = EncryptedTursoDb<AuthDbSpec>`, with `AuthDbSpec` resolving `auth_db_path()` and loading ordered auth migrations for `auth_tokens` plus the email index.
+- `cli/src/services/auth_db/mod.rs`: `AuthDb = EncryptedTursoDb<AuthDbSpec>`, with `AuthDbSpec` resolving `auth_db_path()` and loading ordered auth migrations where baseline SQL creates `auth_credentials` without `user_id`, with `updated_at`, and a trigger that auto-refreshes `updated_at` on row updates.
 
 All three database wrappers (local DB, auth DB, Agent Trace DB) have lifecycle providers. `lifecycle_providers(include_hooks)` registers database providers in order `LocalDbLifecycle` → `AuthDbLifecycle` → `AgentTraceDbLifecycle` before optional hooks, so setup initializes all three databases and doctor diagnoses/fixes all three canonical DB paths.
 

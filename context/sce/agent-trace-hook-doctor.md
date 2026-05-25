@@ -284,7 +284,7 @@ Services implementing `ServiceLifecycle`:
 - `AgentTraceDbLifecycle` in `cli/src/services/agent_trace_db/lifecycle.rs`: validates Agent Trace DB path/health, bootstraps DB parent directory
 
 The `doctor` command aggregates `diagnose` and `fix` across all registered providers.
-The `setup` command aggregates `setup` across all registered providers in order (config → local_db → agent_trace_db → hooks).
+The `setup` command aggregates `setup` across all registered providers in order (config → local_db → auth_db → agent_trace_db → hooks).
 
 ## Output shape contract
 
