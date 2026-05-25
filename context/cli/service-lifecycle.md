@@ -13,7 +13,7 @@
 - `SetupOutcome` is a minimal lifecycle-owned carrier for current setup result shapes:
   - optional lifecycle-owned `RequiredHooksInstallOutcome`
 - `LifecycleProvider` aliases boxed lifecycle providers, and `lifecycle_providers(include_hooks)` is the shared provider catalog/factory used by command orchestrators.
-- Provider order is deterministic: `ConfigLifecycle` → `LocalDbLifecycle` → `AgentTraceDbLifecycle` → `HooksLifecycle` when hooks are included.
+- Provider order is deterministic: `ConfigLifecycle` → `LocalDbLifecycle` → `AuthDbLifecycle` → `AgentTraceDbLifecycle` → `HooksLifecycle` when hooks are included.
 
 ## Current boundaries
 

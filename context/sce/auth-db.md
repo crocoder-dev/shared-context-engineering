@@ -12,11 +12,11 @@ The encrypted auth DB foundation currently consists of a thin Rust wrapper plus 
 - Migration directory: `cli/migrations/auth/`.
 - Ordered migrations:
   - `001_create_auth_tokens.sql`
-  - `002_create_auth_tokens_email_index.sql`
+  - `002_create_auth_credentials_updated_at_trigger.sql`
 
 ## Schema baseline
 
-`auth_tokens` is created idempotently with:
+`auth_credentials` is created idempotently with:
 
 - `id TEXT PRIMARY KEY NOT NULL`
 - `access_token TEXT NOT NULL`
@@ -25,12 +25,15 @@ The encrypted auth DB foundation currently consists of a thin Rust wrapper plus 
 - `refresh_token TEXT NOT NULL`
 - `scope TEXT` (nullable)
 - `stored_at_unix_seconds INTEGER NOT NULL`
-- `email TEXT NOT NULL`
 - `created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`
+- `updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`
 
-The email lookup index is `idx_auth_tokens_email` on `auth_tokens(email)`.
+Current migration baseline:
 
-## Lifecycle integration (T03)
+- `001_create_auth_tokens.sql` creates `auth_credentials` without `user_id`, with `updated_at`.
+- `002_create_auth_credentials_updated_at_trigger.sql` creates `auth_credentials_set_updated_at` trigger to auto-refresh `updated_at` on row updates.
+
+## Lifecycle integration
 
 `AuthDbLifecycle` is registered in `cli/src/services/auth_db/lifecycle.rs` following the existing DB lifecycle pattern:
 - `diagnose` collects auth DB path health problems.

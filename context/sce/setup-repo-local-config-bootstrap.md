@@ -20,7 +20,7 @@ Task `setup-repo-gate-and-local-config-bootstrap` T02 and `turso-local-db-sync` 
 - `cli/src/services/agent_trace_db/lifecycle.rs` implements `AgentTraceDbLifecycle::setup()` for Agent Trace DB initialization.
 - The function uses `RepoPaths::sce_config_file()` and `RepoPaths::sce_dir()` from `default_paths` for path resolution.
 - The canonical payload constant is `REPO_LOCAL_CONFIG_BOOTSTRAP_PAYLOAD`.
-- `cli/src/services/setup/command.rs` derives a repo-root-scoped `AppContext` after `ensure_git_repository`, then aggregates lifecycle providers in config → local_db → agent_trace_db → hooks order; `ConfigLifecycle::setup()` calls `bootstrap_repo_local_config(...)`, `LocalDbLifecycle::setup()` initializes the local DB, and `AgentTraceDbLifecycle::setup()` initializes the Agent Trace DB.
+- `cli/src/services/setup/command.rs` derives a repo-root-scoped `AppContext` after `ensure_git_repository`, then aggregates lifecycle providers in config → local_db → auth_db → agent_trace_db → hooks order; `ConfigLifecycle::setup()` calls `bootstrap_repo_local_config(...)`, `LocalDbLifecycle::setup()` initializes the local DB, `AuthDbLifecycle::setup()` initializes the auth DB, and `AgentTraceDbLifecycle::setup()` initializes the Agent Trace DB.
 
 ## Relationship to other setup contracts
 
