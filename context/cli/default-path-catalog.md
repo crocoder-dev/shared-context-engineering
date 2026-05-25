@@ -16,6 +16,7 @@
 
 - global config: `<config_root>/sce/config.json`
 - auth tokens: `<state_root>/sce/auth/tokens.json`
+- auth DB: `<state_root>/sce/auth.db`
 - local DB: `<state_root>/sce/local.db`
 - agent trace DB: `<state_root>/sce/agent-trace.db`
 

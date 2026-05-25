@@ -26,8 +26,9 @@ The shared module is exported from `cli/src/services/mod.rs` and compile-checked
 
 - `cli/src/services/local_db/mod.rs`: `LocalDb = TursoDb<LocalDbSpec>`, with `LocalDbSpec` resolving `local_db_path()` and declaring zero migrations.
 - `cli/src/services/agent_trace_db/mod.rs`: `AgentTraceDb = TursoDb<AgentTraceDbSpec>`, with `AgentTraceDbSpec` resolving `agent_trace_db_path()` and loading ordered Agent Trace migrations for `diff_traces` and `post_commit_patch_intersections`.
+- `cli/src/services/auth_db/mod.rs`: `AuthDb = EncryptedTursoDb<AuthDbSpec>`, with `AuthDbSpec` resolving `auth_db_path()` and loading ordered auth migrations for `auth_tokens` plus the email index.
 
-Both database wrappers now have lifecycle providers. `lifecycle_providers(include_hooks)` registers database providers in order `LocalDbLifecycle` → `AgentTraceDbLifecycle` before optional hooks, so setup initializes both databases and doctor diagnoses/fixes both canonical DB paths.
+All three database wrappers (local DB, auth DB, Agent Trace DB) have lifecycle providers. `lifecycle_providers(include_hooks)` registers database providers in order `LocalDbLifecycle` → `AuthDbLifecycle` → `AgentTraceDbLifecycle` before optional hooks, so setup initializes all three databases and doctor diagnoses/fixes all three canonical DB paths.
 
 ## Migration metadata
 
@@ -35,4 +36,4 @@ Both database wrappers now have lifecycle providers. `lifecycle_providers(includ
 
 Existing databases created before migration metadata are upgraded by re-applying the current idempotent migration list and recording each migration ID. This lets later `sce setup` / lifecycle initialization runs apply migrations added after the database file already existed, including Agent Trace DB schema/index additions.
 
-See also: [local-db.md](local-db.md), [agent-trace-db.md](agent-trace-db.md), [overview.md](../overview.md), [architecture.md](../architecture.md), [glossary.md](../glossary.md)
+See also: [local-db.md](local-db.md), [agent-trace-db.md](agent-trace-db.md), [auth-db.md](auth-db.md), [overview.md](../overview.md), [architecture.md](../architecture.md), [glossary.md](../glossary.md)

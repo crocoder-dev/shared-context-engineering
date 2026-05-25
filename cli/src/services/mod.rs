@@ -3,6 +3,7 @@ pub mod agent_trace_db;
 pub mod app_support;
 pub mod auth;
 pub mod auth_command;
+pub mod auth_db;
 pub mod capabilities;
 pub mod command_registry;
 pub mod completion;
