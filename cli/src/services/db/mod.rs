@@ -22,6 +22,8 @@ const MIGRATIONS_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS __sce_migrations 
 )";
 const SELECT_MIGRATION_SQL: &str = "SELECT id FROM __sce_migrations WHERE id = ?1 LIMIT 1";
 const INSERT_MIGRATION_SQL: &str = "INSERT INTO __sce_migrations (id) VALUES (?1)";
+const DB_ENCRYPTION_KEY_ENV: &str = "SCE_DB_ENCRYPTION_KEY";
+const ENCRYPTION_CIPHER_AEGIS256: &str = "aegis256";
 
 /// Service-specific Turso database configuration.
 #[allow(dead_code)]
@@ -134,6 +136,100 @@ fn sentence_case(value: &str) -> String {
     first.to_uppercase().collect::<String>() + chars.as_str()
 }
 
+fn ensure_db_parent_dir(db_name: &str, db_path: &Path) -> Result<()> {
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create {db_name} parent directory: {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn build_current_thread_runtime(db_name: &str) -> Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .with_context(|| {
+            format!("failed to create {db_name} tokio runtime. Try: rerun the command; if the issue persists, verify the local Tokio runtime environment.")
+        })
+}
+
+fn run_embedded_migrations(
+    conn: &turso::Connection,
+    runtime: &tokio::runtime::Runtime,
+    db_name: &str,
+    migrations: &[(&str, &str)],
+) -> Result<()> {
+    ensure_migrations_table(conn, runtime, db_name)?;
+
+    for (id, sql) in migrations {
+        if is_migration_applied(conn, runtime, db_name, id)? {
+            continue;
+        }
+
+        apply_migration(conn, runtime, db_name, id, sql)?;
+    }
+
+    Ok(())
+}
+
+fn ensure_migrations_table(
+    conn: &turso::Connection,
+    runtime: &tokio::runtime::Runtime,
+    db_name: &str,
+) -> Result<()> {
+    runtime.block_on(async {
+        conn.execute(MIGRATIONS_TABLE_SQL, ())
+            .await
+            .map_err(|e| anyhow::anyhow!("{db_name} migration metadata setup failed: {e}"))
+    })?;
+
+    Ok(())
+}
+
+fn is_migration_applied(
+    conn: &turso::Connection,
+    runtime: &tokio::runtime::Runtime,
+    db_name: &str,
+    id: &str,
+) -> Result<bool> {
+    runtime.block_on(async {
+        let mut rows = conn.query(SELECT_MIGRATION_SQL, (id,)).await.map_err(|e| {
+            anyhow::anyhow!("{db_name} migration metadata query failed for {id}: {e}")
+        })?;
+
+        rows.next().await.map(|row| row.is_some()).map_err(|e| {
+            anyhow::anyhow!("{db_name} migration metadata row fetch failed for {id}: {e}")
+        })
+    })
+}
+
+fn apply_migration(
+    conn: &turso::Connection,
+    runtime: &tokio::runtime::Runtime,
+    db_name: &str,
+    id: &str,
+    sql: &str,
+) -> Result<()> {
+    runtime.block_on(async {
+        conn.execute(sql, ())
+            .await
+            .map_err(|e| anyhow::anyhow!("{db_name} migration {id} failed: {e}"))?;
+        conn.execute(INSERT_MIGRATION_SQL, (id,))
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!("{db_name} migration metadata record failed for {id}: {e}")
+            })?;
+
+        Ok(())
+    })
+}
+
 /// Generic Turso database adapter.
 ///
 /// Wraps a Turso connection with a tokio current-thread runtime so callers can
@@ -141,6 +237,17 @@ fn sentence_case(value: &str) -> String {
 /// remains async.
 #[allow(dead_code)]
 pub struct TursoDb<M: DbSpec> {
+    conn: turso::Connection,
+    runtime: tokio::runtime::Runtime,
+    spec: PhantomData<fn() -> M>,
+}
+
+/// Generic encrypted Turso database adapter.
+///
+/// Mirrors the structural seams of [`TursoDb`] while reserving encrypted local
+/// database initialization for services that require at-rest encryption.
+#[allow(dead_code)]
+pub struct EncryptedTursoDb<M: DbSpec> {
     conn: turso::Connection,
     runtime: tokio::runtime::Runtime,
     spec: PhantomData<fn() -> M>,
@@ -156,22 +263,9 @@ impl<M: DbSpec> TursoDb<M> {
         let db_name = M::db_name();
         let db_path = M::db_path().with_context(|| format!("failed to resolve {db_name} path"))?;
 
-        if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "failed to create {db_name} parent directory: {}",
-                    parent.display()
-                )
-            })?;
-        }
+        ensure_db_parent_dir(db_name, &db_path)?;
 
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_io()
-            .enable_time()
-            .build()
-            .with_context(|| {
-                format!("failed to create {db_name} tokio runtime. Try: rerun the command; if the issue persists, verify the local Tokio runtime environment.")
-            })?;
+        let runtime = build_current_thread_runtime(db_name)?;
 
         let conn = runtime.block_on(async {
             let path_str = db_path.to_str().ok_or_else(|| {
@@ -276,71 +370,115 @@ impl<M: DbSpec> TursoDb<M> {
     /// Existing databases without migration metadata are brought forward by
     /// re-applying the current idempotent migration set and recording each ID.
     pub fn run_migrations(&self) -> Result<()> {
-        self.ensure_migrations_table()?;
+        run_embedded_migrations(&self.conn, &self.runtime, M::db_name(), M::migrations())
+    }
+}
 
-        for (id, sql) in M::migrations() {
-            if self.is_migration_applied(id)? {
-                continue;
-            }
-
-            self.apply_migration(id, sql)?;
+#[allow(dead_code)]
+impl<M: DbSpec> EncryptedTursoDb<M> {
+    /// Open or create the encrypted database at the spec-provided canonical
+    /// path.
+    ///
+    /// This constructor is the encrypted counterpart to [`TursoDb::new`] and
+    /// uses a strict encrypted local-builder path.
+    pub fn new() -> Result<Self> {
+        let db_name = M::db_name();
+        let db_path = M::db_path().with_context(|| format!("failed to resolve {db_name} path"))?;
+        let encryption_key = std::env::var(DB_ENCRYPTION_KEY_ENV).with_context(|| {
+            format!(
+                "missing or invalid {DB_ENCRYPTION_KEY_ENV} for {db_name}. Try: export {DB_ENCRYPTION_KEY_ENV} with a valid encryption key and rerun the command."
+            )
+        })?;
+        if encryption_key.trim().is_empty() {
+            anyhow::bail!(
+                "missing or invalid {DB_ENCRYPTION_KEY_ENV} for {db_name}. Try: export {DB_ENCRYPTION_KEY_ENV} with a non-empty 64-character hex key and rerun the command."
+            );
         }
 
-        Ok(())
-    }
+        ensure_db_parent_dir(db_name, &db_path)?;
 
-    fn ensure_migrations_table(&self) -> Result<()> {
-        self.runtime.block_on(async {
-            self.conn
-                .execute(MIGRATIONS_TABLE_SQL, ())
+        let runtime = build_current_thread_runtime(db_name)?;
+
+        let conn = runtime.block_on(async {
+            let path_str = db_path.to_str().ok_or_else(|| {
+                anyhow::anyhow!("invalid UTF-8 in database path: {}", db_path.display())
+            })?;
+
+            let encryption_opts = turso::EncryptionOpts {
+                hexkey: encryption_key,
+                cipher: ENCRYPTION_CIPHER_AEGIS256.to_string(),
+            };
+
+            let db = turso::Builder::new_local(path_str)
+                .experimental_encryption(true)
+                .with_encryption(encryption_opts)
+                .build()
                 .await
                 .map_err(|e| {
-                    anyhow::anyhow!("{} migration metadata setup failed: {e}", M::db_name())
-                })
+                    anyhow::anyhow!(
+                        "failed to open encrypted {db_name} database at {} with cipher {ENCRYPTION_CIPHER_AEGIS256}. Try: verify {DB_ENCRYPTION_KEY_ENV} is a valid key and that local Turso encryption support is available: {e}",
+                        db_path.display()
+                    )
+                })?;
+
+            db.connect().map_err(|e| {
+                anyhow::anyhow!("failed to connect to encrypted {db_name} database: {e}")
+            })
         })?;
 
-        Ok(())
+        let db = Self {
+            conn,
+            runtime,
+            spec: PhantomData,
+        };
+
+        db.run_migrations()
+            .with_context(|| format!("failed to run {db_name} migrations"))?;
+
+        Ok(db)
     }
 
-    fn is_migration_applied(&self, id: &str) -> Result<bool> {
+    /// Execute a SQL statement that does not return rows.
+    ///
+    /// # Arguments
+    /// * `sql` - SQL statement, which may contain `?` placeholders.
+    /// * `params` - Parameter values implementing `IntoParams`.
+    ///
+    /// # Returns
+    /// Number of rows affected.
+    pub fn execute(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<u64> {
         self.runtime.block_on(async {
-            let mut rows = self
-                .conn
-                .query(SELECT_MIGRATION_SQL, (id,))
+            self.conn
+                .execute(sql, params)
                 .await
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "{} migration metadata query failed for {id}: {e}",
-                        M::db_name()
-                    )
-                })?;
-
-            rows.next().await.map(|row| row.is_some()).map_err(|e| {
-                anyhow::anyhow!(
-                    "{} migration metadata row fetch failed for {id}: {e}",
-                    M::db_name()
-                )
-            })
+                .map_err(|e| anyhow::anyhow!("{} execute failed: {sql}: {e}", M::db_name()))
         })
     }
 
-    fn apply_migration(&self, id: &str, sql: &str) -> Result<()> {
+    /// Execute a SQL query that returns rows.
+    ///
+    /// # Arguments
+    /// * `sql` - SQL query, which may contain `?` placeholders.
+    /// * `params` - Parameter values implementing `IntoParams`.
+    ///
+    /// # Returns
+    /// A `turso::Rows` iterator over the result set.
+    pub fn query(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<turso::Rows> {
         self.runtime.block_on(async {
             self.conn
-                .execute(sql, ())
+                .query(sql, params)
                 .await
-                .map_err(|e| anyhow::anyhow!("{} migration {id} failed: {e}", M::db_name()))?;
-            self.conn
-                .execute(INSERT_MIGRATION_SQL, (id,))
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "{} migration metadata record failed for {id}: {e}",
-                        M::db_name()
-                    )
-                })?;
-
-            Ok(())
+                .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))
         })
+    }
+
+    /// Run all embedded migrations in order.
+    ///
+    /// Applied migration IDs are recorded in `__sce_migrations` so later
+    /// initializations apply only migrations that were not already recorded.
+    /// Existing databases without migration metadata are brought forward by
+    /// re-applying the current idempotent migration set and recording each ID.
+    pub fn run_migrations(&self) -> Result<()> {
+        run_embedded_migrations(&self.conn, &self.runtime, M::db_name(), M::migrations())
     }
 }
