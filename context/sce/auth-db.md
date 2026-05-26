@@ -1,6 +1,6 @@
 # Auth DB
 
-The encrypted auth DB foundation currently consists of a thin Rust wrapper plus path and migration assets. Runtime auth-token reads/writes still use the existing token-storage path.
+The encrypted auth DB foundation provides a thin Rust wrapper, path and migration assets, and is consumed by `cli/src/services/token_storage.rs` for runtime auth-token persistence.
 
 ## Implemented surface
 
@@ -18,7 +18,7 @@ The encrypted auth DB foundation currently consists of a thin Rust wrapper plus 
 
 `auth_credentials` is created idempotently with:
 
-- `id TEXT PRIMARY KEY NOT NULL`
+- `id INTEGER PRIMARY KEY NOT NULL`
 - `access_token TEXT NOT NULL`
 - `token_type TEXT NOT NULL`
 - `expires_in INTEGER NOT NULL`
@@ -42,8 +42,13 @@ Current migration baseline:
 - `LifecycleProviderId::AuthDb` is the provider identifier.
 - The lifecycle provider is registered in deterministic order: config → local_db → auth_db → agent_trace_db → hooks.
 
-## Not yet wired
+## Token storage integration
 
-- Existing auth command token storage still uses the current runtime path; auth reads/writes are not redirected to this DB.
+- `cli/src/services/token_storage.rs` now uses `AuthDb` for all persistence operations (`save_tokens`, `load_tokens`, `delete_tokens`) via a `OnceLock<Result<AuthDb, String>>` lazy singleton.
+- `token_file_path()` returns the auth DB path from `auth_db_path()` instead of a JSON file path.
+- `TokenStorageError` exposes `PathResolution` and `Database` variants; former `Io`, `Serialization`, `CorruptedTokenFile`, and `Permission` variants have been removed.
+- No JSON file I/O remains in `token_storage.rs`.
+- The `auth_credentials` row uses constant integer ID `1` for single-row token storage.
+- Encryption is required: `SCE_DB_ENCRYPTION_KEY` must be set; failures surface as `TokenStorageError::Database`.
 
-See also: [shared-turso-db.md](shared-turso-db.md), [../cli/default-path-catalog.md](../cli/default-path-catalog.md), [../context-map.md](../context-map.md)
+See also: [shared-turso-db.md](shared-turso-db.md), [../cli/default-path-catalog.md](../cli/default-path-catalog.md), [../context-map.md](../context-map.md), [../../context/plans/token-storage-db-migration.md](../../context/plans/token-storage-db-migration.md)

@@ -77,28 +77,13 @@ mod roots {
             self.roots.config_root().join("sce").join("config.json")
         }
 
-        pub(crate) fn auth_tokens_file(&self) -> PathBuf {
-            self.roots
-                .state_root()
-                .join("sce")
-                .join("auth")
-                .join("tokens.json")
-        }
-
         #[allow(dead_code)]
         pub(crate) fn persisted_artifact_locations(&self) -> Vec<super::PersistedArtifactLocation> {
-            vec![
-                super::PersistedArtifactLocation {
-                    id: super::PersistedArtifactId::GlobalConfig,
-                    root_kind: super::PersistedArtifactRootKind::Config,
-                    path: self.global_config_file(),
-                },
-                super::PersistedArtifactLocation {
-                    id: super::PersistedArtifactId::AuthTokens,
-                    root_kind: super::PersistedArtifactRootKind::State,
-                    path: self.auth_tokens_file(),
-                },
-            ]
+            vec![super::PersistedArtifactLocation {
+                id: super::PersistedArtifactId::GlobalConfig,
+                root_kind: super::PersistedArtifactRootKind::Config,
+                path: self.global_config_file(),
+            }]
         }
     }
 
@@ -320,7 +305,6 @@ pub(crate) enum PersistedArtifactRootKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PersistedArtifactId {
     GlobalConfig,
-    AuthTokens,
 }
 
 #[allow(dead_code)]
