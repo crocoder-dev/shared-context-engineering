@@ -22,8 +22,9 @@ const MIGRATIONS_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS __sce_migrations 
 )";
 const SELECT_MIGRATION_SQL: &str = "SELECT id FROM __sce_migrations WHERE id = ?1 LIMIT 1";
 const INSERT_MIGRATION_SQL: &str = "INSERT INTO __sce_migrations (id) VALUES (?1)";
-const DB_ENCRYPTION_KEY_ENV: &str = "SCE_DB_ENCRYPTION_KEY";
 const ENCRYPTION_CIPHER_AEGIS256: &str = "aegis256";
+
+pub mod encryption_key;
 
 /// Service-specific Turso database configuration.
 #[allow(dead_code)]
@@ -246,7 +247,6 @@ pub struct TursoDb<M: DbSpec> {
 ///
 /// Mirrors the structural seams of [`TursoDb`] while reserving encrypted local
 /// database initialization for services that require at-rest encryption.
-#[allow(dead_code)]
 pub struct EncryptedTursoDb<M: DbSpec> {
     conn: turso::Connection,
     runtime: tokio::runtime::Runtime,
@@ -374,7 +374,6 @@ impl<M: DbSpec> TursoDb<M> {
     }
 }
 
-#[allow(dead_code)]
 impl<M: DbSpec> EncryptedTursoDb<M> {
     /// Open or create the encrypted database at the spec-provided canonical
     /// path.
@@ -384,16 +383,7 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
     pub fn new() -> Result<Self> {
         let db_name = M::db_name();
         let db_path = M::db_path().with_context(|| format!("failed to resolve {db_name} path"))?;
-        let encryption_key = std::env::var(DB_ENCRYPTION_KEY_ENV).with_context(|| {
-            format!(
-                "missing or invalid {DB_ENCRYPTION_KEY_ENV} for {db_name}. Try: export {DB_ENCRYPTION_KEY_ENV} with a valid encryption key and rerun the command."
-            )
-        })?;
-        if encryption_key.trim().is_empty() {
-            anyhow::bail!(
-                "missing or invalid {DB_ENCRYPTION_KEY_ENV} for {db_name}. Try: export {DB_ENCRYPTION_KEY_ENV} with a non-empty 64-character hex key and rerun the command."
-            );
-        }
+        let encryption_key = encryption_key::get_or_create_encryption_key(&db_path, db_name)?;
 
         ensure_db_parent_dir(db_name, &db_path)?;
 
@@ -416,7 +406,7 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
                 .await
                 .map_err(|e| {
                     anyhow::anyhow!(
-                        "failed to open encrypted {db_name} database at {} with cipher {ENCRYPTION_CIPHER_AEGIS256}. Try: verify {DB_ENCRYPTION_KEY_ENV} is a valid key and that local Turso encryption support is available: {e}",
+                        "failed to open encrypted {db_name} database at {} with cipher {ENCRYPTION_CIPHER_AEGIS256}. Try: verify the credential store encryption key is valid and that local Turso encryption support is available: {e}",
                         db_path.display()
                     )
                 })?;
@@ -463,6 +453,7 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
     ///
     /// # Returns
     /// A `turso::Rows` iterator over the result set.
+    #[allow(dead_code)]
     pub fn query(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<turso::Rows> {
         self.runtime.block_on(async {
             self.conn

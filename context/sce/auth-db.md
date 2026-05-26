@@ -49,6 +49,6 @@ Current migration baseline:
 - `TokenStorageError` exposes `PathResolution` and `Database` variants; former `Io`, `Serialization`, `CorruptedTokenFile`, and `Permission` variants have been removed.
 - No JSON file I/O remains in `token_storage.rs`.
 - The `auth_credentials` row uses constant integer ID `1` for single-row token storage.
-- Encryption is required: `SCE_DB_ENCRYPTION_KEY` must be set; failures surface as `TokenStorageError::Database`.
+- Encryption is required: the encryption key is resolved from the OS credential store via `encryption_key::get_or_create_encryption_key()`; failures surface as `TokenStorageError::Database`.
 
 See also: [shared-turso-db.md](shared-turso-db.md), [../cli/default-path-catalog.md](../cli/default-path-catalog.md), [../context-map.md](../context-map.md), [../../context/plans/token-storage-db-migration.md](../../context/plans/token-storage-db-migration.md)

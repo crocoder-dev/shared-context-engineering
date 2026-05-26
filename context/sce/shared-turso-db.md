@@ -14,11 +14,24 @@
   - parent-directory creation
   - synchronous `execute()`, `query()`, and row-mapping `query_map()` wrappers
   - generic embedded migration execution through `run_migrations()` with per-database `__sce_migrations` metadata
-- `EncryptedTursoDb<M: DbSpec>`: encrypted-adapter seam parallel to `TursoDb<M>` with the same structural shape (connection, runtime bridge, and spec marker). `EncryptedTursoDb::new()` now resolves `SCE_DB_ENCRYPTION_KEY`, enforces non-empty key input, enables Turso experimental local encryption, applies strict `aegis256` cipher selection through `turso::EncryptionOpts` during local DB open/connect, and runs embedded migrations after connect.
-- `EncryptedTursoDb<M>` now also exposes synchronous `execute()` and `query()` wrappers plus generic `run_migrations()` with the same `__sce_migrations` metadata flow used by `TursoDb<M>`.
+- `EncryptedTursoDb<M: DbSpec>`: encrypted-adapter seam parallel to `TursoDb<M>` with the same structural shape (connection, runtime bridge, and spec marker). `EncryptedTursoDb::new()` resolves the encryption key from the OS credential store via `encryption_key::get_or_create_encryption_key()`, enables Turso experimental local encryption, applies strict `aegis256` cipher selection through `turso::EncryptionOpts` during local DB open/connect, and runs embedded migrations after connect.
+- `EncryptedTursoDb<M>` also exposes synchronous `execute()`, `query()`, and `query_map()` wrappers plus generic `run_migrations()` with the same `__sce_migrations` metadata flow used by `TursoDb<M>`.
 - Shared lifecycle helpers:
   - `collect_db_path_health()` emits common parent/path health problems for DB-backed services.
   - `bootstrap_db_parent()` creates the resolved DB parent directory for repair/setup flows.
+
+## Encryption key management
+
+`cli/src/services/db/encryption_key.rs` provides OS-credential-store-backed encryption key
+get-or-create logic using `keyring-core` v1. Exposes
+`get_or_create_encryption_key(db_path: &Path, db_name: &str) -> Result<String>`.
+This module is consumed by `EncryptedTursoDb::new()` to replace the previous
+`SCE_DB_ENCRYPTION_KEY` environment variable approach. On first use for a given
+database (file does not exist), a 32-byte random key is generated, hex-encoded to
+64 characters, and persisted in the platform credential store (macOS Keychain,
+Linux keyutils, Windows Credential Store). On subsequent use, the key is read
+from the credential store. If the DB file exists but the key is missing (e.g.
+Linux keyutils expiry), a clear remediation error is returned.
 
 ## Current integration state
 

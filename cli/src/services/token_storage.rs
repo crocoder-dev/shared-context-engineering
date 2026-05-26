@@ -64,7 +64,7 @@ impl fmt::Display for TokenStorageError {
             ),
             Self::Database(reason) => write!(
                 f,
-                "Token storage database error: {reason}. Try: ensure SCE_DB_ENCRYPTION_KEY is set and the auth database is accessible."
+                "Token storage database error: {reason}. Try: ensure the OS credential store is available and the auth database is accessible."
             ),
         }
     }

@@ -36,7 +36,9 @@ dirs = "6"
 hmac = "0.13"
 inquire = "0.9"
 jsonschema = "0.46"
+keyring-core = "1"
 owo-colors = { version = "4", features = ["supports-colors"] }
+rand = { version = "0.8", default-features = false, features = ["std", "std_rng"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "form", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -46,6 +48,15 @@ tracing = "0.1"
 
 uuid = { version = "1", features = ["v4", "v7"] }
 murmur3 = "0.5.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+linux-keyutils-keyring-store = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = "1"
 
 [build-dependencies]
 sha2 = "0.11"
