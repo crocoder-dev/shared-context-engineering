@@ -1,13 +1,29 @@
 use std::fmt;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use crate::services::auth::TokenResponse;
-use crate::services::default_paths::resolve_sce_default_locations;
+use crate::services::auth_db::AuthDb;
+use crate::services::default_paths::auth_db_path;
+
+/// Constant row ID for the single token row in `auth_credentials`.
+const DEFAULT_TOKEN_ROW_ID: i64 = 1;
+
+/// Lazy singleton for the encrypted auth database.
+///
+/// Stores `Result` so initialization failures are preserved across calls.
+static AUTH_DB: OnceLock<Result<AuthDb, String>> = OnceLock::new();
+
+fn get_auth_db() -> Result<&'static AuthDb, TokenStorageError> {
+    let result = AUTH_DB.get_or_init(|| AuthDb::new().map_err(|e| e.to_string()));
+    match result {
+        Ok(db) => Ok(db),
+        Err(msg) => Err(TokenStorageError::Database(msg.clone())),
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StoredTokens {
@@ -36,11 +52,7 @@ impl StoredTokens {
 #[derive(Debug)]
 pub enum TokenStorageError {
     PathResolution(String),
-    Io(std::io::Error),
-    Serialization(serde_json::Error),
-    CorruptedTokenFile(String),
-    #[allow(dead_code)]
-    Permission(String),
+    Database(String),
 }
 
 impl fmt::Display for TokenStorageError {
@@ -50,21 +62,9 @@ impl fmt::Display for TokenStorageError {
                 f,
                 "Unable to resolve token storage path: {reason}. Try: set a valid user home/state directory and retry."
             ),
-            Self::Io(error) => write!(
+            Self::Database(reason) => write!(
                 f,
-                "Failed to read or write authentication tokens: {error}. Try: verify file permissions for the auth state directory."
-            ),
-            Self::Serialization(error) => write!(
-                f,
-                "Failed to serialize authentication tokens: {error}. Try: rerun login to regenerate credentials."
-            ),
-            Self::CorruptedTokenFile(reason) => write!(
-                f,
-                "Stored authentication tokens are invalid: {reason}. Try: run 'sce logout' and then 'sce login'."
-            ),
-            Self::Permission(reason) => write!(
-                f,
-                "Unable to apply secure token file permissions: {reason}. Try: verify local account permissions and retry."
+                "Token storage database error: {reason}. Try: ensure SCE_DB_ENCRYPTION_KEY is set and the auth database is accessible."
             ),
         }
     }
@@ -72,93 +72,85 @@ impl fmt::Display for TokenStorageError {
 
 impl std::error::Error for TokenStorageError {}
 
-impl From<std::io::Error> for TokenStorageError {
-    fn from(value: std::io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-impl From<serde_json::Error> for TokenStorageError {
-    fn from(value: serde_json::Error) -> Self {
-        Self::Serialization(value)
-    }
-}
-
 pub fn save_tokens(token: &TokenResponse) -> Result<StoredTokens, TokenStorageError> {
-    let token_path = token_file_path()?;
+    let db = get_auth_db()?;
     let stored = StoredTokens::from_token_response(token)?;
-    save_tokens_at_path(&token_path, &stored)?;
+
+    #[allow(clippy::cast_possible_wrap)]
+    let expires_in: i64 = stored.expires_in as i64;
+    #[allow(clippy::cast_possible_wrap)]
+    let stored_at_unix_seconds: i64 = stored.stored_at_unix_seconds as i64;
+
+    let sql = "INSERT OR REPLACE INTO auth_credentials \
+        (id, access_token, token_type, expires_in, refresh_token, scope, stored_at_unix_seconds) \
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
+
+    db.execute(
+        sql,
+        (
+            DEFAULT_TOKEN_ROW_ID,
+            stored.access_token.as_str(),
+            stored.token_type.as_str(),
+            expires_in,
+            stored.refresh_token.as_str(),
+            stored.scope.as_deref(),
+            stored_at_unix_seconds,
+        ),
+    )
+    .map_err(|e| TokenStorageError::Database(e.to_string()))?;
+
     Ok(stored)
 }
 
 pub fn load_tokens() -> Result<Option<StoredTokens>, TokenStorageError> {
-    let token_path = token_file_path()?;
-    load_tokens_from_path(&token_path)
+    let db = get_auth_db()?;
+
+    let sql = "SELECT access_token, token_type, expires_in, refresh_token, scope, \
+        stored_at_unix_seconds FROM auth_credentials WHERE id = ?1";
+
+    let rows: Vec<StoredTokens> = db
+        .query_map(sql, (DEFAULT_TOKEN_ROW_ID,), |row| {
+            let access_token: String = row.get(0)?;
+            let token_type: String = row.get(1)?;
+            let expires_in: i64 = row.get(2)?;
+            let refresh_token: String = row.get(3)?;
+            let scope: Option<String> = row.get(4)?;
+            let stored_at_unix_seconds: i64 = row.get(5)?;
+
+            #[allow(clippy::cast_sign_loss)]
+            let expires_in: u64 = expires_in as u64;
+            #[allow(clippy::cast_sign_loss)]
+            let stored_at_unix_seconds: u64 = stored_at_unix_seconds as u64;
+
+            Ok(StoredTokens {
+                access_token,
+                token_type,
+                expires_in,
+                refresh_token,
+                scope,
+                stored_at_unix_seconds,
+            })
+        })
+        .map_err(|e| TokenStorageError::Database(e.to_string()))?;
+
+    Ok(rows.into_iter().next())
 }
 
 pub fn delete_tokens() -> Result<bool, TokenStorageError> {
-    let token_path = token_file_path()?;
-    delete_tokens_at_path(&token_path)
+    let db = get_auth_db()?;
+
+    let affected = db
+        .execute(
+            "DELETE FROM auth_credentials WHERE id = ?1",
+            (DEFAULT_TOKEN_ROW_ID,),
+        )
+        .map_err(|e| TokenStorageError::Database(e.to_string()))?;
+
+    Ok(affected > 0)
 }
 
 pub fn token_file_path() -> Result<PathBuf, TokenStorageError> {
-    resolve_sce_default_locations()
-        .map(|locations| locations.auth_tokens_file())
-        .map_err(|error| TokenStorageError::PathResolution(error.to_string()))
-}
-
-fn save_tokens_at_path(path: &Path, stored: &StoredTokens) -> Result<(), TokenStorageError> {
-    ensure_parent_directory(path)?;
-
-    let mut file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(path)?;
-
-    apply_secure_file_permissions(path)?;
-
-    let encoded = serde_json::to_vec_pretty(stored)?;
-    file.write_all(&encoded)?;
-    file.write_all(b"\n")?;
-    file.sync_all()?;
-
-    Ok(())
-}
-
-fn load_tokens_from_path(path: &Path) -> Result<Option<StoredTokens>, TokenStorageError> {
-    let content = match fs::read_to_string(path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(TokenStorageError::Io(error)),
-    };
-
-    let parsed: StoredTokens = serde_json::from_str(&content).map_err(|error| {
-        TokenStorageError::CorruptedTokenFile(format!("{} ({error})", path.display()))
-    })?;
-
-    Ok(Some(parsed))
-}
-
-fn delete_tokens_at_path(path: &Path) -> Result<bool, TokenStorageError> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(TokenStorageError::Io(error)),
-    }
-}
-
-fn ensure_parent_directory(path: &Path) -> Result<(), TokenStorageError> {
-    let Some(parent) = path.parent() else {
-        return Err(TokenStorageError::PathResolution(format!(
-            "token path '{}' has no parent directory",
-            path.display()
-        )));
-    };
-
-    fs::create_dir_all(parent)?;
-    apply_secure_directory_permissions(parent)?;
-    Ok(())
+    auth_db_path().map_err(|error| TokenStorageError::PathResolution(error.to_string()))
 }
 
 fn current_unix_timestamp_seconds() -> Result<u64, TokenStorageError> {
@@ -168,62 +160,4 @@ fn current_unix_timestamp_seconds() -> Result<u64, TokenStorageError> {
             TokenStorageError::PathResolution(format!("system clock is invalid: {error}"))
         })?
         .as_secs())
-}
-
-#[cfg(unix)]
-fn apply_secure_directory_permissions(path: &Path) -> Result<(), TokenStorageError> {
-    use std::os::unix::fs::PermissionsExt;
-
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn apply_secure_directory_permissions(_path: &Path) -> Result<(), TokenStorageError> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn apply_secure_file_permissions(path: &Path) -> Result<(), TokenStorageError> {
-    use std::os::unix::fs::PermissionsExt;
-
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    Ok(())
-}
-
-#[cfg(windows)]
-fn apply_secure_file_permissions(path: &Path) -> Result<(), TokenStorageError> {
-    use std::process::Command;
-
-    let username = std::env::var("USERNAME").map_err(|_| {
-        TokenStorageError::Permission(
-            "USERNAME environment variable is unavailable on Windows".to_string(),
-        )
-    })?;
-
-    let grant_rule = format!("{username}:(R,W)");
-    let output = Command::new("icacls")
-        .arg(path)
-        .arg("/inheritance:r")
-        .arg("/grant:r")
-        .arg(grant_rule)
-        .output()
-        .map_err(|error| {
-            TokenStorageError::Permission(format!("failed to execute icacls: {error}"))
-        })?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(TokenStorageError::Permission(format!(
-            "icacls failed for '{}': {stderr}",
-            path.display()
-        )))
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-fn apply_secure_file_permissions(_path: &Path) -> Result<(), TokenStorageError> {
-    Ok(())
 }

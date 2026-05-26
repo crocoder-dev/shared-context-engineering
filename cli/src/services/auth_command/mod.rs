@@ -1,8 +1,8 @@
 pub mod command;
 
+use std::io::Write;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{io::Write, path::Path};
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::json;
@@ -82,19 +82,7 @@ pub fn run_login(format: AuthFormat) -> Result<String> {
 
     match format {
         AuthFormat::Text => run_text_login_with_runtime(runtime, &client, &client_id),
-        AuthFormat::Json => run_login_with(
-            format,
-            || Ok(client_id),
-            |client_id| {
-                runtime
-                    .block_on(auth::start_device_auth_flow(
-                        &client,
-                        auth::WORKOS_DEFAULT_BASE_URL,
-                        client_id,
-                    ))
-                    .map_err(|e| map_login_error(&e))
-            },
-        ),
+        AuthFormat::Json => run_login_json(runtime, &client, &client_id, format),
     }
 }
 
@@ -120,22 +108,26 @@ pub fn run_renew(format: AuthFormat, force: bool) -> Result<String> {
     };
 
     let was_expired = auth::is_stored_token_expired(&stored_tokens)?;
-    let updated = if force {
-        runtime
-            .block_on(auth::renew_stored_token(
+    let updated: StoredTokens = if force {
+        let token = runtime
+            .block_on(auth::renew_stored_token_from_refresh_token(
                 &client,
                 auth::WORKOS_DEFAULT_BASE_URL,
                 &client_id,
+                &stored_tokens.refresh_token,
             ))
-            .map_err(|e| map_login_error(&e))?
+            .map_err(|e| map_login_error(&e))?;
+        token_storage::save_tokens(&token)?
     } else {
-        runtime
-            .block_on(auth::ensure_valid_token(
+        let token = runtime
+            .block_on(auth::ensure_valid_token_returning_token(
                 &client,
                 auth::WORKOS_DEFAULT_BASE_URL,
                 &client_id,
+                &stored_tokens,
             ))
-            .map_err(|e| map_login_error(&e))?
+            .map_err(|e| map_login_error(&e))?;
+        token_storage::save_tokens(&token)?
     };
 
     render_renew_result(&updated, force || was_expired, format)
@@ -178,16 +170,6 @@ fn shared_runtime() -> Result<&'static tokio::runtime::Runtime> {
     Ok(AUTH_RUNTIME.get_or_init(|| runtime))
 }
 
-fn run_login_with<R, S>(format: AuthFormat, resolve_client_id: R, start_flow: S) -> Result<String>
-where
-    R: FnOnce() -> Result<String>,
-    S: FnOnce(&str) -> Result<DeviceAuthFlowResult>,
-{
-    let client_id = resolve_client_id()?;
-    let result = start_flow(&client_id)?;
-    render_login_result(&result, format)
-}
-
 fn maybe_renew_expired_credentials(
     runtime: &tokio::runtime::Runtime,
     client: &reqwest::Client,
@@ -201,12 +183,13 @@ fn maybe_renew_expired_credentials(
         return Ok(None);
     }
 
-    match runtime.block_on(auth::ensure_valid_token(
+    match runtime.block_on(auth::ensure_valid_token_returning_token(
         client,
         auth::WORKOS_DEFAULT_BASE_URL,
         client_id,
+        &stored_tokens,
     )) {
-        Ok(updated) => Ok(Some(updated)),
+        Ok(token) => Ok(Some(token_storage::save_tokens(&token)?)),
         Err(_) => Ok(None),
     }
 }
@@ -220,12 +203,13 @@ fn maybe_refresh_tokens_for_status(stored_tokens: &StoredTokens) -> Result<Optio
     let runtime = shared_runtime()?;
     let client = reqwest::Client::new();
 
-    match runtime.block_on(auth::ensure_valid_token(
+    match runtime.block_on(auth::ensure_valid_token_returning_token(
         &client,
         auth::WORKOS_DEFAULT_BASE_URL,
         &client_id,
+        stored_tokens,
     )) {
-        Ok(updated) => Ok(Some(updated)),
+        Ok(token) => Ok(Some(token_storage::save_tokens(&token)?)),
         Err(_) => Ok(None),
     }
 }
@@ -245,8 +229,8 @@ fn run_text_login_with_runtime(
 
     write_login_prompt(&authorization)?;
 
-    let stored_tokens = runtime
-        .block_on(auth::complete_device_auth_flow(
+    let token = runtime
+        .block_on(auth::complete_device_auth_flow_returning_token(
             client,
             auth::WORKOS_DEFAULT_BASE_URL,
             client_id,
@@ -254,12 +238,48 @@ fn run_text_login_with_runtime(
         ))
         .map_err(|e| map_login_error(&e))?;
 
+    let stored_tokens = token_storage::save_tokens(&token)?;
+
     render_login_result(
         &DeviceAuthFlowResult {
             authorization,
             stored_tokens,
         },
         AuthFormat::Text,
+    )
+}
+
+fn run_login_json(
+    runtime: &tokio::runtime::Runtime,
+    client: &reqwest::Client,
+    client_id: &str,
+    format: AuthFormat,
+) -> Result<String> {
+    let authorization = runtime
+        .block_on(auth::request_device_authorization(
+            client,
+            auth::WORKOS_DEFAULT_BASE_URL,
+            client_id,
+        ))
+        .map_err(|e| map_login_error(&e))?;
+
+    let token = runtime
+        .block_on(auth::complete_device_auth_flow_returning_token(
+            client,
+            auth::WORKOS_DEFAULT_BASE_URL,
+            client_id,
+            &authorization,
+        ))
+        .map_err(|e| map_login_error(&e))?;
+
+    let stored_tokens = token_storage::save_tokens(&token)?;
+
+    render_login_result(
+        &DeviceAuthFlowResult {
+            authorization,
+            stored_tokens,
+        },
+        format,
     )
 }
 
@@ -271,31 +291,6 @@ fn resolve_login_client_id() -> Result<String> {
         .workos_client_id
         .value
         .unwrap_or_default())
-}
-
-#[allow(dead_code)]
-fn resolve_login_client_id_with<FEnv, FRead, FGlobalPath>(
-    cwd: &Path,
-    env_lookup: FEnv,
-    read_file: FRead,
-    path_exists: fn(&Path) -> bool,
-    resolve_global_config_path: FGlobalPath,
-) -> Result<String>
-where
-    FEnv: Fn(&str) -> Option<String>,
-    FRead: Fn(&Path) -> Result<String>,
-    FGlobalPath: Fn() -> Result<std::path::PathBuf>,
-{
-    Ok(config::resolve_auth_runtime_config_with(
-        cwd,
-        env_lookup,
-        read_file,
-        path_exists,
-        resolve_global_config_path,
-    )?
-    .workos_client_id
-    .value
-    .unwrap_or_default())
 }
 
 fn write_login_prompt(authorization: &auth::DeviceAuthorizationResponse) -> Result<()> {

@@ -1,5 +1,5 @@
 CREATE TABLE IF NOT EXISTS auth_credentials (
-    id TEXT PRIMARY KEY NOT NULL,
+    id INTEGER PRIMARY KEY NOT NULL,
     access_token TEXT NOT NULL,
     token_type TEXT NOT NULL,
     expires_in INTEGER NOT NULL,

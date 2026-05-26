@@ -5,22 +5,16 @@ use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 
 use crate::services::resilience::{run_with_retry, RetryPolicy};
-use crate::services::token_storage::{load_tokens, save_tokens, StoredTokens, TokenStorageError};
+use crate::services::token_storage::{StoredTokens, TokenStorageError};
 
 pub const DEVICE_CODE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
-#[allow(dead_code)]
 pub const REFRESH_TOKEN_GRANT_TYPE: &str = "refresh_token";
 pub const WORKOS_DEFAULT_BASE_URL: &str = "https://api.workos.com";
 pub const DEFAULT_DEVICE_POLL_INTERVAL_SECONDS: u64 = 5;
-#[allow(dead_code)]
 const TOKEN_EXPIRY_SKEW_SECONDS: u64 = 30;
-#[allow(dead_code)]
 const TOKEN_REFRESH_MAX_ATTEMPTS: u32 = 3;
-#[allow(dead_code)]
 const TOKEN_REFRESH_TIMEOUT_MS: u64 = 10_000;
-#[allow(dead_code)]
 const TOKEN_REFRESH_INITIAL_BACKOFF_MS: u64 = 250;
-#[allow(dead_code)]
 const TOKEN_REFRESH_MAX_BACKOFF_MS: u64 = 2_000;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -46,7 +40,6 @@ pub struct DeviceTokenPollRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct RefreshTokenRequest {
     pub grant_type: String,
     pub refresh_token: String,
@@ -147,88 +140,74 @@ impl From<TokenStorageError> for AuthError {
     }
 }
 
-pub async fn start_device_auth_flow(
-    client: &reqwest::Client,
-    api_base_url: &str,
-    client_id: &str,
-) -> Result<DeviceAuthFlowResult, AuthError> {
-    if client_id.trim().is_empty() {
-        return Err(AuthError::MissingClientId);
-    }
-
-    let authorization = request_device_authorization(client, api_base_url, client_id).await?;
-    let stored_tokens =
-        complete_device_auth_flow(client, api_base_url, client_id, &authorization).await?;
-
-    Ok(DeviceAuthFlowResult {
-        authorization,
-        stored_tokens,
-    })
-}
-
-pub async fn complete_device_auth_flow(
+/// HTTP-only device auth completion: polls for the device token and returns
+/// the raw `TokenResponse` without calling `save_tokens`.
+pub(crate) async fn complete_device_auth_flow_returning_token(
     client: &reqwest::Client,
     api_base_url: &str,
     client_id: &str,
     authorization: &DeviceAuthorizationResponse,
-) -> Result<StoredTokens, AuthError> {
+) -> Result<TokenResponse, AuthError> {
     if client_id.trim().is_empty() {
         return Err(AuthError::MissingClientId);
     }
 
     let token = poll_for_device_token(client, api_base_url, client_id, authorization).await?;
-    let stored_tokens = save_tokens(&token)?;
-    Ok(stored_tokens)
+    Ok(token)
 }
 
-#[allow(dead_code)]
-pub async fn ensure_valid_token(
+/// HTTP-only token validation: checks an existing stored token for expiry and
+/// refreshes if needed. Does NOT call any `token_storage` functions.
+/// Returns the raw `TokenResponse` (re-using the stored token if not expired).
+pub(crate) async fn ensure_valid_token_returning_token(
     client: &reqwest::Client,
     api_base_url: &str,
     client_id: &str,
-) -> Result<StoredTokens, AuthError> {
+    stored: &StoredTokens,
+) -> Result<TokenResponse, AuthError> {
     if client_id.trim().is_empty() {
         return Err(AuthError::MissingClientId);
     }
-
-    let Some(stored) = load_tokens()? else {
-        return Err(AuthError::Unauthorized(
-            String::from("No stored WorkOS credentials were found. Try: run 'sce login' before running authenticated commands."),
-        ));
-    };
 
     let now_unix_seconds = current_unix_timestamp_seconds()?;
-    if !is_token_expired(&stored, now_unix_seconds) {
-        return Ok(stored);
+    if !is_token_expired(stored, now_unix_seconds) {
+        return Ok(TokenResponse {
+            access_token: stored.access_token.clone(),
+            token_type: stored.token_type.clone(),
+            expires_in: stored.expires_in,
+            refresh_token: stored.refresh_token.clone(),
+            scope: stored.scope.clone(),
+        });
     }
 
-    let refreshed = refresh_access_token(client, api_base_url, client_id, &stored.refresh_token)
+    refresh_access_token(client, api_base_url, client_id, &stored.refresh_token)
         .await
-        .map_err(map_refresh_failure_for_public_cli)?;
-    let updated = save_tokens(&refreshed)?;
-    Ok(updated)
+        .map_err(map_refresh_failure_for_public_cli)
 }
 
-pub async fn renew_stored_token(
+/// HTTP-only token renewal: accepts a refresh token directly and calls the
+/// private `refresh_access_token`. Does NOT call any `token_storage` functions.
+/// Returns the raw `TokenResponse`.
+pub(crate) async fn renew_stored_token_from_refresh_token(
     client: &reqwest::Client,
     api_base_url: &str,
     client_id: &str,
-) -> Result<StoredTokens, AuthError> {
+    refresh_token: &str,
+) -> Result<TokenResponse, AuthError> {
     if client_id.trim().is_empty() {
         return Err(AuthError::MissingClientId);
     }
 
-    let Some(stored) = load_tokens()? else {
+    if refresh_token.trim().is_empty() {
         return Err(AuthError::Unauthorized(
-            String::from("No stored WorkOS credentials were found. Try: run 'sce auth login' before running authenticated commands."),
+            "Stored WorkOS refresh token is missing. Try: run 'sce auth login' to authenticate again."
+                .to_string(),
         ));
-    };
+    }
 
-    let refreshed = refresh_access_token(client, api_base_url, client_id, &stored.refresh_token)
+    refresh_access_token(client, api_base_url, client_id, refresh_token)
         .await
-        .map_err(map_refresh_failure_for_public_cli)?;
-    let updated = save_tokens(&refreshed)?;
-    Ok(updated)
+        .map_err(map_refresh_failure_for_public_cli)
 }
 
 pub fn is_stored_token_expired(stored: &StoredTokens) -> Result<bool, AuthError> {
@@ -271,7 +250,7 @@ pub async fn request_device_authorization(
     ))
 }
 
-async fn poll_for_device_token(
+pub(crate) async fn poll_for_device_token(
     client: &reqwest::Client,
     api_base_url: &str,
     client_id: &str,
@@ -339,7 +318,6 @@ fn poll_decision_for_error_code(code: &str) -> PollDecision {
     }
 }
 
-#[allow(dead_code)]
 fn is_token_expired(stored: &StoredTokens, now_unix_seconds: u64) -> bool {
     let lifetime_seconds = stored.expires_in.saturating_sub(TOKEN_EXPIRY_SKEW_SECONDS);
     let expires_at = stored
@@ -348,7 +326,6 @@ fn is_token_expired(stored: &StoredTokens, now_unix_seconds: u64) -> bool {
     now_unix_seconds >= expires_at
 }
 
-#[allow(dead_code)]
 fn current_unix_timestamp_seconds() -> Result<u64, AuthError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -360,7 +337,6 @@ fn current_unix_timestamp_seconds() -> Result<u64, AuthError> {
         })
 }
 
-#[allow(dead_code)]
 async fn refresh_access_token(
     client: &reqwest::Client,
     api_base_url: &str,
@@ -426,7 +402,6 @@ async fn refresh_access_token(
     ))
 }
 
-#[allow(dead_code)]
 fn map_refresh_terminal_error(code: &str, description: Option<&str>) -> AuthError {
     let detail = description
         .map(str::trim)
