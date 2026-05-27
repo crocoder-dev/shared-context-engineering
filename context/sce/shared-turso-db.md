@@ -29,9 +29,10 @@ This module is consumed by `EncryptedTursoDb::new()` to replace the previous
 `SCE_DB_ENCRYPTION_KEY` environment variable approach. On first use for a given
 database (file does not exist), a 32-byte random key is generated, hex-encoded to
 64 characters, and persisted in the platform credential store (macOS Keychain,
-Linux keyutils, Windows Credential Store). On subsequent use, the key is read
-from the credential store. If the DB file exists but the key is missing (e.g.
-Linux keyutils expiry), a clear remediation error is returned.
+Linux Secret Service via zbus, Windows Credential Store). On subsequent use,
+the key is read from the credential store. If the DB file exists but the key
+is missing (for example, keyring entry removed), a clear remediation error is
+returned.
 
 ## Current integration state
 

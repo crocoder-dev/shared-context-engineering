@@ -2,7 +2,7 @@
 //!
 //! Provides a single entry point to get-or-create a 64-character hex
 //! encryption key stored in the platform-native credential store
-//! (macOS Keychain, Linux keyutils, Windows Credential Store).
+//! (macOS Keychain, Linux Secret Service via zbus, Windows Credential Store).
 //!
 //! On first use for a given database name (when the database file does
 //! not yet exist), a random 32-byte key is generated, hex-encoded,
@@ -32,8 +32,8 @@ fn ensure_default_store() -> Result<()> {
         #[cfg(target_os = "linux")]
         {
             keyring_core::set_default_store(
-                linux_keyutils_keyring_store::Store::new()
-                    .context("failed to create Linux keyutils keyring store")?,
+                zbus_secret_service_keyring_store::Store::new()
+                    .context("failed to create Linux Secret Service (zbus) keyring store")?,
             );
         }
         #[cfg(target_os = "macos")]
@@ -83,8 +83,8 @@ fn ensure_default_store() -> Result<()> {
 /// # Errors
 /// - Returns an error if the credential store cannot be initialised on
 ///   the current platform.
-/// - Returns an error if the database file exists but the keyring entry
-///   is missing (e.g. keyring was cleared or has expired on Linux).
+    /// - Returns an error if the database file exists but the keyring entry
+    ///   is missing (e.g. keyring was cleared on Linux).
 /// - Returns an error if key generation or credential store I/O fails.
 pub fn get_or_create_encryption_key(db_path: &Path, db_name: &str) -> Result<String> {
     ensure_default_store()?;
@@ -118,13 +118,14 @@ pub fn get_or_create_encryption_key(db_path: &Path, db_name: &str) -> Result<Str
     }
 
     // The database file exists but the keyring entry is missing.
-    // This can happen on Linux when the persistent keyring expires
-    // (kernel keyutils is in-memory). Provide clear remediation.
+    // This can happen when credentials were removed from the OS keyring.
+    // Provide clear remediation.
     anyhow::bail!(
         "encryption key for '{db_name}' not found in credential store.\n\
          The database file exists at '{}' but no matching credential was found \
          for service 'sce' / user '{db_name}'.\n\
-         On Linux, this can happen when the kernel keyring session expires. \
+         On Linux, this can happen when the Secret Service keyring was cleared \
+         or unavailable when the key was first stored. \
          Try: ensure the OS credential store is available.\n\
          If the database file is also stale or you no longer need its data, \
          delete it and the key will be regenerated automatically on next use.",

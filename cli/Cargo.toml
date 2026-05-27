@@ -49,8 +49,8 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v4", "v7"] }
 murmur3 = "0.5.2"
 
-[target.'cfg(target_os = "linux")'.dependencies]
-linux-keyutils-keyring-store = "1"
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+zbus-secret-service-keyring-store = { version = "1.0.0", features = ["rt-tokio-crypto-rust"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1", features = ["keychain"] }
