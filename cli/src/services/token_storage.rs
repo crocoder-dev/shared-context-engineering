@@ -76,10 +76,16 @@ pub fn save_tokens(token: &TokenResponse) -> Result<StoredTokens, TokenStorageEr
     let db = get_auth_db()?;
     let stored = StoredTokens::from_token_response(token)?;
 
-    #[allow(clippy::cast_possible_wrap)]
-    let expires_in: i64 = stored.expires_in as i64;
-    #[allow(clippy::cast_possible_wrap)]
-    let stored_at_unix_seconds: i64 = stored.stored_at_unix_seconds as i64;
+    let expires_in = i64::try_from(stored.expires_in).map_err(|error| {
+        TokenStorageError::Database(format!(
+            "expires_in value is out of range for database storage: {error}"
+        ))
+    })?;
+    let stored_at_unix_seconds = i64::try_from(stored.stored_at_unix_seconds).map_err(|error| {
+        TokenStorageError::Database(format!(
+            "stored_at_unix_seconds value is out of range for database storage: {error}"
+        ))
+    })?;
 
     let sql = "INSERT OR REPLACE INTO auth_credentials \
         (id, access_token, token_type, expires_in, refresh_token, scope, stored_at_unix_seconds) \
@@ -117,10 +123,15 @@ pub fn load_tokens() -> Result<Option<StoredTokens>, TokenStorageError> {
             let scope: Option<String> = row.get(4)?;
             let stored_at_unix_seconds: i64 = row.get(5)?;
 
-            #[allow(clippy::cast_sign_loss)]
-            let expires_in: u64 = expires_in as u64;
-            #[allow(clippy::cast_sign_loss)]
-            let stored_at_unix_seconds: u64 = stored_at_unix_seconds as u64;
+            let expires_in = u64::try_from(expires_in).map_err(|error| {
+                anyhow::anyhow!("expires_in must be a non-negative integer: {error}")
+            })?;
+            let stored_at_unix_seconds =
+                u64::try_from(stored_at_unix_seconds).map_err(|error| {
+                    anyhow::anyhow!(
+                        "stored_at_unix_seconds must be a non-negative integer: {error}"
+                    )
+                })?;
 
             Ok(StoredTokens {
                 access_token,
