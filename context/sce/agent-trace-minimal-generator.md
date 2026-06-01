@@ -21,8 +21,9 @@ Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical 
 | ----------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `HunkContributor`       | Enum: `Ai`, `Mixed`, `Unknown`                                                                               |
 | `Contributor`           | Nested per-conversation object carrying `type: HunkContributor` and optional `model_id` omitted when absent  |
+| `ConversationRelated`   | Schema-aligned related-link entry shape (`type` as free-form string + `url`) for optional `conversation.related` |
 | `LineRange`             | New-file line span with `start_line` + `end_line` + `content_hash`                                           |
-| `Conversation`          | Per-hunk entry: nested contributor + `ranges` (currently exactly one range derived from `post_commit_patch`) |
+| `Conversation`          | Per-hunk entry: nested contributor + `ranges` (currently exactly one range derived from `post_commit_patch`) + optional `related` omitted when `None` |
 | `TraceFile`             | Per-file entry: path + conversations                                                                         |
 | `AgentTraceVcs`         | Optional top-level VCS metadata object carrying `type` + `revision` when present                             |
 | `AgentTraceTool`        | Optional top-level tool metadata object carrying optional `name` + optional `version`                        |
@@ -30,7 +31,7 @@ Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical 
 | `AgentTraceSceMetadata` | Nested `metadata.sce` object carrying the compiled SCE CLI package `version`                                 |
 | `AgentTrace`            | Top-level payload: `version`, `id`, `timestamp`, optional `vcs`, optional `tool`, `metadata`, `files`        |
 
-All types are `serde`-serializable with `snake_case` field naming. `Conversation.contributor` serializes as a nested object with a JSON field named `type`; `model_id` is present only when a concrete value exists.
+All types are `serde`-serializable with `snake_case` field naming. `Conversation.contributor` serializes as a nested object with a JSON field named `type`; `model_id` is present only when a concrete value exists. `Conversation.related` is optional and omitted when `None` (`skip_serializing_if = "Option::is_none"`). `ConversationRelated` remains schema-aligned domain-model support and is not yet populated by runtime builder logic.
 
 ## Payload shape
 

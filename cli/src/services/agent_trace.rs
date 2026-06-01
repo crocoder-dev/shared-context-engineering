@@ -218,6 +218,21 @@ pub struct Conversation {
     pub contributor: Contributor,
     /// Line ranges in the new file, derived from the `post_commit_patch` hunk metadata.
     pub ranges: Vec<LineRange>,
+    /// Optional related resources for this conversation entry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub related: Option<Vec<ConversationRelated>>,
+}
+
+/// A related resource for a conversation entry.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub struct ConversationRelated {
+    /// Free-form related resource type.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// Related resource URL.
+    pub url: String,
 }
 
 /// Nested contributor object for a conversation entry.
@@ -427,6 +442,7 @@ fn build_trace_file(
                     model_id: contributor_model_id,
                 },
                 ranges: vec![line_range_from_hunk(post_commit_file, post_commit_hunk)],
+                related: None,
             }
         })
         .collect();
