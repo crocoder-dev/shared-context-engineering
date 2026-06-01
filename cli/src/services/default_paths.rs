@@ -337,6 +337,7 @@ pub(crate) mod hook_dir {
     pub const PRE_COMMIT: &str = "pre-commit";
     pub const COMMIT_MSG: &str = "commit-msg";
     pub const POST_COMMIT: &str = "post-commit";
+    pub const POST_REWRITE: &str = "post-rewrite";
 }
 
 #[allow(dead_code)]

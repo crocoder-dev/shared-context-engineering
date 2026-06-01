@@ -36,6 +36,7 @@ pub enum RequiredHookAsset {
     PreCommit,
     CommitMsg,
     PostCommit,
+    PostRewrite,
 }
 
 include!(concat!(env!("OUT_DIR"), "/setup_embedded_assets.rs"));
@@ -50,6 +51,7 @@ pub fn get_required_hook_asset(hook: RequiredHookAsset) -> Option<&'static Embed
         RequiredHookAsset::PreCommit => default_paths::hook_dir::PRE_COMMIT,
         RequiredHookAsset::CommitMsg => default_paths::hook_dir::COMMIT_MSG,
         RequiredHookAsset::PostCommit => default_paths::hook_dir::POST_COMMIT,
+        RequiredHookAsset::PostRewrite => default_paths::hook_dir::POST_REWRITE,
     };
 
     HOOK_EMBEDDED_ASSETS
@@ -1097,4 +1099,32 @@ where
 
 pub fn setup_cancelled_text() -> String {
     value("Setup cancelled. No files were changed.")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn required_hook_assets_contains_four_entries() {
+        let assets: Vec<_> = iter_required_hook_assets().collect();
+        let filenames: Vec<&str> = assets.iter().map(|a| a.relative_path).collect();
+        assert_eq!(assets.len(), 4, "expected exactly 4 required hooks");
+        assert!(
+            filenames.contains(&"post-rewrite"),
+            "post-rewrite must be in the required hook set: {filenames:?}"
+        );
+        assert!(
+            filenames.contains(&"pre-commit"),
+            "pre-commit must be in the required hook set: {filenames:?}"
+        );
+        assert!(
+            filenames.contains(&"commit-msg"),
+            "commit-msg must be in the required hook set: {filenames:?}"
+        );
+        assert!(
+            filenames.contains(&"post-commit"),
+            "post-commit must be in the required hook set: {filenames:?}"
+        );
+    }
 }

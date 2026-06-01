@@ -13,7 +13,7 @@ Task `sce-setup-githooks-any-repo` `T04` defines the `sce setup` command-surface
 - `sce setup --both --hooks`
 - `sce setup` (interactive target selection plus hook install in one run)
 
-`--hooks` runs required-hook installation (`pre-commit`, `commit-msg`, `post-commit`) through the setup service hook installer.
+`--hooks` runs required-hook installation (`pre-commit`, `commit-msg`, `post-commit`, `post-rewrite`) through the setup service hook installer.
 When `--repo` is omitted, setup targets the current working directory.
 
 ## Option compatibility and validation
