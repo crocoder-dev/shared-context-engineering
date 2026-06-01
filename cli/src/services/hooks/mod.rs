@@ -61,6 +61,25 @@ struct DiffTracePayload {
     tool_version: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct RewrittenCommitPair {
+    old_oid: String,
+    new_oid: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct PostRewriteRebasePayload {
+    method: String,
+    capture_timestamp: String,
+    repository_root: String,
+    git_environment: BTreeMap<String, String>,
+    raw_stdin: String,
+    parsed_pairs: Vec<RewrittenCommitPair>,
+    parse_diagnostics: Vec<String>,
+    head_oid: Option<String>,
+    head_patch: Option<String>,
+}
+
 /// Required `sce hooks diff-trace` STDIN payload shape:
 /// `{ sessionID, diff, time, model_id, tool_name, tool_version }`.
 ///
@@ -746,8 +765,112 @@ fn run_post_rewrite_subcommand_with_trace(
     _: &HookSubcommand,
     rewrite_method: &str,
 ) -> Result<String> {
-    let stdin_payload = read_hook_stdin();
-    stdin_payload.and_then(|_| run_post_rewrite_subcommand(repository_root, rewrite_method))
+    let method = rewrite_method.trim();
+
+    if method == "rebase" {
+        let runtime = resolve_runtime_state(repository_root)?;
+        if !runtime.sce_disabled {
+            let stdin_payload = read_hook_stdin()?;
+            return run_post_rewrite_rebase_subcommand(repository_root, method, &stdin_payload);
+        }
+    }
+
+    run_post_rewrite_subcommand(repository_root, method)
+}
+
+fn parse_post_rewrite_stdin(input: &str) -> (Vec<RewrittenCommitPair>, Vec<String>) {
+    let mut pairs = Vec::new();
+    let mut diagnostics = Vec::new();
+
+    for (line_index, line) in input.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.len() >= 2 {
+            pairs.push(RewrittenCommitPair {
+                old_oid: parts[0].to_string(),
+                new_oid: parts[1].to_string(),
+            });
+            if parts.len() > 2 {
+                diagnostics.push(format!(
+                    "Line {}: unexpected content after commit pair: '{}'",
+                    line_index + 1,
+                    parts[2..].join(" ")
+                ));
+            }
+        } else {
+            diagnostics.push(format!(
+                "Line {}: expected '<old-oid> <new-oid>', got: '{}'",
+                line_index + 1,
+                trimmed
+            ));
+        }
+    }
+
+    (pairs, diagnostics)
+}
+
+fn run_post_rewrite_rebase_subcommand(
+    repository_root: &Path,
+    method: &str,
+    stdin_payload: &str,
+) -> Result<String> {
+    let (parsed_pairs, parse_diagnostics) = parse_post_rewrite_stdin(stdin_payload);
+    let capture_timestamp = Utc::now().to_rfc3339();
+    let git_environment = collect_git_environment();
+
+    let head_oid = run_git_command_capture_stdout(
+        repository_root,
+        &["rev-parse", "HEAD"],
+        "Failed to capture HEAD revision from git for post-rewrite rebase evidence.",
+    )
+    .ok();
+
+    let head_patch = run_git_command_capture_stdout(
+        repository_root,
+        &["show", "--format=", "--patch", "--no-ext-diff", "HEAD"],
+        "Failed to capture HEAD patch from git for post-rewrite rebase evidence.",
+    )
+    .ok();
+
+    let payload = PostRewriteRebasePayload {
+        method: method.to_string(),
+        capture_timestamp,
+        repository_root: repository_root.to_string_lossy().to_string(),
+        git_environment,
+        raw_stdin: stdin_payload.to_string(),
+        parsed_pairs,
+        parse_diagnostics,
+        head_oid,
+        head_patch,
+    };
+
+    let serialized = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&payload)
+            .context("Failed to serialize post-rewrite rebase payload for persistence.")?
+    );
+
+    let artifact_directory = repository_root
+        .join("context")
+        .join("tmp")
+        .join("post-rewrite");
+
+    persist_serialized_trace_payload(
+        &artifact_directory,
+        "post-rewrite-rebase",
+        &serialized,
+        "post-rewrite rebase evidence",
+    )?;
+
+    Ok(format!(
+        "post-rewrite hook captured rebase evidence: {} pairs, {} diagnostic(s), artifact in context/tmp/post-rewrite/.",
+        payload.parsed_pairs.len(),
+        payload.parse_diagnostics.len()
+    ))
 }
 
 fn hook_runtime_invocation_name(subcommand: &HookSubcommand) -> &'static str {
@@ -1171,5 +1294,133 @@ mod tests {
         assert_eq!(output.combined_recent_patch.files[0].new_path, "src/lib.rs");
         assert_eq!(output.tool_name, Some(String::from("opencode")));
         assert_eq!(output.tool_version, Some(String::from("1.2.3")));
+    }
+
+    // --- post-rewrite rebase capture tests ---
+
+    #[test]
+    fn parse_post_rewrite_stdin_valid_lines() {
+        let input = "abc123 def456\n\n789abc def012\n";
+        let (pairs, diagnostics) = parse_post_rewrite_stdin(input);
+
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(
+            pairs[0],
+            RewrittenCommitPair {
+                old_oid: "abc123".to_string(),
+                new_oid: "def456".to_string(),
+            }
+        );
+        assert_eq!(
+            pairs[1],
+            RewrittenCommitPair {
+                old_oid: "789abc".to_string(),
+                new_oid: "def012".to_string(),
+            }
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "expected no diagnostics for valid input"
+        );
+    }
+
+    #[test]
+    fn parse_post_rewrite_stdin_malformed_lines() {
+        let input = "abc123 def456\nnot-a-pair\n789abc def012\n";
+        let (pairs, diagnostics) = parse_post_rewrite_stdin(input);
+
+        assert_eq!(
+            pairs.len(),
+            2,
+            "valid lines should be parsed despite malformed line"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "malformed line should produce one diagnostic"
+        );
+        assert!(
+            diagnostics[0].contains("not-a-pair"),
+            "diagnostic should reference the malformed content"
+        );
+        assert!(
+            diagnostics[0].contains("Line 2"),
+            "diagnostic should reference the correct line number"
+        );
+    }
+
+    #[test]
+    fn parse_post_rewrite_stdin_empty_input() {
+        let input = "";
+        let (pairs, diagnostics) = parse_post_rewrite_stdin(input);
+
+        assert!(pairs.is_empty(), "empty input should produce no pairs");
+        assert!(
+            diagnostics.is_empty(),
+            "empty input should produce no diagnostics"
+        );
+    }
+
+    #[test]
+    fn parse_post_rewrite_stdin_extra_content() {
+        let input = "abc123 def456 extra trailing content\n";
+        let (pairs, diagnostics) = parse_post_rewrite_stdin(input);
+
+        assert_eq!(
+            pairs.len(),
+            1,
+            "pair should be parsed from line with extra content"
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "extra content should produce one diagnostic"
+        );
+        assert!(
+            diagnostics[0].contains("trailing content"),
+            "diagnostic should reference the extra content"
+        );
+    }
+
+    #[test]
+    fn parse_post_rewrite_stdin_blank_lines_skipped() {
+        let input = "abc123 def456\n\n\n789abc def012\n";
+        let (pairs, diagnostics) = parse_post_rewrite_stdin(input);
+
+        assert_eq!(pairs.len(), 2, "blank lines should be skipped");
+        assert!(
+            diagnostics.is_empty(),
+            "blank lines should not produce diagnostics"
+        );
+    }
+
+    #[test]
+    fn post_rewrite_amend_method_returns_no_op() {
+        let result = run_post_rewrite_subcommand(Path::new("/fake/repo"), "amend");
+        assert!(result.is_ok(), "post-rewrite amend should succeed");
+        let output = result.expect("already checked is_ok");
+        assert!(
+            output.contains("no-op runtime state"),
+            "amend method should report no-op: got '{output}'"
+        );
+        assert!(
+            output.contains("rewrite_method='amend'"),
+            "amend method should be included in output: got '{output}'"
+        );
+    }
+
+    #[test]
+    fn post_rewrite_other_method_returns_no_op() {
+        let result = run_post_rewrite_subcommand(Path::new("/fake/repo"), "other");
+        assert!(result.is_ok(), "post-rewrite other should succeed");
+        let output = result.expect("already checked is_ok");
+        assert!(
+            output.contains("no-op runtime state"),
+            "other method should report no-op: got '{output}'"
+        );
+        assert!(
+            output.contains("rewrite_method='other'"),
+            "other method should be included in output: got '{output}'"
+        );
     }
 }

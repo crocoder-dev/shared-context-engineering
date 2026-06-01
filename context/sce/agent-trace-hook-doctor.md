@@ -38,8 +38,8 @@ The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor comm
 - explicit git-unavailable, outside-repo, and bare-repo repository-targeting failures
 - effective hook-path source (`default`, local `core.hooksPath`, global `core.hooksPath`)
 - repository root and hooks directory resolution when a repository target is detected
-- top-level-only human text hook rows for `pre-commit`, `commit-msg`, and `post-commit`, with nested `content` / `executable` detail removed from text mode
-- required hook presence and executable permissions for `pre-commit`, `commit-msg`, and `post-commit` when repo-scoped checks apply (delegated to `HooksLifecycle::diagnose`)
+- top-level-only human text hook rows for `pre-commit`, `commit-msg`, `post-commit`, and `post-rewrite`, with nested `content` / `executable` detail removed from text mode
+- required hook presence and executable permissions for `pre-commit`, `commit-msg`, `post-commit`, and `post-rewrite` when repo-scoped checks apply (delegated to `HooksLifecycle::diagnose`)
 - byte-for-byte stale-content detection for required hook payloads against canonical embedded SCE-managed hook assets (delegated to `HooksLifecycle::diagnose`)
 - repo-root installed OpenCode integration inventory for `OpenCode plugins`, `OpenCode agents`, `OpenCode commands`, and `OpenCode skills`
 - integration child-row reporting for those four groups now validates file content against embedded SHA-256; missing files render as `[MISS]`, content mismatches render as `[FAIL]`, and any affected parent group renders as `[FAIL]`
