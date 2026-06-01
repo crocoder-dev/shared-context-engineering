@@ -604,7 +604,7 @@ where
             .context("Failed to serialize post-commit Agent Trace payload for persistence.")?
     );
 
-    let constructed_url = format!("{}{}", AGENT_TRACE_URL_PREFIX, agent_trace.id);
+    let constructed_url = format!("{AGENT_TRACE_URL_PREFIX}{}", agent_trace.id);
 
     let insert_input = AgentTraceInsert {
         commit_id: &flow_result.post_commit_data.commit_oid,
@@ -1003,7 +1003,7 @@ pub fn capture_post_commit_patch_from_git(repository_root: &Path) -> Result<Post
     let commit_oid = capture_head_oid_from_git(repository_root)?;
     let commit_time_ms = capture_head_timestamp_from_git(repository_root)?;
     let patch_text = capture_head_patch_from_git(repository_root)?;
-    let parsed_patch = parse_patch_from_text(&patch_text).map_err(|e| {
+    let parsed_patch = parse_patch_from_text(&patch_text, None).map_err(|e| {
         anyhow!(post_commit_patch_error(
             "failed to parse post-commit patch",
             &e.to_string()
@@ -1083,7 +1083,7 @@ mod tests {
             "Index: {path}\n===================================================================\n--- {path}\n+++ {path}\n@@ -0,0 +1,1 @@\n+{content}\n"
         );
 
-        parse_patch_from_text(&patch_text).expect("test patch should parse")
+        parse_patch_from_text(&patch_text, None).expect("test patch should parse")
     }
 
     #[test]

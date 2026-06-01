@@ -295,7 +295,7 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
     let mut skipped = Vec::new();
 
     for row in rows {
-        match parse_patch(&row.patch) {
+        match parse_patch(&row.patch, Some(row.session_id.as_str())) {
             Ok(mut patch) => {
                 for file in &mut patch.files {
                     for hunk in &mut file.hunks {

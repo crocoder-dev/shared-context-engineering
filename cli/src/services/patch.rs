@@ -80,6 +80,9 @@ pub struct TouchedLine {
     pub line_number: u64,
     /// Content of the line (without the leading `+`/`-` prefix).
     pub content: String,
+    /// Optional session identifier associated with this touched line.
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 /// Kind of touched line.
@@ -190,8 +193,8 @@ pub fn load_patch_from_json_bytes(input: &[u8]) -> Result<ParsedPatch, PatchLoad
 /// ```
 /// use sce::services::patch::{intersect_patches, parse_patch};
 ///
-/// let constructed_patch = parse_patch("...")?;
-/// let post_commit_patch = parse_patch("...")?;
+/// let constructed_patch = parse_patch("...", None)?;
+/// let post_commit_patch = parse_patch("...", None)?;
 /// let overlap = intersect_patches(&constructed_patch, &post_commit_patch);
 /// ```
 #[allow(dead_code)]
@@ -506,7 +509,7 @@ pub fn combine_patches(patches: &[ParsedPatch]) -> ParsedPatch {
 /// Returns `ParseError` with an actionable message when the input is malformed,
 /// such as an invalid hunk header or a `---`/`+++` line that cannot be parsed.
 #[allow(dead_code)]
-pub fn parse_patch(input: &str) -> Result<ParsedPatch, ParseError> {
+pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch, ParseError> {
     let mut files: Vec<PatchFileChange> = Vec::new();
     let mut current_file: Option<FileBuilder> = None;
 
@@ -591,7 +594,7 @@ pub fn parse_patch(input: &str) -> Result<ParsedPatch, ParseError> {
         // Parse hunk header: @@ -old_start[,old_count] +new_start[,new_count] @@
         if let Some(rest) = line.strip_prefix("@@ ") {
             if let Some(fb) = current_file.as_mut() {
-                let hunk = parse_hunk_header_and_body(rest, &mut lines)?;
+                let hunk = parse_hunk_header_and_body(rest, &mut lines, session_id)?;
                 fb.add_hunk(hunk);
             }
         }
@@ -773,6 +776,7 @@ fn parse_diff_path(rest: &str) -> String {
 fn parse_hunk_header_and_body<'a, I>(
     rest: &str,
     lines: &mut std::iter::Peekable<I>,
+    session_id: Option<&str>,
 ) -> Result<PatchHunk, ParseError>
 where
     I: Iterator<Item = &'a str>,
@@ -837,6 +841,7 @@ where
                 kind: TouchedLineKind::Added,
                 line_number: new_line_num,
                 content: content.to_string(),
+                session_id: session_id.map(str::to_string),
             });
             new_line_num += 1;
         } else if let Some(content) = line.strip_prefix('-') {
@@ -845,6 +850,7 @@ where
                 kind: TouchedLineKind::Removed,
                 line_number: old_line_num,
                 content: content.to_string(),
+                session_id: session_id.map(str::to_string),
             });
             old_line_num += 1;
         } else if line.starts_with(' ') || line.starts_with('\t') {
