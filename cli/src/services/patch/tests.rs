@@ -10,7 +10,7 @@ struct PatchScenario {
 fn parse_fixtures(fixtures: &[&str]) -> Vec<ParsedPatch> {
     fixtures
         .iter()
-        .map(|fixture| parse_patch(fixture).expect("fixture patch should parse"))
+        .map(|fixture| parse_patch(fixture, None).expect("fixture patch should parse"))
         .collect()
 }
 
@@ -45,7 +45,7 @@ const TEXT_FILE_LIFECYCLE_RECONSTRUCTION_INCREMENTALS: &[&str] = &[
 
 fn assert_reconstructs_post_commit(scenario: PatchScenario) {
     let combined = combine_patches(&parse_fixtures(scenario.incremental));
-    let post_commit = parse_patch(scenario.post_commit).expect("fixture patch should parse");
+    let post_commit = parse_patch(scenario.post_commit, None).expect("fixture patch should parse");
     let golden: ParsedPatch =
         serde_json::from_str(scenario.golden).expect("golden json should load");
 

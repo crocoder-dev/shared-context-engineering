@@ -383,7 +383,7 @@ fn parse_embedded_deleted_patch(file: &PatchFileChange) -> Option<ParsedPatch> {
         .collect::<Vec<_>>()
         .join("\n");
 
-    let parsed_patch = parse_patch(&embedded_patch).ok()?;
+    let parsed_patch = parse_patch(&embedded_patch, None).ok()?;
     (!parsed_patch.files.is_empty()).then_some(parsed_patch)
 }
 

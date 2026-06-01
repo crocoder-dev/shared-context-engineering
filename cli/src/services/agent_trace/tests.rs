@@ -18,7 +18,7 @@ const TEST_COMMIT_REVISION: &str = "a0b1c2d3e4f5a6b7c8d9e0f11223344556677889";
 fn parse_fixtures(fixtures: &[&str]) -> Vec<ParsedPatch> {
     fixtures
         .iter()
-        .map(|fixture| parse_patch(fixture).expect("fixture patch should parse"))
+        .map(|fixture| parse_patch(fixture, None).expect("fixture patch should parse"))
         .collect()
 }
 
@@ -53,7 +53,8 @@ const TEXT_FILE_LIFECYCLE_RECONSTRUCTION_INCREMENTALS: &[&str] = &[
 
 fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
     let constructed_patch = combine_patches(&parse_fixtures(scenario.incremental));
-    let post_commit_patch = parse_patch(scenario.post_commit).expect("fixture patch should parse");
+    let post_commit_patch =
+        parse_patch(scenario.post_commit, None).expect("fixture patch should parse");
     let golden: Value = serde_json::from_str(scenario.golden).expect("golden json should load");
     validate_agent_trace_value(&golden).expect("golden json should validate against schema");
     let actual = build_agent_trace(
@@ -150,9 +151,10 @@ fn poem_edit_reconstruction_maps_each_hunk_to_one_range() {
         include_str!("fixtures/poem_edit_reconstruction/incremental_01.patch"),
         include_str!("fixtures/poem_edit_reconstruction/incremental_02.patch"),
     ]));
-    let post_commit_patch = parse_patch(include_str!(
-        "fixtures/poem_edit_reconstruction/post_commit.patch"
-    ))
+    let post_commit_patch = parse_patch(
+        include_str!("fixtures/poem_edit_reconstruction/post_commit.patch"),
+        None,
+    )
     .expect("fixture patch should parse");
 
     let agent_trace = build_agent_trace(
