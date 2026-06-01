@@ -30,7 +30,8 @@ use types::{
 
 pub const NAME: &str = "doctor";
 
-pub(super) const REQUIRED_HOOKS: [&str; 3] = ["pre-commit", "commit-msg", "post-commit"];
+pub(super) const REQUIRED_HOOKS: [&str; 4] =
+    ["pre-commit", "commit-msg", "post-commit", "post-rewrite"];
 
 pub type DoctorFormat = OutputFormat;
 

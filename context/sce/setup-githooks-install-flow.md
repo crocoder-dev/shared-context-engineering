@@ -36,7 +36,7 @@ This keeps behavior compatible with:
 
 ## Per-hook installation contract
 
-The flow iterates canonical embedded required hooks (`pre-commit`, `commit-msg`, `post-commit`) and applies deterministic per-hook outcomes:
+The flow iterates canonical embedded required hooks (`pre-commit`, `commit-msg`, `post-commit`, `post-rewrite`) and applies deterministic per-hook outcomes:
 
 - `Installed`: hook was absent and is now present.
 - `Updated`: hook existed but content and/or executable bit did not match canonical state.

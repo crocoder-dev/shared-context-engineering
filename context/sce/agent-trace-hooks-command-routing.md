@@ -54,7 +54,15 @@
   - When validation passes, the payload is serialized and inserted into Agent Trace DB `agent_traces` using `commit_id` from flow-result commit metadata, `commit_time_ms` from flow-result post-commit timestamp metadata, a derived non-null `url` value formatted as `sce.crocoder.dev/trace/<agent_trace.id>`, and the validated runtime `--remote-url` value persisted to nullable `agent_traces.remote_url`.
   - Post-commit Agent Trace success requires both schema validation and Agent Trace DB `agent_traces` persistence to succeed.
   - Current command-surface success output is: `post-commit hook processed intersection: commit=<oid>, intersection_files=<n>`.
-- `post-rewrite` is a deterministic no-op entrypoint.
+- **`post-rewrite` captures rebase evidence** (rebase-only; non-rebase methods remain no-op):
+  - Reads Git STDIN rewrite pairs (old-oid new-oid per line).
+  - Parses STDIN into `{ old_oid, new_oid }` pairs and records parse diagnostics for malformed lines.
+  - Builds a JSON evidence artifact with: raw STDIN, parsed pairs, parse diagnostics, method name (`rebase`), capture timestamp (RFC 3339), repository root path, selected `GIT_*` environment variables, and best-effort post-rewrite HEAD OID and patch metadata.
+  - Persists artifact to `context/tmp/post-rewrite/<timestamp>-<attempt>-post-rewrite-rebase.json` using the same collision-safe atomic create-new retry semantics as `diff-trace`.
+  - `SCE_DISABLED=true` prevents capture and falls through to no-op for all methods.
+  - Non-rebase methods (`amend`, `other`) remain deterministic no-op entrypoints.
+  - No AgentTraceDb writes, schema migrations, remap tables, git notes, or Agent Trace payload transformations.
+  - Success output: `post-rewrite hook captured rebase evidence: <n> pairs, <m> diagnostic(s), artifact in context/tmp/post-rewrite/.`
 - `diff-trace` reads STDIN JSON, validates required non-empty `sessionID`/`diff`/`model_id`/`tool_name`, validates required `tool_version` (must be present and either `null` or a non-empty string), validates required `u64` `time` (Unix epoch milliseconds), rejects `time` values that cannot fit the Agent Trace DB signed `time_ms` column, writes one parsed-payload artifact per invocation to `context/tmp/<timestamp>-000000-diff-trace.json` with atomic create-new retry semantics, and inserts the parsed payload fields into AgentTraceDb via `DiffTraceInsert` + `insert_diff_trace()` including `model_id`.
 - `diff-trace` success requires both persistence paths to succeed; artifact write failures and AgentTraceDb open/insert failures are command-failing runtime errors logged through `sce.hooks.diff_trace.error`.
 
