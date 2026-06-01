@@ -234,7 +234,7 @@ pub fn intersect_patches(
             let overlapping_lines: Vec<TouchedLine> = post_commit_hunk
                 .lines
                 .iter()
-                .filter(|line| {
+                .filter_map(|line| {
                     if let Some(index) = find_available_line_match(
                         &available_lines,
                         &used_lines,
@@ -245,7 +245,11 @@ pub fn intersect_patches(
                             matched_model_id = available_lines[index].model_id.map(str::to_string);
                         }
                         used_lines[index] = true;
-                        return true;
+                        let mut overlapping_line = line.clone();
+                        overlapping_line
+                            .session_id
+                            .clone_from(&available_lines[index].line.session_id);
+                        return Some(overlapping_line);
                     }
 
                     if let Some(index) = find_available_line_match(
@@ -258,12 +262,15 @@ pub fn intersect_patches(
                             matched_model_id = available_lines[index].model_id.map(str::to_string);
                         }
                         used_lines[index] = true;
-                        return true;
+                        let mut overlapping_line = line.clone();
+                        overlapping_line
+                            .session_id
+                            .clone_from(&available_lines[index].line.session_id);
+                        return Some(overlapping_line);
                     }
 
-                    false
+                    None
                 })
-                .cloned()
                 .collect();
 
             if overlapping_lines.is_empty() {
