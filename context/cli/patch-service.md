@@ -8,14 +8,14 @@ Standalone patch domain model and parser in `cli/src/services/patch.rs` for in-m
 - `PatchFileChange` — per-file change with `old_path`, `new_path`, `FileChangeKind`, and hunks
 - `FileChangeKind` — enum: `Added`, `Modified`, `Deleted`, `Renamed` (serialized as `snake_case`)
 - `PatchHunk` — hunk with `old_start`/`old_count`/`new_start`/`new_count` and touched lines
-- `TouchedLine` — a single added or removed line with `kind`, `line_number`, and `content`
+- `TouchedLine` — a single added or removed line with `kind`, `line_number`, `content`, and optional `session_id`
 - `TouchedLineKind` — enum: `Added`, `Removed` (serialized as `snake_case`)
 
 All types derive `Clone, Debug, Deserialize, Eq, PartialEq, Serialize` and support JSON round-trip fidelity via `serde` with `snake_case` field naming. `TouchedLineKind` additionally derives `Hash` to support set-based intersection operations.
 
 ## Parser
 
-`parse_patch(input: &str) -> Result<ParsedPatch, ParseError>` converts raw unified-diff text into `ParsedPatch` structs.
+`parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch, ParseError>` converts raw unified-diff text into `ParsedPatch` structs and propagates `session_id` onto each produced touched line (`Some` when provided, `None` otherwise).
 
 ### Supported formats
 
