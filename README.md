@@ -8,7 +8,7 @@ Shared Context Engineering is AI-assisted software delivery with explicit, versi
 
 This repository contains the `sce` CLI, generated assistant configuration, and the shared `context/` memory used across SCE workflows.
 
-## Documentation
+## Documentation hello
 
 - [Documentation site](https://sce.crocoder.dev/)
 - [Getting started](https://sce.crocoder.dev/docs/getting-started)
