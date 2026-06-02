@@ -203,7 +203,6 @@ fn parse_message_updated_payload(
                 conversation_trace_validation_error,
             )?,
             summary_diffs: conversation_trace_required_summary_diffs(payload)?,
-            text: required_string_field(payload, "text", conversation_trace_validation_error)?,
             generated_at_unix_ms: required_i64_millisecond_field(
                 payload,
                 "generated_at_unix_ms",
@@ -1336,7 +1335,6 @@ mod tests {
                     "status": "modified"
                 }
             ],
-            "text": "implemented payload parsing",
             "generated_at_unix_ms": 1_800_000_000_000_i64
         });
 
@@ -1351,7 +1349,6 @@ mod tests {
         assert_eq!(input.message_id, "message-1");
         assert_eq!(input.role, MessageRole::Assistant);
         assert_eq!(input.agent, "Shared Context Code");
-        assert_eq!(input.text, "implemented payload parsing");
         assert_eq!(input.generated_at_unix_ms, 1_800_000_000_000_i64);
         assert_eq!(
             input.summary_diffs,

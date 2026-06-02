@@ -20,7 +20,7 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 - `insert_agent_trace()`: domain-specific insert helper for `agent_traces` using parameterized SQL.
 - `MessageRole` enum: `User` / `Assistant` — maps to `messages.role` DB constraint.
 - `SummaryDiffItem`: serde-serializable struct `{ file, patch?, additions, deletions, status? }` for typed `summary_diffs` JSON construction.
-- `UpsertMessageInsert`: owned payload struct with all `messages` mutable columns (`session_id`, `message_id`, `role`, `agent`, `summary_diffs`, `text`, `generated_at_unix_ms`).
+- `UpsertMessageInsert`: owned payload struct with all mutable parent `messages` columns (`session_id`, `message_id`, `role`, `agent`, `summary_diffs`, `generated_at_unix_ms`); message body text belongs to `parts.text`, not the parent message row.
 - `UPSERT_MESSAGE_SQL`: parameterized SQL using `INSERT ... ON CONFLICT (session_id, message_id) DO UPDATE SET ...` — leverages the unique index `idx_messages_session_message` for conflict detection; `updated_at` is maintained by the `trg_messages_updated_at` trigger.
 - `upsert_message(input)`: typed helper that serializes `summary_diffs` to JSON and executes the upsert; called by `sce hooks conversation-trace` for normalized `message.updated` payloads.
 - `PartType` enum: `Text` / `Reasoning` — maps to `parts.type` DB constraint.
@@ -106,7 +106,6 @@ The `messages` migration creates:
 - `role TEXT NOT NULL CHECK (role IN ('user', 'assistant'))`
 - `agent TEXT NOT NULL`
 - `summary_diffs TEXT NOT NULL DEFAULT '[]'`
-- `text TEXT NOT NULL`
 - `generated_at_unix_ms INTEGER NOT NULL CHECK (generated_at_unix_ms >= 0)`
 - `created_at TEXT NOT NULL DEFAULT (...)`
 - `updated_at TEXT NOT NULL DEFAULT (...)`
@@ -164,8 +163,8 @@ Post-commit intersection rows are written by the active `post-commit` hook flow,
 `sce hooks conversation-trace` is the current runtime writer for `messages` and `parts`.
 
 - The hook accepts only normalized snake_case STDIN envelopes with top-level `type` values `message.updated` or `message.part.updated`.
-- `message.updated` validates and maps payloads to `UpsertMessageInsert`, then calls `AgentTraceDb::upsert_message()` so repeated `(session_id, message_id)` events refresh mutable message fields.
-- `message.part.updated` validates and maps payloads to `InsertPartInsert`, then calls `AgentTraceDb::insert_part()` so parts remain append-only and do not require a pre-existing message row.
+- `message.updated` validates and maps payloads without message-level `text` to `UpsertMessageInsert`, then calls `AgentTraceDb::upsert_message()` so repeated `(session_id, message_id)` events refresh mutable parent message fields.
+- `message.part.updated` validates and maps payloads with required part `text` to `InsertPartInsert`, then calls `AgentTraceDb::insert_part()` so parts remain append-only and do not require a pre-existing message row.
 - DB open/write failures fail the command; no `context/tmp` artifact is written for conversation traces.
 - This is a CLI-only hook surface; no OpenCode plugin/runtime caller is wired in the current runtime.
 

@@ -6,7 +6,6 @@ WHEN OLD.session_id IS NOT NEW.session_id
     OR OLD.role IS NOT NEW.role
     OR OLD.agent IS NOT NEW.agent
     OR OLD.summary_diffs IS NOT NEW.summary_diffs
-    OR OLD.text IS NOT NEW.text
     OR OLD.generated_at_unix_ms IS NOT NEW.generated_at_unix_ms
 BEGIN
     UPDATE messages

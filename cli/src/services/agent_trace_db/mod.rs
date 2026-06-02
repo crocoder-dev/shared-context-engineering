@@ -122,13 +122,12 @@ pub const INSERT_AGENT_TRACE_SQL: &str =
 /// Parameterized SQL for upserting a message row by `(session_id, message_id)`.
 #[allow(dead_code)]
 pub const UPSERT_MESSAGE_SQL: &str =
-    "INSERT INTO messages (session_id, message_id, role, agent, summary_diffs, text, generated_at_unix_ms)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+    "INSERT INTO messages (session_id, message_id, role, agent, summary_diffs, generated_at_unix_ms)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6)
 ON CONFLICT (session_id, message_id) DO UPDATE SET
     role = excluded.role,
     agent = excluded.agent,
     summary_diffs = excluded.summary_diffs,
-    text = excluded.text,
     generated_at_unix_ms = excluded.generated_at_unix_ms";
 
 /// Parameterized SQL for inserting a part row (append-only, no upsert).
@@ -279,7 +278,6 @@ pub struct UpsertMessageInsert {
     pub role: MessageRole,
     pub agent: String,
     pub summary_diffs: Vec<SummaryDiffItem>,
-    pub text: String,
     pub generated_at_unix_ms: i64,
 }
 
@@ -411,7 +409,6 @@ fn upsert_message_with<M: DbSpec>(db: &TursoDb<M>, input: UpsertMessageInsert) -
             input.role.to_string(),
             input.agent,
             summary_diffs_json,
-            input.text,
             input.generated_at_unix_ms,
         ),
     )
