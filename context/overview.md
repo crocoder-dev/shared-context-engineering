@@ -1,4 +1,4 @@
-# Overview
+B# Overview
 
 Hello, This repository maintains shared assistant configuration for OpenCode and Claude from a single canonical authoring source, then validates that generated outputs stay deterministic and in sync.
 It now supports both manual and automated profile variants: the manual profile preserves interactive approval gates, while the automated profile applies deterministic non-interactive behavior for CI/automation workflows.
