@@ -407,6 +407,11 @@ fn convert_hooks_subcommand(
                 subcommand: services::hooks::HookSubcommand::DiffTrace,
             }))
         }
+        cli_schema::HooksSubcommand::ConversationTrace => {
+            Ok(Box::new(services::hooks::command::HooksCommand {
+                subcommand: services::hooks::HookSubcommand::ConversationTrace,
+            }))
+        }
     }
 }
 

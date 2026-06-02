@@ -22,16 +22,16 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 - `SummaryDiffItem`: serde-serializable struct `{ file, patch?, additions, deletions, status? }` for typed `summary_diffs` JSON construction.
 - `UpsertMessageInsert`: owned payload struct with all `messages` mutable columns (`session_id`, `message_id`, `role`, `agent`, `summary_diffs`, `text`, `generated_at_unix_ms`).
 - `UPSERT_MESSAGE_SQL`: parameterized SQL using `INSERT ... ON CONFLICT (session_id, message_id) DO UPDATE SET ...` — leverages the unique index `idx_messages_session_message` for conflict detection; `updated_at` is maintained by the `trg_messages_updated_at` trigger.
-- `upsert_message(input)`: typed helper that serializes `summary_diffs` to JSON and executes the upsert. Not yet wired into production hook code (planned future task).
+- `upsert_message(input)`: typed helper that serializes `summary_diffs` to JSON and executes the upsert; called by `sce hooks conversation-trace` for normalized `message.updated` payloads.
 - `PartType` enum: `Text` / `Reasoning` — maps to `parts.type` DB constraint.
 - `InsertPartInsert`: owned payload struct with `part_type`, `text`, `session_id`, `message_id`, and `generated_at_unix_ms`.
 - `INSERT_PART_SQL`: parameterized append-only INSERT into `parts` (no upsert; multiple rows per `(session_id, message_id)` allowed).
-- `insert_part(input)`: typed helper that inserts a part row without requiring a matching `messages` row (supports out-of-order writes). Not yet wired into production hook code (planned future task).
+- `insert_part(input)`: typed helper that inserts a part row without requiring a matching `messages` row (supports out-of-order writes); called by `sce hooks conversation-trace` for normalized `message.part.updated` payloads.
 - `lifecycle.rs`: service lifecycle provider for setup/doctor integration.
 
 ## Non-goals
 
-- No read/query helper for loading messages with their joined parts exists in this change; the typed write helpers (`upsert_message`, `insert_part`) are the only exposed message/part API surface. Message/part query helpers are deferred to a future task.
+- No read/query helper for loading messages with their joined parts exists in the current runtime; the typed write helpers (`upsert_message`, `insert_part`) are the only exposed message/part API surface. Message/part query helpers are deferred to a future task.
 - No part upsert/deduplication; `parts` uses only the internal integer `id` for row identity (append-only per the `INSERT_PART_SQL` contract).
 
 ## Database path
@@ -160,6 +160,14 @@ Both triggers compare `OLD.*` vs `NEW.*` for all mutable columns (excluding `upd
 - Existing artifact files are not backfilled into the database.
 
 Post-commit intersection rows are written by the active `post-commit` hook flow, and the same flow now also inserts built Agent Trace payloads into `agent_traces` via `AgentTraceDb::insert_agent_trace()` (see [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md)). The persisted `trace_json` is the schema-validated `build_agent_trace(...)` output and includes top-level `metadata.sce.version` from the compiled `sce` CLI package version plus `content_hash` on every emitted range. Range `content_hash` values are computed from the touched-line kind/content of the post-commit hunk that produced the persisted range, not from DB IDs, paths, line positions, or runtime metadata.
+
+`sce hooks conversation-trace` is the current runtime writer for `messages` and `parts`.
+
+- The hook accepts only normalized snake_case STDIN envelopes with top-level `type` values `message.updated` or `message.part.updated`.
+- `message.updated` validates and maps payloads to `UpsertMessageInsert`, then calls `AgentTraceDb::upsert_message()` so repeated `(session_id, message_id)` events refresh mutable message fields.
+- `message.part.updated` validates and maps payloads to `InsertPartInsert`, then calls `AgentTraceDb::insert_part()` so parts remain append-only and do not require a pre-existing message row.
+- DB open/write failures fail the command; no `context/tmp` artifact is written for conversation traces.
+- This is a CLI-only hook surface; no OpenCode plugin/runtime caller is wired in the current runtime.
 
 ## Recent patch reads
 

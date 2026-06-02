@@ -15,8 +15,9 @@ use crate::services::agent_trace::{
     AgentTraceVcsType,
 };
 use crate::services::agent_trace_db::{
-    AgentTraceDb, AgentTraceInsert, DiffTraceInsert, PostCommitPatchIntersectionInsert,
-    RecentDiffTracePatches,
+    AgentTraceDb, AgentTraceInsert, DiffTraceInsert, InsertPartInsert, MessageRole, PartType,
+    PostCommitPatchIntersectionInsert, RecentDiffTracePatches, SummaryDiffItem,
+    UpsertMessageInsert,
 };
 use crate::services::config;
 use crate::services::observability::traits::Logger;
@@ -34,6 +35,8 @@ const AGENT_TRACE_URL_PREFIX: &str = "sce.crocoder.dev/trace/";
 
 const MAX_TRACE_FILE_CREATE_ATTEMPTS: u64 = 1_000_000;
 
+type PayloadValidationError = fn(&str) -> String;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HookSubcommand {
     PreCommit,
@@ -48,6 +51,7 @@ pub enum HookSubcommand {
         rewrite_method: String,
     },
     DiffTrace,
+    ConversationTrace,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -59,6 +63,12 @@ struct DiffTracePayload {
     model_id: String,
     tool_name: String,
     tool_version: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConversationTracePayload {
+    MessageUpdated(UpsertMessageInsert),
+    MessagePartUpdated(InsertPartInsert),
 }
 
 /// Required `sce hooks diff-trace` STDIN payload shape:
@@ -100,7 +110,174 @@ fn run_hooks_subcommand_in_repo(
             run_post_rewrite_subcommand_with_trace(repository_root, subcommand, rewrite_method)
         }
         HookSubcommand::DiffTrace => run_diff_trace_subcommand(repository_root, logger),
+        HookSubcommand::ConversationTrace => run_conversation_trace_subcommand(logger),
     }
+}
+
+fn run_conversation_trace_subcommand(logger: Option<&dyn Logger>) -> Result<String> {
+    let stdin_payload = read_hook_stdin()?;
+    let result = run_conversation_trace_subcommand_from_payload(&stdin_payload);
+    if let Err(ref error) = result {
+        if let Some(log) = logger {
+            log.error(
+                "sce.hooks.conversation_trace.error",
+                &error.to_string(),
+                &[],
+            );
+        }
+    }
+    result
+}
+
+fn run_conversation_trace_subcommand_from_payload(stdin_payload: &str) -> Result<String> {
+    let payload = parse_conversation_trace_payload(stdin_payload)?;
+    persist_conversation_trace_payload_to_agent_trace_db(payload)
+}
+
+fn persist_conversation_trace_payload_to_agent_trace_db(
+    payload: ConversationTracePayload,
+) -> Result<String> {
+    let db = AgentTraceDb::new()
+        .context("Failed to open Agent Trace DB for conversation-trace persistence.")?;
+
+    match payload {
+        ConversationTracePayload::MessageUpdated(input) => {
+            db.upsert_message(input).context(
+                "Failed to persist message.updated conversation-trace payload to Agent Trace DB.",
+            )?;
+
+            Ok(String::from(
+                "conversation-trace hook persisted message.updated payload to AgentTraceDb.",
+            ))
+        }
+        ConversationTracePayload::MessagePartUpdated(input) => {
+            db.insert_part(input).context(
+                "Failed to persist message.part.updated conversation-trace payload to Agent Trace DB.",
+            )?;
+
+            Ok(String::from(
+                "conversation-trace hook persisted message.part.updated payload to AgentTraceDb.",
+            ))
+        }
+    }
+}
+
+pub fn parse_conversation_trace_payload(stdin_payload: &str) -> Result<ConversationTracePayload> {
+    let parsed: Value = serde_json::from_str(stdin_payload)
+        .context("Invalid conversation-trace payload from STDIN: expected valid JSON.")?;
+    let payload = parsed.as_object().ok_or_else(|| {
+        anyhow!(conversation_trace_validation_error(
+            "expected a JSON object"
+        ))
+    })?;
+    let event_type = required_string_field(payload, "type", conversation_trace_validation_error)?;
+
+    match event_type.as_str() {
+        "message.updated" => parse_message_updated_payload(payload),
+        "message.part.updated" => parse_message_part_updated_payload(payload),
+        _ => bail!(conversation_trace_validation_error(
+            "field 'type' must be one of 'message.updated' or 'message.part.updated'"
+        )),
+    }
+}
+
+fn parse_message_updated_payload(
+    payload: &serde_json::Map<String, Value>,
+) -> Result<ConversationTracePayload> {
+    Ok(ConversationTracePayload::MessageUpdated(
+        UpsertMessageInsert {
+            session_id: required_non_empty_string_field(
+                payload,
+                "session_id",
+                conversation_trace_validation_error,
+            )?,
+            message_id: required_non_empty_string_field(
+                payload,
+                "message_id",
+                conversation_trace_validation_error,
+            )?,
+            role: parse_message_role(payload)?,
+            agent: required_non_empty_string_field(
+                payload,
+                "agent",
+                conversation_trace_validation_error,
+            )?,
+            summary_diffs: conversation_trace_required_summary_diffs(payload)?,
+            text: required_string_field(payload, "text", conversation_trace_validation_error)?,
+            generated_at_unix_ms: required_i64_millisecond_field(
+                payload,
+                "generated_at_unix_ms",
+                conversation_trace_validation_error,
+            )?,
+        },
+    ))
+}
+
+fn parse_message_part_updated_payload(
+    payload: &serde_json::Map<String, Value>,
+) -> Result<ConversationTracePayload> {
+    Ok(ConversationTracePayload::MessagePartUpdated(
+        InsertPartInsert {
+            session_id: required_non_empty_string_field(
+                payload,
+                "session_id",
+                conversation_trace_validation_error,
+            )?,
+            message_id: required_non_empty_string_field(
+                payload,
+                "message_id",
+                conversation_trace_validation_error,
+            )?,
+            part_type: parse_part_type(payload)?,
+            text: required_string_field(payload, "text", conversation_trace_validation_error)?,
+            generated_at_unix_ms: required_i64_millisecond_field(
+                payload,
+                "generated_at_unix_ms",
+                conversation_trace_validation_error,
+            )?,
+        },
+    ))
+}
+
+fn parse_message_role(payload: &serde_json::Map<String, Value>) -> Result<MessageRole> {
+    match required_string_field(payload, "role", conversation_trace_validation_error)?.as_str() {
+        "user" => Ok(MessageRole::User),
+        "assistant" => Ok(MessageRole::Assistant),
+        _ => bail!(conversation_trace_validation_error(
+            "field 'role' must be one of 'user' or 'assistant'"
+        )),
+    }
+}
+
+fn parse_part_type(payload: &serde_json::Map<String, Value>) -> Result<PartType> {
+    match required_string_field(payload, "part_type", conversation_trace_validation_error)?.as_str()
+    {
+        "text" => Ok(PartType::Text),
+        "reasoning" => Ok(PartType::Reasoning),
+        _ => bail!(conversation_trace_validation_error(
+            "field 'part_type' must be one of 'text' or 'reasoning'"
+        )),
+    }
+}
+
+fn conversation_trace_required_summary_diffs(
+    payload: &serde_json::Map<String, Value>,
+) -> Result<Vec<SummaryDiffItem>> {
+    let raw = required_field(
+        payload,
+        "summary_diffs",
+        conversation_trace_validation_error,
+    )?;
+
+    serde_json::from_value(raw.clone()).map_err(|_| {
+        anyhow!(conversation_trace_validation_error(
+            "field 'summary_diffs' must be an array of typed summary diff items"
+        ))
+    })
+}
+
+fn conversation_trace_validation_error(detail: &str) -> String {
+    format!("Invalid conversation-trace payload from STDIN: {detail}.")
 }
 
 fn run_diff_trace_subcommand(
@@ -166,12 +343,19 @@ fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTracePayload> {
         .as_object()
         .ok_or_else(|| anyhow!(diff_trace_validation_error("expected a JSON object")))?;
 
-    let session_id = required_non_empty_string_field(payload, "sessionID")?;
-    let diff = required_non_empty_string_field(payload, "diff")?;
-    let time = required_u64_millisecond_field(payload, "time")?;
-    let model_id = required_non_empty_string_field(payload, "model_id")?;
-    let tool_name = required_non_empty_string_field(payload, "tool_name")?;
-    let tool_version = required_nullable_or_non_empty_string_field(payload, "tool_version")?;
+    let session_id =
+        required_non_empty_string_field(payload, "sessionID", diff_trace_validation_error)?;
+    let diff = required_non_empty_string_field(payload, "diff", diff_trace_validation_error)?;
+    let time = required_u64_millisecond_field(payload, "time", diff_trace_validation_error)?;
+    let model_id =
+        required_non_empty_string_field(payload, "model_id", diff_trace_validation_error)?;
+    let tool_name =
+        required_non_empty_string_field(payload, "tool_name", diff_trace_validation_error)?;
+    let tool_version = required_nullable_or_non_empty_string_field(
+        payload,
+        "tool_version",
+        diff_trace_validation_error,
+    )?;
 
     Ok(DiffTracePayload {
         session_id,
@@ -186,21 +370,22 @@ fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTracePayload> {
 fn required_nullable_or_non_empty_string_field(
     payload: &serde_json::Map<String, Value>,
     field_name: &str,
+    validation_error: PayloadValidationError,
 ) -> Result<Option<String>> {
-    let raw = required_field(payload, field_name)?;
+    let raw = required_field(payload, field_name, validation_error)?;
 
     if raw.is_null() {
         return Ok(None);
     }
 
     let value = raw.as_str().ok_or_else(|| {
-        anyhow!(diff_trace_validation_error(&format!(
+        anyhow!(validation_error(&format!(
             "field '{field_name}' must be null or a non-empty string"
         )))
     })?;
 
     if value.trim().is_empty() {
-        bail!(diff_trace_validation_error(&format!(
+        bail!(validation_error(&format!(
             "field '{field_name}' must be null or a non-empty string"
         )));
     }
@@ -211,22 +396,31 @@ fn required_nullable_or_non_empty_string_field(
 fn required_non_empty_string_field(
     payload: &serde_json::Map<String, Value>,
     field_name: &str,
+    validation_error: PayloadValidationError,
 ) -> Result<String> {
-    let raw = required_field(payload, field_name)?;
-
-    let value = raw.as_str().ok_or_else(|| {
-        anyhow!(diff_trace_validation_error(&format!(
-            "field '{field_name}' must be a non-empty string"
-        )))
-    })?;
+    let value = required_string_field(payload, field_name, validation_error)?;
 
     if value.trim().is_empty() {
-        bail!(diff_trace_validation_error(&format!(
+        bail!(validation_error(&format!(
             "field '{field_name}' must be a non-empty string"
         )));
     }
 
-    Ok(value.to_string())
+    Ok(value)
+}
+
+fn required_string_field(
+    payload: &serde_json::Map<String, Value>,
+    field_name: &str,
+    validation_error: PayloadValidationError,
+) -> Result<String> {
+    let raw = required_field(payload, field_name, validation_error)?;
+
+    raw.as_str().map(ToString::to_string).ok_or_else(|| {
+        anyhow!(validation_error(&format!(
+            "field '{field_name}' must be a string"
+        )))
+    })
 }
 
 #[allow(
@@ -237,8 +431,9 @@ fn required_non_empty_string_field(
 fn required_u64_millisecond_field(
     payload: &serde_json::Map<String, Value>,
     field_name: &str,
+    validation_error: PayloadValidationError,
 ) -> Result<u64> {
-    let raw = required_field(payload, field_name)?;
+    let raw = required_field(payload, field_name, validation_error)?;
 
     if let Some(value) = raw.as_u64() {
         return Ok(value);
@@ -246,7 +441,7 @@ fn required_u64_millisecond_field(
 
     if let Some(value) = raw.as_i64() {
         if value < 0 {
-            bail!(diff_trace_validation_error(&format!(
+            bail!(validation_error(&format!(
                 "field '{field_name}' must be a u64 Unix epoch millisecond value, got a negative number"
             )));
         }
@@ -255,34 +450,70 @@ fn required_u64_millisecond_field(
 
     if let Some(value) = raw.as_f64() {
         if value.fract() != 0.0 {
-            bail!(diff_trace_validation_error(&format!(
+            bail!(validation_error(&format!(
                 "field '{field_name}' must be a u64 Unix epoch millisecond value, got a fractional number"
             )));
         }
         if value < 0.0 {
-            bail!(diff_trace_validation_error(&format!(
+            bail!(validation_error(&format!(
                 "field '{field_name}' must be a u64 Unix epoch millisecond value, got a negative number"
             )));
         }
         if value > u64::MAX as f64 {
-            bail!(diff_trace_validation_error(&format!(
+            bail!(validation_error(&format!(
                 "field '{field_name}' must be a u64 Unix epoch millisecond value"
             )));
         }
         return Ok(value as u64);
     }
 
-    bail!(diff_trace_validation_error(&format!(
+    bail!(validation_error(&format!(
         "field '{field_name}' must be a u64 Unix epoch millisecond value"
+    )))
+}
+
+fn required_i64_millisecond_field(
+    payload: &serde_json::Map<String, Value>,
+    field_name: &str,
+    validation_error: PayloadValidationError,
+) -> Result<i64> {
+    let raw = required_field(payload, field_name, validation_error)?;
+
+    if let Some(value) = raw.as_i64() {
+        if value < 0 {
+            bail!(validation_error(&format!(
+                "field '{field_name}' must be a non-negative signed 64-bit Unix epoch millisecond value"
+            )));
+        }
+        return Ok(value);
+    }
+
+    if let Some(value) = raw.as_u64() {
+        return i64::try_from(value).map_err(|_| {
+            anyhow!(validation_error(&format!(
+                "field '{field_name}' must fit in a signed 64-bit Unix epoch millisecond value for Agent Trace DB storage"
+            )))
+        });
+    }
+
+    if raw.as_f64().is_some_and(|value| value.fract() != 0.0) {
+        bail!(validation_error(&format!(
+            "field '{field_name}' must be a non-negative signed 64-bit Unix epoch millisecond value, got a fractional number"
+        )));
+    }
+
+    bail!(validation_error(&format!(
+        "field '{field_name}' must be a non-negative signed 64-bit Unix epoch millisecond value"
     )))
 }
 
 fn required_field<'a>(
     payload: &'a serde_json::Map<String, Value>,
     field_name: &str,
+    validation_error: PayloadValidationError,
 ) -> Result<&'a Value> {
     payload.get(field_name).ok_or_else(|| {
-        anyhow!(diff_trace_validation_error(&format!(
+        anyhow!(validation_error(&format!(
             "missing required field '{field_name}'"
         )))
     })
@@ -757,6 +988,7 @@ fn hook_runtime_invocation_name(subcommand: &HookSubcommand) -> &'static str {
         HookSubcommand::PostCommit { .. } => "post-commit runtime invocation",
         HookSubcommand::PostRewrite { .. } => "post-rewrite runtime invocation",
         HookSubcommand::DiffTrace => "diff-trace runtime invocation",
+        HookSubcommand::ConversationTrace => "conversation-trace runtime invocation",
     }
 }
 
@@ -799,6 +1031,7 @@ fn hook_trace_name(subcommand: &HookSubcommand) -> &'static str {
         HookSubcommand::PostCommit { .. } => "post-commit",
         HookSubcommand::PostRewrite { .. } => "post-rewrite",
         HookSubcommand::DiffTrace => "diff-trace",
+        HookSubcommand::ConversationTrace => "conversation-trace",
     }
 }
 
@@ -1084,6 +1317,77 @@ mod tests {
         );
 
         parse_patch_from_text(&patch_text, None).expect("test patch should parse")
+    }
+
+    #[test]
+    fn conversation_trace_message_updated_payload_maps_to_message_upsert_input() {
+        let payload = serde_json::json!({
+            "type": "message.updated",
+            "session_id": "session-1",
+            "message_id": "message-1",
+            "role": "assistant",
+            "agent": "Shared Context Code",
+            "summary_diffs": [
+                {
+                    "file": "cli/src/services/hooks/mod.rs",
+                    "patch": "@@ -1 +1 @@",
+                    "additions": 2,
+                    "deletions": 1,
+                    "status": "modified"
+                }
+            ],
+            "text": "implemented payload parsing",
+            "generated_at_unix_ms": 1_800_000_000_000_i64
+        });
+
+        let parsed = parse_conversation_trace_payload(&payload.to_string())
+            .expect("conversation-trace message.updated payload should parse");
+
+        let ConversationTracePayload::MessageUpdated(input) = parsed else {
+            panic!("expected message.updated payload");
+        };
+
+        assert_eq!(input.session_id, "session-1");
+        assert_eq!(input.message_id, "message-1");
+        assert_eq!(input.role, MessageRole::Assistant);
+        assert_eq!(input.agent, "Shared Context Code");
+        assert_eq!(input.text, "implemented payload parsing");
+        assert_eq!(input.generated_at_unix_ms, 1_800_000_000_000_i64);
+        assert_eq!(
+            input.summary_diffs,
+            vec![SummaryDiffItem {
+                file: String::from("cli/src/services/hooks/mod.rs"),
+                patch: Some(String::from("@@ -1 +1 @@")),
+                additions: 2,
+                deletions: 1,
+                status: Some(String::from("modified")),
+            }]
+        );
+    }
+
+    #[test]
+    fn conversation_trace_message_part_updated_payload_maps_to_part_insert_input() {
+        let payload = serde_json::json!({
+            "type": "message.part.updated",
+            "session_id": "session-1",
+            "message_id": "message-1",
+            "part_type": "reasoning",
+            "text": "thinking through validation",
+            "generated_at_unix_ms": 1_800_000_000_001_i64
+        });
+
+        let parsed = parse_conversation_trace_payload(&payload.to_string())
+            .expect("conversation-trace message.part.updated payload should parse");
+
+        let ConversationTracePayload::MessagePartUpdated(input) = parsed else {
+            panic!("expected message.part.updated payload");
+        };
+
+        assert_eq!(input.session_id, "session-1");
+        assert_eq!(input.message_id, "message-1");
+        assert_eq!(input.part_type, PartType::Reasoning);
+        assert_eq!(input.text, "thinking through validation");
+        assert_eq!(input.generated_at_unix_ms, 1_800_000_000_001_i64);
     }
 
     #[test]
