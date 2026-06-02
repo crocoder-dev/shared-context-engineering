@@ -28,6 +28,22 @@ const ADD_AGENT_TRACES_REMOTE_URL_MIGRATION: &str =
 const CREATE_AGENT_TRACES_REMOTE_URL_INDEX_MIGRATION: &str = include_str!(
     "../../../migrations/agent-trace/007_create_agent_traces_vcs_remote_url_index.sql"
 );
+const CREATE_MESSAGES_MIGRATION: &str =
+    include_str!("../../../migrations/agent-trace/008_create_messages.sql");
+const CREATE_PARTS_MIGRATION: &str =
+    include_str!("../../../migrations/agent-trace/009_create_parts.sql");
+const CREATE_MESSAGES_SESSION_MESSAGE_UNIQUE_INDEX_MIGRATION: &str = include_str!(
+    "../../../migrations/agent-trace/010_create_messages_session_message_unique_index.sql"
+);
+const CREATE_MESSAGES_SESSION_ORDER_INDEX_MIGRATION: &str =
+    include_str!("../../../migrations/agent-trace/011_create_messages_session_order_index.sql");
+const CREATE_PARTS_SESSION_MESSAGE_ORDER_INDEX_MIGRATION: &str = include_str!(
+    "../../../migrations/agent-trace/012_create_parts_session_message_order_index.sql"
+);
+const CREATE_MESSAGES_UPDATED_AT_TRIGGER_MIGRATION: &str =
+    include_str!("../../../migrations/agent-trace/013_create_messages_updated_at_trigger.sql");
+const CREATE_PARTS_UPDATED_AT_TRIGGER_MIGRATION: &str =
+    include_str!("../../../migrations/agent-trace/014_create_parts_updated_at_trigger.sql");
 
 const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
     ("001_create_diff_traces", CREATE_DIFF_TRACES_MIGRATION),
@@ -51,6 +67,28 @@ const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
     (
         "007_create_agent_traces_remote_url_index",
         CREATE_AGENT_TRACES_REMOTE_URL_INDEX_MIGRATION,
+    ),
+    ("008_create_messages", CREATE_MESSAGES_MIGRATION),
+    ("009_create_parts", CREATE_PARTS_MIGRATION),
+    (
+        "010_create_messages_session_message_unique_index",
+        CREATE_MESSAGES_SESSION_MESSAGE_UNIQUE_INDEX_MIGRATION,
+    ),
+    (
+        "011_create_messages_session_order_index",
+        CREATE_MESSAGES_SESSION_ORDER_INDEX_MIGRATION,
+    ),
+    (
+        "012_create_parts_session_message_order_index",
+        CREATE_PARTS_SESSION_MESSAGE_ORDER_INDEX_MIGRATION,
+    ),
+    (
+        "013_create_messages_updated_at_trigger",
+        CREATE_MESSAGES_UPDATED_AT_TRIGGER_MIGRATION,
+    ),
+    (
+        "014_create_parts_updated_at_trigger",
+        CREATE_PARTS_UPDATED_AT_TRIGGER_MIGRATION,
     ),
 ];
 
@@ -80,6 +118,24 @@ pub const INSERT_POST_COMMIT_PATCH_INTERSECTION_SQL: &str =
 /// Parameterized SQL for inserting a built agent trace payload.
 pub const INSERT_AGENT_TRACE_SQL: &str =
     "INSERT INTO agent_traces (commit_id, commit_time_ms, trace_json, agent_trace_id, url, remote_url) VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
+
+/// Parameterized SQL for upserting a message row by `(session_id, message_id)`.
+#[allow(dead_code)]
+pub const UPSERT_MESSAGE_SQL: &str =
+    "INSERT INTO messages (session_id, message_id, role, agent, summary_diffs, text, generated_at_unix_ms)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+ON CONFLICT (session_id, message_id) DO UPDATE SET
+    role = excluded.role,
+    agent = excluded.agent,
+    summary_diffs = excluded.summary_diffs,
+    text = excluded.text,
+    generated_at_unix_ms = excluded.generated_at_unix_ms";
+
+/// Parameterized SQL for inserting a part row (append-only, no upsert).
+#[allow(dead_code)]
+pub const INSERT_PART_SQL: &str =
+    "INSERT INTO parts (type, text, message_id, session_id, generated_at_unix_ms)
+VALUES (?1, ?2, ?3, ?4, ?5)";
 
 /// Agent trace database configuration.
 pub struct AgentTraceDbSpec;
@@ -184,6 +240,77 @@ pub struct AgentTraceInsert<'a> {
     pub remote_url: &'a str,
 }
 
+/// Message role constraint for the `messages` table.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub enum MessageRole {
+    User,
+    Assistant,
+}
+
+impl std::fmt::Display for MessageRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::User => write!(f, "user"),
+            Self::Assistant => write!(f, "assistant"),
+        }
+    }
+}
+
+/// One entry in a message's `summary_diffs` JSON array.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[allow(dead_code)]
+pub struct SummaryDiffItem {
+    pub file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patch: Option<String>,
+    pub additions: usize,
+    pub deletions: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+/// Message upsert payload for the `messages` table.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub struct UpsertMessageInsert {
+    pub session_id: String,
+    pub message_id: String,
+    pub role: MessageRole,
+    pub agent: String,
+    pub summary_diffs: Vec<SummaryDiffItem>,
+    pub text: String,
+    pub generated_at_unix_ms: i64,
+}
+
+/// Part type constraint for the `parts` table.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub enum PartType {
+    Text,
+    Reasoning,
+}
+
+impl std::fmt::Display for PartType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Text => write!(f, "text"),
+            Self::Reasoning => write!(f, "reasoning"),
+        }
+    }
+}
+
+/// Part insert payload for the `parts` table (append-only, no upsert).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub struct InsertPartInsert {
+    pub part_type: PartType,
+    pub text: String,
+    pub session_id: String,
+    pub message_id: String,
+    pub generated_at_unix_ms: i64,
+}
+
 impl AgentTraceDb {
     /// Insert a diff trace payload into the `diff_traces` table.
     pub fn insert_diff_trace(&self, input: DiffTraceInsert<'_>) -> Result<u64> {
@@ -211,6 +338,18 @@ impl AgentTraceDb {
         end_time_ms: i64,
     ) -> Result<RecentDiffTracePatches> {
         recent_diff_trace_patches_with(self, cutoff_time_ms, end_time_ms)
+    }
+
+    /// Insert or update a message row identified by `(session_id, message_id)`.
+    #[allow(dead_code)]
+    pub fn upsert_message(&self, input: UpsertMessageInsert) -> Result<u64> {
+        upsert_message_with(self, input)
+    }
+
+    /// Append a part row (no upsert; multiple rows per message allowed).
+    #[allow(dead_code)]
+    pub fn insert_part(&self, input: InsertPartInsert) -> Result<u64> {
+        insert_part_with(self, input)
     }
 }
 
@@ -256,6 +395,38 @@ fn insert_agent_trace_with<M: DbSpec>(db: &TursoDb<M>, input: AgentTraceInsert<'
             input.agent_trace_id,
             input.url,
             input.remote_url,
+        ),
+    )
+}
+
+#[allow(dead_code)]
+fn upsert_message_with<M: DbSpec>(db: &TursoDb<M>, input: UpsertMessageInsert) -> Result<u64> {
+    let summary_diffs_json =
+        serde_json::to_string(&input.summary_diffs).context("failed to serialize summary_diffs")?;
+    db.execute(
+        UPSERT_MESSAGE_SQL,
+        (
+            input.session_id,
+            input.message_id,
+            input.role.to_string(),
+            input.agent,
+            summary_diffs_json,
+            input.text,
+            input.generated_at_unix_ms,
+        ),
+    )
+}
+
+#[allow(dead_code)]
+fn insert_part_with<M: DbSpec>(db: &TursoDb<M>, input: InsertPartInsert) -> Result<u64> {
+    db.execute(
+        INSERT_PART_SQL,
+        (
+            input.part_type.to_string(),
+            input.text,
+            input.message_id,
+            input.session_id,
+            input.generated_at_unix_ms,
         ),
     )
 }
@@ -557,6 +728,29 @@ mod tests {
             "index",
             "idx_agent_traces_remote_url"
         ));
+        assert!(sqlite_object_exists(&db, "table", "messages"));
+        assert!(sqlite_object_exists(&db, "table", "parts"));
+        assert!(sqlite_object_exists(
+            &db,
+            "index",
+            "idx_messages_session_message"
+        ));
+        assert!(sqlite_object_exists(
+            &db,
+            "index",
+            "idx_messages_session_order"
+        ));
+        assert!(sqlite_object_exists(
+            &db,
+            "index",
+            "idx_parts_session_message_order"
+        ));
+        assert!(sqlite_object_exists(
+            &db,
+            "trigger",
+            "trg_messages_updated_at"
+        ));
+        assert!(sqlite_object_exists(&db, "trigger", "trg_parts_updated_at"));
         assert_eq!(
             applied_migration_ids(&db),
             vec![
@@ -567,6 +761,13 @@ mod tests {
                 "005_create_agent_traces_agent_trace_id_index",
                 "006_add_agent_traces_remote_url",
                 "007_create_agent_traces_remote_url_index",
+                "008_create_messages",
+                "009_create_parts",
+                "010_create_messages_session_message_unique_index",
+                "011_create_messages_session_order_index",
+                "012_create_parts_session_message_order_index",
+                "013_create_messages_updated_at_trigger",
+                "014_create_parts_updated_at_trigger",
             ]
         );
 

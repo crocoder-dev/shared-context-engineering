@@ -18,7 +18,21 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 - `insert_post_commit_patch_intersection()`: domain-specific insert helper using parameterized SQL.
 - `AgentTraceInsert<'a>`: insert payload for built Agent Trace rows with `commit_id`, `commit_time_ms`, serialized `trace_json`, `agent_trace_id`, non-null `url`, and required `remote_url: &'a str` (Rust-API-only; DB column stays nullable).
 - `insert_agent_trace()`: domain-specific insert helper for `agent_traces` using parameterized SQL.
+- `MessageRole` enum: `User` / `Assistant` — maps to `messages.role` DB constraint.
+- `SummaryDiffItem`: serde-serializable struct `{ file, patch?, additions, deletions, status? }` for typed `summary_diffs` JSON construction.
+- `UpsertMessageInsert`: owned payload struct with all `messages` mutable columns (`session_id`, `message_id`, `role`, `agent`, `summary_diffs`, `text`, `generated_at_unix_ms`).
+- `UPSERT_MESSAGE_SQL`: parameterized SQL using `INSERT ... ON CONFLICT (session_id, message_id) DO UPDATE SET ...` — leverages the unique index `idx_messages_session_message` for conflict detection; `updated_at` is maintained by the `trg_messages_updated_at` trigger.
+- `upsert_message(input)`: typed helper that serializes `summary_diffs` to JSON and executes the upsert. Not yet wired into production hook code (planned future task).
+- `PartType` enum: `Text` / `Reasoning` — maps to `parts.type` DB constraint.
+- `InsertPartInsert`: owned payload struct with `part_type`, `text`, `session_id`, `message_id`, and `generated_at_unix_ms`.
+- `INSERT_PART_SQL`: parameterized append-only INSERT into `parts` (no upsert; multiple rows per `(session_id, message_id)` allowed).
+- `insert_part(input)`: typed helper that inserts a part row without requiring a matching `messages` row (supports out-of-order writes). Not yet wired into production hook code (planned future task).
 - `lifecycle.rs`: service lifecycle provider for setup/doctor integration.
+
+## Non-goals
+
+- No read/query helper for loading messages with their joined parts exists in this change; the typed write helpers (`upsert_message`, `insert_part`) are the only exposed message/part API surface. Message/part query helpers are deferred to a future task.
+- No part upsert/deduplication; `parts` uses only the internal integer `id` for row identity (append-only per the `INSERT_PART_SQL` contract).
 
 ## Database path
 
@@ -40,6 +54,13 @@ The Agent Trace DB path is resolved from the shared default-path catalog:
 - `005_create_agent_traces_agent_trace_id_index.sql`
 - `006_add_agent_traces_vcs_remote_url.sql` (historical filename; migration ID `006_add_agent_traces_remote_url` adds the `remote_url` column)
 - `007_create_agent_traces_vcs_remote_url_index.sql` (historical filename; migration ID `007_create_agent_traces_remote_url_index` creates `idx_agent_traces_remote_url`)
+- `008_create_messages.sql`
+- `009_create_parts.sql`
+- `010_create_messages_session_message_unique_index.sql`
+- `011_create_messages_session_order_index.sql`
+- `012_create_parts_session_message_order_index.sql`
+- `013_create_messages_updated_at_trigger.sql`
+- `014_create_parts_updated_at_trigger.sql`
 
 The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::new()` applies later Agent Trace migrations to an already-created `~/.local/state/sce/agent-trace.db`.
 
@@ -77,11 +98,47 @@ The `agent_traces` baseline migration creates:
 - `agent_trace_id TEXT NOT NULL UNIQUE`
 - `created_at TEXT NOT NULL DEFAULT (...)`
 
+The `messages` migration creates:
+
+- `id INTEGER PRIMARY KEY`
+- `session_id TEXT NOT NULL`
+- `message_id TEXT NOT NULL`
+- `role TEXT NOT NULL CHECK (role IN ('user', 'assistant'))`
+- `agent TEXT NOT NULL`
+- `summary_diffs TEXT NOT NULL DEFAULT '[]'`
+- `text TEXT NOT NULL`
+- `generated_at_unix_ms INTEGER NOT NULL CHECK (generated_at_unix_ms >= 0)`
+- `created_at TEXT NOT NULL DEFAULT (...)`
+- `updated_at TEXT NOT NULL DEFAULT (...)`
+
+The `parts` migration creates:
+
+- `id INTEGER PRIMARY KEY`
+- `type TEXT NOT NULL CHECK (type IN ('text', 'reasoning'))`
+- `text TEXT NOT NULL`
+- `message_id TEXT NOT NULL`
+- `session_id TEXT NOT NULL`
+- `generated_at_unix_ms INTEGER NOT NULL CHECK (generated_at_unix_ms >= 0)`
+- `created_at TEXT NOT NULL DEFAULT (...)`
+- `updated_at TEXT NOT NULL DEFAULT (...)`
+
+No foreign keys exist between `messages` and `parts`; rows may be written out of order. The data model uses natural identifiers (`session_id`, `message_id`) for joins rather than DB-level referential integrity.
+
 Lookup indexes created by the baseline migration set:
 
 - `idx_diff_traces_time_ms_id` on `(time_ms, id)`
 - `idx_agent_traces_agent_trace_id` on `(agent_trace_id)`
 - `idx_agent_traces_remote_url` on `(remote_url)`
+- `idx_messages_session_message` unique index on `(session_id, message_id)` — enables upsert by natural key
+- `idx_messages_session_order` on `(session_id, generated_at_unix_ms, id)` — enables chronological session-scoped message retrieval
+- `idx_parts_session_message_order` on `(session_id, message_id, generated_at_unix_ms, id)` — enables ordered part joins per message
+
+`updated_at` triggers defined by the migration set:
+
+- `trg_messages_updated_at`: fires on `UPDATE` for non-`updated_at` column changes on `messages`
+- `trg_parts_updated_at`: fires on `UPDATE` for non-`updated_at` column changes on `parts`
+
+Both triggers compare `OLD.*` vs `NEW.*` for all mutable columns (excluding `updated_at` itself) and refresh the timestamp only when a real change occurred.
 
 ## Lifecycle integration
  
