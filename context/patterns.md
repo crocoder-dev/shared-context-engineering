@@ -1,4 +1,4 @@
-B# Patterns
+A# Patterns
 
 ## Config generation tooling
 

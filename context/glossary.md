@@ -1,4 +1,4 @@
-B# Glossary
+A# Glossary
 
 - `pkl-check-generated`: Flake test test test app command exposed as `nix run .#pkl-check-generated`; canonical lightweight parity test entrypoint that runs the generated-output drift check inside the Nix dev shell.
 - `repo-level verification preference`: Current repository guidance that contributor-facing validation/check flows should prefer `nix flake check`; direct Cargo verification commands are secondary and used only when explicitly requested or for narrow targeted debugging, while `cargo fmt` remains the explicit autofix path.
