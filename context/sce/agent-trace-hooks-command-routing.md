@@ -12,6 +12,7 @@
 - `sce hooks post-commit [--vcs <value>] --remote-url <url>`
 - `sce hooks post-rewrite <amend|rebase|other>`
 - `sce hooks diff-trace`
+- `sce hooks conversation-trace`
 
 ## Parser and dispatch behavior
 
@@ -57,6 +58,14 @@
 - `post-rewrite` is a deterministic no-op entrypoint.
 - `diff-trace` reads STDIN JSON, validates required non-empty `sessionID`/`diff`/`model_id`/`tool_name`, validates required `tool_version` (must be present and either `null` or a non-empty string), validates required `u64` `time` (Unix epoch milliseconds), rejects `time` values that cannot fit the Agent Trace DB signed `time_ms` column, writes one parsed-payload artifact per invocation to `context/tmp/<timestamp>-000000-diff-trace.json` with atomic create-new retry semantics, and inserts the parsed payload fields into AgentTraceDb via `DiffTraceInsert` + `insert_diff_trace()` including `model_id`.
 - `diff-trace` success requires both persistence paths to succeed; artifact write failures and AgentTraceDb open/insert failures are command-failing runtime errors logged through `sce.hooks.diff_trace.error`.
+- `conversation-trace` is a recognized hidden hook subcommand routed through `HookSubcommand::ConversationTrace`. It reads STDIN JSON and validates a normalized snake_case envelope with top-level `type` discriminator:
+  - `type: "message.updated"` maps valid payloads into `UpsertMessageInsert` with required non-empty `session_id`, `message_id`, `agent`, valid `role` (`user|assistant`), typed `summary_diffs: SummaryDiffItem[]`, string `text`, and non-negative signed-64-bit `generated_at_unix_ms`.
+  - `type: "message.part.updated"` maps valid payloads into `InsertPartInsert` with required non-empty `session_id`, `message_id`, valid `part_type` (`text|reasoning`), string `text`, and non-negative signed-64-bit `generated_at_unix_ms`.
+  - Invalid payloads fail with deterministic `Invalid conversation-trace payload from STDIN: ...` diagnostics.
+  - After validation, the hook opens `AgentTraceDb` and persists `message.updated` through `AgentTraceDb::upsert_message()` or `message.part.updated` through `AgentTraceDb::insert_part()`.
+  - DB open/write failures are command-failing runtime errors logged through `sce.hooks.conversation_trace.error`.
+  - Current success output is emitted only after the DB write succeeds; the hook does not persist `context/tmp` artifacts.
+  - The current integration is CLI-only; no OpenCode plugin/runtime caller is wired by this plan.
 
 ## Explicit non-goals in the current baseline
 
@@ -65,3 +74,4 @@
 - No backfill/import of existing `context/tmp/*-diff-trace.json` artifacts into AgentTraceDb
 - No retry queue replay
 - No rewrite remap ingestion
+- No `conversation-trace` retry/backfill path or `context/tmp` artifact persistence

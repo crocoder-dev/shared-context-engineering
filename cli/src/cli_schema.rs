@@ -279,6 +279,9 @@ pub enum HooksSubcommand {
 
     #[command(about = "Run diff-trace hook (reads JSON payload from STDIN)")]
     DiffTrace,
+
+    #[command(about = "Run conversation-trace hook (reads JSON payload from STDIN)")]
+    ConversationTrace,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
