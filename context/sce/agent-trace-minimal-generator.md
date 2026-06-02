@@ -13,7 +13,8 @@ Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical 
    - **`mixed`** — `intersection_patch` hunk exists at the same slot but content differs.
    - **`unknown`** — no `intersection_patch` hunk at the same `old_start` slot.
 4. Map `Conversation.contributor.model_id` from the matched `intersection_patch` hunk when contributor type is `ai` or `mixed`; omit `model_id` when provenance is missing (`None`).
-5. Emit one `Conversation` per `post_commit_patch` hunk, one `TraceFile` per `post_commit_patch` file, and one range per hunk with a deterministic `content_hash` computed from that hunk's touched-line kind/content.
+5. For each emitted conversation, derive optional `conversation.related` entries from non-empty `session_id` values on touched lines in the matched `intersection_patch` hunk; emit related entries as `{ "type": "session", "url": "https://sce.crocoder.dev/sessions/<session_id>" }`, deduplicated by session ID with deterministic ordering, and omit `related` when no included lines provide `session_id`.
+6. Emit one `Conversation` per `post_commit_patch` hunk, one `TraceFile` per `post_commit_patch` file, and one range per hunk with a deterministic `content_hash` computed from that hunk's touched-line kind/content.
 
 ## Domain types
 
@@ -31,7 +32,7 @@ Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical 
 | `AgentTraceSceMetadata` | Nested `metadata.sce` object carrying the compiled SCE CLI package `version`                                 |
 | `AgentTrace`            | Top-level payload: `version`, `id`, `timestamp`, optional `vcs`, optional `tool`, `metadata`, `files`        |
 
-All types are `serde`-serializable with `snake_case` field naming. `Conversation.contributor` serializes as a nested object with a JSON field named `type`; `model_id` is present only when a concrete value exists. `Conversation.related` is optional and omitted when `None` (`skip_serializing_if = "Option::is_none"`). `ConversationRelated` remains schema-aligned domain-model support and is not yet populated by runtime builder logic.
+All types are `serde`-serializable with `snake_case` field naming. `Conversation.contributor` serializes as a nested object with a JSON field named `type`; `model_id` is present only when a concrete value exists. `Conversation.related` is optional and omitted when `None` (`skip_serializing_if = "Option::is_none"`) and is now populated from matched intersection-line `session_id` provenance as session links.
 
 ## Payload shape
 

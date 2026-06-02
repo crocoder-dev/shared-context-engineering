@@ -12,7 +12,7 @@
 //! - same hunk slot in `post_commit_patch` but not exact line-by-line match => `mixed`
 //! - hunk present in `post_commit_patch` but missing from `intersection_patch` => `unknown`
 
-use std::{error::Error, fmt, io::Cursor, path::Path, sync::OnceLock};
+use std::{collections::BTreeSet, error::Error, fmt, io::Cursor, path::Path, sync::OnceLock};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, FixedOffset};
@@ -34,6 +34,7 @@ const RANGE_CONTENT_HASH_PREFIX: &str = "murmur3:";
 const RANGE_CONTENT_HASH_INPUT_VERSION: &[u8] = b"sce-agent-trace-range-content-hash-v1\0";
 const TOUCHED_LINE_ADDED_TAG: &[u8] = b"added\0";
 const TOUCHED_LINE_REMOVED_TAG: &[u8] = b"removed\0";
+const SESSION_RELATED_URL_PREFIX: &str = "https://sce.crocoder.dev/sessions/";
 
 fn default_agent_trace_version() -> String {
     AGENT_TRACE_VERSION.to_owned()
@@ -419,30 +420,51 @@ fn build_trace_file(
         .hunks
         .iter()
         .map(|post_commit_hunk| {
-            let (contributor_kind, contributor_model_id) = match intersection_file {
-                Some(ifile) => {
-                    let contributor_kind = classify_hunk(post_commit_hunk, &ifile.hunks);
-                    let matched_intersection_hunk = ifile
-                        .hunks
-                        .iter()
-                        .find(|h| h.old_start == post_commit_hunk.old_start);
-                    let contributor_model_id = match contributor_kind {
-                        HunkContributor::Ai | HunkContributor::Mixed => {
-                            matched_intersection_hunk.and_then(|hunk| hunk.model_id.clone())
-                        }
-                        HunkContributor::Unknown => None,
-                    };
-                    (contributor_kind, contributor_model_id)
-                }
-                None => (HunkContributor::Unknown, None),
-            };
+            let (contributor_kind, contributor_model_id, matched_intersection_hunk) =
+                match intersection_file {
+                    Some(ifile) => {
+                        let contributor_kind = classify_hunk(post_commit_hunk, &ifile.hunks);
+                        let matched_intersection_hunk = ifile
+                            .hunks
+                            .iter()
+                            .find(|h| h.old_start == post_commit_hunk.old_start);
+                        let contributor_model_id = match contributor_kind {
+                            HunkContributor::Ai | HunkContributor::Mixed => {
+                                matched_intersection_hunk.and_then(|hunk| hunk.model_id.clone())
+                            }
+                            HunkContributor::Unknown => None,
+                        };
+                        (
+                            contributor_kind,
+                            contributor_model_id,
+                            matched_intersection_hunk,
+                        )
+                    }
+                    None => (HunkContributor::Unknown, None, None),
+                };
+            let related_session_ids = matched_intersection_hunk
+                .into_iter()
+                .flat_map(|hunk| hunk.lines.iter())
+                .filter_map(|line| line.session_id.as_deref())
+                .filter(|session_id| !session_id.is_empty())
+                .collect::<BTreeSet<_>>();
+            let related = (!related_session_ids.is_empty()).then(|| {
+                related_session_ids
+                    .into_iter()
+                    .map(|session_id| ConversationRelated {
+                        kind: String::from("session"),
+                        url: format!("{SESSION_RELATED_URL_PREFIX}{session_id}"),
+                    })
+                    .collect()
+            });
+
             Conversation {
                 contributor: Contributor {
                     kind: contributor_kind,
                     model_id: contributor_model_id,
                 },
                 ranges: vec![line_range_from_hunk(post_commit_file, post_commit_hunk)],
-                related: None,
+                related,
             }
         })
         .collect();

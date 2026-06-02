@@ -147,7 +147,7 @@ fn poem_edit_reconstruction_matches_golden_agent_trace() {
 
 #[test]
 fn poem_edit_reconstruction_maps_each_hunk_to_one_range() {
-    let constructed_patch = combine_patches(&parse_fixtures(&[
+    let mut constructed_patch = combine_patches(&parse_fixtures(&[
         include_str!("fixtures/poem_edit_reconstruction/incremental_01.patch"),
         include_str!("fixtures/poem_edit_reconstruction/incremental_02.patch"),
     ]));
@@ -156,6 +156,10 @@ fn poem_edit_reconstruction_maps_each_hunk_to_one_range() {
         None,
     )
     .expect("fixture patch should parse");
+
+    let first_hunk_lines = &mut constructed_patch.files[0].hunks[0].lines;
+    first_hunk_lines[0].session_id = Some(String::from("session-z"));
+    first_hunk_lines[1].session_id = Some(String::from("session-a"));
 
     let agent_trace = build_agent_trace(
         &constructed_patch,
@@ -176,6 +180,42 @@ fn poem_edit_reconstruction_maps_each_hunk_to_one_range() {
     assert_eq!(agent_trace.files.len(), 1);
     assert_eq!(agent_trace.files[0].path, "poem.md");
     assert_eq!(agent_trace.files[0].conversations.len(), 3);
+    assert_eq!(
+        agent_trace.files[0].conversations[0].related,
+        Some(vec![
+            super::ConversationRelated {
+                kind: String::from("session"),
+                url: String::from("https://sce.crocoder.dev/sessions/session-a"),
+            },
+            super::ConversationRelated {
+                kind: String::from("session"),
+                url: String::from("https://sce.crocoder.dev/sessions/session-z"),
+            },
+        ])
+    );
+    assert_eq!(agent_trace.files[0].conversations[1].related, None);
+    assert_eq!(agent_trace.files[0].conversations[2].related, None);
+    assert_eq!(
+        actual_json["files"][0]["conversations"][0]["related"],
+        json!([
+            {
+                "type": "session",
+                "url": "https://sce.crocoder.dev/sessions/session-a"
+            },
+            {
+                "type": "session",
+                "url": "https://sce.crocoder.dev/sessions/session-z"
+            }
+        ])
+    );
+    assert!(
+        actual_json["files"][0]["conversations"][1]["related"].is_null(),
+        "conversations without session-backed lines should omit related"
+    );
+    assert!(
+        actual_json["files"][0]["conversations"][2]["related"].is_null(),
+        "conversations without session-backed lines should omit related"
+    );
     assert_eq!(
         agent_trace.files[0]
             .conversations
