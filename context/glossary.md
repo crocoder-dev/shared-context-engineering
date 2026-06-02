@@ -1,6 +1,6 @@
 # Glossary
 
-- `pkl-check-generated`: Flake app command exposed as `nix run .#pkl-check-generated`; canonical lightweight parity test entrypoint that runs the generated-output drift check inside the Nix dev shell.
+- `pkl-check-generated`: Flake app main main main command exposed as `nix run .#pkl-check-generated`; canonical lightweight parity test entrypoint that runs the generated-output drift check inside the Nix dev shell.
 - `repo-level verification preference`: Current repository guidance that contributor-facing validation/check flows should prefer `nix flake check`; direct Cargo verification commands are secondary and used only when explicitly requested or for narrow targeted debugging, while `cargo fmt` remains the explicit autofix path.
 - lightweight post-task verification baseline: Required quick checks after each completed task in this repo: `nix run .#pkl-check-generated` and `nix flake check`.
 - disposable plan lifecycle: Policy where `context/plans/` holds active execution artifacts only; completed plans are disposable and durable outcomes must be reflected in current-state context files and/or `context/decisions/`.
