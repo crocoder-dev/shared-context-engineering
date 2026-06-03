@@ -10,7 +10,7 @@
   - `migrations()` returns ordered embedded migration `(id, sql)` pairs.
 - `TursoDb<M: DbSpec>`: generic adapter that owns:
   - tokio current-thread runtime creation
-  - Turso local database open/connect flow
+  - Turso local database open/connect flow using `turso::Builder::new_local()` with `experimental_multiprocess_wal(true)` so concurrent `sce` processes can safely access the same local database without WAL lock contention
   - parent-directory creation
   - synchronous `execute()`, `query()`, and row-mapping `query_map()` wrappers
   - generic embedded migration execution through `run_migrations()` with per-database `__sce_migrations` metadata
