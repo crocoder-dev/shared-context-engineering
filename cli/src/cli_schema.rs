@@ -282,6 +282,16 @@ pub enum HooksSubcommand {
 
     #[command(about = "Run conversation-trace hook (reads JSON payload from STDIN)")]
     ConversationTrace,
+
+    #[command(
+        name = "claude-capture",
+        about = "Capture raw Claude hook payload JSON from STDIN",
+        hide = true
+    )]
+    ClaudeCapture {
+        #[arg(value_name = "event-name")]
+        event_name: String,
+    },
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]

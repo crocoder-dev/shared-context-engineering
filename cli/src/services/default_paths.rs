@@ -375,6 +375,7 @@ pub(crate) mod context_dir {
     pub const DECISIONS: &str = "decisions";
     pub const HANDOVERS: &str = "handovers";
     pub const TMP: &str = "tmp";
+    pub const CLAUDE: &str = "claude";
 }
 
 #[allow(dead_code)]
@@ -463,6 +464,10 @@ impl RepoPaths {
 
     pub(crate) fn context_tmp_dir(&self) -> PathBuf {
         self.context_dir().join(context_dir::TMP)
+    }
+
+    pub(crate) fn claude_capture_tmp_dir(&self) -> PathBuf {
+        self.context_tmp_dir().join(context_dir::CLAUDE)
     }
 
     pub(crate) fn context_overview_file(&self) -> PathBuf {

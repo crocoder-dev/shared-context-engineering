@@ -143,9 +143,9 @@ Lookup indexes created by the baseline migration set:
 Both triggers compare `OLD.*` vs `NEW.*` for all mutable columns (excluding `updated_at` itself) and refresh the timestamp only when a real change occurred.
 
 ## Lifecycle integration
- 
+
 `AgentTraceDbLifecycle` is registered in `cli/src/services/lifecycle.rs` after `LocalDbLifecycle` and before optional `HooksLifecycle`.
- 
+
 - `diagnose()` reports canonical Agent Trace DB path and parent-directory readiness problems through the shared DB path-health helper.
 - `fix()` can bootstrap the canonical Agent Trace DB parent directory for auto-fixable parent-readiness problems.
 - `setup()` initializes the database with `AgentTraceDb::new()`, including all ordered Agent Trace migrations and any later migrations not yet recorded in `__sce_migrations`.
@@ -157,8 +157,8 @@ Both triggers compare `OLD.*` vs `NEW.*` for all mutable columns (excluding `upd
 
 - The hook path validates required STDIN `{ sessionID, diff, time, model_id, tool_name, tool_version }` before persistence (`tool_name` non-empty; `tool_version` present and either `null` or non-empty string) and passes parsed `model_id`, `tool_name`, and nullable `tool_version` into `DiffTraceInsert`.
 - `time` is accepted as a `u64` Unix epoch millisecond input and must fit the signed `i64` `time_ms` column before any persistence starts.
-- The hook writes the existing collision-safe `context/tmp/<timestamp>-000000-diff-trace.json` parsed-payload artifact and inserts the parsed payload fields through readiness-gated `AgentTraceDb::insert_diff_trace()`.
-- Command success requires both artifact and database persistence to succeed.
+- The hook writes the existing collision-safe `context/tmp/<timestamp>-000000-diff-trace.json` parsed-payload artifact, then attempts to insert the parsed payload fields through `AgentTraceDb::insert_diff_trace()`.
+- Command success requires artifact persistence to succeed; AgentTraceDb open/insert failures are logged and reflected in the success text as failed DB persistence instead of discarding the artifact fallback.
 - Existing artifact files are not backfilled into the database.
 
 Post-commit intersection rows are written by the active `post-commit` hook flow through readiness-gated AgentTraceDb access, and the same flow now also inserts built Agent Trace payloads into `agent_traces` via `AgentTraceDb::insert_agent_trace()` (see [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md)). The persisted `trace_json` is the schema-validated `build_agent_trace(...)` output and includes top-level `metadata.sce.version` from the compiled `sce` CLI package version plus `content_hash` on every emitted range. Range `content_hash` values are computed from the touched-line kind/content of the post-commit hunk that produced the persisted range, not from DB IDs, paths, line positions, or runtime metadata.

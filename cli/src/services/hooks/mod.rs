@@ -9,6 +9,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{json, to_string as serialize_to_json, Value};
+use tracing;
 
 use crate::services::agent_trace::{
     build_agent_trace, validate_agent_trace_value, AgentTrace, AgentTraceMetadataInput,
@@ -18,13 +19,14 @@ use crate::services::agent_trace_db::{
     AgentTraceDb, AgentTraceInsert, DiffTraceInsert, InsertMessageInsert, InsertPartInsert,
     MessageRole, PartType, PostCommitPatchIntersectionInsert, RecentDiffTracePatches,
 };
-use crate::services::config;
 use crate::services::observability::traits::Logger;
 use crate::services::patch::{
     combine_patches as combine_patches_fn, intersect_patches as intersect_patches_fn,
     parse_patch as parse_patch_from_text, ParsedPatch,
 };
+use crate::services::{config, default_paths::RepoPaths};
 
+pub mod claude_transcript;
 pub mod command;
 pub mod lifecycle;
 
@@ -33,6 +35,45 @@ pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@croco
 const AGENT_TRACE_URL_PREFIX: &str = "sce.crocoder.dev/trace/";
 
 const MAX_TRACE_FILE_CREATE_ATTEMPTS: u64 = 1_000_000;
+const SUPPORTED_CLAUDE_CAPTURE_EVENTS_TEXT: &str =
+    "SessionStart, UserPromptSubmit, PostToolUse, Stop";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClaudeCaptureEvent {
+    SessionStart,
+    UserPromptSubmit,
+    PostToolUse,
+    Stop,
+}
+
+impl ClaudeCaptureEvent {
+    pub fn parse(event_name: &str) -> Result<Self> {
+        let normalized = event_name.trim();
+
+        match normalized {
+            "SessionStart" => Ok(Self::SessionStart),
+            "UserPromptSubmit" => Ok(Self::UserPromptSubmit),
+            "PostToolUse" => Ok(Self::PostToolUse),
+            "Stop" => Ok(Self::Stop),
+            _ => bail!(unsupported_claude_capture_event_error(normalized)),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SessionStart => "SessionStart",
+            Self::UserPromptSubmit => "UserPromptSubmit",
+            Self::PostToolUse => "PostToolUse",
+            Self::Stop => "Stop",
+        }
+    }
+}
+
+fn unsupported_claude_capture_event_error(event_name: &str) -> String {
+    format!(
+        "Unsupported Claude capture event '{event_name}'. Supported events: {SUPPORTED_CLAUDE_CAPTURE_EVENTS_TEXT}. Try: rerun with one of the supported Claude hook event names."
+    )
+}
 
 type PayloadValidationError = fn(&str) -> String;
 
@@ -51,6 +92,9 @@ pub enum HookSubcommand {
     },
     DiffTrace,
     ConversationTrace,
+    ClaudeCapture {
+        event: ClaudeCaptureEvent,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -105,6 +149,13 @@ impl ConversationTracePersistenceSummary {
     }
 }
 
+struct TraceArtifactPayload {
+    trace_directory: PathBuf,
+    trace_name: String,
+    serialized: String,
+    artifact_description: &'static str,
+}
+
 /// Required `sce hooks diff-trace` STDIN payload shape:
 /// `{ sessionID, diff, time, model_id, tool_name, tool_version }`.
 ///
@@ -145,6 +196,9 @@ fn run_hooks_subcommand_in_repo(
         }
         HookSubcommand::DiffTrace => run_diff_trace_subcommand(repository_root, logger),
         HookSubcommand::ConversationTrace => run_conversation_trace_subcommand(logger),
+        HookSubcommand::ClaudeCapture { event } => {
+            run_claude_capture_subcommand(repository_root, *event, logger)
+        }
     }
 }
 
@@ -561,6 +615,142 @@ fn run_diff_trace_subcommand_from_payload(
     }
 }
 
+fn run_claude_capture_subcommand(
+    repository_root: &Path,
+    event: ClaudeCaptureEvent,
+    logger: Option<&dyn Logger>,
+) -> Result<String> {
+    let stdin_payload = read_hook_stdin()?;
+    let result = run_claude_capture_subcommand_from_payload(repository_root, event, &stdin_payload);
+    if let Err(ref error) = result {
+        if let Some(log) = logger {
+            log.error(
+                "sce.hooks.claude_capture.error",
+                &error.to_string(),
+                &[("event", event.as_str())],
+            );
+        }
+    }
+    result
+}
+
+fn run_claude_capture_subcommand_from_payload(
+    repository_root: &Path,
+    event: ClaudeCaptureEvent,
+    stdin_payload: &str,
+) -> Result<String> {
+    persist_claude_capture_payload(repository_root, event, stdin_payload)?;
+
+    Ok(format!(
+        "claude-capture hook intake persisted {} payload to context/tmp/claude.",
+        event.as_str()
+    ))
+}
+
+fn persist_claude_capture_payload(
+    repository_root: &Path,
+    event: ClaudeCaptureEvent,
+    stdin_payload: &str,
+) -> Result<PathBuf> {
+    persist_claude_capture_payload_with(repository_root, event, stdin_payload, |artifact| {
+        persist_serialized_trace_payload(
+            &artifact.trace_directory,
+            &artifact.trace_name,
+            &artifact.serialized,
+            artifact.artifact_description,
+        )
+    })
+}
+
+fn persist_claude_capture_payload_with<P>(
+    repository_root: &Path,
+    event: ClaudeCaptureEvent,
+    stdin_payload: &str,
+    persist_artifact: P,
+) -> Result<PathBuf>
+where
+    P: FnOnce(TraceArtifactPayload) -> Result<PathBuf>,
+{
+    let artifact = build_claude_capture_artifact(repository_root, event, stdin_payload)?;
+
+    persist_artifact(artifact)
+}
+
+fn build_claude_capture_artifact(
+    repository_root: &Path,
+    event: ClaudeCaptureEvent,
+    stdin_payload: &str,
+) -> Result<TraceArtifactPayload> {
+    let mut parsed = parse_claude_capture_payload(stdin_payload)?;
+
+    // Enrich PostToolUse artifacts with the model identity from the Claude
+    // transcript. Other event types (SessionStart, UserPromptSubmit, Stop)
+    // remain unchanged.
+    if event == ClaudeCaptureEvent::PostToolUse {
+        enrich_post_tool_use_with_model(&mut parsed);
+    }
+
+    let serialized = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&parsed)
+            .context("Failed to serialize Claude capture payload for persistence.")?
+    );
+
+    Ok(TraceArtifactPayload {
+        trace_directory: RepoPaths::new(repository_root).claude_capture_tmp_dir(),
+        trace_name: event.as_str().to_string(),
+        serialized,
+        artifact_description: "Claude capture payload",
+    })
+}
+
+/// Attempt to enrich a `PostToolUse` parsed payload with the model identity
+/// from the Claude JSONL transcript. Reads `transcript_path` and `tool_use_id`
+/// from the payload, calls the transcript extraction helper, and injects
+/// the model as `"model"` in the root JSON object.
+///
+/// Degrades gracefully: if `transcript_path` or `tool_use_id` are missing,
+/// the transcript is inaccessible, or the model cannot be determined, the
+/// payload is left unchanged. A warning is logged via `tracing::warn!` for
+/// cases where the transcript could not be read.
+fn enrich_post_tool_use_with_model(parsed: &mut Value) {
+    let Some(obj) = parsed.as_object_mut() else {
+        return;
+    };
+
+    let Some(transcript_path_str) = obj.get("transcript_path").and_then(|v| v.as_str()) else {
+        tracing::warn!(
+            "PostToolUse enrichment: missing 'transcript_path' in payload; skipping model enrichment"
+        );
+        return;
+    };
+    let transcript_path = Path::new(transcript_path_str);
+
+    let Some(tool_use_id) = obj.get("tool_use_id").and_then(|v| v.as_str()) else {
+        tracing::warn!(
+            "PostToolUse enrichment: missing 'tool_use_id' in payload; skipping model enrichment"
+        );
+        return;
+    };
+
+    if let Some(model) =
+        claude_transcript::extract_claude_transcript_model(transcript_path, tool_use_id)
+    {
+        obj.insert("model".to_string(), Value::String(model));
+    } else {
+        tracing::warn!(
+            "PostToolUse enrichment: could not extract model from transcript at '{}' for tool_use_id '{}'; writing artifact without model field",
+            transcript_path.display(),
+            tool_use_id
+        );
+    }
+}
+
+fn parse_claude_capture_payload(stdin_payload: &str) -> Result<Value> {
+    serde_json::from_str(stdin_payload)
+        .context("Invalid Claude capture payload from STDIN: expected valid JSON.")
+}
+
 fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTracePayload> {
     let parsed: Value = serde_json::from_str(stdin_payload)
         .context("Invalid diff-trace payload from STDIN: expected valid JSON.")?;
@@ -752,7 +942,7 @@ fn persist_diff_trace_payload(
     repository_root: &Path,
     payload: &DiffTracePayload,
 ) -> Result<PathBuf> {
-    let trace_directory = repository_root.join("context").join("tmp");
+    let trace_directory = RepoPaths::new(repository_root).context_tmp_dir();
     let serialized = format!(
         "{}\n",
         serde_json::to_string_pretty(payload)
@@ -812,6 +1002,22 @@ fn persist_serialized_trace_payload(
     serialized: &str,
     artifact_description: &str,
 ) -> Result<PathBuf> {
+    persist_serialized_trace_payload_at(
+        trace_directory,
+        trace_name,
+        serialized,
+        artifact_description,
+        Utc::now(),
+    )
+}
+
+fn persist_serialized_trace_payload_at(
+    trace_directory: &Path,
+    trace_name: &str,
+    serialized: &str,
+    artifact_description: &str,
+    timestamp: DateTime<Utc>,
+) -> Result<PathBuf> {
     fs::create_dir_all(trace_directory).with_context(|| {
         format!(
             "Failed to create hook trace directory '{}'.",
@@ -819,12 +1025,31 @@ fn persist_serialized_trace_payload(
         )
     })?;
 
-    let timestamp = Utc::now();
+    persist_trace_payload_with_retries(
+        trace_directory,
+        trace_name,
+        serialized,
+        artifact_description,
+        timestamp,
+        persist_trace_payload_to_file,
+    )
+}
 
+fn persist_trace_payload_with_retries<P>(
+    trace_directory: &Path,
+    trace_name: &str,
+    serialized: &str,
+    artifact_description: &str,
+    timestamp: DateTime<Utc>,
+    mut persist_file: P,
+) -> Result<PathBuf>
+where
+    P: FnMut(&Path, &str) -> io::Result<()>,
+{
     for attempt in 0..MAX_TRACE_FILE_CREATE_ATTEMPTS {
         let file_path = trace_directory.join(build_trace_file_name(trace_name, timestamp, attempt));
 
-        match persist_trace_payload_to_file(&file_path, serialized) {
+        match persist_file(&file_path, serialized) {
             Ok(()) => return Ok(file_path),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
             Err(error) => {
@@ -1218,6 +1443,7 @@ fn hook_runtime_invocation_name(subcommand: &HookSubcommand) -> &'static str {
         HookSubcommand::PostRewrite { .. } => "post-rewrite runtime invocation",
         HookSubcommand::DiffTrace => "diff-trace runtime invocation",
         HookSubcommand::ConversationTrace => "conversation-trace runtime invocation",
+        HookSubcommand::ClaudeCapture { .. } => "claude-capture runtime invocation",
     }
 }
 
@@ -1227,7 +1453,7 @@ fn persist_hook_trace(
     input: &Value,
     outcome: &Result<String>,
 ) -> Result<()> {
-    let trace_directory = repository_root.join("context").join("tmp");
+    let trace_directory = RepoPaths::new(repository_root).context_tmp_dir();
     let body = match outcome {
         Ok(output) => json!({
             "input": input,
@@ -1261,6 +1487,7 @@ fn hook_trace_name(subcommand: &HookSubcommand) -> &'static str {
         HookSubcommand::PostRewrite { .. } => "post-rewrite",
         HookSubcommand::DiffTrace => "diff-trace",
         HookSubcommand::ConversationTrace => "conversation-trace",
+        HookSubcommand::ClaudeCapture { .. } => "claude-capture",
     }
 }
 
