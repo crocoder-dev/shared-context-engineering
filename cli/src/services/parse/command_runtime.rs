@@ -344,16 +344,20 @@ fn convert_setup_command(
 fn convert_hooks_subcommand(
     subcommand: cli_schema::HooksSubcommand,
 ) -> Result<RuntimeCommandHandle, ClassifiedError> {
+    let subcommand = convert_hooks_subcommand_request(subcommand)?;
+
+    Ok(Box::new(services::hooks::command::HooksCommand {
+        subcommand,
+    }))
+}
+
+fn convert_hooks_subcommand_request(
+    subcommand: cli_schema::HooksSubcommand,
+) -> Result<services::hooks::HookSubcommand, ClassifiedError> {
     match subcommand {
-        cli_schema::HooksSubcommand::PreCommit => {
-            Ok(Box::new(services::hooks::command::HooksCommand {
-                subcommand: services::hooks::HookSubcommand::PreCommit,
-            }))
-        }
+        cli_schema::HooksSubcommand::PreCommit => Ok(services::hooks::HookSubcommand::PreCommit),
         cli_schema::HooksSubcommand::CommitMsg { message_file } => {
-            Ok(Box::new(services::hooks::command::HooksCommand {
-                subcommand: services::hooks::HookSubcommand::CommitMsg { message_file },
-            }))
+            Ok(services::hooks::HookSubcommand::CommitMsg { message_file })
         }
         cli_schema::HooksSubcommand::PostCommit { vcs, remote_url } => {
             let vcs_type = parse_optional_hook_vcs_type(vcs.as_deref())
@@ -361,22 +365,20 @@ fn convert_hooks_subcommand(
             let remote_url =
                 parse_optional_hook_remote_url(remote_url).map_err(ClassifiedError::validation)?;
 
-            Ok(Box::new(services::hooks::command::HooksCommand {
-                subcommand: services::hooks::HookSubcommand::PostCommit {
-                    vcs_type,
-                    remote_url: Some(remote_url),
-                },
-            }))
+            Ok(services::hooks::HookSubcommand::PostCommit {
+                vcs_type,
+                remote_url: Some(remote_url),
+            })
         }
         cli_schema::HooksSubcommand::PostRewrite { rewrite_method } => {
-            Ok(Box::new(services::hooks::command::HooksCommand {
-                subcommand: services::hooks::HookSubcommand::PostRewrite { rewrite_method },
-            }))
+            Ok(services::hooks::HookSubcommand::PostRewrite { rewrite_method })
         }
-        cli_schema::HooksSubcommand::DiffTrace => {
-            Ok(Box::new(services::hooks::command::HooksCommand {
-                subcommand: services::hooks::HookSubcommand::DiffTrace,
-            }))
+        cli_schema::HooksSubcommand::DiffTrace => Ok(services::hooks::HookSubcommand::DiffTrace),
+        cli_schema::HooksSubcommand::ClaudeCapture { event_name } => {
+            let event = services::hooks::ClaudeCaptureEvent::parse(&event_name)
+                .map_err(|error| ClassifiedError::validation(error.to_string()))?;
+
+            Ok(services::hooks::HookSubcommand::ClaudeCapture { event })
         }
         cli_schema::HooksSubcommand::ConversationTrace => {
             Ok(Box::new(services::hooks::command::HooksCommand {

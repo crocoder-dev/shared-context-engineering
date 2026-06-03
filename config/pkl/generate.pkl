@@ -47,6 +47,9 @@ output {
         text = document.rendered
       }
     }
+    ["config/.claude/settings.json"] {
+      text = claude.settings.rendered
+    }
 
     for (slug, document in opencode.skills) {
       ["config/.opencode/skills/\(slug)/SKILL.md"] {

@@ -1,0 +1,65 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sce",
+            "args": [
+              "hooks",
+              "claude-capture",
+              "SessionStart"
+            ]
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sce",
+            "args": [
+              "hooks",
+              "claude-capture",
+              "UserPromptSubmit"
+            ]
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sce",
+            "args": [
+              "hooks",
+              "claude-capture",
+              "PostToolUse"
+            ]
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sce",
+            "args": [
+              "hooks",
+              "claude-capture",
+              "Stop"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

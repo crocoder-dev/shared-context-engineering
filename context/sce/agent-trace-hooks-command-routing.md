@@ -13,6 +13,7 @@
 - `sce hooks post-rewrite <amend|rebase|other>`
 - `sce hooks diff-trace`
 - `sce hooks conversation-trace`
+- hidden/internal `sce hooks claude-capture <event-name>` for raw Claude JSON capture
 
 ## Parser and dispatch behavior
 
@@ -21,6 +22,7 @@
 - `post-commit` now enforces required parse-time validation for `--remote-url` in `cli/src/services/parse/command_runtime.rs`.
 - `--vcs` remains optional and, when provided, must be one of `git|jj|hg|svn`; unsupported values fail with a validation-classified error.
 - Missing or blank `--remote-url` fails with a validation-classified error before runtime dispatch.
+- `claude-capture` accepts only `SessionStart`, `UserPromptSubmit`, `PostToolUse`, and `Stop`; unsupported event names fail with validation-classified guidance before runtime dispatch.
 - Invalid and ambiguous invocations return deterministic actionable errors pointing to `sce hooks --help`.
 
 ## Current runtime behavior
@@ -59,7 +61,7 @@
   - Current command-surface success output is: `post-commit hook processed intersection: commit=<oid>, intersection_files=<n>`.
 - `post-rewrite` is a deterministic no-op entrypoint.
 - `diff-trace` reads STDIN JSON, validates required non-empty `sessionID`/`diff`/`model_id`/`tool_name`, validates required `tool_version` (must be present and either `null` or a non-empty string), validates required `u64` `time` (Unix epoch milliseconds), rejects `time` values that cannot fit the Agent Trace DB signed `time_ms` column, writes one parsed-payload artifact per invocation to `context/tmp/<timestamp>-000000-diff-trace.json` with atomic create-new retry semantics, opens AgentTraceDb through the no-migration readiness gate, and inserts the parsed payload fields via `DiffTraceInsert` + `insert_diff_trace()` including `model_id`.
-- `diff-trace` success requires both persistence paths to succeed; artifact write failures and AgentTraceDb open/insert failures are command-failing runtime errors logged through `sce.hooks.diff_trace.error`.
+- `diff-trace` command success requires artifact persistence to succeed; AgentTraceDb open/insert failures are logged through `sce.hooks.diff_trace.agent_trace_db_write_failed` and reflected in the success text as failed DB persistence, while the parsed-payload artifact remains the durable fallback.
 - `conversation-trace` is a recognized hidden hook subcommand routed through `HookSubcommand::ConversationTrace`. Rust intake now accepts only typed batch STDIN JSON with a top-level `type` discriminator and `payloads` array; the previous single-event envelope is no longer accepted.
   - `type: "message.updated"` parses each item in `payloads` into `InsertMessageInsert` with required non-empty `session_id`, `message_id`, valid `role` (`user|assistant`), and non-negative signed-64-bit `generated_at_unix_ms`; message-level `text`, `agent`, and `summary_diffs` are not required or mapped because body text belongs to `message.part.updated` / `parts.text` and the parent `messages` row no longer stores the obsolete fields.
   - `type: "message.part.updated"` parses each item in `payloads` into `InsertPartInsert` with required non-empty `session_id`, `message_id`, valid `part_type` (`text|reasoning|patch`), string `text`, and non-negative signed-64-bit `generated_at_unix_ms`.
@@ -69,6 +71,7 @@
   - DB open or schema-readiness failures are command-failing runtime errors logged through `sce.hooks.conversation_trace.error`; valid-item multi-row insert failures are logged once through `sce.hooks.conversation_trace.agent_trace_db_batch_failed`, count the whole valid-item batch as skipped, and do not fail the command. The hook does not fall back to row-by-row insertion after a multi-row insert failure.
   - Current success output reports deterministic batch accounting: `conversation-trace hook persisted <event-type> payload batch to AgentTraceDb: attempted=<n>, persisted=<n>, skipped=<n>.` The hook does not persist `context/tmp` artifacts.
   - OpenCode's generated agent-trace plugin calls this hook with one-element typed batch envelopes for every captured `message.updated` event before its existing diff-trace flow and for every captured `message.part.updated` event without invoking diff-trace.
+- Hidden/internal `claude-capture` reads STDIN JSON and writes one pretty JSON artifact to `context/tmp/claude/<timestamp>-<attempt>-<event-name>.json` with atomic create-new retry semantics; invalid JSON fails before persistence, and this route does not write AgentTraceDb or derive diff traces. See [claude-raw-hook-capture.md](claude-raw-hook-capture.md).
 
 ## Explicit non-goals in the current baseline
 
@@ -78,3 +81,4 @@
 - No retry queue replay
 - No rewrite remap ingestion
 - No `conversation-trace` retry/backfill path or `context/tmp` artifact persistence
+- No Claude diff-trace derivation or AgentTraceDb writes from raw Claude capture
