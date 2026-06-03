@@ -10,7 +10,7 @@
   - `migrations()` returns ordered embedded migration `(id, sql)` pairs.
 - `TursoDb<M: DbSpec>`: generic unencrypted adapter that owns:
   - tokio current-thread runtime creation
-  - Turso local database open/connect flow
+  - Turso local database open/connect flow using `turso::Builder::new_local()` with `experimental_multiprocess_wal(true)` so concurrent `sce` processes can safely access the same local database without WAL lock contention
   - parent-directory creation
   - delegation of synchronous `execute()`, `query()`, row-mapping `query_map()`, and `run_migrations()` to the shared internal `TursoConnectionCore<M>`
 - `EncryptedTursoDb<M: DbSpec>`: encrypted-adapter seam parallel to `TursoDb<M>` with the same structural shape (connection, runtime bridge, and spec marker). `EncryptedTursoDb::new()` resolves the encryption key via `encryption_key::get_or_create_encryption_key()`, enables Turso experimental local encryption, applies strict `aegis256` cipher selection through `turso::EncryptionOpts` during local DB open/connect, and runs embedded migrations after connect.

@@ -335,6 +335,7 @@ impl<M: DbSpec> TursoDb<M> {
                 anyhow::anyhow!("invalid UTF-8 in database path: {}", db_path.display())
             })?;
             let db = turso::Builder::new_local(path_str)
+                .experimental_multiprocess_wal(true)
                 .build()
                 .await
                 .map_err(|e| {

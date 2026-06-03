@@ -119,16 +119,13 @@ pub const INSERT_POST_COMMIT_PATCH_INTERSECTION_SQL: &str =
 pub const INSERT_AGENT_TRACE_SQL: &str =
     "INSERT INTO agent_traces (commit_id, commit_time_ms, trace_json, agent_trace_id, url, remote_url) VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
 
-/// Parameterized SQL for upserting a message row by `(session_id, message_id)`.
+/// Parameterized SQL for inserting a message row, ignoring duplicate
+/// `(session_id, message_id)` writes without updating the existing row.
 #[allow(dead_code)]
-pub const UPSERT_MESSAGE_SQL: &str =
+pub const INSERT_MESSAGE_SQL: &str =
     "INSERT INTO messages (session_id, message_id, role, agent, summary_diffs, generated_at_unix_ms)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-ON CONFLICT (session_id, message_id) DO UPDATE SET
-    role = excluded.role,
-    agent = excluded.agent,
-    summary_diffs = excluded.summary_diffs,
-    generated_at_unix_ms = excluded.generated_at_unix_ms";
+ON CONFLICT (session_id, message_id) DO NOTHING";
 
 /// Parameterized SQL for inserting a part row (append-only, no upsert).
 #[allow(dead_code)]
@@ -269,10 +266,10 @@ pub struct SummaryDiffItem {
     pub status: Option<String>,
 }
 
-/// Message upsert payload for the `messages` table.
+/// Message insert payload for the `messages` table.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(dead_code)]
-pub struct UpsertMessageInsert {
+pub struct InsertMessageInsert {
     pub session_id: String,
     pub message_id: String,
     pub role: MessageRole,
@@ -338,10 +335,10 @@ impl AgentTraceDb {
         recent_diff_trace_patches_with(self, cutoff_time_ms, end_time_ms)
     }
 
-    /// Insert or update a message row identified by `(session_id, message_id)`.
+    /// Insert a message row, ignoring duplicate `(session_id, message_id)` rows.
     #[allow(dead_code)]
-    pub fn upsert_message(&self, input: UpsertMessageInsert) -> Result<u64> {
-        upsert_message_with(self, input)
+    pub fn insert_message(&self, input: InsertMessageInsert) -> Result<u64> {
+        insert_message_with(self, input)
     }
 
     /// Append a part row (no upsert; multiple rows per message allowed).
@@ -398,11 +395,11 @@ fn insert_agent_trace_with<M: DbSpec>(db: &TursoDb<M>, input: AgentTraceInsert<'
 }
 
 #[allow(dead_code)]
-fn upsert_message_with<M: DbSpec>(db: &TursoDb<M>, input: UpsertMessageInsert) -> Result<u64> {
+fn insert_message_with<M: DbSpec>(db: &TursoDb<M>, input: InsertMessageInsert) -> Result<u64> {
     let summary_diffs_json =
         serde_json::to_string(&input.summary_diffs).context("failed to serialize summary_diffs")?;
     db.execute(
-        UPSERT_MESSAGE_SQL,
+        INSERT_MESSAGE_SQL,
         (
             input.session_id,
             input.message_id,

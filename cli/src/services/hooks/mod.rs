@@ -15,9 +15,9 @@ use crate::services::agent_trace::{
     AgentTraceVcsType,
 };
 use crate::services::agent_trace_db::{
-    AgentTraceDb, AgentTraceInsert, DiffTraceInsert, InsertPartInsert, MessageRole, PartType,
-    PostCommitPatchIntersectionInsert, RecentDiffTracePatches, SummaryDiffItem,
-    UpsertMessageInsert,
+    AgentTraceDb, AgentTraceInsert, DiffTraceInsert, InsertMessageInsert, InsertPartInsert,
+    MessageRole, PartType, PostCommitPatchIntersectionInsert, RecentDiffTracePatches,
+    SummaryDiffItem,
 };
 use crate::services::config;
 use crate::services::observability::traits::Logger;
@@ -67,7 +67,7 @@ struct DiffTracePayload {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConversationTracePayload {
-    MessageUpdated(UpsertMessageInsert),
+    MessageUpdated(InsertMessageInsert),
     MessagePartUpdated(InsertPartInsert),
 }
 
@@ -142,7 +142,7 @@ fn persist_conversation_trace_payload_to_agent_trace_db(
 
     match payload {
         ConversationTracePayload::MessageUpdated(input) => {
-            db.upsert_message(input).context(
+            db.insert_message(input).context(
                 "Failed to persist message.updated conversation-trace payload to Agent Trace DB.",
             )?;
 
@@ -185,7 +185,7 @@ fn parse_message_updated_payload(
     payload: &serde_json::Map<String, Value>,
 ) -> Result<ConversationTracePayload> {
     Ok(ConversationTracePayload::MessageUpdated(
-        UpsertMessageInsert {
+        InsertMessageInsert {
             session_id: required_non_empty_string_field(
                 payload,
                 "session_id",
@@ -1319,7 +1319,7 @@ mod tests {
     }
 
     #[test]
-    fn conversation_trace_message_updated_payload_maps_to_message_upsert_input() {
+    fn conversation_trace_message_updated_payload_maps_to_message_insert_input() {
         let payload = serde_json::json!({
             "type": "message.updated",
             "session_id": "session-1",
