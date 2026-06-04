@@ -9,7 +9,7 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 ## Module structure
 
 - `AgentTraceDbSpec`: `DbSpec` implementation for Agent Trace persistence.
-- `AgentTraceDb`: type alias for `TursoDb<AgentTraceDbSpec>`.
+- `AgentTraceDb`: type alias for `TursoDb<AgentTraceDbSpec>`, inheriting shared constructor and operation retry behavior.
 - `DiffTraceInsert<'a>`: insert payload with `time_ms: i64`, `session_id: &'a str`, `patch: &'a str`, `model_id: &'a str`, `tool_name: &'a str`, and nullable `tool_version: Option<&'a str>`.
 - `insert_diff_trace()`: domain-specific insert helper using parameterized SQL.
 - `RecentDiffTracePatches`: parsed recent `diff_traces` query result containing valid parsed patches plus skipped-row reports.
@@ -21,8 +21,8 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 - `MessageRole` enum: `User` / `Assistant` — maps to `messages.role` DB constraint.
 - `SummaryDiffItem`: serde-serializable struct `{ file, patch?, additions, deletions, status? }` for typed `summary_diffs` JSON construction.
 - `InsertMessageInsert`: owned payload struct with insertable parent `messages` columns (`session_id`, `message_id`, `role`, `agent`, `summary_diffs`, `generated_at_unix_ms`); message body text belongs to `parts.text`, not the parent message row.
-- `INSERT_MESSAGE_SQL`: parameterized SQL using `INSERT ... ON CONFLICT (session_id, message_id) DO NOTHING` — leverages the unique index `idx_messages_session_message` for duplicate detection without updating the existing row.
-- `insert_message(input)`: typed helper that serializes `summary_diffs` to JSON and executes the insert-ignore-duplicate statement; called by `sce hooks conversation-trace` for normalized `message.updated` payloads.
+- `INSERT_MESSAGE_SQL`: parameterized SQL using `INSERT ... ON CONFLICT (session_id, message_id) DO UPDATE SET summary_diffs = excluded.summary_diffs` — leverages the unique index `idx_messages_session_message` so duplicate parent-message events update only `summary_diffs`.
+- `insert_message(input)`: typed helper that serializes `summary_diffs` to JSON and executes the summary-diffs-only UPSERT statement; called by `sce hooks conversation-trace` for normalized `message.updated` payloads.
 - `PartType` enum: `Text` / `Reasoning` — maps to `parts.type` DB constraint.
 - `InsertPartInsert`: owned payload struct with `part_type`, `text`, `session_id`, `message_id`, and `generated_at_unix_ms`.
 - `INSERT_PART_SQL`: parameterized append-only INSERT into `parts` (no upsert; multiple rows per `(session_id, message_id)` allowed).
@@ -128,7 +128,7 @@ Lookup indexes created by the baseline migration set:
 - `idx_diff_traces_time_ms_id` on `(time_ms, id)`
 - `idx_agent_traces_agent_trace_id` on `(agent_trace_id)`
 - `idx_agent_traces_remote_url` on `(remote_url)`
-- `idx_messages_session_message` unique index on `(session_id, message_id)` — enables duplicate-ignore message inserts by natural key
+- `idx_messages_session_message` unique index on `(session_id, message_id)` — enables summary-diffs-only message UPSERTs by natural key
 - `idx_messages_session_order` on `(session_id, generated_at_unix_ms, id)` — enables chronological session-scoped message retrieval
 - `idx_parts_session_message_order` on `(session_id, message_id, generated_at_unix_ms, id)` — enables ordered part joins per message
 
@@ -163,7 +163,7 @@ Post-commit intersection rows are written by the active `post-commit` hook flow,
 `sce hooks conversation-trace` is the current runtime writer for `messages` and `parts`.
 
 - The hook accepts only normalized snake_case STDIN envelopes with top-level `type` values `message.updated` or `message.part.updated`.
-- `message.updated` validates and maps payloads without message-level `text` to `InsertMessageInsert`, then calls `AgentTraceDb::insert_message()` so repeated `(session_id, message_id)` events succeed without updating the existing parent message row.
+- `message.updated` validates and maps payloads without message-level `text` to `InsertMessageInsert`, then calls `AgentTraceDb::insert_message()` so repeated `(session_id, message_id)` events update only `summary_diffs` while preserving existing parent message metadata.
 - `message.part.updated` validates and maps payloads with required part `text` to `InsertPartInsert`, then calls `AgentTraceDb::insert_part()` so parts remain append-only and do not require a pre-existing message row.
 - DB open/write failures fail the command; no `context/tmp` artifact is written for conversation traces.
 - The generated OpenCode agent-trace plugin is a runtime caller for both conversation envelope variants: `message.updated` sends a mechanically normalized payload before continuing to the existing diff-trace flow, while `message.part.updated` sends only a mechanically normalized conversation-trace payload.

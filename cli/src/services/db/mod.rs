@@ -15,6 +15,7 @@ use anyhow::{Context, Result};
 use crate::services::lifecycle::{
     HealthCategory, HealthFixability, HealthProblem, HealthProblemKind, HealthSeverity,
 };
+use crate::services::resilience::{run_with_retry_sync, RetryPolicy};
 
 const MIGRATIONS_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS __sce_migrations (
     id TEXT PRIMARY KEY,
@@ -23,6 +24,20 @@ const MIGRATIONS_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS __sce_migrations 
 const SELECT_MIGRATION_SQL: &str = "SELECT id FROM __sce_migrations WHERE id = ?1 LIMIT 1";
 const INSERT_MIGRATION_SQL: &str = "INSERT INTO __sce_migrations (id) VALUES (?1)";
 const ENCRYPTION_CIPHER_AEGIS256: &str = "aegis256";
+const CONNECTION_OPEN_RETRY_POLICY: RetryPolicy = RetryPolicy {
+    max_attempts: 3,
+    timeout_ms: 5_000,
+    initial_backoff_ms: 100,
+    max_backoff_ms: 1_000,
+};
+const CONNECTION_OPEN_RETRY_HINT: &str = "retry after the database lock clears; if the issue persists, stop other SCE processes using this database and rerun the command";
+const QUERY_RETRY_POLICY: RetryPolicy = RetryPolicy {
+    max_attempts: 3,
+    timeout_ms: 3_000,
+    initial_backoff_ms: 100,
+    max_backoff_ms: 500,
+};
+const QUERY_RETRY_HINT: &str = "retry after the database lock clears; if the issue persists, stop other SCE processes using this database and rerun the command";
 
 pub mod encryption_key;
 
@@ -37,6 +52,10 @@ pub trait DbSpec {
 
     /// Ordered embedded migration SQL files as `(id, sql)` pairs.
     fn migrations() -> &'static [(&'static str, &'static str)];
+
+    /// Config-file lookup key under `policies.database_retry`.
+    /// One of `"local_db"`, `"agent_trace_db"`, `"auth_db"`.
+    fn db_config_key() -> &'static str;
 }
 
 /// Collect common filesystem health problems for a Turso database path.
@@ -240,6 +259,7 @@ fn apply_migration(
 pub struct TursoDb<M: DbSpec> {
     conn: turso::Connection,
     runtime: tokio::runtime::Runtime,
+    connection_open_retry_policy: Option<RetryPolicy>,
     spec: PhantomData<fn() -> M>,
 }
 
@@ -250,7 +270,43 @@ pub struct TursoDb<M: DbSpec> {
 pub struct EncryptedTursoDb<M: DbSpec> {
     conn: turso::Connection,
     runtime: tokio::runtime::Runtime,
+    #[allow(dead_code)]
+    connection_open_retry_policy: Option<RetryPolicy>,
     spec: PhantomData<fn() -> M>,
+}
+
+fn resolve_connection_open_retry_policy<M: DbSpec>() -> RetryPolicy {
+    if let Some(config) = crate::services::config::get_database_retry_config() {
+        let per_db = match M::db_config_key() {
+            "local_db" => config.local_db.as_ref(),
+            "agent_trace_db" => config.agent_trace_db.as_ref(),
+            "auth_db" => config.auth_db.as_ref(),
+            _ => None,
+        };
+        if let Some(per_db) = per_db {
+            if let Some(policy) = per_db.connection_open {
+                return policy;
+            }
+        }
+    }
+    CONNECTION_OPEN_RETRY_POLICY
+}
+
+fn resolve_query_retry_policy<M: DbSpec>() -> RetryPolicy {
+    if let Some(config) = crate::services::config::get_database_retry_config() {
+        let per_db = match M::db_config_key() {
+            "local_db" => config.local_db.as_ref(),
+            "agent_trace_db" => config.agent_trace_db.as_ref(),
+            "auth_db" => config.auth_db.as_ref(),
+            _ => None,
+        };
+        if let Some(per_db) = per_db {
+            if let Some(policy) = per_db.query {
+                return policy;
+            }
+        }
+    }
+    QUERY_RETRY_POLICY
 }
 
 #[allow(dead_code)]
@@ -266,28 +322,40 @@ impl<M: DbSpec> TursoDb<M> {
         ensure_db_parent_dir(db_name, &db_path)?;
 
         let runtime = build_current_thread_runtime(db_name)?;
+        let connection_open_retry_policy = Some(resolve_connection_open_retry_policy::<M>());
+        let retry_policy = resolve_connection_open_retry_policy::<M>();
+        let operation_name = format!("open {db_name} database connection");
 
-        let conn = runtime.block_on(async {
-            let path_str = db_path.to_str().ok_or_else(|| {
-                anyhow::anyhow!("invalid UTF-8 in database path: {}", db_path.display())
-            })?;
-            let db = turso::Builder::new_local(path_str)
-                .experimental_multiprocess_wal(true)
-                .build()
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "failed to open {db_name} database at {}: {e}",
-                        db_path.display()
-                    )
-                })?;
-            db.connect()
-                .map_err(|e| anyhow::anyhow!("failed to connect to {db_name} database: {e}"))
-        })?;
+        let conn = run_with_retry_sync(
+            retry_policy,
+            &operation_name,
+            CONNECTION_OPEN_RETRY_HINT,
+            |_| {
+                runtime.block_on(async {
+                    let path_str = db_path.to_str().ok_or_else(|| {
+                        anyhow::anyhow!("invalid UTF-8 in database path: {}", db_path.display())
+                    })?;
+                    let db = turso::Builder::new_local(path_str)
+                        .experimental_multiprocess_wal(true)
+                        .build()
+                        .await
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "failed to open {db_name} database at {}: {e}",
+                                db_path.display()
+                            )
+                        })?;
+                    db.connect().map_err(|e| {
+                        anyhow::anyhow!("failed to connect to {db_name} database: {e}")
+                    })
+                })
+            },
+        )?;
 
         let db = Self {
             conn,
             runtime,
+            connection_open_retry_policy,
             spec: PhantomData,
         };
 
@@ -306,12 +374,24 @@ impl<M: DbSpec> TursoDb<M> {
     /// # Returns
     /// Number of rows affected.
     pub fn execute(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<u64> {
-        self.runtime.block_on(async {
-            self.conn
-                .execute(sql, params)
-                .await
-                .map_err(|e| anyhow::anyhow!("{} execute failed: {sql}: {e}", M::db_name()))
-        })
+        let params = turso::params::IntoParams::into_params(params).map_err(|e| {
+            anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
+        })?;
+        let operation_name = format!("execute {} database query", M::db_name());
+
+        run_with_retry_sync(
+            resolve_query_retry_policy::<M>(),
+            &operation_name,
+            QUERY_RETRY_HINT,
+            |_| {
+                self.runtime.block_on(async {
+                    self.conn
+                        .execute(sql, params.clone())
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{} execute failed: {sql}: {e}", M::db_name()))
+                })
+            },
+        )
     }
 
     /// Execute a SQL query that returns rows.
@@ -323,12 +403,24 @@ impl<M: DbSpec> TursoDb<M> {
     /// # Returns
     /// A `turso::Rows` iterator over the result set.
     pub fn query(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<turso::Rows> {
-        self.runtime.block_on(async {
-            self.conn
-                .query(sql, params)
-                .await
-                .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))
-        })
+        let params = turso::params::IntoParams::into_params(params).map_err(|e| {
+            anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
+        })?;
+        let operation_name = format!("query {} database", M::db_name());
+
+        run_with_retry_sync(
+            resolve_query_retry_policy::<M>(),
+            &operation_name,
+            QUERY_RETRY_HINT,
+            |_| {
+                self.runtime.block_on(async {
+                    self.conn
+                        .query(sql, params.clone())
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))
+                })
+            },
+        )
     }
 
     /// Execute a SQL query and synchronously map all returned rows.
@@ -341,27 +433,43 @@ impl<M: DbSpec> TursoDb<M> {
     where
         F: FnMut(&turso::Row) -> Result<T>,
     {
-        self.runtime.block_on(async {
-            let mut rows = self
-                .conn
-                .query(sql, params)
-                .await
-                .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))?;
-            let mut results = Vec::new();
+        let params = turso::params::IntoParams::into_params(params).map_err(|e| {
+            anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
+        })?;
+        let operation_name = format!("query and fetch {} database rows", M::db_name());
 
-            while let Some(row) = rows
-                .next()
-                .await
-                .map_err(|e| anyhow::anyhow!("{} row fetch failed: {sql}: {e}", M::db_name()))?
-            {
-                results.push(
-                    map_row(&row)
-                        .with_context(|| format!("{} row mapping failed: {sql}", M::db_name()))?,
-                );
-            }
+        let rows = run_with_retry_sync(
+            resolve_query_retry_policy::<M>(),
+            &operation_name,
+            QUERY_RETRY_HINT,
+            |_| {
+                self.runtime.block_on(async {
+                    let mut rows = self.conn.query(sql, params.clone()).await.map_err(|e| {
+                        anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name())
+                    })?;
+                    let mut fetched_rows = Vec::new();
 
-            Ok(results)
-        })
+                    while let Some(row) = rows.next().await.map_err(|e| {
+                        anyhow::anyhow!("{} row fetch failed: {sql}: {e}", M::db_name())
+                    })? {
+                        fetched_rows.push(row);
+                    }
+
+                    Ok(fetched_rows)
+                })
+            },
+        )?;
+
+        let mut results = Vec::new();
+
+        for row in rows {
+            results.push(
+                map_row(&row)
+                    .with_context(|| format!("{} row mapping failed: {sql}", M::db_name()))?,
+            );
+        }
+
+        Ok(results)
     }
 
     /// Run all embedded migrations in order.
@@ -389,37 +497,48 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
         ensure_db_parent_dir(db_name, &db_path)?;
 
         let runtime = build_current_thread_runtime(db_name)?;
+        let connection_open_retry_policy = Some(resolve_connection_open_retry_policy::<M>());
+        let retry_policy = resolve_connection_open_retry_policy::<M>();
+        let operation_name = format!("open encrypted {db_name} database connection");
 
-        let conn = runtime.block_on(async {
-            let path_str = db_path.to_str().ok_or_else(|| {
-                anyhow::anyhow!("invalid UTF-8 in database path: {}", db_path.display())
-            })?;
+        let conn = run_with_retry_sync(
+            retry_policy,
+            &operation_name,
+            CONNECTION_OPEN_RETRY_HINT,
+            |_| {
+                runtime.block_on(async {
+                    let path_str = db_path.to_str().ok_or_else(|| {
+                        anyhow::anyhow!("invalid UTF-8 in database path: {}", db_path.display())
+                    })?;
 
-            let encryption_opts = turso::EncryptionOpts {
-                hexkey: encryption_key,
-                cipher: ENCRYPTION_CIPHER_AEGIS256.to_string(),
-            };
+                    let encryption_opts = turso::EncryptionOpts {
+                        hexkey: encryption_key.clone(),
+                        cipher: ENCRYPTION_CIPHER_AEGIS256.to_string(),
+                    };
 
-            let db = turso::Builder::new_local(path_str)
-                .experimental_encryption(true)
-                .with_encryption(encryption_opts)
-                .build()
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "failed to open encrypted {db_name} database at {} with cipher {ENCRYPTION_CIPHER_AEGIS256}. Try: verify the credential store encryption key is valid and that local Turso encryption support is available: {e}",
-                        db_path.display()
-                    )
-                })?;
+                    let db = turso::Builder::new_local(path_str)
+                        .experimental_encryption(true)
+                        .with_encryption(encryption_opts)
+                        .build()
+                        .await
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "failed to open encrypted {db_name} database at {} with cipher {ENCRYPTION_CIPHER_AEGIS256}. Try: verify the credential store encryption key is valid and that local Turso encryption support is available: {e}",
+                                db_path.display()
+                            )
+                        })?;
 
-            db.connect().map_err(|e| {
-                anyhow::anyhow!("failed to connect to encrypted {db_name} database: {e}")
-            })
-        })?;
+                    db.connect().map_err(|e| {
+                        anyhow::anyhow!("failed to connect to encrypted {db_name} database: {e}")
+                    })
+                })
+            },
+        )?;
 
         let db = Self {
             conn,
             runtime,
+            connection_open_retry_policy,
             spec: PhantomData,
         };
 
@@ -438,12 +557,24 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
     /// # Returns
     /// Number of rows affected.
     pub fn execute(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<u64> {
-        self.runtime.block_on(async {
-            self.conn
-                .execute(sql, params)
-                .await
-                .map_err(|e| anyhow::anyhow!("{} execute failed: {sql}: {e}", M::db_name()))
-        })
+        let params = turso::params::IntoParams::into_params(params).map_err(|e| {
+            anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
+        })?;
+        let operation_name = format!("execute encrypted {} database query", M::db_name());
+
+        run_with_retry_sync(
+            resolve_query_retry_policy::<M>(),
+            &operation_name,
+            QUERY_RETRY_HINT,
+            |_| {
+                self.runtime.block_on(async {
+                    self.conn
+                        .execute(sql, params.clone())
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{} execute failed: {sql}: {e}", M::db_name()))
+                })
+            },
+        )
     }
 
     /// Execute a SQL query that returns rows.
@@ -456,12 +587,24 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
     /// A `turso::Rows` iterator over the result set.
     #[allow(dead_code)]
     pub fn query(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<turso::Rows> {
-        self.runtime.block_on(async {
-            self.conn
-                .query(sql, params)
-                .await
-                .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))
-        })
+        let params = turso::params::IntoParams::into_params(params).map_err(|e| {
+            anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
+        })?;
+        let operation_name = format!("query encrypted {} database", M::db_name());
+
+        run_with_retry_sync(
+            resolve_query_retry_policy::<M>(),
+            &operation_name,
+            QUERY_RETRY_HINT,
+            |_| {
+                self.runtime.block_on(async {
+                    self.conn
+                        .query(sql, params.clone())
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))
+                })
+            },
+        )
     }
 
     /// Execute a SQL query and synchronously map all returned rows.
@@ -474,27 +617,43 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
     where
         F: FnMut(&turso::Row) -> Result<T>,
     {
-        self.runtime.block_on(async {
-            let mut rows = self
-                .conn
-                .query(sql, params)
-                .await
-                .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))?;
-            let mut results = Vec::new();
+        let params = turso::params::IntoParams::into_params(params).map_err(|e| {
+            anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
+        })?;
+        let operation_name = format!("query and fetch encrypted {} database rows", M::db_name());
 
-            while let Some(row) = rows
-                .next()
-                .await
-                .map_err(|e| anyhow::anyhow!("{} row fetch failed: {sql}: {e}", M::db_name()))?
-            {
-                results.push(
-                    map_row(&row)
-                        .with_context(|| format!("{} row mapping failed: {sql}", M::db_name()))?,
-                );
-            }
+        let rows = run_with_retry_sync(
+            resolve_query_retry_policy::<M>(),
+            &operation_name,
+            QUERY_RETRY_HINT,
+            |_| {
+                self.runtime.block_on(async {
+                    let mut rows = self.conn.query(sql, params.clone()).await.map_err(|e| {
+                        anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name())
+                    })?;
+                    let mut fetched_rows = Vec::new();
 
-            Ok(results)
-        })
+                    while let Some(row) = rows.next().await.map_err(|e| {
+                        anyhow::anyhow!("{} row fetch failed: {sql}: {e}", M::db_name())
+                    })? {
+                        fetched_rows.push(row);
+                    }
+
+                    Ok(fetched_rows)
+                })
+            },
+        )?;
+
+        let mut results = Vec::new();
+
+        for row in rows {
+            results.push(
+                map_row(&row)
+                    .with_context(|| format!("{} row mapping failed: {sql}", M::db_name()))?,
+            );
+        }
+
+        Ok(results)
     }
 
     /// Run all embedded migrations in order.

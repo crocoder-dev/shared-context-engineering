@@ -62,7 +62,7 @@
   - `type: "message.updated"` maps valid payloads into `InsertMessageInsert` with required non-empty `session_id`, `message_id`, `agent`, valid `role` (`user|assistant`), typed `summary_diffs: SummaryDiffItem[]`, and non-negative signed-64-bit `generated_at_unix_ms`; message-level `text` is not required or mapped because body text belongs to `message.part.updated` / `parts.text`.
   - `type: "message.part.updated"` maps valid payloads into `InsertPartInsert` with required non-empty `session_id`, `message_id`, valid `part_type` (`text|reasoning`), string `text`, and non-negative signed-64-bit `generated_at_unix_ms`.
   - Invalid payloads fail with deterministic `Invalid conversation-trace payload from STDIN: ...` diagnostics.
-  - After validation, the hook opens `AgentTraceDb` and persists `message.updated` through `AgentTraceDb::insert_message()` using insert-ignore-duplicate semantics or `message.part.updated` through `AgentTraceDb::insert_part()`.
+  - After validation, the hook opens `AgentTraceDb` and persists `message.updated` through `AgentTraceDb::insert_message()` using summary-diffs-only UPSERT semantics or `message.part.updated` through `AgentTraceDb::insert_part()`.
   - DB open/write failures are command-failing runtime errors logged through `sce.hooks.conversation_trace.error`.
   - Current success output is emitted only after the DB write succeeds; the hook does not persist `context/tmp` artifacts.
   - OpenCode's generated agent-trace plugin calls this hook for every captured `message.updated` event before its existing diff-trace flow and for every captured `message.part.updated` event without invoking diff-trace, using mechanically normalized snake_case payloads and leaving value validation to this Rust hook.

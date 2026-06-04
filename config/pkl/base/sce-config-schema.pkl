@@ -17,6 +17,39 @@ local mutuallyExclusiveConstraints = bash_policy_presets.mutually_exclusive.toLi
   }
 ).toListing()
 
+local retryPolicyFieldsSchema = new JsonSchema {
+  type = "object"
+  additionalProperties = false
+  required = new { "max_attempts"; "timeout_ms"; "initial_backoff_ms"; "max_backoff_ms" }
+  properties {
+    ["max_attempts"] = new JsonSchema {
+      type = "integer"
+      minimum = 1
+    }
+    ["timeout_ms"] = new JsonSchema {
+      type = "integer"
+      minimum = 1
+    }
+    ["initial_backoff_ms"] = new JsonSchema {
+      type = "integer"
+      minimum = 0
+    }
+    ["max_backoff_ms"] = new JsonSchema {
+      type = "integer"
+      minimum = 0
+    }
+  }
+}
+
+local perDbRetrySchema = new JsonSchema {
+  type = "object"
+  additionalProperties = false
+  properties {
+    ["connection_open"] = retryPolicyFieldsSchema
+    ["query"] = retryPolicyFieldsSchema
+  }
+}
+
 local sceConfigSchema = new JsonSchema {
   $schema = "https://json-schema.org/draft/2020-12/schema"
   $id = "https://sce.crocoder.dev/config.json"
@@ -63,6 +96,15 @@ local sceConfigSchema = new JsonSchema {
             ["enabled"] = new JsonSchema {
               type = "boolean"
             }
+          }
+        }
+        ["database_retry"] = new JsonSchema {
+          type = "object"
+          additionalProperties = false
+          properties {
+            ["local_db"] = perDbRetrySchema
+            ["agent_trace_db"] = perDbRetrySchema
+            ["auth_db"] = perDbRetrySchema
           }
         }
         ["bash"] = new JsonSchema {
