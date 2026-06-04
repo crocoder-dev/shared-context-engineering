@@ -55,6 +55,198 @@
           },
           "additionalProperties": false
         },
+        "database_retry": {
+          "type": "object",
+          "properties": {
+            "local_db": {
+              "type": "object",
+              "properties": {
+                "connection_open": {
+                  "type": "object",
+                  "properties": {
+                    "max_attempts": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "initial_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "max_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "max_attempts",
+                    "timeout_ms",
+                    "initial_backoff_ms",
+                    "max_backoff_ms"
+                  ]
+                },
+                "query": {
+                  "type": "object",
+                  "properties": {
+                    "max_attempts": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "initial_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "max_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "max_attempts",
+                    "timeout_ms",
+                    "initial_backoff_ms",
+                    "max_backoff_ms"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "agent_trace_db": {
+              "type": "object",
+              "properties": {
+                "connection_open": {
+                  "type": "object",
+                  "properties": {
+                    "max_attempts": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "initial_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "max_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "max_attempts",
+                    "timeout_ms",
+                    "initial_backoff_ms",
+                    "max_backoff_ms"
+                  ]
+                },
+                "query": {
+                  "type": "object",
+                  "properties": {
+                    "max_attempts": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "initial_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "max_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "max_attempts",
+                    "timeout_ms",
+                    "initial_backoff_ms",
+                    "max_backoff_ms"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "auth_db": {
+              "type": "object",
+              "properties": {
+                "connection_open": {
+                  "type": "object",
+                  "properties": {
+                    "max_attempts": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "initial_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "max_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "max_attempts",
+                    "timeout_ms",
+                    "initial_backoff_ms",
+                    "max_backoff_ms"
+                  ]
+                },
+                "query": {
+                  "type": "object",
+                  "properties": {
+                    "max_attempts": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "initial_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "max_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "max_attempts",
+                    "timeout_ms",
+                    "initial_backoff_ms",
+                    "max_backoff_ms"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
         "bash": {
           "type": "object",
           "properties": {

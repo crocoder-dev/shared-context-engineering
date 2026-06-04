@@ -13,10 +13,11 @@ use crate::services::default_paths::{resolve_sce_default_locations, RepoPaths};
 use super::policy::{build_validation_warnings, resolve_bash_policy_config, BashPolicyConfig};
 use super::schema;
 use super::types::{
-    parse_bool_value_from, ConfigPathSource, ConfigRequest, LoadedConfigPath, LogFileMode,
-    LogFormat, LogLevel, ReportFormat, ResolvedAuthRuntimeConfig, ResolvedHookRuntimeConfig,
-    ResolvedObservabilityRuntimeConfig, ResolvedOptionalValue, ResolvedValue, ValueSource,
-    ENV_ATTRIBUTION_HOOKS_ENABLED, ENV_LOG_FILE, ENV_LOG_FILE_MODE, ENV_LOG_FORMAT, ENV_LOG_LEVEL,
+    parse_bool_value_from, ConfigPathSource, ConfigRequest, DatabaseRetryConfig, LoadedConfigPath,
+    LogFileMode, LogFormat, LogLevel, ReportFormat, ResolvedAuthRuntimeConfig,
+    ResolvedHookRuntimeConfig, ResolvedObservabilityRuntimeConfig, ResolvedOptionalValue,
+    ResolvedValue, ValueSource, ENV_ATTRIBUTION_HOOKS_ENABLED, ENV_LOG_FILE, ENV_LOG_FILE_MODE,
+    ENV_LOG_FORMAT, ENV_LOG_LEVEL,
 };
 
 const DEFAULT_TIMEOUT_MS: u64 = 30000;
@@ -63,6 +64,7 @@ pub(super) struct RuntimeConfig {
     pub(super) attribution_hooks_enabled: ResolvedValue<bool>,
     pub(super) workos_client_id: ResolvedOptionalValue<String>,
     pub(super) bash_policies: ResolvedOptionalValue<BashPolicyConfig>,
+    pub(super) database_retry: ResolvedOptionalValue<DatabaseRetryConfig>,
     pub(super) validation_errors: Vec<String>,
     pub(super) validation_warnings: Vec<String>,
 }
@@ -252,6 +254,7 @@ where
         workos_client_id: None,
         bash_policy_presets: None,
         bash_policy_custom: None,
+        database_retry: None,
     };
     let mut validation_errors = Vec::new();
     for loaded_path in &loaded_config_paths {
@@ -290,6 +293,9 @@ where
         }
         if let Some(bash_policy_custom) = layer.bash_policy_custom {
             file_config.bash_policy_custom = Some(bash_policy_custom);
+        }
+        if let Some(database_retry) = layer.database_retry {
+            file_config.database_retry = Some(database_retry);
         }
     }
 
@@ -431,6 +437,9 @@ where
     );
     let validation_warnings = build_validation_warnings(&resolved_bash_policies);
 
+    let resolved_database_retry =
+        resolve_database_retry_config(file_config.database_retry.as_ref());
+
     Ok(RuntimeConfig {
         loaded_config_paths,
         log_level: resolved_log_level,
@@ -441,6 +450,7 @@ where
         attribution_hooks_enabled: resolved_attribution_hooks_enabled,
         workos_client_id: resolved_workos_client_id,
         bash_policies: resolved_bash_policies,
+        database_retry: resolved_database_retry,
         validation_errors,
         validation_warnings,
     })
@@ -542,4 +552,52 @@ where
 
 fn resolve_default_global_config_path() -> Result<PathBuf> {
     Ok(resolve_sce_default_locations()?.global_config_file())
+}
+
+fn resolve_database_retry_config(
+    file_config: Option<&schema::FileConfigValue<DatabaseRetryConfig>>,
+) -> ResolvedOptionalValue<DatabaseRetryConfig> {
+    match file_config {
+        Some(value) => ResolvedOptionalValue {
+            value: Some(value.value.clone()),
+            source: Some(ValueSource::ConfigFile(value.source)),
+        },
+        None => ResolvedOptionalValue {
+            value: None,
+            source: None,
+        },
+    }
+}
+
+use std::sync::OnceLock;
+
+static DATABASE_RETRY_CONFIG: OnceLock<DatabaseRetryConfig> = OnceLock::new();
+
+pub(crate) fn init_database_retry_config(config: DatabaseRetryConfig) -> Result<()> {
+    DATABASE_RETRY_CONFIG
+        .set(config)
+        .map_err(|_| anyhow!("Database retry config has already been initialized."))
+}
+
+pub(crate) fn get_database_retry_config() -> Option<&'static DatabaseRetryConfig> {
+    DATABASE_RETRY_CONFIG.get()
+}
+
+/// Resolve the full runtime config from the environment and initialize the
+/// database retry `OnceLock`. Silently ignores errors — if the config cannot
+/// be resolved, DB adapters fall back to hardcoded defaults.
+pub(crate) fn init_database_retry_config_from_environment(cwd: &Path) {
+    if let Ok(runtime) = resolve_runtime_config(
+        &ConfigRequest {
+            report_format: ReportFormat::Text,
+            config_path: None,
+            log_level: None,
+            timeout_ms: None,
+        },
+        cwd,
+    ) {
+        if let Some(config) = runtime.database_retry.value {
+            let _ = init_database_retry_config(config);
+        }
+    }
 }

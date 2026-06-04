@@ -40,6 +40,10 @@ impl DbSpec for AuthDbSpec {
     fn migrations() -> &'static [(&'static str, &'static str)] {
         AUTH_MIGRATIONS
     }
+
+    fn db_config_key() -> &'static str {
+        "auth_db"
+    }
 }
 
 /// Encrypted auth Turso database adapter.
@@ -82,6 +86,10 @@ mod tests {
 
         fn migrations() -> &'static [(&'static str, &'static str)] {
             AUTH_MIGRATIONS
+        }
+
+        fn db_config_key() -> &'static str {
+            "auth_db"
         }
     }
 

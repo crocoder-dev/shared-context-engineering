@@ -10,7 +10,7 @@ pub type LocalDb = TursoDb<LocalDbSpec>;
 
 - `LocalDbSpec`: `DbSpec` implementation for the canonical per-user local database.
 - `LocalDb`: type alias for `TursoDb<LocalDbSpec>`.
-- `LocalDb::new()`, `execute()`, and `query()`: inherited from `TursoDb<M>`.
+- `LocalDb::new()`, `execute()`, `query()`, and `query_map()`: inherited from `TursoDb<M>` with current hardcoded constructor and operation retry policies.
 - `local_db/lifecycle.rs`: owns local DB health, parent-directory bootstrap, and setup initialization through `LocalDb::new()`.
 
 ## Database path
@@ -40,6 +40,6 @@ let mut rows = db.query("PRAGMA database_list", ())?;
 
 ## Error handling
 
-The shared `TursoDb` adapter returns `anyhow::Result` with service-name-qualified diagnostics for path resolution, parent-directory creation, runtime creation, database open/connect, migration execution, and SQL execution/query failures.
+The shared `TursoDb` adapter returns `anyhow::Result` with service-name-qualified diagnostics for path resolution, parent-directory creation, runtime creation, database open/connect, migration execution, and SQL execution/query failures. Open/connect and `execute`/`query`/`query_map` transient failures are retry-wrapped by the shared adapter; migration execution and row-mapping failures are not retried.
 
 See also: [shared-turso-db.md](shared-turso-db.md), [agent-trace-db.md](agent-trace-db.md), [overview.md](../overview.md), [glossary.md](../glossary.md), [context-map.md](../context-map.md)

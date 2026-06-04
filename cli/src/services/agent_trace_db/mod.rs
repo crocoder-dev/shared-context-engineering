@@ -119,13 +119,13 @@ pub const INSERT_POST_COMMIT_PATCH_INTERSECTION_SQL: &str =
 pub const INSERT_AGENT_TRACE_SQL: &str =
     "INSERT INTO agent_traces (commit_id, commit_time_ms, trace_json, agent_trace_id, url, remote_url) VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
 
-/// Parameterized SQL for inserting a message row, ignoring duplicate
-/// `(session_id, message_id)` writes without updating the existing row.
+/// Parameterized SQL for inserting a message row. Duplicate
+/// `(session_id, message_id)` writes update only `summary_diffs`.
 #[allow(dead_code)]
 pub const INSERT_MESSAGE_SQL: &str =
     "INSERT INTO messages (session_id, message_id, role, agent, summary_diffs, generated_at_unix_ms)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-ON CONFLICT (session_id, message_id) DO NOTHING";
+ON CONFLICT (session_id, message_id) DO UPDATE SET summary_diffs = excluded.summary_diffs";
 
 /// Parameterized SQL for inserting a part row (append-only, no upsert).
 #[allow(dead_code)]
@@ -147,6 +147,10 @@ impl DbSpec for AgentTraceDbSpec {
 
     fn migrations() -> &'static [(&'static str, &'static str)] {
         AGENT_TRACE_MIGRATIONS
+    }
+
+    fn db_config_key() -> &'static str {
+        "agent_trace_db"
     }
 }
 
@@ -335,7 +339,8 @@ impl AgentTraceDb {
         recent_diff_trace_patches_with(self, cutoff_time_ms, end_time_ms)
     }
 
-    /// Insert a message row, ignoring duplicate `(session_id, message_id)` rows.
+    /// Insert a message row, updating only `summary_diffs` on duplicate
+    /// `(session_id, message_id)` rows.
     #[allow(dead_code)]
     pub fn insert_message(&self, input: InsertMessageInsert) -> Result<u64> {
         insert_message_with(self, input)
@@ -524,6 +529,10 @@ mod tests {
         fn migrations() -> &'static [(&'static str, &'static str)] {
             AGENT_TRACE_MIGRATIONS
         }
+
+        fn db_config_key() -> &'static str {
+            "agent_trace_db"
+        }
     }
 
     struct BaselineAgentTraceDbSpec;
@@ -542,6 +551,10 @@ mod tests {
 
         fn migrations() -> &'static [(&'static str, &'static str)] {
             AGENT_TRACE_MIGRATIONS
+        }
+
+        fn db_config_key() -> &'static str {
+            "agent_trace_db"
         }
     }
 

@@ -17,7 +17,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::policy::{parse_bash_policy_presets, parse_custom_bash_policies, CustomBashPolicyEntry};
-use super::types::{ConfigPathSource, LogFileMode, LogFormat, LogLevel};
+use super::types::{ConfigPathSource, DatabaseRetryConfig, LogFileMode, LogFormat, LogLevel};
+use crate::services::resilience::RetryPolicy;
 
 pub(crate) const SCE_CONFIG_SCHEMA_JSON: &str =
     include_str!("../../../assets/generated/config/schema/sce-config.schema.json");
@@ -73,6 +74,7 @@ pub(crate) struct ParsedFileConfigDocument {
 pub(crate) struct ParsedPoliciesConfigDocument {
     pub(crate) bash: Option<ParsedBashPolicyConfigDocument>,
     pub(crate) attribution_hooks: Option<ParsedAttributionHooksConfigDocument>,
+    pub(crate) database_retry: Option<ParsedDatabaseRetryConfigDocument>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -99,6 +101,28 @@ pub(crate) struct ParsedCustomBashPolicyMatchDocument {
     pub(crate) argv_prefix: Option<Vec<String>>,
 }
 
+#[allow(clippy::struct_field_names)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct ParsedDatabaseRetryConfigDocument {
+    pub(crate) local_db: Option<ParsedPerDbRetryConfigDocument>,
+    pub(crate) agent_trace_db: Option<ParsedPerDbRetryConfigDocument>,
+    pub(crate) auth_db: Option<ParsedPerDbRetryConfigDocument>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct ParsedPerDbRetryConfigDocument {
+    pub(crate) connection_open: Option<ParsedRetryPolicyDocument>,
+    pub(crate) query: Option<ParsedRetryPolicyDocument>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct ParsedRetryPolicyDocument {
+    pub(crate) max_attempts: Option<u32>,
+    pub(crate) timeout_ms: Option<u64>,
+    pub(crate) initial_backoff_ms: Option<u64>,
+    pub(crate) max_backoff_ms: Option<u64>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FileConfigValue<T> {
     pub(crate) value: T,
@@ -116,6 +140,7 @@ pub(crate) struct FileConfig {
     pub(crate) workos_client_id: Option<FileConfigValue<String>>,
     pub(crate) bash_policy_presets: Option<FileConfigValue<Vec<String>>>,
     pub(crate) bash_policy_custom: Option<FileConfigValue<Vec<CustomBashPolicyEntry>>>,
+    pub(crate) database_retry: Option<FileConfigValue<DatabaseRetryConfig>>,
 }
 
 pub(crate) type ParsedBashPolicyConfig = (
@@ -127,6 +152,7 @@ pub(crate) type ParsedFilePolicies = (
     Option<FileConfigValue<bool>>,
     Option<FileConfigValue<Vec<String>>>,
     Option<FileConfigValue<Vec<CustomBashPolicyEntry>>>,
+    Option<FileConfigValue<DatabaseRetryConfig>>,
 );
 
 pub(crate) fn validate_config_value_against_schema(value: &Value, path: &Path) -> Result<()> {
@@ -257,7 +283,7 @@ pub(crate) fn parse_file_config(
     let workos_client_id = typed
         .workos_client_id
         .map(|value| FileConfigValue { value, source });
-    let (attribution_hooks_enabled, bash_policy_presets, bash_policy_custom) =
+    let (attribution_hooks_enabled, bash_policy_presets, bash_policy_custom, database_retry) =
         map_policies_config(typed.policies.as_ref(), object, path, source)?;
 
     Ok(FileConfig {
@@ -270,6 +296,7 @@ pub(crate) fn parse_file_config(
         workos_client_id,
         bash_policy_presets,
         bash_policy_custom,
+        database_retry,
     })
 }
 
@@ -280,7 +307,7 @@ pub(crate) fn map_policies_config(
     source: ConfigPathSource,
 ) -> Result<ParsedFilePolicies> {
     let Some(policies_value) = object.get("policies") else {
-        return Ok((None, None, None));
+        return Ok((None, None, None, None));
     };
 
     let policies_object = policies_value.as_object().with_context(|| {
@@ -294,8 +321,8 @@ pub(crate) fn map_policies_config(
         policies_object,
         path,
         Some("policies"),
-        &["bash", "attribution_hooks"],
-        "bash, attribution_hooks",
+        &["bash", "attribution_hooks", "database_retry"],
+        "bash, attribution_hooks, database_retry",
     )?;
 
     let bash = typed.and_then(|config| config.bash.as_ref());
@@ -307,11 +334,18 @@ pub(crate) fn map_policies_config(
     )?;
     let (bash_policy_presets, bash_policy_custom) =
         map_bash_policy_config(bash, policies_object, path, source)?;
+    let database_retry = map_database_retry_config(
+        typed.and_then(|config| config.database_retry.as_ref()),
+        policies_object,
+        path,
+        source,
+    )?;
 
     Ok((
         attribution_hooks_enabled,
         bash_policy_presets,
         bash_policy_custom,
+        database_retry,
     ))
 }
 
@@ -382,4 +416,156 @@ pub(crate) fn map_bash_policy_config(
         .map(|value| FileConfigValue { value, source });
 
     Ok((presets, custom))
+}
+
+#[allow(clippy::too_many_lines)]
+pub(crate) fn map_database_retry_config(
+    typed: Option<&ParsedDatabaseRetryConfigDocument>,
+    policies_object: &serde_json::Map<String, Value>,
+    path: &Path,
+    source: ConfigPathSource,
+) -> Result<Option<FileConfigValue<DatabaseRetryConfig>>> {
+    let Some(database_retry_value) = policies_object.get("database_retry") else {
+        return Ok(None);
+    };
+
+    let database_retry_object = database_retry_value.as_object().with_context(|| {
+        format!(
+            "Config key 'policies.database_retry' in '{}' must be an object.",
+            path.display()
+        )
+    })?;
+
+    validate_object_keys(
+        database_retry_object,
+        path,
+        Some("policies.database_retry"),
+        &["local_db", "agent_trace_db", "auth_db"],
+        "local_db, agent_trace_db, auth_db",
+    )?;
+
+    let build_retry_policy =
+        |parsed: &ParsedRetryPolicyDocument, context: &str| -> Result<RetryPolicy> {
+            let max_attempts = parsed.max_attempts.with_context(|| {
+                format!(
+                    "Config key '{context}.max_attempts' in '{}' must be present.",
+                    path.display()
+                )
+            })?;
+            let timeout_ms = parsed.timeout_ms.with_context(|| {
+                format!(
+                    "Config key '{context}.timeout_ms' in '{}' must be present.",
+                    path.display()
+                )
+            })?;
+            let initial_backoff_ms = parsed.initial_backoff_ms.with_context(|| {
+                format!(
+                    "Config key '{context}.initial_backoff_ms' in '{}' must be present.",
+                    path.display()
+                )
+            })?;
+            let max_backoff_ms = parsed.max_backoff_ms.with_context(|| {
+                format!(
+                    "Config key '{context}.max_backoff_ms' in '{}' must be present.",
+                    path.display()
+                )
+            })?;
+
+            if max_attempts == 0 {
+                bail!(
+                    "Config key '{context}.max_attempts' in '{}' must be >= 1.",
+                    path.display()
+                );
+            }
+            if timeout_ms == 0 {
+                bail!(
+                    "Config key '{context}.timeout_ms' in '{}' must be >= 1.",
+                    path.display()
+                );
+            }
+            if max_backoff_ms < initial_backoff_ms {
+                bail!(
+                    "Config key '{context}.max_backoff_ms' in '{}' must be >= initial_backoff_ms.",
+                    path.display()
+                );
+            }
+
+            Ok(RetryPolicy {
+                max_attempts,
+                timeout_ms,
+                initial_backoff_ms,
+                max_backoff_ms,
+            })
+        };
+
+    let build_per_db = |db_key: &str| -> Result<Option<super::types::PerDbRetryConfig>> {
+        let Some(db_value) = database_retry_object.get(db_key) else {
+            return Ok(None);
+        };
+
+        let db_object = db_value.as_object().with_context(|| {
+            format!(
+                "Config key 'policies.database_retry.{db_key}' in '{}' must be an object.",
+                path.display()
+            )
+        })?;
+
+        validate_object_keys(
+            db_object,
+            path,
+            Some(&format!("policies.database_retry.{db_key}")),
+            &["connection_open", "query"],
+            "connection_open, query",
+        )?;
+
+        let typed_db = typed.and_then(|doc| match db_key {
+            "local_db" => doc.local_db.as_ref(),
+            "agent_trace_db" => doc.agent_trace_db.as_ref(),
+            "auth_db" => doc.auth_db.as_ref(),
+            _ => None,
+        });
+
+        let build_policy = |op_key: &str| -> Result<Option<RetryPolicy>> {
+            let Some(op_value) = db_object.get(op_key) else {
+                return Ok(None);
+            };
+
+            let _op_object = op_value.as_object().with_context(|| {
+                format!(
+                    "Config key 'policies.database_retry.{db_key}.{op_key}' in '{}' must be an object.",
+                    path.display()
+                )
+            })?;
+
+            let typed_policy = typed_db.and_then(|db| match op_key {
+                "connection_open" => db.connection_open.as_ref(),
+                "query" => db.query.as_ref(),
+                _ => None,
+            });
+
+            let parsed = typed_policy.with_context(|| {
+                format!(
+                    "Config key 'policies.database_retry.{db_key}.{op_key}' in '{}' could not be parsed.",
+                    path.display()
+                )
+            })?;
+
+            let context = format!("policies.database_retry.{db_key}.{op_key}");
+            build_retry_policy(parsed, &context).map(Some)
+        };
+
+        Ok(Some(super::types::PerDbRetryConfig {
+            connection_open: build_policy("connection_open")?,
+            query: build_policy("query")?,
+        }))
+    };
+
+    Ok(Some(FileConfigValue {
+        value: DatabaseRetryConfig {
+            local_db: build_per_db("local_db")?,
+            agent_trace_db: build_per_db("agent_trace_db")?,
+            auth_db: build_per_db("auth_db")?,
+        },
+        source,
+    }))
 }

@@ -248,3 +248,19 @@ pub(crate) fn parse_bool_value_from(key: &str, raw: &str, source: &str) -> anyho
         _ => anyhow::bail!("Invalid {key} '{raw}' from {source}. Valid values: true, false, 1, 0."),
     }
 }
+
+use crate::services::resilience::RetryPolicy;
+
+#[allow(clippy::struct_field_names)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DatabaseRetryConfig {
+    pub(crate) local_db: Option<PerDbRetryConfig>,
+    pub(crate) agent_trace_db: Option<PerDbRetryConfig>,
+    pub(crate) auth_db: Option<PerDbRetryConfig>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PerDbRetryConfig {
+    pub(crate) connection_open: Option<RetryPolicy>,
+    pub(crate) query: Option<RetryPolicy>,
+}

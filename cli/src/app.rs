@@ -163,6 +163,7 @@ fn build_startup_context() -> Result<StartupContext, ClassifiedError> {
     })?;
     let observability_config = services::config::resolve_observability_runtime_config(&cwd)
         .map_err(|error| app_support::classify_observability_configuration_error(&error))?;
+    services::config::init_database_retry_config_from_environment(&cwd);
     let startup_diagnostic = app_support::invalid_discovered_config_guidance(&observability_config);
     Ok(StartupContext {
         observability_config,

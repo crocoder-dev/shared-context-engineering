@@ -11,11 +11,14 @@
 - `TursoDb<M: DbSpec>`: generic unencrypted adapter that owns:
   - tokio current-thread runtime creation
   - Turso local database open/connect flow using `turso::Builder::new_local()` with `experimental_multiprocess_wal(true)` so concurrent `sce` processes can safely access the same local database without WAL lock contention
+   - config-driven connection-open retry around only the `build().await.connect()` block using `run_with_retry_sync` (resolved from `policies.database_retry.<db>.connection_open` via `DATABASE_RETRY_CONFIG` `OnceLock` with fallback to hardcoded defaults `3` attempts, `5s` timeout, `100ms..1000ms` backoff)
+   - config-driven operation retry for `execute()`, `query()`, and `query_map()` using `run_with_retry_sync` (resolved from `policies.database_retry.<db>.query` via the same `OnceLock` with fallback to hardcoded defaults `3` attempts, `3s` timeout, `100ms..500ms` backoff)
   - parent-directory creation
-  - delegation of synchronous `execute()`, `query()`, row-mapping `query_map()`, and `run_migrations()` to the shared internal `TursoConnectionCore<M>`
-- `EncryptedTursoDb<M: DbSpec>`: encrypted-adapter seam parallel to `TursoDb<M>` with the same structural shape (connection, runtime bridge, and spec marker). `EncryptedTursoDb::new()` resolves the encryption key via `encryption_key::get_or_create_encryption_key()`, enables Turso experimental local encryption, applies strict `aegis256` cipher selection through `turso::EncryptionOpts` during local DB open/connect, and runs embedded migrations after connect.
-- `EncryptedTursoDb<M>` exposes the same public synchronous `execute()`, `query()`, `query_map()`, and `run_migrations()` methods by delegating to the same `TursoConnectionCore<M>` operation path used by `TursoDb<M>`.
-- `TursoConnectionCore<M>` is internal to `cli/src/services/db/mod.rs` and owns the shared blocking Turso operation wrappers plus embedded migration execution with per-database `__sce_migrations` metadata; encryption vs unencrypted behavior remains constructor-only at the public adapter layer.
+  - retry-backed synchronous `execute()`, `query()`, and row-mapping `query_map()` wrappers via the public adapter methods, with config-driven query retry resolved from `policies.database_retry.<db>.query`
+  - delegation of `run_migrations()` to the shared internal `TursoConnectionCore<M>`
+- `EncryptedTursoDb<M: DbSpec>`: encrypted-adapter seam parallel to `TursoDb<M>` with the same structural shape (connection, runtime bridge, and spec marker). `EncryptedTursoDb::new()` resolves the encryption key via `encryption_key::get_or_create_encryption_key()` (environment variable `SCE_AUTH_DB_ENCRYPTION_KEY` with OS credential-store fallback), enables Turso experimental local encryption, applies strict `aegis256` cipher selection through `turso::EncryptionOpts` during local DB open/connect, wraps that open/connect block in the same connection-open retry policy resolved from `policies.database_retry.<db>.connection_open`, and runs embedded migrations after connect.
+- `EncryptedTursoDb<M>` exposes the same public synchronous `execute()`, `query()`, `query_map()`, and `run_migrations()` methods; operation methods use the same config-driven query retry policy as `TursoDb<M>`.
+- `TursoConnectionCore<M>` is internal to `cli/src/services/db/mod.rs` and owns the shared Turso connection plus tokio current-thread runtime bridging used by the public adapter methods; generic embedded migration execution with per-database `__sce_migrations` metadata is delegated to `run_embedded_migrations` helpers; encryption vs unencrypted behavior remains constructor-only at the public adapter layer.
 - Shared lifecycle helpers:
   - `collect_db_path_health()` emits common parent/path health problems for DB-backed services.
   - `bootstrap_db_parent()` creates the resolved DB parent directory for repair/setup flows.
@@ -56,6 +59,10 @@ All three database wrappers (local DB, auth DB, Agent Trace DB) have lifecycle p
 ## Migration metadata
 
 The shared `TursoConnectionCore<M>` migration path creates a service-local `__sce_migrations` table before applying migrations. Each migration is skipped only when its ID is already recorded in that table; otherwise the SQL is executed and the ID is recorded after success.
+
+Migrations are deliberately outside the connection-open retry block. The constructors retry only local Turso open/connect; schema changes are not retried because migration SQL must not be replayed after partial execution.
+
+`TursoDb<M>` and `EncryptedTursoDb<M>` operation methods use the same config-driven query retry policy, resolved from `policies.database_retry.<db>.query` via `DATABASE_RETRY_CONFIG` `OnceLock` with fallback to hardcoded defaults (`3` attempts, `3s` timeout, `100ms..500ms` backoff). `execute()` and `query()` convert caller parameters to owned Turso params before retry so each attempt can clone the same values. `query_map()` retries the initial query and full row-fetch loop, then runs caller-provided row mapping after retry completion so mapping failures are surfaced as logic errors and are not retried.
 
 Existing databases created before migration metadata are upgraded by re-applying the current idempotent migration list and recording each migration ID. This lets later `sce setup` / lifecycle initialization runs apply migrations added after the database file already existed, including Agent Trace DB schema/index additions.
 

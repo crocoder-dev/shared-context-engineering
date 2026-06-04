@@ -18,6 +18,8 @@ pub(crate) use resolver::{
 };
 pub(crate) use schema::validate_config_file;
 
+pub(crate) use resolver::{get_database_retry_config, init_database_retry_config_from_environment};
+
 pub fn run_config_subcommand(subcommand: ConfigSubcommand) -> Result<String> {
     match subcommand {
         ConfigSubcommand::Show(request) => {

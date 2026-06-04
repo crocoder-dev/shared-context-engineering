@@ -6,6 +6,7 @@ use super::policy::{format_bash_policies_json, format_bash_policies_text};
 use super::resolver::{
     AuthConfigKeySpec, RuntimeConfig, PRECEDENCE_DESCRIPTION, WORKOS_CLIENT_ID_KEY,
 };
+use super::types::DatabaseRetryConfig;
 use super::{ConfigPathSource, ReportFormat, ResolvedOptionalValue, ValueSource};
 
 pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> String {
@@ -34,6 +35,7 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
                     &runtime.workos_client_id,
                 ),
                 format_bash_policies_text(&runtime.bash_policies),
+                format_database_retry_text(&runtime.database_retry),
                 format_validation_warnings_text(&warnings),
             ];
             lines.splice(3..3, format_observability_text_lines(runtime));
@@ -68,6 +70,7 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
                         "workos_client_id": format_optional_auth_resolved_value_json(WORKOS_CLIENT_ID_KEY, &runtime.workos_client_id),
                         "policies": {
                             "bash": format_bash_policies_json(&runtime.bash_policies),
+                            "database_retry": format_database_retry_json(&runtime.database_retry),
                         }
                     },
                     "warnings": warnings,
@@ -364,4 +367,120 @@ fn abbreviate_text_value(value: &str) -> String {
         .rev()
         .collect();
     format!("{prefix}...{suffix}")
+}
+
+fn retry_policy_display(policy: &crate::services::resilience::RetryPolicy) -> String {
+    format!(
+        "{} attempts, {}ms timeout, {}..{}ms backoff",
+        policy.max_attempts, policy.timeout_ms, policy.initial_backoff_ms, policy.max_backoff_ms
+    )
+}
+
+fn format_per_db_retry_text(
+    config: &super::types::PerDbRetryConfig,
+    db_label: &str,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(ref policy) = config.connection_open {
+        lines.push(format!(
+            "      {}: {} (connection_open)",
+            style::label(db_label),
+            style::value(&retry_policy_display(policy))
+        ));
+    }
+    if let Some(ref policy) = config.query {
+        lines.push(format!(
+            "      {}: {} (query)",
+            style::label(db_label),
+            style::value(&retry_policy_display(policy))
+        ));
+    }
+    lines
+}
+
+fn format_database_retry_text(value: &ResolvedOptionalValue<DatabaseRetryConfig>) -> String {
+    match (value.value.as_ref(), value.source) {
+        (Some(config), Some(source)) => {
+            let mut lines = vec![format!("  {}:", style::label("policies.database_retry"))];
+            if let Some(ref per_db) = config.local_db {
+                lines.extend(format_per_db_retry_text(per_db, "local_db"));
+            }
+            if let Some(ref per_db) = config.agent_trace_db {
+                lines.extend(format_per_db_retry_text(per_db, "agent_trace_db"));
+            }
+            if let Some(ref per_db) = config.auth_db {
+                lines.extend(format_per_db_retry_text(per_db, "auth_db"));
+            }
+            match source.config_source() {
+                Some(config_source) => {
+                    lines.push(format!(
+                        "    (source: {}, config_source: {})",
+                        style::label(source.as_str()),
+                        style::label(config_source.as_str())
+                    ));
+                }
+                None => {
+                    lines.push(format!("    (source: {})", style::label(source.as_str())));
+                }
+            }
+            lines.join("\n")
+        }
+        _ => format!(
+            "  {}: {} (source: {})",
+            style::label("policies.database_retry"),
+            style::value("(unset)"),
+            style::label("none")
+        ),
+    }
+}
+
+fn format_per_db_retry_json(config: &super::types::PerDbRetryConfig) -> Value {
+    let mut obj = serde_json::Map::new();
+    if let Some(ref policy) = config.connection_open {
+        obj.insert(
+            "connection_open".to_string(),
+            json!({
+                "max_attempts": policy.max_attempts,
+                "timeout_ms": policy.timeout_ms,
+                "initial_backoff_ms": policy.initial_backoff_ms,
+                "max_backoff_ms": policy.max_backoff_ms,
+            }),
+        );
+    }
+    if let Some(ref policy) = config.query {
+        obj.insert(
+            "query".to_string(),
+            json!({
+                "max_attempts": policy.max_attempts,
+                "timeout_ms": policy.timeout_ms,
+                "initial_backoff_ms": policy.initial_backoff_ms,
+                "max_backoff_ms": policy.max_backoff_ms,
+            }),
+        );
+    }
+    Value::Object(obj)
+}
+
+fn format_database_retry_json(value: &ResolvedOptionalValue<DatabaseRetryConfig>) -> Value {
+    let config = value.value.as_ref();
+    let mut resolved = serde_json::Map::new();
+    if let Some(c) = config {
+        if let Some(ref per_db) = c.local_db {
+            resolved.insert("local_db".to_string(), format_per_db_retry_json(per_db));
+        }
+        if let Some(ref per_db) = c.agent_trace_db {
+            resolved.insert(
+                "agent_trace_db".to_string(),
+                format_per_db_retry_json(per_db),
+            );
+        }
+        if let Some(ref per_db) = c.auth_db {
+            resolved.insert("auth_db".to_string(), format_per_db_retry_json(per_db));
+        }
+    }
+    json!({
+        "resolved": if resolved.is_empty() { Value::Null } else { Value::Object(resolved) },
+        "source": value.source.map(ValueSource::as_str),
+        "config_source": value.source.and_then(ValueSource::config_source).map(ConfigPathSource::as_str),
+    })
 }

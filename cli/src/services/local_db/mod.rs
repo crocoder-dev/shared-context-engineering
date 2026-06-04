@@ -26,6 +26,10 @@ impl DbSpec for LocalDbSpec {
     fn migrations() -> &'static [(&'static str, &'static str)] {
         &[]
     }
+
+    fn db_config_key() -> &'static str {
+        "local_db"
+    }
 }
 
 /// Local Turso database adapter.
