@@ -24,6 +24,8 @@ The generated-config pipeline now has one canonical Pkl-authored source for Open
 ## Claude boundary
 
 - Claude does not consume this OpenCode `plugin` manifest surface.
+- Claude agent-trace event handling is registered through generated `.claude/settings.json` command hooks that run `bun .claude/plugins/sce-agent-trace.ts <event-name>`.
+- The generated Claude TypeScript runtime is an event adapter only: it sends normalized `session-model` payloads to Rust for `SessionStart` model attribution, forwards supported normalized `diff-trace` payloads to `sce hooks diff-trace`, and Rust remains the artifact and database writer.
 - Claude bash-policy enforcement has been removed from generated outputs.
 - OpenCode is now the sole target for SCE-managed bash-policy enforcement via the plugin registration contract.
 

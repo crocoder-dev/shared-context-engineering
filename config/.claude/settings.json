@@ -5,10 +5,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sce",
+            "command": "bun",
             "args": [
-              "hooks",
-              "claude-capture",
+              ".claude/plugins/sce-agent-trace.ts",
               "SessionStart"
             ]
           }
@@ -20,10 +19,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sce",
+            "command": "bun",
             "args": [
-              "hooks",
-              "claude-capture",
+              ".claude/plugins/sce-agent-trace.ts",
               "UserPromptSubmit"
             ]
           }
@@ -36,10 +34,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sce",
+            "command": "bun",
             "args": [
-              "hooks",
-              "claude-capture",
+              ".claude/plugins/sce-agent-trace.ts",
               "PostToolUse"
             ]
           }
@@ -51,10 +48,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sce",
+            "command": "bun",
             "args": [
-              "hooks",
-              "claude-capture",
+              ".claude/plugins/sce-agent-trace.ts",
               "Stop"
             ]
           }

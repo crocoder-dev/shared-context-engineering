@@ -284,14 +284,10 @@ pub enum HooksSubcommand {
     ConversationTrace,
 
     #[command(
-        name = "claude-capture",
-        about = "Capture raw Claude hook payload JSON from STDIN",
-        hide = true
+        name = "session-model",
+        about = "Ingest editor session model attribution (reads JSON payload from STDIN)"
     )]
-    ClaudeCapture {
-        #[arg(value_name = "event-name")]
-        event_name: String,
-    },
+    SessionModel,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]

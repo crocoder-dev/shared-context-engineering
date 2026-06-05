@@ -9,6 +9,7 @@ local bashPolicyPresetCatalogSource = bash_policy_presets.output.text
 local bashPolicyRuntimeSource = read("../lib/bash-policy-plugin/bash-policy/runtime.ts").text
 local opencodeBashPolicyPluginSource = read("../lib/bash-policy-plugin/opencode-bash-policy-plugin.ts").text
 local opencodeAgentTracePluginSource = read("../lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts").text
+local claudeAgentTracePluginSource = read("../lib/agent-trace-plugin/claude-sce-agent-trace-plugin.ts").text
 
 output {
   files {
@@ -49,6 +50,9 @@ output {
     }
     ["config/.claude/settings.json"] {
       text = claude.settings.rendered
+    }
+    ["config/.claude/plugins/sce-agent-trace.ts"] {
+      text = claudeAgentTracePluginSource
     }
 
     for (slug, document in opencode.skills) {

@@ -374,11 +374,8 @@ fn convert_hooks_subcommand_request(
             Ok(services::hooks::HookSubcommand::PostRewrite { rewrite_method })
         }
         cli_schema::HooksSubcommand::DiffTrace => Ok(services::hooks::HookSubcommand::DiffTrace),
-        cli_schema::HooksSubcommand::ClaudeCapture { event_name } => {
-            let event = services::hooks::ClaudeCaptureEvent::parse(&event_name)
-                .map_err(|error| ClassifiedError::validation(error.to_string()))?;
-
-            Ok(services::hooks::HookSubcommand::ClaudeCapture { event })
+        cli_schema::HooksSubcommand::SessionModel => {
+            Ok(services::hooks::HookSubcommand::SessionModel)
         }
         cli_schema::HooksSubcommand::ConversationTrace => {
             Ok(Box::new(services::hooks::command::HooksCommand {

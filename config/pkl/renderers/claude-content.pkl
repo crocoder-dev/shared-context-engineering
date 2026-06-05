@@ -60,10 +60,9 @@ settings = new common.RenderedTextFile {
         "hooks": [
           {
             "type": "command",
-            "command": "sce",
+            "command": "bun",
             "args": [
-              "hooks",
-              "claude-capture",
+              ".claude/plugins/sce-agent-trace.ts",
               "SessionStart"
             ]
           }
@@ -75,10 +74,9 @@ settings = new common.RenderedTextFile {
         "hooks": [
           {
             "type": "command",
-            "command": "sce",
+            "command": "bun",
             "args": [
-              "hooks",
-              "claude-capture",
+              ".claude/plugins/sce-agent-trace.ts",
               "UserPromptSubmit"
             ]
           }
@@ -91,10 +89,9 @@ settings = new common.RenderedTextFile {
         "hooks": [
           {
             "type": "command",
-            "command": "sce",
+            "command": "bun",
             "args": [
-              "hooks",
-              "claude-capture",
+              ".claude/plugins/sce-agent-trace.ts",
               "PostToolUse"
             ]
           }
@@ -106,10 +103,9 @@ settings = new common.RenderedTextFile {
         "hooks": [
           {
             "type": "command",
-            "command": "sce",
+            "command": "bun",
             "args": [
-              "hooks",
-              "claude-capture",
+              ".claude/plugins/sce-agent-trace.ts",
               "Stop"
             ]
           }

@@ -77,3 +77,10 @@ When `buildPatchConversationTracePayloads` returns `undefined` (no diff items ha
 - `buildTrace` exits early when extraction returns `undefined` (non-user role, empty diffs array, or no usable patch entries), so no diff-trace hook invocation occurs for those events.
 - The plugin tracks OpenCode client version per session ID from `session.created` / `session.updated` events and forwards it as `tool_version` when available.
 - When extraction succeeds, `buildTrace` forwards the extracted payload with required `tool_name="opencode"` and required `tool_version` (nullable when session version is unavailable) to `sce hooks diff-trace` via STDIN JSON; the Rust hook runtime validates required non-empty `sessionID`/`diff`/`model_id`/`tool_name`, required nullable/non-empty `tool_version`, plus required `time`, and persists the DB-backed diff-trace fields through AgentTraceDb `diff_traces` insertion.
+
+## Shared boundary with Claude runtime
+
+- OpenCode and Claude now both use generated TypeScript event runtimes as event-shape adapters before handing normalized diff-trace payloads to the shared Rust hook intake.
+- OpenCode registration remains the generated OpenCode `opencode.json` plugin manifest; Claude registration remains generated `.claude/settings.json` command hooks that run Bun against `.claude/plugins/sce-agent-trace.ts`.
+- The shared Rust boundary is `sce hooks diff-trace`: both runtimes send `{ sessionID, diff, time, model_id, tool_name, tool_version }` over STDIN JSON, and Rust remains the only writer of parsed `context/tmp/*-diff-trace.json` artifacts and AgentTraceDb `diff_traces` rows.
+- Claude `model_id` differs from OpenCode attribution: OpenCode reads provider/model data from the OpenCode event, while Claude resolves `model_id` from AgentTraceDb `session_models` at Rust persistence time and skips `diff-trace` persistence when no matching session model row exists.

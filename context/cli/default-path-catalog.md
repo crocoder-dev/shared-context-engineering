@@ -25,7 +25,7 @@
 - `.opencode/`, `.opencode/opencode.json`
 - `.claude/`
 - `.git/`, `.git/hooks/`, `.git/COMMIT_EDITMSG`
-- `context/`, `context/plans/`, `context/decisions/`, `context/handovers/`, `context/tmp/`, `context/tmp/claude/`
+- `context/`, `context/plans/`, `context/decisions/`, `context/handovers/`, `context/tmp/`
 
 ### Embedded/install paths
 
@@ -42,6 +42,6 @@
 - `cli/src/services/doctor/inspect.rs` also resolves OpenCode manifest/plugin/runtime/preset locations through shared `RepoPaths` and `InstallTargetPaths` accessors instead of owning those paths locally.
 - `cli/src/services/setup/mod.rs` now resolves setup target directory names and required hook identifiers through `default_paths.rs` constants/accessors instead of owning those path literals locally.
 - `cli/src/services/default_paths.rs` includes a regression test that scans non-test Rust source under `cli/src/` and fails when new centralized production path literals appear outside the default-path service.
-- `cli/src/services/hooks/mod.rs` resolves Claude raw hook capture artifacts through `RepoPaths::claude_capture_tmp_dir()` instead of owning the `context/tmp/claude/` path shape locally.
+- `cli/src/services/hooks/mod.rs` resolves the collision-safe `context/tmp/` path shape through shared path accessors.
 
 See also: [cli-command-surface.md](./cli-command-surface.md), [../architecture.md](../architecture.md), [../context-map.md](../context-map.md)

@@ -9,7 +9,6 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{json, to_string as serialize_to_json, Value};
-use tracing;
 
 use crate::services::agent_trace::{
     build_agent_trace, validate_agent_trace_value, AgentTrace, AgentTraceMetadataInput,
@@ -18,6 +17,7 @@ use crate::services::agent_trace::{
 use crate::services::agent_trace_db::{
     AgentTraceDb, AgentTraceInsert, DiffTraceInsert, InsertMessageInsert, InsertPartInsert,
     MessageRole, PartType, PostCommitPatchIntersectionInsert, RecentDiffTracePatches,
+    SessionModelUpsert,
 };
 use crate::services::observability::traits::Logger;
 use crate::services::patch::{
@@ -26,7 +26,6 @@ use crate::services::patch::{
 };
 use crate::services::{config, default_paths::RepoPaths};
 
-pub mod claude_transcript;
 pub mod command;
 pub mod lifecycle;
 
@@ -35,46 +34,6 @@ pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@croco
 const AGENT_TRACE_URL_PREFIX: &str = "sce.crocoder.dev/trace/";
 
 const MAX_TRACE_FILE_CREATE_ATTEMPTS: u64 = 1_000_000;
-const SUPPORTED_CLAUDE_CAPTURE_EVENTS_TEXT: &str =
-    "SessionStart, UserPromptSubmit, PostToolUse, Stop";
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ClaudeCaptureEvent {
-    SessionStart,
-    UserPromptSubmit,
-    PostToolUse,
-    Stop,
-}
-
-impl ClaudeCaptureEvent {
-    pub fn parse(event_name: &str) -> Result<Self> {
-        let normalized = event_name.trim();
-
-        match normalized {
-            "SessionStart" => Ok(Self::SessionStart),
-            "UserPromptSubmit" => Ok(Self::UserPromptSubmit),
-            "PostToolUse" => Ok(Self::PostToolUse),
-            "Stop" => Ok(Self::Stop),
-            _ => bail!(unsupported_claude_capture_event_error(normalized)),
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::SessionStart => "SessionStart",
-            Self::UserPromptSubmit => "UserPromptSubmit",
-            Self::PostToolUse => "PostToolUse",
-            Self::Stop => "Stop",
-        }
-    }
-}
-
-fn unsupported_claude_capture_event_error(event_name: &str) -> String {
-    format!(
-        "Unsupported Claude capture event '{event_name}'. Supported events: {SUPPORTED_CLAUDE_CAPTURE_EVENTS_TEXT}. Try: rerun with one of the supported Claude hook event names."
-    )
-}
-
 type PayloadValidationError = fn(&str) -> String;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -92,9 +51,17 @@ pub enum HookSubcommand {
     },
     DiffTrace,
     ConversationTrace,
-    ClaudeCapture {
-        event: ClaudeCaptureEvent,
-    },
+    SessionModel,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct SessionModelPayload {
+    #[serde(rename = "sessionID")]
+    session_id: String,
+    time: u64,
+    model_id: String,
+    tool_name: String,
+    tool_version: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -196,9 +163,7 @@ fn run_hooks_subcommand_in_repo(
         }
         HookSubcommand::DiffTrace => run_diff_trace_subcommand(repository_root, logger),
         HookSubcommand::ConversationTrace => run_conversation_trace_subcommand(logger),
-        HookSubcommand::ClaudeCapture { event } => {
-            run_claude_capture_subcommand(repository_root, *event, logger)
-        }
+        HookSubcommand::SessionModel => run_session_model_subcommand(repository_root, logger),
     }
 }
 
@@ -579,6 +544,28 @@ fn run_diff_trace_subcommand_from_payload(
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
     let payload = parse_diff_trace_payload(stdin_payload)?;
+    let resolve_model = |tool_name: &str, session_id: &str| -> Result<Option<String>> {
+        let db =
+            AgentTraceDb::new().context("Failed to open Agent Trace DB for model resolution.")?;
+        let attribution = db
+            .session_model_by_tool_and_session(tool_name, session_id)
+            .context("Failed to query session model attribution from Agent Trace DB.")?;
+        Ok(attribution.map(|a| a.model_id))
+    };
+
+    run_diff_trace_subcommand_from_payload_with(repository_root, payload, logger, resolve_model)
+}
+
+fn run_diff_trace_subcommand_from_payload_with<R>(
+    repository_root: &Path,
+    payload: DiffTracePayload,
+    logger: Option<&dyn Logger>,
+    _resolve_model: R,
+) -> Result<String>
+where
+    R: FnOnce(&str, &str) -> Result<Option<String>>,
+{
+    // model_id is required from the caller; no resolution needed.
     if let Err(error) = diff_trace_db_time_ms(payload.time) {
         if let Some(log) = logger {
             log.warn(
@@ -615,140 +602,65 @@ fn run_diff_trace_subcommand_from_payload(
     }
 }
 
-fn run_claude_capture_subcommand(
+fn run_session_model_subcommand(
     repository_root: &Path,
-    event: ClaudeCaptureEvent,
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
     let stdin_payload = read_hook_stdin()?;
-    let result = run_claude_capture_subcommand_from_payload(repository_root, event, &stdin_payload);
+    let result = run_session_model_subcommand_from_payload(repository_root, &stdin_payload, logger);
     if let Err(ref error) = result {
         if let Some(log) = logger {
-            log.error(
-                "sce.hooks.claude_capture.error",
-                &error.to_string(),
-                &[("event", event.as_str())],
-            );
+            log.error("sce.hooks.session_model.error", &error.to_string(), &[]);
         }
     }
     result
 }
 
-fn run_claude_capture_subcommand_from_payload(
-    repository_root: &Path,
-    event: ClaudeCaptureEvent,
+fn run_session_model_subcommand_from_payload(
+    _repository_root: &Path,
     stdin_payload: &str,
+    logger: Option<&dyn Logger>,
 ) -> Result<String> {
-    persist_claude_capture_payload(repository_root, event, stdin_payload)?;
+    let payload = parse_session_model_payload(stdin_payload)?;
 
-    Ok(format!(
-        "claude-capture hook intake persisted {} payload to context/tmp/claude.",
-        event.as_str()
-    ))
-}
+    // Convert the u64 time to i64 for DB storage.
+    let session_start_time_ms = i64::try_from(payload.time).map_err(|_| {
+        anyhow!(sm_err(
+            "field 'time' must fit in a signed 64-bit Unix epoch millisecond value for Agent Trace DB storage"
+        ))
+    })?;
 
-fn persist_claude_capture_payload(
-    repository_root: &Path,
-    event: ClaudeCaptureEvent,
-    stdin_payload: &str,
-) -> Result<PathBuf> {
-    persist_claude_capture_payload_with(repository_root, event, stdin_payload, |artifact| {
-        persist_serialized_trace_payload(
-            &artifact.trace_directory,
-            &artifact.trace_name,
-            &artifact.serialized,
-            artifact.artifact_description,
-        )
-    })
-}
+    let upsert_payload = SessionModelUpsert {
+        tool_name: &payload.tool_name,
+        session_id: &payload.session_id,
+        model_id: &payload.model_id,
+        tool_version: payload.tool_version.as_deref(),
+        session_start_time_ms,
+    };
 
-fn persist_claude_capture_payload_with<P>(
-    repository_root: &Path,
-    event: ClaudeCaptureEvent,
-    stdin_payload: &str,
-    persist_artifact: P,
-) -> Result<PathBuf>
-where
-    P: FnOnce(TraceArtifactPayload) -> Result<PathBuf>,
-{
-    let artifact = build_claude_capture_artifact(repository_root, event, stdin_payload)?;
+    let db = AgentTraceDb::new()
+        .context("Failed to open Agent Trace DB for session-model persistence.")?;
+    let result = db
+        .upsert_session_model(upsert_payload)
+        .context("Failed to persist session model attribution to Agent Trace DB.");
 
-    persist_artifact(artifact)
-}
-
-fn build_claude_capture_artifact(
-    repository_root: &Path,
-    event: ClaudeCaptureEvent,
-    stdin_payload: &str,
-) -> Result<TraceArtifactPayload> {
-    let mut parsed = parse_claude_capture_payload(stdin_payload)?;
-
-    // Enrich PostToolUse artifacts with the model identity from the Claude
-    // transcript. Other event types (SessionStart, UserPromptSubmit, Stop)
-    // remain unchanged.
-    if event == ClaudeCaptureEvent::PostToolUse {
-        enrich_post_tool_use_with_model(&mut parsed);
+    match result {
+        Ok(_) => Ok(String::from(
+            "session-model hook intake persisted session model attribution to AgentTraceDb.",
+        )),
+        Err(error) => {
+            if let Some(log) = logger {
+                log.warn(
+                    "sce.hooks.session_model.agent_trace_db_write_failed",
+                    &error.to_string(),
+                    &[],
+                );
+            }
+            Ok(String::from(
+                "session-model hook intake completed; AgentTraceDb persistence failed.",
+            ))
+        }
     }
-
-    let serialized = format!(
-        "{}\n",
-        serde_json::to_string_pretty(&parsed)
-            .context("Failed to serialize Claude capture payload for persistence.")?
-    );
-
-    Ok(TraceArtifactPayload {
-        trace_directory: RepoPaths::new(repository_root).claude_capture_tmp_dir(),
-        trace_name: event.as_str().to_string(),
-        serialized,
-        artifact_description: "Claude capture payload",
-    })
-}
-
-/// Attempt to enrich a `PostToolUse` parsed payload with the model identity
-/// from the Claude JSONL transcript. Reads `transcript_path` and `tool_use_id`
-/// from the payload, calls the transcript extraction helper, and injects
-/// the model as `"model"` in the root JSON object.
-///
-/// Degrades gracefully: if `transcript_path` or `tool_use_id` are missing,
-/// the transcript is inaccessible, or the model cannot be determined, the
-/// payload is left unchanged. A warning is logged via `tracing::warn!` for
-/// cases where the transcript could not be read.
-fn enrich_post_tool_use_with_model(parsed: &mut Value) {
-    let Some(obj) = parsed.as_object_mut() else {
-        return;
-    };
-
-    let Some(transcript_path_str) = obj.get("transcript_path").and_then(|v| v.as_str()) else {
-        tracing::warn!(
-            "PostToolUse enrichment: missing 'transcript_path' in payload; skipping model enrichment"
-        );
-        return;
-    };
-    let transcript_path = Path::new(transcript_path_str);
-
-    let Some(tool_use_id) = obj.get("tool_use_id").and_then(|v| v.as_str()) else {
-        tracing::warn!(
-            "PostToolUse enrichment: missing 'tool_use_id' in payload; skipping model enrichment"
-        );
-        return;
-    };
-
-    if let Some(model) =
-        claude_transcript::extract_claude_transcript_model(transcript_path, tool_use_id)
-    {
-        obj.insert("model".to_string(), Value::String(model));
-    } else {
-        tracing::warn!(
-            "PostToolUse enrichment: could not extract model from transcript at '{}' for tool_use_id '{}'; writing artifact without model field",
-            transcript_path.display(),
-            tool_use_id
-        );
-    }
-}
-
-fn parse_claude_capture_payload(stdin_payload: &str) -> Result<Value> {
-    serde_json::from_str(stdin_payload)
-        .context("Invalid Claude capture payload from STDIN: expected valid JSON.")
 }
 
 fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTracePayload> {
@@ -780,6 +692,123 @@ fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTracePayload> {
         tool_name,
         tool_version,
     })
+}
+
+fn parse_session_model_payload(stdin_payload: &str) -> Result<SessionModelPayload> {
+    let parsed: Value = serde_json::from_str(stdin_payload)
+        .context("Invalid session-model payload from STDIN: expected valid JSON.")?;
+    let payload = parsed
+        .as_object()
+        .ok_or_else(|| anyhow!(sm_err("expected a JSON object")))?;
+
+    let session_id = sm_non_empty(payload, "sessionID")?;
+    let time = sm_u64(payload, "time")?;
+    let model_id = sm_non_empty(payload, "model_id")?;
+    let tool_name = sm_non_empty(payload, "tool_name")?;
+    let tool_version = sm_nullable_or_non_empty(payload, "tool_version")?;
+
+    Ok(SessionModelPayload {
+        session_id,
+        time,
+        model_id,
+        tool_name,
+        tool_version,
+    })
+}
+
+fn sm_err(detail: &str) -> String {
+    format!("Invalid session-model payload from STDIN: {detail}.")
+}
+
+fn sm_non_empty(payload: &serde_json::Map<String, Value>, field: &str) -> Result<String> {
+    let raw = payload
+        .get(field)
+        .ok_or_else(|| anyhow!(sm_err(&format!("missing required field '{field}'"))))?;
+    let value = raw.as_str().ok_or_else(|| {
+        anyhow!(sm_err(&format!(
+            "field '{field}' must be a non-empty string"
+        )))
+    })?;
+    if value.trim().is_empty() {
+        bail!(sm_err(&format!(
+            "field '{field}' must be a non-empty string"
+        )));
+    }
+    Ok(value.to_string())
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn sm_u64(payload: &serde_json::Map<String, Value>, field: &str) -> Result<u64> {
+    let raw = payload
+        .get(field)
+        .ok_or_else(|| anyhow!(sm_err(&format!("missing required field '{field}'"))))?;
+
+    if let Some(value) = raw.as_u64() {
+        return Ok(value);
+    }
+
+    if let Some(value) = raw.as_i64() {
+        if value < 0 {
+            bail!(sm_err(&format!(
+                "field '{field}' must be a u64 Unix epoch millisecond value, got a negative number"
+            )));
+        }
+        return Ok(value as u64);
+    }
+
+    if let Some(value) = raw.as_f64() {
+        if value.fract() != 0.0 {
+            bail!(sm_err(&format!(
+                "field '{field}' must be a u64 Unix epoch millisecond value, got a fractional number"
+            )));
+        }
+        if value < 0.0 {
+            bail!(sm_err(&format!(
+                "field '{field}' must be a u64 Unix epoch millisecond value, got a negative number"
+            )));
+        }
+        if value > u64::MAX as f64 {
+            bail!(sm_err(&format!(
+                "field '{field}' must be a u64 Unix epoch millisecond value"
+            )));
+        }
+        return Ok(value as u64);
+    }
+
+    bail!(sm_err(&format!(
+        "field '{field}' must be a u64 Unix epoch millisecond value"
+    )))
+}
+
+fn sm_nullable_or_non_empty(
+    payload: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<Option<String>> {
+    let raw = payload
+        .get(field)
+        .ok_or_else(|| anyhow!(sm_err(&format!("missing required field '{field}'"))))?;
+
+    if raw.is_null() {
+        return Ok(None);
+    }
+
+    let value = raw.as_str().ok_or_else(|| {
+        anyhow!(sm_err(&format!(
+            "field '{field}' must be null or a non-empty string"
+        )))
+    })?;
+
+    if value.trim().is_empty() {
+        bail!(sm_err(&format!(
+            "field '{field}' must be null or a non-empty string"
+        )));
+    }
+
+    Ok(Some(value.to_string()))
 }
 
 fn required_nullable_or_non_empty_string_field(
@@ -1443,7 +1472,7 @@ fn hook_runtime_invocation_name(subcommand: &HookSubcommand) -> &'static str {
         HookSubcommand::PostRewrite { .. } => "post-rewrite runtime invocation",
         HookSubcommand::DiffTrace => "diff-trace runtime invocation",
         HookSubcommand::ConversationTrace => "conversation-trace runtime invocation",
-        HookSubcommand::ClaudeCapture { .. } => "claude-capture runtime invocation",
+        HookSubcommand::SessionModel => "session-model runtime invocation",
     }
 }
 
@@ -1487,7 +1516,7 @@ fn hook_trace_name(subcommand: &HookSubcommand) -> &'static str {
         HookSubcommand::PostRewrite { .. } => "post-rewrite",
         HookSubcommand::DiffTrace => "diff-trace",
         HookSubcommand::ConversationTrace => "conversation-trace",
-        HookSubcommand::ClaudeCapture { .. } => "claude-capture",
+        HookSubcommand::SessionModel => "session-model",
     }
 }
 
