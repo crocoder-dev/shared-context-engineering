@@ -20,6 +20,18 @@ use sha2::{Digest, Sha256};
 /// Environment variable that overrides keyring-backed auth DB encryption.
 pub const AUTH_DB_ENCRYPTION_KEY_ENV: &str = "SCE_AUTH_DB_ENCRYPTION_KEY";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CredentialStorePlatform {
+    #[cfg(target_os = "linux")]
+    Linux,
+    #[cfg(target_os = "macos")]
+    Macos,
+    #[cfg(target_os = "windows")]
+    Windows,
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    Unsupported,
+}
+
 /// Guards the one-time registration of the platform-native credential store.
 ///
 /// A `Mutex` is used instead of `OnceLock::get_or_try_init` because that
@@ -37,30 +49,32 @@ fn ensure_default_store() -> Result<()> {
         #[cfg(target_os = "linux")]
         {
             keyring_core::set_default_store(
-                zbus_secret_service_keyring_store::Store::new()
-                    .context("failed to create Linux Secret Service (zbus) keyring store")?,
+                zbus_secret_service_keyring_store::Store::new().with_context(|| {
+                    credential_store_unavailable_message(CredentialStorePlatform::Linux)
+                })?,
             );
         }
         #[cfg(target_os = "macos")]
         {
             keyring_core::set_default_store(
-                apple_native_keyring_store::keychain::Store::new()
-                    .context("failed to create macOS keychain store")?,
+                apple_native_keyring_store::keychain::Store::new().with_context(|| {
+                    credential_store_unavailable_message(CredentialStorePlatform::Macos)
+                })?,
             );
         }
         #[cfg(target_os = "windows")]
         {
             keyring_core::set_default_store(
-                windows_native_keyring_store::Store::new()
-                    .context("failed to create Windows credential store")?,
+                windows_native_keyring_store::Store::new().with_context(|| {
+                    credential_store_unavailable_message(CredentialStorePlatform::Windows)
+                })?,
             );
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         {
-            anyhow::bail!(
-                "unsupported platform: no OS credential store available for encryption key \
-                 management. Try: run 'sce' on a supported platform (Linux, macOS, or Windows)."
-            );
+            anyhow::bail!(credential_store_unavailable_message(
+                CredentialStorePlatform::Unsupported
+            ));
         }
 
         *guard = true;
@@ -120,7 +134,8 @@ fn get_or_create_keyring_encryption_key(db_path: &Path, db_name: &str) -> Result
     let entry = Entry::new("sce", db_name).with_context(|| {
         format!(
             "failed to create keyring entry for service 'sce' / user '{db_name}'. \
-             Try: ensure the OS credential store is available and accessible."
+             {}",
+            credential_store_unavailable_message(current_credential_store_platform())
         )
     })?;
 
@@ -136,9 +151,8 @@ fn get_or_create_keyring_encryption_key(db_path: &Path, db_name: &str) -> Result
 
         entry.set_password(&hex_key).with_context(|| {
             format!(
-                "failed to store encryption key for '{db_name}' in credential store. \
-                 Try: ensure the OS credential store is operational (e.g. 'gnome-keyring' \
-                 or 'secret-service' on Linux, Keychain Access on macOS)."
+                "failed to store encryption key for '{db_name}' in credential store. {}",
+                credential_store_unavailable_message(current_credential_store_platform())
             )
         })?;
 
@@ -152,13 +166,62 @@ fn get_or_create_keyring_encryption_key(db_path: &Path, db_name: &str) -> Result
         "encryption key for '{db_name}' not found in credential store.\n\
          The database file exists at '{}' but no matching credential was found \
          for service 'sce' / user '{db_name}'.\n\
-         On Linux, this can happen when the Secret Service keyring was cleared \
-         or unavailable when the key was first stored. \
-         Try: ensure the OS credential store is available.\n\
+         This can happen when the {} was cleared or unavailable when the key \
+         was first stored. {}\n\
          If the database file is also stale or you no longer need its data, \
          delete it and the key will be regenerated automatically on next use.",
-        db_path.display()
+        db_path.display(),
+        credential_store_name(current_credential_store_platform()),
+        credential_store_unavailable_message(current_credential_store_platform())
     );
+}
+
+fn current_credential_store_platform() -> CredentialStorePlatform {
+    #[cfg(target_os = "linux")]
+    {
+        CredentialStorePlatform::Linux
+    }
+    #[cfg(target_os = "macos")]
+    {
+        CredentialStorePlatform::Macos
+    }
+    #[cfg(target_os = "windows")]
+    {
+        CredentialStorePlatform::Windows
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        CredentialStorePlatform::Unsupported
+    }
+}
+
+fn credential_store_name(platform: CredentialStorePlatform) -> &'static str {
+    match platform {
+        #[cfg(target_os = "linux")]
+        CredentialStorePlatform::Linux => "Linux system keyring/Secret Service",
+        #[cfg(target_os = "macos")]
+        CredentialStorePlatform::Macos => "macOS Keychain",
+        #[cfg(target_os = "windows")]
+        CredentialStorePlatform::Windows => "Windows Credential Store",
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        CredentialStorePlatform::Unsupported => "OS credential store",
+    }
+}
+
+fn credential_store_unavailable_message(platform: CredentialStorePlatform) -> String {
+    match platform {
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        CredentialStorePlatform::Unsupported => format!(
+            "No supported OS credential store is available for auth DB encryption key management. \
+             For headless or CI use, set {AUTH_DB_ENCRYPTION_KEY_ENV} to provide the auth DB \
+             encryption secret."
+        ),
+        _ => format!(
+            "Could not access the {}. For headless or CI use, set {AUTH_DB_ENCRYPTION_KEY_ENV} \
+             to provide the auth DB encryption secret.",
+            credential_store_name(platform)
+        ),
+    }
 }
 
 fn env_encryption_key() -> Result<Option<String>> {

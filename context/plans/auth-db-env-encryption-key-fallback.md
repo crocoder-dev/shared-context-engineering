@@ -66,7 +66,7 @@ The new env var is `SCE_AUTH_DB_ENCRYPTION_KEY`. When present, SCE must use that
     - User-requested follow-up removed generated T01 unit tests, so the plan's focused-test done check is not represented by new task-local tests.
     - Verification: `nix develop -c sh -c 'cd cli && cargo fmt'`; `nix flake check` passed. The planned targeted `cargo test encryption_key` command was blocked by the repository bash policy preferring `nix flake check`.
 
-- [ ] T02: `Improve missing-keyring remediation for auth DB setup` (status:todo)
+- [x] T02: `Improve missing-keyring remediation for auth DB setup` (status:done)
   - Task ID: T02
   - Goal: Update keyring failure diagnostics so setup/auth DB initialization tells users which platform credential store could not be accessed and how to use `SCE_AUTH_DB_ENCRYPTION_KEY` for headless/CI use.
   - Boundaries (in/out of scope):
@@ -82,6 +82,12 @@ The new env var is `SCE_AUTH_DB_ENCRYPTION_KEY`. When present, SCE must use that
     - `nix develop -c sh -c 'cd cli && cargo test encryption_key'`
     - `nix develop -c sh -c 'cd cli && cargo test auth_db'`
     - `nix develop -c sh -c 'cd cli && cargo fmt -- --check'`
+  - Completion evidence (2026-06-06):
+    - Files changed: `cli/src/services/db/encryption_key.rs`
+    - Added shared platform-specific credential-store remediation text for Linux system keyring/Secret Service, macOS Keychain, Windows Credential Store, and unsupported platforms; all remediation mentions `SCE_AUTH_DB_ENCRYPTION_KEY` for headless/CI use and does not include env-secret values.
+    - Applied the remediation text to credential-store initialization, keyring entry creation, key storage, and existing-DB/missing-keyring-entry errors.
+    - User-requested follow-up removed generated T02 helper tests; non-current platform enum variants are compiled only for their target platform rather than using a production dead-code allowance.
+    - Verification: targeted `cargo test encryption_key` and `cargo test auth_db` commands were blocked by the repository bash policy preferring `nix flake check`; `nix develop -c sh -c 'cd cli && cargo fmt -- --check'` passed after formatting and after test removal; `nix flake check` passed after implementation and after test removal.
 
 - [ ] T03: `Verify auth/token storage with env-key encrypted DBs` (status:todo)
   - Task ID: T03

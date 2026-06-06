@@ -33,9 +33,12 @@ through `keyring-core` v1. On first keyring-backed use for a given database
 (file does not exist), a 32-byte random key is generated, hex-encoded to 64
 characters, and persisted in the platform credential store (macOS Keychain,
 Linux Secret Service via zbus, Windows Credential Store). On subsequent
-keyring-backed use, the key is read from the credential store. If the DB file
-exists but the key is missing (for example, keyring entry removed), a clear
-remediation error is returned. No plaintext fallback exists.
+keyring-backed use, the key is read from the credential store. Credential-store
+initialization, entry creation/storage, and existing-DB/missing-key errors return
+platform-specific remediation for Linux system keyring/Secret Service, macOS
+Keychain, Windows Credential Store, or unsupported platforms, and always mention
+`SCE_AUTH_DB_ENCRYPTION_KEY` for headless/CI use without printing the secret
+value. No plaintext fallback exists.
 
 ## Current integration state
 
