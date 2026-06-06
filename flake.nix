@@ -39,6 +39,35 @@
           inherit system;
         };
 
+        bunVersion = "1.3.14";
+        bunSource =
+          {
+            x86_64-linux = {
+              platform = "linux-x64";
+              hash = "sha256-lR7iruhV8IWVruxiJSJqKY0/6oOj3NZGXAnLzN9+hI8=";
+            };
+            aarch64-linux = {
+              platform = "linux-aarch64";
+              hash = "sha256-on/7Y6gxA3WDbg1vZorhf6jY0YuIw3yCHGUzGXOhmjs=";
+            };
+            x86_64-darwin = {
+              platform = "darwin-x64";
+              hash = "sha256-QYPfM3RiPlurMVxUfPoJdFM81FfYa3O2OfeoeXTNZjM=";
+            };
+            aarch64-darwin = {
+              platform = "darwin-aarch64";
+              hash = "sha256-2LliIYKK1vl6x6wKt+lYcjQa92MAHogD6CZ2UsJlJiA=";
+            };
+          }
+          .${system};
+        bunPackage = pkgs.bun.overrideAttrs (_oldAttrs: {
+          version = bunVersion;
+          src = pkgs.fetchurl {
+            url = "https://github.com/oven-sh/bun/releases/download/bun-v${bunVersion}/bun-${bunSource.platform}.zip";
+            hash = bunSource.hash;
+          };
+        });
+
         rustVersion = "1.95.0";
 
         rustToolchain = pkgs.rust-bin.stable.${rustVersion}.default.override {
@@ -120,18 +149,19 @@
               ./config/lib/bun.lock
             ];
           };
-          nativeBuildInputs = [ pkgs.bun ];
+          nativeBuildInputs = [ bunPackage ];
           dontBuild = true;
           installPhase = ''
             bun install --frozen-lockfile --no-progress
             # Remove Bun's cache symlinks that point to build directory
             rm -rf node_modules/.cache
+            rm -f node_modules/.bin/download-msgpackr-prebuilds
             mkdir -p $out
             cp -r node_modules $out/
           '';
           outputHashMode = "recursive";
           outputHashAlgo = "sha256";
-          outputHash = "sha256-4OPHPfR0vHIRsAflr/EFddsMkR5ZnRaN9MLrdJDqTJY=";
+          outputHash = "sha256-yDKVHH46EzzyiCwBSISEXnJJbqZ2ihvS2H0SGgITaPY=";
         };
 
         version = pkgs.lib.strings.trim (builtins.readFile ./.version);
@@ -237,7 +267,7 @@
         opencodePackage = opencode.packages.${system}.opencode.overrideAttrs (oldAttrs: {
           postPatch = (oldAttrs.postPatch or "") + ''
             substituteInPlace package.json \
-              --replace-fail '"packageManager": "bun@1.3.13"' \
+              --replace-fail '"packageManager": "bun@1.3.14"' \
               '"packageManager": "bun@${opencodePkgs.bun.version}"'
           '';
         });
@@ -733,7 +763,7 @@
           name = "install-channel-integration-tests";
           runtimeInputs = [
             pkgs.nodejs
-            pkgs.bun
+            bunPackage
             rustToolchain
           ];
           text = ''
@@ -929,6 +959,7 @@
       {
         packages = {
           sce = scePackage;
+          bun = bunPackage;
           opencode = opencodePackage;
           turso = tursoPackage;
           default = scePackage;
@@ -1054,7 +1085,7 @@
             with pkgs;
             [
               biome
-              bun
+              bunPackage
               jq
               pkl
               typescript
