@@ -22,7 +22,7 @@ impl RuntimeCommand for SetupCommand {
     fn execute(&self, context: &AppContext) -> Result<String, ClassifiedError> {
         let setup_dispatch = if let Some(mode) = self.request.config_mode {
             match setup::resolve_setup_dispatch(mode, &setup::InquireSetupTargetPrompter)
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))?
+                .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?
             {
                 setup::SetupDispatch::Proceed(resolved_mode) => Some(resolved_mode),
                 setup::SetupDispatch::Cancelled => {
@@ -37,11 +37,11 @@ impl RuntimeCommand for SetupCommand {
             Some(path) => path.clone(),
             None => std::env::current_dir()
                 .context("Failed to determine current directory")
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))?,
+                .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?,
         };
 
         let repository_root = setup::ensure_git_repository(&setup_start_path)
-            .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
+            .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
 
         // Scope the runtime AppContext to the resolved repository root for lifecycle providers.
         let ctx = context.with_repo_root(repository_root.clone());
@@ -54,7 +54,7 @@ impl RuntimeCommand for SetupCommand {
         for provider in &providers {
             let outcome = provider
                 .setup(&ctx)
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
+                .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
 
             if let Some(ref hooks_outcome) = outcome.required_hooks_install {
                 sections.push(setup::format_required_hook_install_success_message(
@@ -66,7 +66,7 @@ impl RuntimeCommand for SetupCommand {
         // Handle config target installation (OpenCode/Claude assets).
         if let Some(resolved_mode) = setup_dispatch {
             let setup_message = setup::run_setup_for_mode(&repository_root, resolved_mode)
-                .map_err(|error| ClassifiedError::runtime(error.to_string()))?;
+                .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
             sections.push(setup_message);
         }
 

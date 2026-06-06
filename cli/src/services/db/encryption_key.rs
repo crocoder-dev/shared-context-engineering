@@ -1,8 +1,9 @@
-//! Encryption key management backed by the OS credential store.
+//! Encryption key management backed by an env-secret override or the OS credential store.
 //!
 //! Provides a single entry point to get-or-create a 64-character hex
-//! encryption key stored in the platform-native credential store
-//! (macOS Keychain, Linux Secret Service via zbus, Windows Credential Store).
+//! encryption key sourced from `SCE_AUTH_DB_ENCRYPTION_KEY` when set, or
+//! stored in the platform-native credential store (macOS Keychain,
+//! Linux Secret Service via zbus, Windows Credential Store) otherwise.
 //!
 //! On first use for a given database name (when the database file does
 //! not yet exist), a random 32-byte key is generated, hex-encoded,
@@ -14,6 +15,10 @@ use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use keyring_core::Entry;
+use sha2::{Digest, Sha256};
+
+/// Environment variable that overrides keyring-backed auth DB encryption.
+pub const AUTH_DB_ENCRYPTION_KEY_ENV: &str = "SCE_AUTH_DB_ENCRYPTION_KEY";
 
 /// Guards the one-time registration of the platform-native credential store.
 ///
@@ -87,6 +92,29 @@ fn ensure_default_store() -> Result<()> {
 ///   is missing (e.g. keyring was cleared on Linux).
 /// - Returns an error if key generation or credential store I/O fails.
 pub fn get_or_create_encryption_key(db_path: &Path, db_name: &str) -> Result<String> {
+    get_or_create_encryption_key_with_keyring_resolver(
+        db_path,
+        db_name,
+        get_or_create_keyring_encryption_key,
+    )
+}
+
+fn get_or_create_encryption_key_with_keyring_resolver<F>(
+    db_path: &Path,
+    db_name: &str,
+    keyring_resolver: F,
+) -> Result<String>
+where
+    F: FnOnce(&Path, &str) -> Result<String>,
+{
+    if let Some(env_key) = env_encryption_key()? {
+        return Ok(env_key);
+    }
+
+    keyring_resolver(db_path, db_name)
+}
+
+fn get_or_create_keyring_encryption_key(db_path: &Path, db_name: &str) -> Result<String> {
     ensure_default_store()?;
 
     let entry = Entry::new("sce", db_name).with_context(|| {
@@ -131,6 +159,28 @@ pub fn get_or_create_encryption_key(db_path: &Path, db_name: &str) -> Result<Str
          delete it and the key will be regenerated automatically on next use.",
         db_path.display()
     );
+}
+
+fn env_encryption_key() -> Result<Option<String>> {
+    match std::env::var(AUTH_DB_ENCRYPTION_KEY_ENV) {
+        Ok(secret) => Ok(Some(derive_env_encryption_key(&secret)?)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => anyhow::bail!(
+            "{AUTH_DB_ENCRYPTION_KEY_ENV} must contain valid UTF-8 secret text. \
+             Try: set {AUTH_DB_ENCRYPTION_KEY_ENV} to a non-empty auth DB encryption secret."
+        ),
+    }
+}
+
+fn derive_env_encryption_key(secret: &str) -> Result<String> {
+    if secret.trim().is_empty() {
+        anyhow::bail!(
+            "{AUTH_DB_ENCRYPTION_KEY_ENV} is set but empty. \
+             Try: set {AUTH_DB_ENCRYPTION_KEY_ENV} to a non-empty auth DB encryption secret."
+        );
+    }
+
+    Ok(hex_encode(&Sha256::digest(secret.as_bytes())))
 }
 
 /// Generate a 64-character lowercase hex key from 32 random bytes.
