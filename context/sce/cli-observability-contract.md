@@ -43,8 +43,8 @@ Runtime observability now consumes the shared resolved observability config from
 - All `ClassifiedError` instances are logged via `Logger::log_classified_error()` before user-facing stderr diagnostics are written.
 - Event records include deterministic metadata keys used by automation (`command`, `failure_class`, `component` when applicable).
 - Error log records include `error_code` and `error_class` fields for structured observability.
-
 - App runtime initializes tracing subscriber context before parse/dispatch and shuts down tracer provider on process exit.
+- Tracing event emission checks the `sce` target and requested tracing level before constructing serialized `fields` payloads; disabled or filtered tracing events return without building field JSON while enabled events preserve the same `event_id`, `event_message`, and `fields` payload shape.
 
 ## Format contract
 
@@ -75,6 +75,6 @@ Runtime observability now consumes the shared resolved observability config from
 ## Ownership and verification
 
 - `cli/src/services/config/mod.rs` owns shared observability value resolution, config-file discovery/merge, and env-over-config precedence for runtime inputs.
-- `cli/src/services/observability.rs` owns runtime logger construction from resolved values, level filtering, record rendering, and optional file sink lifecycle/permission enforcement; `cli/src/services/observability/traits.rs` owns the logger and telemetry trait boundaries plus the no-op logger implementation.
+- `cli/src/services/observability.rs` owns runtime logger construction from resolved values, level filtering, tracing-event enablement checks, record rendering, and optional file sink lifecycle/permission enforcement; `cli/src/services/observability/traits.rs` owns the logger and telemetry trait boundaries plus the no-op logger implementation.
 - `cli/src/app.rs` owns lifecycle event emission around parse/dispatch success and failure paths, resolves observability config before command dispatch, emits startup invalid-config warning events for skipped discovered config files, wraps dispatch inside the observability subscriber context, and guards the single-use command-dispatch action against repeated telemetry invocation with a runtime-classified error.
-- Contract behavior is covered by `services::observability::tests` and exercised in end-to-end app command tests.
+- Contract behavior is exercised by app command tests and the root flake check suite.
