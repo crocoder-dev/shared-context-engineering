@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
+use clap::ValueEnum;
 use jsonschema::{validator_for, Validator};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -50,7 +51,7 @@ const WORKOS_CLIENT_ID_KEY: AuthConfigKeySpec = AuthConfigKeySpec {
 
 pub type ReportFormat = OutputFormat;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum LogLevel {
     Error,
     Warn,

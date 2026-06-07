@@ -225,16 +225,14 @@ fn convert_clap_command(
                     } else {
                         services::doctor::DoctorMode::Diagnose
                     },
-                    format: convert_output_format(format),
+                    format,
                 },
             }))
         }
         cli_schema::Commands::Hooks { subcommand } => convert_hooks_subcommand(subcommand),
         cli_schema::Commands::Version { format } => {
             Ok(Box::new(services::version::command::VersionCommand {
-                request: services::version::VersionRequest {
-                    format: convert_output_format(format),
-                },
+                request: services::version::VersionRequest { format },
             }))
         }
         cli_schema::Commands::Completion { shell } => {
@@ -253,40 +251,22 @@ fn convert_auth_subcommand(
 ) -> Result<RuntimeCommandHandle, ClassifiedError> {
     let subcommand = match subcommand {
         cli_schema::AuthSubcommand::Login { format } => {
-            services::auth_command::AuthSubcommand::Login {
-                format: convert_output_format(format),
-            }
+            services::auth_command::AuthSubcommand::Login { format }
         }
         cli_schema::AuthSubcommand::Renew { format, force } => {
-            services::auth_command::AuthSubcommand::Renew {
-                format: convert_output_format(format),
-                force,
-            }
+            services::auth_command::AuthSubcommand::Renew { format, force }
         }
         cli_schema::AuthSubcommand::Logout { format } => {
-            services::auth_command::AuthSubcommand::Logout {
-                format: convert_output_format(format),
-            }
+            services::auth_command::AuthSubcommand::Logout { format }
         }
         cli_schema::AuthSubcommand::Status { format } => {
-            services::auth_command::AuthSubcommand::Status {
-                format: convert_output_format(format),
-            }
+            services::auth_command::AuthSubcommand::Status { format }
         }
     };
 
     Ok(Box::new(services::auth_command::command::AuthCommand {
         request: services::auth_command::AuthRequest { subcommand },
     }))
-}
-
-fn convert_output_format(
-    format: cli_schema::OutputFormat,
-) -> services::output_format::OutputFormat {
-    match format {
-        cli_schema::OutputFormat::Text => services::output_format::OutputFormat::Text,
-        cli_schema::OutputFormat::Json => services::output_format::OutputFormat::Json,
-    }
 }
 
 fn convert_completion_shell(
@@ -311,9 +291,9 @@ fn convert_config_subcommand(
             timeout_ms,
         } => Ok(Box::new(services::config::command::ConfigCommand {
             subcommand: services::config::ConfigSubcommand::Show(services::config::ConfigRequest {
-                report_format: convert_output_format(format),
+                report_format: format,
                 config_path: config,
-                log_level: log_level.map(convert_log_level),
+                log_level,
                 timeout_ms,
             }),
         })),
@@ -325,22 +305,13 @@ fn convert_config_subcommand(
         } => Ok(Box::new(services::config::command::ConfigCommand {
             subcommand: services::config::ConfigSubcommand::Validate(
                 services::config::ConfigRequest {
-                    report_format: convert_output_format(format),
+                    report_format: format,
                     config_path: config,
-                    log_level: log_level.map(convert_log_level),
+                    log_level,
                     timeout_ms,
                 },
             ),
         })),
-    }
-}
-
-fn convert_log_level(level: cli_schema::LogLevel) -> services::config::LogLevel {
-    match level {
-        cli_schema::LogLevel::Error => services::config::LogLevel::Error,
-        cli_schema::LogLevel::Warn => services::config::LogLevel::Warn,
-        cli_schema::LogLevel::Info => services::config::LogLevel::Info,
-        cli_schema::LogLevel::Debug => services::config::LogLevel::Debug,
     }
 }
 

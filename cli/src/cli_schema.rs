@@ -1,6 +1,8 @@
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
+use crate::services::config::LogLevel;
+use crate::services::output_format::OutputFormat;
 use crate::services::style;
 
 pub struct TopLevelCommandMetadata {
@@ -279,24 +281,9 @@ pub enum HooksSubcommand {
     DiffTrace,
 }
 
-#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum OutputFormat {
-    #[default]
-    Text,
-    Json,
-}
-
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompletionShell {
     Bash,
     Zsh,
     Fish,
-}
-
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LogLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
 }

@@ -1,7 +1,9 @@
 use anyhow::{bail, Result};
+use clap::ValueEnum;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum OutputFormat {
+    #[default]
     Text,
     Json,
 }
