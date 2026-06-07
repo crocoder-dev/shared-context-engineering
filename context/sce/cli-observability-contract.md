@@ -63,6 +63,7 @@ Runtime observability now consumes the shared resolved observability config from
 - The same traits module exposes object-safe `services::observability::traits::Telemetry` with the current app subscriber boundary: `with_default_subscriber` for command-lifecycle execution.
 - The concrete `services::observability::TelemetryRuntime` implements the telemetry trait by delegating to its existing inherent method.
 - `cli/src/app.rs` stores production logger and telemetry runtime instances behind `Arc<dyn Logger>` and `Arc<dyn Telemetry>` in `AppContext`, then passes that context through command execution.
+- `run_command_lifecycle` expects the telemetry subscriber action to execute command dispatch at most once; if a telemetry implementation invokes the action again, the app returns a `SCE-ERR-RUNTIME` classified error rather than panicking or reparsing consumed arguments.
 
 ## File sink safety contract
 
@@ -75,5 +76,5 @@ Runtime observability now consumes the shared resolved observability config from
 
 - `cli/src/services/config/mod.rs` owns shared observability value resolution, config-file discovery/merge, and env-over-config precedence for runtime inputs.
 - `cli/src/services/observability.rs` owns runtime logger construction from resolved values, level filtering, record rendering, and optional file sink lifecycle/permission enforcement; `cli/src/services/observability/traits.rs` owns the logger and telemetry trait boundaries plus the no-op logger implementation.
-- `cli/src/app.rs` owns lifecycle event emission around parse/dispatch success and failure paths, resolves observability config before command dispatch, emits startup invalid-config warning events for skipped discovered config files, and wraps dispatch inside the observability subscriber context.
+- `cli/src/app.rs` owns lifecycle event emission around parse/dispatch success and failure paths, resolves observability config before command dispatch, emits startup invalid-config warning events for skipped discovered config files, wraps dispatch inside the observability subscriber context, and guards the single-use command-dispatch action against repeated telemetry invocation with a runtime-classified error.
 - Contract behavior is covered by `services::observability::tests` and exercised in end-to-end app command tests.

@@ -8,6 +8,9 @@ use services::app_support::{self, RunOutcome};
 use services::error::ClassifiedError;
 use services::observability::traits::{Logger as LoggerTrait, NoopTelemetry, Telemetry};
 
+const REPEATED_COMMAND_DISPATCH_ERROR: &str =
+    "Command lifecycle telemetry attempted to execute command dispatch more than once";
+
 struct StartupContext {
     observability_config: services::config::ResolvedObservabilityRuntimeConfig,
     startup_diagnostic: Option<String>,
@@ -199,12 +202,10 @@ where
             "Starting command dispatch",
             &[("component", services::observability::NAME)],
         );
-        let command = parse_command_phase(
-            args.take()
-                .expect("command lifecycle should execute exactly once"),
-            &runtime.registry,
-            context.logger(),
-        )?;
+        let Some(command_args) = args.take() else {
+            return Err(ClassifiedError::runtime(REPEATED_COMMAND_DISPATCH_ERROR));
+        };
+        let command = parse_command_phase(command_args, &runtime.registry, context.logger())?;
         app_support::execute_command_phase(command.as_ref(), context)
     })
 }
@@ -225,4 +226,50 @@ where
         &[("command", command.name().as_ref())],
     );
     Ok(command)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::error::FailureClass;
+    use crate::services::observability::traits::NoopLogger;
+
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    struct DoubleInvokeTelemetry;
+
+    impl Telemetry for DoubleInvokeTelemetry {
+        fn with_default_subscriber(
+            &self,
+            action: &mut dyn FnMut() -> Result<String, ClassifiedError>,
+        ) -> Result<String, ClassifiedError> {
+            let _first_result = action()?;
+            action()
+        }
+    }
+
+    fn test_runtime(telemetry: Arc<dyn Telemetry>) -> AppRuntime {
+        AppRuntime {
+            context: AppContext::new(
+                Arc::new(NoopLogger),
+                telemetry,
+                Arc::new(services::capabilities::StdFsOps),
+                Arc::new(services::capabilities::ProcessGitOps),
+                None,
+            ),
+            registry: services::command_registry::build_default_registry(),
+            startup_diagnostic: None,
+        }
+    }
+
+    #[test]
+    fn run_command_lifecycle_reports_runtime_error_when_telemetry_invokes_action_twice() {
+        let runtime = test_runtime(Arc::new(DoubleInvokeTelemetry));
+
+        let error = run_command_lifecycle(["sce".to_string(), "version".to_string()], &runtime)
+            .expect_err("repeated telemetry invocation should fail without panicking");
+
+        assert_eq!(FailureClass::Runtime, error.class());
+        assert_eq!("SCE-ERR-RUNTIME", error.code());
+        assert_eq!(REPEATED_COMMAND_DISPATCH_ERROR, error.message());
+    }
 }
