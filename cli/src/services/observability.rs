@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, bail, Result};
 use chrono::Utc;
 use serde_json::json;
+use tracing::Level;
 
 use crate::services::config::{
     self, LogFileMode, LogFormat, LogLevel, ENV_LOG_FILE, ENV_LOG_FILE_MODE, ENV_LOG_FORMAT,
@@ -301,6 +302,19 @@ impl Logger {
 }
 
 fn emit_tracing_event(level: LogLevel, event_id: &str, message: &str, fields: &[(&str, &str)]) {
+    emit_tracing_event_with_fields_json(level, event_id, message, || tracing_fields_json(fields));
+}
+
+fn tracing_event_enabled(level: LogLevel) -> bool {
+    match level {
+        LogLevel::Error => tracing::enabled!(target: "sce", Level::ERROR),
+        LogLevel::Warn => tracing::enabled!(target: "sce", Level::WARN),
+        LogLevel::Info => tracing::enabled!(target: "sce", Level::INFO),
+        LogLevel::Debug => tracing::enabled!(target: "sce", Level::DEBUG),
+    }
+}
+
+fn tracing_fields_json(fields: &[(&str, &str)]) -> String {
     let detail_fields = fields
         .iter()
         .map(|(key, value)| {
@@ -310,7 +324,22 @@ fn emit_tracing_event(level: LogLevel, event_id: &str, message: &str, fields: &[
             )
         })
         .collect::<serde_json::Map<String, serde_json::Value>>();
-    let fields_json = serde_json::Value::Object(detail_fields).to_string();
+    serde_json::Value::Object(detail_fields).to_string()
+}
+
+fn emit_tracing_event_with_fields_json<F>(
+    level: LogLevel,
+    event_id: &str,
+    message: &str,
+    fields_json: F,
+) where
+    F: FnOnce() -> String,
+{
+    if !tracing_event_enabled(level) {
+        return;
+    }
+
+    let fields_json = fields_json();
 
     match level {
         LogLevel::Error => tracing::error!(
