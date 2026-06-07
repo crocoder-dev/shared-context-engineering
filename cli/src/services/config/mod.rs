@@ -1,5 +1,6 @@
 pub mod command;
 pub mod lifecycle;
+pub mod schema;
 pub mod types;
 
 pub use types::*;
@@ -10,49 +11,32 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use jsonschema::{validator_for, Validator};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::services::default_paths::{resolve_sce_default_locations, schema, RepoPaths};
+use crate::services::default_paths::{resolve_sce_default_locations, RepoPaths};
 use crate::services::style::{self};
 
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const SCE_CONFIG_SCHEMA_JSON: &str =
-    include_str!("../../../assets/generated/config/schema/sce-config.schema.json");
+pub(crate) use schema::validate_config_file;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30000;
 const PRECEDENCE_DESCRIPTION: &str = "flags > env > config file > defaults";
-const CONFIG_SCHEMA_DECLARATION_KEY: &str = "$schema";
-const TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
-    CONFIG_SCHEMA_DECLARATION_KEY,
-    "log_level",
-    "log_format",
-    "log_file",
-    "log_file_mode",
-    "timeout_ms",
-    WORKOS_CLIENT_ID_KEY.config_key,
-    "policies",
-];
-const TOP_LEVEL_CONFIG_KEYS_DESCRIPTION: &str =
-    "$schema, log_level, log_format, log_file, log_file_mode, timeout_ms, workos_client_id, policies";
 const WORKOS_CLIENT_ID_ENV: &str = "WORKOS_CLIENT_ID";
 const WORKOS_CLIENT_ID_BAKED_DEFAULT: &str = "client_sce_default";
-const WORKOS_CLIENT_ID_KEY: AuthConfigKeySpec = AuthConfigKeySpec {
+pub(crate) const WORKOS_CLIENT_ID_KEY: AuthConfigKeySpec = AuthConfigKeySpec {
     config_key: "workos_client_id",
     env_key: WORKOS_CLIENT_ID_ENV,
     baked_default: Some(WORKOS_CLIENT_ID_BAKED_DEFAULT),
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct AuthConfigKeySpec {
-    config_key: &'static str,
-    env_key: &'static str,
-    baked_default: Option<&'static str>,
+pub(crate) struct AuthConfigKeySpec {
+    pub(crate) config_key: &'static str,
+    pub(crate) env_key: &'static str,
+    pub(crate) baked_default: Option<&'static str>,
 }
 
 impl AuthConfigKeySpec {
-    fn precedence_description(self) -> String {
+    pub(crate) fn precedence_description(self) -> String {
         let mut layers = vec![
             format!("env ({})", self.env_key),
             format!("config file ({})", self.config_key),
@@ -81,79 +65,7 @@ struct RuntimeConfig {
     validation_warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct FileConfig {
-    log_level: Option<FileConfigValue<LogLevel>>,
-    log_format: Option<FileConfigValue<LogFormat>>,
-    log_file: Option<FileConfigValue<String>>,
-    log_file_mode: Option<FileConfigValue<LogFileMode>>,
-    timeout_ms: Option<FileConfigValue<u64>>,
-    attribution_hooks_enabled: Option<FileConfigValue<bool>>,
-    workos_client_id: Option<FileConfigValue<String>>,
-    bash_policy_presets: Option<FileConfigValue<Vec<String>>>,
-    bash_policy_custom: Option<FileConfigValue<Vec<CustomBashPolicyEntry>>>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-struct ParsedFileConfigDocument {
-    #[serde(rename = "$schema")]
-    _schema: Option<String>,
-    log_level: Option<String>,
-    log_format: Option<String>,
-    log_file: Option<String>,
-    log_file_mode: Option<String>,
-    timeout_ms: Option<u64>,
-    workos_client_id: Option<String>,
-    policies: Option<ParsedPoliciesConfigDocument>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-struct ParsedPoliciesConfigDocument {
-    bash: Option<ParsedBashPolicyConfigDocument>,
-    attribution_hooks: Option<ParsedAttributionHooksConfigDocument>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-struct ParsedBashPolicyConfigDocument {
-    presets: Option<Vec<String>>,
-    custom: Option<Vec<ParsedCustomBashPolicyEntryDocument>>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-struct ParsedAttributionHooksConfigDocument {
-    enabled: Option<bool>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-struct ParsedCustomBashPolicyEntryDocument {
-    id: Option<String>,
-    #[serde(rename = "match")]
-    matcher: Option<ParsedCustomBashPolicyMatchDocument>,
-    message: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-struct ParsedCustomBashPolicyMatchDocument {
-    argv_prefix: Option<Vec<String>>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct FileConfigValue<T> {
-    value: T,
-    source: ConfigPathSource,
-}
-
-type ParsedBashPolicyConfig = (
-    Option<FileConfigValue<Vec<String>>>,
-    Option<FileConfigValue<Vec<CustomBashPolicyEntry>>>,
-);
-type ParsedFilePolicies = (
-    Option<FileConfigValue<bool>>,
-    Option<FileConfigValue<Vec<String>>>,
-    Option<FileConfigValue<Vec<CustomBashPolicyEntry>>>,
-);
 static BUILTIN_BASH_POLICY_CATALOG: OnceLock<BuiltinBashPolicyCatalog> = OnceLock::new();
-static CONFIG_SCHEMA_VALIDATOR: OnceLock<Validator> = OnceLock::new();
 
 const BASH_POLICY_PRESET_CATALOG_JSON: &str =
     include_str!("../../../assets/generated/config/opencode/lib/bash-policy-presets.json");
@@ -164,14 +76,14 @@ struct BashPolicyConfig {
     custom: Vec<CustomBashPolicyEntry>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 struct BuiltinBashPolicyCatalog {
     presets: Vec<BuiltinBashPolicyPreset>,
     mutually_exclusive: Vec<Vec<String>>,
     redundancy_warnings: Vec<BuiltinBashPolicyRedundancyWarning>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 struct BuiltinBashPolicyPreset {
     id: String,
     #[serde(rename = "match")]
@@ -179,22 +91,22 @@ struct BuiltinBashPolicyPreset {
     message: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 struct BuiltinBashPolicyMatcher {
     argv_prefixes: Vec<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 struct BuiltinBashPolicyRedundancyWarning {
     if_enabled: Vec<String>,
     warning: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CustomBashPolicyEntry {
-    id: String,
-    argv_prefix: Vec<String>,
-    message: String,
+pub(crate) struct CustomBashPolicyEntry {
+    pub(crate) id: String,
+    pub(crate) argv_prefix: Vec<String>,
+    pub(crate) message: String,
 }
 
 impl CustomBashPolicyEntry {
@@ -238,7 +150,7 @@ fn builtin_bash_policy_preset_ids() -> Vec<&'static str> {
         .collect()
 }
 
-fn is_builtin_bash_policy_preset_id(id: &str) -> bool {
+pub(crate) fn is_builtin_bash_policy_preset_id(id: &str) -> bool {
     builtin_bash_policy_catalog()
         .presets
         .iter()
@@ -435,7 +347,7 @@ where
         resolve_global_config_path,
     )?;
 
-    let mut file_config = FileConfig {
+    let mut file_config = schema::FileConfig {
         log_level: None,
         log_format: None,
         log_file: None,
@@ -449,7 +361,7 @@ where
     let mut validation_errors = Vec::new();
     for loaded_path in &loaded_config_paths {
         let raw = read_file(&loaded_path.path)?;
-        let layer = match parse_file_config(&raw, &loaded_path.path, loaded_path.source) {
+        let layer = match schema::parse_file_config(&raw, &loaded_path.path, loaded_path.source) {
             Ok(layer) => layer,
             Err(error) if loaded_path.source.is_default_discovered() => {
                 validation_errors.push(error.to_string());
@@ -640,8 +552,8 @@ where
 }
 
 fn resolve_bash_policy_config(
-    presets: Option<&FileConfigValue<Vec<String>>>,
-    custom: Option<&FileConfigValue<Vec<CustomBashPolicyEntry>>>,
+    presets: Option<&schema::FileConfigValue<Vec<String>>>,
+    custom: Option<&schema::FileConfigValue<Vec<CustomBashPolicyEntry>>>,
 ) -> ResolvedOptionalValue<BashPolicyConfig> {
     let resolved_presets = presets.map(|value| value.value.clone());
     let resolved_custom = custom.map(|value| value.value.clone());
@@ -687,7 +599,7 @@ fn build_validation_warnings(value: &ResolvedOptionalValue<BashPolicyConfig>) ->
 
 fn resolve_optional_auth_config_value<FEnv>(
     key: AuthConfigKeySpec,
-    file_value: Option<FileConfigValue<String>>,
+    file_value: Option<schema::FileConfigValue<String>>,
     env_lookup: &FEnv,
 ) -> ResolvedOptionalValue<String>
 where
@@ -783,266 +695,7 @@ fn resolve_default_global_config_path() -> Result<PathBuf> {
     Ok(resolve_sce_default_locations()?.global_config_file())
 }
 
-pub(crate) fn validate_config_file(path: &Path) -> Result<()> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read config file '{}'.", path.display()))?;
-    parse_file_config(&raw, path, ConfigPathSource::Flag)?;
-    Ok(())
-}
-
-fn config_schema_validator() -> &'static Validator {
-    CONFIG_SCHEMA_VALIDATOR.get_or_init(|| {
-        let schema: Value =
-            serde_json::from_str(SCE_CONFIG_SCHEMA_JSON).expect("config schema JSON should parse");
-        validator_for(&schema).expect("config schema JSON should compile")
-    })
-}
-
-fn generated_config_schema_path() -> String {
-    format!("{}/{}", schema::SCHEMA_DIR, schema::SCE_CONFIG_SCHEMA)
-}
-
-fn validate_config_value_against_schema(value: &Value, path: &Path) -> Result<()> {
-    let mut errors = config_schema_validator()
-        .iter_errors(value)
-        .map(|error| error.to_string())
-        .collect::<Vec<_>>();
-
-    if errors.is_empty() {
-        return Ok(());
-    }
-
-    errors.sort();
-    let generated_schema_path = generated_config_schema_path();
-    bail!(
-        "Config file '{}' failed schema validation against generated schema '{}': {}",
-        path.display(),
-        generated_schema_path,
-        errors.join(" | ")
-    );
-}
-
-fn validate_object_keys(
-    object: &serde_json::Map<String, Value>,
-    path: &Path,
-    context: Option<&str>,
-    allowed_keys: &[&str],
-    allowed_keys_description: &str,
-) -> Result<()> {
-    for key in object.keys() {
-        if !allowed_keys.contains(&key.as_str()) {
-            match context {
-                Some(context) => bail!(
-                    "Config key '{context}' in '{}' contains unknown key '{}'. Allowed keys: {allowed_keys_description}.",
-                    path.display(),
-                    key
-                ),
-                None => bail!(
-                    "Config file '{}' contains unknown key '{}'. Allowed keys: {allowed_keys_description}.",
-                    path.display(),
-                    key
-                ),
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn deserialize_typed_config(parsed: Value, path: &Path) -> Result<ParsedFileConfigDocument> {
-    serde_json::from_value(parsed).with_context(|| {
-        format!(
-            "Config file '{}' could not be mapped into the typed runtime config model.",
-            path.display()
-        )
-    })
-}
-
-fn parse_file_config(raw: &str, path: &Path, source: ConfigPathSource) -> Result<FileConfig> {
-    let parsed: Value = serde_json::from_str(raw)
-        .with_context(|| format!("Config file '{}' must contain valid JSON.", path.display()))?;
-
-    let object = parsed.as_object().with_context(|| {
-        format!(
-            "Config file '{}' must contain a top-level JSON object.",
-            path.display()
-        )
-    })?;
-
-    validate_config_value_against_schema(&parsed, path)?;
-    validate_object_keys(
-        object,
-        path,
-        None,
-        TOP_LEVEL_CONFIG_KEYS,
-        TOP_LEVEL_CONFIG_KEYS_DESCRIPTION,
-    )?;
-
-    let typed = deserialize_typed_config(parsed.clone(), path)?;
-    let log_level = typed
-        .log_level
-        .map(|raw| -> Result<FileConfigValue<LogLevel>> {
-            Ok(FileConfigValue {
-                value: LogLevel::parse(&raw, &format!("config file '{}'", path.display()))?,
-                source,
-            })
-        })
-        .transpose()?;
-    let log_format = typed
-        .log_format
-        .map(|raw| -> Result<FileConfigValue<LogFormat>> {
-            Ok(FileConfigValue {
-                value: LogFormat::parse(&raw, &format!("config file '{}'", path.display()))?,
-                source,
-            })
-        })
-        .transpose()?;
-    let log_file = typed
-        .log_file
-        .map(|value| FileConfigValue { value, source });
-    let log_file_mode = typed
-        .log_file_mode
-        .map(|raw| -> Result<FileConfigValue<LogFileMode>> {
-            Ok(FileConfigValue {
-                value: LogFileMode::parse(&raw, &format!("config file '{}'", path.display()))?,
-                source,
-            })
-        })
-        .transpose()?;
-    let timeout_ms = typed
-        .timeout_ms
-        .map(|value| FileConfigValue { value, source });
-    let workos_client_id = typed
-        .workos_client_id
-        .map(|value| FileConfigValue { value, source });
-    let (attribution_hooks_enabled, bash_policy_presets, bash_policy_custom) =
-        map_policies_config(typed.policies.as_ref(), object, path, source)?;
-
-    Ok(FileConfig {
-        log_level,
-        log_format,
-        log_file,
-        log_file_mode,
-        timeout_ms,
-        attribution_hooks_enabled,
-        workos_client_id,
-        bash_policy_presets,
-        bash_policy_custom,
-    })
-}
-
-fn map_policies_config(
-    typed: Option<&ParsedPoliciesConfigDocument>,
-    object: &serde_json::Map<String, Value>,
-    path: &Path,
-    source: ConfigPathSource,
-) -> Result<ParsedFilePolicies> {
-    let Some(policies_value) = object.get("policies") else {
-        return Ok((None, None, None));
-    };
-
-    let policies_object = policies_value.as_object().with_context(|| {
-        format!(
-            "Config key 'policies' in '{}' must be an object.",
-            path.display()
-        )
-    })?;
-
-    validate_object_keys(
-        policies_object,
-        path,
-        Some("policies"),
-        &["bash", "attribution_hooks"],
-        "bash, attribution_hooks",
-    )?;
-
-    let bash = typed.and_then(|config| config.bash.as_ref());
-    let attribution_hooks_enabled = map_attribution_hooks_config(
-        typed.and_then(|config| config.attribution_hooks.as_ref()),
-        policies_object,
-        path,
-        source,
-    )?;
-    let (bash_policy_presets, bash_policy_custom) =
-        map_bash_policy_config(bash, policies_object, path, source)?;
-
-    Ok((
-        attribution_hooks_enabled,
-        bash_policy_presets,
-        bash_policy_custom,
-    ))
-}
-
-fn map_attribution_hooks_config(
-    typed: Option<&ParsedAttributionHooksConfigDocument>,
-    policies_object: &serde_json::Map<String, Value>,
-    path: &Path,
-    source: ConfigPathSource,
-) -> Result<Option<FileConfigValue<bool>>> {
-    let Some(attribution_hooks_value) = policies_object.get("attribution_hooks") else {
-        return Ok(None);
-    };
-
-    let attribution_hooks_object = attribution_hooks_value.as_object().with_context(|| {
-        format!(
-            "Config key 'policies.attribution_hooks' in '{}' must be an object.",
-            path.display()
-        )
-    })?;
-
-    validate_object_keys(
-        attribution_hooks_object,
-        path,
-        Some("policies.attribution_hooks"),
-        &["enabled"],
-        "enabled",
-    )?;
-
-    Ok(typed
-        .and_then(|config| config.enabled)
-        .map(|value| FileConfigValue { value, source }))
-}
-
-fn map_bash_policy_config(
-    typed: Option<&ParsedBashPolicyConfigDocument>,
-    policies_object: &serde_json::Map<String, Value>,
-    path: &Path,
-    source: ConfigPathSource,
-) -> Result<ParsedBashPolicyConfig> {
-    let Some(bash_value) = policies_object.get("bash") else {
-        return Ok((None, None));
-    };
-
-    let bash_object = bash_value.as_object().with_context(|| {
-        format!(
-            "Config key 'policies.bash' in '{}' must be an object.",
-            path.display()
-        )
-    })?;
-
-    validate_object_keys(
-        bash_object,
-        path,
-        Some("policies.bash"),
-        &["presets", "custom"],
-        "presets, custom",
-    )?;
-
-    let presets = typed
-        .and_then(|config| config.presets.as_ref())
-        .map(|presets| parse_bash_policy_presets(presets, path))
-        .transpose()?
-        .map(|value| FileConfigValue { value, source });
-    let custom = typed
-        .and_then(|config| config.custom.as_ref())
-        .map(|custom| parse_custom_bash_policies(custom, path))
-        .transpose()?
-        .map(|value| FileConfigValue { value, source });
-
-    Ok((presets, custom))
-}
-
-fn parse_bash_policy_presets(items: &[String], path: &Path) -> Result<Vec<String>> {
+pub(crate) fn parse_bash_policy_presets(items: &[String], path: &Path) -> Result<Vec<String>> {
     let mut presets = Vec::with_capacity(items.len());
     let builtin_preset_ids = builtin_bash_policy_preset_ids();
     for item in items {
@@ -1086,8 +739,8 @@ fn parse_bash_policy_presets(items: &[String], path: &Path) -> Result<Vec<String
     Ok(presets)
 }
 
-fn parse_custom_bash_policies(
-    items: &[ParsedCustomBashPolicyEntryDocument],
+pub(crate) fn parse_custom_bash_policies(
+    items: &[schema::ParsedCustomBashPolicyEntryDocument],
     path: &Path,
 ) -> Result<Vec<CustomBashPolicyEntry>> {
     let mut policies = Vec::with_capacity(items.len());
@@ -1123,7 +776,7 @@ fn parse_custom_bash_policies(
 }
 
 fn parse_custom_bash_policy_entry(
-    item: &ParsedCustomBashPolicyEntryDocument,
+    item: &schema::ParsedCustomBashPolicyEntryDocument,
     path: &Path,
 ) -> Result<CustomBashPolicyEntry> {
     let id = item
@@ -1170,7 +823,7 @@ fn parse_custom_bash_policy_entry(
 
 fn parse_custom_bash_policy_match(
     id: &str,
-    matcher: Option<&ParsedCustomBashPolicyMatchDocument>,
+    matcher: Option<&schema::ParsedCustomBashPolicyMatchDocument>,
     path: &Path,
 ) -> Result<Vec<String>> {
     let matcher = matcher.with_context(|| {
