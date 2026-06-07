@@ -29,16 +29,19 @@ the raw non-empty secret text is deterministically SHA-256 hashed and rendered
 as the 64-character lowercase hex key required by Turso encryption. Empty or
 whitespace-only env values fail before any keyring initialization. When the env
 var is absent, the module uses OS-credential-store-backed get-or-create logic
-through `keyring-core` v1. On first keyring-backed use for a given database
-(file does not exist), a 32-byte random key is generated, hex-encoded to 64
-characters, and persisted in the platform credential store (macOS Keychain,
-Linux Secret Service via zbus, Windows Credential Store). On subsequent
-keyring-backed use, the key is read from the credential store. Credential-store
-initialization, entry creation/storage, and existing-DB/missing-key errors return
-platform-specific remediation for Linux system keyring/Secret Service, macOS
-Keychain, Windows Credential Store, or unsupported platforms, and always mention
-`SCE_AUTH_DB_ENCRYPTION_KEY` for headless/CI use without printing the secret
-value. No plaintext fallback exists.
+through `keyring-core` v1. Credential-store default registration is guarded by a
+stable `OnceLock<bool>` plus an atomic in-progress flag: successful registration
+is recorded once, while panic or error leaves the cell uninitialized so a later
+caller can retry without mutex-poisoning the process. On first keyring-backed use
+for a given database (file does not exist), a 32-byte random key is generated,
+hex-encoded to 64 characters, and persisted in the platform credential store
+(macOS Keychain, Linux Secret Service via zbus, Windows Credential Store). On
+subsequent keyring-backed use, the key is read from the credential store.
+Credential-store initialization, entry creation/storage, and existing-DB/missing-key
+errors return platform-specific remediation for Linux system keyring/Secret
+Service, macOS Keychain, Windows Credential Store, or unsupported platforms, and
+always mention `SCE_AUTH_DB_ENCRYPTION_KEY` for headless/CI use without printing
+the secret value. No plaintext fallback exists.
 
 ## Current integration state
 

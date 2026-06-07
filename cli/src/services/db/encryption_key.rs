@@ -11,7 +11,11 @@
 //! read the key from the credential store.
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    OnceLock,
+};
+use std::thread;
 
 use anyhow::{Context, Result};
 use keyring_core::Entry;
@@ -34,50 +38,73 @@ enum CredentialStorePlatform {
 
 /// Guards the one-time registration of the platform-native credential store.
 ///
-/// A `Mutex` is used instead of `OnceLock::get_or_try_init` because that
-/// API is still unstable in the current toolchain (1.95.0). The mutex
-/// ensures thread-safe single initialization and naturally retries on
-/// transient failures (the lock is released when the error propagates).
-static DEFAULT_STORE: Mutex<bool> = Mutex::new(false);
+/// `OnceLock::get_or_try_init` is still unstable in the effective stable
+/// toolchain, so a small atomic in-progress guard serializes fallible
+/// initialization. The `OnceLock` is set only after success; on panic or
+/// error, the in-progress guard is released and the next caller can retry.
+static DEFAULT_STORE: OnceLock<bool> = OnceLock::new();
+static DEFAULT_STORE_INITIALIZING: AtomicBool = AtomicBool::new(false);
+
+struct DefaultStoreInitGuard;
+
+impl Drop for DefaultStoreInitGuard {
+    fn drop(&mut self) {
+        DEFAULT_STORE_INITIALIZING.store(false, Ordering::Release);
+    }
+}
 
 fn ensure_default_store() -> Result<()> {
-    let mut guard = DEFAULT_STORE
-        .lock()
-        .map_err(|_| anyhow::anyhow!("internal error: credential store mutex poisoned"))?;
+    if DEFAULT_STORE.get().is_some() {
+        return Ok(());
+    }
 
-    if !*guard {
-        #[cfg(target_os = "linux")]
-        {
-            keyring_core::set_default_store(
-                zbus_secret_service_keyring_store::Store::new().with_context(|| {
-                    credential_store_unavailable_message(CredentialStorePlatform::Linux)
-                })?,
-            );
-        }
-        #[cfg(target_os = "macos")]
-        {
-            keyring_core::set_default_store(
-                apple_native_keyring_store::keychain::Store::new().with_context(|| {
-                    credential_store_unavailable_message(CredentialStorePlatform::Macos)
-                })?,
-            );
-        }
-        #[cfg(target_os = "windows")]
-        {
-            keyring_core::set_default_store(
-                windows_native_keyring_store::Store::new().with_context(|| {
-                    credential_store_unavailable_message(CredentialStorePlatform::Windows)
-                })?,
-            );
-        }
-        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-        {
-            anyhow::bail!(credential_store_unavailable_message(
-                CredentialStorePlatform::Unsupported
-            ));
+    loop {
+        if DEFAULT_STORE.get().is_some() {
+            return Ok(());
         }
 
-        *guard = true;
+        if DEFAULT_STORE_INITIALIZING
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let _guard = DefaultStoreInitGuard;
+            register_default_store()?;
+            let _ = DEFAULT_STORE.set(true);
+            return Ok(());
+        }
+
+        thread::yield_now();
+    }
+}
+
+fn register_default_store() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        keyring_core::set_default_store(
+            zbus_secret_service_keyring_store::Store::new().with_context(|| {
+                credential_store_unavailable_message(CredentialStorePlatform::Linux)
+            })?,
+        );
+    }
+    #[cfg(target_os = "macos")]
+    {
+        keyring_core::set_default_store(
+            apple_native_keyring_store::keychain::Store::new().with_context(|| {
+                credential_store_unavailable_message(CredentialStorePlatform::Macos)
+            })?,
+        );
+    }
+    #[cfg(target_os = "windows")]
+    {
+        keyring_core::set_default_store(windows_native_keyring_store::Store::new().with_context(
+            || credential_store_unavailable_message(CredentialStorePlatform::Windows),
+        )?);
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        anyhow::bail!(credential_store_unavailable_message(
+            CredentialStorePlatform::Unsupported
+        ));
     }
 
     Ok(())
