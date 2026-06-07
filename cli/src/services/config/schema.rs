@@ -16,8 +16,8 @@ use jsonschema::{validator_for, Validator};
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::policy::{parse_bash_policy_presets, parse_custom_bash_policies, CustomBashPolicyEntry};
 use super::types::{ConfigPathSource, LogFileMode, LogFormat, LogLevel};
-use super::{parse_bash_policy_presets, parse_custom_bash_policies, CustomBashPolicyEntry};
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const SCE_CONFIG_SCHEMA_JSON: &str =
