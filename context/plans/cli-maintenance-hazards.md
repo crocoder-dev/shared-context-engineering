@@ -51,12 +51,16 @@ Resolve the architectural/maintenance hazards in the Rust CLI without changing u
   - Evidence: `nix flake check` passed. Initial narrow `nix develop -c sh -c 'cd cli && cargo fmt --check && cargo check'` attempt was blocked by repo policy in favor of flake validation.
   - Notes: `TursoConnectionCore<M>` now owns the shared synchronous `execute`, `query`, `query_map`, and `run_migrations` implementation; `TursoDb<M>` and `EncryptedTursoDb<M>` keep separate constructors for unencrypted vs encrypted connection initialization and delegate public operation methods to the shared core.
 
-- [ ] T03: `Create config module facade and shared type submodule` (status:todo)
+- [x] T03: `Create config module facade and shared type submodule` (status:done)
   - Task ID: T03
   - Goal: Establish the config split by moving stable shared config types/constants into a focused submodule while keeping `services::config` re-exports/source compatibility.
   - Boundaries (in/out of scope): In - create a `types`-style submodule for config request/response primitives, log/config enums, source metadata, constants that are safe to move first, and facade re-exports from `mod.rs`. Out - moving resolution logic, schema validation, policy validation, or renderers.
   - Done when: `cli/src/services/config/mod.rs` starts acting as a module facade for shared config primitives; existing callers still import through `services::config::*` as before; behavior is unchanged.
   - Verification notes (commands or checks): Nix-wrapped compile/check or `nix flake check`; confirm no public API churn outside config-owned imports is needed.
+  - Completed: 2026-06-07
+  - Files changed: `cli/src/services/config/mod.rs`, `cli/src/services/config/types.rs`
+  - Evidence: `nix flake check` passed (cli-tests, cli-clippy, cli-fmt, pkl-parity all green); `nix run .#pkl-check-generated` passed. No public API changes required outside `config/` module; all existing callers continue importing through `services::config::*`.
+  - Notes: Created `cli/src/services/config/types.rs` containing `LogLevel`, `LogFormat`, `LogFileMode`, `ReportFormat`, `ConfigSubcommand`, `ConfigRequest`, `ValueSource`, `ConfigPathSource`, `LoadedConfigPath`, `ResolvedValue`, `ResolvedOptionalValue`, `ResolvedAuthRuntimeConfig`, `ResolvedObservabilityRuntimeConfig`, `ResolvedHookRuntimeConfig`, `NAME`, env key constants (`ENV_LOG_LEVEL`, `ENV_LOG_FORMAT`, `ENV_LOG_FILE`, `ENV_LOG_FILE_MODE`, `ENV_ATTRIBUTION_HOOKS_ENABLED`), and `parse_bool_value_from`. `mod.rs` now declares `pub mod types;` and `pub use types::*;` as facade re-exports. Resolution logic, schema validation, policy validation, and renderers remain in `mod.rs`.
 
 - [ ] T04: `Extract config schema loading and file parsing concerns` (status:todo)
   - Task ID: T04
