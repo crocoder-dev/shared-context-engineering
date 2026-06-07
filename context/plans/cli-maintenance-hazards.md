@@ -40,12 +40,16 @@ Resolve the architectural/maintenance hazards in the Rust CLI without changing u
   - Evidence: `nix flake check` passed. Narrow `cargo fmt --check && cargo check` attempt was blocked by repo policy in favor of flake validation; `nix develop -c sh -c 'cd cli && cargo fmt'` was run for rustfmt.
   - Notes: `cli_schema.rs` now reuses service-owned `OutputFormat` and `LogLevel`; duplicate schema-local enums and parse-layer conversion helpers were removed without adding variants or changing accepted values.
 
-- [ ] T02: `Deduplicate shared Turso operation methods` (status:todo)
+- [x] T02: `Deduplicate shared Turso operation methods` (status:done)
   - Task ID: T02
   - Goal: Factor `execute`, `query`, `query_map`, and `run_migrations` into one shared implementation path used by both `TursoDb<M>` and `EncryptedTursoDb<M>`.
   - Boundaries (in/out of scope): In - internal DB helper/core type or helper functions inside `cli/src/services/db/mod.rs`, method delegation from both public adapter types, preservation of existing public method signatures. Out - changing `DbSpec`, changing concrete DB specs, changing encryption-key behavior, adding sync/cloud behavior, adding migrations.
   - Done when: the duplicated method bodies no longer exist in both adapter impls; encrypted and unencrypted constructors still initialize connections exactly as before; all existing DB consumers compile unchanged.
   - Verification notes (commands or checks): Prefer `nix flake check`; inspect `cli/src/services/db/mod.rs` to confirm the operation/migration logic has one owner.
+  - Completed: 2026-06-07
+  - Files changed: `cli/src/services/db/mod.rs`
+  - Evidence: `nix flake check` passed. Initial narrow `nix develop -c sh -c 'cd cli && cargo fmt --check && cargo check'` attempt was blocked by repo policy in favor of flake validation.
+  - Notes: `TursoConnectionCore<M>` now owns the shared synchronous `execute`, `query`, `query_map`, and `run_migrations` implementation; `TursoDb<M>` and `EncryptedTursoDb<M>` keep separate constructors for unencrypted vs encrypted connection initialization and delegate public operation methods to the shared core.
 
 - [ ] T03: `Create config module facade and shared type submodule` (status:todo)
   - Task ID: T03

@@ -231,6 +231,76 @@ fn apply_migration(
     })
 }
 
+struct TursoConnectionCore<M: DbSpec> {
+    conn: turso::Connection,
+    runtime: tokio::runtime::Runtime,
+    spec: PhantomData<fn() -> M>,
+}
+
+impl<M: DbSpec> TursoConnectionCore<M> {
+    fn new(conn: turso::Connection, runtime: tokio::runtime::Runtime) -> Self {
+        Self {
+            conn,
+            runtime,
+            spec: PhantomData,
+        }
+    }
+
+    fn execute(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<u64> {
+        self.runtime.block_on(async {
+            self.conn
+                .execute(sql, params)
+                .await
+                .map_err(|e| anyhow::anyhow!("{} execute failed: {sql}: {e}", M::db_name()))
+        })
+    }
+
+    fn query(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<turso::Rows> {
+        self.runtime.block_on(async {
+            self.conn
+                .query(sql, params)
+                .await
+                .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))
+        })
+    }
+
+    fn query_map<T, F>(
+        &self,
+        sql: &str,
+        params: impl turso::params::IntoParams,
+        mut map_row: F,
+    ) -> Result<Vec<T>>
+    where
+        F: FnMut(&turso::Row) -> Result<T>,
+    {
+        self.runtime.block_on(async {
+            let mut rows = self
+                .conn
+                .query(sql, params)
+                .await
+                .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))?;
+            let mut results = Vec::new();
+
+            while let Some(row) = rows
+                .next()
+                .await
+                .map_err(|e| anyhow::anyhow!("{} row fetch failed: {sql}: {e}", M::db_name()))?
+            {
+                results.push(
+                    map_row(&row)
+                        .with_context(|| format!("{} row mapping failed: {sql}", M::db_name()))?,
+                );
+            }
+
+            Ok(results)
+        })
+    }
+
+    fn run_migrations(&self) -> Result<()> {
+        run_embedded_migrations(&self.conn, &self.runtime, M::db_name(), M::migrations())
+    }
+}
+
 /// Generic Turso database adapter.
 ///
 /// Wraps a Turso connection with a tokio current-thread runtime so callers can
@@ -238,9 +308,7 @@ fn apply_migration(
 /// remains async.
 #[allow(dead_code)]
 pub struct TursoDb<M: DbSpec> {
-    conn: turso::Connection,
-    runtime: tokio::runtime::Runtime,
-    spec: PhantomData<fn() -> M>,
+    core: TursoConnectionCore<M>,
 }
 
 /// Generic encrypted Turso database adapter.
@@ -248,9 +316,7 @@ pub struct TursoDb<M: DbSpec> {
 /// Mirrors the structural seams of [`TursoDb`] while reserving encrypted local
 /// database initialization for services that require at-rest encryption.
 pub struct EncryptedTursoDb<M: DbSpec> {
-    conn: turso::Connection,
-    runtime: tokio::runtime::Runtime,
-    spec: PhantomData<fn() -> M>,
+    core: TursoConnectionCore<M>,
 }
 
 #[allow(dead_code)]
@@ -285,9 +351,7 @@ impl<M: DbSpec> TursoDb<M> {
         })?;
 
         let db = Self {
-            conn,
-            runtime,
-            spec: PhantomData,
+            core: TursoConnectionCore::new(conn, runtime),
         };
 
         db.run_migrations()
@@ -305,12 +369,7 @@ impl<M: DbSpec> TursoDb<M> {
     /// # Returns
     /// Number of rows affected.
     pub fn execute(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<u64> {
-        self.runtime.block_on(async {
-            self.conn
-                .execute(sql, params)
-                .await
-                .map_err(|e| anyhow::anyhow!("{} execute failed: {sql}: {e}", M::db_name()))
-        })
+        self.core.execute(sql, params)
     }
 
     /// Execute a SQL query that returns rows.
@@ -322,12 +381,7 @@ impl<M: DbSpec> TursoDb<M> {
     /// # Returns
     /// A `turso::Rows` iterator over the result set.
     pub fn query(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<turso::Rows> {
-        self.runtime.block_on(async {
-            self.conn
-                .query(sql, params)
-                .await
-                .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))
-        })
+        self.core.query(sql, params)
     }
 
     /// Execute a SQL query and synchronously map all returned rows.
@@ -335,32 +389,12 @@ impl<M: DbSpec> TursoDb<M> {
         &self,
         sql: &str,
         params: impl turso::params::IntoParams,
-        mut map_row: F,
+        map_row: F,
     ) -> Result<Vec<T>>
     where
         F: FnMut(&turso::Row) -> Result<T>,
     {
-        self.runtime.block_on(async {
-            let mut rows = self
-                .conn
-                .query(sql, params)
-                .await
-                .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))?;
-            let mut results = Vec::new();
-
-            while let Some(row) = rows
-                .next()
-                .await
-                .map_err(|e| anyhow::anyhow!("{} row fetch failed: {sql}: {e}", M::db_name()))?
-            {
-                results.push(
-                    map_row(&row)
-                        .with_context(|| format!("{} row mapping failed: {sql}", M::db_name()))?,
-                );
-            }
-
-            Ok(results)
-        })
+        self.core.query_map(sql, params, map_row)
     }
 
     /// Run all embedded migrations in order.
@@ -370,7 +404,7 @@ impl<M: DbSpec> TursoDb<M> {
     /// Existing databases without migration metadata are brought forward by
     /// re-applying the current idempotent migration set and recording each ID.
     pub fn run_migrations(&self) -> Result<()> {
-        run_embedded_migrations(&self.conn, &self.runtime, M::db_name(), M::migrations())
+        self.core.run_migrations()
     }
 }
 
@@ -417,9 +451,7 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
         })?;
 
         let db = Self {
-            conn,
-            runtime,
-            spec: PhantomData,
+            core: TursoConnectionCore::new(conn, runtime),
         };
 
         db.run_migrations()
@@ -437,12 +469,7 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
     /// # Returns
     /// Number of rows affected.
     pub fn execute(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<u64> {
-        self.runtime.block_on(async {
-            self.conn
-                .execute(sql, params)
-                .await
-                .map_err(|e| anyhow::anyhow!("{} execute failed: {sql}: {e}", M::db_name()))
-        })
+        self.core.execute(sql, params)
     }
 
     /// Execute a SQL query that returns rows.
@@ -455,12 +482,7 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
     /// A `turso::Rows` iterator over the result set.
     #[allow(dead_code)]
     pub fn query(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<turso::Rows> {
-        self.runtime.block_on(async {
-            self.conn
-                .query(sql, params)
-                .await
-                .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))
-        })
+        self.core.query(sql, params)
     }
 
     /// Execute a SQL query and synchronously map all returned rows.
@@ -468,32 +490,12 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
         &self,
         sql: &str,
         params: impl turso::params::IntoParams,
-        mut map_row: F,
+        map_row: F,
     ) -> Result<Vec<T>>
     where
         F: FnMut(&turso::Row) -> Result<T>,
     {
-        self.runtime.block_on(async {
-            let mut rows = self
-                .conn
-                .query(sql, params)
-                .await
-                .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))?;
-            let mut results = Vec::new();
-
-            while let Some(row) = rows
-                .next()
-                .await
-                .map_err(|e| anyhow::anyhow!("{} row fetch failed: {sql}: {e}", M::db_name()))?
-            {
-                results.push(
-                    map_row(&row)
-                        .with_context(|| format!("{} row mapping failed: {sql}", M::db_name()))?,
-                );
-            }
-
-            Ok(results)
-        })
+        self.core.query_map(sql, params, map_row)
     }
 
     /// Run all embedded migrations in order.
@@ -503,6 +505,6 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
     /// Existing databases without migration metadata are brought forward by
     /// re-applying the current idempotent migration set and recording each ID.
     pub fn run_migrations(&self) -> Result<()> {
-        run_embedded_migrations(&self.conn, &self.runtime, M::db_name(), M::migrations())
+        self.core.run_migrations()
     }
 }

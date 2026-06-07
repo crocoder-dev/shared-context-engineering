@@ -8,14 +8,14 @@
   - `db_name()` returns a human-readable diagnostic name.
   - `db_path()` resolves the canonical database file path.
   - `migrations()` returns ordered embedded migration `(id, sql)` pairs.
-- `TursoDb<M: DbSpec>`: generic adapter that owns:
+- `TursoDb<M: DbSpec>`: generic unencrypted adapter that owns:
   - tokio current-thread runtime creation
   - Turso local database open/connect flow
   - parent-directory creation
-  - synchronous `execute()`, `query()`, and row-mapping `query_map()` wrappers
-  - generic embedded migration execution through `run_migrations()` with per-database `__sce_migrations` metadata
+  - delegation of synchronous `execute()`, `query()`, row-mapping `query_map()`, and `run_migrations()` to the shared internal `TursoConnectionCore<M>`
 - `EncryptedTursoDb<M: DbSpec>`: encrypted-adapter seam parallel to `TursoDb<M>` with the same structural shape (connection, runtime bridge, and spec marker). `EncryptedTursoDb::new()` resolves the encryption key via `encryption_key::get_or_create_encryption_key()`, enables Turso experimental local encryption, applies strict `aegis256` cipher selection through `turso::EncryptionOpts` during local DB open/connect, and runs embedded migrations after connect.
-- `EncryptedTursoDb<M>` also exposes synchronous `execute()`, `query()`, and `query_map()` wrappers plus generic `run_migrations()` with the same `__sce_migrations` metadata flow used by `TursoDb<M>`.
+- `EncryptedTursoDb<M>` exposes the same public synchronous `execute()`, `query()`, `query_map()`, and `run_migrations()` methods by delegating to the same `TursoConnectionCore<M>` operation path used by `TursoDb<M>`.
+- `TursoConnectionCore<M>` is internal to `cli/src/services/db/mod.rs` and owns the shared blocking Turso operation wrappers plus embedded migration execution with per-database `__sce_migrations` metadata; encryption vs unencrypted behavior remains constructor-only at the public adapter layer.
 - Shared lifecycle helpers:
   - `collect_db_path_health()` emits common parent/path health problems for DB-backed services.
   - `bootstrap_db_parent()` creates the resolved DB parent directory for repair/setup flows.
@@ -55,7 +55,7 @@ All three database wrappers (local DB, auth DB, Agent Trace DB) have lifecycle p
 
 ## Migration metadata
 
-`TursoDb<M>::run_migrations()` creates a service-local `__sce_migrations` table before applying migrations. Each migration is skipped only when its ID is already recorded in that table; otherwise the SQL is executed and the ID is recorded after success.
+The shared `TursoConnectionCore<M>` migration path creates a service-local `__sce_migrations` table before applying migrations. Each migration is skipped only when its ID is already recorded in that table; otherwise the SQL is executed and the ID is recorded after success.
 
 Existing databases created before migration metadata are upgraded by re-applying the current idempotent migration list and recording each migration ID. This lets later `sce setup` / lifecycle initialization runs apply migrations added after the database file already existed, including Agent Trace DB schema/index additions.
 
