@@ -1,5 +1,8 @@
 pub mod command;
 pub mod lifecycle;
+pub mod types;
+
+pub use types::*;
 
 use std::{
     path::{Path, PathBuf},
@@ -7,16 +10,13 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use clap::ValueEnum;
 use jsonschema::{validator_for, Validator};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::services::default_paths::{resolve_sce_default_locations, schema, RepoPaths};
-use crate::services::output_format::OutputFormat;
 use crate::services::style::{self};
 
-pub const NAME: &str = "config";
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const SCE_CONFIG_SCHEMA_JSON: &str =
     include_str!("../../../assets/generated/config/schema/sce-config.schema.json");
@@ -36,11 +36,6 @@ const TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
 ];
 const TOP_LEVEL_CONFIG_KEYS_DESCRIPTION: &str =
     "$schema, log_level, log_format, log_file, log_file_mode, timeout_ms, workos_client_id, policies";
-pub(crate) const ENV_LOG_LEVEL: &str = "SCE_LOG_LEVEL";
-pub(crate) const ENV_LOG_FORMAT: &str = "SCE_LOG_FORMAT";
-pub(crate) const ENV_LOG_FILE: &str = "SCE_LOG_FILE";
-pub(crate) const ENV_LOG_FILE_MODE: &str = "SCE_LOG_FILE_MODE";
-pub(crate) const ENV_ATTRIBUTION_HOOKS_ENABLED: &str = "SCE_ATTRIBUTION_HOOKS_ENABLED";
 const WORKOS_CLIENT_ID_ENV: &str = "WORKOS_CLIENT_ID";
 const WORKOS_CLIENT_ID_BAKED_DEFAULT: &str = "client_sce_default";
 const WORKOS_CLIENT_ID_KEY: AuthConfigKeySpec = AuthConfigKeySpec {
@@ -48,202 +43,6 @@ const WORKOS_CLIENT_ID_KEY: AuthConfigKeySpec = AuthConfigKeySpec {
     env_key: WORKOS_CLIENT_ID_ENV,
     baked_default: Some(WORKOS_CLIENT_ID_BAKED_DEFAULT),
 };
-
-pub type ReportFormat = OutputFormat;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-pub enum LogLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-}
-
-impl LogLevel {
-    pub(crate) fn parse(raw: &str, source: &str) -> Result<Self> {
-        match raw {
-            "error" => Ok(Self::Error),
-            "warn" => Ok(Self::Warn),
-            "info" => Ok(Self::Info),
-            "debug" => Ok(Self::Debug),
-            _ => bail!(
-                "Invalid log level '{raw}' from {source}. Valid values: error, warn, info, debug."
-            ),
-        }
-    }
-
-    pub(crate) fn parse_env(raw: &str, key: &str) -> Result<Self> {
-        match raw {
-            "error" => Ok(Self::Error),
-            "warn" => Ok(Self::Warn),
-            "info" => Ok(Self::Info),
-            "debug" => Ok(Self::Debug),
-            _ => bail!("Invalid {key} '{raw}'. Valid values: error, warn, info, debug."),
-        }
-    }
-
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Error => "error",
-            Self::Warn => "warn",
-            Self::Info => "info",
-            Self::Debug => "debug",
-        }
-    }
-
-    pub(crate) fn severity(self) -> u8 {
-        match self {
-            Self::Error => 1,
-            Self::Warn => 2,
-            Self::Info => 3,
-            Self::Debug => 4,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LogFormat {
-    Text,
-    Json,
-}
-
-impl LogFormat {
-    pub(crate) fn parse(raw: &str, source: &str) -> Result<Self> {
-        match raw {
-            "text" => Ok(Self::Text),
-            "json" => Ok(Self::Json),
-            _ => bail!("Invalid log format '{raw}' from {source}. Valid values: text, json."),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn parse_env(raw: &str, key: &str) -> Result<Self> {
-        match raw {
-            "text" => Ok(Self::Text),
-            "json" => Ok(Self::Json),
-            _ => bail!("Invalid {key} '{raw}'. Valid values: text, json."),
-        }
-    }
-
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Text => "text",
-            Self::Json => "json",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LogFileMode {
-    Truncate,
-    Append,
-}
-
-impl LogFileMode {
-    pub(crate) fn parse(raw: &str, source: &str) -> Result<Self> {
-        match raw {
-            "truncate" => Ok(Self::Truncate),
-            "append" => Ok(Self::Append),
-            _ => bail!(
-                "Invalid log file mode '{raw}' from {source}. Valid values: truncate, append."
-            ),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn parse_env(raw: &str, key: &str) -> Result<Self> {
-        match raw {
-            "truncate" => Ok(Self::Truncate),
-            "append" => Ok(Self::Append),
-            _ => bail!("Invalid {key} '{raw}'. Valid values: truncate, append."),
-        }
-    }
-
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Truncate => "truncate",
-            Self::Append => "append",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ValueSource {
-    Flag,
-    Env,
-    ConfigFile(ConfigPathSource),
-    Default,
-}
-
-impl ValueSource {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Flag => "flag",
-            Self::Env => "env",
-            Self::ConfigFile(_) => "config_file",
-            Self::Default => "default",
-        }
-    }
-
-    fn config_source(self) -> Option<ConfigPathSource> {
-        match self {
-            Self::ConfigFile(source) => Some(source),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ConfigSubcommand {
-    Show(ConfigRequest),
-    Validate(ConfigRequest),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ConfigRequest {
-    pub report_format: ReportFormat,
-    pub config_path: Option<PathBuf>,
-    pub log_level: Option<LogLevel>,
-    pub timeout_ms: Option<u64>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ConfigPathSource {
-    Flag,
-    Env,
-    DefaultDiscoveredGlobal,
-    DefaultDiscoveredLocal,
-}
-
-impl ConfigPathSource {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Flag => "flag",
-            Self::Env => "env",
-            Self::DefaultDiscoveredGlobal => "default_discovered_global",
-            Self::DefaultDiscoveredLocal => "default_discovered_local",
-        }
-    }
-
-    const fn is_default_discovered(self) -> bool {
-        matches!(
-            self,
-            Self::DefaultDiscoveredGlobal | Self::DefaultDiscoveredLocal
-        )
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ResolvedValue<T> {
-    value: T,
-    source: ValueSource,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LoadedConfigPath {
-    pub(crate) path: PathBuf,
-    pub(crate) source: ConfigPathSource,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct AuthConfigKeySpec {
@@ -280,32 +79,6 @@ struct RuntimeConfig {
     bash_policies: ResolvedOptionalValue<BashPolicyConfig>,
     validation_errors: Vec<String>,
     validation_warnings: Vec<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ResolvedOptionalValue<T> {
-    pub(crate) value: Option<T>,
-    source: Option<ValueSource>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ResolvedAuthRuntimeConfig {
-    pub(crate) workos_client_id: ResolvedOptionalValue<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ResolvedObservabilityRuntimeConfig {
-    pub(crate) log_level: LogLevel,
-    pub(crate) log_format: LogFormat,
-    pub(crate) log_file: Option<String>,
-    pub(crate) log_file_mode: LogFileMode,
-    pub(crate) loaded_config_paths: Vec<LoadedConfigPath>,
-    pub(crate) validation_errors: Vec<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ResolvedHookRuntimeConfig {
-    pub(crate) attribution_hooks_enabled: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -864,14 +637,6 @@ where
         validation_errors,
         validation_warnings,
     })
-}
-
-pub(crate) fn parse_bool_value_from(key: &str, raw: &str, source: &str) -> Result<bool> {
-    match raw {
-        "1" | "true" => Ok(true),
-        "0" | "false" => Ok(false),
-        _ => bail!("Invalid {key} '{raw}' from {source}. Valid values: true, false, 1, 0."),
-    }
 }
 
 fn resolve_bash_policy_config(
