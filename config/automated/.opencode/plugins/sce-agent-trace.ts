@@ -63,6 +63,15 @@ type EventMessagePartUpdated = Extract<
 	{ type: "message.part.updated" }
 >;
 
+function extractDiffEntries(
+	eventInfo: EventMessageUpdated["properties"]["info"],
+) {
+	if (typeof eventInfo.summary === "object") {
+		return eventInfo.summary.diffs;
+	}
+	return undefined;
+}
+
 function extractDiffTracePayload(
 	event: EventMessageUpdated,
 ): DiffTracePayload | undefined {
@@ -72,8 +81,7 @@ function extractDiffTracePayload(
 		return undefined;
 	}
 
-	// Access info.summary?.diffs via explicit checks
-	const diffEntries = eventInfo.summary?.diffs;
+	const diffEntries = extractDiffEntries(eventInfo);
 
 	if (!diffEntries || diffEntries.length === 0) {
 		return undefined;
@@ -81,13 +89,9 @@ function extractDiffTracePayload(
 
 	const patches: string[] = [];
 	for (const entry of diffEntries) {
-		const entryObj = entry as { patch?: string };
-
-		if (!entryObj.patch) {
-			continue;
+		if ("patch" in entry && typeof entry.patch === "string") {
+			patches.push(entry.patch);
 		}
-
-		patches.push(entryObj.patch);
 	}
 
 	if (patches.length === 0) {
@@ -143,6 +147,51 @@ export function buildMessagePartConversationTracePayload(
 	};
 }
 
+function buildPatchConversationTracePayloads(
+	event: EventMessageUpdated,
+): ConversationTracePayload[] | undefined {
+	const eventInfo = event.properties.info;
+	const diffEntries = extractDiffEntries(eventInfo);
+
+	if (!diffEntries || diffEntries.length === 0) {
+		return undefined;
+	}
+
+	const patchMessageId = `${eventInfo.id}-patch`;
+	const payloads: ConversationTracePayload[] = [];
+
+	payloads.push({
+		type: "message.updated",
+		payloads: [
+			{
+				session_id: eventInfo.sessionID,
+				message_id: patchMessageId,
+				role: eventInfo.role,
+				generated_at_unix_ms: Date.now(),
+			},
+		],
+	});
+
+	for (const entry of diffEntries) {
+		if ("patch" in entry && typeof entry.patch === "string") {
+			payloads.push({
+				type: "message.part.updated",
+				payloads: [
+					{
+						session_id: eventInfo.sessionID,
+						message_id: patchMessageId,
+						part_type: "patch",
+						text: entry.patch,
+						generated_at_unix_ms: Date.now(),
+					},
+				],
+			});
+		}
+	}
+
+	return payloads;
+}
+
 export async function recordConversationTrace(
 	repoRoot: string,
 	event: EventMessageUpdated | EventMessagePartUpdated,
@@ -161,6 +210,15 @@ export async function recordConversationTrace(
 	}
 
 	if (event.type === "message.updated") {
+		const patchPayloads = buildPatchConversationTracePayloads(event);
+
+		if (patchPayloads !== undefined) {
+			await Promise.all(
+				patchPayloads.map((p) => runConversationTraceHook(repoRoot, p)),
+			);
+			return;
+		}
+
 		await runConversationTraceHook(
 			repoRoot,
 			buildConversationTracePayload(event),
@@ -252,6 +310,7 @@ async function runConversationTraceHook(
 export const SceAgentTracePlugin: Plugin = async ({ directory, worktree }) => {
 	const repoRoot = worktree ?? directory ?? process.cwd();
 	const clientVersionsBySessionId: Map<string, string> = new Map();
+	const processedDiffsMessageIds: Set<string> = new Set();
 
 	return {
 		event: async (input) => {
@@ -270,6 +329,19 @@ export const SceAgentTracePlugin: Plugin = async ({ directory, worktree }) => {
 			}
 
 			if (input.event.type === "message.updated") {
+				const eventInfo = input.event.properties.info;
+				const diffEntries = extractDiffEntries(eventInfo);
+				const hasDiffs =
+					diffEntries !== undefined && diffEntries.length > 0;
+
+				if (hasDiffs) {
+					const dedupKey = `${eventInfo.sessionID}:${eventInfo.id}`;
+					if (processedDiffsMessageIds.has(dedupKey)) {
+						return;
+					}
+					processedDiffsMessageIds.add(dedupKey);
+				}
+
 				const clientVersion =
 					clientVersionsBySessionId.get(
 						input.event.properties.info.sessionID,

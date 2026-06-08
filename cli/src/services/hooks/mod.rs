@@ -470,8 +470,9 @@ fn parse_part_type(payload: &serde_json::Map<String, Value>) -> Result<PartType>
     {
         "text" => Ok(PartType::Text),
         "reasoning" => Ok(PartType::Reasoning),
+        "patch" => Ok(PartType::Patch),
         _ => bail!(conversation_trace_validation_error(
-            "field 'part_type' must be one of 'text' or 'reasoning'"
+            "field 'part_type' must be one of 'text', 'reasoning' or 'patch'"
         )),
     }
 }
