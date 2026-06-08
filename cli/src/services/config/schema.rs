@@ -32,7 +32,7 @@ pub(crate) const TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "log_file",
     "log_file_mode",
     "timeout_ms",
-    super::WORKOS_CLIENT_ID_KEY.config_key,
+    super::resolver::WORKOS_CLIENT_ID_KEY.config_key,
     "policies",
 ];
 
