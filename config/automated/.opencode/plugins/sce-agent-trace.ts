@@ -24,21 +24,29 @@ type DiffTracePayload = {
 	model_id: string;
 };
 
-type ConversationTraceMessageUpdatedPayload = {
-	type: "message.updated";
+type ConversationTraceMessageUpdatedItem = {
 	session_id: string;
 	message_id: string;
 	role: EventMessageUpdated["properties"]["info"]["role"];
 	generated_at_unix_ms: number;
 };
 
-type ConversationTraceMessagePartUpdatedPayload = {
-	type: "message.part.updated";
+type ConversationTraceMessagePartUpdatedItem = {
 	session_id: string;
 	message_id: string;
 	part_type: EventMessagePartUpdated["properties"]["part"]["type"];
 	text: unknown;
 	generated_at_unix_ms: number;
+};
+
+type ConversationTraceMessageUpdatedPayload = {
+	type: "message.updated";
+	payloads: ConversationTraceMessageUpdatedItem[];
+};
+
+type ConversationTraceMessagePartUpdatedPayload = {
+	type: "message.part.updated";
+	payloads: ConversationTraceMessagePartUpdatedItem[];
 };
 
 type ConversationTracePayload =
@@ -105,10 +113,14 @@ function buildConversationTracePayload(
 
 	return {
 		type: "message.updated",
-		session_id: eventInfo.sessionID,
-		message_id: eventInfo.id,
-		role: eventInfo.role,
-		generated_at_unix_ms: Date.now(),
+		payloads: [
+			{
+				session_id: eventInfo.sessionID,
+				message_id: eventInfo.id,
+				role: eventInfo.role,
+				generated_at_unix_ms: Date.now(),
+			},
+		],
 	};
 }
 
@@ -119,11 +131,15 @@ export function buildMessagePartConversationTracePayload(
 
 	return {
 		type: "message.part.updated",
-		session_id: eventPart.sessionID,
-		message_id: eventPart.messageID,
-		part_type: eventPart.type,
-		text: "text" in eventPart ? eventPart.text : "",
-		generated_at_unix_ms: Date.now(),
+		payloads: [
+			{
+				session_id: eventPart.sessionID,
+				message_id: eventPart.messageID,
+				part_type: eventPart.type,
+				text: "text" in eventPart ? eventPart.text : "",
+				generated_at_unix_ms: Date.now(),
+			},
+		],
 	};
 }
 

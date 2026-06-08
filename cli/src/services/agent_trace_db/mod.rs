@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use turso::Value as TursoValue;
 
 use crate::services::{
     db::{DbSpec, TursoDb},
@@ -330,10 +331,21 @@ impl AgentTraceDb {
         insert_message_with(self, input)
     }
 
+    /// Insert message rows with one multi-row statement, ignoring duplicate
+    /// `(session_id, message_id)` rows.
+    pub fn insert_messages(&self, inputs: Vec<InsertMessageInsert>) -> Result<u64> {
+        insert_messages_with(self, inputs)
+    }
+
     /// Append a part row (no upsert; multiple rows per message allowed).
     #[allow(dead_code)]
     pub fn insert_part(&self, input: InsertPartInsert) -> Result<u64> {
         insert_part_with(self, input)
+    }
+
+    /// Append part rows with one multi-row statement.
+    pub fn insert_parts(&self, inputs: Vec<InsertPartInsert>) -> Result<u64> {
+        insert_parts_with(self, inputs)
     }
 }
 
@@ -396,6 +408,34 @@ fn insert_message_with<M: DbSpec>(db: &TursoDb<M>, input: InsertMessageInsert) -
     )
 }
 
+fn insert_messages_with<M: DbSpec>(
+    db: &TursoDb<M>,
+    inputs: Vec<InsertMessageInsert>,
+) -> Result<u64> {
+    if inputs.is_empty() {
+        return Ok(0);
+    }
+
+    let mut params = Vec::with_capacity(inputs.len() * 4);
+    let mut rows = Vec::with_capacity(inputs.len());
+
+    for (row_index, input) in inputs.into_iter().enumerate() {
+        let param_start = row_index * 4 + 1;
+        rows.push(numbered_placeholders(param_start, 4));
+        params.push(TursoValue::Text(input.session_id));
+        params.push(TursoValue::Text(input.message_id));
+        params.push(TursoValue::Text(input.role.to_string()));
+        params.push(TursoValue::Integer(input.generated_at_unix_ms));
+    }
+
+    let sql = format!(
+        "INSERT INTO messages (session_id, message_id, role, generated_at_unix_ms)\nVALUES {}\nON CONFLICT (session_id, message_id) DO NOTHING",
+        rows.join(", ")
+    );
+
+    db.execute(&sql, params)
+}
+
 #[allow(dead_code)]
 fn insert_part_with<M: DbSpec>(db: &TursoDb<M>, input: InsertPartInsert) -> Result<u64> {
     db.execute(
@@ -408,6 +448,41 @@ fn insert_part_with<M: DbSpec>(db: &TursoDb<M>, input: InsertPartInsert) -> Resu
             input.generated_at_unix_ms,
         ),
     )
+}
+
+fn insert_parts_with<M: DbSpec>(db: &TursoDb<M>, inputs: Vec<InsertPartInsert>) -> Result<u64> {
+    if inputs.is_empty() {
+        return Ok(0);
+    }
+
+    let mut params = Vec::with_capacity(inputs.len() * 5);
+    let mut rows = Vec::with_capacity(inputs.len());
+
+    for (row_index, input) in inputs.into_iter().enumerate() {
+        let param_start = row_index * 5 + 1;
+        rows.push(numbered_placeholders(param_start, 5));
+        params.push(TursoValue::Text(input.part_type.to_string()));
+        params.push(TursoValue::Text(input.text));
+        params.push(TursoValue::Text(input.message_id));
+        params.push(TursoValue::Text(input.session_id));
+        params.push(TursoValue::Integer(input.generated_at_unix_ms));
+    }
+
+    let sql = format!(
+        "INSERT INTO parts (type, text, message_id, session_id, generated_at_unix_ms)\nVALUES {}",
+        rows.join(", ")
+    );
+
+    db.execute(&sql, params)
+}
+
+fn numbered_placeholders(start: usize, count: usize) -> String {
+    let placeholders = (start..start + count)
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!("({placeholders})")
 }
 
 fn recent_diff_trace_patches_with<M: DbSpec>(
