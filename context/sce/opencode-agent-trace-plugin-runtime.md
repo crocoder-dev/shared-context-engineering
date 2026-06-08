@@ -35,10 +35,9 @@ Otherwise, the helper returns `undefined`.
 ## Current usage boundary
 
 - `recordConversationTrace(repoRoot, event)` builds and sends the conversation-trace payload for both `message.updated` and `message.part.updated` variants; for `message.updated`, it still runs before `buildTrace`.
-- The `message.updated` conversation-trace payload maps OpenCode event fields mechanically to `type`, `session_id`, `message_id`, `role`, `agent`, `summary_diffs`, and `generated_at_unix_ms`; it does not duplicate Rust hook validation.
+- The `message.updated` conversation-trace payload maps OpenCode event fields mechanically to `type`, `session_id`, `message_id`, `role`, and `generated_at_unix_ms`; it does not emit message-level `agent` or `summary_diffs` fields and does not duplicate Rust hook validation.
 - `buildMessagePartConversationTracePayload(event)` maps `event.properties.part.sessionID`, `messageID`, `type`, and `text` into `session_id`, `message_id`, `part_type`, and `text`, and uses `Date.now()` for `generated_at_unix_ms`.
 - The diff extraction seam is internal to the source module and is used by `buildTrace` at runtime.
 - `buildTrace` exits early when extraction returns `undefined` (non-user role, empty diffs array, or no usable patch entries), so no diff-trace hook invocation occurs for those events.
 - The plugin tracks OpenCode client version per session ID from `session.created` / `session.updated` events and forwards it as `tool_version` when available.
 - When extraction succeeds, `buildTrace` forwards the extracted payload with required `tool_name="opencode"` and required `tool_version` (nullable when session version is unavailable) to `sce hooks diff-trace` via STDIN JSON; the Rust hook runtime validates required non-empty `sessionID`/`diff`/`model_id`/`tool_name`, required nullable/non-empty `tool_version`, plus required `time`, and persists the DB-backed diff-trace fields through AgentTraceDb `diff_traces` insertion.
-
