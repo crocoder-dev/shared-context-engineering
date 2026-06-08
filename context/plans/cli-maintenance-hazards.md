@@ -95,19 +95,60 @@ Resolve the architectural/maintenance hazards in the Rust CLI without changing u
   - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` passed after adding `cli/src/services/config/resolver.rs` to the git index so Nix source filtering included the new module; `nix develop -c sh -c 'cd cli && cargo fmt --check'` was blocked by repo policy in favor of `nix flake check`; user reported `nix flake check` was run.
   - Notes: Created `cli/src/services/config/resolver.rs` to own runtime config discovery, file-layer merging, env/flag/default precedence, auth-key resolution, observability resolution, attribution-hooks resolution, and default-discovered invalid-file degradation. `mod.rs` now delegates runtime resolution through the resolver while preserving facade re-exports for existing startup/auth/hooks callers. `schema.rs` now references the resolver-owned `WORKOS_CLIENT_ID_KEY` for the top-level config-key list.
 
-- [ ] T07: `Extract config text and JSON rendering` (status:todo)
+- [x] T07: `Extract config text and JSON rendering` (status:done)
   - Task ID: T07
   - Goal: Move `sce config show` and `sce config validate` text/JSON rendering into a focused render submodule without changing output contracts.
   - Boundaries (in/out of scope): In - text rendering, JSON response construction, display-value/redaction helpers that are rendering-specific, render tests/golden assertions if present. Out - changing resolved data semantics, schema validation, policy validation, or command parsing.
   - Done when: config renderers have one focused owner; output for representative `show` and `validate` cases remains stable; `mod.rs` is reduced to facade/orchestration-level exports and `run_config_subcommand` delegation.
   - Verification notes (commands or checks): Prefer `nix flake check`; include targeted config show/validate output tests if available/needed.
+  - Completed: 2026-06-08
+  - Files changed: `cli/src/services/config/mod.rs`, `cli/src/services/config/render.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` passed; `nix develop -c sh -c 'cd cli && cargo check'` was blocked by repo policy in favor of `nix flake check`; `nix flake check` passed; `nix run .#pkl-check-generated` passed.
+  - Notes: Created `cli/src/services/config/render.rs` as the focused owner for `sce config show` and `sce config validate` text/JSON rendering, including rendering-specific config-path formatting, resolved-value formatting, validation issue/warning rendering, and auth display-value redaction/abbreviation helpers. `cli/src/services/config/mod.rs` now remains a small facade/orchestrator that resolves runtime config and delegates output formatting to the render module without changing config resolution, schema, policy, or command parsing behavior. Context sync classified this as an important architecture-boundary update and refreshed the config/domain context links.
 
-- [ ] T08: `Final validation and context sync` (status:todo)
+- [x] T08: `Final validation and context sync` (status:done)
   - Task ID: T08
   - Goal: Run full validation, remove temporary scaffolding, and sync durable context for the resulting CLI architecture and maintenance boundaries.
   - Boundaries (in/out of scope): In - full repo validation, generated-output parity, cleanup of task-owned temporary files, context updates for current-state architecture/glossary/domain docs. Out - new refactors or behavior changes beyond documenting the completed plan outcome.
   - Done when: `nix run .#pkl-check-generated` and `nix flake check` pass; config/DB/CLI enum context reflects the new ownership; this plan records validation evidence and any residual risks.
   - Verification notes (commands or checks): `nix run .#pkl-check-generated`; `nix flake check`; verify `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/cli/config-precedence-contract.md`, and `context/sce/shared-turso-db.md` are current or explicitly verified unchanged.
+  - Completed: 2026-06-08
+  - Files changed: `context/plans/cli-maintenance-hazards.md`
+  - Evidence: `nix run .#pkl-check-generated` passed with generated outputs up to date; `nix flake check` passed all evaluated checks, including `cli-tests`, `cli-clippy`, `cli-fmt`, `pkl-parity`, npm/config-lib JS checks, and integration install checks. Reviewed task-owned temporary scaffolding and found no T08-owned temp files to remove.
+  - Notes: Final validation confirmed the completed maintenance refactor without additional code changes. Existing current-state context already reflects the canonical CLI enum ownership, shared Turso operation core, and split config module ownership, including `render.rs`; no residual risks identified.
+
+## Validation Report
+
+### Commands run
+
+- `nix run .#pkl-check-generated` -> exit 0; generated outputs are up to date.
+- `nix flake check` -> exit 0; all evaluated flake checks passed, including CLI tests/clippy/fmt, `pkl-parity`, npm/config-lib JS checks, and integration install checks.
+
+### Cleanup
+
+- Reviewed `context/tmp/`; no T08-owned temporary scaffolding was identified for removal.
+
+### Success-criteria verification
+
+- [x] `cli/src/cli_schema.rs` no longer defines independent duplicate `OutputFormat` / `LogLevel` enums; it imports canonical service-owned types from `services::output_format` and `services::config`.
+- [x] Adding an output format or log level now has one canonical enum owner plus parser/rendering tests.
+- [x] `TursoDb<M>` and `EncryptedTursoDb<M>` delegate shared synchronous operations and migration execution through `TursoConnectionCore<M>`.
+- [x] Database error/migration/local/encrypted initialization behavior remained stable under full flake validation.
+- [x] `cli/src/services/config/mod.rs` is a small facade over focused `types`, `schema`, `policy`, `resolver`, private `render`, `command`, and `lifecycle` modules.
+- [x] Existing config, startup, doctor, auth, attribution-hooks, and observability behavior remained unchanged under full flake validation.
+- [x] Rust formatting, linting, tests, generated-output parity, and repo-level validation passed through `nix flake check` plus `nix run .#pkl-check-generated`.
+
+### Context verification
+
+- Verified `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/cli/config-precedence-contract.md`, and `context/sce/shared-turso-db.md` against current code ownership. Existing context already reflects canonical CLI enum ownership, shared Turso operation ownership, and the focused config module split including `render.rs`.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- None identified.
 
 ## Open questions
 

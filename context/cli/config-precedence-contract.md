@@ -2,7 +2,7 @@
 
 ## Scope
 
-This contract documents the implemented `sce config` command behavior in `cli/src/services/config/mod.rs`, the runtime resolver in `cli/src/services/config/resolver.rs`, the canonical Pkl-authored `sce/config.json` schema artifact generated to `config/schema/sce-config.schema.json` and embedded by `cli/src/services/config/schema.rs` as `SCE_CONFIG_SCHEMA_JSON`, the typed serde DTO + mapping pipeline used for config-file parsing, and parser/dispatch wiring in `cli/src/app.rs`.
+This contract documents the implemented `sce config` command behavior in `cli/src/services/config/mod.rs`, the runtime resolver in `cli/src/services/config/resolver.rs`, the text/JSON output renderer in `cli/src/services/config/render.rs`, the canonical Pkl-authored `sce/config.json` schema artifact generated to `config/schema/sce-config.schema.json` and embedded by `cli/src/services/config/schema.rs` as `SCE_CONFIG_SCHEMA_JSON`, the typed serde DTO + mapping pipeline used for config-file parsing, and parser/dispatch wiring in `cli/src/app.rs`.
 
 The current implementation resolves flat logging keys with deterministic env-over-config precedence and source metadata, uses those resolved values in `cli/src/app.rs` / `cli/src/services/observability.rs` for runtime logging, exposes resolved-value inspection through `sce config show`, and keeps `sce config validate` focused on validation status plus errors/warnings.
 
@@ -118,5 +118,6 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `cli/src/command_surface.rs`
 - `cli/src/services/config/mod.rs`
 - `cli/src/services/config/resolver.rs`
+- `cli/src/services/config/render.rs`
 - `cli/src/services/config/schema.rs`
 - `cli/src/services/config/policy.rs`
