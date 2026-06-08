@@ -29,8 +29,6 @@ type ConversationTraceMessageUpdatedPayload = {
 	session_id: string;
 	message_id: string;
 	role: EventMessageUpdated["properties"]["info"]["role"];
-	agent: unknown;
-	summary_diffs: unknown[];
 	generated_at_unix_ms: number;
 };
 
@@ -110,9 +108,6 @@ function buildConversationTracePayload(
 		session_id: eventInfo.sessionID,
 		message_id: eventInfo.id,
 		role: eventInfo.role,
-		agent: "agent" in eventInfo ? eventInfo.agent : null,
-		summary_diffs:
-			eventInfo.role === "user" ? (eventInfo.summary?.diffs ?? []) : [],
 		generated_at_unix_ms: Date.now(),
 	};
 }

@@ -17,7 +17,6 @@ use crate::services::agent_trace::{
 use crate::services::agent_trace_db::{
     AgentTraceDb, AgentTraceInsert, DiffTraceInsert, InsertMessageInsert, InsertPartInsert,
     MessageRole, PartType, PostCommitPatchIntersectionInsert, RecentDiffTracePatches,
-    SummaryDiffItem,
 };
 use crate::services::config;
 use crate::services::observability::traits::Logger;
@@ -197,12 +196,6 @@ fn parse_message_updated_payload(
                 conversation_trace_validation_error,
             )?,
             role: parse_message_role(payload)?,
-            agent: required_non_empty_string_field(
-                payload,
-                "agent",
-                conversation_trace_validation_error,
-            )?,
-            summary_diffs: conversation_trace_required_summary_diffs(payload)?,
             generated_at_unix_ms: required_i64_millisecond_field(
                 payload,
                 "generated_at_unix_ms",
@@ -257,22 +250,6 @@ fn parse_part_type(payload: &serde_json::Map<String, Value>) -> Result<PartType>
             "field 'part_type' must be one of 'text' or 'reasoning'"
         )),
     }
-}
-
-fn conversation_trace_required_summary_diffs(
-    payload: &serde_json::Map<String, Value>,
-) -> Result<Vec<SummaryDiffItem>> {
-    let raw = required_field(
-        payload,
-        "summary_diffs",
-        conversation_trace_validation_error,
-    )?;
-
-    serde_json::from_value(raw.clone()).map_err(|_| {
-        anyhow!(conversation_trace_validation_error(
-            "field 'summary_diffs' must be an array of typed summary diff items"
-        ))
-    })
 }
 
 fn conversation_trace_validation_error(detail: &str) -> String {
@@ -1325,16 +1302,6 @@ mod tests {
             "session_id": "session-1",
             "message_id": "message-1",
             "role": "assistant",
-            "agent": "Shared Context Code",
-            "summary_diffs": [
-                {
-                    "file": "cli/src/services/hooks/mod.rs",
-                    "patch": "@@ -1 +1 @@",
-                    "additions": 2,
-                    "deletions": 1,
-                    "status": "modified"
-                }
-            ],
             "generated_at_unix_ms": 1_800_000_000_000_i64
         });
 
@@ -1348,18 +1315,7 @@ mod tests {
         assert_eq!(input.session_id, "session-1");
         assert_eq!(input.message_id, "message-1");
         assert_eq!(input.role, MessageRole::Assistant);
-        assert_eq!(input.agent, "Shared Context Code");
         assert_eq!(input.generated_at_unix_ms, 1_800_000_000_000_i64);
-        assert_eq!(
-            input.summary_diffs,
-            vec![SummaryDiffItem {
-                file: String::from("cli/src/services/hooks/mod.rs"),
-                patch: Some(String::from("@@ -1 +1 @@")),
-                additions: 2,
-                deletions: 1,
-                status: Some(String::from("modified")),
-            }]
-        );
     }
 
     #[test]

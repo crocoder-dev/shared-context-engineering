@@ -120,12 +120,12 @@ pub const INSERT_AGENT_TRACE_SQL: &str =
     "INSERT INTO agent_traces (commit_id, commit_time_ms, trace_json, agent_trace_id, url, remote_url) VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
 
 /// Parameterized SQL for inserting a message row. Duplicate
-/// `(session_id, message_id)` writes update only `summary_diffs`.
+/// `(session_id, message_id)` writes are ignored.
 #[allow(dead_code)]
 pub const INSERT_MESSAGE_SQL: &str =
-    "INSERT INTO messages (session_id, message_id, role, agent, summary_diffs, generated_at_unix_ms)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-ON CONFLICT (session_id, message_id) DO UPDATE SET summary_diffs = excluded.summary_diffs";
+    "INSERT INTO messages (session_id, message_id, role, generated_at_unix_ms)
+VALUES (?1, ?2, ?3, ?4)
+ON CONFLICT (session_id, message_id) DO NOTHING";
 
 /// Parameterized SQL for inserting a part row (append-only, no upsert).
 #[allow(dead_code)]
@@ -257,19 +257,6 @@ impl std::fmt::Display for MessageRole {
     }
 }
 
-/// One entry in a message's `summary_diffs` JSON array.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[allow(dead_code)]
-pub struct SummaryDiffItem {
-    pub file: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub patch: Option<String>,
-    pub additions: usize,
-    pub deletions: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
-}
-
 /// Message insert payload for the `messages` table.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(dead_code)]
@@ -277,8 +264,6 @@ pub struct InsertMessageInsert {
     pub session_id: String,
     pub message_id: String,
     pub role: MessageRole,
-    pub agent: String,
-    pub summary_diffs: Vec<SummaryDiffItem>,
     pub generated_at_unix_ms: i64,
 }
 
@@ -339,8 +324,7 @@ impl AgentTraceDb {
         recent_diff_trace_patches_with(self, cutoff_time_ms, end_time_ms)
     }
 
-    /// Insert a message row, updating only `summary_diffs` on duplicate
-    /// `(session_id, message_id)` rows.
+    /// Insert a message row, ignoring duplicate `(session_id, message_id)` rows.
     #[allow(dead_code)]
     pub fn insert_message(&self, input: InsertMessageInsert) -> Result<u64> {
         insert_message_with(self, input)
@@ -401,16 +385,12 @@ fn insert_agent_trace_with<M: DbSpec>(db: &TursoDb<M>, input: AgentTraceInsert<'
 
 #[allow(dead_code)]
 fn insert_message_with<M: DbSpec>(db: &TursoDb<M>, input: InsertMessageInsert) -> Result<u64> {
-    let summary_diffs_json =
-        serde_json::to_string(&input.summary_diffs).context("failed to serialize summary_diffs")?;
     db.execute(
         INSERT_MESSAGE_SQL,
         (
             input.session_id,
             input.message_id,
             input.role.to_string(),
-            input.agent,
-            summary_diffs_json,
             input.generated_at_unix_ms,
         ),
     )
