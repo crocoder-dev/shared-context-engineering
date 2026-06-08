@@ -6,8 +6,8 @@ Current runtime source: `config/lib/agent-trace-plugin/opencode-sce-agent-trace-
 
 - The plugin captures `message.updated` events for conversation-trace handoff before any diff-trace extraction.
 - The plugin also captures `message.part.updated` events for conversation-trace handoff; part events do not invoke diff-trace.
-- For every captured `message.updated` event, the plugin builds a normalized snake_case `message.updated` envelope and invokes `sce hooks conversation-trace` over STDIN JSON; the Rust hook owns value validation and AgentTraceDb persistence.
-- For every captured `message.part.updated` event, the plugin builds a normalized snake_case `message.part.updated` envelope and invokes `sce hooks conversation-trace` over STDIN JSON with the same subprocess behavior.
+- For every captured `message.updated` event, the plugin builds a typed batch envelope `{ type: "message.updated", payloads: [item] }` and invokes `sce hooks conversation-trace` over STDIN JSON before any diff-trace extraction; the item uses normalized snake_case fields and does not include its own `type` field.
+- For every captured `message.part.updated` event, the plugin builds a typed batch envelope `{ type: "message.part.updated", payloads: [item] }` and invokes `sce hooks conversation-trace` over STDIN JSON with the same subprocess behavior; the item uses normalized snake_case fields and does not include its own `type` field.
 - Existing diff-trace capture remains filtered to user messages with usable diffs.
 - When diff extraction succeeds, the plugin invokes `sce hooks diff-trace` after conversation-trace handoff and sends `{ sessionID, diff, time, model_id, tool_name, tool_version }` over STDIN JSON (`tool_name` is always `"opencode"`; `tool_version` is captured from session lifecycle events when available).
 - The plugin no longer writes diff-trace artifacts or database rows directly; the Rust `diff-trace` hook path owns AgentTraceDb insertion plus collision-safe timestamp+attempt artifact writes.
@@ -34,9 +34,9 @@ Otherwise, the helper returns `undefined`.
 
 ## Current usage boundary
 
-- `recordConversationTrace(repoRoot, event)` builds and sends the conversation-trace payload for both `message.updated` and `message.part.updated` variants; for `message.updated`, it still runs before `buildTrace`.
-- The `message.updated` conversation-trace payload maps OpenCode event fields mechanically to `type`, `session_id`, `message_id`, `role`, and `generated_at_unix_ms`; it does not emit message-level `agent` or `summary_diffs` fields and does not duplicate Rust hook validation.
-- `buildMessagePartConversationTracePayload(event)` maps `event.properties.part.sessionID`, `messageID`, `type`, and `text` into `session_id`, `message_id`, `part_type`, and `text`, and uses `Date.now()` for `generated_at_unix_ms`.
+- `recordConversationTrace(repoRoot, event)` builds and sends one-element typed batch payloads for both `message.updated` and `message.part.updated` variants; for `message.updated`, it still runs before `buildTrace`.
+- The `message.updated` conversation-trace batch maps OpenCode event fields mechanically into a `payloads[0]` item with `session_id`, `message_id`, `role`, and `generated_at_unix_ms`; it does not emit message-level `agent` or `summary_diffs` fields and does not duplicate Rust hook validation.
+- `buildMessagePartConversationTracePayload(event)` maps `event.properties.part.sessionID`, `messageID`, `type`, and `text` into a `payloads[0]` item with `session_id`, `message_id`, `part_type`, and `text`, and uses `Date.now()` for `generated_at_unix_ms`.
 - The diff extraction seam is internal to the source module and is used by `buildTrace` at runtime.
 - `buildTrace` exits early when extraction returns `undefined` (non-user role, empty diffs array, or no usable patch entries), so no diff-trace hook invocation occurs for those events.
 - The plugin tracks OpenCode client version per session ID from `session.created` / `session.updated` events and forwards it as `tool_version` when available.

@@ -20,17 +20,19 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 - `insert_agent_trace()`: domain-specific insert helper for `agent_traces` using parameterized SQL.
 - `MessageRole` enum: `User` / `Assistant` — maps to `messages.role` DB constraint.
 - `InsertMessageInsert`: owned payload struct with insertable parent `messages` columns (`session_id`, `message_id`, `role`, `generated_at_unix_ms`); message body text belongs to `parts.text`, not the parent message row.
-- `INSERT_MESSAGE_SQL`: parameterized SQL using `INSERT ... ON CONFLICT (session_id, message_id) DO NOTHING` — leverages the unique index `idx_messages_session_message` so duplicate parent-message events remain non-failing without mutating the existing row.
-- `insert_message(input)`: typed helper that executes the duplicate-ignore parent-message insert; called by `sce hooks conversation-trace` for normalized `message.updated` payloads.
+- `INSERT_MESSAGE_SQL`: parameterized single-row SQL using `INSERT ... ON CONFLICT (session_id, message_id) DO NOTHING` — leverages the unique index `idx_messages_session_message` so duplicate parent-message events remain non-failing without mutating the existing row.
+- `insert_message(input)`: typed single-row helper that executes the duplicate-ignore parent-message insert; retained as part of the adapter surface.
+- `insert_messages(inputs)`: typed batch helper that generates and executes one parameterized multi-row `messages` insert for valid conversation-trace `message.updated` batches while preserving duplicate-ignore semantics.
 - `PartType` enum: `Text` / `Reasoning` — maps to `parts.type` DB constraint.
 - `InsertPartInsert`: owned payload struct with `part_type`, `text`, `session_id`, `message_id`, and `generated_at_unix_ms`.
-- `INSERT_PART_SQL`: parameterized append-only INSERT into `parts` (no upsert; multiple rows per `(session_id, message_id)` allowed).
-- `insert_part(input)`: typed helper that inserts a part row without requiring a matching `messages` row (supports out-of-order writes); called by `sce hooks conversation-trace` for normalized `message.part.updated` payloads.
+- `INSERT_PART_SQL`: parameterized single-row append-only INSERT into `parts` (no upsert; multiple rows per `(session_id, message_id)` allowed).
+- `insert_part(input)`: typed single-row helper that inserts a part row without requiring a matching `messages` row (supports out-of-order writes); retained as part of the adapter surface.
+- `insert_parts(inputs)`: typed batch helper that generates and executes one parameterized multi-row append-only `parts` insert for valid conversation-trace `message.part.updated` batches.
 - `lifecycle.rs`: service lifecycle provider for setup/doctor integration.
 
 ## Non-goals
 
-- No read/query helper for loading messages with their joined parts exists in the current runtime; the typed write helpers (`insert_message`, `insert_part`) are the only exposed message/part API surface. Message/part query helpers are deferred to a future task.
+- No read/query helper for loading messages with their joined parts exists in the current runtime; the typed write helpers (`insert_message`, `insert_messages`, `insert_part`, `insert_parts`) are the only exposed message/part API surface. Message/part query helpers are deferred to a future task.
 - No part upsert/deduplication; `parts` uses only the internal integer `id` for row identity (append-only per the `INSERT_PART_SQL` contract).
 
 ## Database path
@@ -159,11 +161,14 @@ Post-commit intersection rows are written by the active `post-commit` hook flow,
 
 `sce hooks conversation-trace` is the current runtime writer for `messages` and `parts`.
 
-- The hook accepts only normalized snake_case STDIN envelopes with top-level `type` values `message.updated` or `message.part.updated`.
-- `message.updated` validates and maps payloads without message-level `text`, `agent`, or `summary_diffs` to `InsertMessageInsert`, then calls `AgentTraceDb::insert_message()` so repeated `(session_id, message_id)` events are ignored without failing.
-- `message.part.updated` validates and maps payloads with required part `text` to `InsertPartInsert`, then calls `AgentTraceDb::insert_part()` so parts remain append-only and do not require a pre-existing message row.
-- DB open/write failures fail the command; no `context/tmp` artifact is written for conversation traces.
-- The generated OpenCode agent-trace plugin is a runtime caller for both conversation envelope variants: `message.updated` sends a mechanically normalized payload before continuing to the existing diff-trace flow, while `message.part.updated` sends only a mechanically normalized conversation-trace payload.
+- The hook accepts only normalized snake_case typed batch STDIN envelopes: top-level `type` is `message.updated` or `message.part.updated`, and top-level `payloads` is an array of same-kind item objects.
+- `message.updated` batch items validate and map payloads without message-level `text`, `agent`, or `summary_diffs` to `InsertMessageInsert`; valid rows are inserted through one multi-row `AgentTraceDb::insert_messages(...)` call so repeated `(session_id, message_id)` events are ignored without failing.
+- `message.part.updated` batch items validate and map payloads with required part `text` to `InsertPartInsert`; valid rows are inserted through one multi-row `AgentTraceDb::insert_parts(...)` call so parts remain append-only and do not require a pre-existing message row.
+- Per-item parser validation failures are retained as skipped-item diagnostics, logged, and counted as skipped while valid sibling items remain eligible for persistence.
+- The hook opens one `AgentTraceDb` per invocation; DB open failures remain command-failing because no rows can be attempted.
+- Multi-row insert failures are logged once and count the whole valid-item batch as skipped without failing the command; the hook does not fall back to row-by-row insertion after a batch failure. Successful inserts contribute to deterministic success output counts (`attempted`, `persisted`, `skipped`). Duplicate parent message inserts preserve the existing `ON CONFLICT DO NOTHING` affected-row semantics.
+- No `context/tmp` artifact is written for conversation traces.
+- The generated OpenCode agent-trace plugin is a runtime caller for both conversation event variants and currently sends one-element typed batch envelopes for captured `message.updated` and `message.part.updated` events.
 
 ## Recent patch reads
 
