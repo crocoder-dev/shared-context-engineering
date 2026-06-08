@@ -194,7 +194,7 @@ pub struct DiffTraceInsert<'a> {
     pub time_ms: i64,
     pub session_id: &'a str,
     pub patch: &'a str,
-    pub model_id: &'a str,
+    pub model_id: Option<&'a str>,
     pub tool_name: &'a str,
     pub tool_version: Option<&'a str>,
 }
@@ -780,7 +780,7 @@ mod tests {
                 time_ms,
                 session_id,
                 patch,
-                model_id: "test-provider/test-model",
+                model_id: Some("test-provider/test-model"),
                 tool_name: "opencode",
                 tool_version: Some("1.2.3"),
             },

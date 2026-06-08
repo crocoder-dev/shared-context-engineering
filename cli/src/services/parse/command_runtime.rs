@@ -378,9 +378,7 @@ fn convert_hooks_subcommand_request(
             Ok(services::hooks::HookSubcommand::SessionModel)
         }
         cli_schema::HooksSubcommand::ConversationTrace => {
-            Ok(Box::new(services::hooks::command::HooksCommand {
-                subcommand: services::hooks::HookSubcommand::ConversationTrace,
-            }))
+            Ok(services::hooks::HookSubcommand::ConversationTrace)
         }
     }
 }

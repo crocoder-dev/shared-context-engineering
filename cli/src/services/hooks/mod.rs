@@ -70,7 +70,7 @@ struct DiffTracePayload {
     session_id: String,
     diff: String,
     time: u64,
-    model_id: String,
+    model_id: Option<String>,
     tool_name: String,
     tool_version: Option<String>,
 }
@@ -116,6 +116,7 @@ impl ConversationTracePersistenceSummary {
     }
 }
 
+#[allow(dead_code)]
 struct TraceArtifactPayload {
     trace_directory: PathBuf,
     trace_name: String,
@@ -124,10 +125,11 @@ struct TraceArtifactPayload {
 }
 
 /// Required `sce hooks diff-trace` STDIN payload shape:
-/// `{ sessionID, diff, time, model_id, tool_name, tool_version }`.
+/// `{ sessionID, diff, time, model_id?, tool_name, tool_version }`.
 ///
 /// Validation contract:
-/// - `sessionID`, `diff`, `model_id`, and `tool_name` must be non-empty strings.
+/// - `sessionID`, `diff`, and `tool_name` must be non-empty strings.
+/// - `model_id` is optional: absent or `null` → `None`, present+non-empty → `Some`, present+empty → error.
 /// - `time` must be a `u64` Unix epoch millisecond value.
 /// - `tool_version` must be present and either `null` or a non-empty string.
 pub fn run_hooks_subcommand(
@@ -553,19 +555,23 @@ fn run_diff_trace_subcommand_from_payload(
         Ok(attribution.map(|a| a.model_id))
     };
 
-    run_diff_trace_subcommand_from_payload_with(repository_root, payload, logger, resolve_model)
+    run_diff_trace_subcommand_from_payload_with(repository_root, &payload, logger, resolve_model)
 }
 
 fn run_diff_trace_subcommand_from_payload_with<R>(
     repository_root: &Path,
-    payload: DiffTracePayload,
+    payload: &DiffTracePayload,
     logger: Option<&dyn Logger>,
-    _resolve_model: R,
+    resolve_model: R,
 ) -> Result<String>
 where
     R: FnOnce(&str, &str) -> Result<Option<String>>,
 {
-    // model_id is required from the caller; no resolution needed.
+    let resolved_model_id: Option<String> = match &payload.model_id {
+        Some(id) => Some(id.clone()),
+        None => resolve_model(&payload.tool_name, &payload.session_id)?,
+    };
+
     if let Err(error) = diff_trace_db_time_ms(payload.time) {
         if let Some(log) = logger {
             log.warn(
@@ -575,8 +581,9 @@ where
             );
         }
     }
-    persist_diff_trace_payload(repository_root, &payload)?;
-    let agent_trace_db_result = persist_diff_trace_payload_to_agent_trace_db(&payload);
+    persist_diff_trace_payload(repository_root, payload)?;
+    let agent_trace_db_result =
+        persist_diff_trace_payload_to_agent_trace_db(payload, resolved_model_id.as_deref());
     let agent_trace_db_persisted = match agent_trace_db_result {
         Ok(()) => true,
         Err(error) => {
@@ -674,8 +681,7 @@ fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTracePayload> {
         required_non_empty_string_field(payload, "sessionID", diff_trace_validation_error)?;
     let diff = required_non_empty_string_field(payload, "diff", diff_trace_validation_error)?;
     let time = required_u64_millisecond_field(payload, "time", diff_trace_validation_error)?;
-    let model_id =
-        required_non_empty_string_field(payload, "model_id", diff_trace_validation_error)?;
+    let model_id = optional_string_field(payload, "model_id")?;
     let tool_name =
         required_non_empty_string_field(payload, "tool_name", diff_trace_validation_error)?;
     let tool_version = required_nullable_or_non_empty_string_field(
@@ -837,6 +843,33 @@ fn required_nullable_or_non_empty_string_field(
     Ok(Some(value.to_string()))
 }
 
+fn optional_string_field(
+    payload: &serde_json::Map<String, Value>,
+    field_name: &str,
+) -> Result<Option<String>> {
+    let Some(raw) = payload.get(field_name) else {
+        return Ok(None);
+    };
+
+    if raw.is_null() {
+        return Ok(None);
+    }
+
+    let value = raw.as_str().ok_or_else(|| {
+        anyhow!(diff_trace_validation_error(&format!(
+            "field '{field_name}' must be null, absent, or a non-empty string"
+        )))
+    })?;
+
+    if value.trim().is_empty() {
+        bail!(diff_trace_validation_error(&format!(
+            "field '{field_name}' must be null, absent, or a non-empty string"
+        )));
+    }
+
+    Ok(Some(value.to_string()))
+}
+
 fn required_non_empty_string_field(
     payload: &serde_json::Map<String, Value>,
     field_name: &str,
@@ -986,8 +1019,11 @@ fn persist_diff_trace_payload(
     )
 }
 
-fn persist_diff_trace_payload_to_agent_trace_db(payload: &DiffTracePayload) -> Result<()> {
-    persist_diff_trace_payload_to_agent_trace_db_with(payload, |input| {
+fn persist_diff_trace_payload_to_agent_trace_db(
+    payload: &DiffTracePayload,
+    model_id: Option<&str>,
+) -> Result<()> {
+    persist_diff_trace_payload_to_agent_trace_db_with(payload, model_id, |input| {
         let db = open_agent_trace_db_for_hook_runtime(
             "Failed to open Agent Trace DB for diff-trace persistence.",
         )?;
@@ -1000,6 +1036,7 @@ fn persist_diff_trace_payload_to_agent_trace_db(payload: &DiffTracePayload) -> R
 
 fn persist_diff_trace_payload_to_agent_trace_db_with<F>(
     payload: &DiffTracePayload,
+    model_id: Option<&str>,
     insert_fn: F,
 ) -> Result<()>
 where
@@ -1011,7 +1048,7 @@ where
         time_ms,
         session_id: &payload.session_id,
         patch: &payload.diff,
-        model_id: &payload.model_id,
+        model_id,
         tool_name: &payload.tool_name,
         tool_version: payload.tool_version.as_deref(),
     })

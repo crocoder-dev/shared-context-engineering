@@ -76,7 +76,7 @@ When `buildPatchConversationTracePayloads` returns `undefined` (no diff items ha
 - The diff extraction seam is internal to the source module and is used by `buildTrace` at runtime.
 - `buildTrace` exits early when extraction returns `undefined` (non-user role, empty diffs array, or no usable patch entries), so no diff-trace hook invocation occurs for those events.
 - The plugin tracks OpenCode client version per session ID from `session.created` / `session.updated` events and forwards it as `tool_version` when available.
-- When extraction succeeds, `buildTrace` forwards the extracted payload with required `tool_name="opencode"` and required `tool_version` (nullable when session version is unavailable) to `sce hooks diff-trace` via STDIN JSON; the Rust hook runtime validates required non-empty `sessionID`/`diff`/`model_id`/`tool_name`, required nullable/non-empty `tool_version`, plus required `time`, and persists the DB-backed diff-trace fields through AgentTraceDb `diff_traces` insertion.
+- When extraction succeeds, `buildTrace` forwards the extracted payload with required `tool_name="opencode"` and required `tool_version` (nullable when session version is unavailable) to `sce hooks diff-trace` via STDIN JSON; the Rust hook runtime validates required non-empty `sessionID`/`diff`/`tool_name`, optional `model_id` (absent/`null` → `None`, resolved from `session_models` when absent), required nullable/non-empty `tool_version`, plus required `time`, and persists the DB-backed diff-trace fields (including nullable `model_id`) through AgentTraceDb `diff_traces` insertion.
 
 ## Shared boundary with Claude runtime
 
