@@ -1,2 +1,4 @@
 context/** linguist-generated=true
 **/package-lock.json linguist-generated=true
+.opencode/** linguist-generated=true
+.claude/** linguist-generated=true
