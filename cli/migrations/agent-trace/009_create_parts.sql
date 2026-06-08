@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS parts (
     id INTEGER PRIMARY KEY,
-    type TEXT NOT NULL CHECK (type IN ('text', 'reasoning')),
+    type TEXT NOT NULL CHECK (type IN ('text', 'reasoning', 'patch')),
     text TEXT NOT NULL,
     message_id TEXT NOT NULL,
     session_id TEXT NOT NULL,

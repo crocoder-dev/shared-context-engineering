@@ -274,6 +274,7 @@ pub struct InsertMessageInsert {
 pub enum PartType {
     Text,
     Reasoning,
+    Patch,
 }
 
 impl std::fmt::Display for PartType {
@@ -281,6 +282,7 @@ impl std::fmt::Display for PartType {
         match self {
             Self::Text => write!(f, "text"),
             Self::Reasoning => write!(f, "reasoning"),
+            Self::Patch => write!(f, "patch"),
         }
     }
 }
