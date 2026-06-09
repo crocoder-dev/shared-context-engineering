@@ -30,7 +30,7 @@ categories = ["command-line-utilities", "development-tools"]
 anyhow = "1"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
-turso = "0.6.0"
+turso = { git = "https://github.com/tursodatabase/turso", rev = "fed0b50b8aa697f56ab015aa9e905e0f56371092" }
 clap_complete = "4"
 dirs = "6"
 hmac = "0.13"
