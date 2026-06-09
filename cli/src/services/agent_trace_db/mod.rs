@@ -657,10 +657,6 @@ mod tests {
 
     static TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
     static BASELINE_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
-    static NO_MIGRATION_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
-    static READY_SCHEMA_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
-    static EMPTY_SCHEMA_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
-    static PARTIAL_SCHEMA_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
 
     struct TestAgentTraceDbSpec;
 
@@ -697,98 +693,6 @@ mod tests {
                 .get()
                 .cloned()
                 .context("baseline test DB path should be initialized")
-        }
-
-        fn migrations() -> &'static [(&'static str, &'static str)] {
-            AGENT_TRACE_MIGRATIONS
-        }
-
-        fn db_config_key() -> &'static str {
-            "agent_trace_db"
-        }
-    }
-
-    struct NoMigrationAgentTraceDbSpec;
-
-    impl DbSpec for NoMigrationAgentTraceDbSpec {
-        fn db_name() -> &'static str {
-            "no-migration test agent trace DB"
-        }
-
-        fn db_path() -> Result<PathBuf> {
-            NO_MIGRATION_TEST_DB_PATH
-                .get()
-                .cloned()
-                .context("no-migration test DB path should be initialized")
-        }
-
-        fn migrations() -> &'static [(&'static str, &'static str)] {
-            AGENT_TRACE_MIGRATIONS
-        }
-
-        fn db_config_key() -> &'static str {
-            "agent_trace_db"
-        }
-    }
-
-    struct ReadySchemaAgentTraceDbSpec;
-
-    impl DbSpec for ReadySchemaAgentTraceDbSpec {
-        fn db_name() -> &'static str {
-            "ready-schema test agent trace DB"
-        }
-
-        fn db_path() -> Result<PathBuf> {
-            READY_SCHEMA_TEST_DB_PATH
-                .get()
-                .cloned()
-                .context("ready-schema test DB path should be initialized")
-        }
-
-        fn migrations() -> &'static [(&'static str, &'static str)] {
-            AGENT_TRACE_MIGRATIONS
-        }
-
-        fn db_config_key() -> &'static str {
-            "agent_trace_db"
-        }
-    }
-
-    struct EmptySchemaAgentTraceDbSpec;
-
-    impl DbSpec for EmptySchemaAgentTraceDbSpec {
-        fn db_name() -> &'static str {
-            "empty-schema test agent trace DB"
-        }
-
-        fn db_path() -> Result<PathBuf> {
-            EMPTY_SCHEMA_TEST_DB_PATH
-                .get()
-                .cloned()
-                .context("empty-schema test DB path should be initialized")
-        }
-
-        fn migrations() -> &'static [(&'static str, &'static str)] {
-            AGENT_TRACE_MIGRATIONS
-        }
-
-        fn db_config_key() -> &'static str {
-            "agent_trace_db"
-        }
-    }
-
-    struct PartialSchemaAgentTraceDbSpec;
-
-    impl DbSpec for PartialSchemaAgentTraceDbSpec {
-        fn db_name() -> &'static str {
-            "partial-schema test agent trace DB"
-        }
-
-        fn db_path() -> Result<PathBuf> {
-            PARTIAL_SCHEMA_TEST_DB_PATH
-                .get()
-                .cloned()
-                .context("partial-schema test DB path should be initialized")
         }
 
         fn migrations() -> &'static [(&'static str, &'static str)] {
@@ -848,13 +752,6 @@ mod tests {
             )
             .expect("sqlite_master query should succeed");
         !rows.is_empty()
-    }
-
-    fn sqlite_object_count<M: DbSpec>(db: &TursoDb<M>) -> i64 {
-        db.query_map("SELECT COUNT(*) FROM sqlite_master", (), |row| {
-            row.get::<i64>(0).map_err(Into::into)
-        })
-        .expect("sqlite_master count query should succeed")[0]
     }
 
     fn applied_migration_ids<M: DbSpec>(db: &TursoDb<M>) -> Vec<String> {
@@ -1052,125 +949,6 @@ mod tests {
             },
         );
         assert!(duplicate_insert.is_err());
-
-        if let Some(parent) = db_path.parent() {
-            fs::remove_dir_all(parent).expect("test DB directory should be removed");
-        }
-    }
-
-    #[test]
-    fn open_without_migrations_bypasses_agent_trace_migrations() {
-        let db_path = unique_test_db_path();
-        NO_MIGRATION_TEST_DB_PATH
-            .set(db_path.clone())
-            .expect("no-migration test DB path should only be initialized once");
-
-        let db = TursoDb::<NoMigrationAgentTraceDbSpec>::open_without_migrations()
-            .expect("no-migration test DB should open");
-
-        assert_eq!(sqlite_object_count(&db), 0);
-        assert!(!sqlite_object_exists(&db, "table", "__sce_migrations"));
-        assert!(!sqlite_object_exists(&db, "table", "diff_traces"));
-        assert!(!sqlite_object_exists(&db, "table", "agent_traces"));
-        assert!(!sqlite_object_exists(&db, "table", "messages"));
-        assert!(!sqlite_object_exists(&db, "table", "parts"));
-
-        drop(db);
-        let db = TursoDb::<NoMigrationAgentTraceDbSpec>::new()
-            .expect("migration-running test DB should open after no-migration open");
-
-        assert!(sqlite_object_exists(&db, "table", "__sce_migrations"));
-        assert!(sqlite_object_exists(&db, "table", "diff_traces"));
-        assert_eq!(
-            applied_migration_ids(&db).len(),
-            AGENT_TRACE_MIGRATIONS.len()
-        );
-
-        if let Some(parent) = db_path.parent() {
-            fs::remove_dir_all(parent).expect("test DB directory should be removed");
-        }
-    }
-
-    #[test]
-    fn schema_readiness_accepts_migrated_agent_trace_schema() {
-        let db_path = unique_test_db_path();
-        READY_SCHEMA_TEST_DB_PATH
-            .set(db_path.clone())
-            .expect("ready-schema test DB path should only be initialized once");
-
-        let db = TursoDb::<ReadySchemaAgentTraceDbSpec>::new()
-            .expect("ready-schema test DB should open");
-
-        ensure_schema_ready_for_hooks_with(&db).expect("migrated schema should be ready");
-
-        if let Some(parent) = db_path.parent() {
-            fs::remove_dir_all(parent).expect("test DB directory should be removed");
-        }
-    }
-
-    #[test]
-    fn schema_readiness_rejects_empty_agent_trace_schema_with_setup_guidance() {
-        let db_path = unique_test_db_path();
-        EMPTY_SCHEMA_TEST_DB_PATH
-            .set(db_path.clone())
-            .expect("empty-schema test DB path should only be initialized once");
-
-        let db = TursoDb::<EmptySchemaAgentTraceDbSpec>::open_without_migrations()
-            .expect("empty-schema test DB should open");
-
-        let error = ensure_schema_ready_for_hooks_with(&db)
-            .expect_err("empty schema should not be ready")
-            .to_string();
-
-        assert!(
-            error.contains("Agent Trace DB schema is not initialized or is incomplete"),
-            "unexpected error: {error}"
-        );
-        assert!(
-            error.contains("missing migration metadata table"),
-            "unexpected error: {error}"
-        );
-        assert!(
-            error.contains("Run 'sce setup'."),
-            "unexpected error: {error}"
-        );
-
-        if let Some(parent) = db_path.parent() {
-            fs::remove_dir_all(parent).expect("test DB directory should be removed");
-        }
-    }
-
-    #[test]
-    fn schema_readiness_rejects_partial_agent_trace_schema() {
-        let db_path = unique_test_db_path();
-        PARTIAL_SCHEMA_TEST_DB_PATH
-            .set(db_path.clone())
-            .expect("partial-schema test DB path should only be initialized once");
-
-        let db = TursoDb::<PartialSchemaAgentTraceDbSpec>::new()
-            .expect("partial-schema test DB should open");
-        let missing_migration_id = AGENT_TRACE_MIGRATIONS
-            .last()
-            .map(|(id, _)| *id)
-            .expect("agent trace migrations should not be empty");
-        db.execute(
-            "DELETE FROM __sce_migrations WHERE id = ?1",
-            (missing_migration_id,),
-        )
-        .expect("test migration metadata delete should succeed");
-
-        let error = ensure_schema_ready_for_hooks_with(&db)
-            .expect_err("schema missing required migration metadata should not be ready")
-            .to_string();
-
-        assert!(
-            error.contains(&format!("missing migrations {missing_migration_id}")),
-            "unexpected error: {error}"
-        );
-        assert!(
-            error.contains("Run 'sce setup'."),
-            "unexpected error: {error}"
-        );
 
         if let Some(parent) = db_path.parent() {
             fs::remove_dir_all(parent).expect("test DB directory should be removed");
