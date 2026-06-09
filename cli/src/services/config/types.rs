@@ -88,7 +88,6 @@ impl LogFormat {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn parse_env(raw: &str, key: &str) -> anyhow::Result<Self> {
         match raw {
             "text" => Ok(Self::Text),
@@ -122,7 +121,6 @@ impl LogFileMode {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn parse_env(raw: &str, key: &str) -> anyhow::Result<Self> {
         match raw {
             "truncate" => Ok(Self::Truncate),

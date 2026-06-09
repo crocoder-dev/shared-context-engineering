@@ -27,7 +27,6 @@ const ENCRYPTION_CIPHER_AEGIS256: &str = "aegis256";
 pub mod encryption_key;
 
 /// Service-specific Turso database configuration.
-#[allow(dead_code)]
 pub trait DbSpec {
     /// Human-readable database name used in diagnostics.
     fn db_name() -> &'static str;
@@ -306,7 +305,6 @@ impl<M: DbSpec> TursoConnectionCore<M> {
 /// Wraps a Turso connection with a tokio current-thread runtime so callers can
 /// use synchronous `execute`/`query` methods while the underlying Turso API
 /// remains async.
-#[allow(dead_code)]
 pub struct TursoDb<M: DbSpec> {
     core: TursoConnectionCore<M>,
 }
@@ -319,7 +317,6 @@ pub struct EncryptedTursoDb<M: DbSpec> {
     core: TursoConnectionCore<M>,
 }
 
-#[allow(dead_code)]
 impl<M: DbSpec> TursoDb<M> {
     /// Open or create the database at the spec-provided canonical path.
     ///
@@ -380,6 +377,7 @@ impl<M: DbSpec> TursoDb<M> {
     ///
     /// # Returns
     /// A `turso::Rows` iterator over the result set.
+    #[allow(dead_code)]
     pub fn query(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<turso::Rows> {
         self.core.query(sql, params)
     }
