@@ -55,12 +55,16 @@ This targets transient `database is locked` failures caused by hook processes ra
   - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` passed; `nix flake check` passed; `nix run .#pkl-check-generated` passed; `git diff --check` passed. A direct focused `cargo test agent_trace_db` attempt was blocked by repo bash policy in favor of `nix flake check`.
   - Notes: Added non-mutating `AgentTraceDb::ensure_schema_ready_for_hooks()` readiness checking against the canonical Agent Trace migration metadata (`__sce_migrations`) and `AGENT_TRACE_MIGRATIONS`. Missing or incomplete metadata fails with stable setup guidance (`Run 'sce setup'.`) without inspecting table/index/column objects or running migrations. Context sync classified the change as Agent Trace DB domain-local with small root architecture discoverability update.
 
-- [ ] T03: `Route all Agent Trace hooks through no-migration readiness-gated DB access` (status:todo)
+- [x] T03: `Route all Agent Trace hooks through no-migration readiness-gated DB access` (status:done)
   - Task ID: T03
   - Goal: Update `conversation-trace`, `diff-trace`, and `post-commit` Agent Trace DB access to use the no-migration open path plus schema readiness checks before runtime reads/writes.
   - Boundaries (in/out of scope): In - hook DB construction call sites, preserving existing parser/accounting/output behavior, ensuring missing-schema DB failures are command-failing where current DB open failures are command-failing. Out - changing generated OpenCode plugin behavior, changing attribution-only `commit-msg`, changing no-op `pre-commit`/`post-rewrite`.
   - Done when: No active Agent Trace hook path calls the migration-running constructor during runtime persistence; missing schema produces clear runtime guidance; normal ready-schema paths retain existing persisted data behavior.
   - Verification notes (commands or checks): Focused hook tests for `conversation-trace`, `diff-trace`, and `post-commit` cover ready-schema behavior and missing-schema failure guidance where feasible.
+  - Completed: 2026-06-09
+  - Files changed: `cli/src/services/hooks/mod.rs`, `cli/src/services/agent_trace_db/mod.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt' && nix flake check` passed.
+  - Notes: Added a shared hook-runtime Agent Trace DB opener that uses `AgentTraceDb::open_for_hooks_without_migrations()` followed by `AgentTraceDb::ensure_schema_ready_for_hooks()` before returning the DB. Routed `conversation-trace`, `diff-trace`, post-commit intersection, and post-commit Agent Trace persistence through that readiness gate. User requested removal of generated unit tests; no new tests remain from this task.
 
 - [ ] T04: `Keep setup and doctor lifecycle as schema initialization owners` (status:todo)
   - Task ID: T04

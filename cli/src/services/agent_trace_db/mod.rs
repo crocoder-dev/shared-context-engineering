@@ -307,7 +307,6 @@ impl AgentTraceDb {
     /// Setup/lifecycle initialization must continue to use [`AgentTraceDb::new`]
     /// so schema migrations remain explicitly owned by setup flows. Hook callers
     /// must verify schema readiness before reading or writing through this DB.
-    #[allow(dead_code)]
     pub fn open_for_hooks_without_migrations() -> Result<Self> {
         TursoDb::<AgentTraceDbSpec>::open_without_migrations()
     }
@@ -318,7 +317,6 @@ impl AgentTraceDb {
     /// This check is intentionally non-mutating. Missing or incomplete schema is
     /// reported with setup guidance instead of running migrations from a
     /// high-frequency hook path.
-    #[allow(dead_code)]
     pub fn ensure_schema_ready_for_hooks(&self) -> Result<()> {
         ensure_schema_ready_for_hooks_with(self)
     }

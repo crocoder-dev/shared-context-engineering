@@ -175,8 +175,9 @@ fn persist_conversation_trace_payload_to_agent_trace_db(
     payload: ConversationTracePayload,
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
-    let db = AgentTraceDb::new()
-        .context("Failed to open Agent Trace DB for conversation-trace persistence.")?;
+    let db = open_agent_trace_db_for_hook_runtime(
+        "Failed to open Agent Trace DB for conversation-trace persistence.",
+    )?;
 
     let summary = match payload {
         ConversationTracePayload::MessageUpdated(batch) => {
@@ -188,6 +189,29 @@ fn persist_conversation_trace_payload_to_agent_trace_db(
     };
 
     Ok(summary.render())
+}
+
+fn open_agent_trace_db_for_hook_runtime(context_message: &'static str) -> Result<AgentTraceDb> {
+    prepare_agent_trace_db_for_hook_runtime_with(
+        AgentTraceDb::open_for_hooks_without_migrations,
+        AgentTraceDb::ensure_schema_ready_for_hooks,
+        context_message,
+    )
+}
+
+fn prepare_agent_trace_db_for_hook_runtime_with<D, O, R>(
+    open_db: O,
+    ensure_schema_ready: R,
+    context_message: &'static str,
+) -> Result<D>
+where
+    O: FnOnce() -> Result<D>,
+    R: FnOnce(&D) -> Result<()>,
+{
+    let db = open_db().context(context_message)?;
+    ensure_schema_ready(&db).context(context_message)?;
+
+    Ok(db)
 }
 
 fn persist_message_updated_batch_to_agent_trace_db(
@@ -745,8 +769,9 @@ fn persist_diff_trace_payload(
 
 fn persist_diff_trace_payload_to_agent_trace_db(payload: &DiffTracePayload) -> Result<()> {
     persist_diff_trace_payload_to_agent_trace_db_with(payload, |input| {
-        let db = AgentTraceDb::new()
-            .context("Failed to open Agent Trace DB for diff-trace persistence.")?;
+        let db = open_agent_trace_db_for_hook_runtime(
+            "Failed to open Agent Trace DB for diff-trace persistence.",
+        )?;
         db.insert_diff_trace(input)
             .context("Failed to persist diff-trace payload to Agent Trace DB.")?;
 
@@ -969,7 +994,9 @@ fn run_post_commit_agent_trace_flow(
     vcs_type: Option<AgentTraceVcsType>,
     remote_url: &str,
 ) -> Result<AgentTrace> {
-    let db = AgentTraceDb::new().context("Failed to open Agent Trace DB for post-commit trace.")?;
+    let db = open_agent_trace_db_for_hook_runtime(
+        "Failed to open Agent Trace DB for post-commit trace.",
+    )?;
 
     run_post_commit_agent_trace_flow_with(
         flow_result,
@@ -1057,8 +1084,9 @@ const RECENT_DAYS_MILLIS: i64 = 7 * 24 * 60 * 60 * 1000;
 fn run_post_commit_intersection_flow(
     repository_root: &Path,
 ) -> Result<PostCommitIntersectionFlowResult> {
-    let db = AgentTraceDb::new()
-        .context("Failed to open Agent Trace DB for post-commit intersection.")?;
+    let db = open_agent_trace_db_for_hook_runtime(
+        "Failed to open Agent Trace DB for post-commit intersection.",
+    )?;
 
     run_post_commit_intersection_flow_with(
         repository_root,

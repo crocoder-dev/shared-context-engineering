@@ -67,7 +67,7 @@ The Agent Trace DB path is resolved from the shared default-path catalog:
 
 The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::new()` applies later Agent Trace migrations to an already-created `~/.local/state/sce/agent-trace.db`.
 
-`AgentTraceDb::open_for_hooks_without_migrations()` is the named no-migration Agent Trace open path for hook runtime code. It preserves Turso open/connect retry behavior from the shared adapter but intentionally skips `run_migrations()`, so it neither creates `__sce_migrations` nor applies Agent Trace schema SQL. Hook callers using this path must call `ensure_schema_ready_for_hooks()` before persistence; readiness is based on exact migration metadata parity with `AGENT_TRACE_MIGRATIONS`, not table/index/column introspection.
+`AgentTraceDb::open_for_hooks_without_migrations()` is the named no-migration Agent Trace open path for hook runtime code. It preserves Turso open/connect retry behavior from the shared adapter but intentionally skips `run_migrations()`, so it neither creates `__sce_migrations` nor applies Agent Trace schema SQL. Active hook callers (`conversation-trace`, `diff-trace`, and both post-commit Agent Trace DB flows) use this path and call `ensure_schema_ready_for_hooks()` before reads/writes; readiness is based on exact migration metadata parity with `AGENT_TRACE_MIGRATIONS`, not table/index/column introspection.
 
 The `diff_traces` baseline migration creates:
 
@@ -157,11 +157,11 @@ Both triggers compare `OLD.*` vs `NEW.*` for all mutable columns (excluding `upd
 
 - The hook path validates required STDIN `{ sessionID, diff, time, model_id, tool_name, tool_version }` before persistence (`tool_name` non-empty; `tool_version` present and either `null` or non-empty string) and passes parsed `model_id`, `tool_name`, and nullable `tool_version` into `DiffTraceInsert`.
 - `time` is accepted as a `u64` Unix epoch millisecond input and must fit the signed `i64` `time_ms` column before any persistence starts.
-- The hook writes the existing collision-safe `context/tmp/<timestamp>-000000-diff-trace.json` parsed-payload artifact and inserts the parsed payload fields through `AgentTraceDb::insert_diff_trace()`.
+- The hook writes the existing collision-safe `context/tmp/<timestamp>-000000-diff-trace.json` parsed-payload artifact and inserts the parsed payload fields through readiness-gated `AgentTraceDb::insert_diff_trace()`.
 - Command success requires both artifact and database persistence to succeed.
 - Existing artifact files are not backfilled into the database.
 
-Post-commit intersection rows are written by the active `post-commit` hook flow, and the same flow now also inserts built Agent Trace payloads into `agent_traces` via `AgentTraceDb::insert_agent_trace()` (see [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md)). The persisted `trace_json` is the schema-validated `build_agent_trace(...)` output and includes top-level `metadata.sce.version` from the compiled `sce` CLI package version plus `content_hash` on every emitted range. Range `content_hash` values are computed from the touched-line kind/content of the post-commit hunk that produced the persisted range, not from DB IDs, paths, line positions, or runtime metadata.
+Post-commit intersection rows are written by the active `post-commit` hook flow through readiness-gated AgentTraceDb access, and the same flow now also inserts built Agent Trace payloads into `agent_traces` via `AgentTraceDb::insert_agent_trace()` (see [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md)). The persisted `trace_json` is the schema-validated `build_agent_trace(...)` output and includes top-level `metadata.sce.version` from the compiled `sce` CLI package version plus `content_hash` on every emitted range. Range `content_hash` values are computed from the touched-line kind/content of the post-commit hunk that produced the persisted range, not from DB IDs, paths, line positions, or runtime metadata.
 
 `sce hooks conversation-trace` is the current runtime writer for `messages` and `parts`.
 
@@ -169,7 +169,7 @@ Post-commit intersection rows are written by the active `post-commit` hook flow,
 - `message.updated` batch items validate and map payloads without message-level `text`, `agent`, or `summary_diffs` to `InsertMessageInsert`; valid rows are inserted through one multi-row `AgentTraceDb::insert_messages(...)` call so repeated `(session_id, message_id)` events are ignored without failing.
 - `message.part.updated` batch items validate and map payloads with required part `text` to `InsertPartInsert`; valid rows are inserted through one multi-row `AgentTraceDb::insert_parts(...)` call so parts remain append-only and do not require a pre-existing message row.
 - Per-item parser validation failures are retained as skipped-item diagnostics, logged, and counted as skipped while valid sibling items remain eligible for persistence.
-- The hook opens one `AgentTraceDb` per invocation; DB open failures remain command-failing because no rows can be attempted.
+- The hook opens one no-migration `AgentTraceDb` per invocation and checks schema readiness before insertion; DB open or readiness failures remain command-failing because no rows can be attempted.
 - Multi-row insert failures are logged once and count the whole valid-item batch as skipped without failing the command; the hook does not fall back to row-by-row insertion after a batch failure. Successful inserts contribute to deterministic success output counts (`attempted`, `persisted`, `skipped`). Duplicate parent message inserts preserve the existing `ON CONFLICT DO NOTHING` affected-row semantics.
 - No `context/tmp` artifact is written for conversation traces.
 - The generated OpenCode agent-trace plugin is a runtime caller for both conversation event variants and currently sends one-element typed batch envelopes for captured `message.updated` and `message.part.updated` events.
