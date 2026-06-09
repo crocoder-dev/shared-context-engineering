@@ -1,0 +1,4 @@
+{
+  "filePath": "hunks/hello.ts",
+  "content": "function helloWorld(): void {\n  console.log(\"Hello World\");\n}\n\nhelloWorld();\n"
+}

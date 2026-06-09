@@ -1,6 +1,9 @@
 # OpenCode agent-trace plugin runtime
 
-Current runtime source: `config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts`.
+Current TypeScript runtime sources:
+
+- `config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts`
+- `config/lib/agent-trace-plugin/claude-sce-agent-trace-plugin.ts`
 
 ## Event capture baseline
 
@@ -84,3 +87,10 @@ When `buildPatchConversationTracePayloads` returns `undefined` (no diff items ha
 - OpenCode registration remains the generated OpenCode `opencode.json` plugin manifest; Claude registration remains generated `.claude/settings.json` command hooks that run Bun against `.claude/plugins/sce-agent-trace.ts`.
 - The shared Rust boundary is `sce hooks diff-trace`: both runtimes send `{ sessionID, diff, time, model_id, tool_name, tool_version }` over STDIN JSON, and Rust remains the only writer of parsed `context/tmp/*-diff-trace.json` artifacts and AgentTraceDb `diff_traces` rows.
 - Claude `model_id` differs from OpenCode attribution: OpenCode reads provider/model data from the OpenCode event, while Claude resolves `model_id` from AgentTraceDb `session_models` at Rust persistence time and skips `diff-trace` persistence when no matching session model row exists.
+
+## Claude derivation golden tests
+
+- `config/lib/agent-trace-plugin/claude-sce-agent-trace-plugin.test.ts` tests the exported `deriveClaudeDiffTracePayload(...)` seam only; private diff-render helpers remain unexported and untested directly.
+- The test dynamically discovers the checked-in `cli/src/services/patch/fixtures/diff_creation/` scenario directories, validates the expected eight-scenario set, then loads each `claude-post-tool-use.json` plus `expected.patch` pair.
+- Each scenario calls `deriveClaudeDiffTracePayload(...)` with fixed time/tool-version inputs and asserts derived status, session ID, time, `tool_name="claude"`, tool version, exact golden diff, and no emitted `model_id`.
+- The tests are discoverable from both `config/lib/agent-trace-plugin` and the shared `config/lib` Bun package root via `bun test`.

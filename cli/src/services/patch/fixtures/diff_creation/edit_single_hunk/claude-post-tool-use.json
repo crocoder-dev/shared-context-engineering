@@ -1,0 +1,31 @@
+{
+  "hook_event_name": "PostToolUse",
+  "session_id": "test-edit-single-hunk",
+  "tool_name": "Edit",
+  "tool_input": {
+    "file_path": "poem.md"
+  },
+  "tool_response": {
+    "structuredPatch": {
+      "hunks": [
+        {
+          "oldStart": 1,
+          "oldCount": 8,
+          "newStart": 1,
+          "newCount": 8,
+          "lines": [
+            " # Q Moment of Code",
+            " ",
+            " In circuits deep where logic flows,",
+            "-A thousand silent processes glow,",
+            "+Q thousand silent processes glow,",
+            " Through paths of thought, both near and far,",
+            " We build the world the way things are.",
+            " ",
+            " Each line we write, each function named,"
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,6 @@
+diff --git a/src/version.txt b/src/version.txt
+new file mode 100644
+--- /dev/null
++++ b/src/version.txt
+@@ -0,0 +1,1 @@
++1.0.0

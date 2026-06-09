@@ -1,0 +1,12 @@
+{
+  "hook_event_name": "PostToolUse",
+  "session_id": "test-write-create-empty",
+  "tool_name": "Write",
+  "tool_input": {
+    "file_path": "src/empty.md",
+    "content": ""
+  },
+  "tool_response": {
+    "originalFile": null
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "hook_event_name": "PostToolUse",
+  "session_id": "test-edit-only-deletions",
+  "tool_name": "Edit",
+  "tool_input": {
+    "file_path": "main.ts"
+  },
+  "tool_response": {
+    "structuredPatch": {
+      "hunks": [
+        {
+          "oldStart": 1,
+          "oldCount": 5,
+          "newStart": 1,
+          "newCount": 3,
+          "lines": [
+            {
+              "kind": "context",
+              "content": "import { foo } from \"./foo\";"
+            },
+            {
+              "kind": "context",
+              "content": "import { bar } from \"./bar\";"
+            },
+            {
+              "kind": "context",
+              "content": ""
+            },
+            {
+              "kind": "removed",
+              "content": "import { baz } from \"./baz\";"
+            },
+            {
+              "kind": "removed",
+              "content": "import { qux } from \"./qux\";"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "hook_event_name": "PostToolUse",
+  "session_id": "test-edit-only-additions",
+  "tool_name": "Edit",
+  "tool_input": {
+    "file_path": "main.ts"
+  },
+  "tool_response": {
+    "structuredPatch": {
+      "hunks": [
+        {
+          "oldStart": 1,
+          "oldCount": 3,
+          "newStart": 1,
+          "newCount": 5,
+          "lines": [
+            {
+              "kind": "context",
+              "content": "import { foo } from \"./foo\";"
+            },
+            {
+              "kind": "context",
+              "content": "import { bar } from \"./bar\";"
+            },
+            {
+              "kind": "context",
+              "content": ""
+            },
+            {
+              "kind": "added",
+              "content": "import { baz } from \"./baz\";"
+            },
+            {
+              "kind": "added",
+              "content": "import { qux } from \"./qux\";"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
