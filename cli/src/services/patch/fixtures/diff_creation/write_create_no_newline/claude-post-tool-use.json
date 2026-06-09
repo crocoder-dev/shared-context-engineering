@@ -1,0 +1,12 @@
+{
+  "hook_event_name": "PostToolUse",
+  "session_id": "test-write-create-no-newline",
+  "tool_name": "Write",
+  "tool_input": {
+    "file_path": "src/version.txt",
+    "content": "1.0.0"
+  },
+  "tool_response": {
+    "originalFile": null
+  }
+}

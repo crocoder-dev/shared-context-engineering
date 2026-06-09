@@ -53,7 +53,7 @@ Both functions wrap `serde_json::from_str`/`serde_json::from_slice` and map serd
 - **Result structure**: only files with at least one overlapping touched line appear in the result; hunks with no overlapping lines are excluded; hunk range metadata (`old_start`, `old_count`, `new_start`, `new_count`) is preserved from the second patch (`b`) so the result keeps the target patch shape, while matched-line `session_id` and hunk `model_id` provenance are inherited from the first patch (`a`) when available (and remain `None` when matched constructed provenance is absent)
 - **Determinism**: the same inputs always produce the same output
 - **Equivalent-hunk behavior**: semantically identical hunks still intersect when they differ only in surrounding context windows, hunk header ranges, or absolute-vs-relative `Index:` path spelling, as long as their touched-line identities match exactly
-- **Consumed by**: the post-commit hook runtime combines recent DB diff-trace patches and then intersects with the current commit patch (see `agent-trace-hooks-command-routing.md`). Previously listed as "not yet wired" before T04.
+- **Consumed by**: the post-commit hook runtime combines recent DB diff-trace patches and then intersects with the current commit patch (see `agent-trace-hooks-command-routing.md`).
 
 ### Combination
 
@@ -64,7 +64,7 @@ Both functions wrap `serde_json::from_str`/`serde_json::from_slice` and map serd
 - **Hunk reconstruction and provenance**: surviving lines are grouped by their hunk metadata from the last contributing patch; each reconstructed hunk preserves that winning hunk's `model_id` provenance; hunks are ordered by `old_start`; lines within each hunk are ordered by `line_number` with `Removed` before `Added` at the same position, then by `content` for full determinism
 - **File ordering**: files appear in the result in the order they are first encountered across the input patches
 - **Determinism**: the same inputs in the same order always produce the same output
-- **Consumed by**: the post-commit hook runtime combines recent DB diff-trace patches before intersecting (see `agent-trace-hooks-command-routing.md`). Previously listed as "not yet wired" before T04.
+- **Consumed by**: the post-commit hook runtime combines recent DB diff-trace patches before intersecting (see `agent-trace-hooks-command-routing.md`).
 
 ### Runtime wiring status
 
@@ -82,6 +82,11 @@ Public types consumed by the parser or load helpers have `#[allow(dead_code)]` r
 Patch reconstruction tests use deterministic fixture suites under `cli/src/services/patch/fixtures/`.
 
 - Existing suites remain intact (`average_age_reconstruction`, `hello_world_reconstruction`).
+- `diff_creation/` is the checked-in Claude diff-render golden fixture suite used by TypeScript derivation coverage. Each scenario directory has:
+  - `input.json` describing the canonical file path/content or rendered hunk inputs
+  - `expected.patch` containing the expected unified diff output
+  - `claude-post-tool-use.json` containing a sanitized synthetic Claude `PostToolUse` payload shaped for `deriveClaudeDiffTracePayload(...)`
+  - Covered scenarios: simple/empty/no-newline/multiline Write create flows and single-hunk/multi-hunk/additions-only/deletions-only Edit flows
 - The current tmp-hunks scenario is materialized as `text_file_lifecycle_reconstruction/` with:
   - `incremental_01.patch` .. `incremental_26.patch` reconstructed from `tmp_hunks/*-message.part.updated.json` in lexical filename order
   - `post_commit.patch` reconstructed from `tmp_hunks/*-post-commit.json` `input.head_patch_from_git`

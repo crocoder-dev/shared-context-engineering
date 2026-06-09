@@ -1,0 +1,12 @@
+{
+  "hook_event_name": "PostToolUse",
+  "session_id": "test-write-create-simple",
+  "tool_name": "Write",
+  "tool_input": {
+    "file_path": "hunks/hello.ts",
+    "content": "function helloWorld(): void {\n  console.log(\"Hello World\");\n}\n\nhelloWorld();\n"
+  },
+  "tool_response": {
+    "originalFile": null
+  }
+}

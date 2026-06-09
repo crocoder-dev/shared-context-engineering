@@ -1,0 +1,10 @@
+Index: main.ts
+===================================================================
+--- a/main.ts
++++ b/main.ts
+@@ -1,5 +1,3 @@
+ import { foo } from "./foo";
+ import { bar } from "./bar";
+ 
+-import { baz } from "./baz";
+-import { qux } from "./qux";
