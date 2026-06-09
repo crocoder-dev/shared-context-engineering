@@ -1,6 +1,0 @@
-{
-  "filePath": "main.ts",
-  "renderedHunks": [
-    "@@ -1,5 +1,3 @@\n import { foo } from \"./foo\";\n import { bar } from \"./bar\";\n \n-import { baz } from \"./baz\";\n-import { qux } from \"./qux\";"
-  ]
-}

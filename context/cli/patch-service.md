@@ -82,10 +82,10 @@ Public types consumed by the parser or load helpers have `#[allow(dead_code)]` r
 Patch reconstruction tests use deterministic fixture suites under `cli/src/services/patch/fixtures/`.
 
 - Existing suites remain intact (`average_age_reconstruction`, `hello_world_reconstruction`).
-- `diff_creation/` is the checked-in Claude diff-render golden fixture suite used by TypeScript derivation coverage. Each scenario directory has:
-  - `input.json` describing the canonical file path/content or rendered hunk inputs
-  - `expected.patch` containing the expected unified diff output
+- `diff_creation/` is the checked-in Claude diff-render golden fixture suite used by TypeScript derivation coverage. Each active golden scenario consumes:
   - `claude-post-tool-use.json` containing a sanitized synthetic Claude `PostToolUse` payload shaped for `deriveClaudeDiffTracePayload(...)`
+  - `expected.patch` containing the expected unified diff output
+  - No `input.json` sidecar is part of the active fixture contract for this suite.
   - Covered scenarios: simple/empty/no-newline/multiline Write create flows and single-hunk/multi-hunk/additions-only/deletions-only Edit flows
 - The current tmp-hunks scenario is materialized as `text_file_lifecycle_reconstruction/` with:
   - `incremental_01.patch` .. `incremental_26.patch` reconstructed from `tmp_hunks/*-message.part.updated.json` in lexical filename order
