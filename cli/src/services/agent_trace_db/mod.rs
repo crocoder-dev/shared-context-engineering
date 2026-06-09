@@ -299,6 +299,17 @@ pub struct InsertPartInsert {
 }
 
 impl AgentTraceDb {
+    /// Open the Agent Trace DB for high-frequency hook runtime paths without
+    /// running embedded migrations.
+    ///
+    /// Setup/lifecycle initialization must continue to use [`AgentTraceDb::new`]
+    /// so schema migrations remain explicitly owned by setup flows. Hook callers
+    /// must verify schema readiness before reading or writing through this DB.
+    #[allow(dead_code)]
+    pub fn open_for_hooks_without_migrations() -> Result<Self> {
+        TursoDb::<AgentTraceDbSpec>::open_without_migrations()
+    }
+
     /// Insert a diff trace payload into the `diff_traces` table.
     pub fn insert_diff_trace(&self, input: DiffTraceInsert<'_>) -> Result<u64> {
         insert_diff_trace_with(self, input)
@@ -568,6 +579,7 @@ mod tests {
 
     static TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
     static BASELINE_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
+    static NO_MIGRATION_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
 
     struct TestAgentTraceDbSpec;
 
@@ -604,6 +616,29 @@ mod tests {
                 .get()
                 .cloned()
                 .context("baseline test DB path should be initialized")
+        }
+
+        fn migrations() -> &'static [(&'static str, &'static str)] {
+            AGENT_TRACE_MIGRATIONS
+        }
+
+        fn db_config_key() -> &'static str {
+            "agent_trace_db"
+        }
+    }
+
+    struct NoMigrationAgentTraceDbSpec;
+
+    impl DbSpec for NoMigrationAgentTraceDbSpec {
+        fn db_name() -> &'static str {
+            "no-migration test agent trace DB"
+        }
+
+        fn db_path() -> Result<PathBuf> {
+            NO_MIGRATION_TEST_DB_PATH
+                .get()
+                .cloned()
+                .context("no-migration test DB path should be initialized")
         }
 
         fn migrations() -> &'static [(&'static str, &'static str)] {
@@ -663,6 +698,13 @@ mod tests {
             )
             .expect("sqlite_master query should succeed");
         !rows.is_empty()
+    }
+
+    fn sqlite_object_count<M: DbSpec>(db: &TursoDb<M>) -> i64 {
+        db.query_map("SELECT COUNT(*) FROM sqlite_master", (), |row| {
+            row.get::<i64>(0).map_err(Into::into)
+        })
+        .expect("sqlite_master count query should succeed")[0]
     }
 
     fn applied_migration_ids<M: DbSpec>(db: &TursoDb<M>) -> Vec<String> {
@@ -860,6 +902,39 @@ mod tests {
             },
         );
         assert!(duplicate_insert.is_err());
+
+        if let Some(parent) = db_path.parent() {
+            fs::remove_dir_all(parent).expect("test DB directory should be removed");
+        }
+    }
+
+    #[test]
+    fn open_without_migrations_bypasses_agent_trace_migrations() {
+        let db_path = unique_test_db_path();
+        NO_MIGRATION_TEST_DB_PATH
+            .set(db_path.clone())
+            .expect("no-migration test DB path should only be initialized once");
+
+        let db = TursoDb::<NoMigrationAgentTraceDbSpec>::open_without_migrations()
+            .expect("no-migration test DB should open");
+
+        assert_eq!(sqlite_object_count(&db), 0);
+        assert!(!sqlite_object_exists(&db, "table", "__sce_migrations"));
+        assert!(!sqlite_object_exists(&db, "table", "diff_traces"));
+        assert!(!sqlite_object_exists(&db, "table", "agent_traces"));
+        assert!(!sqlite_object_exists(&db, "table", "messages"));
+        assert!(!sqlite_object_exists(&db, "table", "parts"));
+
+        drop(db);
+        let db = TursoDb::<NoMigrationAgentTraceDbSpec>::new()
+            .expect("migration-running test DB should open after no-migration open");
+
+        assert!(sqlite_object_exists(&db, "table", "__sce_migrations"));
+        assert!(sqlite_object_exists(&db, "table", "diff_traces"));
+        assert_eq!(
+            applied_migration_ids(&db).len(),
+            AGENT_TRACE_MIGRATIONS.len()
+        );
 
         if let Some(parent) = db_path.parent() {
             fs::remove_dir_all(parent).expect("test DB directory should be removed");

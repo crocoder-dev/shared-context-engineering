@@ -326,6 +326,21 @@ impl<M: DbSpec> TursoDb<M> {
     /// Parent directories are created automatically. Migrations are run after
     /// the database connection is established.
     pub fn new() -> Result<Self> {
+        let db = Self::open_without_migrations()?;
+
+        db.run_migrations()
+            .with_context(|| format!("failed to run {} migrations", M::db_name()))?;
+
+        Ok(db)
+    }
+
+    /// Open or create the database at the spec-provided canonical path without
+    /// running embedded migrations.
+    ///
+    /// Parent directories are created automatically and the connection-open
+    /// retry policy is preserved. Runtime callers that use this path are
+    /// responsible for verifying schema readiness before query/write work.
+    pub fn open_without_migrations() -> Result<Self> {
         let db_name = M::db_name();
         let db_path = M::db_path().with_context(|| format!("failed to resolve {db_name} path"))?;
 
@@ -361,14 +376,9 @@ impl<M: DbSpec> TursoDb<M> {
             },
         )?;
 
-        let db = Self {
+        Ok(Self {
             core: TursoConnectionCore::new(conn, runtime),
-        };
-
-        db.run_migrations()
-            .with_context(|| format!("failed to run {db_name} migrations"))?;
-
-        Ok(db)
+        })
     }
 
     /// Execute a SQL statement that does not return rows.

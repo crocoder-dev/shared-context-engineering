@@ -10,6 +10,7 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 
 - `AgentTraceDbSpec`: `DbSpec` implementation for Agent Trace persistence.
 - `AgentTraceDb`: type alias for `TursoDb<AgentTraceDbSpec>`, inheriting shared constructor and operation retry behavior.
+- `open_for_hooks_without_migrations()`: Agent Trace-specific runtime-open API for high-frequency hook paths; opens/connects via `TursoDb::open_without_migrations()` and does not run embedded migrations.
 - `DiffTraceInsert<'a>`: insert payload with `time_ms: i64`, `session_id: &'a str`, `patch: &'a str`, `model_id: &'a str`, `tool_name: &'a str`, and nullable `tool_version: Option<&'a str>`.
 - `insert_diff_trace()`: domain-specific insert helper using parameterized SQL.
 - `RecentDiffTracePatches`: parsed recent `diff_traces` query result containing valid parsed patches plus skipped-row reports.
@@ -64,6 +65,8 @@ The Agent Trace DB path is resolved from the shared default-path catalog:
 - `014_create_parts_updated_at_trigger.sql`
 
 The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::new()` applies later Agent Trace migrations to an already-created `~/.local/state/sce/agent-trace.db`.
+
+`AgentTraceDb::open_for_hooks_without_migrations()` is the named no-migration Agent Trace open path for hook runtime code. It preserves Turso open/connect retry behavior from the shared adapter but intentionally skips `run_migrations()`, so it neither creates `__sce_migrations` nor applies Agent Trace schema SQL. Hook callers using this path must verify that required schema already exists before persistence.
 
 The `diff_traces` baseline migration creates:
 
