@@ -505,6 +505,86 @@ impl<M: DbSpec> TursoDb<M> {
     pub fn run_migrations(&self) -> Result<()> {
         self.core.run_migrations()
     }
+
+    /// Check migration metadata for problems that would prevent safe hook
+    /// runtime access.
+    ///
+    /// Returns a list of problems: missing migration metadata table,
+    /// incomplete applied migrations, or unexpected extra migrations.
+    /// An empty list means the schema is ready.
+    pub fn migration_metadata_problems(&self) -> Result<Vec<String>> {
+        let migration_table_exists = self.query_map(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__sce_migrations' LIMIT 1",
+            (),
+            |row| row.get::<String>(0).map_err(Into::into),
+        )?;
+
+        if migration_table_exists.is_empty() {
+            return Ok(vec![String::from("missing migration metadata table")]);
+        }
+
+        let applied_ids = self.query_map(
+            "SELECT id FROM __sce_migrations ORDER BY id ASC",
+            (),
+            |row| row.get::<String>(0).map_err(Into::into),
+        )?;
+        let expected_ids = M::migrations()
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        let mut problems = Vec::new();
+
+        if applied_ids.len() != expected_ids.len() {
+            problems.push(format!(
+                "expected {} applied migrations, found {}",
+                expected_ids.len(),
+                applied_ids.len()
+            ));
+        }
+
+        let missing_ids = expected_ids
+            .iter()
+            .copied()
+            .filter(|id| !applied_ids.iter().any(|applied_id| applied_id == id))
+            .collect::<Vec<_>>();
+        if !missing_ids.is_empty() {
+            problems.push(format!("missing migrations {}", missing_ids.join(", ")));
+        }
+
+        let unexpected_ids = applied_ids
+            .iter()
+            .filter(|applied_id| !expected_ids.iter().any(|id| id == &applied_id.as_str()))
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        if !unexpected_ids.is_empty() {
+            problems.push(format!(
+                "unexpected migrations {}",
+                unexpected_ids.join(", ")
+            ));
+        }
+
+        Ok(problems)
+    }
+
+    /// Verify that the database schema needed by hook runtime readers and
+    /// writers already exists.
+    ///
+    /// This check is intentionally non-mutating. Missing or incomplete schema
+    /// is reported with the provided setup guidance instead of running
+    /// migrations from a high-frequency hook path.
+    pub fn ensure_schema_ready(&self, setup_guidance: &str) -> Result<()> {
+        let problems = self.migration_metadata_problems()?;
+
+        if problems.is_empty() {
+            return Ok(());
+        }
+
+        anyhow::bail!(
+            "{} schema is not initialized or is incomplete: {}. {setup_guidance}",
+            M::db_name(),
+            problems.join(", ")
+        )
+    }
 }
 
 impl<M: DbSpec> EncryptedTursoDb<M> {
