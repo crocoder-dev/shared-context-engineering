@@ -26,16 +26,16 @@ const INSERT_MIGRATION_SQL: &str = "INSERT INTO __sce_migrations (id) VALUES (?1
 const ENCRYPTION_CIPHER_AEGIS256: &str = "aegis256";
 const CONNECTION_OPEN_RETRY_POLICY: RetryPolicy = RetryPolicy {
     max_attempts: 3,
-    timeout_ms: 5_000,
-    initial_backoff_ms: 100,
-    max_backoff_ms: 1_000,
+    timeout_ms: 1_000,
+    initial_backoff_ms: 25,
+    max_backoff_ms: 200,
 };
 const CONNECTION_OPEN_RETRY_HINT: &str = "retry after the database lock clears; if the issue persists, stop other SCE processes using this database and rerun the command";
 const QUERY_RETRY_POLICY: RetryPolicy = RetryPolicy {
     max_attempts: 3,
-    timeout_ms: 3_000,
-    initial_backoff_ms: 100,
-    max_backoff_ms: 500,
+    timeout_ms: 500,
+    initial_backoff_ms: 25,
+    max_backoff_ms: 100,
 };
 const QUERY_RETRY_HINT: &str = "retry after the database lock clears; if the issue persists, stop other SCE processes using this database and rerun the command";
 

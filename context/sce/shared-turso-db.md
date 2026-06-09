@@ -11,8 +11,8 @@
 - `TursoDb<M: DbSpec>`: generic unencrypted adapter that owns:
   - tokio current-thread runtime creation
   - Turso local database open/connect flow using `turso::Builder::new_local()` with `experimental_multiprocess_wal(true)` so concurrent `sce` processes can safely access the same local database without WAL lock contention
-  - config-driven connection-open retry around only the `build().await.connect()` block using `run_with_retry_sync` (resolved from `policies.database_retry.<db>.connection_open` via `DATABASE_RETRY_CONFIG` `OnceLock` with fallback to hardcoded defaults `3` attempts, `5s` timeout, `100ms..1000ms` backoff)
-  - config-driven operation retry for `execute()`, `query()`, and `query_map()` using `run_with_retry_sync` (resolved from `policies.database_retry.<db>.query` via the same `OnceLock` with fallback to hardcoded defaults `3` attempts, `3s` timeout, `100ms..500ms` backoff)
+  - config-driven connection-open retry around only the `build().await.connect()` block using `run_with_retry_sync` (resolved from `policies.database_retry.<db>.connection_open` via `DATABASE_RETRY_CONFIG` `OnceLock` with fallback to hardcoded defaults `3` attempts, `1s` timeout, `25ms..200ms` backoff)
+  - config-driven operation retry for `execute()`, `query()`, and `query_map()` using `run_with_retry_sync` (resolved from `policies.database_retry.<db>.query` via the same `OnceLock` with fallback to hardcoded defaults `3` attempts, `500ms` timeout, `25ms..100ms` backoff)
   - parent-directory creation
   - retry-backed synchronous `execute()`, `query()`, and row-mapping `query_map()` wrappers via the public adapter methods, with config-driven query retry resolved from `policies.database_retry.<db>.query`
   - migration-running initialization through `new()` and generic embedded migration execution through `run_migrations()` delegated to the shared internal `TursoConnectionCore<M>` with per-database `__sce_migrations` metadata
@@ -67,7 +67,7 @@ All three database wrappers (local DB, auth DB, Agent Trace DB) have lifecycle p
 
 Migrations are deliberately outside the connection-open retry block. The constructors retry only local Turso open/connect; schema changes are not retried because migration SQL must not be replayed after partial execution.
 
-`TursoDb<M>` and `EncryptedTursoDb<M>` operation methods use the same config-driven query retry policy, resolved from `policies.database_retry.<db>.query` via `DATABASE_RETRY_CONFIG` `OnceLock` with fallback to hardcoded defaults (`3` attempts, `3s` timeout, `100ms..500ms` backoff). `execute()` and `query()` convert caller parameters to owned Turso params before retry so each attempt can clone the same values. `query_map()` retries the initial query and full row-fetch loop, then runs caller-provided row mapping after retry completion so mapping failures are surfaced as logic errors and are not retried.
+`TursoDb<M>` and `EncryptedTursoDb<M>` operation methods use the same config-driven query retry policy, resolved from `policies.database_retry.<db>.query` via `DATABASE_RETRY_CONFIG` `OnceLock` with fallback to hardcoded defaults (`3` attempts, `500ms` timeout, `25ms..100ms` backoff). `execute()` and `query()` convert caller parameters to owned Turso params before retry so each attempt can clone the same values. `query_map()` retries the initial query and full row-fetch loop, then runs caller-provided row mapping after retry completion so mapping failures are surfaced as logic errors and are not retried.
 
 Existing databases created before migration metadata are upgraded by re-applying the current idempotent migration list and recording each migration ID. This lets later `sce setup` / lifecycle initialization runs apply migrations added after the database file already existed, including Agent Trace DB schema/index additions.
 
