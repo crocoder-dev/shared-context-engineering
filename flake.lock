@@ -149,17 +149,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1778776475,
-        "narHash": "sha256-uOrvQZ16TlgRFt7kiKIPMT84S07PArVdw6OWzDt7rD8=",
+        "lastModified": 1780748666,
+        "narHash": "sha256-Cga+cPuoxu2o/oMwKNXJ1DdHW5EoyRTLr9xj2hoOtaE=",
         "owner": "tursodatabase",
         "repo": "turso",
-        "rev": "c349ca43a7eb1d68854f668c23b97a2f1791d55a",
+        "rev": "fed0b50b8aa697f56ab015aa9e905e0f56371092",
         "type": "github"
       },
       "original": {
         "owner": "tursodatabase",
         "repo": "turso",
-        "rev": "c349ca43a7eb1d68854f668c23b97a2f1791d55a",
+        "rev": "fed0b50b8aa697f56ab015aa9e905e0f56371092",
         "type": "github"
       }
     }

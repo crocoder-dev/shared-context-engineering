@@ -9,7 +9,7 @@
     crane.url = "github:ipetkov/crane";
     opencode.url = "github:anomalyco/opencode/dev";
     opencode-nixpkgs.follows = "opencode/nixpkgs";
-    turso.url = "github:tursodatabase/turso/c349ca43a7eb1d68854f668c23b97a2f1791d55a";
+    turso.url = "github:tursodatabase/turso/fed0b50b8aa697f56ab015aa9e905e0f56371092";
     turso.inputs.nixpkgs.follows = "nixpkgs";
     turso.inputs.flake-utils.follows = "flake-utils";
     turso.inputs.crane.follows = "crane";
@@ -274,7 +274,7 @@
 
         tursoCargoArgs = {
           pname = "turso";
-          version = "0.6.0";
+          version = "0.7.0-pre.5";
           src = turso;
           strictDeps = true;
 
