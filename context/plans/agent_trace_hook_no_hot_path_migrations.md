@@ -44,12 +44,16 @@ This targets transient `database is locked` failures caused by hook processes ra
   - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt' && nix flake check` passed. Initial narrow `cargo test agent_trace_db` command was blocked by repo bash policy in favor of `nix flake check`.
   - Notes: Added shared `TursoDb::<M>::open_without_migrations()` plus Agent Trace-specific `AgentTraceDb::open_for_hooks_without_migrations()` for later hook routing. `TursoDb::<M>::new()` still runs migrations. Focused Agent Trace DB tests distinguish migration-running initialization from no-migration opening.
 
-- [ ] T02: `Add Agent Trace schema readiness checks` (status:todo)
+- [x] T02: `Add Agent Trace schema readiness checks` (status:done)
   - Task ID: T02
   - Goal: Add a deterministic schema readiness check for the Agent Trace DB tables/indexes required by all active Agent Trace hook writers/readers.
   - Boundaries (in/out of scope): In - readiness helper(s) for required objects such as `diff_traces`, `post_commit_patch_intersections`, `agent_traces`, `messages`, `parts`, and required indexes/columns where needed; actionable error type/message for missing schema. Out - running migrations, repairing schema, backfilling legacy DBs.
-  - Done when: The readiness check can identify an uninitialized or incomplete Agent Trace DB before hook persistence proceeds and returns a stable error with `Run 'sce setup' or 'sce doctor --fix'` style guidance.
+  - Done when: The readiness check can identify an uninitialized or incomplete Agent Trace DB before hook persistence proceeds and returns a stable error with `Run 'sce setup'` guidance.
   - Verification notes (commands or checks): Unit tests cover ready schema, empty DB, and at least one partially missing required object case.
+  - Completed: 2026-06-09
+  - Files changed: `cli/src/services/agent_trace_db/mod.rs`, `context/sce/agent-trace-db.md`, `context/architecture.md`, `context/context-map.md`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` passed; `nix flake check` passed; `nix run .#pkl-check-generated` passed; `git diff --check` passed. A direct focused `cargo test agent_trace_db` attempt was blocked by repo bash policy in favor of `nix flake check`.
+  - Notes: Added non-mutating `AgentTraceDb::ensure_schema_ready_for_hooks()` readiness checking against the canonical Agent Trace migration metadata (`__sce_migrations`) and `AGENT_TRACE_MIGRATIONS`. Missing or incomplete metadata fails with stable setup guidance (`Run 'sce setup'.`) without inspecting table/index/column objects or running migrations. Context sync classified the change as Agent Trace DB domain-local with small root architecture discoverability update.
 
 - [ ] T03: `Route all Agent Trace hooks through no-migration readiness-gated DB access` (status:todo)
   - Task ID: T03

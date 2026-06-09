@@ -93,6 +93,8 @@ const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
     ),
 ];
 
+const AGENT_TRACE_SCHEMA_SETUP_GUIDANCE: &str = "Run 'sce setup'.";
+
 /// Parameterized SQL for inserting a captured diff trace payload.
 pub const INSERT_DIFF_TRACE_SQL: &str =
     "INSERT INTO diff_traces (time_ms, session_id, patch, model_id, tool_name, tool_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
@@ -310,6 +312,17 @@ impl AgentTraceDb {
         TursoDb::<AgentTraceDbSpec>::open_without_migrations()
     }
 
+    /// Verify that the Agent Trace DB schema needed by hook runtime readers and
+    /// writers already exists.
+    ///
+    /// This check is intentionally non-mutating. Missing or incomplete schema is
+    /// reported with setup guidance instead of running migrations from a
+    /// high-frequency hook path.
+    #[allow(dead_code)]
+    pub fn ensure_schema_ready_for_hooks(&self) -> Result<()> {
+        ensure_schema_ready_for_hooks_with(self)
+    }
+
     /// Insert a diff trace payload into the `diff_traces` table.
     pub fn insert_diff_trace(&self, input: DiffTraceInsert<'_>) -> Result<u64> {
         insert_diff_trace_with(self, input)
@@ -360,6 +373,73 @@ impl AgentTraceDb {
     pub fn insert_parts(&self, inputs: Vec<InsertPartInsert>) -> Result<u64> {
         insert_parts_with(self, inputs)
     }
+}
+
+fn ensure_schema_ready_for_hooks_with<M: DbSpec>(db: &TursoDb<M>) -> Result<()> {
+    let problems = schema_migration_metadata_problems(db)?;
+
+    if problems.is_empty() {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "Agent Trace DB schema is not initialized or is incomplete: {}. {AGENT_TRACE_SCHEMA_SETUP_GUIDANCE}",
+        problems.join(", ")
+    )
+}
+
+fn schema_migration_metadata_problems<M: DbSpec>(db: &TursoDb<M>) -> Result<Vec<String>> {
+    let migration_table_exists = db.query_map(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__sce_migrations' LIMIT 1",
+        (),
+        |row| row.get::<String>(0).map_err(Into::into),
+    )?;
+
+    if migration_table_exists.is_empty() {
+        return Ok(vec![String::from("missing migration metadata table")]);
+    }
+
+    let applied_ids = db.query_map(
+        "SELECT id FROM __sce_migrations ORDER BY id ASC",
+        (),
+        |row| row.get::<String>(0).map_err(Into::into),
+    )?;
+    let expected_ids = AGENT_TRACE_MIGRATIONS
+        .iter()
+        .map(|(id, _)| *id)
+        .collect::<Vec<_>>();
+    let mut problems = Vec::new();
+
+    if applied_ids.len() != expected_ids.len() {
+        problems.push(format!(
+            "expected {} applied migrations, found {}",
+            expected_ids.len(),
+            applied_ids.len()
+        ));
+    }
+
+    let missing_ids = expected_ids
+        .iter()
+        .copied()
+        .filter(|id| !applied_ids.iter().any(|applied_id| applied_id == id))
+        .collect::<Vec<_>>();
+    if !missing_ids.is_empty() {
+        problems.push(format!("missing migrations {}", missing_ids.join(", ")));
+    }
+
+    let unexpected_ids = applied_ids
+        .iter()
+        .filter(|applied_id| !expected_ids.iter().any(|id| id == &applied_id.as_str()))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if !unexpected_ids.is_empty() {
+        problems.push(format!(
+            "unexpected migrations {}",
+            unexpected_ids.join(", ")
+        ));
+    }
+
+    Ok(problems)
 }
 
 fn insert_diff_trace_with<M: DbSpec>(db: &TursoDb<M>, input: DiffTraceInsert<'_>) -> Result<u64> {
@@ -580,6 +660,9 @@ mod tests {
     static TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
     static BASELINE_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
     static NO_MIGRATION_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
+    static READY_SCHEMA_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
+    static EMPTY_SCHEMA_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
+    static PARTIAL_SCHEMA_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
 
     struct TestAgentTraceDbSpec;
 
@@ -639,6 +722,75 @@ mod tests {
                 .get()
                 .cloned()
                 .context("no-migration test DB path should be initialized")
+        }
+
+        fn migrations() -> &'static [(&'static str, &'static str)] {
+            AGENT_TRACE_MIGRATIONS
+        }
+
+        fn db_config_key() -> &'static str {
+            "agent_trace_db"
+        }
+    }
+
+    struct ReadySchemaAgentTraceDbSpec;
+
+    impl DbSpec for ReadySchemaAgentTraceDbSpec {
+        fn db_name() -> &'static str {
+            "ready-schema test agent trace DB"
+        }
+
+        fn db_path() -> Result<PathBuf> {
+            READY_SCHEMA_TEST_DB_PATH
+                .get()
+                .cloned()
+                .context("ready-schema test DB path should be initialized")
+        }
+
+        fn migrations() -> &'static [(&'static str, &'static str)] {
+            AGENT_TRACE_MIGRATIONS
+        }
+
+        fn db_config_key() -> &'static str {
+            "agent_trace_db"
+        }
+    }
+
+    struct EmptySchemaAgentTraceDbSpec;
+
+    impl DbSpec for EmptySchemaAgentTraceDbSpec {
+        fn db_name() -> &'static str {
+            "empty-schema test agent trace DB"
+        }
+
+        fn db_path() -> Result<PathBuf> {
+            EMPTY_SCHEMA_TEST_DB_PATH
+                .get()
+                .cloned()
+                .context("empty-schema test DB path should be initialized")
+        }
+
+        fn migrations() -> &'static [(&'static str, &'static str)] {
+            AGENT_TRACE_MIGRATIONS
+        }
+
+        fn db_config_key() -> &'static str {
+            "agent_trace_db"
+        }
+    }
+
+    struct PartialSchemaAgentTraceDbSpec;
+
+    impl DbSpec for PartialSchemaAgentTraceDbSpec {
+        fn db_name() -> &'static str {
+            "partial-schema test agent trace DB"
+        }
+
+        fn db_path() -> Result<PathBuf> {
+            PARTIAL_SCHEMA_TEST_DB_PATH
+                .get()
+                .cloned()
+                .context("partial-schema test DB path should be initialized")
         }
 
         fn migrations() -> &'static [(&'static str, &'static str)] {
@@ -934,6 +1086,92 @@ mod tests {
         assert_eq!(
             applied_migration_ids(&db).len(),
             AGENT_TRACE_MIGRATIONS.len()
+        );
+
+        if let Some(parent) = db_path.parent() {
+            fs::remove_dir_all(parent).expect("test DB directory should be removed");
+        }
+    }
+
+    #[test]
+    fn schema_readiness_accepts_migrated_agent_trace_schema() {
+        let db_path = unique_test_db_path();
+        READY_SCHEMA_TEST_DB_PATH
+            .set(db_path.clone())
+            .expect("ready-schema test DB path should only be initialized once");
+
+        let db = TursoDb::<ReadySchemaAgentTraceDbSpec>::new()
+            .expect("ready-schema test DB should open");
+
+        ensure_schema_ready_for_hooks_with(&db).expect("migrated schema should be ready");
+
+        if let Some(parent) = db_path.parent() {
+            fs::remove_dir_all(parent).expect("test DB directory should be removed");
+        }
+    }
+
+    #[test]
+    fn schema_readiness_rejects_empty_agent_trace_schema_with_setup_guidance() {
+        let db_path = unique_test_db_path();
+        EMPTY_SCHEMA_TEST_DB_PATH
+            .set(db_path.clone())
+            .expect("empty-schema test DB path should only be initialized once");
+
+        let db = TursoDb::<EmptySchemaAgentTraceDbSpec>::open_without_migrations()
+            .expect("empty-schema test DB should open");
+
+        let error = ensure_schema_ready_for_hooks_with(&db)
+            .expect_err("empty schema should not be ready")
+            .to_string();
+
+        assert!(
+            error.contains("Agent Trace DB schema is not initialized or is incomplete"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.contains("missing migration metadata table"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.contains("Run 'sce setup'."),
+            "unexpected error: {error}"
+        );
+
+        if let Some(parent) = db_path.parent() {
+            fs::remove_dir_all(parent).expect("test DB directory should be removed");
+        }
+    }
+
+    #[test]
+    fn schema_readiness_rejects_partial_agent_trace_schema() {
+        let db_path = unique_test_db_path();
+        PARTIAL_SCHEMA_TEST_DB_PATH
+            .set(db_path.clone())
+            .expect("partial-schema test DB path should only be initialized once");
+
+        let db = TursoDb::<PartialSchemaAgentTraceDbSpec>::new()
+            .expect("partial-schema test DB should open");
+        let missing_migration_id = AGENT_TRACE_MIGRATIONS
+            .last()
+            .map(|(id, _)| *id)
+            .expect("agent trace migrations should not be empty");
+        db.execute(
+            "DELETE FROM __sce_migrations WHERE id = ?1",
+            (missing_migration_id,),
+        )
+        .expect("test migration metadata delete should succeed");
+
+        let error = ensure_schema_ready_for_hooks_with(&db)
+            .expect_err("schema missing required migration metadata should not be ready")
+            .to_string();
+
+        assert!(
+            error.contains(&format!("missing migrations {missing_migration_id}")),
+            "unexpected error: {error}"
+        );
+        assert!(
+            error.contains("Run 'sce setup'."),
+            "unexpected error: {error}"
         );
 
         if let Some(parent) = db_path.parent() {
