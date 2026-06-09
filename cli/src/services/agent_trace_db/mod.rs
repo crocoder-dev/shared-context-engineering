@@ -318,7 +318,7 @@ impl AgentTraceDb {
     /// reported with setup guidance instead of running migrations from a
     /// high-frequency hook path.
     pub fn ensure_schema_ready_for_hooks(&self) -> Result<()> {
-        ensure_schema_ready_for_hooks_with(self)
+        self.ensure_schema_ready(AGENT_TRACE_SCHEMA_SETUP_GUIDANCE)
     }
 
     /// Insert a diff trace payload into the `diff_traces` table.
@@ -371,73 +371,6 @@ impl AgentTraceDb {
     pub fn insert_parts(&self, inputs: Vec<InsertPartInsert>) -> Result<u64> {
         insert_parts_with(self, inputs)
     }
-}
-
-fn ensure_schema_ready_for_hooks_with<M: DbSpec>(db: &TursoDb<M>) -> Result<()> {
-    let problems = schema_migration_metadata_problems(db)?;
-
-    if problems.is_empty() {
-        return Ok(());
-    }
-
-    anyhow::bail!(
-        "Agent Trace DB schema is not initialized or is incomplete: {}. {AGENT_TRACE_SCHEMA_SETUP_GUIDANCE}",
-        problems.join(", ")
-    )
-}
-
-fn schema_migration_metadata_problems<M: DbSpec>(db: &TursoDb<M>) -> Result<Vec<String>> {
-    let migration_table_exists = db.query_map(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__sce_migrations' LIMIT 1",
-        (),
-        |row| row.get::<String>(0).map_err(Into::into),
-    )?;
-
-    if migration_table_exists.is_empty() {
-        return Ok(vec![String::from("missing migration metadata table")]);
-    }
-
-    let applied_ids = db.query_map(
-        "SELECT id FROM __sce_migrations ORDER BY id ASC",
-        (),
-        |row| row.get::<String>(0).map_err(Into::into),
-    )?;
-    let expected_ids = AGENT_TRACE_MIGRATIONS
-        .iter()
-        .map(|(id, _)| *id)
-        .collect::<Vec<_>>();
-    let mut problems = Vec::new();
-
-    if applied_ids.len() != expected_ids.len() {
-        problems.push(format!(
-            "expected {} applied migrations, found {}",
-            expected_ids.len(),
-            applied_ids.len()
-        ));
-    }
-
-    let missing_ids = expected_ids
-        .iter()
-        .copied()
-        .filter(|id| !applied_ids.iter().any(|applied_id| applied_id == id))
-        .collect::<Vec<_>>();
-    if !missing_ids.is_empty() {
-        problems.push(format!("missing migrations {}", missing_ids.join(", ")));
-    }
-
-    let unexpected_ids = applied_ids
-        .iter()
-        .filter(|applied_id| !expected_ids.iter().any(|id| id == &applied_id.as_str()))
-        .map(String::as_str)
-        .collect::<Vec<_>>();
-    if !unexpected_ids.is_empty() {
-        problems.push(format!(
-            "unexpected migrations {}",
-            unexpected_ids.join(", ")
-        ));
-    }
-
-    Ok(problems)
 }
 
 fn insert_diff_trace_with<M: DbSpec>(db: &TursoDb<M>, input: DiffTraceInsert<'_>) -> Result<u64> {
