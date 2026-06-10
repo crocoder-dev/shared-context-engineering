@@ -711,7 +711,6 @@ export async function runClaudeHookRuntime(
 		return;
 	}
 
-	// For PostToolUse, attempt best-effort diff-trace forwarding
 	if (eventName !== "PostToolUse") {
 		return;
 	}
