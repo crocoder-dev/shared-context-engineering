@@ -6,6 +6,7 @@
 //! is Claude `PostToolUse` payloads for `Write` creates and `Edit` structured
 //! patches.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -41,6 +42,43 @@ pub enum ClaudeStructuredPatchSkipReason {
     MissingFileContent,
     UnsupportedEditPayload,
     MissingSessionId,
+}
+
+impl fmt::Display for ClaudeStructuredPatchSkipReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ClaudeStructuredPatchSkipReason::UnsupportedEvent => {
+                write!(f, "unsupported Claude hook event")
+            }
+            ClaudeStructuredPatchSkipReason::EventWithoutDiffTrace => {
+                write!(f, "Claude event does not carry a diff trace")
+            }
+            ClaudeStructuredPatchSkipReason::InvalidPayload => {
+                write!(f, "invalid Claude structured payload")
+            }
+            ClaudeStructuredPatchSkipReason::EventNameMismatch => {
+                write!(f, "Claude payload event name mismatch")
+            }
+            ClaudeStructuredPatchSkipReason::UnsupportedTool => {
+                write!(f, "unsupported Claude tool")
+            }
+            ClaudeStructuredPatchSkipReason::UnsupportedWritePayload => {
+                write!(f, "unsupported Claude Write payload")
+            }
+            ClaudeStructuredPatchSkipReason::MissingFilePath => {
+                write!(f, "missing file path in Claude structured payload")
+            }
+            ClaudeStructuredPatchSkipReason::MissingFileContent => {
+                write!(f, "missing file content in Claude structured payload")
+            }
+            ClaudeStructuredPatchSkipReason::UnsupportedEditPayload => {
+                write!(f, "unsupported Claude Edit payload")
+            }
+            ClaudeStructuredPatchSkipReason::MissingSessionId => {
+                write!(f, "missing session_id in Claude structured payload")
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -22,7 +22,9 @@
 
 ## Runtime wiring status
 
-The module is wired into `sce hooks diff-trace` for Claude payload classification at intake (T04): when `hook_event_name` is present and the event is a supported `PostToolUse` (`Write` create or `Edit` structured patch), the raw JSON is persisted as a `structured` payload type in `diff_traces` without conversion to unified-diff text. Unsupported Claude events (non-`PostToolUse`, unsupported tools) produce deterministic no-op results. OpenCode normalized payloads continue to be stored as `patch` payloads unchanged. Post-commit parsing dispatch through `structured_patch.rs` is planned in T05.
+The module is wired into `sce hooks diff-trace` for Claude payload classification at intake (T04): when `hook_event_name` is present and the event is a supported `PostToolUse` (`Write` create or `Edit` structured patch), the raw JSON is persisted as a `structured` payload type in `diff_traces` without conversion to unified-diff text. Unsupported Claude events (non-`PostToolUse`, unsupported tools) produce deterministic no-op results. OpenCode normalized payloads continue to be stored as `patch` payloads unchanged.
+
+Post-commit parsing dispatch through `structured_patch.rs` is implemented (T05): `AgentTraceDb::recent_diff_trace_patches` now reads `payload_type` from each `diff_traces` row and dispatches `patch` rows through existing `parse_patch` while dispatching `structured` rows through `derive_claude_structured_patch` at read time, producing `ParsedPatch` for both paths before hunk `model_id` injection and downstream combine/intersect operations.
 
 ## Test status
 

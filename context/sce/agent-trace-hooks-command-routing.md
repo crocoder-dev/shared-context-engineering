@@ -41,7 +41,8 @@
   - Missing or incomplete Agent Trace DB schema is a command-failing runtime error with `Run 'sce setup'.` guidance; hook runtime does not run migrations as a fallback.
   - Captures the current commit's patch from git using `capture_post_commit_patch_from_git()`.
   - Queries recent `diff_traces` patches from the past 7 days via `AgentTraceDb::recent_diff_trace_patches()`.
-  - Recent-row patch parsing carries nullable row `model_id` into each produced `PatchHunk`, so combined/intersection patch inputs retain per-hunk model provenance for downstream Agent Trace attribution building.
+  - Recent-row parsing dispatches on `payload_type`: `patch` rows parse through existing `parse_patch`, while `structured` rows parse stored JSON through `structured_patch::derive_claude_structured_patch` at read time to produce `ParsedPatch`.
+  - Parsed `PatchHunk` entries carry nullable row `model_id` for both paths, so combined/intersection patch inputs retain per-hunk model provenance for downstream Agent Trace attribution building.
   - Combines valid recent patches in chronological order via `patch::combine_patches`.
   - Intersects the combined recent patch with the post-commit patch via `patch::intersect_patches`.
   - Persists the serialized intersection result to `post_commit_patch_intersections` table with commit metadata (OID, timestamp), window bounds (cutoff_ms, end_ms), and loaded/skipped counts.

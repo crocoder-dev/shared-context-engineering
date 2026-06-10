@@ -206,8 +206,9 @@ The `sce hooks session-model` command route writes normalized session-model attr
 
 - SQL reads `id`, `time_ms`, `session_id`, `patch`, nullable `model_id` + `tool_name` + `tool_version`, and `payload_type` from `diff_traces` where `time_ms >= cutoff_time_ms AND time_ms <= end_time_ms`.
 - Rows are ordered by `time_ms ASC, id ASC` for deterministic chronological processing.
-- Valid row patches are parsed through `cli/src/services/patch.rs` `parse_patch`, then each produced `PatchHunk` is annotated with the originating row `model_id` (`Some(value)` propagated verbatim, `NULL` propagated as `None`); parsed row records also carry nullable `tool_name`/`tool_version` and `payload_type` from the same source row and are returned as `ParsedDiffTracePatch` records.
-- Malformed recent row patches are returned as `SkippedDiffTracePatch` records with deterministic parse-error reasons; malformed historical rows do not fail the operation.
+- Valid row patches are parsed through `cli/src/services/patch.rs` `parse_patch` for `payload_type="patch"` rows (OpenCode unified-diff payloads), while `payload_type="structured"` rows (Claude `PostToolUse` structured payloads) are parsed from stored JSON through `cli/src/services/structured_patch.rs` `derive_claude_structured_patch` at read time to produce `ParsedPatch` without pre-rendered unified-diff text.
+- Each produced `PatchHunk` is annotated with the originating row `model_id` (`Some(value)` propagated verbatim, `NULL` propagated as `None`) for both patch and structured paths; parsed row records also carry nullable `tool_name`/`tool_version` and `payload_type` from the same source row and are returned as `ParsedDiffTracePatch` records.
+- Malformed recent row patches (invalid unified-diff text, invalid structured JSON, unsupported payload types, or unsupported Claude structured payloads) are returned as `SkippedDiffTracePatch` records with deterministic parse-error or derivation-skip reasons; malformed historical rows do not fail the operation.
 - `RecentDiffTracePatches::loaded_count()` and `skipped_count()` expose accounting for later hook output and persistence metadata.
 
 See also: [shared-turso-db.md](shared-turso-db.md), [local-db.md](local-db.md), [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md), [context-map.md](../context-map.md)

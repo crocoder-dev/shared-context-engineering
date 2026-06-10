@@ -9,7 +9,10 @@ use crate::services::{
     db::{DbSpec, TursoDb},
     default_paths::agent_trace_db_path,
     patch::{parse_patch, ParseError, ParsedPatch},
+    structured_patch::{derive_claude_structured_patch, ClaudeStructuredPatchDerivationResult},
 };
+
+use serde_json::Value;
 
 pub mod lifecycle;
 
@@ -676,7 +679,27 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
     let mut skipped = Vec::new();
 
     for row in rows {
-        match parse_patch(&row.patch, Some(row.session_id.as_str())) {
+        let parse_result = match row.payload_type.as_str() {
+            PAYLOAD_TYPE_PATCH => parse_patch(&row.patch, Some(row.session_id.as_str()))
+                .map_err(|error| skipped_diff_trace_patch_reason(&error)),
+            PAYLOAD_TYPE_STRUCTURED => match serde_json::from_str::<Value>(&row.patch) {
+                Ok(payload) => match derive_claude_structured_patch(
+                    "PostToolUse",
+                    &payload,
+                    u64::try_from(row.time_ms).expect("diff trace time_ms should be non-negative"),
+                    row.tool_version.as_deref(),
+                ) {
+                    ClaudeStructuredPatchDerivationResult::Derived(derived) => Ok(derived.patch),
+                    ClaudeStructuredPatchDerivationResult::Skipped(reason) => {
+                        Err(reason.to_string())
+                    }
+                },
+                Err(error) => Err(format!("invalid structured payload JSON: {error}")),
+            },
+            other => Err(format!("unsupported diff-trace payload_type: {other}")),
+        };
+
+        match parse_result {
             Ok(mut patch) => {
                 for file in &mut patch.files {
                     for hunk in &mut file.hunks {
@@ -694,11 +717,11 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
                     payload_type: row.payload_type,
                 });
             }
-            Err(error) => skipped.push(SkippedDiffTracePatch {
+            Err(reason) => skipped.push(SkippedDiffTracePatch {
                 id: row.id,
                 time_ms: row.time_ms,
                 session_id: row.session_id,
-                reason: skipped_diff_trace_patch_reason(&error),
+                reason,
             }),
         }
     }
