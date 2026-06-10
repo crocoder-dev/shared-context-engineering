@@ -101,20 +101,65 @@ Planning interpretation: the last nine commits created and then refined a Claude
    - Verification notes (commands or checks): Run `nix run .#pkl-check-generated`; run the relevant config-lib checks only if package/test manifests changed, otherwise rely on T09 full validation.
    - Completion evidence (2026-06-10): Deleted `config/lib/agent-trace-plugin/claude-sce-agent-trace-plugin.ts` (canonical source), `config/lib/agent-trace-plugin/claude-sce-agent-trace-plugin.test.ts` (Bun test), `config/.claude/plugins/sce-agent-trace.ts` (generated), and `.claude/plugins/sce-agent-trace.ts` (root copy). Removed Claude plugin source read and output mapping from `config/pkl/generate.pkl`. Updated root `.claude/settings.json` to direct `sce hooks session-model` / `sce hooks diff-trace` commands. Regenerated outputs. `nix run .#pkl-check-generated` (generated outputs up to date), `nix flake check` (all 7 checks passed: cli-tests, cli-clippy, cli-fmt, config-lib-bun-tests, config-lib-biome-check, config-lib-biome-format, pkl-parity).
 
-- [ ] T08: `Sync current-state context for Rust-owned Claude tracing` (status:todo)
+- [x] T08: `Sync current-state context for Rust-owned Claude tracing` (status:done)
   - Task ID: T08
   - Goal: Update durable context to describe the new Rust-owned Claude derivation boundary and removal of Claude TypeScript plugin runtime.
   - Boundaries (in/out of scope): In - focused updates to `context/sce/opencode-agent-trace-plugin-runtime.md`, `context/sce/agent-trace-hooks-command-routing.md`, `context/cli/patch-service.md`, `context/context-map.md`, `context/overview.md`, and glossary/architecture entries if needed. Out - historical narration beyond current-state facts, unrelated context cleanup.
   - Done when: Context says OpenCode still uses TypeScript normalized diff traces, diff-trace storage uses typed source payloads, Claude settings call `sce hooks` directly, Rust derives Claude structured patches during post-commit processing, and golden tests are Rust-owned.
   - Verification notes (commands or checks): Review context references for stale `.claude/plugins/sce-agent-trace.ts`, Claude TypeScript golden test, and shared TypeScript-runtime-to-Rust boundary claims.
+  - Completion evidence (2026-06-10): Updated `context/sce/opencode-agent-trace-plugin-runtime.md` (removed stale Claude TypeScript source listing, updated golden tests section), `context/overview.md` (replaced Claude Bun-runtime paragraph with direct-command-hook description, fixed stale "until T05" qualifier), `context/architecture.md` (fixed stale "until T05" qualifier), `context/glossary.md` (fixed stale "until T05" qualifier), `context/sce/claude-raw-hook-capture.md` (updated "Current state" to reflect direct `sce hooks` boundary and former TypeScript runtime removal). Confirmed zero remaining stale references via targeted search. `nix run .#pkl-check-generated` passed.
 
-- [ ] T09: `Validate and clean up Claude Rust diff-trace migration` (status:todo)
+- [x] T09: `Validate and clean up Claude Rust diff-trace migration` (status:done)
   - Task ID: T09
   - Goal: Run final validation, remove temporary scaffolding, and record plan completion evidence.
   - Boundaries (in/out of scope): In - full repo validation, generated-output parity, checking for stale Claude TypeScript references, updating this plan with validation evidence. Out - new feature work or unrelated refactors discovered during validation.
   - Done when: `nix run .#pkl-check-generated` and `nix flake check` pass; no stale Claude plugin TypeScript files/references remain except intentional historical references; plan status/evidence is updated.
   - Verification notes (commands or checks): `nix run .#pkl-check-generated`; `nix flake check`; targeted search for `.claude/plugins/sce-agent-trace.ts`, `deriveClaudeDiffTracePayload`, and Claude TypeScript golden-test references; targeted search/review that Claude structured payload rows are not rendered into patchsets before persistence.
+  - Completion evidence (2026-06-10):
+    - **`nix run .#pkl-check-generated`**: passed (generated outputs up to date)
+    - **`nix flake check`**: all 4 checks passed (cli-tests, cli-clippy, cli-fmt, pkl-parity)
+    - **Stale file check**: `config/.claude/plugins/` and `.claude/plugins/` directories do not exist; only `opencode-sce-agent-trace-plugin.ts` remains in `config/lib/agent-trace-plugin/`
+    - **Settings.json**: `config/.claude/settings.json` calls `sce hooks session-model` and `sce hooks diff-trace` directly (no agent-trace plugin or Bun invocations)
+    - **Structured payload contract (code review confirmed)**:
+      - Claude `PostToolUse` payloads stored as raw JSON with `payload_type="structured"` at `diff-trace` intake (`cli/src/services/hooks/mod.rs` line 352: `diff: stdin_payload.to_string()`)
+      - Post-commit read-time dispatch: `payload_type="structured"` rows parse stored JSON through `derive_claude_structured_patch` (`cli/src/services/agent_trace_db/mod.rs` lines 437-443)
+    - **Temporary scaffolding**: none found; `PAYLOAD_TYPE_STRUCTURED` is properly active (no `#[allow(dead_code)]`); `structured_patch.rs` has no file-level `#![allow(dead_code)]`; no plan-specific TODOs in Rust code
 
 ## Open questions
 
 - None blocking. User clarified that Claude derivation should happen fully in Rust, Claude TypeScript should be removed, OpenCode TypeScript should remain, generated Claude settings should call `sce hooks` directly, and AgentTraceDb should persist generic typed source payloads so Claude structured payloads are converted to `ParsedPatch` during post-commit processing rather than insert-time patchset rendering.
+
+---
+
+## Validation Report
+
+### Commands run
+
+| Command | Exit code | Result |
+|---------|-----------|--------|
+| `nix run .#pkl-check-generated` | 0 | Generated outputs are up to date |
+| `nix flake check` | 0 | All 4 checks passed: cli-tests, cli-clippy, cli-fmt, pkl-parity |
+
+### Temporary scaffolding
+
+None found. `PAYLOAD_TYPE_STRUCTURED` is properly active (no `#[allow(dead_code)]`); `structured_patch.rs` has no file-level `#![allow(dead_code)]`; no plan-specific TODOs in Rust source.
+
+### Success-criteria verification
+
+- [x] **Generated Claude settings call `sce hooks` directly**: `config/.claude/settings.json` uses `"sce"` command with `"hooks" "session-model"` and `"hooks" "diff-trace"` args; no Bun or `.claude/plugins/sce-agent-trace.ts` references. File verified on disk.
+
+- [x] **AgentTraceDb typed payload storage**: `PAYLOAD_TYPE_PATCH` (`"patch"`) and `PAYLOAD_TYPE_STRUCTURED` (`"structured"`) constants at `cli/src/services/agent_trace_db/mod.rs:73-74`; migration `009_add_diff_traces_payload_type.sql` added `payload_type TEXT NOT NULL DEFAULT 'patch'` column. Code review confirmed.
+
+- [x] **Claude structured payloads stored as raw JSON, derived at post-commit read time**: Intake path (`cli/src/services/hooks/mod.rs:352`) stores `stdin_payload.to_string()` with `payload_type="structured"`. Post-commit read path (`cli/src/services/agent_trace_db/mod.rs:437-443`) dispatches `"structured"` rows through `derive_claude_structured_patch` at read time. Code review confirmed.
+
+- [x] **OpenCode normalized payloads unchanged**: Continue as `payload_type="patch"` through existing flat-payload validation and `parse_patch` processing. Code review confirmed.
+
+- [x] **Claude TypeScript removed**: `config/lib/agent-trace-plugin/claude-sce-agent-trace-plugin.ts` (canonical source) deleted; `config/.claude/plugins/` directory does not exist; `.claude/plugins/` directory does not exist; only `opencode-sce-agent-trace-plugin.ts` remains. File system verified.
+
+- [x] **Golden fixture coverage lives in Rust**: `cli/src/services/structured_patch/tests.rs` (`claude_derivation_golden_tests`) validates all eight `diff_creation/` scenarios against `derive_claude_structured_patch`. Context docs confirmed.
+
+- [x] **Generated output parity and full repo validation pass**: `nix run .#pkl-check-generated` exit 0; `nix flake check` exit 0 (all 4 checks green).
+
+### Residual risks
+
+None identified. All plan success criteria met with concrete evidence.

@@ -23,8 +23,9 @@ The generated Claude TypeScript runtime at `config/.claude/plugins/sce-agent-tra
 
 ## Current state
 
-- The Claude TypeScript runtime sends only normalized `session-model` (for `SessionStart` model attribution) and `diff-trace` (for supported `PostToolUse` file-change payloads) payloads to Rust.
-- Rust owns normalized persistence: `session-model` upserts into `session_models`, `diff-trace` writes parsed-payload artifacts under `context/tmp/*-diff-trace.json` and inserts into `diff_traces`.
+- Claude settings call `sce hooks` directly via generated `.claude/settings.json` command hooks: `SessionStart` pipes raw hook event JSON to `sce hooks session-model`, matched `PostToolUse Write|Edit|MultiEdit|NotebookEdit` pipes raw hook event JSON to `sce hooks diff-trace`. Rust handles extraction, validation, and persistence without a TypeScript intermediary.
+- The former Claude TypeScript runtime at `config/.claude/plugins/sce-agent-trace.ts` was removed in T07 of the `claude-rust-diff-trace` plan.
+- Rust owns normalized persistence: `session-model` upserts into `session_models`, `diff-trace` inserts into `diff_traces` with `payload_type` classification (`"patch"` for OpenCode, `"structured"` for Claude).
 - Claude `diff-trace` `model_id` is resolved from `session_models` at persistence time; OpenCode sends `model_id` directly.
 - No raw Claude hook payload artifacts are written by TypeScript or Rust.
 
