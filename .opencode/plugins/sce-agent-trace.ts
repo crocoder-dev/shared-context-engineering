@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import type { Hooks, Plugin } from "@opencode-ai/plugin";
 
 import type { Hooks, Plugin } from "@opencode-ai/plugin";
 
