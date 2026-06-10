@@ -1,9 +1,10 @@
 # OpenCode agent-trace plugin runtime
 
-Current TypeScript runtime sources:
+Current TypeScript runtime source:
 
 - `config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts`
-- `config/lib/agent-trace-plugin/claude-sce-agent-trace-plugin.ts`
+
+The Claude TypeScript agent-trace runtime was removed in T07 of the `claude-rust-diff-trace` plan. Claude now routes through generated `.claude/settings.json` command hooks that call `sce hooks` directly with raw hook event JSON on STDIN; Rust handles extraction, validation, and persistence without a TypeScript intermediary.
 
 ## Event capture baseline
 
@@ -95,4 +96,4 @@ When `buildPatchConversationTracePayloads` returns `undefined` (no diff items ha
 - Rust golden tests in `cli/src/services/structured_patch/tests.rs` (`claude_derivation_golden_tests`) own the Claude derivation fixture coverage.
 - The test dynamically discovers the checked-in `cli/src/services/structured_patch/fixtures/` scenario directories, validates the expected eight-scenario set, then loads each `claude-post-tool-use.json` plus `expected.patch` pair.
 - Each scenario calls `derive_claude_structured_patch(...)` with fixed time/tool-version inputs and asserts derived status, session ID, time, `tool_name="claude"`, tool version, exact golden diff parsed via `parse_patch`, and no emitted `model_id`.
-- The TypeScript `deriveClaudeDiffTracePayload(...)` seam and its Bun test remain present until T05 removes the Claude TypeScript plugin source.
+- The former TypeScript `deriveClaudeDiffTracePayload(...)` seam and its Bun test were removed in T07 when the Claude TypeScript plugin source was deleted.

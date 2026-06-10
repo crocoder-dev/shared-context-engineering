@@ -37,7 +37,7 @@ Current target renderer helper modules:
 - `config/pkl/generate.pkl` (single multi-file generation entrypoint)
 - `config/pkl/check-generated.sh` (dev-shell integration stale-output detection against committed generated files)
 - `nix flake check` / `checks.<system>.{cli-tests,cli-clippy,cli-fmt,integrations-install-tests,integrations-install-clippy,integrations-install-fmt,pkl-parity,npm-bun-tests,npm-biome-check,npm-biome-format,config-lib-bun-tests,config-lib-biome-check,config-lib-biome-format}` (root-flake check derivations for the current CLI, `integrations/install` runner, generated-output parity, and JS validation inventory)
-- `config-lib-bun-tests` executes from `config/lib/` while using a repo-shaped copied source subset that also includes `cli/src/services/structured_patch/fixtures` for Claude agent-trace golden fixture coverage (Rust-owned since T02; the TypeScript Bun test remains present until T05).
+- `config-lib-bun-tests` executes from `config/lib/` while using a repo-shaped copied source subset that also includes `cli/src/services/structured_patch/fixtures` for Claude agent-trace golden fixture coverage (fully Rust-owned; the Claude TypeScript Bun test was removed in T07).
 
 The scaffold provides stable canonical content-unit identifiers and reusable target-agnostic text primitives for all planned authored generated classes (agents, commands, skills, shared runtime assets, OpenCode plugin entrypoints, generated Claude plugin entrypoints, generated OpenCode package manifests, and generated Claude project settings).
 
