@@ -85,12 +85,13 @@ Planning interpretation: the last nine commits created and then refined a Claude
   - Verification notes (commands or checks): Run focused post-commit/hooks tests through Nix, for example `nix develop -c sh -c 'cd cli && cargo test post_commit'` or the narrowest matching selector once test names are known.
   - Completion evidence (2026-06-10): Modified `parse_recent_diff_trace_patch_rows` in `agent_trace_db/mod.rs` to dispatch on `payload_type`: `patch` rows use existing `parse_patch`, `structured` rows parse stored JSON and derive `ParsedPatch` via `derive_claude_structured_patch` at read time, other payload types are skipped deterministically. Added `Display` impl for `ClaudeStructuredPatchSkipReason` in `structured_patch.rs`. `nix flake check` passed (all 4 checks green). `nix run .#pkl-check-generated` passed.
 
-- [ ] T06: `Render Claude settings with direct sce hook commands` (status:todo)
+- [x] T06: `Render Claude settings with direct sce hook commands` (status:done)
   - Task ID: T06
   - Goal: Update canonical Pkl-generated Claude settings so Claude invokes `sce hooks session-model` and `sce hooks diff-trace` directly instead of running Bun against `.claude/plugins/sce-agent-trace.ts`.
   - Boundaries (in/out of scope): In - `config/pkl/renderers/claude-content.pkl` settings command definitions and regenerated `config/.claude/settings.json` / repo-root `.claude/settings.json` outputs. Out - OpenCode renderer/plugin registration, agent/skill content changes unrelated to settings, manual edits to generated outputs without source updates.
   - Done when: Generated Claude settings contain no `.claude/plugins/sce-agent-trace.ts` or `bun` hook invocation for agent tracing, and route `SessionStart` to `sce hooks session-model` while routing matched `PostToolUse` to `sce hooks diff-trace` with Claude hook payload on STDIN according to Claude hook command behavior.
   - Verification notes (commands or checks): Run `nix develop -c pkl eval -m . config/pkl/generate.pkl` after source edits, then `nix run .#pkl-check-generated`.
+  - Completion evidence (2026-06-10): Replaced `claude-content.pkl` settings block: `SessionStart` routes to `sce hooks session-model`, `PostToolUse Write|Edit|MultiEdit|NotebookEdit` routes to `sce hooks diff-trace`, removed `UserPromptSubmit`/`Stop` hooks. Added `parse_claude_session_model_payload` to `cli/src/services/hooks/mod.rs` so the Rust `session-model` intake handles raw Claude `SessionStart` payloads (extracts `session_id`/`model_id`/`time`/`tool_version`, normalizes `model_id` with `claude/` prefix). Regenerated `config/.claude/settings.json`. `nix flake check` passed (all 4 checks green). `nix run .#pkl-check-generated` passed.
 
 - [ ] T07: `Remove Claude TypeScript plugin source and generated outputs` (status:todo)
   - Task ID: T07

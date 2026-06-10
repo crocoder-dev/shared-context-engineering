@@ -83,10 +83,12 @@ When `buildPatchConversationTracePayloads` returns `undefined` (no diff items ha
 
 ## Shared boundary with Claude runtime
 
-- OpenCode and Claude now both use generated TypeScript event runtimes as event-shape adapters before handing normalized diff-trace payloads to the shared Rust hook intake.
-- OpenCode registration remains the generated OpenCode `opencode.json` plugin manifest; Claude registration remains generated `.claude/settings.json` command hooks that run Bun against `.claude/plugins/sce-agent-trace.ts`.
-- The shared Rust boundary is `sce hooks diff-trace`: both runtimes send `{ sessionID, diff, time, model_id, tool_name, tool_version }` over STDIN JSON, and Rust remains the only writer of parsed `context/tmp/*-diff-trace.json` artifacts and AgentTraceDb `diff_traces` rows.
-- Claude `model_id` differs from OpenCode attribution: OpenCode reads provider/model data from the OpenCode event, while Claude resolves `model_id` from AgentTraceDb `session_models` at Rust persistence time and skips `diff-trace` persistence when no matching session model row exists.
+- OpenCode uses a generated TypeScript event runtime as an event-shape adapter before handing normalized diff-trace payloads to the shared Rust hook intake.
+- Claude registration uses generated `.claude/settings.json` command hooks that call `sce hooks` directly (no TypeScript runtime intermediary): `SessionStart` pipes the raw Claude hook event JSON to `sce hooks session-model`, and matched `PostToolUse Write|Edit|MultiEdit|NotebookEdit` pipes the raw hook event to `sce hooks diff-trace`.
+- Rust `diff-trace` intake detects Claude payloads via `hook_event_name` and derives structured patches from the raw JSON with `payload_type="structured"`; OpenCode normalized payloads (no `hook_event_name`) are stored as `payload_type="patch"`.
+- Rust `session-model` intake detects Claude `SessionStart` payloads via `hook_event_name` and extracts `session_id`/`model_id`/`time`/`tool_version` directly from the raw Claude event format.
+- The shared Rust boundary is `sce hooks diff-trace` and `sce hooks session-model`: Rust remains the only writer of parsed `context/tmp/*-diff-trace.json` artifacts and AgentTraceDb `diff_traces`/`session_models` rows.
+- Claude `model_id` differs from OpenCode attribution: OpenCode reads provider/model data from the OpenCode event and includes `model_id` in the payload; for Claude `diff-trace`, Rust resolves `model_id` from AgentTraceDb `session_models` at persistence time and skips persistence when no matching session model row exists; for Claude `session-model`, Rust extracts `model_id` from the raw hook event and normalizes it with a `claude/` prefix.
 
 ## Claude derivation golden tests
 

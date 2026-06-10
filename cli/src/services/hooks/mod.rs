@@ -820,6 +820,12 @@ fn parse_session_model_payload(stdin_payload: &str) -> Result<SessionModelPayloa
         .as_object()
         .ok_or_else(|| anyhow!(payload_kind.validation_error("expected a JSON object")))?;
 
+    // Classify: Claude structured payloads carry hook_event_name.
+    if payload.contains_key("hook_event_name") {
+        return parse_claude_session_model_payload(payload, payload_kind);
+    }
+
+    // Original OpenCode/session-model normalized payload — unchanged.
     let session_id = required_non_empty_string_field(payload, "sessionID", |d| {
         payload_kind.validation_error(d)
     })?;
@@ -839,6 +845,120 @@ fn parse_session_model_payload(stdin_payload: &str) -> Result<SessionModelPayloa
         tool_name,
         tool_version,
     })
+}
+
+/// Parse a raw Claude `SessionStart` hook event payload into a session-model intake result.
+///
+/// Extracts `session_id`, `model_id`, `time`, and `tool_version` from the raw
+/// Claude hook event format (which uses `snake_case` fields and nested model objects)
+/// so that Claude settings can pipe hook events directly to `sce hooks session-model`.
+const CLAUDE_MODEL_ID_PREFIX: &str = "claude/";
+
+fn parse_claude_session_model_payload(
+    payload: &serde_json::Map<String, Value>,
+    payload_kind: StdinPayloadKind,
+) -> Result<SessionModelPayload> {
+    let event_name = required_non_empty_string_field(payload, "hook_event_name", payload_kind)?;
+
+    if event_name != "SessionStart" {
+        bail!(payload_kind.validation_error(&format!(
+            "Claude '{event_name}' event is not supported for session-model intake (expected SessionStart)"
+        )));
+    }
+
+    let session_id = required_claude_session_id(payload, payload_kind)?;
+    let model_id = required_claude_model_id(payload, payload_kind)?;
+    let time = extract_claude_event_time(payload);
+    let tool_name = "claude".to_string();
+    let tool_version = extract_claude_tool_version_from_payload(payload);
+
+    Ok(SessionModelPayload {
+        session_id,
+        time,
+        model_id,
+        tool_name,
+        tool_version,
+    })
+}
+
+fn required_claude_session_id(
+    payload: &serde_json::Map<String, Value>,
+    payload_kind: StdinPayloadKind,
+) -> Result<String> {
+    for key in ["session_id", "sessionID"] {
+        if let Some(value) = payload.get(key) {
+            if let Some(s) = value.as_str() {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    return Ok(trimmed.to_string());
+                }
+            }
+        }
+    }
+    bail!(payload_kind.validation_error(
+        "missing non-empty 'session_id' or 'sessionID' field for Claude SessionStart"
+    ))
+}
+
+fn required_claude_model_id(
+    payload: &serde_json::Map<String, Value>,
+    payload_kind: StdinPayloadKind,
+) -> Result<String> {
+    // Try direct string fields first.
+    for key in ["model", "model_id", "modelId"] {
+        if let Some(value) = payload.get(key) {
+            if let Some(s) = value.as_str() {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    return Ok(normalize_claude_model_id(trimmed));
+                }
+            }
+            // If model is an object, try nested identifier fields.
+            if let Some(model_obj) = value.as_object() {
+                for nested_key in ["id", "model", "name"] {
+                    if let Some(nested_value) = model_obj.get(nested_key) {
+                        if let Some(s) = nested_value.as_str() {
+                            let trimmed = s.trim();
+                            if !trimmed.is_empty() {
+                                return Ok(normalize_claude_model_id(trimmed));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    bail!(payload_kind.validation_error(
+        "missing non-empty model identifier (model, model_id, or model.id) for Claude SessionStart"
+    ))
+}
+
+fn normalize_claude_model_id(model: &str) -> String {
+    if model.starts_with(CLAUDE_MODEL_ID_PREFIX) {
+        model.to_string()
+    } else {
+        format!("{CLAUDE_MODEL_ID_PREFIX}{model}")
+    }
+}
+
+fn extract_claude_tool_version_from_payload(
+    payload: &serde_json::Map<String, Value>,
+) -> Option<String> {
+    for key in ["tool_version", "claude_version", "version"] {
+        match payload.get(key) {
+            Some(Value::String(s)) => {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+                return None; // empty string → None (null semantics)
+            }
+            Some(Value::Null) => return None,
+            Some(_) | None => {} // non-string, non-null, or missing → skip
+        }
+    }
+    None
 }
 
 fn required_nullable_or_non_empty_string_field(
