@@ -93,12 +93,13 @@ Planning interpretation: the last nine commits created and then refined a Claude
   - Verification notes (commands or checks): Run `nix develop -c pkl eval -m . config/pkl/generate.pkl` after source edits, then `nix run .#pkl-check-generated`.
   - Completion evidence (2026-06-10): Replaced `claude-content.pkl` settings block: `SessionStart` routes to `sce hooks session-model`, `PostToolUse Write|Edit|MultiEdit|NotebookEdit` routes to `sce hooks diff-trace`, removed `UserPromptSubmit`/`Stop` hooks. Added `parse_claude_session_model_payload` to `cli/src/services/hooks/mod.rs` so the Rust `session-model` intake handles raw Claude `SessionStart` payloads (extracts `session_id`/`model_id`/`time`/`tool_version`, normalizes `model_id` with `claude/` prefix). Regenerated `config/.claude/settings.json`. `nix flake check` passed (all 4 checks green). `nix run .#pkl-check-generated` passed.
 
-- [ ] T07: `Remove Claude TypeScript plugin source and generated outputs` (status:todo)
-  - Task ID: T07
-  - Goal: Delete the now-obsolete Claude TypeScript agent-trace runtime and its TypeScript golden tests while preserving OpenCode TypeScript plugin/runtime code.
-  - Boundaries (in/out of scope): In - remove `config/lib/agent-trace-plugin/claude-sce-agent-trace-plugin.ts`, its Bun test, generated `config/.claude/plugins/sce-agent-trace.ts`, generated root `.claude/plugins/sce-agent-trace.ts`, and references that assume a Claude plugin path exists. Out - `config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts`, OpenCode generated plugins, bash-policy code.
-  - Done when: No repo-owned Claude `.claude/plugins` agent-trace TypeScript remains; config-lib package/test configuration no longer expects the deleted Claude test; generated output parity is clean after regeneration.
-  - Verification notes (commands or checks): Run `nix run .#pkl-check-generated`; run the relevant config-lib checks only if package/test manifests changed, otherwise rely on T09 full validation.
+- [x] T07: `Remove Claude TypeScript plugin source and generated outputs` (status:done)
+   - Task ID: T07
+   - Goal: Delete the now-obsolete Claude TypeScript agent-trace runtime and its TypeScript golden tests while preserving OpenCode TypeScript plugin/runtime code.
+   - Boundaries (in/out of scope): In - remove `config/lib/agent-trace-plugin/claude-sce-agent-trace-plugin.ts`, its Bun test, generated `config/.claude/plugins/sce-agent-trace.ts`, generated root `.claude/plugins/sce-agent-trace.ts`, and references that assume a Claude plugin path exists. Out - `config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts`, OpenCode generated plugins, bash-policy code.
+   - Done when: No repo-owned Claude `.claude/plugins` agent-trace TypeScript remains; config-lib package/test configuration no longer expects the deleted Claude test; generated output parity is clean after regeneration.
+   - Verification notes (commands or checks): Run `nix run .#pkl-check-generated`; run the relevant config-lib checks only if package/test manifests changed, otherwise rely on T09 full validation.
+   - Completion evidence (2026-06-10): Deleted `config/lib/agent-trace-plugin/claude-sce-agent-trace-plugin.ts` (canonical source), `config/lib/agent-trace-plugin/claude-sce-agent-trace-plugin.test.ts` (Bun test), `config/.claude/plugins/sce-agent-trace.ts` (generated), and `.claude/plugins/sce-agent-trace.ts` (root copy). Removed Claude plugin source read and output mapping from `config/pkl/generate.pkl`. Updated root `.claude/settings.json` to direct `sce hooks session-model` / `sce hooks diff-trace` commands. Regenerated outputs. `nix run .#pkl-check-generated` (generated outputs up to date), `nix flake check` (all 7 checks passed: cli-tests, cli-clippy, cli-fmt, config-lib-bun-tests, config-lib-biome-check, config-lib-biome-format, pkl-parity).
 
 - [ ] T08: `Sync current-state context for Rust-owned Claude tracing` (status:todo)
   - Task ID: T08
