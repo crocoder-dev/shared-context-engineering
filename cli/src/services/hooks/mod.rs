@@ -17,12 +17,15 @@ use crate::services::agent_trace::{
 use crate::services::agent_trace_db::{
     AgentTraceDb, AgentTraceInsert, DiffTraceInsert, InsertMessageInsert, InsertPartInsert,
     MessageRole, PartType, PostCommitPatchIntersectionInsert, RecentDiffTracePatches,
-    SessionModelUpsert, PAYLOAD_TYPE_PATCH,
+    SessionModelUpsert, PAYLOAD_TYPE_PATCH, PAYLOAD_TYPE_STRUCTURED,
 };
 use crate::services::observability::traits::Logger;
 use crate::services::patch::{
     combine_patches as combine_patches_fn, intersect_patches as intersect_patches_fn,
     parse_patch as parse_patch_from_text, ParsedPatch,
+};
+use crate::services::structured_patch::{
+    derive_claude_structured_patch, ClaudeStructuredPatchDerivationResult,
 };
 use crate::services::{config, default_paths::RepoPaths};
 
@@ -73,6 +76,14 @@ struct DiffTracePayload {
     model_id: Option<String>,
     tool_name: String,
     tool_version: Option<String>,
+    payload_type: String,
+}
+
+/// Either a diff-trace payload to persist or a deterministic no-op result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DiffTraceParseResult {
+    Persist(DiffTracePayload),
+    NoOp(String),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -563,7 +574,11 @@ fn run_diff_trace_subcommand_from_payload(
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
-    let payload = parse_diff_trace_payload(stdin_payload)?;
+    let parse_result = parse_diff_trace_payload(stdin_payload)?;
+    let payload = match parse_result {
+        DiffTraceParseResult::Persist(payload) => payload,
+        DiffTraceParseResult::NoOp(message) => return Ok(message),
+    };
     let resolve_model = |tool_name: &str, session_id: &str| -> Result<Option<String>> {
         let db =
             AgentTraceDb::new().context("Failed to open Agent Trace DB for model resolution.")?;
@@ -688,7 +703,7 @@ fn run_session_model_subcommand_from_payload(
     }
 }
 
-fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTracePayload> {
+fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTraceParseResult> {
     let payload_kind = StdinPayloadKind::DiffTrace;
     let parsed: Value = serde_json::from_str(stdin_payload)
         .with_context(|| payload_kind.validation_error("expected valid JSON"))?;
@@ -696,6 +711,12 @@ fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTracePayload> {
         .as_object()
         .ok_or_else(|| anyhow!(payload_kind.validation_error("expected a JSON object")))?;
 
+    // Classify: Claude structured payloads carry hook_event_name.
+    if payload.contains_key("hook_event_name") {
+        return parse_claude_diff_trace_payload(payload, stdin_payload, payload_kind);
+    }
+
+    // OpenCode normalized payload — unchanged validation.
     let session_id = required_non_empty_string_field(payload, "sessionID", |d| {
         payload_kind.validation_error(d)
     })?;
@@ -709,14 +730,86 @@ fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTracePayload> {
     let tool_version =
         required_nullable_or_non_empty_string_field(payload, "tool_version", payload_kind)?;
 
-    Ok(DiffTracePayload {
+    Ok(DiffTraceParseResult::Persist(DiffTracePayload {
         session_id,
         diff,
         time,
         model_id,
         tool_name,
         tool_version,
-    })
+        payload_type: PAYLOAD_TYPE_PATCH.to_string(),
+    }))
+}
+
+/// Parse a Claude structured hook payload into a diff-trace intake result.
+///
+/// Returns `NoOp` for events without diff traces and unsupported tool usage;
+/// only supported `PostToolUse Write` / `Edit` events produce a `Persist` result.
+fn parse_claude_diff_trace_payload(
+    payload: &serde_json::Map<String, Value>,
+    stdin_payload: &str,
+    payload_kind: StdinPayloadKind,
+) -> Result<DiffTraceParseResult> {
+    let event_name = required_non_empty_string_field(payload, "hook_event_name", payload_kind)?;
+
+    if event_name != "PostToolUse" {
+        return Ok(DiffTraceParseResult::NoOp(format!(
+            "diff-trace hook intake: Claude '{event_name}' event has no diff trace; no-op."
+        )));
+    }
+
+    let time = extract_claude_event_time(payload);
+
+    match derive_claude_structured_patch(&event_name, &Value::Object(payload.clone()), time, None) {
+        ClaudeStructuredPatchDerivationResult::Derived(patch) => {
+            Ok(DiffTraceParseResult::Persist(DiffTracePayload {
+                session_id: patch.session_id,
+                diff: stdin_payload.to_string(),
+                time: patch.time,
+                model_id: None,
+                tool_name: patch.tool_name,
+                tool_version: patch.tool_version,
+                payload_type: PAYLOAD_TYPE_STRUCTURED.to_string(),
+            }))
+        }
+        ClaudeStructuredPatchDerivationResult::Skipped(reason) => {
+            Ok(DiffTraceParseResult::NoOp(format!(
+                "diff-trace hook intake: Claude PostToolUse event skipped ({reason:?}); no-op."
+            )))
+        }
+    }
+}
+
+/// Extract a u64 timestamp from a Claude hook event payload, falling back to the
+/// current system time when no timestamp field is present.
+fn extract_claude_event_time(payload: &serde_json::Map<String, Value>) -> u64 {
+    for key in &["time", "timestamp"] {
+        if let Some(time_value) = payload.get(*key) {
+            if let Some(time) = time_value.as_u64() {
+                return time;
+            }
+            if let Some(time) = time_value.as_i64() {
+                if time >= 0 {
+                    #[allow(clippy::cast_sign_loss)]
+                    return time as u64;
+                }
+            }
+            if let Some(time) = time_value.as_f64() {
+                #[allow(
+                    clippy::cast_sign_loss,
+                    clippy::cast_possible_truncation,
+                    clippy::cast_precision_loss
+                )]
+                if time >= 0.0 && time.fract() == 0.0 && time <= u64::MAX as f64 {
+                    return time as u64;
+                }
+            }
+        }
+    }
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 fn parse_session_model_payload(stdin_payload: &str) -> Result<SessionModelPayload> {
@@ -985,7 +1078,7 @@ where
         model_id,
         tool_name: &payload.tool_name,
         tool_version: payload.tool_version.as_deref(),
-        payload_type: PAYLOAD_TYPE_PATCH,
+        payload_type: &payload.payload_type,
     })
 }
 
