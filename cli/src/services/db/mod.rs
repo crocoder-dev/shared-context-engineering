@@ -32,8 +32,8 @@ const CONNECTION_OPEN_RETRY_POLICY: RetryPolicy = RetryPolicy {
 };
 const CONNECTION_OPEN_RETRY_HINT: &str = "retry after the database lock clears; if the issue persists, stop other SCE processes using this database and rerun the command";
 const QUERY_RETRY_POLICY: RetryPolicy = RetryPolicy {
-    max_attempts: 3,
-    timeout_ms: 500,
+    max_attempts: 5,
+    timeout_ms: 200,
     initial_backoff_ms: 25,
     max_backoff_ms: 100,
 };
