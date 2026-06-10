@@ -118,7 +118,7 @@
         };
 
         configLibBashPolicySrc = pkgs.lib.fileset.toSource {
-          root = ./config/lib;
+          root = workspaceRoot;
           fileset = pkgs.lib.fileset.unions [
             ./config/lib/package.json
             ./config/lib/bun.lock
@@ -127,6 +127,7 @@
             ./config/lib/bash-policy-plugin/bash-policy/runtime.ts
             ./config/lib/bash-policy-plugin/bash-policy-runtime.test.ts
             ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
+            (pkgs.lib.fileset.maybeMissing ./cli/src/services/patch/fixtures/diff_creation)
           ];
         };
 
@@ -852,9 +853,9 @@
               set -euo pipefail
 
               # Copy source files
-              cp -r "${configLibBashPolicySrc}" ./config-lib
-              chmod -R u+w ./config-lib
-              cd ./config-lib
+              cp -r "${configLibBashPolicySrc}" ./repo
+              chmod -R u+w ./repo
+              cd ./repo/config/lib
 
               # Use pre-fetched dependencies from FOD
               cp -r "${configLibBashPolicyDeps}/node_modules" ./
@@ -873,9 +874,9 @@
             ''
               set -euo pipefail
 
-              cp -r "${configLibBashPolicySrc}" ./config-lib
-              chmod -R u+w ./config-lib
-              cd ./config-lib
+              cp -r "${configLibBashPolicySrc}" ./repo
+              chmod -R u+w ./repo
+              cd ./repo/config/lib
 
               biome check --formatter-enabled=false .
 
@@ -890,9 +891,9 @@
             ''
               set -euo pipefail
 
-              cp -r "${configLibBashPolicySrc}" ./config-lib
-              chmod -R u+w ./config-lib
-              cd ./config-lib
+              cp -r "${configLibBashPolicySrc}" ./repo
+              chmod -R u+w ./repo
+              cd ./repo/config/lib
 
               biome check --linter-enabled=false .
 
