@@ -75,6 +75,25 @@ struct DiffTracePayload {
     tool_version: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StdinPayloadKind {
+    DiffTrace,
+    SessionModel,
+}
+
+impl StdinPayloadKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::DiffTrace => "diff-trace",
+            Self::SessionModel => "session-model",
+        }
+    }
+
+    fn validation_error(self, detail: &str) -> String {
+        format!("Invalid {} payload from STDIN: {detail}.", self.label())
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConversationTracePayload {
     MessageUpdated(ConversationTraceMessageBatch),
@@ -123,7 +142,6 @@ struct TraceArtifactPayload {
     serialized: String,
     artifact_description: &'static str,
 }
-
 /// Required `sce hooks diff-trace` STDIN payload shape:
 /// `{ sessionID, diff, time, model_id?, tool_name, tool_version }`.
 ///
@@ -632,7 +650,7 @@ fn run_session_model_subcommand_from_payload(
 
     // Convert the u64 time to i64 for DB storage.
     let session_start_time_ms = i64::try_from(payload.time).map_err(|_| {
-        anyhow!(sm_err(
+        anyhow!(StdinPayloadKind::SessionModel.validation_error(
             "field 'time' must fit in a signed 64-bit Unix epoch millisecond value for Agent Trace DB storage"
         ))
     })?;
@@ -671,24 +689,25 @@ fn run_session_model_subcommand_from_payload(
 }
 
 fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTracePayload> {
+    let payload_kind = StdinPayloadKind::DiffTrace;
     let parsed: Value = serde_json::from_str(stdin_payload)
-        .context("Invalid diff-trace payload from STDIN: expected valid JSON.")?;
+        .with_context(|| payload_kind.validation_error("expected valid JSON"))?;
     let payload = parsed
         .as_object()
-        .ok_or_else(|| anyhow!(diff_trace_validation_error("expected a JSON object")))?;
+        .ok_or_else(|| anyhow!(payload_kind.validation_error("expected a JSON object")))?;
 
-    let session_id =
-        required_non_empty_string_field(payload, "sessionID", diff_trace_validation_error)?;
-    let diff = required_non_empty_string_field(payload, "diff", diff_trace_validation_error)?;
-    let time = required_u64_millisecond_field(payload, "time", diff_trace_validation_error)?;
-    let model_id = optional_string_field(payload, "model_id")?;
-    let tool_name =
-        required_non_empty_string_field(payload, "tool_name", diff_trace_validation_error)?;
-    let tool_version = required_nullable_or_non_empty_string_field(
-        payload,
-        "tool_version",
-        diff_trace_validation_error,
-    )?;
+    let session_id = required_non_empty_string_field(payload, "sessionID", |d| {
+        payload_kind.validation_error(d)
+    })?;
+    let diff =
+        required_non_empty_string_field(payload, "diff", |d| payload_kind.validation_error(d))?;
+    let time = required_u64_millisecond_field(payload, "time", payload_kind)?;
+    let model_id = optional_string_field(payload, "model_id", payload_kind)?;
+    let tool_name = required_non_empty_string_field(payload, "tool_name", |d| {
+        payload_kind.validation_error(d)
+    })?;
+    let tool_version =
+        required_nullable_or_non_empty_string_field(payload, "tool_version", payload_kind)?;
 
     Ok(DiffTracePayload {
         session_id,
@@ -701,17 +720,24 @@ fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTracePayload> {
 }
 
 fn parse_session_model_payload(stdin_payload: &str) -> Result<SessionModelPayload> {
+    let payload_kind = StdinPayloadKind::SessionModel;
     let parsed: Value = serde_json::from_str(stdin_payload)
-        .context("Invalid session-model payload from STDIN: expected valid JSON.")?;
+        .with_context(|| payload_kind.validation_error("expected valid JSON"))?;
     let payload = parsed
         .as_object()
-        .ok_or_else(|| anyhow!(sm_err("expected a JSON object")))?;
+        .ok_or_else(|| anyhow!(payload_kind.validation_error("expected a JSON object")))?;
 
-    let session_id = sm_non_empty(payload, "sessionID")?;
-    let time = sm_u64(payload, "time")?;
-    let model_id = sm_non_empty(payload, "model_id")?;
-    let tool_name = sm_non_empty(payload, "tool_name")?;
-    let tool_version = sm_nullable_or_non_empty(payload, "tool_version")?;
+    let session_id = required_non_empty_string_field(payload, "sessionID", |d| {
+        payload_kind.validation_error(d)
+    })?;
+    let time = required_u64_millisecond_field(payload, "time", payload_kind)?;
+    let model_id =
+        required_non_empty_string_field(payload, "model_id", |d| payload_kind.validation_error(d))?;
+    let tool_name = required_non_empty_string_field(payload, "tool_name", |d| {
+        payload_kind.validation_error(d)
+    })?;
+    let tool_version =
+        required_nullable_or_non_empty_string_field(payload, "tool_version", payload_kind)?;
 
     Ok(SessionModelPayload {
         session_id,
@@ -722,120 +748,25 @@ fn parse_session_model_payload(stdin_payload: &str) -> Result<SessionModelPayloa
     })
 }
 
-fn sm_err(detail: &str) -> String {
-    format!("Invalid session-model payload from STDIN: {detail}.")
-}
-
-fn sm_non_empty(payload: &serde_json::Map<String, Value>, field: &str) -> Result<String> {
-    let raw = payload
-        .get(field)
-        .ok_or_else(|| anyhow!(sm_err(&format!("missing required field '{field}'"))))?;
-    let value = raw.as_str().ok_or_else(|| {
-        anyhow!(sm_err(&format!(
-            "field '{field}' must be a non-empty string"
-        )))
-    })?;
-    if value.trim().is_empty() {
-        bail!(sm_err(&format!(
-            "field '{field}' must be a non-empty string"
-        )));
-    }
-    Ok(value.to_string())
-}
-
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
-fn sm_u64(payload: &serde_json::Map<String, Value>, field: &str) -> Result<u64> {
-    let raw = payload
-        .get(field)
-        .ok_or_else(|| anyhow!(sm_err(&format!("missing required field '{field}'"))))?;
-
-    if let Some(value) = raw.as_u64() {
-        return Ok(value);
-    }
-
-    if let Some(value) = raw.as_i64() {
-        if value < 0 {
-            bail!(sm_err(&format!(
-                "field '{field}' must be a u64 Unix epoch millisecond value, got a negative number"
-            )));
-        }
-        return Ok(value as u64);
-    }
-
-    if let Some(value) = raw.as_f64() {
-        if value.fract() != 0.0 {
-            bail!(sm_err(&format!(
-                "field '{field}' must be a u64 Unix epoch millisecond value, got a fractional number"
-            )));
-        }
-        if value < 0.0 {
-            bail!(sm_err(&format!(
-                "field '{field}' must be a u64 Unix epoch millisecond value, got a negative number"
-            )));
-        }
-        if value > u64::MAX as f64 {
-            bail!(sm_err(&format!(
-                "field '{field}' must be a u64 Unix epoch millisecond value"
-            )));
-        }
-        return Ok(value as u64);
-    }
-
-    bail!(sm_err(&format!(
-        "field '{field}' must be a u64 Unix epoch millisecond value"
-    )))
-}
-
-fn sm_nullable_or_non_empty(
-    payload: &serde_json::Map<String, Value>,
-    field: &str,
-) -> Result<Option<String>> {
-    let raw = payload
-        .get(field)
-        .ok_or_else(|| anyhow!(sm_err(&format!("missing required field '{field}'"))))?;
-
-    if raw.is_null() {
-        return Ok(None);
-    }
-
-    let value = raw.as_str().ok_or_else(|| {
-        anyhow!(sm_err(&format!(
-            "field '{field}' must be null or a non-empty string"
-        )))
-    })?;
-
-    if value.trim().is_empty() {
-        bail!(sm_err(&format!(
-            "field '{field}' must be null or a non-empty string"
-        )));
-    }
-
-    Ok(Some(value.to_string()))
-}
-
 fn required_nullable_or_non_empty_string_field(
     payload: &serde_json::Map<String, Value>,
     field_name: &str,
-    validation_error: PayloadValidationError,
+    payload_kind: StdinPayloadKind,
 ) -> Result<Option<String>> {
-    let raw = required_field(payload, field_name, validation_error)?;
+    let raw = required_field(payload, field_name, |d| payload_kind.validation_error(d))?;
 
     if raw.is_null() {
         return Ok(None);
     }
 
     let value = raw.as_str().ok_or_else(|| {
-        anyhow!(validation_error(&format!(
+        anyhow!(payload_kind.validation_error(&format!(
             "field '{field_name}' must be null or a non-empty string"
         )))
     })?;
 
     if value.trim().is_empty() {
-        bail!(validation_error(&format!(
+        bail!(payload_kind.validation_error(&format!(
             "field '{field_name}' must be null or a non-empty string"
         )));
     }
@@ -846,6 +777,7 @@ fn required_nullable_or_non_empty_string_field(
 fn optional_string_field(
     payload: &serde_json::Map<String, Value>,
     field_name: &str,
+    payload_kind: StdinPayloadKind,
 ) -> Result<Option<String>> {
     let Some(raw) = payload.get(field_name) else {
         return Ok(None);
@@ -856,13 +788,13 @@ fn optional_string_field(
     }
 
     let value = raw.as_str().ok_or_else(|| {
-        anyhow!(diff_trace_validation_error(&format!(
+        anyhow!(payload_kind.validation_error(&format!(
             "field '{field_name}' must be null, absent, or a non-empty string"
         )))
     })?;
 
     if value.trim().is_empty() {
-        bail!(diff_trace_validation_error(&format!(
+        bail!(payload_kind.validation_error(&format!(
             "field '{field_name}' must be null, absent, or a non-empty string"
         )));
     }
@@ -873,17 +805,23 @@ fn optional_string_field(
 fn required_non_empty_string_field(
     payload: &serde_json::Map<String, Value>,
     field_name: &str,
-    validation_error: PayloadValidationError,
+    format_error: impl Fn(&str) -> String,
 ) -> Result<String> {
-    let value = required_string_field(payload, field_name, validation_error)?;
+    let raw = required_field(payload, field_name, &format_error)?;
+
+    let value = raw.as_str().ok_or_else(|| {
+        anyhow!(format_error(&format!(
+            "field '{field_name}' must be a non-empty string"
+        )))
+    })?;
 
     if value.trim().is_empty() {
-        bail!(validation_error(&format!(
+        bail!(format_error(&format!(
             "field '{field_name}' must be a non-empty string"
         )));
     }
 
-    Ok(value)
+    Ok(value.to_string())
 }
 
 fn required_string_field(
@@ -908,9 +846,9 @@ fn required_string_field(
 fn required_u64_millisecond_field(
     payload: &serde_json::Map<String, Value>,
     field_name: &str,
-    validation_error: PayloadValidationError,
+    payload_kind: StdinPayloadKind,
 ) -> Result<u64> {
-    let raw = required_field(payload, field_name, validation_error)?;
+    let raw = required_field(payload, field_name, |d| payload_kind.validation_error(d))?;
 
     if let Some(value) = raw.as_u64() {
         return Ok(value);
@@ -918,7 +856,7 @@ fn required_u64_millisecond_field(
 
     if let Some(value) = raw.as_i64() {
         if value < 0 {
-            bail!(validation_error(&format!(
+            bail!(payload_kind.validation_error(&format!(
                 "field '{field_name}' must be a u64 Unix epoch millisecond value, got a negative number"
             )));
         }
@@ -927,24 +865,24 @@ fn required_u64_millisecond_field(
 
     if let Some(value) = raw.as_f64() {
         if value.fract() != 0.0 {
-            bail!(validation_error(&format!(
+            bail!(payload_kind.validation_error(&format!(
                 "field '{field_name}' must be a u64 Unix epoch millisecond value, got a fractional number"
             )));
         }
         if value < 0.0 {
-            bail!(validation_error(&format!(
+            bail!(payload_kind.validation_error(&format!(
                 "field '{field_name}' must be a u64 Unix epoch millisecond value, got a negative number"
             )));
         }
         if value > u64::MAX as f64 {
-            bail!(validation_error(&format!(
+            bail!(payload_kind.validation_error(&format!(
                 "field '{field_name}' must be a u64 Unix epoch millisecond value"
             )));
         }
         return Ok(value as u64);
     }
 
-    bail!(validation_error(&format!(
+    bail!(payload_kind.validation_error(&format!(
         "field '{field_name}' must be a u64 Unix epoch millisecond value"
     )))
 }
@@ -987,17 +925,13 @@ fn required_i64_millisecond_field(
 fn required_field<'a>(
     payload: &'a serde_json::Map<String, Value>,
     field_name: &str,
-    validation_error: PayloadValidationError,
+    format_error: impl Fn(&str) -> String,
 ) -> Result<&'a Value> {
     payload.get(field_name).ok_or_else(|| {
-        anyhow!(validation_error(&format!(
+        anyhow!(format_error(&format!(
             "missing required field '{field_name}'"
         )))
     })
-}
-
-fn diff_trace_validation_error(detail: &str) -> String {
-    format!("Invalid diff-trace payload from STDIN: {detail}.")
 }
 
 fn persist_diff_trace_payload(
@@ -1056,7 +990,7 @@ where
 
 fn diff_trace_db_time_ms(time: u64) -> Result<i64> {
     i64::try_from(time).map_err(|_| {
-        anyhow!(diff_trace_validation_error(
+        anyhow!(StdinPayloadKind::DiffTrace.validation_error(
             "field 'time' must fit in a signed 64-bit Unix epoch millisecond value for Agent Trace DB storage"
         ))
     })
