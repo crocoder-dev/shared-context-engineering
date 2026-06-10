@@ -24,7 +24,7 @@ Planning interpretation: the last nine commits created and then refined a Claude
 - `sce hooks diff-trace` can accept Claude structured `PostToolUse` payloads and derive the same patch output currently covered by the `diff_creation` golden fixtures.
 - Existing OpenCode normalized `diff-trace` payloads remain accepted and behaviorally unchanged.
 - Claude TypeScript plugin source, generated plugin output, and Claude TypeScript golden tests are removed from the repo-owned Claude path.
-- Golden fixture coverage for Claude diff derivation lives in Rust and validates the checked-in `cli/src/services/patch/fixtures/diff_creation/` scenarios.
+- Golden fixture coverage for Claude diff derivation lives in Rust and validates the checked-in `cli/src/services/structured_patch/fixtures/` scenarios.
 - Generated output parity and full repo validation pass.
 
 ## Constraints and non-goals
@@ -46,12 +46,13 @@ Planning interpretation: the last nine commits created and then refined a Claude
   - Verification notes (commands or checks): Run the narrow Rust tests added for the derivation helper via `nix develop -c sh -c 'cd cli && cargo test claude'` if a narrow test target exists; otherwise use the narrowest relevant `cargo test` selector. Final full validation remains T07.
   - Completion evidence (2026-06-10): Added synchronous Rust `structured_patch` service module; Claude `PostToolUse` `Write` and `Edit` structured payload derivation returns `ParsedPatch`-backed `ClaudeStructuredPatch` results with deterministic skip reasons and fixed time/tool-version inputs. Generated helper tests were removed after review; golden fixture coverage remains deferred to T02. `nix flake check` passed. `nix run .#pkl-check-generated` passed. Direct narrow `cargo test claude` was not run because the repo bash policy blocks direct Cargo test commands in favor of `nix flake check`.
 
-- [ ] T02: `Move Claude diff-creation golden tests to Rust` (status:todo)
+- [x] T02: `Move Claude diff-creation golden tests to Rust` (status:done)
   - Task ID: T02
-  - Goal: Recreate the current Claude derivation golden coverage in Rust against `cli/src/services/patch/fixtures/diff_creation/`.
+  - Goal: Recreate the current Claude derivation golden coverage in Rust against `cli/src/services/structured_patch/fixtures/`.
   - Boundaries (in/out of scope): In - Rust tests that discover/validate the expected eight fixture scenarios and assert derived patch equality using `claude-post-tool-use.json` plus `expected.patch`. Out - deleting TypeScript tests/source, modifying fixture contents except for necessary fixture-contract corrections, changing OpenCode tests.
   - Done when: Rust tests fail on missing/extra scenarios, use fixed time/tool-version inputs, assert `sessionID`, `tool_name="claude"`, nullable/omitted `model_id` behavior as appropriate, and exact diff output for each golden fixture.
   - Verification notes (commands or checks): Run the narrow Rust golden test selector through Nix, for example `nix develop -c sh -c 'cd cli && cargo test claude_derivation'` once test names are known.
+  - Completion evidence (2026-06-10): Added `cli/src/services/structured_patch/tests.rs` with runtime fixture discovery, missing/extra scenario validation, and `claude_derivation_golden_tests` asserting all eight `diff_creation/` scenarios against `derive_claude_structured_patch` with fixed time/tool-version inputs. `nix flake check` passed. `nix run .#pkl-check-generated` passed.
 
 - [ ] T03: `Teach sce hooks diff-trace to accept Claude structured payloads` (status:todo)
   - Task ID: T03

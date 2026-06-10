@@ -26,7 +26,7 @@ The module is not wired into `sce hooks diff-trace` yet. Current hook runtime st
 
 ## Test status
 
-Golden fixture migration from `cli/src/services/patch/fixtures/diff_creation/` is deferred to T02. No generated helper tests are kept for this T01 slice.
+Golden fixture coverage lives in `cli/src/services/structured_patch/tests.rs` as `claude_derivation_golden_tests`. The test discovers all scenarios under `cli/src/services/structured_patch/fixtures/`, validates the expected eight scenarios, and asserts derived `ParsedPatch` equality against `parse_patch(expected.patch)` with fixed time/tool-version inputs. No generated helper tests are kept for the T01 derivation slice.
 
 ## See also
 

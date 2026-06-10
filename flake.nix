@@ -95,6 +95,7 @@
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/default_paths.rs)
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/agent_trace/fixtures)
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/patch/fixtures)
+            (pkgs.lib.fileset.maybeMissing ./cli/src/services/structured_patch/fixtures)
             (pkgs.lib.fileset.maybeMissing ./cli/migrations)
             ./config
             (pkgs.lib.fileset.maybeMissing ./cli/assets/hooks)
@@ -127,7 +128,7 @@
             ./config/lib/bash-policy-plugin/bash-policy/runtime.ts
             ./config/lib/bash-policy-plugin/bash-policy-runtime.test.ts
             ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
-            (pkgs.lib.fileset.maybeMissing ./cli/src/services/patch/fixtures/diff_creation)
+            (pkgs.lib.fileset.maybeMissing ./cli/src/services/structured_patch/fixtures)
           ];
         };
 

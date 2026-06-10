@@ -90,7 +90,7 @@ When `buildPatchConversationTracePayloads` returns `undefined` (no diff items ha
 
 ## Claude derivation golden tests
 
-- `config/lib/agent-trace-plugin/claude-sce-agent-trace-plugin.test.ts` tests the exported `deriveClaudeDiffTracePayload(...)` seam only; private diff-render helpers remain unexported and untested directly.
-- The test dynamically discovers the checked-in `cli/src/services/patch/fixtures/diff_creation/` scenario directories, validates the expected eight-scenario set, then loads each `claude-post-tool-use.json` plus `expected.patch` pair.
-- Each scenario calls `deriveClaudeDiffTracePayload(...)` with fixed time/tool-version inputs and asserts derived status, session ID, time, `tool_name="claude"`, tool version, exact golden diff, and no emitted `model_id`.
-- The tests are discoverable from both `config/lib/agent-trace-plugin` and the shared `config/lib` Bun package root via `bun test`.
+- Rust golden tests in `cli/src/services/structured_patch/tests.rs` (`claude_derivation_golden_tests`) own the Claude derivation fixture coverage.
+- The test dynamically discovers the checked-in `cli/src/services/structured_patch/fixtures/` scenario directories, validates the expected eight-scenario set, then loads each `claude-post-tool-use.json` plus `expected.patch` pair.
+- Each scenario calls `derive_claude_structured_patch(...)` with fixed time/tool-version inputs and asserts derived status, session ID, time, `tool_name="claude"`, tool version, exact golden diff parsed via `parse_patch`, and no emitted `model_id`.
+- The TypeScript `deriveClaudeDiffTracePayload(...)` seam and its Bun test remain present until T05 removes the Claude TypeScript plugin source.

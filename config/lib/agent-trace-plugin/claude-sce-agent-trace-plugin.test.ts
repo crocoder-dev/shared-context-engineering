@@ -24,7 +24,7 @@ type ClaudePostToolUseFixture = {
 
 const fixtureRoot = path.resolve(
 	path.dirname(fileURLToPath(import.meta.url)),
-	"../../../cli/src/services/patch/fixtures/diff_creation",
+	"../../../cli/src/services/structured_patch/fixtures",
 );
 
 function discoverFixtureScenarios(): string[] {

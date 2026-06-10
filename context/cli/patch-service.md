@@ -82,11 +82,12 @@ Public types consumed by the parser or load helpers have `#[allow(dead_code)]` r
 Patch reconstruction tests use deterministic fixture suites under `cli/src/services/patch/fixtures/`.
 
 - Existing suites remain intact (`average_age_reconstruction`, `hello_world_reconstruction`).
-- `diff_creation/` is the checked-in Claude diff-render golden fixture suite used by TypeScript derivation coverage. Each active golden scenario consumes:
-  - `claude-post-tool-use.json` containing a sanitized synthetic Claude `PostToolUse` payload shaped for `deriveClaudeDiffTracePayload(...)`
+- `diff_creation/` is the checked-in Claude diff-render golden fixture suite used by Rust derivation coverage, located at `cli/src/services/structured_patch/fixtures/`. Each active golden scenario consumes:
+  - `claude-post-tool-use.json` containing a sanitized synthetic Claude `PostToolUse` payload shaped for `derive_claude_structured_patch(...)`
   - `expected.patch` containing the expected unified diff output
   - No `input.json` sidecar is part of the active fixture contract for this suite.
   - Covered scenarios: simple/empty/no-newline/multiline Write create flows and single-hunk/multi-hunk/additions-only/deletions-only Edit flows
+  - Rust golden tests in `cli/src/services/structured_patch/tests.rs` discover and validate all scenarios at test time, failing on missing or extra fixtures.
 - The current tmp-hunks scenario is materialized as `text_file_lifecycle_reconstruction/` with:
   - `incremental_01.patch` .. `incremental_26.patch` reconstructed from `tmp_hunks/*-message.part.updated.json` in lexical filename order
   - `post_commit.patch` reconstructed from `tmp_hunks/*-post-commit.json` `input.head_patch_from_git`
