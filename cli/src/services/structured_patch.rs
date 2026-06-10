@@ -6,8 +6,6 @@
 //! is Claude `PostToolUse` payloads for `Write` creates and `Edit` structured
 //! patches.
 
-#![allow(dead_code)]
-
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};

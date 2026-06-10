@@ -109,7 +109,6 @@ const AGENT_TRACE_SCHEMA_SETUP_GUIDANCE: &str = "Run 'sce setup'.";
 /// `OpenCode` normalized diff-trace payloads use [`PAYLOAD_TYPE_PATCH`].
 /// `Claude` structured `PostToolUse` payloads use [`PAYLOAD_TYPE_STRUCTURED`].
 pub const PAYLOAD_TYPE_PATCH: &str = "patch";
-#[allow(dead_code)]
 pub const PAYLOAD_TYPE_STRUCTURED: &str = "structured";
 
 /// Parameterized SQL for inserting a captured diff trace payload.

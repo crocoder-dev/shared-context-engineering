@@ -22,7 +22,7 @@
 
 ## Runtime wiring status
 
-The module is not wired into `sce hooks diff-trace` yet. Current hook runtime still accepts normalized diff-trace JSON with raw diff text. The `diff_traces` table now supports a `payload_type` discriminator (`patch` for `OpenCode` unified-diff payloads, `structured` for `Claude` `PostToolUse` payloads) so structured payloads can be persisted and later parsed through `structured_patch.rs` during post-commit processing. Runtime intake wiring is planned in T04; post-commit parsing dispatch is planned in T05.
+The module is wired into `sce hooks diff-trace` for Claude payload classification at intake (T04): when `hook_event_name` is present and the event is a supported `PostToolUse` (`Write` create or `Edit` structured patch), the raw JSON is persisted as a `structured` payload type in `diff_traces` without conversion to unified-diff text. Unsupported Claude events (non-`PostToolUse`, unsupported tools) produce deterministic no-op results. OpenCode normalized payloads continue to be stored as `patch` payloads unchanged. Post-commit parsing dispatch through `structured_patch.rs` is planned in T05.
 
 ## Test status
 
