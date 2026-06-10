@@ -94,6 +94,7 @@ Patch reconstruction tests use deterministic fixture suites under `cli/src/servi
 
 ## See also
 
+- [structured-patch-service.md](structured-patch-service.md)
 - [overview.md](../overview.md)
 - [architecture.md](../architecture.md)
 - [glossary.md](../glossary.md)
