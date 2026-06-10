@@ -17,7 +17,7 @@ use crate::services::agent_trace::{
 use crate::services::agent_trace_db::{
     AgentTraceDb, AgentTraceInsert, DiffTraceInsert, InsertMessageInsert, InsertPartInsert,
     MessageRole, PartType, PostCommitPatchIntersectionInsert, RecentDiffTracePatches,
-    SessionModelUpsert,
+    SessionModelUpsert, PAYLOAD_TYPE_PATCH,
 };
 use crate::services::observability::traits::Logger;
 use crate::services::patch::{
@@ -985,6 +985,7 @@ where
         model_id,
         tool_name: &payload.tool_name,
         tool_version: payload.tool_version.as_deref(),
+        payload_type: PAYLOAD_TYPE_PATCH,
     })
 }
 
@@ -1884,6 +1885,7 @@ mod tests {
                         patch: valid_patch("src/lib.rs", "shared line"),
                         tool_name: Some(String::from("opencode")),
                         tool_version: Some(String::from("1.2.3")),
+                        payload_type: String::from(PAYLOAD_TYPE_PATCH),
                     }],
                     skipped: vec![SkippedDiffTracePatch {
                         id: 8,

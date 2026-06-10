@@ -120,7 +120,7 @@ fn claude_derivation_golden_tests() {
                     "tool_version mismatch for scenario {name}"
                 );
 
-                let expected_patch = parse_patch(&expected_patch_text).unwrap_or_else(|e| {
+                let expected_patch = parse_patch(&expected_patch_text, None).unwrap_or_else(|e| {
                     panic!("expected patch should parse for scenario {name}: {e}")
                 });
 

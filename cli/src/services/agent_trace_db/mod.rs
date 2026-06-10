@@ -47,6 +47,8 @@ const CREATE_PARTS_UPDATED_AT_TRIGGER_MIGRATION: &str =
     include_str!("../../../migrations/agent-trace/014_create_parts_updated_at_trigger.sql");
 const CREATE_SESSION_MODELS_MIGRATION: &str =
     include_str!("../../../migrations/agent-trace/015_create_session_models.sql");
+const ADD_DIFF_TRACES_PAYLOAD_TYPE_MIGRATION: &str =
+    include_str!("../../../migrations/agent-trace/009_add_diff_traces_payload_type.sql");
 
 const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
     ("001_create_diff_traces", CREATE_DIFF_TRACES_MIGRATION),
@@ -94,17 +96,29 @@ const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
         CREATE_PARTS_UPDATED_AT_TRIGGER_MIGRATION,
     ),
     ("015_create_session_models", CREATE_SESSION_MODELS_MIGRATION),
+    (
+        "016_add_diff_traces_payload_type",
+        ADD_DIFF_TRACES_PAYLOAD_TYPE_MIGRATION,
+    ),
 ];
 
 const AGENT_TRACE_SCHEMA_SETUP_GUIDANCE: &str = "Run 'sce setup'.";
 
+/// Payload type discriminator for diff trace source payloads.
+///
+/// `OpenCode` normalized diff-trace payloads use [`PAYLOAD_TYPE_PATCH`].
+/// `Claude` structured `PostToolUse` payloads use [`PAYLOAD_TYPE_STRUCTURED`].
+pub const PAYLOAD_TYPE_PATCH: &str = "patch";
+#[allow(dead_code)]
+pub const PAYLOAD_TYPE_STRUCTURED: &str = "structured";
+
 /// Parameterized SQL for inserting a captured diff trace payload.
 pub const INSERT_DIFF_TRACE_SQL: &str =
-    "INSERT INTO diff_traces (time_ms, session_id, patch, model_id, tool_name, tool_version) VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
+    "INSERT INTO diff_traces (time_ms, session_id, patch, model_id, tool_name, tool_version, payload_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
 
 /// Parameterized SQL for retrieving recent captured diff trace patches.
 pub const SELECT_RECENT_DIFF_TRACE_PATCHES_SQL: &str =
-    "SELECT id, time_ms, session_id, patch, model_id, tool_name, tool_version
+    "SELECT id, time_ms, session_id, patch, model_id, tool_name, tool_version, payload_type
 FROM diff_traces
 WHERE time_ms >= ?1 AND time_ms <= ?2
 ORDER BY time_ms ASC, id ASC";
@@ -197,6 +211,7 @@ pub struct DiffTraceInsert<'a> {
     pub model_id: Option<&'a str>,
     pub tool_name: &'a str,
     pub tool_version: Option<&'a str>,
+    pub payload_type: &'a str,
 }
 
 /// Session model attribution payload to upsert into the agent trace database.
@@ -229,6 +244,7 @@ pub struct DiffTracePatchRow {
     pub model_id: Option<String>,
     pub tool_name: Option<String>,
     pub tool_version: Option<String>,
+    pub payload_type: String,
 }
 
 /// Parsed recent diff trace patch ready for comparison flows.
@@ -240,6 +256,7 @@ pub struct ParsedDiffTracePatch {
     pub patch: ParsedPatch,
     pub tool_name: Option<String>,
     pub tool_version: Option<String>,
+    pub payload_type: String,
 }
 
 /// Deterministic skipped-row report for invalid recent diff trace patches.
@@ -445,6 +462,7 @@ fn insert_diff_trace_with<M: DbSpec>(db: &TursoDb<M>, input: DiffTraceInsert<'_>
             input.model_id,
             input.tool_name,
             input.tool_version,
+            input.payload_type,
         ),
     )
 }
@@ -648,6 +666,9 @@ fn diff_trace_patch_row_from_turso(row: &turso::Row) -> Result<DiffTracePatchRow
         tool_version: row
             .get(6)
             .context("failed to read diff_traces.tool_version")?,
+        payload_type: row
+            .get(7)
+            .context("failed to read diff_traces.payload_type")?,
     })
 }
 
@@ -671,6 +692,7 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
                     patch,
                     tool_name: row.tool_name,
                     tool_version: row.tool_version,
+                    payload_type: row.payload_type,
                 });
             }
             Err(error) => skipped.push(SkippedDiffTracePatch {
@@ -783,6 +805,7 @@ mod tests {
                 model_id: Some("test-provider/test-model"),
                 tool_name: "opencode",
                 tool_version: Some("1.2.3"),
+                payload_type: PAYLOAD_TYPE_PATCH,
             },
         )
         .expect("diff trace insert should succeed");
@@ -865,6 +888,19 @@ mod tests {
                 (Some("opencode"), Some("1.2.3")),
                 (Some("opencode"), Some("1.2.3")),
                 (Some("opencode"), Some("1.2.3")),
+            ]
+        );
+        assert_eq!(
+            result
+                .patches
+                .iter()
+                .map(|patch| patch.payload_type.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                PAYLOAD_TYPE_PATCH,
+                PAYLOAD_TYPE_PATCH,
+                PAYLOAD_TYPE_PATCH,
+                PAYLOAD_TYPE_PATCH
             ]
         );
         assert_eq!(
@@ -968,6 +1004,7 @@ mod tests {
                 "013_create_messages_updated_at_trigger",
                 "014_create_parts_updated_at_trigger",
                 "015_create_session_models",
+                "016_add_diff_traces_payload_type",
             ]
         );
 

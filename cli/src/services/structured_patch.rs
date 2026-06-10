@@ -192,6 +192,7 @@ fn write_create_patch(file_path: String, content: &str) -> ParsedPatch {
             kind: TouchedLineKind::Added,
             line_number: u64::try_from(index + 1).expect("line index should fit in u64"),
             content,
+            session_id: None,
         })
         .collect::<Vec<_>>();
     let new_count = u64::try_from(lines.len()).expect("line count should fit in u64");
@@ -241,6 +242,7 @@ fn parse_structured_patch_hunk(hunk_value: &Value) -> Option<PatchHunk> {
                     kind: TouchedLineKind::Added,
                     line_number: new_line_number,
                     content,
+                    session_id: None,
                 });
                 new_line_number += 1;
             }
@@ -249,6 +251,7 @@ fn parse_structured_patch_hunk(hunk_value: &Value) -> Option<PatchHunk> {
                     kind: TouchedLineKind::Removed,
                     line_number: old_line_number,
                     content,
+                    session_id: None,
                 });
                 old_line_number += 1;
             }

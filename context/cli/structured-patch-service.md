@@ -22,7 +22,7 @@
 
 ## Runtime wiring status
 
-The module is not wired into `sce hooks diff-trace` yet. Current hook runtime still accepts normalized diff-trace JSON with raw diff text. Runtime integration is planned in `context/plans/claude-rust-diff-trace.md` T03.
+The module is not wired into `sce hooks diff-trace` yet. Current hook runtime still accepts normalized diff-trace JSON with raw diff text. The `diff_traces` table now supports a `payload_type` discriminator (`patch` for `OpenCode` unified-diff payloads, `structured` for `Claude` `PostToolUse` payloads) so structured payloads can be persisted and later parsed through `structured_patch.rs` during post-commit processing. Runtime intake wiring is planned in T04; post-commit parsing dispatch is planned in T05.
 
 ## Test status
 

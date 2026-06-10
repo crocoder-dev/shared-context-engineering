@@ -21,20 +21,27 @@ Planning interpretation: the last nine commits created and then refined a Claude
 ## Success criteria
 
 - Generated Claude settings call `sce hooks session-model` and `sce hooks diff-trace` directly; they no longer execute Bun or `.claude/plugins/sce-agent-trace.ts`.
-- `sce hooks diff-trace` can accept Claude structured `PostToolUse` payloads and derive the same patch output currently covered by the `diff_creation` golden fixtures.
-- Existing OpenCode normalized `diff-trace` payloads remain accepted and behaviorally unchanged.
+- AgentTraceDb stores diff-trace source payloads behind a generic payload column plus a payload-type discriminator, with OpenCode rows marked as patch payloads and Claude rows marked as structured payloads.
+- `sce hooks diff-trace` persists Claude structured `PostToolUse` payload JSON without first rendering it into a patchset; post-commit processing derives `ParsedPatch` from the stored structured JSON through `structured_patch.rs`.
+- Existing OpenCode normalized `diff-trace` payloads remain accepted and behaviorally unchanged, except for being stored through the generic payload/discriminator schema and parsed from that representation during post-commit processing.
 - Claude TypeScript plugin source, generated plugin output, and Claude TypeScript golden tests are removed from the repo-owned Claude path.
 - Golden fixture coverage for Claude diff derivation lives in Rust and validates the checked-in `cli/src/services/structured_patch/fixtures/` scenarios.
 - Generated output parity and full repo validation pass.
 
 ## Constraints and non-goals
 
-- In scope: Rust hook intake/derivation, Rust tests, Pkl-generated Claude settings, generated output updates, context sync.
+- In scope: AgentTraceDb diff-trace storage migration, Rust hook intake/derivation, Rust tests, Pkl-generated Claude settings, generated output updates, context sync.
 - In scope: removing Claude-specific TypeScript plugin source/tests and generated `.claude/plugins` output.
 - Out of scope: changing OpenCode TypeScript plugin behavior or removing OpenCode TypeScript runtime code.
-- Out of scope: changing post-commit Agent Trace payload semantics, AgentTraceDb schema, or OpenCode plugin registration.
+- Out of scope: changing post-commit Agent Trace payload semantics, AgentTraceDb schema beyond the `diff_traces` typed source-payload migration, or OpenCode plugin registration.
 - Out of scope: adding a new external dependency unless implementation proves the existing Rust stack cannot parse the structured Claude payload safely.
 - Preserve one-task/one-atomic-commit slicing; each executable task below should land independently.
+
+## Assumptions
+
+- The generic diff-trace persisted payload uses a discriminator with values equivalent to `patch` for OpenCode unified patch payloads and `structured` for Claude structured hook payloads.
+- Claude structured rows should mirror OpenCode row behavior: persist the source payload at `sce hooks diff-trace` intake, then convert to `ParsedPatch` only during post-commit recent-diff-trace processing.
+- `cli/src/services/structured_patch.rs` remains the Rust owner for converting Claude structured payload JSON into `ParsedPatch`.
 
 ## Task stack
 
@@ -43,7 +50,7 @@ Planning interpretation: the last nine commits created and then refined a Claude
   - Goal: Add Rust data models and pure derivation helpers that convert supported Claude `PostToolUse` structured payloads into the existing normalized diff-trace shape.
   - Boundaries (in/out of scope): In - Rust-only parsing/normalization helpers for Claude `Write` create and `Edit` structured-patch payloads, status/skip reasons matching the current supported cases, no CLI routing changes. Out - generated settings changes, TypeScript deletion, DB persistence changes, OpenCode flow changes.
   - Done when: Rust exposes a testable pure function that accepts event name + JSON payload + fixed time/tool version inputs and returns derived `{ sessionID, diff, time, tool_name="claude", tool_version }` or deterministic skip/error results for unsupported payloads.
-  - Verification notes (commands or checks): Run the narrow Rust tests added for the derivation helper via `nix develop -c sh -c 'cd cli && cargo test claude'` if a narrow test target exists; otherwise use the narrowest relevant `cargo test` selector. Final full validation remains T07.
+  - Verification notes (commands or checks): Run the narrow Rust tests added for the derivation helper via `nix develop -c sh -c 'cd cli && cargo test claude'` if a narrow test target exists; otherwise use the narrowest relevant `cargo test` selector. Final full validation remains T09.
   - Completion evidence (2026-06-10): Added synchronous Rust `structured_patch` service module; Claude `PostToolUse` `Write` and `Edit` structured payload derivation returns `ParsedPatch`-backed `ClaudeStructuredPatch` results with deterministic skip reasons and fixed time/tool-version inputs. Generated helper tests were removed after review; golden fixture coverage remains deferred to T02. `nix flake check` passed. `nix run .#pkl-check-generated` passed. Direct narrow `cargo test claude` was not run because the repo bash policy blocks direct Cargo test commands in favor of `nix flake check`.
 
 - [x] T02: `Move Claude diff-creation golden tests to Rust` (status:done)
@@ -54,41 +61,56 @@ Planning interpretation: the last nine commits created and then refined a Claude
   - Verification notes (commands or checks): Run the narrow Rust golden test selector through Nix, for example `nix develop -c sh -c 'cd cli && cargo test claude_derivation'` once test names are known.
   - Completion evidence (2026-06-10): Added `cli/src/services/structured_patch/tests.rs` with runtime fixture discovery, missing/extra scenario validation, and `claude_derivation_golden_tests` asserting all eight `diff_creation/` scenarios against `derive_claude_structured_patch` with fixed time/tool-version inputs. `nix flake check` passed. `nix run .#pkl-check-generated` passed.
 
-- [ ] T03: `Teach sce hooks diff-trace to accept Claude structured payloads` (status:todo)
+- [x] T03: `Migrate diff_traces to typed generic payload storage` (status:done)
   - Task ID: T03
-  - Goal: Extend the Rust `sce hooks diff-trace` STDIN intake so Claude structured `PostToolUse` payloads are derived in Rust and then pass through the existing diff-trace persistence path.
-  - Boundaries (in/out of scope): In - payload classification, validation errors/skips, derivation-to-existing `DiffTracePayload` adapter, tests for Claude structured payload runtime path and existing normalized payload compatibility. Out - new DB schema, post-commit flow changes, OpenCode plugin changes, generated settings changes.
-  - Done when: `diff-trace` accepts both the existing normalized payload and the new Claude structured payload; Claude unsupported/no-diff cases produce deterministic success/no-op or validation behavior consistent with current hook semantics; OpenCode normalized payload tests still pass unchanged.
+  - Goal: Replace patch-only diff-trace persistence with a generic source-payload column plus payload-type discriminator while preserving existing OpenCode rows and query behavior.
+  - Boundaries (in/out of scope): In - AgentTraceDb migration(s), typed insert/query structs, constants/enums for `patch` and `structured` discriminator values, backward-compatible handling for existing `patch` data if required by current migrations/tests. Out - Claude hook intake, post-commit structured parsing, generated settings changes, OpenCode plugin changes.
+  - Done when: New diff-trace inserts can persist payload text with an explicit type; existing OpenCode patch payloads are stored/read as `patch`; recent-diff-trace query code exposes enough typed information for later parsing into `ParsedPatch`.
+  - Verification notes (commands or checks): Run focused AgentTraceDb tests through Nix, for example `nix develop -c sh -c 'cd cli && cargo test agent_trace_db'`; include migration/backward-compatibility test coverage where the current DB test harness supports it.
+  - Completion evidence (2026-06-10): Added migration `009_add_diff_traces_payload_type.sql` adding `payload_type TEXT NOT NULL DEFAULT 'patch'` to `diff_traces`. Added `PAYLOAD_TYPE_PATCH` and `PAYLOAD_TYPE_STRUCTURED` constants to `agent_trace_db/mod.rs`. Updated `DiffTraceInsert`, `DiffTracePatchRow`, `ParsedDiffTracePatch` to carry `payload_type`. Updated `INSERT_DIFF_TRACE_SQL` and `SELECT_RECENT_DIFF_TRACE_PATCHES_SQL` to include `payload_type`. Updated `insert_diff_trace_with`, `diff_trace_patch_row_from_turso`, and `parse_recent_diff_trace_patch_rows` for the new column. Updated `hooks/mod.rs` to pass `PAYLOAD_TYPE_PATCH` for existing OpenCode diff-trace flow. Updated baseline migration test to expect 9 migrations. Added `payload_type` assertion to existing diff-trace query test. `nix flake check` passed. `nix run .#pkl-check-generated` passed.
+
+- [ ] T04: `Persist Claude structured diff-trace source payloads` (status:todo)
+  - Task ID: T04
+  - Goal: Extend `sce hooks diff-trace` STDIN intake so Claude structured `PostToolUse` payload JSON is classified and persisted as a structured source payload without converting it to a patchset at insert time.
+  - Boundaries (in/out of scope): In - payload classification, validation errors/skips for unsupported/no-diff Claude events, insert adapter to the generic payload schema, tests for Claude structured payload intake and existing OpenCode normalized payload compatibility. Out - post-commit conversion to `ParsedPatch`, generated settings changes, OpenCode plugin changes.
+  - Done when: `diff-trace` accepts existing OpenCode normalized payloads as `patch` payloads and Claude supported structured payloads as `structured` payloads; Claude unsupported/no-diff cases produce deterministic success/no-op or validation behavior consistent with current hook semantics; no Claude row is rendered to unified-diff text before DB persistence.
   - Verification notes (commands or checks): Run focused hooks tests through Nix, for example `nix develop -c sh -c 'cd cli && cargo test hooks'`; include a targeted exact test when available.
 
-- [ ] T04: `Render Claude settings with direct sce hook commands` (status:todo)
-  - Task ID: T04
+- [ ] T05: `Parse typed diff-trace payloads during post-commit processing` (status:todo)
+  - Task ID: T05
+  - Goal: Update post-commit recent-diff-trace processing so typed persisted payloads are converted into `ParsedPatch` at read/processing time.
+  - Boundaries (in/out of scope): In - parser dispatch for `payload_type="patch"` through existing patch parsing, parser dispatch for `payload_type="structured"` through `structured_patch.rs`, malformed-row skip accounting, model/tool metadata preservation, tests covering mixed OpenCode+Claude rows. Out - DB schema changes beyond T03, hook settings generation, Agent Trace output schema changes.
+  - Done when: Post-commit combines/intersects OpenCode patch rows and Claude structured rows through the same `ParsedPatch` pipeline; structured Claude rows derive the same patch output as Rust golden fixtures; malformed or unsupported stored payloads are skipped/reportable without breaking valid rows.
+  - Verification notes (commands or checks): Run focused post-commit/hooks tests through Nix, for example `nix develop -c sh -c 'cd cli && cargo test post_commit'` or the narrowest matching selector once test names are known.
+
+- [ ] T06: `Render Claude settings with direct sce hook commands` (status:todo)
+  - Task ID: T06
   - Goal: Update canonical Pkl-generated Claude settings so Claude invokes `sce hooks session-model` and `sce hooks diff-trace` directly instead of running Bun against `.claude/plugins/sce-agent-trace.ts`.
   - Boundaries (in/out of scope): In - `config/pkl/renderers/claude-content.pkl` settings command definitions and regenerated `config/.claude/settings.json` / repo-root `.claude/settings.json` outputs. Out - OpenCode renderer/plugin registration, agent/skill content changes unrelated to settings, manual edits to generated outputs without source updates.
   - Done when: Generated Claude settings contain no `.claude/plugins/sce-agent-trace.ts` or `bun` hook invocation for agent tracing, and route `SessionStart` to `sce hooks session-model` while routing matched `PostToolUse` to `sce hooks diff-trace` with Claude hook payload on STDIN according to Claude hook command behavior.
   - Verification notes (commands or checks): Run `nix develop -c pkl eval -m . config/pkl/generate.pkl` after source edits, then `nix run .#pkl-check-generated`.
 
-- [ ] T05: `Remove Claude TypeScript plugin source and generated outputs` (status:todo)
-  - Task ID: T05
+- [ ] T07: `Remove Claude TypeScript plugin source and generated outputs` (status:todo)
+  - Task ID: T07
   - Goal: Delete the now-obsolete Claude TypeScript agent-trace runtime and its TypeScript golden tests while preserving OpenCode TypeScript plugin/runtime code.
   - Boundaries (in/out of scope): In - remove `config/lib/agent-trace-plugin/claude-sce-agent-trace-plugin.ts`, its Bun test, generated `config/.claude/plugins/sce-agent-trace.ts`, generated root `.claude/plugins/sce-agent-trace.ts`, and references that assume a Claude plugin path exists. Out - `config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts`, OpenCode generated plugins, bash-policy code.
   - Done when: No repo-owned Claude `.claude/plugins` agent-trace TypeScript remains; config-lib package/test configuration no longer expects the deleted Claude test; generated output parity is clean after regeneration.
-  - Verification notes (commands or checks): Run `nix run .#pkl-check-generated`; run the relevant config-lib checks only if package/test manifests changed, otherwise rely on T07 full validation.
+  - Verification notes (commands or checks): Run `nix run .#pkl-check-generated`; run the relevant config-lib checks only if package/test manifests changed, otherwise rely on T09 full validation.
 
-- [ ] T06: `Sync current-state context for Rust-owned Claude tracing` (status:todo)
-  - Task ID: T06
+- [ ] T08: `Sync current-state context for Rust-owned Claude tracing` (status:todo)
+  - Task ID: T08
   - Goal: Update durable context to describe the new Rust-owned Claude derivation boundary and removal of Claude TypeScript plugin runtime.
   - Boundaries (in/out of scope): In - focused updates to `context/sce/opencode-agent-trace-plugin-runtime.md`, `context/sce/agent-trace-hooks-command-routing.md`, `context/cli/patch-service.md`, `context/context-map.md`, `context/overview.md`, and glossary/architecture entries if needed. Out - historical narration beyond current-state facts, unrelated context cleanup.
-  - Done when: Context says OpenCode still uses TypeScript normalized diff traces, Claude settings call `sce hooks` directly, Rust derives Claude structured patches, and golden tests are Rust-owned.
+  - Done when: Context says OpenCode still uses TypeScript normalized diff traces, diff-trace storage uses typed source payloads, Claude settings call `sce hooks` directly, Rust derives Claude structured patches during post-commit processing, and golden tests are Rust-owned.
   - Verification notes (commands or checks): Review context references for stale `.claude/plugins/sce-agent-trace.ts`, Claude TypeScript golden test, and shared TypeScript-runtime-to-Rust boundary claims.
 
-- [ ] T07: `Validate and clean up Claude Rust diff-trace migration` (status:todo)
-  - Task ID: T07
+- [ ] T09: `Validate and clean up Claude Rust diff-trace migration` (status:todo)
+  - Task ID: T09
   - Goal: Run final validation, remove temporary scaffolding, and record plan completion evidence.
   - Boundaries (in/out of scope): In - full repo validation, generated-output parity, checking for stale Claude TypeScript references, updating this plan with validation evidence. Out - new feature work or unrelated refactors discovered during validation.
   - Done when: `nix run .#pkl-check-generated` and `nix flake check` pass; no stale Claude plugin TypeScript files/references remain except intentional historical references; plan status/evidence is updated.
-  - Verification notes (commands or checks): `nix run .#pkl-check-generated`; `nix flake check`; targeted search for `.claude/plugins/sce-agent-trace.ts`, `deriveClaudeDiffTracePayload`, and Claude TypeScript golden-test references.
+  - Verification notes (commands or checks): `nix run .#pkl-check-generated`; `nix flake check`; targeted search for `.claude/plugins/sce-agent-trace.ts`, `deriveClaudeDiffTracePayload`, and Claude TypeScript golden-test references; targeted search/review that Claude structured payload rows are not rendered into patchsets before persistence.
 
 ## Open questions
 
-- None blocking. User clarified that Claude derivation should happen fully in Rust, Claude TypeScript should be removed, OpenCode TypeScript should remain, and generated Claude settings should call `sce hooks` directly.
+- None blocking. User clarified that Claude derivation should happen fully in Rust, Claude TypeScript should be removed, OpenCode TypeScript should remain, generated Claude settings should call `sce hooks` directly, and AgentTraceDb should persist generic typed source payloads so Claude structured payloads are converted to `ParsedPatch` during post-commit processing rather than insert-time patchset rendering.

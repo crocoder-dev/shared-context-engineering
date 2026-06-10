@@ -12,7 +12,8 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 - `AgentTraceDb`: type alias for `TursoDb<AgentTraceDbSpec>`, inheriting shared constructor and operation retry behavior.
 - `open_for_hooks_without_migrations()`: Agent Trace-specific runtime-open API for high-frequency hook paths; opens/connects via `TursoDb::open_without_migrations()` and does not run embedded migrations.
 - `ensure_schema_ready_for_hooks()`: non-mutating hook-readiness check that delegates to the shared `TursoDb::ensure_schema_ready()` method with the Agent Trace–specific `AGENT_TRACE_SCHEMA_SETUP_GUIDANCE` constant (`"Run 'sce setup'."`); verifies the Agent Trace DB has the expected applied migration metadata in `__sce_migrations` for every ID in `AGENT_TRACE_MIGRATIONS`; missing/incomplete metadata fails with `Run 'sce setup'.` guidance instead of running migrations.
-- `DiffTraceInsert<'a>`: insert payload with `time_ms: i64`, `session_id: &'a str`, `patch: &'a str`, `model_id: Option<&'a str>`, `tool_name: &'a str`, and nullable `tool_version: Option<&'a str>`.
+- `DiffTraceInsert<'a>`: insert payload with `time_ms: i64`, `session_id: &'a str`, `patch: &'a str`, `model_id: Option<&'a str>`, `tool_name: &'a str`, nullable `tool_version: Option<&'a str>`, and `payload_type: &'a str` (using `PAYLOAD_TYPE_PATCH` or `PAYLOAD_TYPE_STRUCTURED` constants).
+- `PAYLOAD_TYPE_PATCH` / `PAYLOAD_TYPE_STRUCTURED`: string constants (`"patch"` / `"structured"`) for the `diff_traces.payload_type` discriminator column; `OpenCode` normalized diff-trace payloads use `patch`, `Claude` structured `PostToolUse` payloads use `structured`.
 - `insert_diff_trace()`: domain-specific insert helper using parameterized SQL.
 - `RecentDiffTracePatches`: parsed recent `diff_traces` query result containing valid parsed patches plus skipped-row reports.
 - `recent_diff_trace_patches(cutoff_time_ms, end_time_ms)`: chronological `diff_traces` read helper for rows in the inclusive window `time_ms >= cutoff_time_ms AND time_ms <= end_time_ms`; parses raw patch text through `parse_patch` and skips malformed rows without failing the query.
@@ -69,6 +70,7 @@ The Agent Trace DB path is resolved from the shared default-path catalog:
 - `013_create_messages_updated_at_trigger.sql`
 - `014_create_parts_updated_at_trigger.sql`
 - `015_create_session_models.sql`
+- `009_add_diff_traces_payload_type.sql` (migration ID `016_add_diff_traces_payload_type`; adds `payload_type TEXT NOT NULL DEFAULT 'patch'` to `diff_traces`)
 
 The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::new()` applies later Agent Trace migrations to an already-created `~/.local/state/sce/agent-trace.db`.
 
@@ -84,6 +86,10 @@ The `diff_traces` baseline migration creates:
 - `model_id TEXT`
 - `tool_name TEXT`
 - `tool_version TEXT`
+
+Migration `009_add_diff_traces_payload_type` adds:
+
+- `payload_type TEXT NOT NULL DEFAULT 'patch'` — discriminator for source payload format; `patch` for `OpenCode` unified-diff payloads, `structured` for `Claude` `PostToolUse` structured payloads.
 
 The `post_commit_patch_intersections` baseline migration creates:
 
@@ -173,7 +179,7 @@ Both triggers compare `OLD.*` vs `NEW.*` for all mutable columns (excluding `upd
 `sce hooks diff-trace` is the current runtime writer for `diff_traces`.
 
 - The hook path validates required STDIN `{ sessionID, diff, time, tool_name, tool_version }` before persistence, with `model_id` accepted as optional (absent or `null`). When `model_id` is absent, Rust resolves it from `session_models` by `(tool_name, session_id)`. If no matching session model row exists, the hook returns success/no-op without artifact or DB writes.
-- When `model_id` is present, it passes directly into `DiffTraceInsert` as `Option<&str>` (`Some` for non-empty, `None` for absent/null).
+- When `model_id` is present, it passes directly into `DiffTraceInsert` as `Option<&str>` (`Some` for non-empty, `None` for absent/null). The `payload_type` field is set to `PAYLOAD_TYPE_PATCH` for `OpenCode` normalized diff-trace payloads.
 - `time` is accepted as a `u64` Unix epoch millisecond input and must fit the signed `i64` `time_ms` column before any persistence starts.
 - The hook writes the existing collision-safe `context/tmp/<timestamp>-000000-diff-trace.json` parsed-payload artifact (when model enrichment succeeds or model_id was present), then attempts to insert the parsed payload fields through `AgentTraceDb::insert_diff_trace()`.
 - Command success requires artifact persistence to succeed; AgentTraceDb open/insert failures are logged and reflected in the success text as failed DB persistence instead of discarding the artifact fallback.
@@ -198,9 +204,9 @@ The `sce hooks session-model` command route writes normalized session-model attr
 
 `AgentTraceDb::recent_diff_trace_patches(cutoff_time_ms, end_time_ms)` supports the post-commit comparison flow without changing `diff_traces` writes:
 
-- SQL reads `id`, `time_ms`, `session_id`, `patch`, and nullable `model_id` + `tool_name` + `tool_version` from `diff_traces` where `time_ms >= cutoff_time_ms AND time_ms <= end_time_ms`.
+- SQL reads `id`, `time_ms`, `session_id`, `patch`, nullable `model_id` + `tool_name` + `tool_version`, and `payload_type` from `diff_traces` where `time_ms >= cutoff_time_ms AND time_ms <= end_time_ms`.
 - Rows are ordered by `time_ms ASC, id ASC` for deterministic chronological processing.
-- Valid row patches are parsed through `cli/src/services/patch.rs` `parse_patch`, then each produced `PatchHunk` is annotated with the originating row `model_id` (`Some(value)` propagated verbatim, `NULL` propagated as `None`); parsed row records also carry nullable `tool_name`/`tool_version` from the same source row and are returned as `ParsedDiffTracePatch` records.
+- Valid row patches are parsed through `cli/src/services/patch.rs` `parse_patch`, then each produced `PatchHunk` is annotated with the originating row `model_id` (`Some(value)` propagated verbatim, `NULL` propagated as `None`); parsed row records also carry nullable `tool_name`/`tool_version` and `payload_type` from the same source row and are returned as `ParsedDiffTracePatch` records.
 - Malformed recent row patches are returned as `SkippedDiffTracePatch` records with deterministic parse-error reasons; malformed historical rows do not fail the operation.
 - `RecentDiffTracePatches::loaded_count()` and `skipped_count()` expose accounting for later hook output and persistence metadata.
 
