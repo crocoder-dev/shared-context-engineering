@@ -70,7 +70,7 @@ The Agent Trace DB path is resolved from the shared default-path catalog:
 - `013_create_messages_updated_at_trigger.sql`
 - `014_create_parts_updated_at_trigger.sql`
 - `015_create_session_models.sql`
-- `009_add_diff_traces_payload_type.sql` (migration ID `016_add_diff_traces_payload_type`; adds `payload_type TEXT NOT NULL DEFAULT 'patch'` to `diff_traces`)
+- `016_add_diff_traces_payload_type.sql` (migration ID `016_add_diff_traces_payload_type`; adds `payload_type TEXT NOT NULL DEFAULT 'patch'` to `diff_traces`)
 
 The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::new()` applies later Agent Trace migrations to an already-created `~/.local/state/sce/agent-trace.db`.
 
@@ -87,7 +87,7 @@ The `diff_traces` baseline migration creates:
 - `tool_name TEXT`
 - `tool_version TEXT`
 
-Migration `009_add_diff_traces_payload_type` adds:
+Migration `016_add_diff_traces_payload_type` adds:
 
 - `payload_type TEXT NOT NULL DEFAULT 'patch'` — discriminator for source payload format; `patch` for `OpenCode` unified-diff payloads, `structured` for `Claude` `PostToolUse` structured payloads.
 

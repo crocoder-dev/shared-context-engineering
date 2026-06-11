@@ -51,7 +51,7 @@ const CREATE_PARTS_UPDATED_AT_TRIGGER_MIGRATION: &str =
 const CREATE_SESSION_MODELS_MIGRATION: &str =
     include_str!("../../../migrations/agent-trace/015_create_session_models.sql");
 const ADD_DIFF_TRACES_PAYLOAD_TYPE_MIGRATION: &str =
-    include_str!("../../../migrations/agent-trace/009_add_diff_traces_payload_type.sql");
+    include_str!("../../../migrations/agent-trace/016_add_diff_traces_payload_type.sql");
 
 const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
     ("001_create_diff_traces", CREATE_DIFF_TRACES_MIGRATION),
