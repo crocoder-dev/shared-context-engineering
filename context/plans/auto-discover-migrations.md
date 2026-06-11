@@ -6,11 +6,11 @@ Replace hardcoded per-database migration lists with a `build.rs`-generated modul
 
 ## Success criteria
 
-- [ ] No hardcoded migration IDs or `include_str!` calls exist in `agent_trace_db/mod.rs` or `auth_db/mod.rs`.
-- [ ] `build.rs` generates a `src/generated_migrations.rs` module with `&[(&str, &str)]` arrays for each migration directory.
-- [ ] Migration ordering is deterministic: files are sorted by the numeric prefix before the first `_`.
-- [ ] Tests assert dynamically (count, sortedness, prefix pattern) instead of hardcoding full expected ID lists.
-- [ ] `nix flake check` passes after all changes.
+- [x] No hardcoded migration IDs or `include_str!` calls exist in `agent_trace_db/mod.rs` or `auth_db/mod.rs`.
+- [x] `build.rs` generates a `src/generated_migrations.rs` module with `&[(&str, &str)]` arrays for each migration directory.
+- [x] Migration ordering is deterministic: files are sorted by the numeric prefix before the first `_`.
+- [x] Tests assert dynamically (count, sortedness, prefix pattern) instead of hardcoding full expected ID lists.
+- [x] `nix flake check` passes after all changes.
 
 ## Constraints and non-goals
 
@@ -23,8 +23,8 @@ Replace hardcoded per-database migration lists with a `build.rs`-generated modul
 
 - [x] T01: Extend `build.rs` to scan and generate migration arrays (status: done)
 - [x] T02: Update `DbSpec` consumers to use generated migration arrays (status: done)
-- [ ] T03: Convert tests to dynamic migration assertions (status: todo)
-- [ ] T04: Validation, cleanup, and context sync (status: todo)
+- [x] T03: Convert tests to dynamic migration assertions (status: done)
+- [x] T04: Validation, cleanup, and context sync (status: done)
 
 ---
 
@@ -80,23 +80,21 @@ Replace hardcoded per-database migration lists with a `build.rs`-generated modul
 
 ### T03: Convert tests to dynamic migration assertions
 
-- **Task ID**: T03
-- **Goal**: Replace hardcoded `vec!["001_...", "002_..."]` assertions in `agent_trace_db/mod.rs` and `auth_db/mod.rs` tests with dynamic checks that validate properties instead of exact lists.
-- **Boundaries (in/out of scope)**:
-  - **In**: Test assertions in `agent_trace_db/mod.rs` and `auth_db/mod.rs`.
-  - **Out**: Changing production migration logic or the `__sce_migrations` schema.
-- **Done when**:
-  - No test contains a hardcoded list of migration IDs.
-  - Tests verify: applied count equals expected count, IDs are sorted lexicographically, every ID matches `^\d{3}_.+`.
-  - `nix flake check` passes.
-- **Verification notes (commands or checks)**:
-  - `grep -n "001_create" cli/src/services/agent_trace_db/mod.rs` → only in generated file
-  - `grep -n "001_create" cli/src/services/auth_db/mod.rs` → only in generated file
-  - `nix flake check`
+- **Status:** done
+- **Completed:** 2026-06-11
+- **Files changed:** `cli/src/services/agent_trace_db/mod.rs`, `cli/src/services/auth_db/mod.rs`
+- **Evidence:** `nix flake check` passed (cli-tests, cli-clippy, cli-fmt, pkl-parity); `nix run .#pkl-check-generated` up to date; no hardcoded migration ID lists remain in test code.
+- **Notes:** Replaced exact `assert_eq!` on derived migration ID lists with dynamic property assertions (count parity, ascending order, `NNN_...` pattern) in both `new_applies_baseline_agent_trace_migration_and_indexes` and `auth_db_baseline_migration_creates_table_index_and_constraints`.
 
 ---
 
 ### T04: Validation, cleanup, and context sync
+
+- **Status:** done
+- **Completed:** 2026-06-11
+- **Files changed:** None (verification + audit only)
+- **Evidence:** `nix flake check` passed (all checks); `nix run .#pkl-check-generated` up to date; no stale comments / dead code found in `agent_trace_db/mod.rs`, `auth_db/mod.rs`, `build.rs`, or `generated_migrations.rs`; zero `include_str!("...migrations...")` references remain outside `generated_migrations.rs`.
+- **Notes:** Context files (`shared-turso-db.md`, `agent-trace-db.md`, `auth-db.md`) already reflect the `build.rs`-generated migration pattern. No cleanup needed.
 
 - **Task ID**: T04
 - **Goal**: Run full validation, remove any temporary scaffolding, and update `context/` files to reflect the new build-time migration generation pattern.
@@ -115,3 +113,35 @@ Replace hardcoded per-database migration lists with a `build.rs`-generated modul
 ## Open questions
 
 None — all clarifications resolved.
+
+## Validation Report
+
+### Commands run
+
+- `nix flake check` → exit 0, all checks passed (cli-tests, cli-clippy, cli-fmt, pkl-parity, integrations-install-tests, integrations-install-clippy, integrations-install-fmt, npm-bun-tests, npm-biome-check, npm-biome-format, config-lib-bun-tests, config-lib-biome-check, config-lib-biome-format)
+- `nix run .#pkl-check-generated` → exit 0, "Generated outputs are up to date."
+
+### Temporary scaffolding
+
+- None found. No commented-out code, TODO markers, or dead references exist in `agent_trace_db/mod.rs`, `auth_db/mod.rs`, `build.rs`, or `generated_migrations.rs`. `context/tmp/` contains only pre-existing runtime hook artifacts (gitignored).
+
+### Context verification
+
+- `context/sce/shared-turso-db.md` — lines 10–11 describe `build.rs` scan and `generated_migrations.rs` generation ✓
+- `context/sce/agent-trace-db.md` — line 51 references `generated_migrations::AGENT_TRACE_MIGRATIONS` ✓
+- `context/sce/auth-db.md` — line 10 references `generated_migrations::AUTH_MIGRATIONS` ✓
+- `context/glossary.md` — "CLI generated migration manifest" entry at line 51 ✓
+- `context/overview.md` — lines 18, 44, 50 describe generated migrations ✓
+- `context/context-map.md` — line 44 links to `shared-turso-db.md` with build-time generation description ✓
+
+### Success-criteria verification
+
+- [x] **No hardcoded migration IDs or `include_str!` calls exist in `agent_trace_db/mod.rs` or `auth_db/mod.rs`.** — Grep for `include_str!("...migrations..."` across `cli/src/` returns zero matches outside `generated_migrations.rs`.
+- [x] **`build.rs` generates a `src/generated_migrations.rs` module with `&[(&str, &str)]` arrays.** — File exists at `cli/src/generated_migrations.rs` with `AGENT_TRACE_MIGRATIONS` (14 entries) and `AUTH_MIGRATIONS` (2 entries), each is `&[(&str, &str)]` with `include_str!` SQL embedding.
+- [x] **Migration ordering is deterministic: sorted by numeric prefix.** — `generated_migrations.rs` lists 001–014 for agent-trace, 001–002 for auth, in ascending numeric order. Build sorts by parsed integer prefix before `_`.
+- [x] **Tests assert dynamically (count, sortedness, prefix pattern).** — Both `new_applies_baseline_agent_trace_migration_and_indexes` and `auth_db_baseline_migration_creates_table_index_and_constraints` use dynamic assertions: count parity with generated arrays, ascending sortedness via `windows(2)`, and `NNN_...` prefix pattern.
+- [x] **`nix flake check` passes after all changes.** — Confirmed via fresh run: all checks passed, exit 0.
+
+### Residual risks
+
+- None identified. The build-time generation pattern is deterministic, all dynamic test assertions cover the expected properties, and context files are aligned with code truth.

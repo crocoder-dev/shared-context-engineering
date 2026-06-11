@@ -128,11 +128,24 @@ mod tests {
         ));
 
         // Verify migration IDs are ordered
-        let expected_migration_ids: Vec<String> = generated_migrations::AUTH_MIGRATIONS
-            .iter()
-            .map(|(id, _)| (*id).to_owned())
-            .collect();
-        assert_eq!(applied_migration_ids(&db), expected_migration_ids);
+        let applied_ids = applied_migration_ids(&db);
+        assert_eq!(
+            applied_ids.len(),
+            generated_migrations::AUTH_MIGRATIONS.len(),
+            "applied migration count should match generated migration count"
+        );
+        assert!(
+            applied_ids.windows(2).all(|w| w[0] < w[1]),
+            "applied migration IDs should be sorted ascending: {applied_ids:?}"
+        );
+        for id in &applied_ids {
+            assert!(
+                id.len() > 4
+                    && id.chars().take(3).all(|c| c.is_ascii_digit())
+                    && id.chars().nth(3) == Some('_'),
+                "migration ID '{id}' should match NNN_... pattern"
+            );
+        }
 
         // Verify column NOT NULL constraints via PRAGMA table_info
         // Returns: cid, name, type, notnull, dflt_value, pk
