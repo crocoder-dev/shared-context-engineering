@@ -17,6 +17,8 @@ pub static AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
     ("012_create_parts_session_message_order_index", include_str!("../migrations/agent-trace/012_create_parts_session_message_order_index.sql")),
     ("013_create_messages_updated_at_trigger", include_str!("../migrations/agent-trace/013_create_messages_updated_at_trigger.sql")),
     ("014_create_parts_updated_at_trigger", include_str!("../migrations/agent-trace/014_create_parts_updated_at_trigger.sql")),
+    ("015_create_session_models", include_str!("../migrations/agent-trace/015_create_session_models.sql")),
+    ("016_add_diff_traces_payload_type", include_str!("../migrations/agent-trace/016_add_diff_traces_payload_type.sql")),
 ];
 
 #[rustfmt::skip]

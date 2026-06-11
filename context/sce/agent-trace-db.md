@@ -53,15 +53,15 @@ The Agent Trace DB path is resolved from the shared default-path catalog:
 
 ## Migrations
 
-`AgentTraceDbSpec::migrations()` embeds an ordered split fresh-start baseline migration set from `cli/migrations/agent-trace/`:
+`AgentTraceDbSpec::migrations()` returns `generated_migrations::AGENT_TRACE_MIGRATIONS`, generated from `cli/migrations/agent-trace/` at build time. Migration IDs are the SQL filename stems, sorted by numeric prefix:
 
 - `001_create_diff_traces.sql`
 - `002_create_post_commit_patch_intersections.sql`
 - `003_create_agent_traces.sql`
 - `004_create_diff_traces_time_ms_id_index.sql`
 - `005_create_agent_traces_agent_trace_id_index.sql`
-- `006_add_agent_traces_vcs_remote_url.sql` (historical filename; migration ID `006_add_agent_traces_remote_url` adds the `remote_url` column)
-- `007_create_agent_traces_vcs_remote_url_index.sql` (historical filename; migration ID `007_create_agent_traces_remote_url_index` creates `idx_agent_traces_remote_url`)
+- `006_add_agent_traces_vcs_remote_url.sql`
+- `007_create_agent_traces_vcs_remote_url_index.sql`
 - `008_create_messages.sql`
 - `009_create_parts.sql`
 - `010_create_messages_session_message_unique_index.sql`

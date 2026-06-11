@@ -5,105 +5,20 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use turso::Value as TursoValue;
 
-use crate::services::{
-    db::{DbSpec, TursoDb},
-    default_paths::agent_trace_db_path,
-    patch::{parse_patch, ParseError, ParsedPatch},
-    structured_patch::{derive_claude_structured_patch, ClaudeStructuredPatchDerivationResult},
+use crate::{
+    generated_migrations,
+    services::{
+        db::{DbSpec, TursoDb},
+        default_paths::agent_trace_db_path,
+        patch::{parse_patch, ParseError, ParsedPatch},
+        structured_patch::{derive_claude_structured_patch, ClaudeStructuredPatchDerivationResult},
+    },
 };
 
 use serde_json::Value;
 
 pub mod lifecycle;
 
-const CREATE_DIFF_TRACES_MIGRATION: &str =
-    include_str!("../../../migrations/agent-trace/001_create_diff_traces.sql");
-const CREATE_POST_COMMIT_PATCH_INTERSECTIONS_MIGRATION: &str =
-    include_str!("../../../migrations/agent-trace/002_create_post_commit_patch_intersections.sql");
-const CREATE_AGENT_TRACES_MIGRATION: &str =
-    include_str!("../../../migrations/agent-trace/003_create_agent_traces.sql");
-const CREATE_DIFF_TRACES_TIME_MS_ID_INDEX_MIGRATION: &str =
-    include_str!("../../../migrations/agent-trace/004_create_diff_traces_time_ms_id_index.sql");
-const CREATE_AGENT_TRACES_AGENT_TRACE_ID_INDEX_MIGRATION: &str = include_str!(
-    "../../../migrations/agent-trace/005_create_agent_traces_agent_trace_id_index.sql"
-);
-const ADD_AGENT_TRACES_REMOTE_URL_MIGRATION: &str =
-    include_str!("../../../migrations/agent-trace/006_add_agent_traces_vcs_remote_url.sql");
-const CREATE_AGENT_TRACES_REMOTE_URL_INDEX_MIGRATION: &str = include_str!(
-    "../../../migrations/agent-trace/007_create_agent_traces_vcs_remote_url_index.sql"
-);
-const CREATE_MESSAGES_MIGRATION: &str =
-    include_str!("../../../migrations/agent-trace/008_create_messages.sql");
-const CREATE_PARTS_MIGRATION: &str =
-    include_str!("../../../migrations/agent-trace/009_create_parts.sql");
-const CREATE_MESSAGES_SESSION_MESSAGE_UNIQUE_INDEX_MIGRATION: &str = include_str!(
-    "../../../migrations/agent-trace/010_create_messages_session_message_unique_index.sql"
-);
-const CREATE_MESSAGES_SESSION_ORDER_INDEX_MIGRATION: &str =
-    include_str!("../../../migrations/agent-trace/011_create_messages_session_order_index.sql");
-const CREATE_PARTS_SESSION_MESSAGE_ORDER_INDEX_MIGRATION: &str = include_str!(
-    "../../../migrations/agent-trace/012_create_parts_session_message_order_index.sql"
-);
-const CREATE_MESSAGES_UPDATED_AT_TRIGGER_MIGRATION: &str =
-    include_str!("../../../migrations/agent-trace/013_create_messages_updated_at_trigger.sql");
-const CREATE_PARTS_UPDATED_AT_TRIGGER_MIGRATION: &str =
-    include_str!("../../../migrations/agent-trace/014_create_parts_updated_at_trigger.sql");
-const CREATE_SESSION_MODELS_MIGRATION: &str =
-    include_str!("../../../migrations/agent-trace/015_create_session_models.sql");
-const ADD_DIFF_TRACES_PAYLOAD_TYPE_MIGRATION: &str =
-    include_str!("../../../migrations/agent-trace/016_add_diff_traces_payload_type.sql");
-
-const AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
-    ("001_create_diff_traces", CREATE_DIFF_TRACES_MIGRATION),
-    (
-        "002_create_post_commit_patch_intersections",
-        CREATE_POST_COMMIT_PATCH_INTERSECTIONS_MIGRATION,
-    ),
-    ("003_create_agent_traces", CREATE_AGENT_TRACES_MIGRATION),
-    (
-        "004_create_diff_traces_time_ms_id_index",
-        CREATE_DIFF_TRACES_TIME_MS_ID_INDEX_MIGRATION,
-    ),
-    (
-        "005_create_agent_traces_agent_trace_id_index",
-        CREATE_AGENT_TRACES_AGENT_TRACE_ID_INDEX_MIGRATION,
-    ),
-    (
-        "006_add_agent_traces_remote_url",
-        ADD_AGENT_TRACES_REMOTE_URL_MIGRATION,
-    ),
-    (
-        "007_create_agent_traces_remote_url_index",
-        CREATE_AGENT_TRACES_REMOTE_URL_INDEX_MIGRATION,
-    ),
-    ("008_create_messages", CREATE_MESSAGES_MIGRATION),
-    ("009_create_parts", CREATE_PARTS_MIGRATION),
-    (
-        "010_create_messages_session_message_unique_index",
-        CREATE_MESSAGES_SESSION_MESSAGE_UNIQUE_INDEX_MIGRATION,
-    ),
-    (
-        "011_create_messages_session_order_index",
-        CREATE_MESSAGES_SESSION_ORDER_INDEX_MIGRATION,
-    ),
-    (
-        "012_create_parts_session_message_order_index",
-        CREATE_PARTS_SESSION_MESSAGE_ORDER_INDEX_MIGRATION,
-    ),
-    (
-        "013_create_messages_updated_at_trigger",
-        CREATE_MESSAGES_UPDATED_AT_TRIGGER_MIGRATION,
-    ),
-    (
-        "014_create_parts_updated_at_trigger",
-        CREATE_PARTS_UPDATED_AT_TRIGGER_MIGRATION,
-    ),
-    ("015_create_session_models", CREATE_SESSION_MODELS_MIGRATION),
-    (
-        "016_add_diff_traces_payload_type",
-        ADD_DIFF_TRACES_PAYLOAD_TYPE_MIGRATION,
-    ),
-];
 
 const AGENT_TRACE_SCHEMA_SETUP_GUIDANCE: &str = "Run 'sce setup'.";
 
@@ -193,7 +108,7 @@ impl DbSpec for AgentTraceDbSpec {
     }
 
     fn migrations() -> &'static [(&'static str, &'static str)] {
-        AGENT_TRACE_MIGRATIONS
+        generated_migrations::AGENT_TRACE_MIGRATIONS
     }
 
     fn db_config_key() -> &'static str {
@@ -763,7 +678,7 @@ mod tests {
         }
 
         fn migrations() -> &'static [(&'static str, &'static str)] {
-            AGENT_TRACE_MIGRATIONS
+            generated_migrations::AGENT_TRACE_MIGRATIONS
         }
 
         fn db_config_key() -> &'static str {
@@ -786,7 +701,7 @@ mod tests {
         }
 
         fn migrations() -> &'static [(&'static str, &'static str)] {
-            AGENT_TRACE_MIGRATIONS
+            generated_migrations::AGENT_TRACE_MIGRATIONS
         }
 
         fn db_config_key() -> &'static str {
@@ -1009,27 +924,11 @@ mod tests {
             "trg_messages_updated_at"
         ));
         assert!(sqlite_object_exists(&db, "trigger", "trg_parts_updated_at"));
-        assert_eq!(
-            applied_migration_ids(&db),
-            vec![
-                "001_create_diff_traces",
-                "002_create_post_commit_patch_intersections",
-                "003_create_agent_traces",
-                "004_create_diff_traces_time_ms_id_index",
-                "005_create_agent_traces_agent_trace_id_index",
-                "006_add_agent_traces_remote_url",
-                "007_create_agent_traces_remote_url_index",
-                "008_create_messages",
-                "009_create_parts",
-                "010_create_messages_session_message_unique_index",
-                "011_create_messages_session_order_index",
-                "012_create_parts_session_message_order_index",
-                "013_create_messages_updated_at_trigger",
-                "014_create_parts_updated_at_trigger",
-                "015_create_session_models",
-                "016_add_diff_traces_payload_type",
-            ]
-        );
+        let expected_migration_ids: Vec<String> = generated_migrations::AGENT_TRACE_MIGRATIONS
+            .iter()
+            .map(|(id, _)| (*id).to_owned())
+            .collect();
+        assert_eq!(applied_migration_ids(&db), expected_migration_ids);
 
         let trace_url = agent_trace::agent_trace_persisted_url("trace-1");
 
