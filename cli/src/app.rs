@@ -317,7 +317,7 @@ where
             return Err(ClassifiedError::runtime(REPEATED_COMMAND_DISPATCH_ERROR));
         };
         let command = parse_command_phase(command_args, &runtime.registry, &context)?;
-        app_support::execute_command_phase(command.as_ref(), &context)
+        app_support::execute_command_phase(&command, &context)
     })
 }
 
@@ -325,7 +325,7 @@ fn parse_command_phase<I>(
     args: I,
     registry: &services::command_registry::CommandRegistry,
     context: &ProductionAppContext<'_>,
-) -> Result<services::command_registry::RuntimeCommandHandle, ClassifiedError>
+) -> Result<services::command_registry::RuntimeCommand, ClassifiedError>
 where
     I: IntoIterator<Item = String>,
 {

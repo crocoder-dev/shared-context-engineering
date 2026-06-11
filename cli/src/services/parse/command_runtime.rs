@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::{cli_schema, command_surface, services};
-use services::command_registry::{CommandRegistry, RuntimeCommandHandle};
+use services::command_registry::{CommandRegistry, RuntimeCommand};
 use services::error::{ClassifiedError, FailureClass};
 use services::observability::traits::Logger as LoggerTrait;
 
@@ -9,7 +9,7 @@ pub fn parse_runtime_command<I>(
     args: I,
     registry: &CommandRegistry,
     logger: Option<&dyn LoggerTrait>,
-) -> Result<RuntimeCommandHandle, ClassifiedError>
+) -> Result<RuntimeCommand, ClassifiedError>
 where
     I: IntoIterator<Item = String>,
 {
@@ -48,13 +48,12 @@ fn handle_clap_error(
     args: &[String],
     registry: &CommandRegistry,
     error: &clap::Error,
-) -> Result<RuntimeCommandHandle, ClassifiedError> {
+) -> Result<RuntimeCommand, ClassifiedError> {
     if error.kind() == clap::error::ErrorKind::DisplayHelp {
         if let Some((name, text)) = render_subcommand_help_from_args(args) {
-            return Ok(Box::new(services::help::command::HelpTextCommand {
-                name,
-                text,
-            }));
+            return Ok(RuntimeCommand::HelpText(
+                services::help::command::HelpTextCommand { name, text },
+            ));
         }
 
         return registry_command(registry, services::help::NAME);
@@ -80,14 +79,18 @@ fn handle_clap_error(
 fn registry_command(
     registry: &CommandRegistry,
     name: &str,
-) -> Result<RuntimeCommandHandle, ClassifiedError> {
-    let constructor = registry.get(name).ok_or_else(|| {
+) -> Result<RuntimeCommand, ClassifiedError> {
+    if !registry.contains(name) {
+        return Err(ClassifiedError::runtime(format!(
+            "Command '{name}' is not registered. Try: run 'sce --help' to see available commands."
+        )));
+    }
+
+    services::command_registry::default_runtime_command(name).ok_or_else(|| {
         ClassifiedError::runtime(format!(
             "Command '{name}' is not registered. Try: run 'sce --help' to see available commands."
         ))
-    })?;
-
-    Ok(constructor())
+    })
 }
 
 fn classify_clap_error(error: &clap::Error) -> ClassifiedError {
@@ -127,18 +130,22 @@ fn render_subcommand_help_from_args(args: &[String]) -> Option<(String, String)>
     cli_schema::render_help_for_path(&command_path).map(|text| (command_name, text))
 }
 
-fn render_missing_subcommand_help(args: &[String]) -> Option<RuntimeCommandHandle> {
+fn render_missing_subcommand_help(args: &[String]) -> Option<RuntimeCommand> {
     let command_name = args.get(1)?.as_str();
 
     match command_name {
-        services::auth_command::NAME => Some(Box::new(services::help::command::HelpTextCommand {
-            name: services::auth_command::NAME.to_string(),
-            text: cli_schema::auth_help_text(),
-        })),
-        services::config::NAME => Some(Box::new(services::help::command::HelpTextCommand {
-            name: services::config::NAME.to_string(),
-            text: cli_schema::render_help_for_path(&[services::config::NAME])?,
-        })),
+        services::auth_command::NAME => Some(RuntimeCommand::HelpText(
+            services::help::command::HelpTextCommand {
+                name: services::auth_command::NAME.to_string(),
+                text: cli_schema::auth_help_text(),
+            },
+        )),
+        services::config::NAME => Some(RuntimeCommand::HelpText(
+            services::help::command::HelpTextCommand {
+                name: services::config::NAME.to_string(),
+                text: cli_schema::render_help_for_path(&[services::config::NAME])?,
+            },
+        )),
         _ => None,
     }
 }
@@ -203,9 +210,7 @@ fn extract_quoted_value(message: &str) -> Option<String> {
     Some(message[start + 1..start + 1 + end].to_string())
 }
 
-fn convert_clap_command(
-    command: cli_schema::Commands,
-) -> Result<RuntimeCommandHandle, ClassifiedError> {
+fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand, ClassifiedError> {
     match command {
         cli_schema::Commands::Config { subcommand } => convert_config_subcommand(subcommand),
         cli_schema::Commands::Auth { subcommand } => convert_auth_subcommand(subcommand),
@@ -217,8 +222,8 @@ fn convert_clap_command(
             hooks,
             repo,
         } => convert_setup_command(opencode, claude, both, non_interactive, hooks, repo),
-        cli_schema::Commands::Doctor { fix, format } => {
-            Ok(Box::new(services::doctor::command::DoctorCommand {
+        cli_schema::Commands::Doctor { fix, format } => Ok(RuntimeCommand::Doctor(
+            services::doctor::command::DoctorCommand {
                 request: services::doctor::DoctorRequest {
                     mode: if fix {
                         services::doctor::DoctorMode::Fix
@@ -227,28 +232,28 @@ fn convert_clap_command(
                     },
                     format,
                 },
-            }))
-        }
+            },
+        )),
         cli_schema::Commands::Hooks { subcommand } => convert_hooks_subcommand(subcommand),
-        cli_schema::Commands::Version { format } => {
-            Ok(Box::new(services::version::command::VersionCommand {
+        cli_schema::Commands::Version { format } => Ok(RuntimeCommand::Version(
+            services::version::command::VersionCommand {
                 request: services::version::VersionRequest { format },
-            }))
-        }
-        cli_schema::Commands::Completion { shell } => {
-            Ok(Box::new(services::completion::command::CompletionCommand {
+            },
+        )),
+        cli_schema::Commands::Completion { shell } => Ok(RuntimeCommand::Completion(
+            services::completion::command::CompletionCommand {
                 request: services::completion::CompletionRequest {
                     shell: convert_completion_shell(shell),
                 },
-            }))
-        }
+            },
+        )),
     }
 }
 
 #[allow(clippy::unnecessary_wraps, clippy::needless_pass_by_value)]
 fn convert_auth_subcommand(
     subcommand: cli_schema::AuthSubcommand,
-) -> Result<RuntimeCommandHandle, ClassifiedError> {
+) -> Result<RuntimeCommand, ClassifiedError> {
     let subcommand = match subcommand {
         cli_schema::AuthSubcommand::Login { format } => {
             services::auth_command::AuthSubcommand::Login { format }
@@ -264,9 +269,11 @@ fn convert_auth_subcommand(
         }
     };
 
-    Ok(Box::new(services::auth_command::command::AuthCommand {
-        request: services::auth_command::AuthRequest { subcommand },
-    }))
+    Ok(RuntimeCommand::Auth(
+        services::auth_command::command::AuthCommand {
+            request: services::auth_command::AuthRequest { subcommand },
+        },
+    ))
 }
 
 fn convert_completion_shell(
@@ -282,36 +289,42 @@ fn convert_completion_shell(
 #[allow(clippy::unnecessary_wraps)]
 fn convert_config_subcommand(
     subcommand: cli_schema::ConfigSubcommand,
-) -> Result<RuntimeCommandHandle, ClassifiedError> {
+) -> Result<RuntimeCommand, ClassifiedError> {
     match subcommand {
         cli_schema::ConfigSubcommand::Show {
             format,
             config,
             log_level,
             timeout_ms,
-        } => Ok(Box::new(services::config::command::ConfigCommand {
-            subcommand: services::config::ConfigSubcommand::Show(services::config::ConfigRequest {
-                report_format: format,
-                config_path: config,
-                log_level,
-                timeout_ms,
-            }),
-        })),
+        } => Ok(RuntimeCommand::Config(
+            services::config::command::ConfigCommand {
+                subcommand: services::config::ConfigSubcommand::Show(
+                    services::config::ConfigRequest {
+                        report_format: format,
+                        config_path: config,
+                        log_level,
+                        timeout_ms,
+                    },
+                ),
+            },
+        )),
         cli_schema::ConfigSubcommand::Validate {
             format,
             config,
             log_level,
             timeout_ms,
-        } => Ok(Box::new(services::config::command::ConfigCommand {
-            subcommand: services::config::ConfigSubcommand::Validate(
-                services::config::ConfigRequest {
-                    report_format: format,
-                    config_path: config,
-                    log_level,
-                    timeout_ms,
-                },
-            ),
-        })),
+        } => Ok(RuntimeCommand::Config(
+            services::config::command::ConfigCommand {
+                subcommand: services::config::ConfigSubcommand::Validate(
+                    services::config::ConfigRequest {
+                        report_format: format,
+                        config_path: config,
+                        log_level,
+                        timeout_ms,
+                    },
+                ),
+            },
+        )),
     }
 }
 
@@ -323,7 +336,7 @@ fn convert_setup_command(
     non_interactive: bool,
     hooks: bool,
     repo: Option<PathBuf>,
-) -> Result<RuntimeCommandHandle, ClassifiedError> {
+) -> Result<RuntimeCommand, ClassifiedError> {
     let options = services::setup::SetupCliOptions {
         help: false,
         non_interactive,
@@ -337,18 +350,20 @@ fn convert_setup_command(
     let request = services::setup::resolve_setup_request(options)
         .map_err(|error| ClassifiedError::validation(error.to_string()))?;
 
-    Ok(Box::new(services::setup::command::SetupCommand { request }))
+    Ok(RuntimeCommand::Setup(
+        services::setup::command::SetupCommand { request },
+    ))
 }
 
 #[allow(clippy::unnecessary_wraps)]
 fn convert_hooks_subcommand(
     subcommand: cli_schema::HooksSubcommand,
-) -> Result<RuntimeCommandHandle, ClassifiedError> {
+) -> Result<RuntimeCommand, ClassifiedError> {
     let subcommand = convert_hooks_subcommand_request(subcommand)?;
 
-    Ok(Box::new(services::hooks::command::HooksCommand {
-        subcommand,
-    }))
+    Ok(RuntimeCommand::Hooks(
+        services::hooks::command::HooksCommand { subcommand },
+    ))
 }
 
 fn convert_hooks_subcommand_request(

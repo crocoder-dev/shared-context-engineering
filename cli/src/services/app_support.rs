@@ -102,7 +102,7 @@ pub(crate) fn log_startup_configuration(
 }
 
 pub(crate) fn execute_command_phase(
-    command: &dyn RuntimeCommand,
+    command: &RuntimeCommand,
     context: &AppContext,
 ) -> Result<String, ClassifiedError> {
     let command_name = command.name();

@@ -1,64 +1,83 @@
-use std::collections::HashMap;
+use std::borrow::Cow;
 
 use crate::app::AppContext;
+use crate::services;
 use crate::services::error::ClassifiedError;
 
-/// Trait for executable CLI commands.
-///
-/// Each command implements this trait to provide a name and an execution
-/// method that receives shared application context and returns a result
-/// payload or a classified error.
-pub trait RuntimeCommand {
-    fn name(&self) -> std::borrow::Cow<'_, str>;
+const DEFAULT_COMMAND_NAMES: &[&str] = &[
+    services::auth_command::NAME,
+    services::completion::NAME,
+    services::config::NAME,
+    services::doctor::NAME,
+    services::help::NAME,
+    services::hooks::NAME,
+    services::setup::NAME,
+    services::version::NAME,
+];
 
-    fn execute(&self, context: &AppContext) -> Result<String, ClassifiedError>;
+/// Static runtime command dispatcher for all known CLI commands.
+///
+/// Parsed command requests are represented as enum variants instead of boxed
+/// trait objects. Each variant delegates to the same service-owned command
+/// implementation used before the static-dispatch migration.
+pub enum RuntimeCommand {
+    Help(services::help::command::HelpCommand),
+    HelpText(services::help::command::HelpTextCommand),
+    Auth(services::auth_command::command::AuthCommand),
+    Config(services::config::command::ConfigCommand),
+    Setup(services::setup::command::SetupCommand),
+    Doctor(services::doctor::command::DoctorCommand),
+    Hooks(services::hooks::command::HooksCommand),
+    Version(services::version::command::VersionCommand),
+    Completion(services::completion::command::CompletionCommand),
 }
 
-/// Owned handle to a dynamically dispatched runtime command.
-pub type RuntimeCommandHandle = Box<dyn RuntimeCommand>;
-
-/// Type alias for a command constructor that produces an owned command handle.
-type CommandConstructor = fn() -> RuntimeCommandHandle;
-
-/// Statically populated registry that maps command names to their constructors.
-///
-/// The registry is populated at compile time via [`build_default_registry`]
-/// and looked up by name during command dispatch. Constructors are zero-arg
-/// functions so the registry does not carry per-invocation state; per-invocation
-/// data (e.g. parsed flags) is resolved by the parse layer before the command
-/// is constructed.
-pub struct CommandRegistry {
-    constructors: HashMap<&'static str, CommandConstructor>,
-}
-
-impl CommandRegistry {
-    /// Create an empty registry.
-    pub fn new() -> Self {
-        Self {
-            constructors: HashMap::new(),
+impl RuntimeCommand {
+    pub fn name(&self) -> Cow<'_, str> {
+        match self {
+            Self::Help(_) => Cow::Borrowed(services::help::NAME),
+            Self::HelpText(command) => command.name(),
+            Self::Auth(_) => Cow::Borrowed(services::auth_command::NAME),
+            Self::Config(_) => Cow::Borrowed(services::config::NAME),
+            Self::Setup(_) => Cow::Borrowed(services::setup::NAME),
+            Self::Doctor(_) => Cow::Borrowed(services::doctor::NAME),
+            Self::Hooks(_) => Cow::Borrowed(services::hooks::NAME),
+            Self::Version(_) => Cow::Borrowed(services::version::NAME),
+            Self::Completion(_) => Cow::Borrowed(services::completion::NAME),
         }
     }
 
-    /// Register a command constructor under the given name.
-    ///
-    /// If a constructor is already registered under `name`, it is replaced.
-    #[allow(dead_code)]
-    pub fn register(&mut self, name: &'static str, constructor: CommandConstructor) {
-        self.constructors.insert(name, constructor);
+    pub fn execute(&self, context: &AppContext) -> Result<String, ClassifiedError> {
+        match self {
+            Self::Help(_) => Ok(services::help::help_text()),
+            Self::HelpText(command) => Ok(command.execute(context)),
+            Self::Auth(command) => command.execute(context),
+            Self::Config(command) => command.execute(context),
+            Self::Setup(command) => command.execute(context),
+            Self::Doctor(command) => command.execute(context),
+            Self::Hooks(command) => command.execute(context),
+            Self::Version(command) => command.execute(context),
+            Self::Completion(command) => Ok(command.execute(context)),
+        }
+    }
+}
+
+/// Statically populated command catalog.
+///
+/// The catalog owns deterministic command-name lookup only. Per-invocation
+/// command payloads are built by the parse layer as [`RuntimeCommand`] variants.
+pub struct CommandRegistry {
+    names: &'static [&'static str],
+}
+
+impl CommandRegistry {
+    pub fn contains(&self, name: &str) -> bool {
+        self.names.contains(&name)
     }
 
-    /// Look up a command constructor by name.
-    ///
-    /// Returns `None` if no constructor is registered under `name`.
-    #[allow(dead_code)]
-    pub fn get(&self, name: &str) -> Option<CommandConstructor> {
-        self.constructors.get(name).copied()
-    }
-
-    /// Return the set of registered command names.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn command_names(&self) -> Vec<&'static str> {
-        let mut names: Vec<&'static str> = self.constructors.keys().copied().collect();
+        let mut names = self.names.to_vec();
         names.sort_unstable();
         names
     }
@@ -70,96 +89,116 @@ impl Default for CommandRegistry {
     }
 }
 
-/// Build the default command registry with all known commands.
-///
-/// This function is the single compile-time source of truth for which
-/// commands are available. Individual command constructors are added
-/// here as they are migrated to service-owned `command.rs` files.
-///
-/// Commands that require per-invocation data (parsed flags, subcommand
-/// selection) are still constructed in the parse layer; only stateless
-/// or default-constructible commands are registered here.
+/// Build the default deterministic command catalog with all known commands.
 pub fn build_default_registry() -> CommandRegistry {
-    let mut registry = CommandRegistry::new();
-    registry.register("help", crate::services::help::command::make_help_command);
-    registry.register(
-        "auth",
-        crate::services::auth_command::command::make_auth_command,
-    );
-    registry.register(
-        "config",
-        crate::services::config::command::make_config_command,
-    );
-    registry.register("setup", crate::services::setup::command::make_setup_command);
-    registry.register(
-        "doctor",
-        crate::services::doctor::command::make_doctor_command,
-    );
-    registry.register("hooks", crate::services::hooks::command::make_hooks_command);
-    registry.register(
-        "version",
-        crate::services::version::command::make_version_command,
-    );
-    registry.register(
-        "completion",
-        crate::services::completion::command::make_completion_command,
-    );
-    registry
+    CommandRegistry {
+        names: DEFAULT_COMMAND_NAMES,
+    }
+}
+
+pub fn default_runtime_command(name: &str) -> Option<RuntimeCommand> {
+    match name {
+        services::help::NAME => Some(RuntimeCommand::Help(services::help::command::HelpCommand)),
+        services::auth_command::NAME => Some(RuntimeCommand::Auth(
+            services::auth_command::command::AuthCommand {
+                request: services::auth_command::AuthRequest {
+                    subcommand: services::auth_command::AuthSubcommand::Status {
+                        format: services::auth_command::AuthFormat::Text,
+                    },
+                },
+            },
+        )),
+        services::config::NAME => Some(RuntimeCommand::Config(
+            services::config::command::ConfigCommand {
+                subcommand: services::config::ConfigSubcommand::Show(
+                    services::config::ConfigRequest {
+                        report_format: services::config::ReportFormat::Text,
+                        config_path: None,
+                        log_level: None,
+                        timeout_ms: None,
+                    },
+                ),
+            },
+        )),
+        services::setup::NAME => Some(RuntimeCommand::Setup(
+            services::setup::command::SetupCommand {
+                request: services::setup::SetupRequest {
+                    config_mode: Some(services::setup::SetupMode::Interactive),
+                    install_hooks: true,
+                    hooks_repo_path: None,
+                },
+            },
+        )),
+        services::doctor::NAME => Some(RuntimeCommand::Doctor(
+            services::doctor::command::DoctorCommand {
+                request: services::doctor::DoctorRequest {
+                    mode: services::doctor::DoctorMode::Diagnose,
+                    format: services::doctor::DoctorFormat::Text,
+                },
+            },
+        )),
+        services::hooks::NAME => Some(RuntimeCommand::Hooks(
+            services::hooks::command::HooksCommand {
+                subcommand: services::hooks::HookSubcommand::PreCommit,
+            },
+        )),
+        services::version::NAME => Some(RuntimeCommand::Version(
+            services::version::command::VersionCommand {
+                request: services::version::VersionRequest {
+                    format: services::version::VersionFormat::Text,
+                },
+            },
+        )),
+        services::completion::NAME => Some(RuntimeCommand::Completion(
+            services::completion::command::CompletionCommand {
+                request: services::completion::CompletionRequest {
+                    shell: services::completion::CompletionShell::Bash,
+                },
+            },
+        )),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    struct TestCommand;
-
-    impl RuntimeCommand for TestCommand {
-        fn name(&self) -> std::borrow::Cow<'_, str> {
-            std::borrow::Cow::Borrowed("test")
-        }
-
-        fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
-            Ok("test output".to_string())
-        }
-    }
-
-    fn make_test_command() -> RuntimeCommandHandle {
-        Box::new(TestCommand)
-    }
-
     #[test]
-    fn registry_new_is_empty() {
-        let registry = CommandRegistry::new();
-        assert!(registry.command_names().is_empty());
-        assert!(registry.get("test").is_none());
-    }
-
-    #[test]
-    fn register_and_retrieve_command() {
-        let mut registry = CommandRegistry::new();
-        registry.register("test", make_test_command as CommandConstructor);
-
-        let constructor = registry
-            .get("test")
-            .expect("should find registered command");
-        let command = constructor();
-        assert_eq!(command.name(), "test");
-    }
-
-    #[test]
-    fn register_replaces_existing() {
-        let mut registry = CommandRegistry::new();
-        registry.register("test", make_test_command as CommandConstructor);
-        registry.register("test", make_test_command as CommandConstructor);
-
-        assert_eq!(registry.command_names().len(), 1);
-    }
-
-    #[test]
-    fn default_registry_is_build_default() {
+    fn default_registry_lists_all_commands_deterministically() {
         let registry = CommandRegistry::default();
-        // The default registry grows as commands are migrated to service-owned
-        // command files. T02 registers "help"; T03–T04 add remaining commands.
-        assert!(registry.command_names().contains(&"help"));
+
+        assert_eq!(
+            registry.command_names(),
+            vec![
+                "auth",
+                "completion",
+                "config",
+                "doctor",
+                "help",
+                "hooks",
+                "setup",
+                "version"
+            ]
+        );
+    }
+
+    #[test]
+    fn default_registry_reports_known_command_names() {
+        let registry = CommandRegistry::default();
+
+        for name in DEFAULT_COMMAND_NAMES {
+            assert!(registry.contains(name));
+        }
+        assert!(!registry.contains("sync"));
+    }
+
+    #[test]
+    fn default_runtime_commands_have_expected_names() {
+        for name in DEFAULT_COMMAND_NAMES {
+            let command = default_runtime_command(name).expect("command should exist");
+            assert_eq!(command.name(), *name);
+        }
+        assert!(default_runtime_command("sync").is_none());
     }
 }

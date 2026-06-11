@@ -62,12 +62,16 @@ The intended end state is a statically wired CLI runtime where the production ap
   - Evidence: `nix build .#checks.x86_64-linux.cli-tests && nix build .#checks.x86_64-linux.cli-clippy && nix build .#checks.x86_64-linux.cli-fmt` passed; `nix run .#pkl-check-generated` passed. Full `nix flake check` still fails on unrelated pre-existing `config-lib-biome-check` issues in `config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts`.
   - Notes: Production runtime keeps concrete dependency fields and now names the concrete borrowed context view with `ProductionAppContext`; parse-phase plumbing receives that borrowed context instead of a standalone logger reference. Command-handle removal remains deferred to T03. Context sync classification: verify-only; existing durable context already describes the current concrete-runtime and borrowed-context architecture.
 
-- [ ] T03: `Replace RuntimeCommandHandle with a static command enum` (status:todo)
+- [x] T03: `Replace RuntimeCommandHandle with a static command enum` (status:done)
   - Task ID: T03
   - Goal: Remove boxed runtime command dispatch by introducing a `RuntimeCommand` enum (or equivalently named static dispatcher) with variants for every current command payload.
   - Boundaries (in/out of scope): In - `cli/src/services/command_registry.rs`, command enum variants, command name lookup, enum `execute` dispatch, parse-layer return type, help/missing-subcommand command construction. Out - rewriting individual command business logic beyond adapting method signatures.
   - Done when: `RuntimeCommandHandle = Box<dyn RuntimeCommand>` is removed; parse-time conversion returns the static command enum; app execution matches enum variants and delegates to the same service-owned command implementations; command-registry tests are replaced with deterministic static-catalog tests.
   - Verification notes (commands or checks): Run command parser/registry/app tests and ensure help/version/completion/config/setup/doctor/hooks/auth dispatch paths still pass existing assertions.
+  - Completed: 2026-06-11
+  - Files changed: `cli/src/app.rs`, `cli/src/services/app_support.rs`, `cli/src/services/command_registry.rs`, `cli/src/services/parse/command_runtime.rs`, `cli/src/services/help/command.rs`, `cli/src/services/auth_command/command.rs`, `cli/src/services/config/command.rs`, `cli/src/services/setup/command.rs`, `cli/src/services/doctor/command.rs`, `cli/src/services/hooks/command.rs`, `cli/src/services/version/command.rs`, `cli/src/services/completion/command.rs`
+  - Evidence: `nix build .#checks.x86_64-linux.cli-tests && nix build .#checks.x86_64-linux.cli-clippy && nix build .#checks.x86_64-linux.cli-fmt` passed; `nix run .#pkl-check-generated` passed; searched `cli/src` for stale `RuntimeCommandHandle`, `Box<dyn RuntimeCommand>`, `impl RuntimeCommand for`, `dyn RuntimeCommand`, and removed command-constructor symbols with no matches.
+  - Notes: Runtime command dispatch now uses the static `RuntimeCommand` enum and a deterministic static `CommandRegistry` name catalog. The parse layer returns enum variants directly, and app execution dispatches through enum methods to existing service-owned command structs. Context sync classification: important change; durable command-dispatch context needs updating.
 
 - [ ] T04: `Make command execution generic over required capabilities` (status:todo)
   - Task ID: T04

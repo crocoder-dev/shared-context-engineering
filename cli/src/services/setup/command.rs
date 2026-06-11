@@ -1,9 +1,6 @@
-use std::borrow::Cow;
-
 use anyhow::Context;
 
 use crate::app::AppContext;
-use crate::services::command_registry::{RuntimeCommand, RuntimeCommandHandle};
 use crate::services::error::ClassifiedError;
 use crate::services::lifecycle::{
     lifecycle_providers, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
@@ -14,12 +11,8 @@ pub struct SetupCommand {
     pub request: setup::SetupRequest,
 }
 
-impl RuntimeCommand for SetupCommand {
-    fn name(&self) -> Cow<'_, str> {
-        Cow::Borrowed(setup::NAME)
-    }
-
-    fn execute(&self, context: &AppContext) -> Result<String, ClassifiedError> {
+impl SetupCommand {
+    pub fn execute(&self, context: &AppContext) -> Result<String, ClassifiedError> {
         let setup_dispatch = if let Some(mode) = self.request.config_mode {
             match setup::resolve_setup_dispatch(mode, &setup::InquireSetupTargetPrompter)
                 .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?
@@ -96,19 +89,4 @@ fn setup_required_hooks_outcome_from_lifecycle(
             })
             .collect(),
     }
-}
-
-/// Construct a `SetupCommand` with a default interactive setup request (used by the registry).
-///
-/// This default constructor is available for registry-based dispatch.
-/// The parse layer constructs `SetupCommand` with the user's chosen options.
-#[allow(dead_code)]
-pub fn make_setup_command() -> RuntimeCommandHandle {
-    Box::new(SetupCommand {
-        request: setup::SetupRequest {
-            config_mode: Some(setup::SetupMode::Interactive),
-            install_hooks: true,
-            hooks_repo_path: None,
-        },
-    })
 }
