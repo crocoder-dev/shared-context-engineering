@@ -7,10 +7,10 @@ The encrypted auth DB foundation provides a thin Rust wrapper, path and migratio
 - Canonical path resolver: `cli/src/services/default_paths.rs::auth_db_path()`.
 - Database file path: `<state_root>/sce/auth.db`.
 - Service wrapper: `cli/src/services/auth_db/mod.rs`.
-- `AuthDbSpec` implements `DbSpec` with diagnostic name `auth DB`, `auth_db_path()`, and ordered embedded auth migrations.
+- `AuthDbSpec` implements `DbSpec` with diagnostic name `auth DB`, `auth_db_path()`, and `generated_migrations::AUTH_MIGRATIONS`.
 - `AuthDb` is a type alias for `EncryptedTursoDb<AuthDbSpec>`, inheriting retry-backed constructor and operation behavior and consumed by the lifecycle provider at `cli/src/services/auth_db/lifecycle.rs`.
 - Migration directory: `cli/migrations/auth/`.
-- Ordered migrations:
+- Ordered migrations generated from filename stems:
   - `001_create_auth_tokens.sql`
   - `002_create_auth_credentials_updated_at_trigger.sql`
 

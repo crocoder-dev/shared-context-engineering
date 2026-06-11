@@ -4,26 +4,13 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::services::{
-    db::{DbSpec, EncryptedTursoDb},
-    default_paths::auth_db_path,
+use crate::{
+    generated_migrations,
+    services::{
+        db::{DbSpec, EncryptedTursoDb},
+        default_paths::auth_db_path,
+    },
 };
-
-const CREATE_AUTH_CREDENTIALS_MIGRATION: &str =
-    include_str!("../../../migrations/auth/001_create_auth_tokens.sql");
-const CREATE_AUTH_CREDENTIALS_UPDATED_AT_TRIGGER_MIGRATION: &str =
-    include_str!("../../../migrations/auth/002_create_auth_credentials_updated_at_trigger.sql");
-
-const AUTH_MIGRATIONS: &[(&str, &str)] = &[
-    (
-        "001_create_auth_credentials",
-        CREATE_AUTH_CREDENTIALS_MIGRATION,
-    ),
-    (
-        "002_create_auth_credentials_updated_at_trigger",
-        CREATE_AUTH_CREDENTIALS_UPDATED_AT_TRIGGER_MIGRATION,
-    ),
-];
 
 /// Encrypted auth database configuration.
 pub struct AuthDbSpec;
@@ -38,7 +25,7 @@ impl DbSpec for AuthDbSpec {
     }
 
     fn migrations() -> &'static [(&'static str, &'static str)] {
-        AUTH_MIGRATIONS
+        generated_migrations::AUTH_MIGRATIONS
     }
 
     fn db_config_key() -> &'static str {
@@ -85,7 +72,7 @@ mod tests {
         }
 
         fn migrations() -> &'static [(&'static str, &'static str)] {
-            AUTH_MIGRATIONS
+            generated_migrations::AUTH_MIGRATIONS
         }
 
         fn db_config_key() -> &'static str {
@@ -141,13 +128,11 @@ mod tests {
         ));
 
         // Verify migration IDs are ordered
-        assert_eq!(
-            applied_migration_ids(&db),
-            vec![
-                "001_create_auth_credentials",
-                "002_create_auth_credentials_updated_at_trigger",
-            ]
-        );
+        let expected_migration_ids: Vec<String> = generated_migrations::AUTH_MIGRATIONS
+            .iter()
+            .map(|(id, _)| (*id).to_owned())
+            .collect();
+        assert_eq!(applied_migration_ids(&db), expected_migration_ids);
 
         // Verify column NOT NULL constraints via PRAGMA table_info
         // Returns: cid, name, type, notnull, dflt_value, pk

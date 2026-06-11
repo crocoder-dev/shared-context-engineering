@@ -1,6 +1,7 @@
 mod app;
 mod cli_schema;
 mod command_surface;
+mod generated_migrations;
 mod services;
 
 use std::process::ExitCode;
