@@ -4,7 +4,7 @@
 
 ## Current contract
 
-- `ServiceLifecycle: Send + Sync` exposes three default no-op methods:
+- `ServiceLifecycle: Send + Sync` exposes three default no-op methods against the current borrowed `AppContext` view:
   - `diagnose(&self, ctx: &AppContext) -> Vec<HealthProblem>`
   - `fix(&self, ctx: &AppContext, problems: &[HealthProblem]) -> Vec<FixResultRecord>`
   - `setup(&self, ctx: &AppContext) -> anyhow::Result<SetupOutcome>`
@@ -36,13 +36,13 @@
 - `AgentTraceDbLifecycle::setup` initializes the Agent Trace DB through `AgentTraceDb::new()` and returns an empty `SetupOutcome` because DB bootstrap currently has no dedicated outcome carrier.
 - `doctor` runtime execution now aggregates lifecycle providers for diagnosis and repair:
   - `cli/src/services/doctor/command.rs` passes `AppContext` into doctor execution.
-  - `cli/src/services/doctor/mod.rs` resolves the repository root once, creates a repo-root-scoped `AppContext` using `with_repo_root()`, and requests the full provider catalog with hooks included.
+  - `cli/src/services/doctor/mod.rs` resolves the repository root once, creates a repo-root-scoped borrowed `AppContext` using `with_repo_root()`, and requests the full provider catalog with hooks included.
   - `ConfigLifecycle::diagnose` and `HooksLifecycle::diagnose`/`fix` now consume `ctx.repo_root()` instead of calling `std::env::current_dir()` independently.
   - Diagnose mode collects `ServiceLifecycle::diagnose` health problems from each provider, adapts them into doctor-owned problem records, then `doctor/inspect.rs` builds the report facts and integration health around those service-owned problems.
   - Fix mode adapts doctor problem records back into lifecycle health problems for provider repair decisions, adapts lifecycle fix records into doctor-owned fix records, rebuilds the report after fixes, and keeps manual remediation reporting through `doctor/fixes.rs`.
 - `setup` runtime execution now aggregates lifecycle providers for setup:
-  - `cli/src/services/setup/command.rs` resolves the repository root, derives a repo-root-scoped `AppContext` from the runtime command context with `with_repo_root()`, and requests the shared provider catalog with hooks included only when `SetupRequest.install_hooks` is true.
-  - Setup lifecycle providers receive the runtime logger, telemetry, filesystem capability, and git capability objects with `repo_root` populated instead of a setup-local replacement context.
+  - `cli/src/services/setup/command.rs` resolves the repository root, derives a repo-root-scoped borrowed `AppContext` from the runtime command context with `with_repo_root()`, and requests the shared provider catalog with hooks included only when `SetupRequest.install_hooks` is true.
+  - Setup lifecycle providers receive borrowed access to the runtime logger, telemetry, filesystem capability, and git capability objects with `repo_root` populated instead of a setup-local replacement context.
   - `HooksLifecycle::setup` returns lifecycle-owned `SetupOutcome.required_hooks_install` from the canonical `install_required_git_hooks` flow, and setup command adapts that result into setup-owned hook install outcomes before rendering.
   - Config asset installation (OpenCode/Claude targets) remains handled by the setup command after lifecycle aggregation.
 

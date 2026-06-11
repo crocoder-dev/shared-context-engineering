@@ -1,7 +1,6 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use crate::services;
 use services::app_support::{self, RunOutcome};
@@ -17,25 +16,63 @@ struct StartupContext {
 }
 
 struct AppRuntime {
-    context: AppContext,
+    logger: services::observability::Logger,
+    telemetry: NoopTelemetry,
+    fs: services::capabilities::StdFsOps,
+    git: services::capabilities::ProcessGitOps,
     registry: services::command_registry::CommandRegistry,
     startup_diagnostic: Option<String>,
 }
 
-pub struct AppContext {
-    logger: Arc<dyn LoggerTrait>,
-    telemetry: Arc<dyn Telemetry>,
-    fs: Arc<dyn services::capabilities::FsOps>,
-    git: Arc<dyn services::capabilities::GitOps>,
+pub struct AppContext<
+    'a,
+    L: LoggerTrait = services::observability::Logger,
+    T: Telemetry = NoopTelemetry,
+    F: services::capabilities::FsOps = services::capabilities::StdFsOps,
+    G: services::capabilities::GitOps = services::capabilities::ProcessGitOps,
+> {
+    logger: &'a L,
+    telemetry: &'a T,
+    fs: &'a F,
+    git: &'a G,
     repo_root: Option<PathBuf>,
 }
 
-impl AppContext {
+pub(crate) trait HasLogger {
+    fn logger(&self) -> &dyn LoggerTrait;
+}
+
+#[allow(dead_code)]
+pub(crate) trait HasTelemetry {
+    fn telemetry(&self) -> &dyn Telemetry;
+}
+
+#[allow(dead_code)]
+pub(crate) trait HasFs {
+    fn fs(&self) -> &dyn services::capabilities::FsOps;
+}
+
+#[allow(dead_code)]
+pub(crate) trait HasGit {
+    fn git(&self) -> &dyn services::capabilities::GitOps;
+}
+
+pub(crate) trait HasRepoRoot {
+    fn repo_root(&self) -> Option<&Path>;
+}
+
+impl<'a, L, T, F, G> AppContext<'a, L, T, F, G>
+where
+    L: LoggerTrait,
+    T: Telemetry,
+    F: services::capabilities::FsOps,
+    G: services::capabilities::GitOps,
+{
     pub(crate) fn new(
-        logger: Arc<dyn LoggerTrait>,
-        telemetry: Arc<dyn Telemetry>,
-        fs: Arc<dyn services::capabilities::FsOps>,
-        git: Arc<dyn services::capabilities::GitOps>,
+        logger: &'a L,
+        telemetry: &'a T,
+        fs: &'a F,
+        git: &'a G,
         repo_root: Option<PathBuf>,
     ) -> Self {
         Self {
@@ -48,21 +85,21 @@ impl AppContext {
     }
 
     pub(crate) fn logger(&self) -> &dyn LoggerTrait {
-        self.logger.as_ref()
+        HasLogger::logger(self)
     }
 
     #[allow(dead_code)]
     pub(crate) fn fs(&self) -> &dyn services::capabilities::FsOps {
-        self.fs.as_ref()
+        HasFs::fs(self)
     }
 
     #[allow(dead_code)]
     pub(crate) fn git(&self) -> &dyn services::capabilities::GitOps {
-        self.git.as_ref()
+        HasGit::git(self)
     }
 
     fn telemetry(&self) -> &dyn Telemetry {
-        self.telemetry.as_ref()
+        HasTelemetry::telemetry(self)
     }
 
     /// Returns a context for a command-scoped repository root while preserving
@@ -70,10 +107,10 @@ impl AppContext {
     #[allow(dead_code)]
     pub(crate) fn with_repo_root(&self, repo_root: impl Into<PathBuf>) -> Self {
         Self {
-            logger: Arc::clone(&self.logger),
-            telemetry: Arc::clone(&self.telemetry),
-            fs: Arc::clone(&self.fs),
-            git: Arc::clone(&self.git),
+            logger: self.logger,
+            telemetry: self.telemetry,
+            fs: self.fs,
+            git: self.git,
             repo_root: Some(repo_root.into()),
         }
     }
@@ -83,7 +120,81 @@ impl AppContext {
     /// Lifecycle providers use this during setup to avoid re-resolving
     /// the repository root independently.
     pub fn repo_root(&self) -> Option<&Path> {
+        HasRepoRoot::repo_root(self)
+    }
+}
+
+impl<L, T, F, G> HasLogger for AppContext<'_, L, T, F, G>
+where
+    L: LoggerTrait,
+    T: Telemetry,
+    F: services::capabilities::FsOps,
+    G: services::capabilities::GitOps,
+{
+    fn logger(&self) -> &dyn LoggerTrait {
+        self.logger
+    }
+}
+
+impl<L, T, F, G> HasTelemetry for AppContext<'_, L, T, F, G>
+where
+    L: LoggerTrait,
+    T: Telemetry,
+    F: services::capabilities::FsOps,
+    G: services::capabilities::GitOps,
+{
+    fn telemetry(&self) -> &dyn Telemetry {
+        self.telemetry
+    }
+}
+
+impl<L, T, F, G> HasFs for AppContext<'_, L, T, F, G>
+where
+    L: LoggerTrait,
+    T: Telemetry,
+    F: services::capabilities::FsOps,
+    G: services::capabilities::GitOps,
+{
+    fn fs(&self) -> &dyn services::capabilities::FsOps {
+        self.fs
+    }
+}
+
+impl<L, T, F, G> HasGit for AppContext<'_, L, T, F, G>
+where
+    L: LoggerTrait,
+    T: Telemetry,
+    F: services::capabilities::FsOps,
+    G: services::capabilities::GitOps,
+{
+    fn git(&self) -> &dyn services::capabilities::GitOps {
+        self.git
+    }
+}
+
+impl<L, T, F, G> HasRepoRoot for AppContext<'_, L, T, F, G>
+where
+    L: LoggerTrait,
+    T: Telemetry,
+    F: services::capabilities::FsOps,
+    G: services::capabilities::GitOps,
+{
+    fn repo_root(&self) -> Option<&Path> {
         self.repo_root.as_deref()
+    }
+}
+
+impl AppRuntime {
+    fn context(
+        &self,
+    ) -> AppContext<
+        '_,
+        services::observability::Logger,
+        NoopTelemetry,
+        services::capabilities::StdFsOps,
+        services::capabilities::ProcessGitOps,
+    > {
+        AppContext::new(&self.logger, &self.telemetry, &self.fs, &self.git, None)
     }
 }
 
@@ -131,10 +242,14 @@ where
     let result = perform_dependency_check(dependency_check)
         .and_then(|()| build_startup_context())
         .and_then(initialize_runtime)
-        .map(|runtime| RunOutcome {
-            logger: Some(Arc::clone(&runtime.context.logger)),
-            startup_diagnostic: runtime.startup_diagnostic.clone(),
-            result: run_command_lifecycle(args, &runtime),
+        .map(|runtime| {
+            let startup_diagnostic = runtime.startup_diagnostic.clone();
+            let result = run_command_lifecycle(args, &runtime);
+            RunOutcome {
+                logger: Some(runtime.logger),
+                startup_diagnostic,
+                result,
+            }
         });
 
     match result {
@@ -176,16 +291,11 @@ fn initialize_runtime(startup: StartupContext) -> Result<AppRuntime, ClassifiedE
         services::observability::Logger::from_resolved_config(&startup.observability_config)
             .map_err(|error| app_support::classify_observability_configuration_error(&error))?;
     app_support::log_startup_configuration(&logger, &startup.observability_config);
-    let telemetry = NoopTelemetry;
-    let context = AppContext::new(
-        Arc::new(logger),
-        Arc::new(telemetry),
-        Arc::new(services::capabilities::StdFsOps),
-        Arc::new(services::capabilities::ProcessGitOps),
-        None,
-    );
     Ok(AppRuntime {
-        context,
+        logger,
+        telemetry: NoopTelemetry,
+        fs: services::capabilities::StdFsOps,
+        git: services::capabilities::ProcessGitOps,
         registry: services::command_registry::build_default_registry(),
         startup_diagnostic: startup.startup_diagnostic,
     })
@@ -195,7 +305,7 @@ fn run_command_lifecycle<I>(args: I, runtime: &AppRuntime) -> Result<String, Cla
 where
     I: IntoIterator<Item = String>,
 {
-    let context = &runtime.context;
+    let context = runtime.context();
     let mut args = Some(args.into_iter().collect::<Vec<_>>());
     context.telemetry().with_default_subscriber(&mut || {
         context.logger().info(
@@ -207,7 +317,7 @@ where
             return Err(ClassifiedError::runtime(REPEATED_COMMAND_DISPATCH_ERROR));
         };
         let command = parse_command_phase(command_args, &runtime.registry, context.logger())?;
-        app_support::execute_command_phase(command.as_ref(), context)
+        app_support::execute_command_phase(command.as_ref(), &context)
     })
 }
 

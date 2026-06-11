@@ -19,7 +19,6 @@ use serde_json::Value;
 
 pub mod lifecycle;
 
-
 const AGENT_TRACE_SCHEMA_SETUP_GUIDANCE: &str = "Run 'sce setup'.";
 
 /// Payload type discriminator for diff trace source payloads.
