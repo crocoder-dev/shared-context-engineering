@@ -14,7 +14,7 @@ Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical 
    - **`unknown`** — no `intersection_patch` hunk at the same `old_start` slot.
 4. Map `Conversation.contributor.model_id` from the matched `intersection_patch` hunk when contributor type is `ai` or `mixed`; omit `model_id` when provenance is missing (`None`).
 5. For each emitted conversation, derive optional `conversation.related` entries from non-empty `session_id` values on touched lines in the matched `intersection_patch` hunk; emit related entries as `{ "type": "session", "url": "https://sce.crocoder.dev/sessions/<session_id>" }`, deduplicated by session ID with deterministic ordering, and omit `related` when no included lines provide `session_id`.
-6. Emit one `Conversation` per `post_commit_patch` hunk, one `TraceFile` per `post_commit_patch` file, and one range per hunk with a deterministic `content_hash` computed from that hunk's touched-line kind/content.
+6. Emit one `Conversation` per `post_commit_patch` hunk, each carrying the trace lookup `url`, one `TraceFile` per `post_commit_patch` file, and one range per hunk with a deterministic `content_hash` computed from that hunk's touched-line kind/content.
 
 ## Domain types
 
@@ -24,7 +24,7 @@ Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical 
 | `Contributor`           | Nested per-conversation object carrying `type: HunkContributor` and optional `model_id` omitted when absent  |
 | `ConversationRelated`   | Schema-aligned related-link entry shape (`type` as free-form string + `url`) for optional `conversation.related` |
 | `LineRange`             | New-file line span with `start_line` + `end_line` + `content_hash`                                           |
-| `Conversation`          | Per-hunk entry: nested contributor + `ranges` (currently exactly one range derived from `post_commit_patch`) + optional `related` omitted when `None` |
+| `Conversation`          | Per-hunk entry: trace lookup `url`, nested contributor, `ranges` (currently exactly one range derived from `post_commit_patch`), and optional `related` omitted when `None` |
 | `TraceFile`             | Per-file entry: path + conversations                                                                         |
 | `AgentTraceVcs`         | Optional top-level VCS metadata object carrying `type` + `revision` when present                             |
 | `AgentTraceTool`        | Optional top-level tool metadata object carrying optional `name` + optional `version`                        |
@@ -32,7 +32,7 @@ Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical 
 | `AgentTraceSceMetadata` | Nested `metadata.sce` object carrying the compiled SCE CLI package `version`                                 |
 | `AgentTrace`            | Top-level payload: `version`, `id`, `timestamp`, optional `vcs`, optional `tool`, `metadata`, `files`        |
 
-All types are `serde`-serializable with `snake_case` field naming. `Conversation.contributor` serializes as a nested object with a JSON field named `type`; `model_id` is present only when a concrete value exists. `Conversation.related` is optional and omitted when `None` (`skip_serializing_if = "Option::is_none"`) and is now populated from matched intersection-line `session_id` provenance as session links.
+All types are `serde`-serializable with `snake_case` field naming. `Conversation.url` is always serialized as `https://sce.crocoder.dev/conversations/{agent_trace.id}` for the generated top-level trace ID. `Conversation.contributor` serializes as a nested object with a JSON field named `type`; `model_id` is present only when a concrete value exists. `Conversation.related` is optional and omitted when `None` (`skip_serializing_if = "Option::is_none"`) and populated from matched intersection-line `session_id` provenance as session links.
 
 ## Payload shape
 
@@ -45,6 +45,7 @@ Current output includes top-level metadata fields with this contract:
 - when `vcs` is emitted, `vcs.type` is sourced from the schema-aligned enum (`git | jj | hg | svn`) and `vcs.revision` is sourced from `AgentTraceMetadataInput.commit_revision`
 - `tool` is omitted when `intersection_patch.files` is empty (no AI content overlapped with the post-commit patch) or when both `AgentTraceMetadataInput.tool_name` and `AgentTraceMetadataInput.tool_version` are `None`; when `intersection_patch.files` is non-empty and either metadata value is present, builder construction sets `AgentTrace.tool` and it serializes as `{ "name"?: string, "version"?: string }` with each nested field omitted when absent
 - `metadata.sce.version` is always emitted and is sourced from `env!("CARGO_PKG_VERSION")`, the compiled `sce` CLI package version; it is implementation metadata and does not change top-level Agent Trace `version` semantics
+- every `Conversation.url` is the absolute URI `https://sce.crocoder.dev/conversations/{agent_trace.id}` derived from the generated top-level `AgentTrace.id`; all conversations in one payload therefore share the same URL
 
 ```json
 {
@@ -65,6 +66,7 @@ Current output includes top-level metadata fields with this contract:
       "path": "src/example.ts",
       "conversations": [
         {
+          "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
           "contributor": { "type": "ai", "model_id": "model-ai" },
           "ranges": [
             {
@@ -84,12 +86,12 @@ Current output includes top-level metadata fields with this contract:
 
 - `classify_hunk(post_commit_hunk, intersection_hunks) -> HunkContributor` — classify a single `post_commit_patch` hunk against `intersection_patch` hunks.
 - `range_content_hash(hunk) -> String` — internal helper that computes the serialized range-level `murmur3:<lowercase-hex>` content fingerprint from `PatchHunk.lines` using versioned, length-delimited touched-line serialization in patch order. The hash input includes touched-line kind and content, and excludes hunk positions, line numbers, file paths, trace metadata, contributor/model metadata, VCS metadata, tool metadata, and database IDs.
-- `build_agent_trace(constructed_patch, post_commit_patch, metadata) -> Result<AgentTrace>` — full generator entrypoint that validates `metadata.commit_timestamp` as RFC 3339, uses it as top-level `timestamp`, derives a UUIDv7 `id` from that same commit-time moment, conditionally emits `vcs` only when `metadata.vcs_type` is present (mapping `vcs.type` from metadata and `vcs.revision` from `metadata.commit_revision`), carries optional tool metadata inputs (`metadata.tool_name`, `metadata.tool_version`) for top-level `tool` mapping, and always emits `metadata.sce.version` from the compiled package version. When `intersection_patch.files` is empty, `tool` is always `None` regardless of metadata values.
+- `build_agent_trace(constructed_patch, post_commit_patch, metadata) -> Result<AgentTrace>` — full generator entrypoint that validates `metadata.commit_timestamp` as RFC 3339, uses it as top-level `timestamp`, derives a UUIDv7 `id` from that same commit-time moment, derives one conversation URL from that `id`, conditionally emits `vcs` only when `metadata.vcs_type` is present (mapping `vcs.type` from metadata and `vcs.revision` from `metadata.commit_revision`), carries optional tool metadata inputs (`metadata.tool_name`, `metadata.tool_version`) for top-level `tool` mapping, and always emits `metadata.sce.version` from the compiled package version. When `intersection_patch.files` is empty, `tool` is always `None` regardless of metadata values.
 
 ## Test fixture contract
 
-- Golden fixtures under `cli/src/services/agent_trace/fixtures/**/golden.json` pin deterministic literal values for top-level `id`, `timestamp`, optional `vcs`, `metadata.sce.version`, range-level `content_hash`, and expected file/conversation shapes.
-- Tests validate golden fixtures and built payloads against the embedded schema, assert core runtime metadata directly (`version`, `timestamp`, optional `vcs`, and `metadata.sce.version`), and compare `vcs`, `metadata`, and `files` against fixture truth.
+- Golden fixtures under `cli/src/services/agent_trace/fixtures/**/golden.json` pin deterministic literal values for top-level `id`, `timestamp`, optional `vcs`, `metadata.sce.version`, per-conversation `url`, range-level `content_hash`, and expected file/conversation shapes.
+- Tests validate golden fixtures and built payloads against the embedded schema, assert core runtime metadata directly (`version`, `timestamp`, optional `vcs`, and `metadata.sce.version`), and compare `vcs`, `metadata`, and normalized `files` against fixture truth. Expected fixture URLs are normalized to the runtime `AgentTrace.id` before the existing file-shape comparison because UUIDv7 generation includes non-deterministic bits.
 
 ## Relationship to existing patch service
 
