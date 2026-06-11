@@ -773,3 +773,45 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
         self.core.run_migrations()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const QUERY_RETRY_FAILURE_BUDGET_MS: u64 = 2_000;
+
+    fn worst_case_retry_failure_budget_ms(policy: RetryPolicy) -> u64 {
+        let attempt_timeouts = policy
+            .timeout_ms
+            .saturating_mul(u64::from(policy.max_attempts));
+        let retry_backoffs = (2..=policy.max_attempts)
+            .map(|attempt| retry_backoff_ms(policy, attempt))
+            .fold(0_u64, u64::saturating_add);
+
+        attempt_timeouts.saturating_add(retry_backoffs)
+    }
+
+    fn retry_backoff_ms(policy: RetryPolicy, attempt: u32) -> u64 {
+        if attempt <= 1 {
+            return 0;
+        }
+
+        let exponent = (attempt - 2).min(20);
+        let multiplier = 1_u64 << exponent;
+
+        policy
+            .initial_backoff_ms
+            .saturating_mul(multiplier)
+            .min(policy.max_backoff_ms)
+    }
+
+    #[test]
+    fn default_query_retry_policy_stays_within_two_second_failure_budget() {
+        let budget_ms = worst_case_retry_failure_budget_ms(QUERY_RETRY_POLICY);
+
+        assert!(
+            budget_ms <= QUERY_RETRY_FAILURE_BUDGET_MS,
+            "default query retry failure budget was {budget_ms}ms; expected <= {QUERY_RETRY_FAILURE_BUDGET_MS}ms"
+        );
+    }
+}
