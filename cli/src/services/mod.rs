@@ -21,6 +21,7 @@ pub mod output_format;
 pub mod parse;
 pub mod patch;
 pub mod resilience;
+pub mod sce_web;
 pub mod security;
 pub mod setup;
 pub mod structured_patch;

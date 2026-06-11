@@ -24,6 +24,7 @@ use crate::services::patch::{
     combine_patches as combine_patches_fn, intersect_patches as intersect_patches_fn,
     parse_patch as parse_patch_from_text, ParsedPatch,
 };
+use crate::services::sce_web;
 use crate::services::structured_patch::{
     derive_claude_structured_patch, ClaudeStructuredPatchDerivationResult,
 };
@@ -34,7 +35,6 @@ pub mod lifecycle;
 
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
-const AGENT_TRACE_URL_PREFIX: &str = "sce.crocoder.dev/trace/";
 const CLAUDE_CLI_BINARY: &str = "claude";
 
 const MAX_TRACE_FILE_CREATE_ATTEMPTS: u64 = 1_000_000;
@@ -1608,7 +1608,7 @@ where
             .context("Failed to serialize post-commit Agent Trace payload for persistence.")?
     );
 
-    let constructed_url = format!("{AGENT_TRACE_URL_PREFIX}{}", agent_trace.id);
+    let constructed_url = sce_web::agent_trace_persisted_url(&agent_trace.id);
 
     let insert_input = AgentTraceInsert {
         commit_id: &flow_result.post_commit_data.commit_oid,
