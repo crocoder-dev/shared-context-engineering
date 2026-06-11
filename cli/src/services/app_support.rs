@@ -1,6 +1,5 @@
 use std::io::Write;
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use crate::app::AppContext;
 use crate::services;
@@ -12,7 +11,7 @@ const INVALID_CONFIG_WARNING_EVENT_ID: &str = "sce.config.invalid_config";
 
 pub(crate) struct RunOutcome {
     pub(crate) result: Result<String, ClassifiedError>,
-    pub(crate) logger: Option<Arc<dyn LoggerTrait>>,
+    pub(crate) logger: Option<services::observability::Logger>,
     pub(crate) startup_diagnostic: Option<String>,
 }
 
@@ -30,12 +29,22 @@ where
             if let Some(diagnostic) = outcome.startup_diagnostic {
                 write_startup_diagnostic(stderr, &diagnostic);
             }
+            let logger = outcome
+                .logger
+                .as_ref()
+                .map(|logger| logger as &dyn LoggerTrait);
             write_stdout_payload(stdout, &payload).map_or_else(
-                |error| exit_with_error(stderr, outcome.logger.as_deref(), &error),
+                |error| exit_with_error(stderr, logger, &error),
                 |()| ExitCode::SUCCESS,
             )
         }
-        Err(error) => exit_with_error(stderr, outcome.logger.as_deref(), &error),
+        Err(error) => {
+            let logger = outcome
+                .logger
+                .as_ref()
+                .map(|logger| logger as &dyn LoggerTrait);
+            exit_with_error(stderr, logger, &error)
+        }
     }
 }
 
