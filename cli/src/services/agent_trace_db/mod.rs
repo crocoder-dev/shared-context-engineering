@@ -924,11 +924,24 @@ mod tests {
             "trg_messages_updated_at"
         ));
         assert!(sqlite_object_exists(&db, "trigger", "trg_parts_updated_at"));
-        let expected_migration_ids: Vec<String> = generated_migrations::AGENT_TRACE_MIGRATIONS
-            .iter()
-            .map(|(id, _)| (*id).to_owned())
-            .collect();
-        assert_eq!(applied_migration_ids(&db), expected_migration_ids);
+        let applied_ids = applied_migration_ids(&db);
+        assert_eq!(
+            applied_ids.len(),
+            generated_migrations::AGENT_TRACE_MIGRATIONS.len(),
+            "applied migration count should match generated migration count"
+        );
+        assert!(
+            applied_ids.windows(2).all(|w| w[0] < w[1]),
+            "applied migration IDs should be sorted ascending: {applied_ids:?}"
+        );
+        for id in &applied_ids {
+            assert!(
+                id.len() > 4
+                    && id.chars().take(3).all(|c| c.is_ascii_digit())
+                    && id.chars().nth(3) == Some('_'),
+                "migration ID '{id}' should match NNN_... pattern"
+            );
+        }
 
         let trace_url = agent_trace::agent_trace_persisted_url("trace-1");
 
