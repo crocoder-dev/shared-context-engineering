@@ -35,6 +35,7 @@ pub mod lifecycle;
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
 const AGENT_TRACE_URL_PREFIX: &str = "sce.crocoder.dev/trace/";
+const CLAUDE_CLI_BINARY: &str = "claude";
 
 const MAX_TRACE_FILE_CREATE_ATTEMPTS: u64 = 1_000_000;
 type PayloadValidationError = fn(&str) -> String;
@@ -813,6 +814,16 @@ fn extract_claude_event_time(payload: &serde_json::Map<String, Value>) -> u64 {
 }
 
 fn parse_session_model_payload(stdin_payload: &str) -> Result<SessionModelPayload> {
+    parse_session_model_payload_with(stdin_payload, capture_claude_cli_version)
+}
+
+fn parse_session_model_payload_with<V>(
+    stdin_payload: &str,
+    claude_tool_version: V,
+) -> Result<SessionModelPayload>
+where
+    V: FnOnce() -> Option<String>,
+{
     let payload_kind = StdinPayloadKind::SessionModel;
     let parsed: Value = serde_json::from_str(stdin_payload)
         .with_context(|| payload_kind.validation_error("expected valid JSON"))?;
@@ -822,7 +833,7 @@ fn parse_session_model_payload(stdin_payload: &str) -> Result<SessionModelPayloa
 
     // Classify: Claude structured payloads carry hook_event_name.
     if payload.contains_key("hook_event_name") {
-        return parse_claude_session_model_payload(payload, payload_kind);
+        return parse_claude_session_model_payload(payload, payload_kind, claude_tool_version);
     }
 
     // Original OpenCode/session-model normalized payload — unchanged.
@@ -857,6 +868,7 @@ const CLAUDE_MODEL_ID_PREFIX: &str = "claude/";
 fn parse_claude_session_model_payload(
     payload: &serde_json::Map<String, Value>,
     payload_kind: StdinPayloadKind,
+    claude_tool_version: impl FnOnce() -> Option<String>,
 ) -> Result<SessionModelPayload> {
     let event_name = required_non_empty_string_field(payload, "hook_event_name", payload_kind)?;
 
@@ -870,7 +882,9 @@ fn parse_claude_session_model_payload(
     let model_id = required_claude_model_id(payload, payload_kind)?;
     let time = extract_claude_event_time(payload);
     let tool_name = "claude".to_string();
-    let tool_version = extract_claude_tool_version_from_payload(payload);
+    let tool_version = extract_claude_tool_version_from_payload(payload).or_else(|| {
+        claude_tool_version().and_then(|version| normalize_claude_tool_version(&version))
+    });
 
     Ok(SessionModelPayload {
         session_id,
@@ -947,18 +961,36 @@ fn extract_claude_tool_version_from_payload(
 ) -> Option<String> {
     for key in ["tool_version", "claude_version", "version"] {
         match payload.get(key) {
-            Some(Value::String(s)) => {
-                let trimmed = s.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
-                }
-                return None; // empty string → None (null semantics)
-            }
+            Some(Value::String(s)) => return normalize_claude_tool_version(s),
             Some(Value::Null) => return None,
             Some(_) | None => {} // non-string, non-null, or missing → skip
         }
     }
     None
+}
+
+fn capture_claude_cli_version() -> Option<String> {
+    let output = Command::new(CLAUDE_CLI_BINARY)
+        .arg("--version")
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    normalize_claude_tool_version(&stdout)
+}
+
+fn normalize_claude_tool_version(version: &str) -> Option<String> {
+    let trimmed = version.trim();
+
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn required_nullable_or_non_empty_string_field(
@@ -2067,6 +2099,83 @@ mod tests {
         assert_eq!(input.part_type, PartType::Reasoning);
         assert_eq!(input.text, "thinking through validation");
         assert_eq!(input.generated_at_unix_ms, 1_800_000_000_001_i64);
+    }
+
+    fn claude_session_start_payload(extra_fields: &Value) -> String {
+        let mut payload = serde_json::json!({
+            "hook_event_name": "SessionStart",
+            "session_id": "session-123",
+            "model": "sonnet-4",
+            "time": 1_800_000_000_000_u64,
+        });
+        let payload_object = payload
+            .as_object_mut()
+            .expect("base test payload should be a JSON object");
+        let extra_object = extra_fields
+            .as_object()
+            .expect("extra test payload fields should be a JSON object");
+
+        for (key, value) in extra_object {
+            payload_object.insert(key.clone(), value.clone());
+        }
+
+        payload.to_string()
+    }
+
+    #[test]
+    fn claude_session_model_payload_prefers_payload_tool_version_without_cli_probe() {
+        let payload = claude_session_start_payload(&serde_json::json!({
+            "tool_version": "  Claude Code 1.2.3\n",
+        }));
+
+        let output = parse_session_model_payload_with(&payload, || {
+            panic!("payload tool_version should avoid Claude CLI version probe")
+        })
+        .expect("Claude SessionStart payload should parse");
+
+        assert_eq!(output.session_id, "session-123");
+        assert_eq!(output.model_id, "claude/sonnet-4");
+        assert_eq!(output.tool_name, "claude");
+        assert_eq!(output.tool_version, Some(String::from("Claude Code 1.2.3")));
+    }
+
+    #[test]
+    fn claude_session_model_payload_prefers_payload_claude_version_without_cli_probe() {
+        let payload = claude_session_start_payload(&serde_json::json!({
+            "claude_version": "Claude Code 1.2.4",
+        }));
+
+        let output = parse_session_model_payload_with(&payload, || {
+            panic!("payload claude_version should avoid Claude CLI version probe")
+        })
+        .expect("Claude SessionStart payload should parse");
+
+        assert_eq!(output.tool_version, Some(String::from("Claude Code 1.2.4")));
+    }
+
+    #[test]
+    fn claude_session_model_payload_uses_cli_version_when_payload_version_missing() {
+        let payload = claude_session_start_payload(&serde_json::json!({}));
+
+        let output = parse_session_model_payload_with(&payload, || {
+            Some(String::from("\nClaude Code 2.0.0  "))
+        })
+        .expect("Claude SessionStart payload should parse");
+
+        assert_eq!(output.tool_version, Some(String::from("Claude Code 2.0.0")));
+    }
+
+    #[test]
+    fn claude_session_model_payload_keeps_none_for_failed_or_empty_cli_version() {
+        let payload = claude_session_start_payload(&serde_json::json!({}));
+
+        let unavailable = parse_session_model_payload_with(&payload, || None)
+            .expect("Claude SessionStart payload should parse with unavailable CLI version");
+        assert_eq!(unavailable.tool_version, None);
+
+        let empty = parse_session_model_payload_with(&payload, || Some(String::from("\n  \t")))
+            .expect("Claude SessionStart payload should parse with empty CLI version");
+        assert_eq!(empty.tool_version, None);
     }
 
     #[test]

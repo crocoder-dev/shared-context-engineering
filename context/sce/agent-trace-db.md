@@ -198,7 +198,7 @@ Post-commit intersection rows are written by the active `post-commit` hook flow 
 - No `context/tmp` artifact is written for conversation traces.
 - The generated OpenCode agent-trace plugin is a runtime caller for both conversation event variants and currently sends one-element typed batch envelopes for captured `message.updated` and `message.part.updated` events.
 
-The `sce hooks session-model` command route writes normalized session-model attribution payloads into `session_models` via STDIN JSON intake with required `sessionID`/`time`/`model_id`/`tool_name` and nullable `tool_version`. `(tool_name, session_id)` is the unique upsert key: subsequent upserts for the same tool/session pair replace `model_id`, `tool_version`, and `session_start_time_ms` while updating `updated_at`. See [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md).
+The `sce hooks session-model` command route writes session-model attribution payloads into `session_models` via STDIN JSON intake with required `sessionID`/`time`/`model_id`/`tool_name` and nullable `tool_version`; Claude `SessionStart` raw payloads may fill missing version metadata from a best-effort `claude --version` probe before upsert. `(tool_name, session_id)` is the unique upsert key: subsequent upserts for the same tool/session pair replace `model_id`, `tool_version`, and `session_start_time_ms` while updating `updated_at`. See [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md).
 
 ## Recent patch reads
 
