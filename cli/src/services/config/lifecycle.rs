@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::app::AppContext;
+use crate::app::HasRepoRoot;
 use crate::services::default_paths::{resolve_sce_default_locations, RepoPaths};
 use crate::services::lifecycle::{
     HealthCategory, HealthFixability, HealthProblem, HealthProblemKind, HealthSeverity,
@@ -20,7 +20,7 @@ impl ServiceLifecycle for ConfigLifecycle {
         LifecycleProviderId::Config
     }
 
-    fn diagnose(&self, ctx: &AppContext) -> Vec<HealthProblem> {
+    fn diagnose(&self, ctx: &dyn HasRepoRoot) -> Vec<HealthProblem> {
         let repository_root = match ctx.repo_root() {
             Some(path) => path.to_path_buf(),
             None => {
@@ -41,7 +41,7 @@ impl ServiceLifecycle for ConfigLifecycle {
         diagnose_config_health(&repository_root)
     }
 
-    fn setup(&self, ctx: &AppContext) -> Result<SetupOutcome> {
+    fn setup(&self, ctx: &dyn HasRepoRoot) -> Result<SetupOutcome> {
         let repository_root = ctx
             .repo_root()
             .context("Config lifecycle setup requires a resolved repository root")?;

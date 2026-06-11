@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::process::ExitCode;
 
-use crate::app::AppContext;
+use crate::app::{ContextWithRepoRoot, HasLogger};
 use crate::services;
 use services::command_registry::RuntimeCommand;
 use services::error::ClassifiedError;
@@ -101,10 +101,13 @@ pub(crate) fn log_startup_configuration(
     }
 }
 
-pub(crate) fn execute_command_phase(
+pub(crate) fn execute_command_phase<C>(
     command: &RuntimeCommand,
-    context: &AppContext,
-) -> Result<String, ClassifiedError> {
+    context: &C,
+) -> Result<String, ClassifiedError>
+where
+    C: HasLogger + ContextWithRepoRoot,
+{
     let command_name = command.name();
     let logger = context.logger();
     logger.debug(

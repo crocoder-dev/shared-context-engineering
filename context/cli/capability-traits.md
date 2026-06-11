@@ -11,11 +11,12 @@ The CLI exposes broad dependency-injection capability traits in `cli/src/service
 - `resolve_repository_root` uses `git rev-parse --show-toplevel`.
 - `resolve_hooks_directory` uses `git rev-parse --git-path hooks` and resolves relative hook paths against the provided repository root.
 - `AppRuntime` owns concrete `StdFsOps` and `ProcessGitOps` production dependencies alongside concrete observability dependencies.
-- `AppContext` is generic over filesystem and git capability implementations and borrows them from the runtime; it is passed to static `RuntimeCommand::execute` (enum defined in `cli/src/services/command_registry.rs`). It exposes narrow `fs()` / `git()` accessors and `with_repo_root(...)` for deriving a repository-scoped context while preserving the borrowed runtime capability objects.
+- `AppContext` is generic over filesystem and git capability implementations and borrows them from the runtime; it is passed through static `RuntimeCommand::execute` (enum defined in `cli/src/services/command_registry.rs`) behind narrow accessor bounds. It exposes `fs()` / `git()` accessors plus `HasLogger`, `HasRepoRoot`, and `ContextWithRepoRoot` capability traits; `ContextWithRepoRoot` derives a repository-scoped context while preserving the borrowed runtime capability objects.
+- Current command execution bounds are capability-oriented: central dispatch requires logger access plus repo-root scoping, context-free commands accept any context, hooks require logger access, and setup/doctor require repo-root scoping.
 - Test-only `UnimplementedFsOps` and `UnimplementedGitOps` stubs are available under `capabilities::test_stubs` for tests that need to satisfy trait bounds before providing focused fakes.
 
 ## Boundary
 
-Existing service internals do not consume these traits yet. Doctor/setup/hooks/config internals still use their current local filesystem and git seams until later lifecycle/AppContext tasks migrate call sites.
+Existing service internals do not consume the broad fs/git traits yet. Doctor/setup/hooks/config internals still use their current local filesystem and git seams until later lifecycle/AppContext tasks migrate call sites.
 
 See also: [overview](../overview.md), [architecture](../architecture.md), [context map](../context-map.md)

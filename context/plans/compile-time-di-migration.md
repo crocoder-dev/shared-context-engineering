@@ -73,12 +73,16 @@ The intended end state is a statically wired CLI runtime where the production ap
   - Evidence: `nix build .#checks.x86_64-linux.cli-tests && nix build .#checks.x86_64-linux.cli-clippy && nix build .#checks.x86_64-linux.cli-fmt` passed; `nix run .#pkl-check-generated` passed; searched `cli/src` for stale `RuntimeCommandHandle`, `Box<dyn RuntimeCommand>`, `impl RuntimeCommand for`, `dyn RuntimeCommand`, and removed command-constructor symbols with no matches.
   - Notes: Runtime command dispatch now uses the static `RuntimeCommand` enum and a deterministic static `CommandRegistry` name catalog. The parse layer returns enum variants directly, and app execution dispatches through enum methods to existing service-owned command structs. Context sync classification: important change; durable command-dispatch context needs updating.
 
-- [ ] T04: `Make command execution generic over required capabilities` (status:todo)
+- [x] T04: `Make command execution generic over required capabilities` (status:done)
   - Task ID: T04
   - Goal: Update service-owned command execution methods to accept generic context/capability bounds instead of the full production context type wherever possible.
   - Boundaries (in/out of scope): In - command `execute` methods for help/version/completion/auth/config/setup/doctor/hooks, capability trait bounds, logger/repo-root usage, parse/app support call sites. Out - changing command request/response models or renderer output.
   - Done when: command code expresses narrow context requirements through capability traits/accessors; the static command enum can execute against any context satisfying those bounds; public CLI behavior remains unchanged.
   - Verification notes (commands or checks): Run affected command tests and any app-level stdout/stderr/exit-code tests.
+  - Completed: 2026-06-11
+  - Files changed: `cli/src/app.rs`, `cli/src/services/app_support.rs`, `cli/src/services/command_registry.rs`, command modules under `cli/src/services/{auth_command,completion,config,doctor,help,hooks,setup,version}/command.rs`, `cli/src/services/lifecycle.rs`, lifecycle modules under `cli/src/services/{agent_trace_db,auth_db,config,hooks,local_db}/lifecycle.rs`, `cli/src/services/doctor/mod.rs`
+  - Evidence: `nix build .#checks.x86_64-linux.cli-tests`, `nix build .#checks.x86_64-linux.cli-clippy`, and `nix build .#checks.x86_64-linux.cli-fmt` passed; `nix run .#pkl-check-generated` passed. Full `nix flake check` still fails on unrelated pre-existing `config-lib-biome-format` issues in `config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts`.
+  - Notes: Command execution is now generic over capability accessors: dispatch requires logger + repo-root scoping bounds, context-free command payloads accept any context, hooks requires logger access, and setup/doctor require repo-root scoping. Lifecycle provider trait objects remain in place for T05, but their methods now consume the narrow repo-root accessor trait so setup/doctor can operate over generic command contexts. Context sync classification: important change; durable command/lifecycle context should reflect the narrower capability-bound execution seam.
 
 - [ ] T05: `Replace lifecycle provider trait objects with static lifecycle dispatch` (status:todo)
   - Task ID: T05

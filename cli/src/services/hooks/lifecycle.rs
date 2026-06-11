@@ -4,7 +4,7 @@ use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
 
-use crate::app::AppContext;
+use crate::app::HasRepoRoot;
 use crate::services::lifecycle::{
     FixOutcome, FixResultRecord, HealthCategory, HealthFixability, HealthProblem,
     HealthProblemKind, HealthSeverity, LifecycleProviderId, RequiredHookInstallStatus,
@@ -32,7 +32,7 @@ impl ServiceLifecycle for HooksLifecycle {
         LifecycleProviderId::Hooks
     }
 
-    fn diagnose(&self, ctx: &AppContext) -> Vec<HealthProblem> {
+    fn diagnose(&self, ctx: &dyn HasRepoRoot) -> Vec<HealthProblem> {
         let repository_root = match ctx.repo_root() {
             Some(path) => path.to_path_buf(),
             None => {
@@ -63,7 +63,7 @@ impl ServiceLifecycle for HooksLifecycle {
         })
     }
 
-    fn fix(&self, ctx: &AppContext, problems: &[HealthProblem]) -> Vec<FixResultRecord> {
+    fn fix(&self, ctx: &dyn HasRepoRoot, problems: &[HealthProblem]) -> Vec<FixResultRecord> {
         let should_fix_hooks = problems.iter().any(|problem| {
             problem.category == HealthCategory::HookRollout
                 && problem.fixability == HealthFixability::AutoFixable
@@ -97,7 +97,7 @@ impl ServiceLifecycle for HooksLifecycle {
         }
     }
 
-    fn setup(&self, ctx: &AppContext) -> Result<SetupOutcome> {
+    fn setup(&self, ctx: &dyn HasRepoRoot) -> Result<SetupOutcome> {
         let repository_root = ctx
             .repo_root()
             .context("Hooks lifecycle setup requires a resolved repository root")?;

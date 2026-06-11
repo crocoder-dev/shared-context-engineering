@@ -1,7 +1,5 @@
 use std::borrow::Cow;
 
-use crate::app::AppContext;
-
 pub struct HelpCommand;
 
 pub struct HelpTextCommand {
@@ -14,7 +12,7 @@ impl HelpTextCommand {
         Cow::Borrowed(self.name.as_str())
     }
 
-    pub fn execute(&self, _context: &AppContext) -> String {
+    pub fn execute<C>(&self, _context: &C) -> String {
         self.text.clone()
     }
 }

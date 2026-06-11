@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::app::AppContext;
+use crate::app::{ContextWithRepoRoot, HasLogger};
 use crate::services;
 use crate::services::error::ClassifiedError;
 
@@ -47,7 +47,10 @@ impl RuntimeCommand {
         }
     }
 
-    pub fn execute(&self, context: &AppContext) -> Result<String, ClassifiedError> {
+    pub fn execute<C>(&self, context: &C) -> Result<String, ClassifiedError>
+    where
+        C: HasLogger + ContextWithRepoRoot,
+    {
         match self {
             Self::Help(_) => Ok(services::help::help_text()),
             Self::HelpText(command) => Ok(command.execute(context)),

@@ -20,7 +20,7 @@ Out of scope for this contract task:
 
 ## Current implementation baseline
 
-The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor command surface and stable output-shape scaffolding, with focused `doctor/{inspect,render,fixes,types}.rs` submodules separating diagnosis, rendering, fix execution, and doctor-owned domain types. The `doctor` command now aggregates `ServiceLifecycle::diagnose` and `ServiceLifecycle::fix` calls across registered service providers (`config`, `hooks`, `local_db`). Together they cover the global-readiness slice plus the current repo-integrity, database-inventory, and repair slices:
+The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor command surface and stable output-shape scaffolding, with focused `doctor/{inspect,render,fixes,types}.rs` submodules separating diagnosis, rendering, fix execution, and doctor-owned domain types. The `doctor` command now aggregates `ServiceLifecycle::diagnose` and `ServiceLifecycle::fix` calls across registered service providers (`config`, `local_db`, `auth_db`, `agent_trace_db`, `hooks`). Together they cover the global-readiness slice plus the current repo-integrity, database-inventory, and repair slices:
 
 - explicit mode selection through `sce doctor` (`diagnose`) and `sce doctor --fix` (`fix`)
 - command/help wiring for `--fix` plus stable text/JSON mode reporting
@@ -44,83 +44,11 @@ The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor comm
 - repo-root installed OpenCode integration inventory for `OpenCode plugins`, `OpenCode agents`, `OpenCode commands`, and `OpenCode skills`
 - integration child-row reporting for those four groups now validates file content against embedded SHA-256; missing files render as `[MISS]`, content mismatches render as `[FAIL]`, and any affected parent group renders as `[FAIL]`
 - repo-root OpenCode plugin inventory includes the installed manifest file plus plugin/runtime/preset artifacts as required presence-only files; generated `config/.opencode/**` trees are not inspected by doctor
-- repair-mode delegation to `ServiceLifecycle::fix` implementations: `HooksLifecycle::fix` reuses `install_required_git_hooks` for missing hooks directories plus missing, stale, or non-executable required hooks; `LocalDbLifecycle::fix` and `AgentTraceDbLifecycle::fix` handle bootstrap of missing canonical SCE-owned DB parent directories
+- repair-mode delegation to `ServiceLifecycle::fix` implementations: `HooksLifecycle::fix` reuses `install_required_git_hooks` for missing hooks directories plus missing, stale, or non-executable required hooks; `LocalDbLifecycle::fix`, `AuthDbLifecycle::fix`, and `AgentTraceDbLifecycle::fix` handle bootstrap of missing canonical SCE-owned DB parent directories
 
 ## Approved human text-mode contract
 
-Plan `doctor-human-text-integration-audit` task `T01` locks the approved human-facing `sce doctor` text contract for downstream implementation tasks.
-This section is now implemented by the current runtime and remains normative for future changes.
-
-### Text-mode section order
-  
-Human text output for `sce doctor` must render these sections in this exact order:
-  
-1. `Environment`
-2. `Configuration` (includes Agent Trace DB health row)
-3. `Repository`
-4. `Git Hooks`
-5. `Integrations`
-
-### Human text status vocabulary
-
-Human text rows must use exactly this status vocabulary:
-
-- `[PASS]`: healthy
-- `[FAIL]`: SCE will not work unless fixed
-- `[MISS]`: required file is missing
-
-No alternate human text status labels are allowed for this layout.
-
-When shared CLI color output is enabled, `[PASS]` renders green and `[FAIL]` / `[MISS]` render red.
-When color is disabled, human text still renders the exact bracketed tokens without ANSI sequences.
-
-### Header and row formatting
-
-Diagnose mode renders the header `SCE doctor diagnose`.
-Fix mode renders the header `SCE doctor fix`.
-
-Human text rows with path detail use the simplified `label (path)` form.
-Healthy human rows do not append redundant prose such as `present`, `expected`, or `all required files present`.
-
-Repository rows use the labels `Repository` and `Hooks` in text mode.
-
-### Git Hooks text simplification
-
-Human text output for `Git Hooks` is simplified to top-level required-hook presence rows only.
-Nested human text rows for hook `content` or `executable` detail are not part of the approved layout.
-This simplification is text-mode only and does not change JSON output requirements.
-
-### Integrations text contract
-
-Human text output for `Integrations` must use exactly these groups:
-
-- `OpenCode plugins`
-- `OpenCode agents`
-- `OpenCode commands`
-- `OpenCode skills`
-
-Integration checks for this contract inspect installed repo-root artifacts only.
-They validate file presence and content hashes against embedded OpenCode assets.
-Generated `config/.opencode/**` trees are out of scope for doctor integration checks in this change stream.
-
-For `agents`, `commands`, and `skills`, the installed repo-root trees are required inventory.
-If any required file in an integration group is missing or mismatched:
-
-- missing child rows render `[MISS]`
-- mismatched child rows render `[FAIL]` and include a content-mismatch detail
-- the parent integration group renders `[FAIL]`
-
-An integration group renders `[PASS]` only when every required installed file in that group is present.
-
-Healthy integration parent rows render the group name only.
-Integration child rows render as `[STATUS] relative/path (absolute/path)` in text mode.
-
-### Non-goals for this contract slice
-
-- no JSON output shape or semantic changes
-- no `sce doctor --fix` behavior changes
-- no Claude integration content validation
-- no new integration group names
+The implemented human-facing `sce doctor` text contract is split into `context/sce/doctor-human-text-contract.md`.
 
 ## Command surface contract
 
@@ -261,7 +189,7 @@ When an issue is `not_yet_implemented`, output must say that doctor recognizes t
 
 Repair behavior must:
 
-- delegate to `ServiceLifecycle::fix` implementations for service-owned repairs (`ConfigLifecycle`, `HooksLifecycle`, `LocalDbLifecycle`)
+- delegate to `ServiceLifecycle::fix` implementations for service-owned repairs (`ConfigLifecycle`, `LocalDbLifecycle`, `AuthDbLifecycle`, `AgentTraceDbLifecycle`, `HooksLifecycle`)
 - reuse existing canonical SCE repair flows when ownership already exists, especially `sce setup --hooks` semantics and shared setup/security helpers
 - add new internal doctor-owned repair routines only for safe gaps with no existing canonical repair command
 - stay idempotent across repeated `--fix` runs
@@ -269,11 +197,11 @@ Repair behavior must:
 
 ## ServiceLifecycle trait
 
-The `ServiceLifecycle` trait in `cli/src/services/lifecycle.rs` provides a unified interface for service health checks, repairs, and setup:
+The `ServiceLifecycle` trait in `cli/src/services/lifecycle.rs` provides a unified interface for service health checks, repairs, and setup through the narrow repo-root accessor:
 
-- `diagnose(&self, ctx: &AppContext) -> Vec<HealthProblem>`: returns health problems detected by the service
-- `fix(&self, ctx: &AppContext) -> Vec<FixResult>`: attempts to repair issues detected by the service
-- `setup(&self, ctx: &AppContext) -> Vec<SetupOutcome>`: performs service-specific setup steps
+- `diagnose(&self, ctx: &dyn HasRepoRoot) -> Vec<HealthProblem>`: returns health problems detected by the service
+- `fix(&self, ctx: &dyn HasRepoRoot, problems: &[HealthProblem]) -> Vec<FixResultRecord>`: attempts to repair issues detected by the service
+- `setup(&self, ctx: &dyn HasRepoRoot) -> anyhow::Result<SetupOutcome>`: performs service-specific setup steps
 
 Default implementations are no-ops, allowing services to opt-in to lifecycle ownership incrementally.
 
@@ -281,6 +209,7 @@ Services implementing `ServiceLifecycle`:
 - `ConfigLifecycle` in `cli/src/services/config/lifecycle.rs`: validates global/local config readability and schema compliance
 - `HooksLifecycle` in `cli/src/services/hooks/lifecycle.rs`: checks hook rollout integrity, required-hook presence/executability/content
 - `LocalDbLifecycle` in `cli/src/services/local_db/lifecycle.rs`: validates DB path/health, bootstraps DB parent directory
+- `AuthDbLifecycle` in `cli/src/services/auth_db/lifecycle.rs`: validates encrypted auth DB path/health, bootstraps DB parent directory
 - `AgentTraceDbLifecycle` in `cli/src/services/agent_trace_db/lifecycle.rs`: validates Agent Trace DB path/health, bootstraps DB parent directory
 
 The `doctor` command aggregates `diagnose` and `fix` across all registered providers.

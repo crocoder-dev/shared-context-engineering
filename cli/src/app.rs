@@ -69,6 +69,10 @@ pub(crate) trait HasRepoRoot {
     fn repo_root(&self) -> Option<&Path>;
 }
 
+pub(crate) trait ContextWithRepoRoot: HasRepoRoot {
+    fn with_repo_root(&self, repo_root: impl Into<PathBuf>) -> Self;
+}
+
 impl<'a, L, T, F, G> AppContext<'a, L, T, F, G>
 where
     L: LoggerTrait,
@@ -127,6 +131,7 @@ where
     ///
     /// Lifecycle providers use this during setup to avoid re-resolving
     /// the repository root independently.
+    #[allow(dead_code)]
     pub fn repo_root(&self) -> Option<&Path> {
         HasRepoRoot::repo_root(self)
     }
@@ -189,6 +194,18 @@ where
 {
     fn repo_root(&self) -> Option<&Path> {
         self.repo_root.as_deref()
+    }
+}
+
+impl<L, T, F, G> ContextWithRepoRoot for AppContext<'_, L, T, F, G>
+where
+    L: LoggerTrait,
+    T: Telemetry,
+    F: services::capabilities::FsOps,
+    G: services::capabilities::GitOps,
+{
+    fn with_repo_root(&self, repo_root: impl Into<PathBuf>) -> Self {
+        AppContext::with_repo_root(self, repo_root)
     }
 }
 
@@ -324,7 +341,7 @@ where
 fn parse_command_phase<I>(
     args: I,
     registry: &services::command_registry::CommandRegistry,
-    context: &ProductionAppContext<'_>,
+    context: &impl HasLogger,
 ) -> Result<services::command_registry::RuntimeCommand, ClassifiedError>
 where
     I: IntoIterator<Item = String>,

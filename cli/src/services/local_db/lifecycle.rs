@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-use crate::app::AppContext;
+use crate::app::HasRepoRoot;
 use crate::services::db::{bootstrap_db_parent, collect_db_path_health, DbSpec};
 use crate::services::default_paths::local_db_path;
 use crate::services::lifecycle::{
@@ -18,11 +18,11 @@ impl ServiceLifecycle for LocalDbLifecycle {
         LifecycleProviderId::LocalDb
     }
 
-    fn diagnose(&self, _ctx: &AppContext) -> Vec<HealthProblem> {
+    fn diagnose(&self, _ctx: &dyn HasRepoRoot) -> Vec<HealthProblem> {
         diagnose_local_db_health()
     }
 
-    fn fix(&self, _ctx: &AppContext, problems: &[HealthProblem]) -> Vec<FixResultRecord> {
+    fn fix(&self, _ctx: &dyn HasRepoRoot, problems: &[HealthProblem]) -> Vec<FixResultRecord> {
         let should_bootstrap_parent = problems.iter().any(|problem| {
             problem.category == HealthCategory::GlobalState
                 && problem.fixability == HealthFixability::AutoFixable
@@ -48,7 +48,7 @@ impl ServiceLifecycle for LocalDbLifecycle {
         }
     }
 
-    fn setup(&self, _ctx: &AppContext) -> Result<SetupOutcome> {
+    fn setup(&self, _ctx: &dyn HasRepoRoot) -> Result<SetupOutcome> {
         LocalDb::new().context("Local DB lifecycle setup failed while initializing local DB")?;
         Ok(SetupOutcome::default())
     }
