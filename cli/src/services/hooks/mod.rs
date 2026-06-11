@@ -11,8 +11,8 @@ use serde::Serialize;
 use serde_json::{json, to_string as serialize_to_json, Value};
 
 use crate::services::agent_trace::{
-    build_agent_trace, validate_agent_trace_value, AgentTrace, AgentTraceMetadataInput,
-    AgentTraceVcsType,
+    agent_trace_persisted_url, build_agent_trace, validate_agent_trace_value, AgentTrace,
+    AgentTraceMetadataInput, AgentTraceVcsType,
 };
 use crate::services::agent_trace_db::{
     AgentTraceDb, AgentTraceInsert, DiffTraceInsert, InsertMessageInsert, InsertPartInsert,
@@ -24,12 +24,10 @@ use crate::services::patch::{
     combine_patches as combine_patches_fn, intersect_patches as intersect_patches_fn,
     parse_patch as parse_patch_from_text, ParsedPatch,
 };
-use crate::services::sce_web;
 use crate::services::structured_patch::{
     derive_claude_structured_patch, ClaudeStructuredPatchDerivationResult,
 };
 use crate::services::{config, default_paths::RepoPaths};
-
 pub mod command;
 pub mod lifecycle;
 
@@ -1608,7 +1606,7 @@ where
             .context("Failed to serialize post-commit Agent Trace payload for persistence.")?
     );
 
-    let constructed_url = sce_web::agent_trace_persisted_url(&agent_trace.id);
+    let constructed_url = agent_trace_persisted_url(&agent_trace.id);
 
     let insert_input = AgentTraceInsert {
         commit_id: &flow_result.post_commit_data.commit_oid,

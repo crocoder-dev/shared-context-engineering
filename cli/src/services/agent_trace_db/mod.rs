@@ -743,7 +743,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::services::sce_web;
+    use crate::services::agent_trace;
 
     static TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
     static BASELINE_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
@@ -1031,7 +1031,7 @@ mod tests {
             ]
         );
 
-        let trace_url = sce_web::agent_trace_persisted_url("trace-1");
+        let trace_url = agent_trace::agent_trace_persisted_url("trace-1");
 
         let duplicate_insert = insert_agent_trace_with(
             &db,
