@@ -178,10 +178,10 @@ Both triggers compare `OLD.*` vs `NEW.*` for all mutable columns (excluding `upd
 
 `sce hooks diff-trace` is the current runtime writer for `diff_traces`.
 
-- The hook path validates required STDIN `{ sessionID, diff, time, tool_name, tool_version }` before persistence, with `model_id` accepted as optional (absent or `null`). When `model_id` is absent, Rust resolves it from `session_models` by `(tool_name, session_id)`. If no matching session model row exists, the hook returns success/no-op without artifact or DB writes.
-- When `model_id` is present, it passes directly into `DiffTraceInsert` as `Option<&str>` (`Some` for non-empty, `None` for absent/null). The `payload_type` field is set to `PAYLOAD_TYPE_PATCH` for `OpenCode` normalized diff-trace payloads.
+- The hook path validates required STDIN `{ sessionID, diff, time, tool_name, tool_version }` before persistence, with `model_id` accepted as optional (absent or `null`) and `tool_version` accepted as nullable. When either attribution field is missing/nullable, Rust queries `session_models` by `(tool_name, session_id)` and fills missing `model_id` / `tool_version` from the stored row when available.
+- Direct payload `model_id` and `tool_version` values pass into `DiffTraceInsert` with precedence over stored session values. If no matching session row exists, missing attribution remains `None` and persistence continues with nullable fields. The `payload_type` field is set to `PAYLOAD_TYPE_PATCH` for `OpenCode` normalized diff-trace payloads and `PAYLOAD_TYPE_STRUCTURED` for Claude structured `PostToolUse` payloads.
 - `time` is accepted as a `u64` Unix epoch millisecond input and must fit the signed `i64` `time_ms` column before any persistence starts.
-- The hook writes the existing collision-safe `context/tmp/<timestamp>-000000-diff-trace.json` parsed-payload artifact (when model enrichment succeeds or model_id was present), then attempts to insert the parsed payload fields through `AgentTraceDb::insert_diff_trace()`.
+- The hook writes the existing collision-safe `context/tmp/<timestamp>-000000-diff-trace.json` parsed-payload artifact, then attempts to insert the parsed payload fields plus resolved nullable attribution through `AgentTraceDb::insert_diff_trace()`.
 - Command success requires artifact persistence to succeed; AgentTraceDb open/insert failures are logged and reflected in the success text as failed DB persistence instead of discarding the artifact fallback.
 - Existing artifact files are not backfilled into the database.
 
