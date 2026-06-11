@@ -8,6 +8,7 @@
   - `db_name()` returns a human-readable diagnostic name.
   - `db_path()` resolves the canonical database file path.
   - `migrations()` returns ordered embedded migration `(id, sql)` pairs.
+- `cli/build.rs` scans immediate `cli/migrations/<db-name>/*.sql` directories at compile time and writes `cli/src/generated_migrations.rs` with database-named migration constants (`AGENT_TRACE_MIGRATIONS`, `AUTH_MIGRATIONS`, etc.). Generated entries use the filename stem as the migration ID, embed SQL with `include_str!`, and are sorted by the numeric prefix before the first `_`.
 - `TursoDb<M: DbSpec>`: generic unencrypted adapter that owns:
   - tokio current-thread runtime creation
   - Turso local database open/connect flow using `turso::Builder::new_local()` with `experimental_multiprocess_wal(true)` so concurrent `sce` processes can safely access the same local database without WAL lock contention
