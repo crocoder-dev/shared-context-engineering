@@ -30,6 +30,7 @@ use super::patch::{
 pub const AGENT_TRACE_VERSION: &str = "0.1.0";
 pub const SCE_METADATA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+const CONVERSATION_URL_BASE: &str = "https://sce.crocoder.dev/conversations";
 const RANGE_CONTENT_HASH_PREFIX: &str = "murmur3:";
 const RANGE_CONTENT_HASH_INPUT_VERSION: &[u8] = b"sce-agent-trace-range-content-hash-v1\0";
 const TOUCHED_LINE_ADDED_TAG: &[u8] = b"added\0";
@@ -58,6 +59,10 @@ fn generate_agent_trace_id(commit_time: DateTime<FixedOffset>) -> Result<String>
     let timestamp = Timestamp::from_unix(NoContext, seconds, commit_time.timestamp_subsec_nanos());
 
     Ok(Uuid::new_v7(timestamp).to_string())
+}
+
+fn conversation_url(agent_trace_id: &str) -> String {
+    format!("{CONVERSATION_URL_BASE}/{agent_trace_id}")
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -215,6 +220,8 @@ pub enum HunkContributor {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Conversation {
+    /// Absolute lookup URL for the generated top-level agent trace.
+    pub url: String,
     /// Classification of this hunk's origin.
     pub contributor: Contributor,
     /// Line ranges in the new file, derived from the `post_commit_patch` hunk metadata.
@@ -406,6 +413,7 @@ fn parse_embedded_deleted_patch(file: &PatchFileChange) -> Option<ParsedPatch> {
 fn build_trace_file(
     post_commit_file: &PatchFileChange,
     intersection_patch: &ParsedPatch,
+    conversation_url: &str,
 ) -> Option<TraceFile> {
     if post_commit_file.hunks.is_empty() {
         return None;
@@ -459,6 +467,7 @@ fn build_trace_file(
             });
 
             Conversation {
+                url: conversation_url.to_owned(),
                 contributor: Contributor {
                     kind: contributor_kind,
                     model_id: contributor_model_id,
@@ -495,6 +504,8 @@ pub fn build_agent_trace(
     metadata: AgentTraceMetadataInput<'_>,
 ) -> Result<AgentTrace> {
     let commit_time = parse_commit_timestamp(metadata.commit_timestamp)?;
+    let id = generate_agent_trace_id(commit_time)?;
+    let conversation_url = conversation_url(&id);
     let timestamp = metadata.commit_timestamp.to_owned();
     let intersection_patch = intersect_patches(constructed_patch, post_commit_patch);
 
@@ -504,12 +515,14 @@ pub fn build_agent_trace(
         if let Some(embedded_patch) = parse_embedded_deleted_patch(post_commit_file) {
             let embedded_intersection = intersect_patches(constructed_patch, &embedded_patch);
             files.extend(embedded_patch.files.iter().filter_map(|embedded_file| {
-                build_trace_file(embedded_file, &embedded_intersection)
+                build_trace_file(embedded_file, &embedded_intersection, &conversation_url)
             }));
             continue;
         }
 
-        if let Some(trace_file) = build_trace_file(post_commit_file, &intersection_patch) {
+        if let Some(trace_file) =
+            build_trace_file(post_commit_file, &intersection_patch, &conversation_url)
+        {
             files.push(trace_file);
         }
     }
@@ -527,7 +540,7 @@ pub fn build_agent_trace(
 
     Ok(AgentTrace {
         version: default_agent_trace_version(),
-        id: generate_agent_trace_id(commit_time)?,
+        id,
         timestamp,
         vcs: metadata.vcs_type.map(|vcs_type| AgentTraceVcs {
             r#type: vcs_type,

@@ -80,6 +80,21 @@ fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
     );
     let actual_json = serde_json::to_value(&actual).expect("agent trace should serialize");
     validate_agent_trace_value(&actual_json).expect("actual json should validate against schema");
+    let expected_conversation_url = format!("https://sce.crocoder.dev/conversations/{}", actual.id);
+    let mut expected_files = golden["files"].clone();
+    for conversation in expected_files
+        .as_array_mut()
+        .expect("golden files should be an array")
+        .iter_mut()
+        .flat_map(|file| {
+            file["conversations"]
+                .as_array_mut()
+                .expect("golden conversations should be an array")
+                .iter_mut()
+        })
+    {
+        conversation["url"] = Value::String(expected_conversation_url.clone());
+    }
     let metadata_version = actual_json["metadata"]["sce"]["version"]
         .as_str()
         .expect("metadata.sce.version should serialize as a string");
@@ -88,7 +103,7 @@ fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
         "metadata.sce.version should not be empty"
     );
     assert_eq!(actual_json["vcs"], golden["vcs"]);
-    assert_eq!(actual_json["files"], golden["files"]);
+    assert_eq!(actual_json["files"], expected_files);
 }
 
 #[test]
