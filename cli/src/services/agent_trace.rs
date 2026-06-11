@@ -26,16 +26,33 @@ use super::patch::{
     intersect_patches, parse_patch, FileChangeKind, ParsedPatch, PatchFileChange, PatchHunk,
     TouchedLineKind,
 };
-use crate::services::sce_web;
+use super::version::PACKAGE_VERSION;
 
 pub const AGENT_TRACE_VERSION: &str = "0.1.0";
-pub const SCE_METADATA_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const SCE_WEB_BASE_URL: &str = "https://sce.crocoder.dev";
 
 const RANGE_CONTENT_HASH_PREFIX: &str = "murmur3:";
 const RANGE_CONTENT_HASH_INPUT_VERSION: &[u8] = b"sce-agent-trace-range-content-hash-v1\0";
 const TOUCHED_LINE_ADDED_TAG: &[u8] = b"added\0";
 const TOUCHED_LINE_REMOVED_TAG: &[u8] = b"removed\0";
-const SESSION_RELATED_URL_PREFIX: &str = "https://sce.crocoder.dev/sessions/";
+
+pub(crate) fn agent_trace_conversation_url(agent_trace_id: &str) -> String {
+    format!("{SCE_WEB_BASE_URL}/conversations/{agent_trace_id}")
+}
+
+pub(crate) fn agent_trace_persisted_url(agent_trace_id: &str) -> String {
+    format!("{}/trace/{agent_trace_id}", sce_web_host())
+}
+
+pub(crate) fn agent_trace_session_url(session_id: &str) -> String {
+    format!("{SCE_WEB_BASE_URL}/sessions/{session_id}")
+}
+
+fn sce_web_host() -> &'static str {
+    SCE_WEB_BASE_URL
+        .strip_prefix("https://")
+        .unwrap_or(SCE_WEB_BASE_URL)
+}
 
 fn default_agent_trace_version() -> String {
     AGENT_TRACE_VERSION.to_owned()
@@ -44,7 +61,7 @@ fn default_agent_trace_version() -> String {
 fn default_agent_trace_metadata() -> AgentTraceMetadata {
     AgentTraceMetadata {
         sce: AgentTraceSceMetadata {
-            version: SCE_METADATA_VERSION.to_owned(),
+            version: PACKAGE_VERSION.to_owned(),
         },
     }
 }
@@ -457,7 +474,7 @@ fn build_trace_file(
                     .into_iter()
                     .map(|session_id| ConversationRelated {
                         kind: String::from("session"),
-                        url: format!("{SESSION_RELATED_URL_PREFIX}{session_id}"),
+                        url: agent_trace_session_url(session_id),
                     })
                     .collect()
             });
@@ -501,7 +518,7 @@ pub fn build_agent_trace(
 ) -> Result<AgentTrace> {
     let commit_time = parse_commit_timestamp(metadata.commit_timestamp)?;
     let id = generate_agent_trace_id(commit_time)?;
-    let conversation_url = sce_web::agent_trace_conversation_url(&id);
+    let conversation_url = agent_trace_conversation_url(&id);
     let timestamp = metadata.commit_timestamp.to_owned();
     let intersection_patch = intersect_patches(constructed_patch, post_commit_patch);
 

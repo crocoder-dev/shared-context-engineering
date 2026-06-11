@@ -96,7 +96,7 @@
 ## Placeholder CLI scaffolding
 
 - Keep production CLI path ownership centralized in `cli/src/services/default_paths.rs`; new non-test path literals or path-shape definitions should be added there as named accessors/constants instead of becoming new path owners in other modules.
-- Keep SCE-owned web URI construction centralized in `services::sce_web`; production Rust code should use its helpers instead of repeating `https://sce.crocoder.dev`, host-only variants, or derived path prefixes.
+- Keep SCE-owned web URI construction centralized in `services::agent_trace`; production Rust code should use its helpers instead of repeating `https://sce.crocoder.dev`, host-only variants, or derived path prefixes.
 - Prefer localized `#[allow(dead_code)]` on intentionally shared path/setup helper items over file-level dead-code suppression so lint scope stays narrow while keeping catalog seams available to tests and future consumers.
 - For early CLI foundation tasks, keep the real top-level command catalog/help metadata centralized in one canonical seam (`cli/src/cli_schema.rs` in the current architecture) and let custom top-level help renderers consume that seam instead of maintaining a second parallel command list.
 - Keep top-level help intentionally curated: command visibility on `sce`, `sce help`, and `sce --help` may differ from parser availability when a command should remain directly invocable but temporarily hidden from operator-facing help.

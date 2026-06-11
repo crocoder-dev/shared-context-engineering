@@ -34,6 +34,7 @@ fn main() {
     }
 
     emit_git_commit();
+    emit_repo_version();
 }
 
 fn emit_git_commit() {
@@ -84,6 +85,31 @@ fn emit_git_commit() {
     let commit = commit.trim();
     if !commit.is_empty() {
         println!("cargo:rustc-env=SCE_GIT_COMMIT={commit}");
+    }
+}
+
+fn emit_repo_version() {
+    let manifest_dir = match env::var("CARGO_MANIFEST_DIR") {
+        Ok(value) => PathBuf::from(value),
+        Err(_) => return,
+    };
+
+    let repository_root = match manifest_dir.parent() {
+        Some(path) => path.to_path_buf(),
+        None => return,
+    };
+
+    let version_path = repository_root.join(".version");
+    println!("cargo:rerun-if-changed={}", version_path.display());
+
+    let Ok(bytes) = fs::read(&version_path) else {
+        return;
+    };
+
+    let version = String::from_utf8_lossy(&bytes);
+    let version = version.trim();
+    if !version.is_empty() {
+        println!("cargo:rustc-env=SCE_VERSION={version}");
     }
 }
 

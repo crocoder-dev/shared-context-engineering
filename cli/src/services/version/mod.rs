@@ -9,7 +9,10 @@ use crate::services::style::{self};
 pub const NAME: &str = "version";
 
 const BINARY_NAME: &str = env!("CARGO_PKG_NAME");
-const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const PACKAGE_VERSION: &str = match option_env!("SCE_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
 const GIT_COMMIT: &str = match option_env!("SCE_GIT_COMMIT") {
     Some(commit) => commit,
     None => "unknown",

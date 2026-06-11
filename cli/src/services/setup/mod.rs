@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::services::style::{label, success, value};
-use crate::services::{default_paths, default_paths::RepoPaths, sce_web};
+use crate::services::{default_paths, default_paths::RepoPaths};
 
 pub mod command;
 
@@ -13,8 +13,8 @@ pub mod command;
 /// Contains only the `$schema` declaration pointing to the SCE config JSON Schema.
 fn repo_local_config_bootstrap_payload() -> String {
     format!(
-        "{{\n  \"$schema\": \"{}\"\n}}\n",
-        sce_web::config_schema_url()
+        "{{\n  \"$schema\": \"{}/config.json\"\n}}\n",
+        crate::services::agent_trace::SCE_WEB_BASE_URL
     )
 }
 

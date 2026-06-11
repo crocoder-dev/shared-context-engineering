@@ -3,8 +3,8 @@ use super::{
     LineRange, AGENT_TRACE_VERSION,
 };
 use crate::services::{
+    agent_trace::agent_trace_conversation_url,
     patch::{combine_patches, parse_patch, ParsedPatch},
-    sce_web,
 };
 use serde_json::{json, Value};
 
@@ -83,7 +83,7 @@ fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
     );
     let actual_json = serde_json::to_value(&actual).expect("agent trace should serialize");
     validate_agent_trace_value(&actual_json).expect("actual json should validate against schema");
-    let expected_conversation_url = sce_web::agent_trace_conversation_url(&actual.id);
+    let expected_conversation_url = agent_trace_conversation_url(&actual.id);
     let mut expected_files = golden["files"].clone();
     for conversation in expected_files
         .as_array_mut()
