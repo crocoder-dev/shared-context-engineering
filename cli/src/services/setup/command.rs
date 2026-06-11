@@ -1,6 +1,6 @@
 use anyhow::Context;
 
-use crate::app::AppContext;
+use crate::app::ContextWithRepoRoot;
 use crate::services::error::ClassifiedError;
 use crate::services::lifecycle::{
     lifecycle_providers, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
@@ -12,7 +12,7 @@ pub struct SetupCommand {
 }
 
 impl SetupCommand {
-    pub fn execute(&self, context: &AppContext) -> Result<String, ClassifiedError> {
+    pub fn execute<C: ContextWithRepoRoot>(&self, context: &C) -> Result<String, ClassifiedError> {
         let setup_dispatch = if let Some(mode) = self.request.config_mode {
             match setup::resolve_setup_dispatch(mode, &setup::InquireSetupTargetPrompter)
                 .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?

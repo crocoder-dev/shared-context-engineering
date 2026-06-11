@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::app::AppContext;
+use crate::app::HasRepoRoot;
 
 pub type LifecycleProvider = Box<dyn ServiceLifecycle>;
 
@@ -114,15 +114,15 @@ pub struct SetupOutcome {
 pub trait ServiceLifecycle: Send + Sync {
     fn id(&self) -> LifecycleProviderId;
 
-    fn diagnose(&self, _ctx: &AppContext) -> Vec<HealthProblem> {
+    fn diagnose(&self, _ctx: &dyn HasRepoRoot) -> Vec<HealthProblem> {
         Vec::new()
     }
 
-    fn fix(&self, _ctx: &AppContext, _problems: &[HealthProblem]) -> Vec<FixResultRecord> {
+    fn fix(&self, _ctx: &dyn HasRepoRoot, _problems: &[HealthProblem]) -> Vec<FixResultRecord> {
         Vec::new()
     }
 
-    fn setup(&self, _ctx: &AppContext) -> Result<SetupOutcome> {
+    fn setup(&self, _ctx: &dyn HasRepoRoot) -> Result<SetupOutcome> {
         Ok(SetupOutcome::default())
     }
 }

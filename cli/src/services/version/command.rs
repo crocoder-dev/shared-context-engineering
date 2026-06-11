@@ -1,4 +1,3 @@
-use crate::app::AppContext;
 use crate::services::error::ClassifiedError;
 use crate::services::version;
 
@@ -7,7 +6,7 @@ pub struct VersionCommand {
 }
 
 impl VersionCommand {
-    pub fn execute(&self, _context: &AppContext) -> Result<String, ClassifiedError> {
+    pub fn execute<C>(&self, _context: &C) -> Result<String, ClassifiedError> {
         version::render_version(self.request)
             .map_err(|error| ClassifiedError::runtime(error.to_string()))
     }

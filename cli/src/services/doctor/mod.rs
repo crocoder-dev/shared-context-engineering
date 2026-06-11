@@ -4,7 +4,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use crate::app::AppContext;
+use crate::app::{ContextWithRepoRoot, HasRepoRoot};
 use crate::services::default_paths::{resolve_sce_default_locations, resolve_state_data_root};
 use crate::services::lifecycle::{
     lifecycle_providers, FixOutcome, HealthCategory, HealthFixability, HealthProblem,
@@ -65,7 +65,10 @@ struct ProviderDoctorProblem {
     problem: DoctorProblem,
 }
 
-pub fn run_doctor_with_context(request: DoctorRequest, context: &AppContext) -> Result<String> {
+pub fn run_doctor_with_context<C>(request: DoctorRequest, context: &C) -> Result<String>
+where
+    C: ContextWithRepoRoot,
+{
     let repository_root = if let Some(path) = context.repo_root() {
         path.to_path_buf()
     } else {
@@ -81,7 +84,7 @@ pub fn run_doctor_with_context(request: DoctorRequest, context: &AppContext) -> 
 fn execute_doctor_with_context(
     request: DoctorRequest,
     repository_root: &Path,
-    context: &AppContext,
+    context: &dyn HasRepoRoot,
 ) -> DoctorExecution {
     execute_doctor_with_lifecycle_providers(
         request,
@@ -102,7 +105,7 @@ fn execute_doctor_with_context(
 fn execute_doctor_with_lifecycle_providers(
     request: DoctorRequest,
     repository_root: &Path,
-    context: &AppContext,
+    context: &dyn HasRepoRoot,
     dependencies: &DoctorDependencies<'_>,
 ) -> DoctorExecution {
     let providers = lifecycle_providers(true);
@@ -146,7 +149,7 @@ fn execute_doctor_with_lifecycle_providers(
 }
 
 fn diagnose_lifecycle_providers(
-    context: &AppContext,
+    context: &dyn HasRepoRoot,
     providers: &[LifecycleProvider],
 ) -> Vec<ProviderDoctorProblem> {
     providers
@@ -165,7 +168,7 @@ fn diagnose_lifecycle_providers(
 }
 
 fn fix_lifecycle_providers(
-    context: &AppContext,
+    context: &dyn HasRepoRoot,
     providers: &[LifecycleProvider],
     problems: &[ProviderDoctorProblem],
 ) -> Vec<DoctorFixResultRecord> {
