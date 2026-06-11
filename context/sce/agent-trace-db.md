@@ -33,8 +33,8 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 - `insert_parts(inputs)`: typed batch helper that generates and executes one parameterized multi-row append-only `parts` insert for valid conversation-trace `message.part.updated` batches.
 - `SessionModelUpsert<'a>`: upsert payload with `tool_name`, `session_id`, `model_id`, nullable `tool_version`, and `session_start_time_ms`.
 - `upsert_session_model()`: domain-specific upsert helper for `session_models` keyed by `(tool_name, session_id)`.
-- `SessionModelAttribution`: durable session model attribution row returned from `session_models` lookups.
-- `session_model_by_tool_and_session()`: lookup helper for model attribution by `(tool_name, session_id)`.
+- `SessionModelAttribution`: durable session model attribution row returned from `session_models` lookups, carrying `model_id` plus nullable `tool_version` for later diff-trace fallback.
+- `session_model_by_tool_and_session()`: lookup helper for model/tool-version attribution by `(tool_name, session_id)`.
 - `lifecycle.rs`: service lifecycle provider for setup/doctor integration.
 
 ## Non-goals
@@ -198,7 +198,7 @@ Post-commit intersection rows are written by the active `post-commit` hook flow 
 - No `context/tmp` artifact is written for conversation traces.
 - The generated OpenCode agent-trace plugin is a runtime caller for both conversation event variants and currently sends one-element typed batch envelopes for captured `message.updated` and `message.part.updated` events.
 
-The `sce hooks session-model` command route writes session-model attribution payloads into `session_models` via STDIN JSON intake with required `sessionID`/`time`/`model_id`/`tool_name` and nullable `tool_version`; Claude `SessionStart` raw payloads may fill missing version metadata from a best-effort `claude --version` probe before upsert. `(tool_name, session_id)` is the unique upsert key: subsequent upserts for the same tool/session pair replace `model_id`, `tool_version`, and `session_start_time_ms` while updating `updated_at`. See [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md).
+The `sce hooks session-model` command route writes session-model attribution payloads into `session_models` via STDIN JSON intake with required `sessionID`/`time`/`model_id`/`tool_name` and nullable `tool_version`; Claude `SessionStart` raw payloads may fill missing version metadata from a best-effort `claude --version` probe before upsert. The stored nullable `session_models.tool_version` is the durable fallback reused by later diff-trace persistence when the incoming payload omits version metadata. `(tool_name, session_id)` is the unique upsert key: subsequent upserts for the same tool/session pair replace `model_id`, `tool_version`, and `session_start_time_ms` while updating `updated_at`. See [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md).
 
 ## Recent patch reads
 
