@@ -17,6 +17,7 @@
       "path": "hunks/fib.ts",
       "conversations": [
         {
+          "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
           "contributor": {
             "type": "ai"
           },
@@ -34,6 +35,7 @@
       "path": "hunks/optimized.ts",
       "conversations": [
         {
+          "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
           "contributor": {
             "type": "ai"
           },
@@ -51,6 +53,7 @@
       "path": "hunks/unoptimized.ts",
       "conversations": [
         {
+          "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
           "contributor": {
             "type": "ai"
           },

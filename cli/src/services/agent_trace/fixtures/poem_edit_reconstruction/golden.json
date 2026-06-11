@@ -17,6 +17,7 @@
       "path": "poem.md",
       "conversations": [
         {
+          "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
           "contributor": {
             "type": "mixed"
           },
@@ -29,6 +30,7 @@
           ]
         },
         {
+          "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
           "contributor": {
             "type": "unknown"
           },
@@ -41,6 +43,7 @@
           ]
         },
         {
+          "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
           "contributor": {
             "type": "ai"
           },
