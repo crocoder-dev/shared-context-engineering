@@ -51,12 +51,16 @@ The intended end state is a statically wired CLI runtime where the production ap
   - Evidence: `nix build .#checks.x86_64-linux.cli-tests && nix build .#checks.x86_64-linux.cli-clippy && nix build .#checks.x86_64-linux.cli-fmt` passed; `nix run .#pkl-check-generated` passed. Full `nix flake check` still fails on unrelated pre-existing `config-lib-biome-format` issues in `config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts`.
   - Notes: `AppRuntime` now owns concrete production dependencies, while `AppContext` is a generic borrowed view with capability accessors and command/lifecycle trait-object dispatch remains for later tasks. The two non-app Rust file changes are formatter-only blank-line cleanup required by `cli-fmt`.
 
-- [ ] T02: `Wire production runtime through concrete dependencies` (status:todo)
+- [x] T02: `Wire production runtime through concrete dependencies` (status:done)
   - Task ID: T02
   - Goal: Update `AppRuntime` initialization and run-lifecycle plumbing to own concrete production dependencies and pass borrowed generic contexts through startup, telemetry, parse, execute, and rendering phases.
   - Boundaries (in/out of scope): In - `initialize_runtime`, `try_run_with_dependency_check`, `run_command_lifecycle`, `parse_command_phase`, `app_support` logger plumbing as needed, tests for startup diagnostics and stream contracts. Out - changing command parsing semantics or removing command handles.
   - Done when: production startup constructs concrete `Logger`, `NoopTelemetry`, `StdFsOps`, and `ProcessGitOps` without wrapping them in trait-object `Arc`s; runtime logging/telemetry still occurs once per command dispatch; existing app-level tests pass.
   - Verification notes (commands or checks): Run relevant app/CLI tests plus `nix flake check` when practical.
+  - Completed: 2026-06-11
+  - Files changed: `cli/src/app.rs`
+  - Evidence: `nix build .#checks.x86_64-linux.cli-tests && nix build .#checks.x86_64-linux.cli-clippy && nix build .#checks.x86_64-linux.cli-fmt` passed; `nix run .#pkl-check-generated` passed. Full `nix flake check` still fails on unrelated pre-existing `config-lib-biome-check` issues in `config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts`.
+  - Notes: Production runtime keeps concrete dependency fields and now names the concrete borrowed context view with `ProductionAppContext`; parse-phase plumbing receives that borrowed context instead of a standalone logger reference. Command-handle removal remains deferred to T03. Context sync classification: verify-only; existing durable context already describes the current concrete-runtime and borrowed-context architecture.
 
 - [ ] T03: `Replace RuntimeCommandHandle with a static command enum` (status:todo)
   - Task ID: T03

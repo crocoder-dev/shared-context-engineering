@@ -38,6 +38,14 @@ pub struct AppContext<
     repo_root: Option<PathBuf>,
 }
 
+type ProductionAppContext<'a> = AppContext<
+    'a,
+    services::observability::Logger,
+    NoopTelemetry,
+    services::capabilities::StdFsOps,
+    services::capabilities::ProcessGitOps,
+>;
+
 pub(crate) trait HasLogger {
     fn logger(&self) -> &dyn LoggerTrait;
 }
@@ -185,15 +193,7 @@ where
 }
 
 impl AppRuntime {
-    fn context(
-        &self,
-    ) -> AppContext<
-        '_,
-        services::observability::Logger,
-        NoopTelemetry,
-        services::capabilities::StdFsOps,
-        services::capabilities::ProcessGitOps,
-    > {
+    fn context(&self) -> ProductionAppContext<'_> {
         AppContext::new(&self.logger, &self.telemetry, &self.fs, &self.git, None)
     }
 }
@@ -316,7 +316,7 @@ where
         let Some(command_args) = args.take() else {
             return Err(ClassifiedError::runtime(REPEATED_COMMAND_DISPATCH_ERROR));
         };
-        let command = parse_command_phase(command_args, &runtime.registry, context.logger())?;
+        let command = parse_command_phase(command_args, &runtime.registry, &context)?;
         app_support::execute_command_phase(command.as_ref(), &context)
     })
 }
@@ -324,11 +324,12 @@ where
 fn parse_command_phase<I>(
     args: I,
     registry: &services::command_registry::CommandRegistry,
-    logger: &dyn LoggerTrait,
+    context: &ProductionAppContext<'_>,
 ) -> Result<services::command_registry::RuntimeCommandHandle, ClassifiedError>
 where
     I: IntoIterator<Item = String>,
 {
+    let logger = context.logger();
     let command =
         services::parse::command_runtime::parse_runtime_command(args, registry, Some(logger))?;
     logger.info(
