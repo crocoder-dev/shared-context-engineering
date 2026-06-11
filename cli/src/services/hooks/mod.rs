@@ -17,7 +17,7 @@ use crate::services::agent_trace::{
 use crate::services::agent_trace_db::{
     AgentTraceDb, AgentTraceInsert, DiffTraceInsert, InsertMessageInsert, InsertPartInsert,
     MessageRole, PartType, PostCommitPatchIntersectionInsert, RecentDiffTracePatches,
-    SessionModelUpsert, PAYLOAD_TYPE_PATCH, PAYLOAD_TYPE_STRUCTURED,
+    SessionModelAttribution, SessionModelUpsert, PAYLOAD_TYPE_PATCH, PAYLOAD_TYPE_STRUCTURED,
 };
 use crate::services::observability::traits::Logger;
 use crate::services::patch::{
@@ -85,6 +85,12 @@ struct DiffTracePayload {
 enum DiffTraceParseResult {
     Persist(DiffTracePayload),
     NoOp(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ResolvedDiffTraceAttribution {
+    model_id: Option<String>,
+    tool_version: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -580,31 +586,35 @@ fn run_diff_trace_subcommand_from_payload(
         DiffTraceParseResult::Persist(payload) => payload,
         DiffTraceParseResult::NoOp(message) => return Ok(message),
     };
-    let resolve_model = |tool_name: &str, session_id: &str| -> Result<Option<String>> {
-        let db =
-            AgentTraceDb::new().context("Failed to open Agent Trace DB for model resolution.")?;
-        let attribution = db
-            .session_model_by_tool_and_session(tool_name, session_id)
-            .context("Failed to query session model attribution from Agent Trace DB.")?;
-        Ok(attribution.map(|a| a.model_id))
-    };
+    let resolve_attribution =
+        |tool_name: &str, session_id: &str| -> Result<Option<SessionModelAttribution>> {
+            let db = AgentTraceDb::new()
+                .context("Failed to open Agent Trace DB for model resolution.")?;
+            let attribution = db
+                .session_model_by_tool_and_session(tool_name, session_id)
+                .context("Failed to query session model attribution from Agent Trace DB.")?;
+            Ok(attribution)
+        };
 
-    run_diff_trace_subcommand_from_payload_with(repository_root, &payload, logger, resolve_model)
+    run_diff_trace_subcommand_from_payload_with(
+        repository_root,
+        &payload,
+        logger,
+        resolve_attribution,
+    )
 }
 
 fn run_diff_trace_subcommand_from_payload_with<R>(
     repository_root: &Path,
     payload: &DiffTracePayload,
     logger: Option<&dyn Logger>,
-    resolve_model: R,
+    resolve_session_attribution: R,
 ) -> Result<String>
 where
-    R: FnOnce(&str, &str) -> Result<Option<String>>,
+    R: FnOnce(&str, &str) -> Result<Option<SessionModelAttribution>>,
 {
-    let resolved_model_id: Option<String> = match &payload.model_id {
-        Some(id) => Some(id.clone()),
-        None => resolve_model(&payload.tool_name, &payload.session_id)?,
-    };
+    let resolved_attribution =
+        resolve_diff_trace_attribution(payload, resolve_session_attribution)?;
 
     if let Err(error) = diff_trace_db_time_ms(payload.time) {
         if let Some(log) = logger {
@@ -616,8 +626,11 @@ where
         }
     }
     persist_diff_trace_payload(repository_root, payload)?;
-    let agent_trace_db_result =
-        persist_diff_trace_payload_to_agent_trace_db(payload, resolved_model_id.as_deref());
+    let agent_trace_db_result = persist_diff_trace_payload_to_agent_trace_db(
+        payload,
+        resolved_attribution.model_id.as_deref(),
+        resolved_attribution.tool_version.as_deref(),
+    );
     let agent_trace_db_persisted = match agent_trace_db_result {
         Ok(()) => true,
         Err(error) => {
@@ -641,6 +654,33 @@ where
             "diff-trace hook intake persisted payload to context/tmp; AgentTraceDb persistence failed.",
         ))
     }
+}
+
+fn resolve_diff_trace_attribution<R>(
+    payload: &DiffTracePayload,
+    resolve_attribution: R,
+) -> Result<ResolvedDiffTraceAttribution>
+where
+    R: FnOnce(&str, &str) -> Result<Option<SessionModelAttribution>>,
+{
+    let session_attribution = if payload.model_id.is_none() || payload.tool_version.is_none() {
+        resolve_attribution(&payload.tool_name, &payload.session_id)?
+    } else {
+        None
+    };
+
+    Ok(ResolvedDiffTraceAttribution {
+        model_id: payload.model_id.clone().or_else(|| {
+            session_attribution
+                .as_ref()
+                .map(|attribution| attribution.model_id.clone())
+        }),
+        tool_version: payload.tool_version.clone().or_else(|| {
+            session_attribution
+                .as_ref()
+                .and_then(|attribution| attribution.tool_version.clone())
+        }),
+    })
 }
 
 fn run_session_model_subcommand(
@@ -1201,8 +1241,9 @@ fn persist_diff_trace_payload(
 fn persist_diff_trace_payload_to_agent_trace_db(
     payload: &DiffTracePayload,
     model_id: Option<&str>,
+    tool_version: Option<&str>,
 ) -> Result<()> {
-    persist_diff_trace_payload_to_agent_trace_db_with(payload, model_id, |input| {
+    persist_diff_trace_payload_to_agent_trace_db_with(payload, model_id, tool_version, |input| {
         let db = open_agent_trace_db_for_hook_runtime(
             "Failed to open Agent Trace DB for diff-trace persistence.",
         )?;
@@ -1216,6 +1257,7 @@ fn persist_diff_trace_payload_to_agent_trace_db(
 fn persist_diff_trace_payload_to_agent_trace_db_with<F>(
     payload: &DiffTracePayload,
     model_id: Option<&str>,
+    tool_version: Option<&str>,
     insert_fn: F,
 ) -> Result<()>
 where
@@ -1229,7 +1271,7 @@ where
         patch: &payload.diff,
         model_id,
         tool_name: &payload.tool_name,
-        tool_version: payload.tool_version.as_deref(),
+        tool_version,
         payload_type: &payload.payload_type,
     })
 }
@@ -2122,6 +2164,31 @@ mod tests {
         payload.to_string()
     }
 
+    fn diff_trace_payload(model_id: Option<&str>, tool_version: Option<&str>) -> DiffTracePayload {
+        DiffTracePayload {
+            session_id: String::from("session-123"),
+            diff: String::from("diff text"),
+            time: 1_800_000_000_000_u64,
+            model_id: model_id.map(String::from),
+            tool_name: String::from("claude"),
+            tool_version: tool_version.map(String::from),
+            payload_type: String::from(PAYLOAD_TYPE_STRUCTURED),
+        }
+    }
+
+    fn session_model_attribution(
+        model_id: &str,
+        tool_version: Option<&str>,
+    ) -> SessionModelAttribution {
+        SessionModelAttribution {
+            tool_name: String::from("claude"),
+            session_id: String::from("session-123"),
+            model_id: model_id.to_string(),
+            tool_version: tool_version.map(String::from),
+            session_start_time_ms: 1_800_000_000_000_i64,
+        }
+    }
+
     #[test]
     fn claude_session_model_payload_prefers_payload_tool_version_without_cli_probe() {
         let payload = claude_session_start_payload(&serde_json::json!({
@@ -2176,6 +2243,89 @@ mod tests {
         let empty = parse_session_model_payload_with(&payload, || Some(String::from("\n  \t")))
             .expect("Claude SessionStart payload should parse with empty CLI version");
         assert_eq!(empty.tool_version, None);
+    }
+
+    #[test]
+    fn diff_trace_attribution_uses_session_tool_version_when_payload_missing() {
+        let payload = diff_trace_payload(Some("direct-model"), None);
+
+        let resolved = resolve_diff_trace_attribution(&payload, |tool_name, session_id| {
+            assert_eq!(tool_name, "claude");
+            assert_eq!(session_id, "session-123");
+            Ok(Some(session_model_attribution(
+                "session-model",
+                Some("Claude Code 1.2.3"),
+            )))
+        })
+        .expect("diff-trace attribution should resolve");
+
+        assert_eq!(resolved.model_id, Some(String::from("direct-model")));
+        assert_eq!(
+            resolved.tool_version,
+            Some(String::from("Claude Code 1.2.3"))
+        );
+    }
+
+    #[test]
+    fn diff_trace_attribution_prefers_payload_tool_version() {
+        let payload = diff_trace_payload(None, Some("payload-version"));
+
+        let resolved = resolve_diff_trace_attribution(&payload, |_tool_name, _session_id| {
+            Ok(Some(session_model_attribution(
+                "session-model",
+                Some("stored-version"),
+            )))
+        })
+        .expect("diff-trace attribution should resolve");
+
+        assert_eq!(resolved.model_id, Some(String::from("session-model")));
+        assert_eq!(resolved.tool_version, Some(String::from("payload-version")));
+    }
+
+    #[test]
+    fn diff_trace_attribution_skips_session_query_when_payload_attribution_complete() {
+        let payload = diff_trace_payload(Some("direct-model"), Some("payload-version"));
+
+        let resolved = resolve_diff_trace_attribution(&payload, |_tool_name, _session_id| {
+            panic!("complete payload attribution should avoid session_models lookup")
+        })
+        .expect("complete payload attribution should resolve without session lookup");
+
+        assert_eq!(resolved.model_id, Some(String::from("direct-model")));
+        assert_eq!(resolved.tool_version, Some(String::from("payload-version")));
+    }
+
+    #[test]
+    fn diff_trace_attribution_keeps_none_when_session_row_missing() {
+        let payload = diff_trace_payload(None, None);
+
+        let resolved = resolve_diff_trace_attribution(&payload, |_tool_name, _session_id| Ok(None))
+            .expect("diff-trace attribution should allow missing session row");
+
+        assert_eq!(resolved.model_id, None);
+        assert_eq!(resolved.tool_version, None);
+    }
+
+    #[test]
+    fn diff_trace_db_persistence_uses_resolved_tool_version() {
+        let payload = diff_trace_payload(Some("direct-model"), None);
+
+        persist_diff_trace_payload_to_agent_trace_db_with(
+            &payload,
+            Some("direct-model"),
+            Some("Claude Code 1.2.3"),
+            |input| {
+                assert_eq!(input.time_ms, 1_800_000_000_000_i64);
+                assert_eq!(input.session_id, "session-123");
+                assert_eq!(input.model_id, Some("direct-model"));
+                assert_eq!(input.tool_name, "claude");
+                assert_eq!(input.tool_version, Some("Claude Code 1.2.3"));
+                assert_eq!(input.payload_type, PAYLOAD_TYPE_STRUCTURED);
+
+                Ok(())
+            },
+        )
+        .expect("resolved diff-trace attribution should be persisted");
     }
 
     #[test]
