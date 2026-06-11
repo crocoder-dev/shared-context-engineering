@@ -1027,9 +1027,37 @@ fn normalize_claude_tool_version(version: &str) -> Option<String> {
     let trimmed = version.trim();
 
     if trimmed.is_empty() {
-        None
+        return None;
+    }
+
+    // Extract the first version-like pattern: a contiguous sequence of digits
+    // and dots that starts with a digit, ends with a digit, and contains at
+    // least one dot. This handles formats like "2.1.170 (Claude Code)" →
+    // "2.1.170" or "Claude Code 1.2.3" → "1.2.3".
+    let mut result = String::new();
+    let mut in_version = false;
+
+    for ch in trimmed.chars() {
+        if ch.is_ascii_digit() {
+            in_version = true;
+            result.push(ch);
+        } else if ch == '.' && in_version {
+            result.push(ch);
+        } else if in_version {
+            // Non-digit, non-dot while in a version sequence — check for match
+            if result.ends_with(|c: char| c.is_ascii_digit()) && result.contains('.') {
+                return Some(result);
+            }
+            in_version = false;
+            result.clear();
+        }
+    }
+
+    // Check at end of input
+    if in_version && result.ends_with(|c: char| c.is_ascii_digit()) && result.contains('.') {
+        Some(result)
     } else {
-        Some(trimmed.to_string())
+        None
     }
 }
 
@@ -2203,7 +2231,7 @@ mod tests {
         assert_eq!(output.session_id, "session-123");
         assert_eq!(output.model_id, "claude/sonnet-4");
         assert_eq!(output.tool_name, "claude");
-        assert_eq!(output.tool_version, Some(String::from("Claude Code 1.2.3")));
+        assert_eq!(output.tool_version, Some(String::from("1.2.3")));
     }
 
     #[test]
@@ -2217,7 +2245,7 @@ mod tests {
         })
         .expect("Claude SessionStart payload should parse");
 
-        assert_eq!(output.tool_version, Some(String::from("Claude Code 1.2.4")));
+        assert_eq!(output.tool_version, Some(String::from("1.2.4")));
     }
 
     #[test]
@@ -2229,7 +2257,7 @@ mod tests {
         })
         .expect("Claude SessionStart payload should parse");
 
-        assert_eq!(output.tool_version, Some(String::from("Claude Code 2.0.0")));
+        assert_eq!(output.tool_version, Some(String::from("2.0.0")));
     }
 
     #[test]
