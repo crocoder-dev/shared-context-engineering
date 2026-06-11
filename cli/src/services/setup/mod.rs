@@ -5,14 +5,18 @@ use std::{
 };
 
 use crate::services::style::{label, success, value};
-use crate::services::{default_paths, default_paths::RepoPaths};
+use crate::services::{default_paths, default_paths::RepoPaths, sce_web};
 
 pub mod command;
 
 /// Canonical JSON payload for a newly bootstrapped repo-local `.sce/config.json`.
 /// Contains only the `$schema` declaration pointing to the SCE config JSON Schema.
-const REPO_LOCAL_CONFIG_BOOTSTRAP_PAYLOAD: &str =
-    "{\n  \"$schema\": \"https://sce.crocoder.dev/config.json\"\n}\n";
+fn repo_local_config_bootstrap_payload() -> String {
+    format!(
+        "{{\n  \"$schema\": \"{}\"\n}}\n",
+        sce_web::config_schema_url()
+    )
+}
 
 pub const NAME: &str = "setup";
 
@@ -230,7 +234,7 @@ pub fn bootstrap_repo_local_config(repository_root: &Path) -> Result<()> {
         )
     })?;
 
-    fs::write(&config_file, REPO_LOCAL_CONFIG_BOOTSTRAP_PAYLOAD).with_context(|| {
+    fs::write(&config_file, repo_local_config_bootstrap_payload()).with_context(|| {
         format!(
             "Failed to write repo-local config file '{}'",
             config_file.display()

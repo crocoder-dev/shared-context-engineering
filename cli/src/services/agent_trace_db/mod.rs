@@ -743,6 +743,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::services::sce_web;
 
     static TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
     static BASELINE_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
@@ -1030,6 +1031,8 @@ mod tests {
             ]
         );
 
+        let trace_url = sce_web::agent_trace_persisted_url("trace-1");
+
         let duplicate_insert = insert_agent_trace_with(
             &db,
             AgentTraceInsert {
@@ -1037,7 +1040,7 @@ mod tests {
                 commit_time_ms: 123,
                 trace_json: r#"{"id":"trace-1"}"#,
                 agent_trace_id: "trace-1",
-                url: "sce.crocoder.dev/trace/trace-1",
+                url: &trace_url,
                 remote_url: "https://github.com/test/repo",
             },
         );
@@ -1050,7 +1053,7 @@ mod tests {
                 commit_time_ms: 124,
                 trace_json: r#"{"id":"trace-1"}"#,
                 agent_trace_id: "trace-1",
-                url: "sce.crocoder.dev/trace/trace-1",
+                url: &trace_url,
                 remote_url: "https://github.com/test/repo",
             },
         );

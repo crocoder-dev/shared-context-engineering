@@ -26,11 +26,11 @@ use super::patch::{
     intersect_patches, parse_patch, FileChangeKind, ParsedPatch, PatchFileChange, PatchHunk,
     TouchedLineKind,
 };
+use crate::services::sce_web;
 
 pub const AGENT_TRACE_VERSION: &str = "0.1.0";
 pub const SCE_METADATA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-const CONVERSATION_URL_BASE: &str = "https://sce.crocoder.dev/conversations";
 const RANGE_CONTENT_HASH_PREFIX: &str = "murmur3:";
 const RANGE_CONTENT_HASH_INPUT_VERSION: &[u8] = b"sce-agent-trace-range-content-hash-v1\0";
 const TOUCHED_LINE_ADDED_TAG: &[u8] = b"added\0";
@@ -59,10 +59,6 @@ fn generate_agent_trace_id(commit_time: DateTime<FixedOffset>) -> Result<String>
     let timestamp = Timestamp::from_unix(NoContext, seconds, commit_time.timestamp_subsec_nanos());
 
     Ok(Uuid::new_v7(timestamp).to_string())
-}
-
-fn conversation_url(agent_trace_id: &str) -> String {
-    format!("{CONVERSATION_URL_BASE}/{agent_trace_id}")
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -505,7 +501,7 @@ pub fn build_agent_trace(
 ) -> Result<AgentTrace> {
     let commit_time = parse_commit_timestamp(metadata.commit_timestamp)?;
     let id = generate_agent_trace_id(commit_time)?;
-    let conversation_url = conversation_url(&id);
+    let conversation_url = sce_web::agent_trace_conversation_url(&id);
     let timestamp = metadata.commit_timestamp.to_owned();
     let intersection_patch = intersect_patches(constructed_patch, post_commit_patch);
 
