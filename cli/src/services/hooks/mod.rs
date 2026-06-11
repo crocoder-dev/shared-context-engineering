@@ -791,7 +791,9 @@ fn parse_claude_diff_trace_payload(
     stdin_payload: &str,
     payload_kind: StdinPayloadKind,
 ) -> Result<DiffTraceParseResult> {
-    let event_name = required_non_empty_string_field(payload, "hook_event_name", payload_kind)?;
+    let event_name = required_non_empty_string_field(payload, "hook_event_name", |d| {
+        payload_kind.validation_error(d)
+    })?;
 
     if event_name != "PostToolUse" {
         return Ok(DiffTraceParseResult::NoOp(format!(
@@ -910,7 +912,9 @@ fn parse_claude_session_model_payload(
     payload_kind: StdinPayloadKind,
     claude_tool_version: impl FnOnce() -> Option<String>,
 ) -> Result<SessionModelPayload> {
-    let event_name = required_non_empty_string_field(payload, "hook_event_name", payload_kind)?;
+    let event_name = required_non_empty_string_field(payload, "hook_event_name", |d| {
+        payload_kind.validation_error(d)
+    })?;
 
     if event_name != "SessionStart" {
         bail!(payload_kind.validation_error(&format!(
