@@ -1,8 +1,6 @@
 import { spawn } from "node:child_process";
 import type { Hooks, Plugin } from "@opencode-ai/plugin";
 
-import type { Hooks, Plugin } from "@opencode-ai/plugin";
-
 type OpenCodeEvent = Parameters<NonNullable<Hooks["event"]>>[0]["event"];
 
 const REQUIRED_EVENTS: Set<OpenCodeEvent["type"]> = new Set([
@@ -332,8 +330,7 @@ export const SceAgentTracePlugin: Plugin = async ({ directory, worktree }) => {
 			if (input.event.type === "message.updated") {
 				const eventInfo = input.event.properties.info;
 				const diffEntries = extractDiffEntries(eventInfo);
-				const hasDiffs =
-					diffEntries !== undefined && diffEntries.length > 0;
+				const hasDiffs = diffEntries !== undefined && diffEntries.length > 0;
 
 				if (hasDiffs) {
 					const dedupKey = `${eventInfo.sessionID}:${eventInfo.id}`;
