@@ -15,7 +15,7 @@ Usage:
 Firehose-style stress test for `sce hooks conversation-trace`.
 Each request is launched in the background, with a random launch-to-launch
 delay, and sends a random valid typed batch payload:
-`message.updated` or `message.part.updated`.
+`message` or `message.part`.
 The script runs against an isolated temporary Agent Trace DB initialized through
 `sce setup --hooks`, asserts every hook request finishes within the default DB
 query retry 2s failure budget, verifies the DB is closed after all requests, and
@@ -233,7 +233,7 @@ random_part_type() {
 build_message_updated_payload() {
   local request_index="$1"
   local batch_size="$2"
-  local payload='{"type":"message.updated","payloads":['
+  local payload='{"type":"message","payloads":['
   local item_index role session_id message_id generated_at_unix_ms separator
 
   for ((item_index = 1; item_index <= batch_size; item_index++)); do
@@ -256,7 +256,7 @@ build_message_updated_payload() {
 build_message_part_updated_payload() {
   local request_index="$1"
   local batch_size="$2"
-  local payload='{"type":"message.part.updated","payloads":['
+  local payload='{"type":"message.part","payloads":['
   local item_index part_type session_id message_id generated_at_unix_ms text separator
 
   for ((item_index = 1; item_index <= batch_size; item_index++)); do
@@ -283,10 +283,10 @@ launch_request() {
 
   batch_size="$(random_between 1 4)"
   if (( RANDOM % 2 == 0 )); then
-    event_type='message.updated'
+    event_type='message'
     payload="$(build_message_updated_payload "$request_index" "$batch_size")"
   else
-    event_type='message.part.updated'
+    event_type='message.part'
     payload="$(build_message_part_updated_payload "$request_index" "$batch_size")"
   fi
 
@@ -381,7 +381,7 @@ for ((request_index = 1; request_index <= total_requests; request_index++)); do
     slow_request_ids+=("${recorded_index}:duration-${duration_ms}ms")
   fi
 
-  if [[ "$event_type" == 'message.updated' ]]; then
+  if [[ "$event_type" == 'message' ]]; then
     message_updated_requests=$((message_updated_requests + 1))
     message_updated_items=$((message_updated_items + batch_size))
   else
@@ -433,9 +433,9 @@ printf '  Requests succeeded:            %s\n' "$succeeded"
 printf '  Request process failures:      %s\n' "$request_failures"
 printf '  Request budget failures:       %s\n' "$budget_failures"
 printf '  DB close check failures:       %s\n' "$db_close_failures"
-printf '  message.updated requests:      %s\n' "$message_updated_requests"
-printf '  message.part.updated requests: %s\n' "$message_part_updated_requests"
-printf '  message.updated payload items: %s\n' "$message_updated_items"
+printf '  message requests:      %s\n' "$message_updated_requests"
+printf '  message.part requests: %s\n' "$message_part_updated_requests"
+printf '  message payload items: %s\n' "$message_updated_items"
 printf '  message.part payload items:    %s\n' "$message_part_updated_items"
 printf '  Hook attempted rows reported:  %s\n' "$hook_attempted"
 printf '  Hook persisted rows reported:  %s\n' "$hook_persisted"

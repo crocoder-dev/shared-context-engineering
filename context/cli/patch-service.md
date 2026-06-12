@@ -89,7 +89,7 @@ Patch reconstruction tests use deterministic fixture suites under `cli/src/servi
   - Covered scenarios: simple/empty/no-newline/multiline Write create flows and single-hunk/multi-hunk/additions-only/deletions-only Edit flows
   - Rust golden tests in `cli/src/services/structured_patch/tests.rs` discover and validate all scenarios at test time, failing on missing or extra fixtures.
 - The current tmp-hunks scenario is materialized as `text_file_lifecycle_reconstruction/` with:
-  - `incremental_01.patch` .. `incremental_26.patch` reconstructed from `tmp_hunks/*-message.part.updated.json` in lexical filename order
+  - `incremental_01.patch` .. `incremental_26.patch` reconstructed from `tmp_hunks/*-message.part.json` in lexical filename order
   - `post_commit.patch` reconstructed from `tmp_hunks/*-post-commit.json` `input.head_patch_from_git`
 - Incremental fixture patch headers are normalized to relative repo paths for parser/file matching compatibility.
 

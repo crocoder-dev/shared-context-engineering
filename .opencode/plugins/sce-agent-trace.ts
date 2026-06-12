@@ -24,7 +24,7 @@ type DiffTracePayload = {
 };
 
 type ConversationTraceMessageUpdatedItem = {
-	type: "message.updated";
+	type: "message";
 	session_id: string;
 	message_id: string;
 	role: EventMessageUpdated["properties"]["info"]["role"];
@@ -32,7 +32,7 @@ type ConversationTraceMessageUpdatedItem = {
 };
 
 type ConversationTraceMessagePartUpdatedItem = {
-	type: "message.part.updated";
+	type: "message.part";
 	session_id: string;
 	message_id: string;
 	part_type: EventMessagePartUpdated["properties"]["part"]["type"];
@@ -113,7 +113,7 @@ function buildConversationTracePayload(
 	return {
 		payloads: [
 			{
-				type: "message.updated",
+				type: "message",
 				session_id: eventInfo.sessionID,
 				message_id: eventInfo.id,
 				role: eventInfo.role,
@@ -131,7 +131,7 @@ export function buildMessagePartConversationTracePayload(
 	return {
 		payloads: [
 			{
-				type: "message.part.updated",
+				type: "message.part",
 				session_id: eventPart.sessionID,
 				message_id: eventPart.messageID,
 				part_type: eventPart.type,
@@ -156,7 +156,7 @@ function buildPatchConversationTracePayload(
 	const payloads: ConversationTraceItem[] = [];
 
 	payloads.push({
-		type: "message.updated",
+		type: "message",
 		session_id: eventInfo.sessionID,
 		message_id: patchMessageId,
 		role: eventInfo.role,
@@ -166,7 +166,7 @@ function buildPatchConversationTracePayload(
 	for (const entry of diffEntries) {
 		if ("patch" in entry && typeof entry.patch === "string") {
 			payloads.push({
-				type: "message.part.updated",
+				type: "message.part",
 				session_id: eventInfo.sessionID,
 				message_id: patchMessageId,
 				part_type: "patch",

@@ -110,8 +110,8 @@ impl StdinPayloadKind {
     }
 }
 
-const CONVERSATION_TRACE_MESSAGE_UPDATED: &str = "message.updated";
-const CONVERSATION_TRACE_MESSAGE_PART_UPDATED: &str = "message.part.updated";
+const CONVERSATION_TRACE_MESSAGE_UPDATED: &str = "message";
+const CONVERSATION_TRACE_MESSAGE_PART_UPDATED: &str = "message.part";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConversationTracePayload {
@@ -317,7 +317,7 @@ fn persist_message_updated_batch_to_agent_trace_db_with<I>(
 where
     I: FnOnce(Vec<InsertMessageInsert>) -> Result<u64>,
 {
-    const EVENT_TYPE: &str = "message.updated";
+    const EVENT_TYPE: &str = "message";
 
     let mut skipped = batch.skipped.len();
 
@@ -355,7 +355,7 @@ fn persist_message_part_updated_batch_to_agent_trace_db_with<I>(
 where
     I: FnOnce(Vec<InsertPartInsert>) -> Result<u64>,
 {
-    const EVENT_TYPE: &str = "message.part.updated";
+    const EVENT_TYPE: &str = "message.part";
 
     let mut skipped = batch.skipped.len();
 
@@ -510,7 +510,7 @@ fn parse_conversation_trace_payloads(payloads: &[Value]) -> ConversationTracePay
             _ => skipped.push(SkippedConversationTracePayload {
                 index,
                 reason: conversation_trace_validation_error(
-                    "field 'type' must be one of 'message.updated' or 'message.part.updated'",
+                    "field 'type' must be one of 'message' or 'message.part'",
                 ),
             }),
         }
@@ -2131,7 +2131,7 @@ fn post_commit_patch_error(detail: &str, context: &str) -> String {
 /// Transform a validated raw Claude `UserPromptSubmit` event payload into the two
 /// normalized `serde_json::Value` items expected by `parse_conversation_trace_payloads`.
 ///
-/// Returns one `message.updated` item and one `message.part.updated` item sharing
+/// Returns one `message` item and one `message.part` item sharing
 /// the same generated `UUIDv7` `message_id` and the event's `session_id`.
 ///
 /// Supported events:
@@ -2211,7 +2211,7 @@ where
 /// Transform a raw Claude `Stop` hook event into two normalized conversation-trace
 /// payload items.
 ///
-/// Returns one `message.updated` item and one `message.part.updated` item sharing
+/// Returns one `message` item and one `message.part` item sharing
 /// the same generated `UUIDv7` `message_id` and the event's `session_id`.
 ///
 /// Supported events:
@@ -2370,7 +2370,7 @@ where
     })];
 
     if structured_patch_has_items {
-        // Each structuredPatch item produces its own message.part.updated
+        // Each structuredPatch item produces its own message.part
         if let Some(patch_items) = tool_response_obj
             .get("structuredPatch")
             .and_then(|v| v.as_array())
@@ -2448,14 +2448,14 @@ mod tests {
         let payload = serde_json::json!({
             "payloads": [
                 {
-                    "type": "message.updated",
+                    "type": "message",
                     "session_id": "session-1",
                     "message_id": "message-1",
                     "role": "assistant",
                     "generated_at_unix_ms": 1_800_000_000_000_i64
                 },
                 {
-                    "type": "message.part.updated",
+                    "type": "message.part",
                     "session_id": "session-1",
                     "message_id": "message-1",
                     "part_type": "reasoning",
@@ -2494,21 +2494,21 @@ mod tests {
         let payload = serde_json::json!({
             "payloads": [
                 {
-                    "type": "message.updated",
+                    "type": "message",
                     "session_id": "session-1",
                     "message_id": "message-1",
                     "role": "assistant",
                     "generated_at_unix_ms": 1_800_000_000_000_i64
                 },
                 {
-                    "type": "message.updated",
+                    "type": "message",
                     "session_id": "session-2",
                     "message_id": "message-2",
                     "role": "system",
                     "generated_at_unix_ms": 1_800_000_000_002_i64
                 },
                 {
-                    "type": "message.part.updated",
+                    "type": "message.part",
                     "session_id": "session-3",
                     "message_id": "message-3",
                     "part_type": "text",
