@@ -84,7 +84,7 @@ where
 fn execute_doctor_with_context(
     request: DoctorRequest,
     repository_root: &Path,
-    context: &dyn HasRepoRoot,
+    context: &impl HasRepoRoot,
 ) -> DoctorExecution {
     execute_doctor_with_lifecycle_providers(
         request,
@@ -105,7 +105,7 @@ fn execute_doctor_with_context(
 fn execute_doctor_with_lifecycle_providers(
     request: DoctorRequest,
     repository_root: &Path,
-    context: &dyn HasRepoRoot,
+    context: &impl HasRepoRoot,
     dependencies: &DoctorDependencies<'_>,
 ) -> DoctorExecution {
     let providers = lifecycle_providers(true);
@@ -149,7 +149,7 @@ fn execute_doctor_with_lifecycle_providers(
 }
 
 fn diagnose_lifecycle_providers(
-    context: &dyn HasRepoRoot,
+    context: &impl HasRepoRoot,
     providers: &[LifecycleProvider],
 ) -> Vec<ProviderDoctorProblem> {
     providers
@@ -168,7 +168,7 @@ fn diagnose_lifecycle_providers(
 }
 
 fn fix_lifecycle_providers(
-    context: &dyn HasRepoRoot,
+    context: &impl HasRepoRoot,
     providers: &[LifecycleProvider],
     problems: &[ProviderDoctorProblem],
 ) -> Vec<DoctorFixResultRecord> {

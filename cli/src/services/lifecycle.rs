@@ -112,15 +112,19 @@ pub struct SetupOutcome {
 pub trait ServiceLifecycle: Send + Sync {
     fn id(&self) -> LifecycleProviderId;
 
-    fn diagnose(&self, _ctx: &dyn HasRepoRoot) -> Vec<HealthProblem> {
+    fn diagnose<C: HasRepoRoot + ?Sized>(&self, _ctx: &C) -> Vec<HealthProblem> {
         Vec::new()
     }
 
-    fn fix(&self, _ctx: &dyn HasRepoRoot, _problems: &[HealthProblem]) -> Vec<FixResultRecord> {
+    fn fix<C: HasRepoRoot + ?Sized>(
+        &self,
+        _ctx: &C,
+        _problems: &[HealthProblem],
+    ) -> Vec<FixResultRecord> {
         Vec::new()
     }
 
-    fn setup(&self, _ctx: &dyn HasRepoRoot) -> Result<SetupOutcome> {
+    fn setup<C: HasRepoRoot + ?Sized>(&self, _ctx: &C) -> Result<SetupOutcome> {
         Ok(SetupOutcome::default())
     }
 }
@@ -145,7 +149,7 @@ impl LifecycleProvider {
         }
     }
 
-    pub fn diagnose(self, ctx: &dyn HasRepoRoot) -> Vec<HealthProblem> {
+    pub fn diagnose<C: HasRepoRoot + ?Sized>(self, ctx: &C) -> Vec<HealthProblem> {
         match self {
             Self::Config => crate::services::config::lifecycle::ConfigLifecycle.diagnose(ctx),
             Self::LocalDb => crate::services::local_db::lifecycle::LocalDbLifecycle.diagnose(ctx),
@@ -157,7 +161,11 @@ impl LifecycleProvider {
         }
     }
 
-    pub fn fix(self, ctx: &dyn HasRepoRoot, problems: &[HealthProblem]) -> Vec<FixResultRecord> {
+    pub fn fix<C: HasRepoRoot + ?Sized>(
+        self,
+        ctx: &C,
+        problems: &[HealthProblem],
+    ) -> Vec<FixResultRecord> {
         match self {
             Self::Config => crate::services::config::lifecycle::ConfigLifecycle.fix(ctx, problems),
             Self::LocalDb => {
@@ -171,7 +179,7 @@ impl LifecycleProvider {
         }
     }
 
-    pub fn setup(self, ctx: &dyn HasRepoRoot) -> Result<SetupOutcome> {
+    pub fn setup<C: HasRepoRoot + ?Sized>(self, ctx: &C) -> Result<SetupOutcome> {
         match self {
             Self::Config => crate::services::config::lifecycle::ConfigLifecycle.setup(ctx),
             Self::LocalDb => crate::services::local_db::lifecycle::LocalDbLifecycle.setup(ctx),

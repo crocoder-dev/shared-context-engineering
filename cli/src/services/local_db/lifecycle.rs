@@ -18,11 +18,15 @@ impl ServiceLifecycle for LocalDbLifecycle {
         LifecycleProviderId::LocalDb
     }
 
-    fn diagnose(&self, _ctx: &dyn HasRepoRoot) -> Vec<HealthProblem> {
+    fn diagnose<C: HasRepoRoot + ?Sized>(&self, _ctx: &C) -> Vec<HealthProblem> {
         diagnose_local_db_health()
     }
 
-    fn fix(&self, _ctx: &dyn HasRepoRoot, problems: &[HealthProblem]) -> Vec<FixResultRecord> {
+    fn fix<C: HasRepoRoot + ?Sized>(
+        &self,
+        _ctx: &C,
+        problems: &[HealthProblem],
+    ) -> Vec<FixResultRecord> {
         let should_bootstrap_parent = problems.iter().any(|problem| {
             problem.category == HealthCategory::GlobalState
                 && problem.fixability == HealthFixability::AutoFixable
@@ -48,7 +52,7 @@ impl ServiceLifecycle for LocalDbLifecycle {
         }
     }
 
-    fn setup(&self, _ctx: &dyn HasRepoRoot) -> Result<SetupOutcome> {
+    fn setup<C: HasRepoRoot + ?Sized>(&self, _ctx: &C) -> Result<SetupOutcome> {
         LocalDb::new().context("Local DB lifecycle setup failed while initializing local DB")?;
         Ok(SetupOutcome::default())
     }

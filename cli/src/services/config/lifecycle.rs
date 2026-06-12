@@ -20,7 +20,7 @@ impl ServiceLifecycle for ConfigLifecycle {
         LifecycleProviderId::Config
     }
 
-    fn diagnose(&self, ctx: &dyn HasRepoRoot) -> Vec<HealthProblem> {
+    fn diagnose<C: HasRepoRoot + ?Sized>(&self, ctx: &C) -> Vec<HealthProblem> {
         let repository_root = match ctx.repo_root() {
             Some(path) => path.to_path_buf(),
             None => {
@@ -41,7 +41,7 @@ impl ServiceLifecycle for ConfigLifecycle {
         diagnose_config_health(&repository_root)
     }
 
-    fn setup(&self, ctx: &dyn HasRepoRoot) -> Result<SetupOutcome> {
+    fn setup<C: HasRepoRoot + ?Sized>(&self, ctx: &C) -> Result<SetupOutcome> {
         let repository_root = ctx
             .repo_root()
             .context("Config lifecycle setup requires a resolved repository root")?;

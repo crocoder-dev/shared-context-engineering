@@ -197,11 +197,11 @@ Repair behavior must:
 
 ## ServiceLifecycle trait
 
-The `ServiceLifecycle` trait in `cli/src/services/lifecycle.rs` provides a unified interface for service health checks, repairs, and setup through the narrow repo-root accessor:
+The `ServiceLifecycle` trait in `cli/src/services/lifecycle.rs` provides a unified interface for service health checks, repairs, and setup through generic methods over the narrow repo-root accessor:
 
-- `diagnose(&self, ctx: &dyn HasRepoRoot) -> Vec<HealthProblem>`: returns health problems detected by the service
-- `fix(&self, ctx: &dyn HasRepoRoot, problems: &[HealthProblem]) -> Vec<FixResultRecord>`: attempts to repair issues detected by the service
-- `setup(&self, ctx: &dyn HasRepoRoot) -> anyhow::Result<SetupOutcome>`: performs service-specific setup steps
+- `diagnose<C: HasRepoRoot + ?Sized>(&self, ctx: &C) -> Vec<HealthProblem>`: returns health problems detected by the service
+- `fix<C: HasRepoRoot + ?Sized>(&self, ctx: &C, problems: &[HealthProblem]) -> Vec<FixResultRecord>`: attempts to repair issues detected by the service
+- `setup<C: HasRepoRoot + ?Sized>(&self, ctx: &C) -> anyhow::Result<SetupOutcome>`: performs service-specific setup steps
 
 Default implementations are no-ops, allowing services to opt-in to lifecycle ownership incrementally.
 

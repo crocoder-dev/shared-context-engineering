@@ -4,15 +4,15 @@
 
 ## Current contract
 
-- `ServiceLifecycle: Send + Sync` exposes three default no-op methods against the narrow repo-root accessor:
-  - `diagnose(&self, ctx: &dyn HasRepoRoot) -> Vec<HealthProblem>`
-  - `fix(&self, ctx: &dyn HasRepoRoot, problems: &[HealthProblem]) -> Vec<FixResultRecord>`
-  - `setup(&self, ctx: &dyn HasRepoRoot) -> anyhow::Result<SetupOutcome>`
+- `ServiceLifecycle: Send + Sync` exposes three default no-op generic methods against any context implementing the narrow repo-root accessor:
+  - `diagnose<C: HasRepoRoot + ?Sized>(&self, ctx: &C) -> Vec<HealthProblem>`
+  - `fix<C: HasRepoRoot + ?Sized>(&self, ctx: &C, problems: &[HealthProblem]) -> Vec<FixResultRecord>`
+  - `setup<C: HasRepoRoot + ?Sized>(&self, ctx: &C) -> anyhow::Result<SetupOutcome>`
 - `HealthProblem`, `HealthCategory`, `HealthSeverity`, `HealthFixability`, and `HealthProblemKind` are lifecycle-owned types that mirror the current doctor taxonomy without making the trait depend on `doctor` module types.
 - `FixResultRecord` and `FixOutcome` are lifecycle-owned fix result types.
 - `SetupOutcome` is a minimal lifecycle-owned carrier for current setup result shapes:
   - optional lifecycle-owned `RequiredHooksInstallOutcome`
-- `LifecycleProvider` is a static enum over the concrete provider implementations, and `lifecycle_providers(include_hooks)` is the shared provider catalog/factory used by command orchestrators. The enum owns inherent `id`, `diagnose`, `fix`, and `setup` dispatch methods and does not allocate boxed provider trait objects.
+- `LifecycleProvider` is a static enum over the concrete provider implementations, and `lifecycle_providers(include_hooks)` is the shared provider catalog/factory used by command orchestrators. The enum owns inherent generic `id`, `diagnose`, `fix`, and `setup` dispatch methods and does not allocate boxed provider trait objects or erase the lifecycle context to a repo-root trait object.
 - Provider order is deterministic: `ConfigLifecycle` → `LocalDbLifecycle` → `AuthDbLifecycle` → `AgentTraceDbLifecycle` → `HooksLifecycle` when hooks are included.
 
 ## Current boundaries
@@ -42,7 +42,7 @@
   - Fix mode adapts doctor problem records back into lifecycle health problems for provider repair decisions, adapts lifecycle fix records into doctor-owned fix records, rebuilds the report after fixes, and keeps manual remediation reporting through `doctor/fixes.rs`.
 - `setup` runtime execution now aggregates lifecycle providers for setup:
   - `cli/src/services/setup/command.rs` accepts any context implementing `ContextWithRepoRoot`, resolves the repository root, derives a repo-root-scoped borrowed context with `with_repo_root()`, and requests the shared provider catalog with hooks included only when `SetupRequest.install_hooks` is true.
-  - Setup lifecycle providers receive only the narrow repo-root accessor they currently need instead of the full concrete production context type.
+  - Setup lifecycle providers receive only a generic context implementing the narrow repo-root accessor they currently need instead of the full concrete production context type.
   - `HooksLifecycle::setup` returns lifecycle-owned `SetupOutcome.required_hooks_install` from the canonical `install_required_git_hooks` flow, and setup command adapts that result into setup-owned hook install outcomes before rendering.
   - Config asset installation (OpenCode/Claude targets) remains handled by the setup command after lifecycle aggregation.
 

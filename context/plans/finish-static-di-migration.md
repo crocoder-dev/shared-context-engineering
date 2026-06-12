@@ -51,12 +51,16 @@ This is a follow-up to the completed `compile-time-di-migration` plan. That plan
   - Evidence: `nix build .#checks.x86_64-linux.cli-tests .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt --print-out-paths` succeeded; `nix run .#pkl-check-generated` passed; targeted stale-signature search found no matching object-returning accessor signatures in `cli/src/app.rs`.
   - Notes: `nix flake check` was attempted but currently fails in unrelated `config-lib-biome-format` TypeScript formatting output, outside the T01 Rust accessor scope.
 
-- [ ] T02: `Remove dyn HasRepoRoot from lifecycle dispatch` (status:todo)
+- [x] T02: `Remove dyn HasRepoRoot from lifecycle dispatch` (status:done)
   - Task ID: T02
   - Goal: Make lifecycle provider methods and aggregation compile-time typed over `HasRepoRoot` instead of accepting `&dyn HasRepoRoot`.
   - Boundaries (in/out of scope): In - `cli/src/services/lifecycle.rs`, lifecycle provider implementations under `cli/src/services/*/lifecycle.rs`, and doctor/setup aggregation call sites that pass repo-root-scoped contexts. Out - changing lifecycle health taxonomy, provider order, setup outcomes, doctor rendering, or hook install behavior.
   - Done when: `ServiceLifecycle` defaults, concrete lifecycle implementations, `LifecycleProvider::{diagnose,fix,setup}`, and doctor/setup lifecycle helpers no longer require `&dyn HasRepoRoot`; deterministic provider order and existing setup/doctor behavior are preserved.
   - Verification notes (commands or checks): Run doctor/setup/lifecycle-relevant CLI tests through Nix; inspect `cli/src/services` for remaining `&dyn HasRepoRoot` in lifecycle dispatch paths and justify any non-lifecycle leftovers if present.
+  - Completed: 2026-06-12
+  - Files changed: `cli/src/services/lifecycle.rs`; `cli/src/services/doctor/mod.rs`; `cli/src/services/config/lifecycle.rs`; `cli/src/services/hooks/lifecycle.rs`; `cli/src/services/local_db/lifecycle.rs`; `cli/src/services/auth_db/lifecycle.rs`; `cli/src/services/agent_trace_db/lifecycle.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` succeeded; `nix build .#checks.x86_64-linux.cli-tests .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt --print-out-paths` succeeded; `rg --fixed-strings "&dyn HasRepoRoot" "cli/src"` returned no matches; `nix run .#pkl-check-generated` passed.
+  - Notes: Important context-sync change because current-state docs still described lifecycle provider boundaries as `&dyn HasRepoRoot` before this task. `nix flake check` was attempted after implementation and still fails outside this task in `config-lib-biome-check` because `config/lib/agent-trace-plugin/opencode-agent-trace-plugin.ts` has duplicate `Hooks`/`Plugin` type imports.
 
 - [x] T03: `Decouple RunOutcome rendering from production Logger` (status:done)
   - Task ID: T03
