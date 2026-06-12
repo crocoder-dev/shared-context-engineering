@@ -5,7 +5,9 @@ use std::process::ExitCode;
 use crate::services;
 use services::app_support::{self, RunOutcome};
 use services::error::ClassifiedError;
-use services::observability::traits::{Logger as LoggerTrait, NoopTelemetry, Telemetry};
+use services::observability::traits::{
+    Logger as LoggerTrait, NoopTelemetry, Telemetry as TelemetryTrait,
+};
 
 const REPEATED_COMMAND_DISPATCH_ERROR: &str =
     "Command lifecycle telemetry attempted to execute command dispatch more than once";
@@ -27,7 +29,7 @@ struct AppRuntime {
 pub struct AppContext<
     'a,
     L: LoggerTrait = services::observability::Logger,
-    T: Telemetry = NoopTelemetry,
+    T: TelemetryTrait = NoopTelemetry,
     F: services::capabilities::FsOps = services::capabilities::StdFsOps,
     G: services::capabilities::GitOps = services::capabilities::ProcessGitOps,
 > {
@@ -47,22 +49,30 @@ type ProductionAppContext<'a> = AppContext<
 >;
 
 pub(crate) trait HasLogger {
-    fn logger(&self) -> &dyn LoggerTrait;
+    type Logger: LoggerTrait;
+
+    fn logger(&self) -> &Self::Logger;
 }
 
 #[allow(dead_code)]
 pub(crate) trait HasTelemetry {
-    fn telemetry(&self) -> &dyn Telemetry;
+    type Telemetry: TelemetryTrait;
+
+    fn telemetry(&self) -> &Self::Telemetry;
 }
 
 #[allow(dead_code)]
 pub(crate) trait HasFs {
-    fn fs(&self) -> &dyn services::capabilities::FsOps;
+    type Fs: services::capabilities::FsOps;
+
+    fn fs(&self) -> &Self::Fs;
 }
 
 #[allow(dead_code)]
 pub(crate) trait HasGit {
-    fn git(&self) -> &dyn services::capabilities::GitOps;
+    type Git: services::capabilities::GitOps;
+
+    fn git(&self) -> &Self::Git;
 }
 
 pub(crate) trait HasRepoRoot {
@@ -76,7 +86,7 @@ pub(crate) trait ContextWithRepoRoot: HasRepoRoot {
 impl<'a, L, T, F, G> AppContext<'a, L, T, F, G>
 where
     L: LoggerTrait,
-    T: Telemetry,
+    T: TelemetryTrait,
     F: services::capabilities::FsOps,
     G: services::capabilities::GitOps,
 {
@@ -96,21 +106,21 @@ where
         }
     }
 
-    pub(crate) fn logger(&self) -> &dyn LoggerTrait {
+    pub(crate) fn logger(&self) -> &L {
         HasLogger::logger(self)
     }
 
     #[allow(dead_code)]
-    pub(crate) fn fs(&self) -> &dyn services::capabilities::FsOps {
+    pub(crate) fn fs(&self) -> &F {
         HasFs::fs(self)
     }
 
     #[allow(dead_code)]
-    pub(crate) fn git(&self) -> &dyn services::capabilities::GitOps {
+    pub(crate) fn git(&self) -> &G {
         HasGit::git(self)
     }
 
-    fn telemetry(&self) -> &dyn Telemetry {
+    fn telemetry(&self) -> &T {
         HasTelemetry::telemetry(self)
     }
 
@@ -140,11 +150,13 @@ where
 impl<L, T, F, G> HasLogger for AppContext<'_, L, T, F, G>
 where
     L: LoggerTrait,
-    T: Telemetry,
+    T: TelemetryTrait,
     F: services::capabilities::FsOps,
     G: services::capabilities::GitOps,
 {
-    fn logger(&self) -> &dyn LoggerTrait {
+    type Logger = L;
+
+    fn logger(&self) -> &Self::Logger {
         self.logger
     }
 }
@@ -152,11 +164,13 @@ where
 impl<L, T, F, G> HasTelemetry for AppContext<'_, L, T, F, G>
 where
     L: LoggerTrait,
-    T: Telemetry,
+    T: TelemetryTrait,
     F: services::capabilities::FsOps,
     G: services::capabilities::GitOps,
 {
-    fn telemetry(&self) -> &dyn Telemetry {
+    type Telemetry = T;
+
+    fn telemetry(&self) -> &Self::Telemetry {
         self.telemetry
     }
 }
@@ -164,11 +178,13 @@ where
 impl<L, T, F, G> HasFs for AppContext<'_, L, T, F, G>
 where
     L: LoggerTrait,
-    T: Telemetry,
+    T: TelemetryTrait,
     F: services::capabilities::FsOps,
     G: services::capabilities::GitOps,
 {
-    fn fs(&self) -> &dyn services::capabilities::FsOps {
+    type Fs = F;
+
+    fn fs(&self) -> &Self::Fs {
         self.fs
     }
 }
@@ -176,11 +192,13 @@ where
 impl<L, T, F, G> HasGit for AppContext<'_, L, T, F, G>
 where
     L: LoggerTrait,
-    T: Telemetry,
+    T: TelemetryTrait,
     F: services::capabilities::FsOps,
     G: services::capabilities::GitOps,
 {
-    fn git(&self) -> &dyn services::capabilities::GitOps {
+    type Git = G;
+
+    fn git(&self) -> &Self::Git {
         self.git
     }
 }
@@ -188,7 +206,7 @@ where
 impl<L, T, F, G> HasRepoRoot for AppContext<'_, L, T, F, G>
 where
     L: LoggerTrait,
-    T: Telemetry,
+    T: TelemetryTrait,
     F: services::capabilities::FsOps,
     G: services::capabilities::GitOps,
 {
@@ -200,7 +218,7 @@ where
 impl<L, T, F, G> ContextWithRepoRoot for AppContext<'_, L, T, F, G>
 where
     L: LoggerTrait,
-    T: Telemetry,
+    T: TelemetryTrait,
     F: services::capabilities::FsOps,
     G: services::capabilities::GitOps,
 {
