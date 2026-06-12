@@ -434,7 +434,19 @@ pub fn parse_conversation_trace_payload(stdin_payload: &str) -> Result<Conversat
 
     // Classify: Claude raw hook events carry hook_event_name.
     if payload.contains_key("hook_event_name") {
-        let items = transform_claude_user_prompt_submit(payload)?;
+        let event_name = required_non_empty_string_field(
+            payload,
+            "hook_event_name",
+            conversation_trace_validation_error,
+        )?;
+
+        let items = match event_name.as_str() {
+            "UserPromptSubmit" => transform_claude_user_prompt_submit(payload)?,
+            "Stop" => transform_claude_stop(payload)?,
+            _ => bail!(conversation_trace_validation_error(&format!(
+                "unsupported Claude hook event '{event_name}': supported events are 'UserPromptSubmit' and 'Stop'"
+            ))),
+        };
         return Ok(parse_conversation_trace_payloads(&items));
     }
 
@@ -2190,6 +2202,88 @@ where
             "message_id": message_id,
             "part_type": "text",
             "text": prompt,
+            "generated_at_unix_ms": generated_at_unix_ms,
+        }),
+    ])
+}
+
+/// Transform a raw Claude `Stop` hook event into two normalized conversation-trace
+/// payload items.
+///
+/// Returns one `message.updated` item and one `message.part.updated` item sharing
+/// the same generated `UUIDv7` `message_id` and the event's `session_id`.
+///
+/// Supported events:
+/// - `Stop`: produces two items (assistant parent message + text part).
+///
+/// Any other `hook_event_name` value produces a validation error.
+/// Missing or empty required fields (`session_id`, `last_assistant_message`) produce
+/// a validation error.
+fn transform_claude_stop(payload: &serde_json::Map<String, Value>) -> Result<Vec<Value>> {
+    transform_claude_stop_with(
+        payload,
+        || {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default();
+            let ts = uuid::Timestamp::from_unix(uuid::NoContext, now.as_secs(), now.subsec_nanos());
+            uuid::Uuid::new_v7(ts)
+        },
+        || current_unix_time_ms().unwrap_or(0),
+    )
+}
+
+/// Injectable counterpart of `transform_claude_stop` for deterministic testing.
+fn transform_claude_stop_with<G, T>(
+    payload: &serde_json::Map<String, Value>,
+    generate_message_id: G,
+    generate_timestamp_ms: T,
+) -> Result<Vec<Value>>
+where
+    G: FnOnce() -> uuid::Uuid,
+    T: FnOnce() -> i64,
+{
+    let event_name = required_non_empty_string_field(
+        payload,
+        "hook_event_name",
+        conversation_trace_validation_error,
+    )?;
+
+    if event_name != "Stop" {
+        let raw_content = serde_json::to_string(payload).unwrap_or_default();
+        bail!(conversation_trace_validation_error(&format!(
+            "unsupported Claude hook event '{event_name}': only 'Stop' is supported. Raw event: {raw_content}"
+        )));
+    }
+
+    let session_id = required_non_empty_string_field(
+        payload,
+        "session_id",
+        conversation_trace_validation_error,
+    )?;
+    let last_assistant_message = required_non_empty_string_field(
+        payload,
+        "last_assistant_message",
+        conversation_trace_validation_error,
+    )?;
+
+    let message_id = generate_message_id().to_string();
+    let generated_at_unix_ms = generate_timestamp_ms();
+
+    Ok(vec![
+        json!({
+            "type": CONVERSATION_TRACE_MESSAGE_UPDATED,
+            "session_id": session_id,
+            "message_id": message_id,
+            "role": "assistant",
+            "generated_at_unix_ms": generated_at_unix_ms,
+        }),
+        json!({
+            "type": CONVERSATION_TRACE_MESSAGE_PART_UPDATED,
+            "session_id": session_id,
+            "message_id": message_id,
+            "part_type": "text",
+            "text": last_assistant_message,
             "generated_at_unix_ms": generated_at_unix_ms,
         }),
     ])
