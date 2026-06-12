@@ -26,6 +26,12 @@ struct AppRuntime {
     startup_diagnostic: Option<String>,
 }
 
+/// Lightweight borrowed view of the CLI runtime dependencies.
+///
+/// `AppContext` does **not** own its dependencies; it borrows them from `AppRuntime`.
+/// It is intended for short-lived, command-scoped use and should not be stored
+/// long-term (e.g., in structs or across await points) because its lifetime is
+/// tied to the owning `AppRuntime`.
 pub struct AppContext<
     'a,
     L: LoggerTrait = services::observability::Logger,
