@@ -40,7 +40,7 @@ impl SetupCommand {
         let ctx = context.with_repo_root(repository_root.clone());
 
         // Aggregate setup steps from lifecycle providers in order:
-        // config → local_db → hooks (when requested).
+        // config → local_db → auth_db → agent_trace_db → hooks (when requested).
         let providers = lifecycle_providers(self.request.install_hooks);
         let mut sections = Vec::new();
 
