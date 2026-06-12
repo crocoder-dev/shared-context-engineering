@@ -95,19 +95,55 @@ The intended end state is a statically wired CLI runtime where the production ap
   - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` passed; `nix build .#checks.x86_64-linux.cli-tests`, `nix build .#checks.x86_64-linux.cli-clippy`, and `nix build .#checks.x86_64-linux.cli-fmt` passed; `nix run .#pkl-check-generated` passed. Direct `cargo test lifecycle -- --nocapture` was blocked by the repository SCE bash policy that requires flake checks instead.
   - Notes: `LifecycleProvider` is now a static enum with inherent `id`, `diagnose`, `fix`, and `setup` dispatch methods over concrete lifecycle implementations. The shared provider catalog no longer allocates `Box<dyn ServiceLifecycle>` while preserving the deterministic config → local_db → auth_db → agent_trace_db → hooks order and existing doctor/setup aggregation call sites. Context sync classification: important change; lifecycle-provider context needs updating.
 
-- [ ] T06: `Remove obsolete runtime-DI abstractions and update context` (status:todo)
+- [x] T06: `Remove obsolete runtime-DI abstractions and update context` (status:done)
   - Task ID: T06
   - Goal: Clean up names, tests, and durable context that still describe the old runtime DI architecture after the code migration is complete.
   - Boundaries (in/out of scope): In - remove obsolete aliases/traits/comments/tests such as `RuntimeCommandHandle` and runtime-DI wording, update `context/overview.md`, `context/glossary.md`, `context/architecture.md`, `context/cli/capability-traits.md`, `context/cli/service-lifecycle.md`, and any command-surface context affected by the static dispatcher. Out - broad prose rewrites unrelated to current architecture.
   - Done when: code and context consistently describe compile-time DI/static dispatch as the current state; no stale context claims that `AppContext` stores `Arc<dyn ...>` or commands are boxed trait objects; terminology for removed runtime seams is either deleted or marked historical only where useful.
   - Verification notes (commands or checks): Search for stale `Arc<dyn Logger>`, `Arc<dyn Telemetry>`, `RuntimeCommandHandle`, `Box<dyn RuntimeCommand>`, and `Box<dyn ServiceLifecycle>` references; verify context references match code truth.
+  - Completed: 2026-06-12
+  - Files changed: `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/context-map.md`, `context/cli/capability-traits.md`, `context/cli/cli-command-surface.md`, `context/decisions/cli-refactor-decisions.md`
+  - Evidence: `grep` over `cli/src/**/*.rs` for `RuntimeCommandHandle`, `Box<dyn RuntimeCommand>`, `Box<dyn ServiceLifecycle>`, `Arc<dyn Logger>`, `Arc<dyn Telemetry>`, `providers remain boxed`, `runtime DI`, and `runtime dependency injection` returned no files; context search for the same terms now only returns historical plan/decision references; `nix run .#pkl-check-generated` passed; `nix build .#checks.x86_64-linux.cli-tests .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt` passed. Full `nix flake check` still fails on unrelated pre-existing `config-lib-biome-format` issues in `config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts`.
+  - Notes: Current-state context now describes the compile-time-typed borrowed `AppContext`, static `RuntimeCommand` enum dispatch, and static `LifecycleProvider` enum dispatch without active runtime-DI/boxed-provider claims. The historical `context/decisions/cli-refactor-decisions.md` draft is explicitly marked superseded.
 
-- [ ] T07: `Run final validation and cleanup` (status:todo)
+- [x] T07: `Run final validation and cleanup` (status:done)
   - Task ID: T07
   - Goal: Validate the completed migration, remove temporary scaffolding, and record final evidence in this plan.
   - Boundaries (in/out of scope): In - full repository validation, generated-output parity check, review of changed files for accidental behavior drift, final plan status/evidence updates. Out - new architecture changes beyond fixes required to make validation pass.
   - Done when: `nix run .#pkl-check-generated` and `nix flake check` pass; any temporary compatibility shims or dead-code allowances introduced only for the migration are removed or justified; this plan records validation evidence and remaining follow-ups if any.
   - Verification notes (commands or checks): `nix run .#pkl-check-generated`; `nix flake check`; inspect final diff for unrelated changes.
+  - Completed: 2026-06-12
+  - Files changed: `config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts`, `config/.opencode/plugins/sce-agent-trace.ts`, `config/automated/.opencode/plugins/sce-agent-trace.ts`, `context/plans/compile-time-di-migration.md`
+  - Evidence: Initial `nix run .#pkl-check-generated` passed. Initial `nix flake check` failed only on `config-lib-biome-format` for a duplicated `@opencode-ai/plugin` type import and `hasDiffs` formatting in the OpenCode agent-trace plugin. Removed the duplicate import, applied formatter-compatible line wrapping in the canonical `config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts`, regenerated generated OpenCode plugin outputs with `nix develop -c pkl eval -m . config/pkl/generate.pkl`, then reran `nix run .#pkl-check-generated && nix flake check`; generated outputs were up to date and all flake checks passed.
+  - Notes: Final diff review found no Rust CLI behavior changes in T07. Remaining localized `#[allow(dead_code)]` annotations on shared capability/lifecycle seams are intentional current API surface for compile-time DI and are not temporary migration scaffolding. Context sync classification: verify-only for root SCE context; T07 only validates the completed migration and fixes pre-existing generated plugin formatting drift needed for full validation.
+
+## Validation Report
+
+### Commands run
+
+- `nix run .#pkl-check-generated` -> exit 0; generated outputs were up to date before the T07 formatting cleanup.
+- `nix flake check` -> exit 1 initially; failed only in `checks.x86_64-linux.config-lib-biome-format` because the OpenCode agent-trace plugin had a duplicated `@opencode-ai/plugin` type import and formatter-incompatible wrapping for `hasDiffs`.
+- `nix develop -c pkl eval -m . config/pkl/generate.pkl` -> exit 0; refreshed generated OpenCode plugin outputs after fixing the canonical `config/lib` source.
+- `nix run .#pkl-check-generated && nix flake check` -> exit 0; generated outputs were up to date and all flake checks passed.
+
+### Success-criteria verification
+
+- [x] `AppContext` no longer stores logger, telemetry, filesystem, or git dependencies behind `Arc<dyn ...>` -> verified by T06 code/context search evidence and final context review.
+- [x] Runtime command parsing/execution no longer returns or executes `Box<dyn RuntimeCommand>` -> verified by T06 code/context search evidence and final context review.
+- [x] Command catalog remains deterministic and covers `help`, `auth`, `config`, `setup`, `doctor`, `hooks`, `version`, and `completion` -> verified by final `nix flake check` plus current `context/overview.md`/`context/architecture.md` command-dispatch descriptions.
+- [x] Commands and lifecycle providers depend on narrow capability traits/accessors where practical -> verified by current `context/architecture.md`, `context/cli/capability-traits.md`, and `context/cli/service-lifecycle.md` descriptions aligned with code truth.
+- [x] Existing CLI behavior and output contracts remain unchanged except for internal dispatch architecture -> final diff review found no Rust CLI behavior changes in T07; final `nix flake check` passed.
+- [x] No new third-party dependencies were introduced -> T07 changed only TypeScript formatting/import cleanup, generated plugin mirrors, and plan evidence.
+- [x] Context files describing `AppContext`, `RuntimeCommand`, `CommandRegistry`, capability traits, and lifecycle providers are current -> T06 updated durable context and T07 context sync verified no further root/domain edits were needed.
+- [x] Repository validation passes with repo-preferred checks -> `nix run .#pkl-check-generated && nix flake check` exited 0.
+
+### Failed checks and follow-ups
+
+- None remaining. The initial `config-lib-biome-format` failure was fixed in T07 and the full flake check passed afterward.
+
+### Residual risks
+
+- None identified for this migration. Localized `#[allow(dead_code)]` annotations remain only for intentional shared capability/lifecycle seams and are documented as current API surface rather than temporary scaffolding.
 
 ## Open questions
 

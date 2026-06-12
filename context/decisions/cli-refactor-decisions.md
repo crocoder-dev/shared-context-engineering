@@ -1,8 +1,8 @@
 # CLI Refactor: Open Architecture Decisions
 
-**Status:** Draft — awaiting decision before implementation begins  
+**Status:** Historical draft — superseded by the implemented compile-time DI/static-dispatch architecture  
 **Affected plans:** `cli-observability-di`, `cli-command-registry`, `cli-service-lifecycle`  
-**Context:** Pre-implementation decision gate for the three-phase CLI refactor.
+**Context:** Pre-implementation decision gate for the earlier three-phase CLI refactor. This file is retained as historical design input only; current code truth is the compile-time-typed borrowed `AppContext`, static `RuntimeCommand` enum dispatch, and static `LifecycleProvider` enum dispatch documented in `context/architecture.md`, `context/cli/capability-traits.md`, and `context/cli/service-lifecycle.md`.
 
 ---
 
