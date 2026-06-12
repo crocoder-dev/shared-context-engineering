@@ -24,6 +24,7 @@ type DiffTracePayload = {
 };
 
 type ConversationTraceMessageUpdatedItem = {
+	type: "message.updated";
 	session_id: string;
 	message_id: string;
 	role: EventMessageUpdated["properties"]["info"]["role"];
@@ -31,6 +32,7 @@ type ConversationTraceMessageUpdatedItem = {
 };
 
 type ConversationTraceMessagePartUpdatedItem = {
+	type: "message.part.updated";
 	session_id: string;
 	message_id: string;
 	part_type: EventMessagePartUpdated["properties"]["part"]["type"];
@@ -38,19 +40,13 @@ type ConversationTraceMessagePartUpdatedItem = {
 	generated_at_unix_ms: number;
 };
 
-type ConversationTraceMessageUpdatedPayload = {
-	type: "message.updated";
-	payloads: ConversationTraceMessageUpdatedItem[];
-};
+type ConversationTraceItem =
+	| ConversationTraceMessageUpdatedItem
+	| ConversationTraceMessagePartUpdatedItem;
 
-type ConversationTraceMessagePartUpdatedPayload = {
-	type: "message.part.updated";
-	payloads: ConversationTraceMessagePartUpdatedItem[];
+type ConversationTracePayload = {
+	payloads: ConversationTraceItem[];
 };
-
-type ConversationTracePayload =
-	| ConversationTraceMessageUpdatedPayload
-	| ConversationTraceMessagePartUpdatedPayload;
 
 type EventMessageUpdated = Extract<
 	NonNullable<TraceInput["event"]>,
@@ -111,13 +107,13 @@ function shouldCaptureEvent(eventType: OpenCodeEvent["type"]): boolean {
 
 function buildConversationTracePayload(
 	event: EventMessageUpdated,
-): ConversationTraceMessageUpdatedPayload {
+): ConversationTracePayload {
 	const eventInfo = event.properties.info;
 
 	return {
-		type: "message.updated",
 		payloads: [
 			{
+				type: "message.updated",
 				session_id: eventInfo.sessionID,
 				message_id: eventInfo.id,
 				role: eventInfo.role,
@@ -129,13 +125,13 @@ function buildConversationTracePayload(
 
 export function buildMessagePartConversationTracePayload(
 	event: EventMessagePartUpdated,
-): ConversationTraceMessagePartUpdatedPayload {
+): ConversationTracePayload {
 	const eventPart = event.properties.part;
 
 	return {
-		type: "message.part.updated",
 		payloads: [
 			{
+				type: "message.part.updated",
 				session_id: eventPart.sessionID,
 				message_id: eventPart.messageID,
 				part_type: eventPart.type,
@@ -146,9 +142,9 @@ export function buildMessagePartConversationTracePayload(
 	};
 }
 
-function buildPatchConversationTracePayloads(
+function buildPatchConversationTracePayload(
 	event: EventMessageUpdated,
-): ConversationTracePayload[] | undefined {
+): ConversationTracePayload | undefined {
 	const eventInfo = event.properties.info;
 	const diffEntries = extractDiffEntries(eventInfo);
 
@@ -157,38 +153,30 @@ function buildPatchConversationTracePayloads(
 	}
 
 	const patchMessageId = `${eventInfo.id}-patch`;
-	const payloads: ConversationTracePayload[] = [];
+	const payloads: ConversationTraceItem[] = [];
 
 	payloads.push({
 		type: "message.updated",
-		payloads: [
-			{
-				session_id: eventInfo.sessionID,
-				message_id: patchMessageId,
-				role: eventInfo.role,
-				generated_at_unix_ms: Date.now(),
-			},
-		],
+		session_id: eventInfo.sessionID,
+		message_id: patchMessageId,
+		role: eventInfo.role,
+		generated_at_unix_ms: Date.now(),
 	});
 
 	for (const entry of diffEntries) {
 		if ("patch" in entry && typeof entry.patch === "string") {
 			payloads.push({
 				type: "message.part.updated",
-				payloads: [
-					{
-						session_id: eventInfo.sessionID,
-						message_id: patchMessageId,
-						part_type: "patch",
-						text: entry.patch,
-						generated_at_unix_ms: Date.now(),
-					},
-				],
+				session_id: eventInfo.sessionID,
+				message_id: patchMessageId,
+				part_type: "patch",
+				text: entry.patch,
+				generated_at_unix_ms: Date.now(),
 			});
 		}
 	}
 
-	return payloads;
+	return { payloads };
 }
 
 export async function recordConversationTrace(
@@ -209,12 +197,10 @@ export async function recordConversationTrace(
 	}
 
 	if (event.type === "message.updated") {
-		const patchPayloads = buildPatchConversationTracePayloads(event);
+		const patchPayload = buildPatchConversationTracePayload(event);
 
-		if (patchPayloads !== undefined) {
-			await Promise.all(
-				patchPayloads.map((p) => runConversationTraceHook(repoRoot, p)),
-			);
+		if (patchPayload !== undefined) {
+			await runConversationTraceHook(repoRoot, patchPayload);
 			return;
 		}
 

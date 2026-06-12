@@ -18,6 +18,40 @@
 					{
 						"type": "command",
 						"command": "sce hooks diff-trace"
+					},
+					{
+						"type": "command",
+						"command": "bash .claude/scripts/event-logger.sh"
+					}
+				]
+			}
+		],
+		"UserPromptSubmit": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "bash .claude/scripts/event-logger.sh"
+					}
+				]
+			}
+		],
+		"PreToolUse": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "bash .claude/scripts/event-logger.sh"
+					}
+				]
+			}
+		],
+		"Stop": [
+			{
+				"hooks": [
+					{
+						"type": "command",
+						"command": "bash .claude/scripts/event-logger.sh"
 					}
 				]
 			}

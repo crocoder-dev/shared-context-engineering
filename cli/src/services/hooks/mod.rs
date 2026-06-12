@@ -110,10 +110,15 @@ impl StdinPayloadKind {
     }
 }
 
+const CONVERSATION_TRACE_MESSAGE_UPDATED: &str = "message.updated";
+const CONVERSATION_TRACE_MESSAGE_PART_UPDATED: &str = "message.part.updated";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ConversationTracePayload {
-    MessageUpdated(ConversationTraceMessageBatch),
-    MessagePartUpdated(ConversationTracePartBatch),
+pub struct ConversationTracePayload {
+    pub attempted_count: usize,
+    pub message_updated: ConversationTraceMessageBatch,
+    pub message_part_updated: ConversationTracePartBatch,
+    pub skipped: Vec<SkippedConversationTracePayload>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -136,17 +141,17 @@ pub struct SkippedConversationTracePayload {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ConversationTracePersistenceSummary {
-    event_type: &'static str,
-    attempted_count: usize,
-    persisted_count: usize,
-    skipped_count: usize,
+    attempted: usize,
+    persisted_messages: usize,
+    persisted_parts: usize,
+    skipped: usize,
 }
 
 impl ConversationTracePersistenceSummary {
     fn render(&self) -> String {
         format!(
-            "conversation-trace hook persisted {} payload batch to AgentTraceDb: attempted={}, persisted={}, skipped={}.",
-            self.event_type, self.attempted_count, self.persisted_count, self.skipped_count
+            "conversation-trace hook persisted mixed payload batch to AgentTraceDb: attempted={}, persisted_messages={}, persisted_parts={}, skipped={}.",
+            self.attempted, self.persisted_messages, self.persisted_parts, self.skipped
         )
     }
 }
@@ -234,16 +239,45 @@ fn persist_conversation_trace_payload_to_agent_trace_db(
         "Failed to open Agent Trace DB for conversation-trace persistence.",
     )?;
 
-    let summary = match payload {
-        ConversationTracePayload::MessageUpdated(batch) => {
-            persist_message_updated_batch_to_agent_trace_db(&db, batch, logger)
-        }
-        ConversationTracePayload::MessagePartUpdated(batch) => {
-            persist_message_part_updated_batch_to_agent_trace_db(&db, batch, logger)
-        }
-    };
+    let summary = persist_conversation_trace_payload_to_agent_trace_db_with(
+        payload,
+        logger,
+        |inserts| db.insert_messages(inserts),
+        |inserts| db.insert_parts(inserts),
+    );
 
     Ok(summary.render())
+}
+
+fn persist_conversation_trace_payload_to_agent_trace_db_with<IM, IP>(
+    payload: ConversationTracePayload,
+    logger: Option<&dyn Logger>,
+    insert_messages: IM,
+    insert_parts: IP,
+) -> ConversationTracePersistenceSummary
+where
+    IM: FnOnce(Vec<InsertMessageInsert>) -> Result<u64>,
+    IP: FnOnce(Vec<InsertPartInsert>) -> Result<u64>,
+{
+    log_skipped_conversation_trace_payloads(logger, "unsupported", &payload.skipped);
+
+    let message_summary = persist_message_updated_batch_to_agent_trace_db_with(
+        payload.message_updated,
+        logger,
+        insert_messages,
+    );
+    let part_summary = persist_message_part_updated_batch_to_agent_trace_db_with(
+        payload.message_part_updated,
+        logger,
+        insert_parts,
+    );
+
+    ConversationTracePersistenceSummary {
+        attempted: payload.attempted_count,
+        persisted_messages: message_summary.persisted,
+        persisted_parts: part_summary.persisted,
+        skipped: payload.skipped.len() + message_summary.skipped + part_summary.skipped,
+    }
 }
 
 fn open_agent_trace_db_for_hook_runtime(context_message: &'static str) -> Result<AgentTraceDb> {
@@ -269,69 +303,36 @@ where
     Ok(db)
 }
 
-fn persist_message_updated_batch_to_agent_trace_db(
-    db: &AgentTraceDb,
-    batch: ConversationTraceMessageBatch,
-    logger: Option<&dyn Logger>,
-) -> ConversationTracePersistenceSummary {
-    const EVENT_TYPE: &str = "message.updated";
-
-    let attempted_count = batch.inserts.len() + batch.skipped.len();
-    let mut skipped_count = batch.skipped.len();
-
-    log_skipped_conversation_trace_payloads(logger, EVENT_TYPE, &batch.skipped);
-
-    let valid_count = batch.inserts.len();
-    let persisted_count = if valid_count == 0 {
-        0
-    } else {
-        match db.insert_messages(batch.inserts) {
-            Ok(affected_rows) => usize::try_from(affected_rows)
-                .unwrap_or(usize::MAX)
-                .min(valid_count),
-            Err(error) => {
-                skipped_count += valid_count;
-                log_conversation_trace_batch_insert_failure(
-                    logger,
-                    EVENT_TYPE,
-                    valid_count,
-                    &error,
-                );
-                0
-            }
-        }
-    };
-
-    ConversationTracePersistenceSummary {
-        event_type: EVENT_TYPE,
-        attempted_count,
-        persisted_count,
-        skipped_count,
-    }
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ConversationTraceEventPersistenceSummary {
+    persisted: usize,
+    skipped: usize,
 }
 
-fn persist_message_part_updated_batch_to_agent_trace_db(
-    db: &AgentTraceDb,
-    batch: ConversationTracePartBatch,
+fn persist_message_updated_batch_to_agent_trace_db_with<I>(
+    batch: ConversationTraceMessageBatch,
     logger: Option<&dyn Logger>,
-) -> ConversationTracePersistenceSummary {
-    const EVENT_TYPE: &str = "message.part.updated";
+    insert_messages: I,
+) -> ConversationTraceEventPersistenceSummary
+where
+    I: FnOnce(Vec<InsertMessageInsert>) -> Result<u64>,
+{
+    const EVENT_TYPE: &str = "message.updated";
 
-    let attempted_count = batch.inserts.len() + batch.skipped.len();
-    let mut skipped_count = batch.skipped.len();
+    let mut skipped = batch.skipped.len();
 
     log_skipped_conversation_trace_payloads(logger, EVENT_TYPE, &batch.skipped);
 
     let valid_count = batch.inserts.len();
-    let persisted_count = if valid_count == 0 {
+    let persisted = if valid_count == 0 {
         0
     } else {
-        match db.insert_parts(batch.inserts) {
+        match insert_messages(batch.inserts) {
             Ok(affected_rows) => usize::try_from(affected_rows)
                 .unwrap_or(usize::MAX)
                 .min(valid_count),
             Err(error) => {
-                skipped_count += valid_count;
+                skipped += valid_count;
                 log_conversation_trace_batch_insert_failure(
                     logger,
                     EVENT_TYPE,
@@ -343,12 +344,45 @@ fn persist_message_part_updated_batch_to_agent_trace_db(
         }
     };
 
-    ConversationTracePersistenceSummary {
-        event_type: EVENT_TYPE,
-        attempted_count,
-        persisted_count,
-        skipped_count,
-    }
+    ConversationTraceEventPersistenceSummary { persisted, skipped }
+}
+
+fn persist_message_part_updated_batch_to_agent_trace_db_with<I>(
+    batch: ConversationTracePartBatch,
+    logger: Option<&dyn Logger>,
+    insert_parts: I,
+) -> ConversationTraceEventPersistenceSummary
+where
+    I: FnOnce(Vec<InsertPartInsert>) -> Result<u64>,
+{
+    const EVENT_TYPE: &str = "message.part.updated";
+
+    let mut skipped = batch.skipped.len();
+
+    log_skipped_conversation_trace_payloads(logger, EVENT_TYPE, &batch.skipped);
+
+    let valid_count = batch.inserts.len();
+    let persisted = if valid_count == 0 {
+        0
+    } else {
+        match insert_parts(batch.inserts) {
+            Ok(affected_rows) => usize::try_from(affected_rows)
+                .unwrap_or(usize::MAX)
+                .min(valid_count),
+            Err(error) => {
+                skipped += valid_count;
+                log_conversation_trace_batch_insert_failure(
+                    logger,
+                    EVENT_TYPE,
+                    valid_count,
+                    &error,
+                );
+                0
+            }
+        }
+    };
+
+    ConversationTraceEventPersistenceSummary { persisted, skipped }
 }
 
 fn log_skipped_conversation_trace_payloads(
@@ -397,16 +431,10 @@ pub fn parse_conversation_trace_payload(stdin_payload: &str) -> Result<Conversat
             "expected a JSON object"
         ))
     })?;
-    let event_type = required_string_field(payload, "type", conversation_trace_validation_error)?;
+
     let payloads = required_payloads_array(payload)?;
 
-    match event_type.as_str() {
-        "message.updated" => parse_message_updated_payloads(payloads),
-        "message.part.updated" => parse_message_part_updated_payloads(payloads),
-        _ => bail!(conversation_trace_validation_error(
-            "field 'type' must be one of 'message.updated' or 'message.part.updated'"
-        )),
-    }
+    Ok(parse_conversation_trace_payloads(payloads))
 }
 
 fn required_payloads_array(payload: &serde_json::Map<String, Value>) -> Result<&Vec<Value>> {
@@ -419,55 +447,75 @@ fn required_payloads_array(payload: &serde_json::Map<String, Value>) -> Result<&
         })
 }
 
-fn parse_message_updated_payloads(payloads: &[Value]) -> Result<ConversationTracePayload> {
-    let mut inserts = Vec::new();
+fn parse_conversation_trace_payloads(payloads: &[Value]) -> ConversationTracePayload {
+    let mut message_inserts = Vec::new();
+    let mut message_skipped = Vec::new();
+    let mut part_inserts = Vec::new();
+    let mut part_skipped = Vec::new();
     let mut skipped = Vec::new();
 
     for (index, item) in payloads.iter().enumerate() {
-        let Some(item) = conversation_trace_payload_item(item, index, &mut skipped)? else {
+        let Some(item) = conversation_trace_payload_item(item, index, &mut skipped) else {
             continue;
         };
-        match parse_message_updated_item(item) {
-            Ok(input) => inserts.push(input),
-            Err(error) => skipped.push(SkippedConversationTracePayload {
+
+        let event_type =
+            match required_string_field(item, "type", conversation_trace_validation_error) {
+                Ok(event_type) => event_type,
+                Err(error) => {
+                    skipped.push(SkippedConversationTracePayload {
+                        index,
+                        reason: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+
+        match event_type.as_str() {
+            CONVERSATION_TRACE_MESSAGE_UPDATED => match parse_message_updated_item(item) {
+                Ok(input) => message_inserts.push(input),
+                Err(error) => message_skipped.push(SkippedConversationTracePayload {
+                    index,
+                    reason: error.to_string(),
+                }),
+            },
+            CONVERSATION_TRACE_MESSAGE_PART_UPDATED => {
+                match parse_message_part_updated_item(item) {
+                    Ok(input) => part_inserts.push(input),
+                    Err(error) => part_skipped.push(SkippedConversationTracePayload {
+                        index,
+                        reason: error.to_string(),
+                    }),
+                }
+            }
+            _ => skipped.push(SkippedConversationTracePayload {
                 index,
-                reason: error.to_string(),
+                reason: conversation_trace_validation_error(
+                    "field 'type' must be one of 'message.updated' or 'message.part.updated'",
+                ),
             }),
         }
     }
 
-    Ok(ConversationTracePayload::MessageUpdated(
-        ConversationTraceMessageBatch { inserts, skipped },
-    ))
-}
-
-fn parse_message_part_updated_payloads(payloads: &[Value]) -> Result<ConversationTracePayload> {
-    let mut inserts = Vec::new();
-    let mut skipped = Vec::new();
-
-    for (index, item) in payloads.iter().enumerate() {
-        let Some(item) = conversation_trace_payload_item(item, index, &mut skipped)? else {
-            continue;
-        };
-        match parse_message_part_updated_item(item) {
-            Ok(input) => inserts.push(input),
-            Err(error) => skipped.push(SkippedConversationTracePayload {
-                index,
-                reason: error.to_string(),
-            }),
-        }
+    ConversationTracePayload {
+        attempted_count: payloads.len(),
+        message_updated: ConversationTraceMessageBatch {
+            inserts: message_inserts,
+            skipped: message_skipped,
+        },
+        message_part_updated: ConversationTracePartBatch {
+            inserts: part_inserts,
+            skipped: part_skipped,
+        },
+        skipped,
     }
-
-    Ok(ConversationTracePayload::MessagePartUpdated(
-        ConversationTracePartBatch { inserts, skipped },
-    ))
 }
 
 fn conversation_trace_payload_item<'a>(
     item: &'a Value,
     index: usize,
     skipped: &mut Vec<SkippedConversationTracePayload>,
-) -> Result<Option<&'a serde_json::Map<String, Value>>> {
+) -> Option<&'a serde_json::Map<String, Value>> {
     let Some(payload) = item.as_object() else {
         skipped.push(SkippedConversationTracePayload {
             index,
@@ -475,16 +523,10 @@ fn conversation_trace_payload_item<'a>(
                 "payloads[{index}] must be an object"
             )),
         });
-        return Ok(None);
+        return None;
     };
 
-    if payload.contains_key("type") {
-        bail!(conversation_trace_validation_error(&format!(
-            "payloads[{index}] must not declare its own 'type'; use the top-level 'type' for homogeneous batches"
-        )));
-    }
-
-    Ok(Some(payload))
+    Some(payload)
 }
 
 fn parse_message_updated_item(
@@ -2094,83 +2136,115 @@ mod tests {
     }
 
     #[test]
-    fn conversation_trace_message_updated_payload_maps_to_message_insert_input() {
+    fn conversation_trace_mixed_payload_maps_to_message_and_part_insert_inputs() {
         let payload = serde_json::json!({
-            "type": "message.updated",
             "payloads": [
                 {
+                    "type": "message.updated",
                     "session_id": "session-1",
                     "message_id": "message-1",
                     "role": "assistant",
                     "generated_at_unix_ms": 1_800_000_000_000_i64
                 },
                 {
-                    "session_id": "session-2",
-                    "message_id": "message-2",
-                    "role": "system",
-                    "generated_at_unix_ms": 1_800_000_000_002_i64
-                }
-            ]
-        });
-
-        let parsed = parse_conversation_trace_payload(&payload.to_string())
-            .expect("conversation-trace message.updated payload should parse");
-
-        let ConversationTracePayload::MessageUpdated(batch) = parsed else {
-            panic!("expected message.updated payload");
-        };
-
-        assert_eq!(batch.inserts.len(), 1);
-        assert_eq!(batch.skipped.len(), 1);
-        assert_eq!(batch.skipped[0].index, 1);
-        assert!(batch.skipped[0].reason.contains("field 'role'"));
-        let input = &batch.inserts[0];
-        assert_eq!(input.session_id, "session-1");
-        assert_eq!(input.message_id, "message-1");
-        assert_eq!(input.role, MessageRole::Assistant);
-        assert_eq!(input.generated_at_unix_ms, 1_800_000_000_000_i64);
-    }
-
-    #[test]
-    fn conversation_trace_message_part_updated_payload_maps_to_part_insert_input() {
-        let payload = serde_json::json!({
-            "type": "message.part.updated",
-            "payloads": [
-                {
+                    "type": "message.part.updated",
                     "session_id": "session-1",
                     "message_id": "message-1",
                     "part_type": "reasoning",
                     "text": "thinking through validation",
                     "generated_at_unix_ms": 1_800_000_000_001_i64
-                },
-                {
-                    "session_id": "session-2",
-                    "message_id": "message-2",
-                    "part_type": "text",
-                    "generated_at_unix_ms": 1_800_000_000_002_i64
                 }
             ]
         });
 
         let parsed = parse_conversation_trace_payload(&payload.to_string())
-            .expect("conversation-trace message.part.updated payload should parse");
+            .expect("conversation-trace mixed payload should parse");
 
-        let ConversationTracePayload::MessagePartUpdated(batch) = parsed else {
-            panic!("expected message.part.updated payload");
-        };
+        assert_eq!(parsed.attempted_count, 2);
+        assert!(parsed.skipped.is_empty());
+        assert!(parsed.message_updated.skipped.is_empty());
+        assert!(parsed.message_part_updated.skipped.is_empty());
 
-        assert_eq!(batch.inserts.len(), 1);
-        assert_eq!(batch.skipped.len(), 1);
-        assert_eq!(batch.skipped[0].index, 1);
-        assert!(batch.skipped[0]
+        assert_eq!(parsed.message_updated.inserts.len(), 1);
+        let message = &parsed.message_updated.inserts[0];
+        assert_eq!(message.session_id, "session-1");
+        assert_eq!(message.message_id, "message-1");
+        assert_eq!(message.role, MessageRole::Assistant);
+        assert_eq!(message.generated_at_unix_ms, 1_800_000_000_000_i64);
+
+        assert_eq!(parsed.message_part_updated.inserts.len(), 1);
+        let part = &parsed.message_part_updated.inserts[0];
+        assert_eq!(part.session_id, "session-1");
+        assert_eq!(part.message_id, "message-1");
+        assert_eq!(part.part_type, PartType::Reasoning);
+        assert_eq!(part.text, "thinking through validation");
+        assert_eq!(part.generated_at_unix_ms, 1_800_000_000_001_i64);
+    }
+
+    #[test]
+    fn conversation_trace_mixed_payload_skips_malformed_sibling_items() {
+        let payload = serde_json::json!({
+            "payloads": [
+                {
+                    "type": "message.updated",
+                    "session_id": "session-1",
+                    "message_id": "message-1",
+                    "role": "assistant",
+                    "generated_at_unix_ms": 1_800_000_000_000_i64
+                },
+                {
+                    "type": "message.updated",
+                    "session_id": "session-2",
+                    "message_id": "message-2",
+                    "role": "system",
+                    "generated_at_unix_ms": 1_800_000_000_002_i64
+                },
+                {
+                    "type": "message.part.updated",
+                    "session_id": "session-3",
+                    "message_id": "message-3",
+                    "part_type": "text",
+                    "generated_at_unix_ms": 1_800_000_000_003_i64
+                },
+                {
+                    "type": "session.started",
+                    "session_id": "session-4"
+                },
+                42,
+                {
+                    "type": null,
+                    "session_id": "session-5"
+                }
+            ]
+        });
+
+        let parsed = parse_conversation_trace_payload(&payload.to_string())
+            .expect("conversation-trace mixed payload should parse with skipped items");
+
+        assert_eq!(parsed.attempted_count, 6);
+        assert_eq!(parsed.message_updated.inserts.len(), 1);
+        assert_eq!(parsed.message_updated.skipped.len(), 1);
+        assert_eq!(parsed.message_updated.skipped[0].index, 1);
+        assert!(parsed.message_updated.skipped[0]
+            .reason
+            .contains("field 'role'"));
+        assert_eq!(parsed.message_part_updated.inserts.len(), 0);
+        assert_eq!(parsed.message_part_updated.skipped.len(), 1);
+        assert_eq!(parsed.message_part_updated.skipped[0].index, 2);
+        assert!(parsed.message_part_updated.skipped[0]
             .reason
             .contains("missing required field 'text'"));
-        let input = &batch.inserts[0];
-        assert_eq!(input.session_id, "session-1");
-        assert_eq!(input.message_id, "message-1");
-        assert_eq!(input.part_type, PartType::Reasoning);
-        assert_eq!(input.text, "thinking through validation");
-        assert_eq!(input.generated_at_unix_ms, 1_800_000_000_001_i64);
+        assert_eq!(parsed.skipped.len(), 3);
+        assert_eq!(parsed.skipped[0].index, 3);
+        assert!(parsed.skipped[0].reason.contains("field 'type'"));
+        assert_eq!(parsed.skipped[1].index, 4);
+        assert!(parsed.skipped[1]
+            .reason
+            .contains("payloads[4] must be an object"));
+        assert_eq!(parsed.skipped[2].index, 5);
+        assert!(parsed.skipped[2]
+            .reason
+            .contains("field 'type' must be a string"));
     }
 
     fn claude_session_start_payload(extra_fields: &Value) -> String {
