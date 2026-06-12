@@ -27,7 +27,7 @@ The generated-config pipeline now has one canonical Pkl-authored source for Open
 - Claude agent-trace event handling is registered through generated `.claude/settings.json` command hooks that call `sce hooks` directly: `SessionStart` → `sce hooks session-model`, matched `PostToolUse Write|Edit|MultiEdit|NotebookEdit` → `sce hooks diff-trace`.
 - The Rust CLI receives raw Claude hook event JSON on STDIN and handles extraction, validation, and persistence without a TypeScript translation layer.
 - Claude bash-policy enforcement has been removed from generated outputs.
-- OpenCode is now the sole target for SCE-managed bash-policy enforcement via the plugin registration contract.
+- OpenCode bash-policy enforcement now delegates to the Rust `sce policy bash` command through a thin generated plugin wrapper; the former TypeScript runtime (`bash-policy/runtime.ts`) has been removed from generated outputs.
 
 ## Ownership and edit policy
 

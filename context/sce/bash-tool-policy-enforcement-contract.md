@@ -131,7 +131,7 @@ The original contract intentionally excluded shell control operators (`|`, `&&`,
 - If ANY segment matches a blocking policy, the entire command is blocked
 - This applies to both preset policies (e.g., `forbid-git-all`) and custom policies
 
-**Implementation:** `config/lib/bash-policy-plugin/bash-policy/runtime.ts` currently enforces generated OpenCode runtime behavior, and `cli/src/services/bash_policy.rs` contains the Rust evaluator seam plus the hidden `sce policy bash` command adapter for hook callers. Both preserve original single-command behavior for commands without operators.
+**Implementation:** `cli/src/services/bash_policy.rs` owns the canonical Rust evaluator and the hidden `sce policy bash` command adapter for hook callers. The OpenCode plugin at `config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts` is a thin wrapper that delegates to `sce policy bash --input normalized --output json` via `spawnSync`; it no longer contains independent policy logic. Both preserve original single-command behavior for commands without operators.
 
 **Examples:**
 - `cat abc | git diff` with `forbid-git-all` -> blocked (segment "git diff" matches)
@@ -243,7 +243,6 @@ For a non-matching command, enforcement must allow the bash tool to continue nor
 - `context/cli/config-precedence-contract.md`
 - `config/pkl/base/bash-policy-presets.pkl`
 - `config/pkl/generate.pkl`
-- `config/lib/bash-policy-plugin/bash-policy/runtime.ts`
 - `config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts`
 - `cli/src/services/bash_policy.rs`
 - `cli/src/services/config/policy.rs`

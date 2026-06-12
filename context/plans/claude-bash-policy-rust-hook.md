@@ -52,12 +52,16 @@ Migrate SCE bash-tool policy enforcement from the OpenCode TypeScript runtime in
   - Design decision: The `sce policy bash` command uses explicit `--input` (default: `claude-pre-tool-use`) and `--output` (default: `claude-hook`) flags rather than auto-detection or a `--caller` identity flag. Claude Code hooks invoke `sce policy bash` with defaults; OpenCode plugin delegation (T03) will pass `--input normalized --output json`. This keeps the interface deterministic and avoids heuristic format sniffing.
   - Notes: The `policy` command is hidden from top-level help (`POLICY_SHOW_IN_TOP_LEVEL_HELP = false`). Config resolution falls back from git root to current directory when not in a git repo. The `resolve_bash_policy_runtime_config` function was added to the config resolver to support policy evaluation without requiring the full observability config resolution path.
 
-- [ ] T03: `Delegate OpenCode bash-policy plugin to sce policy` (status:todo)
+- [x] T03: `Delegate OpenCode bash-policy plugin to sce policy` (status:done)
   - Task ID: T03
   - Goal: Replace OpenCode TypeScript policy business logic with a thin generated plugin wrapper that calls the Rust `sce policy` command.
   - Boundaries (in/out of scope): In - update `config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts` to invoke `sce policy` with a normalized request, preserve OpenCode denial text/throw behavior, remove or shrink TypeScript runtime ownership that duplicates Rust logic, adapt JS tests to wrapper behavior where still useful. Out - Claude hook generation and Rust evaluator behavior.
   - Done when: OpenCode generated plugin behavior still blocks/permits according to the current contract, but policy parsing/matching is not duplicated in TypeScript; generated OpenCode outputs point at the wrapper and no longer emit stale standalone runtime logic as an authority.
-  - Verification notes (commands or checks): `nix develop -c sh -c 'cd config/lib && bun test bash-policy-plugin'` or the narrowest matching Bun test; `nix run .#pkl-check-generated` after regeneration.
+  - Verification notes (commands or checks): `nix develop -c sh -c 'cd config/lib && bun test bash-policy-plugin'`; `nix run .#pkl-check-generated`; `nix flake check`.
+  - Completed: 2026-06-12
+  - Files changed: `config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts`, `config/lib/bash-policy-plugin/bash-policy-runtime.test.ts`, `config/pkl/generate.pkl`, `flake.nix`, `.opencode/plugins/sce-bash-policy.ts`, removed `config/lib/bash-policy-plugin/bash-policy/runtime.ts`, removed `config/.opencode/plugins/bash-policy/runtime.ts`, removed `config/automated/.opencode/plugins/bash-policy/runtime.ts`, removed `.opencode/plugins/bash-policy/runtime.ts`
+  - Evidence: `nix flake check` passed (cli-tests, cli-clippy, cli-fmt, pkl-parity, config-lib-bun-tests, config-lib-biome-check, config-lib-biome-format, all JS checks); `nix run .#pkl-check-generated` passed; 12 Bun tests pass covering allow/deny/fail-open behavior and input format validation.
+  - Notes: The OpenCode bash-policy plugin now delegates to `sce policy bash --input normalized --output json` via `spawnSync` instead of importing a TypeScript runtime. The TypeScript runtime (`bash-policy/runtime.ts`) has been removed entirely. The Pkl generator no longer emits `bash-policy/runtime.ts`. The plugin fails open (allows commands) when `sce` is not found, exits non-zero, returns empty stdout, or returns invalid JSON. The `repoRoot` parameter is no longer needed since `sce policy bash` resolves the project root itself.
 
 - [ ] T04: `Generate Claude PreToolUse bash-policy hook` (status:todo)
   - Task ID: T04

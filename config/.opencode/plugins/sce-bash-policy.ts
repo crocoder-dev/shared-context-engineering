@@ -1,16 +1,53 @@
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import type { Plugin } from "@opencode-ai/plugin";
 
-import {
-	evaluateBashCommandPolicy,
-	formatPolicyBlockMessage,
-} from "./bash-policy/runtime.ts";
+interface JsonPolicyResult {
+	status: string;
+	decision: string;
+	command: string;
+	normalized_argv?: string[];
+	reason?: string;
+	policy_id?: string;
+}
 
-export const SceBashPolicyPlugin: Plugin = async ({ directory, worktree }) => {
-	const pluginDirectory = path.dirname(fileURLToPath(import.meta.url));
-	const repoRoot = worktree ?? directory ?? process.cwd();
+/**
+ * Evaluate a bash command against SCE bash-tool policy by delegating to the
+ * Rust `sce policy bash` command. Returns the parsed JSON result, or null if
+ * the policy check could not be performed (fail-open).
+ */
+function evaluateBashCommandPolicy(command: string): JsonPolicyResult | null {
+	try {
+		const result = spawnSync(
+			"sce",
+			["policy", "bash", "--input", "normalized", "--output", "json"],
+			{
+				input: JSON.stringify({ command }),
+				encoding: "utf8",
+				timeout: 10_000,
+			},
+		);
 
+		if (result.error) {
+			return null;
+		}
+
+		if (result.status !== 0) {
+			return null;
+		}
+
+		const stdout = result.stdout?.trim();
+		if (!stdout) {
+			return null;
+		}
+
+		const parsed: JsonPolicyResult = JSON.parse(stdout);
+		return parsed;
+	} catch {
+		return null;
+	}
+}
+
+export const SceBashPolicyPlugin: Plugin = async () => {
 	return {
 		"tool.execute.before": async (input, output) => {
 			if (input.tool !== "bash") {
@@ -27,16 +64,15 @@ export const SceBashPolicyPlugin: Plugin = async ({ directory, worktree }) => {
 				return;
 			}
 
-			const result = await evaluateBashCommandPolicy({
-				command,
-				worktree: repoRoot,
-				pluginDirectory,
-			});
-			if (result.allowed) {
+			const policyResult = evaluateBashCommandPolicy(command);
+			if (!policyResult) {
+				// Fail open: if the policy check cannot be performed, allow the command.
 				return;
 			}
 
-			throw new Error(formatPolicyBlockMessage(result.policy));
+			if (policyResult.decision === "deny" && policyResult.reason) {
+				throw new Error(policyResult.reason);
+			}
 		},
 	};
 };

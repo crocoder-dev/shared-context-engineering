@@ -125,8 +125,7 @@
             ./config/lib/bun.lock
             ./config/lib/tsconfig.json
             ./config/lib/agent-trace-plugin
-            ./config/lib/bash-policy-plugin/bash-policy/runtime.ts
-            ./config/lib/bash-policy-plugin/bash-policy-runtime.test.ts
+./config/lib/bash-policy-plugin/bash-policy-runtime.test.ts
             ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/structured_patch/fixtures)
           ];
