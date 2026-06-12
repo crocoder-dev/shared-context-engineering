@@ -6,7 +6,7 @@ Migrate SCE bash-tool policy enforcement from the OpenCode TypeScript runtime in
 
 ## Success criteria
 
-- Claude generated `.claude/settings.json` includes a `PreToolUse` hook for the `Bash` tool that invokes `sce policy ...` in command-hook exec form.
+- Claude generated `.claude/settings.json` includes a `PreToolUse` hook for the `Bash` tool that invokes `sce policy ...` through Claude command-hook configuration.
 - The Claude hook denies blocked commands using Claude Code hook JSON with `hookSpecificOutput.hookEventName = "PreToolUse"`, `permissionDecision = "deny"`, and the canonical SCE policy denial reason.
 - Bash policy evaluation is owned by Rust under `cli/`; the OpenCode TypeScript implementation no longer owns independent policy logic.
 - OpenCode and Claude both delegate to the same Rust policy behavior and remain parity-equivalent for current bash-policy tests.
@@ -63,12 +63,16 @@ Migrate SCE bash-tool policy enforcement from the OpenCode TypeScript runtime in
   - Evidence: `nix flake check` passed (cli-tests, cli-clippy, cli-fmt, pkl-parity, config-lib-bun-tests, config-lib-biome-check, config-lib-biome-format, all JS checks); `nix run .#pkl-check-generated` passed; 12 Bun tests pass covering allow/deny/fail-open behavior and input format validation.
   - Notes: The OpenCode bash-policy plugin now delegates to `sce policy bash --input normalized --output json` via `spawnSync` instead of importing a TypeScript runtime. The TypeScript runtime (`bash-policy/runtime.ts`) has been removed entirely. The Pkl generator no longer emits `bash-policy/runtime.ts`. The plugin fails open (allows commands) when `sce` is not found, exits non-zero, returns empty stdout, or returns invalid JSON. The `repoRoot` parameter is no longer needed since `sce policy bash` resolves the project root itself.
 
-- [ ] T04: `Generate Claude PreToolUse bash-policy hook` (status:todo)
+- [x] T04: `Generate Claude PreToolUse bash-policy hook` (status:done)
   - Task ID: T04
   - Goal: Add generated Claude Code settings that enforce bash-policy through the Rust `sce policy` hook path.
-  - Boundaries (in/out of scope): In - update `config/pkl/renderers/claude-content.pkl` settings rendering, add a `PreToolUse` matcher for `Bash`, use command-hook exec form with `command: "sce"` and explicit args, preserve existing Claude Agent Trace `SessionStart` and `PostToolUse` hooks, regenerate `config/.claude/settings.json` and repo-root `.claude/settings.json` if applicable. Out - changing Agent Trace hook behavior, adding Claude TypeScript policy runtime files.
+  - Boundaries (in/out of scope): In - update `config/pkl/renderers/claude-content.pkl` settings rendering, add a `PreToolUse` matcher for `Bash`, use command-hook form with `command: "sce policy bash"` (no `args`, per human feedback during T04), preserve existing Claude Agent Trace `SessionStart` and `PostToolUse` hooks, regenerate `config/.claude/settings.json` and repo-root `.claude/settings.json` if applicable. Out - changing Agent Trace hook behavior, adding Claude TypeScript policy runtime files.
   - Done when: Generated `.claude/settings.json` includes both existing Agent Trace hooks and the new Bash `PreToolUse` policy hook; the hook command routes raw Claude event JSON to `sce policy`; generated-output parity passes.
   - Verification notes (commands or checks): Inspect generated settings; `nix run .#pkl-check-generated`; use Claude hook JSON fixtures to verify deny/allow behavior through the CLI command from T02.
+  - Completed: 2026-06-12
+  - Files changed: `config/pkl/renderers/claude-content.pkl`, `config/.claude/settings.json`
+  - Evidence: Inspected generated `config/.claude/settings.json` and confirmed existing `SessionStart` / `PostToolUse` Agent Trace hooks plus new `PreToolUse` matcher for `Bash` running `sce policy bash`; Claude smoke fixtures passed for blocked `git commit -m test` deny JSON and allowed `pwd` empty output; `nix run .#pkl-check-generated` passed; `nix flake check` passed.
+  - Notes: The generated Claude bash-policy hook uses a single `command` string (`sce policy bash`) instead of `command: "sce"` plus `args`, per human feedback during implementation. No Claude TypeScript policy runtime was added.
 
 - [ ] T05: `Clean up obsolete TypeScript policy ownership and docs` (status:todo)
   - Task ID: T05
