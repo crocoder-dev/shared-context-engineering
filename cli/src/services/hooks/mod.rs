@@ -443,8 +443,9 @@ pub fn parse_conversation_trace_payload(stdin_payload: &str) -> Result<Conversat
         let items = match event_name.as_str() {
             "UserPromptSubmit" => transform_claude_user_prompt_submit(payload)?,
             "Stop" => transform_claude_stop(payload)?,
+            "PostToolUse" => transform_claude_post_tool_use(payload)?,
             _ => bail!(conversation_trace_validation_error(&format!(
-                "unsupported Claude hook event '{event_name}': supported events are 'UserPromptSubmit' and 'Stop'"
+                "unsupported Claude hook event '{event_name}': supported events are 'UserPromptSubmit', 'Stop' and 'PostToolUse'"
             ))),
         };
         return Ok(parse_conversation_trace_payloads(&items));
@@ -2287,6 +2288,133 @@ where
             "generated_at_unix_ms": generated_at_unix_ms,
         }),
     ])
+}
+fn transform_claude_post_tool_use(payload: &serde_json::Map<String, Value>) -> Result<Vec<Value>> {
+    transform_claude_post_tool_use_with(
+        payload,
+        || {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default();
+            let ts = uuid::Timestamp::from_unix(uuid::NoContext, now.as_secs(), now.subsec_nanos());
+            uuid::Uuid::new_v7(ts)
+        },
+        || current_unix_time_ms().unwrap_or(0),
+    )
+}
+
+/// Injectable counterpart of `transform_claude_post_tool_use` for deterministic testing.
+fn transform_claude_post_tool_use_with<G, T>(
+    payload: &serde_json::Map<String, Value>,
+    generate_message_id: G,
+    generate_timestamp_ms: T,
+) -> Result<Vec<Value>>
+where
+    G: FnOnce() -> uuid::Uuid,
+    T: FnOnce() -> i64,
+{
+    let event_name = required_non_empty_string_field(
+        payload,
+        "hook_event_name",
+        conversation_trace_validation_error,
+    )?;
+
+    if event_name != "PostToolUse" {
+        let raw_content = serde_json::to_string(payload).unwrap_or_default();
+        bail!(conversation_trace_validation_error(&format!(
+            "unsupported Claude hook event '{event_name}': only 'PostToolUse' is supported. Raw event: {raw_content}"
+        )));
+    }
+
+    // Silently skip PostToolUse events for non-Write/Edit tools
+    let tool_name = payload
+        .get("tool_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if tool_name != "Write" && tool_name != "Edit" {
+        return Ok(vec![]);
+    }
+
+    let session_id = required_non_empty_string_field(
+        payload,
+        "session_id",
+        conversation_trace_validation_error,
+    )?;
+
+    let tool_response = required_field(
+        payload,
+        "tool_response",
+        conversation_trace_validation_error,
+    )?;
+    let tool_response_obj = tool_response.as_object().ok_or_else(|| {
+        anyhow!(conversation_trace_validation_error(
+            "field 'tool_response' must be an object"
+        ))
+    })?;
+
+    let message_id = generate_message_id().to_string();
+    let generated_at_unix_ms = generate_timestamp_ms();
+
+    // Check if tool_response.structuredPatch has any items
+    let structured_patch_has_items = tool_response_obj
+        .get("structuredPatch")
+        .and_then(|v| v.as_array())
+        .is_some_and(|arr| !arr.is_empty());
+
+    let mut items = vec![json!({
+        "type": CONVERSATION_TRACE_MESSAGE_UPDATED,
+        "session_id": session_id,
+        "message_id": message_id,
+        "role": "assistant",
+        "generated_at_unix_ms": generated_at_unix_ms,
+    })];
+
+    if structured_patch_has_items {
+        // Each structuredPatch item produces its own message.part.updated
+        if let Some(patch_items) = tool_response_obj
+            .get("structuredPatch")
+            .and_then(|v| v.as_array())
+        {
+            for patch_item in patch_items {
+                if let Some(patch_item_obj) = patch_item.as_object() {
+                    if let Some(lines) = patch_item_obj.get("lines").and_then(|v| v.as_array()) {
+                        let text: Vec<String> = lines
+                            .iter()
+                            .filter_map(|l| l.as_str().map(String::from))
+                            .collect();
+                        let text = text.join("\n");
+
+                        items.push(json!({
+                            "type": CONVERSATION_TRACE_MESSAGE_PART_UPDATED,
+                            "session_id": session_id,
+                            "message_id": message_id,
+                            "part_type": "patch",
+                            "text": text,
+                            "generated_at_unix_ms": generated_at_unix_ms,
+                        }));
+                    }
+                }
+            }
+        }
+    } else {
+        // No structured patches — use tool_response.content as the text
+        let text = required_string_field(
+            tool_response_obj,
+            "content",
+            conversation_trace_validation_error,
+        )?;
+
+        items.push(json!({
+            "type": CONVERSATION_TRACE_MESSAGE_PART_UPDATED,
+            "session_id": session_id,
+            "message_id": message_id,
+            "part_type": "patch",
+            "text": text,
+            "generated_at_unix_ms": generated_at_unix_ms,
+        }));
+    }
+
+    Ok(items)
 }
 
 #[cfg(test)]

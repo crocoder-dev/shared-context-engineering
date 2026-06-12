@@ -18,10 +18,14 @@
 					{
 						"type": "command",
 						"command": "sce hooks diff-trace"
-					},
+					}
+				]
+			},
+			{
+				"hooks": [
 					{
 						"type": "command",
-						"command": "bash .claude/scripts/event-logger.sh"
+						"command": "sce hooks conversation-trace"
 					}
 				]
 			}
@@ -31,17 +35,7 @@
 				"hooks": [
 					{
 						"type": "command",
-						"command": "bash .claude/scripts/event-logger.sh"
-					}
-				]
-			}
-		],
-		"PreToolUse": [
-			{
-				"hooks": [
-					{
-						"type": "command",
-						"command": "bash .claude/scripts/event-logger.sh"
+						"command": "sce hooks conversation-trace"
 					}
 				]
 			}
@@ -51,7 +45,7 @@
 				"hooks": [
 					{
 						"type": "command",
-						"command": "bash .claude/scripts/event-logger.sh"
+						"command": "sce hooks conversation-trace"
 					}
 				]
 			}
