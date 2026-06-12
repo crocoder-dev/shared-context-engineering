@@ -25,9 +25,18 @@ const BASH_POLICY_PRESET_CATALOG_JSON: &str =
 static BUILTIN_BASH_POLICY_CATALOG: OnceLock<BuiltinBashPolicyCatalog> = OnceLock::new();
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct BashPolicyConfig {
-    pub(super) presets: Vec<String>,
-    pub(super) custom: Vec<CustomBashPolicyEntry>,
+pub(crate) struct BashPolicyConfig {
+    pub(crate) presets: Vec<String>,
+    pub(crate) custom: Vec<CustomBashPolicyEntry>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub(crate) struct RuntimeBashPolicyPreset {
+    pub(crate) id: String,
+    pub(crate) argv_prefixes: Vec<Vec<String>>,
+    pub(crate) message: String,
+    pub(crate) order: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,6 +103,21 @@ fn builtin_bash_policy_catalog() -> &'static BuiltinBashPolicyCatalog {
             && !preset.matcher.argv_prefixes.is_empty()));
         catalog
     })
+}
+
+#[allow(dead_code)]
+pub(crate) fn runtime_bash_policy_presets() -> Vec<RuntimeBashPolicyPreset> {
+    builtin_bash_policy_catalog()
+        .presets
+        .iter()
+        .enumerate()
+        .map(|(order, preset)| RuntimeBashPolicyPreset {
+            id: preset.id.clone(),
+            argv_prefixes: preset.matcher.argv_prefixes.clone(),
+            message: preset.message.clone(),
+            order,
+        })
+        .collect()
 }
 
 fn builtin_bash_policy_preset_ids() -> Vec<&'static str> {

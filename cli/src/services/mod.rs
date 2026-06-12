@@ -4,6 +4,8 @@ pub mod app_support;
 pub mod auth;
 pub mod auth_command;
 pub mod auth_db;
+#[allow(dead_code)]
+pub mod bash_policy;
 pub mod capabilities;
 pub mod command_registry;
 pub mod completion;
