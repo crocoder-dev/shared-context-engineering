@@ -84,12 +84,16 @@ The intended end state is a statically wired CLI runtime where the production ap
   - Evidence: `nix build .#checks.x86_64-linux.cli-tests`, `nix build .#checks.x86_64-linux.cli-clippy`, and `nix build .#checks.x86_64-linux.cli-fmt` passed; `nix run .#pkl-check-generated` passed. Full `nix flake check` still fails on unrelated pre-existing `config-lib-biome-format` issues in `config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts`.
   - Notes: Command execution is now generic over capability accessors: dispatch requires logger + repo-root scoping bounds, context-free command payloads accept any context, hooks requires logger access, and setup/doctor require repo-root scoping. Lifecycle provider trait objects remain in place for T05, but their methods now consume the narrow repo-root accessor trait so setup/doctor can operate over generic command contexts. Context sync classification: important change; durable command/lifecycle context should reflect the narrower capability-bound execution seam.
 
-- [ ] T05: `Replace lifecycle provider trait objects with static lifecycle dispatch` (status:todo)
+- [x] T05: `Replace lifecycle provider trait objects with static lifecycle dispatch` (status:done)
   - Task ID: T05
   - Goal: Remove `Box<dyn ServiceLifecycle>` provider aggregation and replace it with deterministic static provider dispatch that works with generic context capabilities.
   - Boundaries (in/out of scope): In - `cli/src/services/lifecycle.rs`, provider catalog representation/order, doctor/setup provider iteration, lifecycle method signatures, lifecycle tests/context docs references. Out - changing lifecycle health taxonomy, setup outcomes, doctor report rendering, or hook install behavior.
   - Done when: lifecycle provider catalogs no longer allocate boxed trait objects; provider order remains config → local_db → auth_db → agent_trace_db → hooks when included; doctor and setup still aggregate diagnose/fix/setup outcomes exactly as before.
   - Verification notes (commands or checks): Run doctor/setup/lifecycle tests; manually inspect static provider ordering in tests; use `nix flake check` for broad validation.
+  - Completed: 2026-06-12
+  - Files changed: `cli/src/services/lifecycle.rs`, `cli/src/services/setup/command.rs`, lifecycle-related context files under `context/`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` passed; `nix build .#checks.x86_64-linux.cli-tests`, `nix build .#checks.x86_64-linux.cli-clippy`, and `nix build .#checks.x86_64-linux.cli-fmt` passed; `nix run .#pkl-check-generated` passed. Direct `cargo test lifecycle -- --nocapture` was blocked by the repository SCE bash policy that requires flake checks instead.
+  - Notes: `LifecycleProvider` is now a static enum with inherent `id`, `diagnose`, `fix`, and `setup` dispatch methods over concrete lifecycle implementations. The shared provider catalog no longer allocates `Box<dyn ServiceLifecycle>` while preserving the deterministic config → local_db → auth_db → agent_trace_db → hooks order and existing doctor/setup aggregation call sites. Context sync classification: important change; lifecycle-provider context needs updating.
 
 - [ ] T06: `Remove obsolete runtime-DI abstractions and update context` (status:todo)
   - Task ID: T06

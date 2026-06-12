@@ -4,8 +4,6 @@ use anyhow::Result;
 
 use crate::app::HasRepoRoot;
 
-pub type LifecycleProvider = Box<dyn ServiceLifecycle>;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LifecycleProviderId {
     Config,
@@ -127,19 +125,78 @@ pub trait ServiceLifecycle: Send + Sync {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LifecycleProvider {
+    Config,
+    LocalDb,
+    AuthDb,
+    AgentTraceDb,
+    Hooks,
+}
+
+impl LifecycleProvider {
+    pub fn id(self) -> LifecycleProviderId {
+        match self {
+            Self::Config => LifecycleProviderId::Config,
+            Self::LocalDb => LifecycleProviderId::LocalDb,
+            Self::AuthDb => LifecycleProviderId::AuthDb,
+            Self::AgentTraceDb => LifecycleProviderId::AgentTraceDb,
+            Self::Hooks => LifecycleProviderId::Hooks,
+        }
+    }
+
+    pub fn diagnose(self, ctx: &dyn HasRepoRoot) -> Vec<HealthProblem> {
+        match self {
+            Self::Config => crate::services::config::lifecycle::ConfigLifecycle.diagnose(ctx),
+            Self::LocalDb => crate::services::local_db::lifecycle::LocalDbLifecycle.diagnose(ctx),
+            Self::AuthDb => crate::services::auth_db::lifecycle::AuthDbLifecycle.diagnose(ctx),
+            Self::AgentTraceDb => {
+                crate::services::agent_trace_db::lifecycle::AgentTraceDbLifecycle.diagnose(ctx)
+            }
+            Self::Hooks => crate::services::hooks::lifecycle::HooksLifecycle.diagnose(ctx),
+        }
+    }
+
+    pub fn fix(self, ctx: &dyn HasRepoRoot, problems: &[HealthProblem]) -> Vec<FixResultRecord> {
+        match self {
+            Self::Config => crate::services::config::lifecycle::ConfigLifecycle.fix(ctx, problems),
+            Self::LocalDb => {
+                crate::services::local_db::lifecycle::LocalDbLifecycle.fix(ctx, problems)
+            }
+            Self::AuthDb => crate::services::auth_db::lifecycle::AuthDbLifecycle.fix(ctx, problems),
+            Self::AgentTraceDb => {
+                crate::services::agent_trace_db::lifecycle::AgentTraceDbLifecycle.fix(ctx, problems)
+            }
+            Self::Hooks => crate::services::hooks::lifecycle::HooksLifecycle.fix(ctx, problems),
+        }
+    }
+
+    pub fn setup(self, ctx: &dyn HasRepoRoot) -> Result<SetupOutcome> {
+        match self {
+            Self::Config => crate::services::config::lifecycle::ConfigLifecycle.setup(ctx),
+            Self::LocalDb => crate::services::local_db::lifecycle::LocalDbLifecycle.setup(ctx),
+            Self::AuthDb => crate::services::auth_db::lifecycle::AuthDbLifecycle.setup(ctx),
+            Self::AgentTraceDb => {
+                crate::services::agent_trace_db::lifecycle::AgentTraceDbLifecycle.setup(ctx)
+            }
+            Self::Hooks => crate::services::hooks::lifecycle::HooksLifecycle.setup(ctx),
+        }
+    }
+}
+
 /// Returns lifecycle providers in deterministic orchestration order.
 ///
 /// Provider order is config → `local_db` → `auth_db` → `agent_trace_db` → hooks when hook lifecycle behavior is requested.
 pub fn lifecycle_providers(include_hooks: bool) -> Vec<LifecycleProvider> {
-    let mut providers: Vec<LifecycleProvider> = vec![
-        Box::new(crate::services::config::lifecycle::ConfigLifecycle),
-        Box::new(crate::services::local_db::lifecycle::LocalDbLifecycle),
-        Box::new(crate::services::auth_db::lifecycle::AuthDbLifecycle),
-        Box::new(crate::services::agent_trace_db::lifecycle::AgentTraceDbLifecycle),
+    let mut providers = vec![
+        LifecycleProvider::Config,
+        LifecycleProvider::LocalDb,
+        LifecycleProvider::AuthDb,
+        LifecycleProvider::AgentTraceDb,
     ];
 
     if include_hooks {
-        providers.push(Box::new(crate::services::hooks::lifecycle::HooksLifecycle));
+        providers.push(LifecycleProvider::Hooks);
     }
 
     providers
