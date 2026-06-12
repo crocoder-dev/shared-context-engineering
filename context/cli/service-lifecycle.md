@@ -12,7 +12,7 @@
 - `FixResultRecord` and `FixOutcome` are lifecycle-owned fix result types.
 - `SetupOutcome` is a minimal lifecycle-owned carrier for current setup result shapes:
   - optional lifecycle-owned `RequiredHooksInstallOutcome`
-- `LifecycleProvider` is a static enum over the concrete provider implementations, and `lifecycle_providers(include_hooks)` is the shared provider catalog/factory used by command orchestrators. The enum owns inherent generic `id`, `diagnose`, `fix`, and `setup` dispatch methods and does not allocate boxed provider trait objects or erase the lifecycle context to a repo-root trait object.
+- `LifecycleProvider` is a static enum over the concrete provider implementations, and `lifecycle_providers(include_hooks)` is the shared provider catalog/factory used by command orchestrators. The enum owns inherent generic `id`, `diagnose`, `fix`, and `setup` dispatch methods and does not allocate boxed provider trait objects or erase the lifecycle context to `&dyn HasRepoRoot`; provider dispatch remains compile-time typed over the narrow repo-root accessor.
 - Provider order is deterministic: `ConfigLifecycle` → `LocalDbLifecycle` → `AuthDbLifecycle` → `AgentTraceDbLifecycle` → `HooksLifecycle` when hooks are included.
 
 ## Current boundaries

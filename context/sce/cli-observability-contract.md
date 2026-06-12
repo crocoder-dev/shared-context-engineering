@@ -62,7 +62,7 @@ Runtime observability now consumes the shared resolved observability config from
 - `NoopLogger` is available from the same traits module for tests and future dependency-injected services that need a logger without side effects.
 - The same traits module exposes object-safe `services::observability::traits::Telemetry` with the current app subscriber boundary: `with_default_subscriber` for command-lifecycle execution.
 - The concrete `services::observability::TelemetryRuntime` implements the telemetry trait by delegating to its existing inherent method.
-- `cli/src/app.rs` stores the production logger and telemetry runtime as concrete `AppRuntime` fields, creates borrowed `AppContext` views for command execution, and exposes logger/telemetry access through context accessors instead of owned `Arc<dyn ...>` fields.
+- `cli/src/app.rs` stores the production logger and telemetry runtime as concrete `AppRuntime` fields, creates borrowed `AppContext` views for command execution, and exposes logger/telemetry access through associated-type context accessors instead of owned `Arc<dyn ...>` fields or object-erased accessor return values.
 - Final stream rendering uses `RunOutcome<L: Logger>` in `cli/src/services/app_support.rs`, so classified-error and stdout-write-failure logging depends on the logger trait boundary rather than the concrete production logger type.
 - `run_command_lifecycle` expects the telemetry subscriber action to execute command dispatch at most once; if a telemetry implementation invokes the action again, the app returns a `SCE-ERR-RUNTIME` classified error rather than panicking or reparsing consumed arguments.
 
