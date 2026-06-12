@@ -269,7 +269,10 @@ where
     )
 }
 
-fn try_run_with_dependency_check<I, F>(args: I, dependency_check: F) -> RunOutcome
+fn try_run_with_dependency_check<I, F>(
+    args: I,
+    dependency_check: F,
+) -> RunOutcome<services::observability::Logger>
 where
     I: IntoIterator<Item = String>,
     F: FnOnce() -> anyhow::Result<()>,

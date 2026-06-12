@@ -58,12 +58,16 @@ This is a follow-up to the completed `compile-time-di-migration` plan. That plan
   - Done when: `ServiceLifecycle` defaults, concrete lifecycle implementations, `LifecycleProvider::{diagnose,fix,setup}`, and doctor/setup lifecycle helpers no longer require `&dyn HasRepoRoot`; deterministic provider order and existing setup/doctor behavior are preserved.
   - Verification notes (commands or checks): Run doctor/setup/lifecycle-relevant CLI tests through Nix; inspect `cli/src/services` for remaining `&dyn HasRepoRoot` in lifecycle dispatch paths and justify any non-lifecycle leftovers if present.
 
-- [ ] T03: `Decouple RunOutcome rendering from production Logger` (status:todo)
+- [x] T03: `Decouple RunOutcome rendering from production Logger` (status:done)
   - Task ID: T03
   - Goal: Remove the production `services::observability::Logger` type coupling from outcome rendering while preserving classified-error logging and stdout/stderr behavior.
   - Boundaries (in/out of scope): In - `cli/src/services/app_support.rs`, `cli/src/app.rs` runtime/outcome construction, and tests that construct or render `RunOutcome`. Out - changing `ClassifiedError`, logger event semantics, command output rendering, or observability configuration resolution.
   - Done when: `RunOutcome` no longer has `logger: Option<services::observability::Logger>` as a concrete field; rendering can operate over a logger trait/associated type/borrrowed logger strategy without changing user-visible output; classified errors and stdout-write failures are still logged once when a logger is available.
   - Verification notes (commands or checks): Run app-level stdout/stderr/error-classification tests through Nix; inspect `app_support.rs` for production-logger hardcoding in `RunOutcome` and for unchanged error logging paths.
+  - Completed: 2026-06-12
+  - Files changed: `cli/src/app.rs`; `cli/src/services/app_support.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` succeeded; `nix build .#checks.x86_64-linux.cli-tests .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt --print-out-paths` succeeded; targeted searches found no `logger: Option<services::observability::Logger>` field and no `as &dyn LoggerTrait` cast in `app_support.rs`.
+  - Notes: A direct `cargo test app_support` attempt was blocked by the repository bash policy that requires using `nix flake check`/flake checks over direct Cargo test commands. This is an important context-sync change because current-state docs describe `RunOutcome`/rendering ownership.
 
 - [ ] T04: `Sync static DI context documentation` (status:todo)
   - Task ID: T04

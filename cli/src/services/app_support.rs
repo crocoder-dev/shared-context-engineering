@@ -9,18 +9,22 @@ use services::observability::traits::Logger as LoggerTrait;
 
 const INVALID_CONFIG_WARNING_EVENT_ID: &str = "sce.config.invalid_config";
 
-pub(crate) struct RunOutcome {
+pub(crate) struct RunOutcome<L>
+where
+    L: LoggerTrait,
+{
     pub(crate) result: Result<String, ClassifiedError>,
-    pub(crate) logger: Option<services::observability::Logger>,
+    pub(crate) logger: Option<L>,
     pub(crate) startup_diagnostic: Option<String>,
 }
 
-pub(crate) fn render_run_outcome<StdoutW, StderrW>(
-    outcome: RunOutcome,
+pub(crate) fn render_run_outcome<L, StdoutW, StderrW>(
+    outcome: RunOutcome<L>,
     stdout: &mut StdoutW,
     stderr: &mut StderrW,
 ) -> ExitCode
 where
+    L: LoggerTrait,
     StdoutW: Write,
     StderrW: Write,
 {
@@ -29,20 +33,14 @@ where
             if let Some(diagnostic) = outcome.startup_diagnostic {
                 write_startup_diagnostic(stderr, &diagnostic);
             }
-            let logger = outcome
-                .logger
-                .as_ref()
-                .map(|logger| logger as &dyn LoggerTrait);
+            let logger = outcome.logger.as_ref();
             write_stdout_payload(stdout, &payload).map_or_else(
                 |error| exit_with_error(stderr, logger, &error),
                 |()| ExitCode::SUCCESS,
             )
         }
         Err(error) => {
-            let logger = outcome
-                .logger
-                .as_ref()
-                .map(|logger| logger as &dyn LoggerTrait);
+            let logger = outcome.logger.as_ref();
             exit_with_error(stderr, logger, &error)
         }
     }
@@ -132,12 +130,9 @@ where
     })
 }
 
-fn exit_with_error<W>(
-    stderr: &mut W,
-    logger: Option<&dyn LoggerTrait>,
-    error: &ClassifiedError,
-) -> ExitCode
+fn exit_with_error<L, W>(stderr: &mut W, logger: Option<&L>, error: &ClassifiedError) -> ExitCode
 where
+    L: LoggerTrait,
     W: Write,
 {
     if let Some(log) = logger {

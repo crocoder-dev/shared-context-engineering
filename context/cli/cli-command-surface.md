@@ -69,7 +69,7 @@ A user-invocable `sync` command is not wired in the current CLI surface; local D
 ## Command loop and error model
 
 - Argument parsing is handled by `clap` derive macros in `cli/src/cli_schema.rs` and dispatched from `cli/src/app.rs`.
-- `cli/src/app.rs` now runs commands through explicit phases with `StartupContext`, `AppRuntime`, and `RunOutcome` carrying startup-derived observability config, logger/telemetry state, registry state, and final render data across the lifecycle.
+- `cli/src/app.rs` now runs commands through explicit phases with `StartupContext`, `AppRuntime`, and generic `RunOutcome<L: LoggerTrait>` carrying startup-derived observability config, logger/telemetry state, registry state, and final render data across the lifecycle without hardcoding render support to the production logger type.
 - `parse_command_phase` delegates clap output conversion to `cli/src/services/parse/command_runtime.rs`, which returns concrete `RuntimeCommand` enum variants; `services::app_support::execute_command_phase` emits lifecycle logs around `RuntimeCommand::execute(...)`, and the enum delegates behavior to service-owned command payload structs.
 - Top-level failures are classified into stable exit-code classes owned by `cli/src/app.rs`: `2` parse, `3` validation, `4` runtime, and `5` dependency.
 - User-facing diagnostics are rendered on `stderr` as `Error [SCE-ERR-<CLASS>]: ...` with class-default `Try:` remediation appended only when missing; when stderr color is enabled the heading, error code, and diagnostic body all render through shared stderr styling helpers.
