@@ -131,7 +131,7 @@ The original contract intentionally excluded shell control operators (`|`, `&&`,
 - If ANY segment matches a blocking policy, the entire command is blocked
 - This applies to both preset policies (e.g., `forbid-git-all`) and custom policies
 
-**Implementation:** `config/lib/bash-policy-plugin/bash-policy/runtime.ts` currently enforces generated OpenCode runtime behavior, and `cli/src/services/bash_policy.rs` contains the Rust evaluator seam for the active Claude/OpenCode Rust-hook migration. Both preserve original single-command behavior for commands without operators.
+**Implementation:** `config/lib/bash-policy-plugin/bash-policy/runtime.ts` currently enforces generated OpenCode runtime behavior, and `cli/src/services/bash_policy.rs` contains the Rust evaluator seam plus the hidden `sce policy bash` command adapter for hook callers. Both preserve original single-command behavior for commands without operators.
 
 **Examples:**
 - `cat abc | git diff` with `forbid-git-all` -> blocked (segment "git diff" matches)

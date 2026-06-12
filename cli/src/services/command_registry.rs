@@ -11,6 +11,7 @@ const DEFAULT_COMMAND_NAMES: &[&str] = &[
     services::doctor::NAME,
     services::help::NAME,
     services::hooks::NAME,
+    services::bash_policy::NAME,
     services::setup::NAME,
     services::version::NAME,
 ];
@@ -28,6 +29,7 @@ pub enum RuntimeCommand {
     Setup(services::setup::command::SetupCommand),
     Doctor(services::doctor::command::DoctorCommand),
     Hooks(services::hooks::command::HooksCommand),
+    Policy(services::bash_policy::command::PolicyCommand),
     Version(services::version::command::VersionCommand),
     Completion(services::completion::command::CompletionCommand),
 }
@@ -42,6 +44,7 @@ impl RuntimeCommand {
             Self::Setup(_) => Cow::Borrowed(services::setup::NAME),
             Self::Doctor(_) => Cow::Borrowed(services::doctor::NAME),
             Self::Hooks(_) => Cow::Borrowed(services::hooks::NAME),
+            Self::Policy(_) => Cow::Borrowed(services::bash_policy::NAME),
             Self::Version(_) => Cow::Borrowed(services::version::NAME),
             Self::Completion(_) => Cow::Borrowed(services::completion::NAME),
         }
@@ -59,6 +62,7 @@ impl RuntimeCommand {
             Self::Setup(command) => command.execute(context),
             Self::Doctor(command) => command.execute(context),
             Self::Hooks(command) => command.execute(context),
+            Self::Policy(command) => command.execute(),
             Self::Version(command) => command.execute(context),
             Self::Completion(command) => Ok(command.execute(context)),
         }
@@ -145,6 +149,14 @@ pub fn default_runtime_command(name: &str) -> Option<RuntimeCommand> {
                 subcommand: services::hooks::HookSubcommand::PreCommit,
             },
         )),
+        services::bash_policy::NAME => Some(RuntimeCommand::Policy(
+            services::bash_policy::command::PolicyCommand {
+                request: services::bash_policy::BashPolicyRequest {
+                    input: services::bash_policy::PolicyInputMode::ClaudePreToolUse,
+                    output: services::bash_policy::PolicyOutputMode::ClaudeHook,
+                },
+            },
+        )),
         services::version::NAME => Some(RuntimeCommand::Version(
             services::version::command::VersionCommand {
                 request: services::version::VersionRequest {
@@ -180,6 +192,7 @@ mod tests {
                 "doctor",
                 "help",
                 "hooks",
+                "policy",
                 "setup",
                 "version"
             ]

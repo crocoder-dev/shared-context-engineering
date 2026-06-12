@@ -235,6 +235,7 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
             },
         )),
         cli_schema::Commands::Hooks { subcommand } => convert_hooks_subcommand(subcommand),
+        cli_schema::Commands::Policy { subcommand } => Ok(convert_policy_subcommand(&subcommand)),
         cli_schema::Commands::Version { format } => Ok(RuntimeCommand::Version(
             services::version::command::VersionCommand {
                 request: services::version::VersionRequest { format },
@@ -247,6 +248,43 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
                 },
             },
         )),
+    }
+}
+
+fn convert_policy_subcommand(subcommand: &cli_schema::PolicySubcommand) -> RuntimeCommand {
+    let request = match subcommand {
+        cli_schema::PolicySubcommand::Bash { input, output } => {
+            services::bash_policy::BashPolicyRequest {
+                input: convert_policy_input_mode(*input),
+                output: convert_policy_output_mode(*output),
+            }
+        }
+    };
+
+    RuntimeCommand::Policy(services::bash_policy::command::PolicyCommand { request })
+}
+
+fn convert_policy_input_mode(
+    input: cli_schema::PolicyInputMode,
+) -> services::bash_policy::PolicyInputMode {
+    match input {
+        cli_schema::PolicyInputMode::ClaudePreToolUse => {
+            services::bash_policy::PolicyInputMode::ClaudePreToolUse
+        }
+        cli_schema::PolicyInputMode::Normalized => {
+            services::bash_policy::PolicyInputMode::Normalized
+        }
+    }
+}
+
+fn convert_policy_output_mode(
+    output: cli_schema::PolicyOutputMode,
+) -> services::bash_policy::PolicyOutputMode {
+    match output {
+        cli_schema::PolicyOutputMode::ClaudeHook => {
+            services::bash_policy::PolicyOutputMode::ClaudeHook
+        }
+        cli_schema::PolicyOutputMode::Json => services::bash_policy::PolicyOutputMode::Json,
     }
 }
 

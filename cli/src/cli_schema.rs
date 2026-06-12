@@ -33,6 +33,10 @@ pub const HOOKS_CLAP_ABOUT: &str = "Run attribution-only git hooks (disabled by 
 pub const HOOKS_TOP_LEVEL_PURPOSE: &str = "Run attribution-only git hooks (disabled by default)";
 pub const HOOKS_SHOW_IN_TOP_LEVEL_HELP: bool = false;
 
+pub const POLICY_CLAP_ABOUT: &str = "Evaluate SCE policy requests for editor hooks";
+pub const POLICY_TOP_LEVEL_PURPOSE: &str = "Evaluate SCE policy requests for editor hooks";
+pub const POLICY_SHOW_IN_TOP_LEVEL_HELP: bool = false;
+
 pub const VERSION_CLAP_ABOUT: &str = "Print deterministic runtime version metadata";
 pub const VERSION_TOP_LEVEL_PURPOSE: &str = "Print deterministic runtime version metadata";
 pub const VERSION_SHOW_IN_TOP_LEVEL_HELP: bool = true;
@@ -66,6 +70,11 @@ pub const TOP_LEVEL_COMMANDS: &[TopLevelCommandMetadata] = &[
         name: crate::services::hooks::NAME,
         purpose: HOOKS_TOP_LEVEL_PURPOSE,
         show_in_top_level_help: HOOKS_SHOW_IN_TOP_LEVEL_HELP,
+    },
+    TopLevelCommandMetadata {
+        name: crate::services::bash_policy::NAME,
+        purpose: POLICY_TOP_LEVEL_PURPOSE,
+        show_in_top_level_help: POLICY_SHOW_IN_TOP_LEVEL_HELP,
     },
     TopLevelCommandMetadata {
         name: crate::services::version::NAME,
@@ -181,6 +190,12 @@ pub enum Commands {
         subcommand: HooksSubcommand,
     },
 
+    #[command(about = POLICY_CLAP_ABOUT, hide = !POLICY_SHOW_IN_TOP_LEVEL_HELP)]
+    Policy {
+        #[command(subcommand)]
+        subcommand: PolicySubcommand,
+    },
+
     #[command(about = VERSION_CLAP_ABOUT, hide = !VERSION_SHOW_IN_TOP_LEVEL_HELP)]
     Version {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
@@ -288,6 +303,32 @@ pub enum HooksSubcommand {
         about = "Ingest editor session model attribution (reads JSON payload from STDIN)"
     )]
     SessionModel,
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum PolicySubcommand {
+    #[command(name = "bash", about = "Evaluate a bash policy request from STDIN")]
+    Bash {
+        #[arg(long, value_enum, default_value_t = PolicyInputMode::ClaudePreToolUse)]
+        input: PolicyInputMode,
+
+        #[arg(long, value_enum, default_value_t = PolicyOutputMode::ClaudeHook)]
+        output: PolicyOutputMode,
+    },
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PolicyInputMode {
+    #[value(name = "claude-pre-tool-use")]
+    ClaudePreToolUse,
+    Normalized,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PolicyOutputMode {
+    #[value(name = "claude-hook")]
+    ClaudeHook,
+    Json,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]

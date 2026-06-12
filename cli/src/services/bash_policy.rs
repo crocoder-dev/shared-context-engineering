@@ -1,8 +1,32 @@
-use std::path::Path;
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use crate::services::config;
 use crate::services::config::policy::{
     runtime_bash_policy_presets, BashPolicyConfig, CustomBashPolicyEntry, RuntimeBashPolicyPreset,
 };
+use crate::services::error::ClassifiedError;
+
+pub mod command {
+    use crate::services::bash_policy;
+    use crate::services::error::ClassifiedError;
+
+    pub struct PolicyCommand {
+        pub request: bash_policy::BashPolicyRequest,
+    }
+
+    impl PolicyCommand {
+        pub fn execute(&self) -> Result<String, ClassifiedError> {
+            bash_policy::run_bash_policy_request(&self.request)
+        }
+    }
+}
+
+pub const NAME: &str = "policy";
 
 const ENV_ASSIGNMENT_PREFIX_CHARS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_";
 const WRAPPER_BINARIES: &[&str] = &["env", "/usr/bin/env", "command", "nohup", "sudo"];
@@ -353,9 +377,226 @@ fn is_shell_operator(token: &str) -> bool {
     SHELL_OPERATORS.contains(&token)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PolicyInputMode {
+    ClaudePreToolUse,
+    Normalized,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PolicyOutputMode {
+    ClaudeHook,
+    Json,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BashPolicyRequest {
+    pub input: PolicyInputMode,
+    pub output: PolicyOutputMode,
+}
+
+#[derive(Debug, Deserialize)]
+struct NormalizedBashPolicyRequest {
+    command: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudePreToolUseEvent {
+    #[serde(default)]
+    tool_name: Option<String>,
+    tool_input: ClaudeBashToolInput,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeBashToolInput {
+    command: String,
+}
+
+#[derive(Serialize)]
+struct JsonPolicyResult<'a> {
+    status: &'static str,
+    decision: &'static str,
+    command: &'a str,
+    normalized_argv: Option<&'a [String]>,
+    reason: Option<&'a str>,
+    policy_id: Option<&'a str>,
+}
+
+pub fn run_bash_policy_request(request: &BashPolicyRequest) -> Result<String, ClassifiedError> {
+    let stdin_payload = read_stdin_payload()?;
+    run_bash_policy_request_from_payload(request, &stdin_payload)
+}
+
+fn run_bash_policy_request_from_payload(
+    request: &BashPolicyRequest,
+    stdin_payload: &str,
+) -> Result<String, ClassifiedError> {
+    let command = parse_command_from_stdin(request.input, stdin_payload)?;
+    let cwd = resolved_policy_project_root()?;
+    let policy_config = config::resolve_bash_policy_runtime_config(&cwd).map_err(|error| {
+        ClassifiedError::runtime(format!(
+            "Failed to resolve bash policy configuration for '{}': {error}",
+            cwd.display()
+        ))
+    })?;
+    let evaluation = evaluate_bash_command_policy(&command, policy_config.as_ref());
+
+    render_policy_result(request.output, &command, &evaluation)
+}
+
+fn read_stdin_payload() -> Result<String, ClassifiedError> {
+    let mut payload = String::new();
+    io::stdin().read_to_string(&mut payload).map_err(|error| {
+        ClassifiedError::validation(format!(
+            "Failed to read bash policy request from STDIN: {error}. Try: pipe a JSON payload to 'sce policy bash'."
+        ))
+    })?;
+    if payload.trim().is_empty() {
+        return Err(ClassifiedError::validation(
+            "Missing bash policy request on STDIN. Try: pipe Claude PreToolUse JSON or normalized {\"command\":...} JSON to 'sce policy bash'.",
+        ));
+    }
+    Ok(payload)
+}
+
+fn parse_command_from_stdin(
+    input: PolicyInputMode,
+    stdin_payload: &str,
+) -> Result<String, ClassifiedError> {
+    match input {
+        PolicyInputMode::ClaudePreToolUse => parse_claude_pre_tool_use_command(stdin_payload),
+        PolicyInputMode::Normalized => parse_normalized_command(stdin_payload),
+    }
+}
+
+fn parse_claude_pre_tool_use_command(stdin_payload: &str) -> Result<String, ClassifiedError> {
+    let event: ClaudePreToolUseEvent = parse_json_payload(stdin_payload, "Claude PreToolUse")?;
+    if let Some(tool_name) = event.tool_name.as_deref() {
+        if tool_name != "Bash" {
+            return Err(ClassifiedError::validation(format!(
+                "Invalid Claude PreToolUse payload: expected tool_name 'Bash' but received '{tool_name}'."
+            )));
+        }
+    }
+    validate_non_empty_command(event.tool_input.command, "Claude PreToolUse")
+}
+
+fn parse_normalized_command(stdin_payload: &str) -> Result<String, ClassifiedError> {
+    let request: NormalizedBashPolicyRequest =
+        parse_json_payload(stdin_payload, "normalized bash policy")?;
+    validate_non_empty_command(request.command, "normalized bash policy")
+}
+
+fn parse_json_payload<T>(stdin_payload: &str, label: &str) -> Result<T, ClassifiedError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    serde_json::from_str(stdin_payload).map_err(|error| {
+        ClassifiedError::validation(format!(
+            "Invalid {label} JSON from STDIN: {error}. Try: pipe a valid JSON object to 'sce policy bash'."
+        ))
+    })
+}
+
+fn validate_non_empty_command(command: String, label: &str) -> Result<String, ClassifiedError> {
+    if command.trim().is_empty() {
+        return Err(ClassifiedError::validation(format!(
+            "Invalid {label} payload: command must be a non-empty string."
+        )));
+    }
+    Ok(command)
+}
+
+fn resolved_policy_project_root() -> Result<PathBuf, ClassifiedError> {
+    let cwd = std::env::current_dir().map_err(|error| {
+        ClassifiedError::runtime(format!(
+            "Failed to determine current directory for bash policy configuration: {error}"
+        ))
+    })?;
+    Ok(resolve_git_root(&cwd).unwrap_or(cwd))
+}
+
+fn resolve_git_root(cwd: &Path) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let root = String::from_utf8(output.stdout).ok()?;
+    let root = root.trim();
+    (!root.is_empty()).then(|| PathBuf::from(root))
+}
+
+fn render_policy_result(
+    output: PolicyOutputMode,
+    command: &str,
+    evaluation: &PolicyEvaluation,
+) -> Result<String, ClassifiedError> {
+    match output {
+        PolicyOutputMode::ClaudeHook => render_claude_hook_result(evaluation),
+        PolicyOutputMode::Json => render_json_result(command, evaluation),
+    }
+}
+
+fn render_claude_hook_result(evaluation: &PolicyEvaluation) -> Result<String, ClassifiedError> {
+    match evaluation {
+        PolicyEvaluation::Allowed { .. } => Ok(String::new()),
+        PolicyEvaluation::Blocked { policy, .. } => serialize_json(&json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": format_policy_block_message(policy)
+            }
+        })),
+    }
+}
+
+fn render_json_result(
+    command: &str,
+    evaluation: &PolicyEvaluation,
+) -> Result<String, ClassifiedError> {
+    match evaluation {
+        PolicyEvaluation::Allowed { normalized_argv } => serialize_json(&JsonPolicyResult {
+            status: "ok",
+            decision: "allow",
+            command,
+            normalized_argv: normalized_argv.as_deref(),
+            reason: None,
+            policy_id: None,
+        }),
+        PolicyEvaluation::Blocked {
+            normalized_argv,
+            policy,
+        } => {
+            let reason = format_policy_block_message(policy);
+            serialize_json(&JsonPolicyResult {
+                status: "ok",
+                decision: "deny",
+                command,
+                normalized_argv: Some(normalized_argv.as_slice()),
+                reason: Some(&reason),
+                policy_id: Some(&policy.id),
+            })
+        }
+    }
+}
+
+fn serialize_json<T: ?Sized + Serialize>(value: &T) -> Result<String, ClassifiedError> {
+    serde_json::to_string(value).map_err(|error| {
+        ClassifiedError::runtime(format!(
+            "Failed to serialize bash policy result JSON: {error}"
+        ))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use serde_json::Value;
 
     fn config(presets: &[&str], custom: Vec<CustomBashPolicyEntry>) -> BashPolicyConfig {
         BashPolicyConfig {
@@ -497,6 +738,325 @@ mod tests {
         assert_eq!(
             format_policy_block_message(&policy),
             "Blocked by SCE bash-tool policy 'test-policy': Test message"
+        );
+    }
+
+    #[test]
+    fn policy_adapter_parses_claude_pre_tool_use_bash_command() {
+        let command = parse_command_from_stdin(
+            PolicyInputMode::ClaudePreToolUse,
+            r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git status"}}"#,
+        )
+        .expect("payload should parse");
+
+        assert_eq!(command, "git status");
+    }
+
+    #[test]
+    fn policy_adapter_rejects_claude_pre_tool_use_non_bash_tool() {
+        let error = parse_command_from_stdin(
+            PolicyInputMode::ClaudePreToolUse,
+            r#"{"tool_name":"Read","tool_input":{"command":"git status"}}"#,
+        )
+        .expect_err("payload should fail");
+
+        assert!(error.message().contains("expected tool_name 'Bash'"));
+    }
+
+    #[test]
+    fn policy_adapter_parses_normalized_policy_request() {
+        let command = parse_command_from_stdin(
+            PolicyInputMode::Normalized,
+            r#"{"command":"nix develop -c git commit"}"#,
+        )
+        .expect("payload should parse");
+
+        assert_eq!(command, "nix develop -c git commit");
+    }
+
+    #[test]
+    fn policy_adapter_renders_claude_deny_json_for_blocked_policy() {
+        let config = config(&["forbid-git-commit"], Vec::new());
+        let evaluation = evaluate_bash_command_policy("git commit -m test", Some(&config));
+        let rendered =
+            render_policy_result(PolicyOutputMode::ClaudeHook, "git commit", &evaluation)
+                .expect("result should render");
+        let value: Value = serde_json::from_str(&rendered).expect("result should be JSON");
+
+        assert_eq!(
+            value["hookSpecificOutput"]["hookEventName"],
+            Value::String("PreToolUse".to_string())
+        );
+        assert_eq!(
+            value["hookSpecificOutput"]["permissionDecision"],
+            Value::String("deny".to_string())
+        );
+        assert!(value["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .expect("reason should be a string")
+            .starts_with("Blocked by SCE bash-tool policy 'forbid-git-commit':"));
+    }
+
+    #[test]
+    fn policy_adapter_renders_empty_claude_output_for_allowed_policy() {
+        let evaluation = evaluate_bash_command_policy("git status", None);
+        let rendered =
+            render_policy_result(PolicyOutputMode::ClaudeHook, "git status", &evaluation)
+                .expect("result should render");
+
+        assert_eq!(rendered, "");
+    }
+
+    #[test]
+    fn policy_adapter_renders_normalized_json_result_for_blocked_policy() {
+        let config = config(&["forbid-git-commit"], Vec::new());
+        let evaluation = evaluate_bash_command_policy("git commit -m test", Some(&config));
+        let rendered =
+            render_policy_result(PolicyOutputMode::Json, "git commit -m test", &evaluation)
+                .expect("result should render");
+        let value: Value = serde_json::from_str(&rendered).expect("result should be JSON");
+
+        assert_eq!(value["status"], Value::String("ok".to_string()));
+        assert_eq!(value["decision"], Value::String("deny".to_string()));
+        assert_eq!(
+            value["policy_id"],
+            Value::String("forbid-git-commit".to_string())
+        );
+    }
+
+    // --- Malformed custom policy tests (TS parity) ---
+
+    #[test]
+    fn bash_policy_ignores_custom_policy_with_empty_id() {
+        let config = config(
+            &[],
+            vec![CustomBashPolicyEntry {
+                id: String::new(),
+                argv_prefix: vec!["rm".to_string()],
+                message: "Empty id".to_string(),
+            }],
+        );
+
+        assert!(matches!(
+            evaluate_bash_command_policy("rm -rf /tmp", Some(&config)),
+            PolicyEvaluation::Allowed { .. }
+        ));
+    }
+
+    #[test]
+    fn bash_policy_ignores_custom_policy_with_empty_message() {
+        let config = config(
+            &[],
+            vec![CustomBashPolicyEntry {
+                id: "missing-message".to_string(),
+                argv_prefix: vec!["rm".to_string()],
+                message: String::new(),
+            }],
+        );
+
+        assert!(matches!(
+            evaluate_bash_command_policy("rm -rf /tmp", Some(&config)),
+            PolicyEvaluation::Allowed { .. }
+        ));
+    }
+
+    #[test]
+    fn bash_policy_ignores_custom_policy_with_empty_argv_prefix() {
+        let config = config(
+            &[],
+            vec![CustomBashPolicyEntry {
+                id: "empty-prefix".to_string(),
+                argv_prefix: vec![],
+                message: "Empty prefix".to_string(),
+            }],
+        );
+
+        assert!(matches!(
+            evaluate_bash_command_policy("rm -rf /tmp", Some(&config)),
+            PolicyEvaluation::Allowed { .. }
+        ));
+    }
+
+    #[test]
+    fn bash_policy_ignores_custom_policy_with_empty_string_in_argv_prefix() {
+        let config = config(
+            &[],
+            vec![CustomBashPolicyEntry {
+                id: "empty-string-prefix".to_string(),
+                argv_prefix: vec!["rm".to_string(), String::new()],
+                message: "Empty string in prefix".to_string(),
+            }],
+        );
+
+        assert!(matches!(
+            evaluate_bash_command_policy("rm -rf /tmp", Some(&config)),
+            PolicyEvaluation::Allowed { .. }
+        ));
+    }
+
+    #[test]
+    fn bash_policy_custom_policy_blocks_matching_command() {
+        let config = config(
+            &[],
+            vec![custom(
+                "custom-block-rm",
+                &["rm"],
+                "rm is blocked by custom policy",
+            )],
+        );
+
+        let evaluation = evaluate_bash_command_policy("rm -rf /tmp", Some(&config));
+        assert!(matches!(
+            evaluation,
+            PolicyEvaluation::Blocked { policy, .. } if policy.id == "custom-block-rm"
+        ));
+    }
+
+    // --- parseCommandSegments edge cases (TS parity) ---
+
+    #[test]
+    fn parse_command_segments_returns_none_for_empty_string() {
+        assert_eq!(parse_command_segments(""), None);
+    }
+
+    #[test]
+    fn parse_command_segments_handles_single_token() {
+        assert_eq!(
+            parse_command_segments("ls"),
+            Some(vec![vec!["ls".to_string()]])
+        );
+    }
+
+    #[test]
+    fn parse_command_segments_handles_only_operators() {
+        assert_eq!(parse_command_segments("| | |"), Some(vec![]));
+    }
+
+    #[test]
+    fn parse_command_segments_handles_trailing_operator() {
+        assert_eq!(
+            parse_command_segments("ls |"),
+            Some(vec![vec!["ls".to_string()]])
+        );
+    }
+
+    #[test]
+    fn parse_command_segments_handles_consecutive_operators() {
+        let result = parse_command_segments("cat abc || || git diff");
+        assert_eq!(
+            result,
+            Some(vec![
+                vec!["cat".to_string(), "abc".to_string()],
+                vec!["git".to_string(), "diff".to_string()],
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_command_segments_preserves_single_quoted_arguments() {
+        assert_eq!(
+            parse_command_segments("echo 'hello world' | wc -l"),
+            Some(vec![
+                vec!["echo".to_string(), "hello world".to_string()],
+                vec!["wc".to_string(), "-l".to_string()],
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_command_segments_preserves_double_quoted_arguments() {
+        assert_eq!(
+            parse_command_segments("echo \"hello world\" | wc -l"),
+            Some(vec![
+                vec!["echo".to_string(), "hello world".to_string()],
+                vec!["wc".to_string(), "-l".to_string()],
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_command_segments_returns_none_for_unclosed_quotes() {
+        assert_eq!(parse_command_segments("echo 'unclosed"), None);
+    }
+
+    #[test]
+    fn parse_command_segments_does_not_split_operators_inside_quotes() {
+        assert_eq!(
+            parse_command_segments("nix develop -c sh -c 'cd cli && cargo fmt --check'"),
+            Some(vec![vec![
+                "nix".to_string(),
+                "develop".to_string(),
+                "-c".to_string(),
+                "sh".to_string(),
+                "-c".to_string(),
+                "cd cli && cargo fmt --check".to_string(),
+            ]])
+        );
+    }
+
+    // --- Shell operator policy tests (TS parity) ---
+
+    #[test]
+    fn bash_policy_blocks_or_or_operator_segment() {
+        let config = config(&["forbid-git-all"], Vec::new());
+
+        assert_eq!(
+            blocked_policy_id("git status || echo fail", &config).as_deref(),
+            Some("forbid-git-all")
+        );
+    }
+
+    #[test]
+    fn bash_policy_blocks_background_operator_segment() {
+        let config = config(&["forbid-git-commit"], Vec::new());
+
+        assert_eq!(
+            blocked_policy_id("npm start & git push", &config).as_deref(),
+            Some("forbid-git-commit")
+        );
+    }
+
+    #[test]
+    fn bash_policy_blocks_sh_c_payload_with_forbid_git_commit() {
+        let config = config(&["forbid-git-commit"], Vec::new());
+
+        let evaluation = evaluate_bash_command_policy("sh -c 'git commit -m test'", Some(&config));
+        assert!(matches!(
+            evaluation,
+            PolicyEvaluation::Blocked { normalized_argv, policy }
+                if normalized_argv == ["git", "commit", "-m", "test"] && policy.id == "forbid-git-commit"
+        ));
+    }
+
+    #[test]
+    fn bash_policy_reports_first_matching_segment_argv() {
+        let config = config(&["forbid-git-all"], Vec::new());
+
+        let evaluation = evaluate_bash_command_policy("git diff | cat file", Some(&config));
+        assert!(matches!(
+            evaluation,
+            PolicyEvaluation::Blocked { normalized_argv, .. }
+                if normalized_argv == ["git", "diff"]
+        ));
+    }
+
+    #[test]
+    fn bash_policy_allows_pipe_with_no_matching_segments() {
+        let config = config(&["forbid-git-all"], Vec::new());
+
+        assert!(matches!(
+            evaluate_bash_command_policy("cat file | ls", Some(&config)),
+            PolicyEvaluation::Allowed { .. }
+        ));
+    }
+
+    #[test]
+    fn bash_policy_blocks_double_and_segment() {
+        let config = config(&["forbid-git-all"], Vec::new());
+
+        assert_eq!(
+            blocked_policy_id("git status && npm install", &config).as_deref(),
+            Some("forbid-git-all")
         );
     }
 }

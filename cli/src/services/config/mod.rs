@@ -14,7 +14,8 @@ use render::{format_show_output, format_validate_output};
 use resolver::resolve_runtime_config;
 
 pub(crate) use resolver::{
-    resolve_auth_runtime_config, resolve_hook_runtime_config, resolve_observability_runtime_config,
+    resolve_auth_runtime_config, resolve_bash_policy_runtime_config, resolve_hook_runtime_config,
+    resolve_observability_runtime_config,
 };
 pub(crate) use schema::validate_config_file;
 
