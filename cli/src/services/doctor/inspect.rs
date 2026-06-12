@@ -836,12 +836,6 @@ fn inspect_opencode_plugin_dependency_health(
     problems: &mut Vec<DoctorProblem>,
 ) {
     inspect_opencode_asset_presence(
-        &install_targets.opencode_runtime_target(),
-        "OpenCode bash-policy runtime",
-        "bash-policy runtime",
-        problems,
-    );
-    inspect_opencode_asset_presence(
         &install_targets.opencode_preset_catalog_target(),
         "OpenCode bash-policy preset catalog",
         "bash-policy preset catalog",

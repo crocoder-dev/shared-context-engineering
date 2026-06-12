@@ -84,7 +84,7 @@
 - Treat `nix run .#pkl-check-generated` and `nix flake check` as the lightweight post-task verification baseline and run both after each completed task.
 - For non-destructive verification during development, run `nix develop -c pkl eval -m context/tmp/t04-generated config/pkl/generate.pkl` and inspect emitted paths under `context/tmp/`.
 - Keep `output.files` limited to generated-owned paths only (`config/{opencode_root}/{agent,command,skills,lib,plugins}`, generated `config/{opencode_root}/package.json`, and `config/{claude_root}/{agents,commands,skills,plugins,settings.json}`, where roots map to `.opencode` and `.claude`).
-- For OpenCode pre-execution tool policy hooks, keep the plugin entrypoint thin (`plugins/*.ts`) and move normalization, config loading, and policy matching logic into `lib/*.ts` so manual and automated profiles regenerate identical enforcement behavior from one canonical TypeScript source.
+- For OpenCode pre-execution bash-policy hooks, keep the generated plugin entrypoint thin (`plugins/sce-bash-policy.ts`) and delegate policy evaluation to the Rust `sce policy bash --input normalized --output json` command so OpenCode and Claude share one evaluator.
 
 ## Internal subagent parity mapping
 

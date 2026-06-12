@@ -351,8 +351,6 @@ pub(crate) mod opencode_asset {
     pub const PLUGINS_DIR: &str = "plugins";
     pub const PLUGIN_FILE: &str = "sce-bash-policy.ts";
     pub const PLUGIN_MANIFEST_ENTRY: &str = "./plugins/sce-bash-policy.ts";
-    pub const RUNTIME_DIR: &str = "plugins/bash-policy";
-    pub const RUNTIME_FILE: &str = "runtime.ts";
     pub const LIB_DIR: &str = "lib";
     pub const PRESET_CATALOG: &str = "bash-policy-presets.json";
     pub const OPENCODE_AGENT_DIR: &str = "agent";
@@ -522,15 +520,6 @@ impl EmbeddedAssetPaths {
             .join(opencode_asset::PLUGIN_FILE)
     }
 
-    pub(crate) fn opencode_runtime_dir(&self) -> PathBuf {
-        self.opencode_assets_dir().join(opencode_asset::RUNTIME_DIR)
-    }
-
-    pub(crate) fn opencode_runtime_file(&self) -> PathBuf {
-        self.opencode_runtime_dir()
-            .join(opencode_asset::RUNTIME_FILE)
-    }
-
     pub(crate) fn opencode_lib_dir(&self) -> PathBuf {
         self.opencode_assets_dir().join(opencode_asset::LIB_DIR)
     }
@@ -593,12 +582,6 @@ impl InstallTargetPaths {
         self.opencode_target_dir()
             .join(opencode_asset::PLUGINS_DIR)
             .join(opencode_asset::PLUGIN_FILE)
-    }
-
-    pub(crate) fn opencode_runtime_target(&self) -> PathBuf {
-        self.opencode_target_dir()
-            .join(opencode_asset::RUNTIME_DIR)
-            .join(opencode_asset::RUNTIME_FILE)
     }
 
     pub(crate) fn opencode_preset_catalog_target(&self) -> PathBuf {

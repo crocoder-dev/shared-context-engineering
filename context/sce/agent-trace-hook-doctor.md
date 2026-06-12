@@ -43,7 +43,7 @@ The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor comm
 - byte-for-byte stale-content detection for required hook payloads against canonical embedded SCE-managed hook assets (delegated to `HooksLifecycle::diagnose`)
 - repo-root installed OpenCode integration inventory for `OpenCode plugins`, `OpenCode agents`, `OpenCode commands`, and `OpenCode skills`
 - integration child-row reporting for those four groups now validates file content against embedded SHA-256; missing files render as `[MISS]`, content mismatches render as `[FAIL]`, and any affected parent group renders as `[FAIL]`
-- repo-root OpenCode plugin inventory includes the installed manifest file plus plugin/runtime/preset artifacts as required presence-only files; generated `config/.opencode/**` trees are not inspected by doctor
+- repo-root OpenCode plugin inventory includes the installed manifest file plus plugin/preset artifacts as required presence-only files; generated `config/.opencode/**` trees are not inspected by doctor
 - repair-mode delegation to `ServiceLifecycle::fix` implementations: `HooksLifecycle::fix` reuses `install_required_git_hooks` for missing hooks directories plus missing, stale, or non-executable required hooks; `LocalDbLifecycle::fix`, `AuthDbLifecycle::fix`, and `AgentTraceDbLifecycle::fix` handle bootstrap of missing canonical SCE-owned DB parent directories
 
 ## Approved human text-mode contract

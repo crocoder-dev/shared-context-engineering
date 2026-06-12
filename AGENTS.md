@@ -59,7 +59,7 @@ Run these through Nix from repo root unless noted otherwise.
 
 ### Bun config/plugin commands
 
-Run these from `config/lib/bash-policy-plugin/` when working on the Bun-owned bash-policy runtime.
+Run these from `config/lib/bash-policy-plugin/` when working on the Bun-owned OpenCode bash-policy plugin wrapper tests.
 
 - Run plugin/runtime test suite: `bun test`
 - Run a single Bun test by name: `bun test -t "<test name>"`

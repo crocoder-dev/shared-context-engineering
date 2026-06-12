@@ -74,20 +74,62 @@ Migrate SCE bash-tool policy enforcement from the OpenCode TypeScript runtime in
   - Evidence: Inspected generated `config/.claude/settings.json` and confirmed existing `SessionStart` / `PostToolUse` Agent Trace hooks plus new `PreToolUse` matcher for `Bash` running `sce policy bash`; Claude smoke fixtures passed for blocked `git commit -m test` deny JSON and allowed `pwd` empty output; `nix run .#pkl-check-generated` passed; `nix flake check` passed.
   - Notes: The generated Claude bash-policy hook uses a single `command` string (`sce policy bash`) instead of `command: "sce"` plus `args`, per human feedback during implementation. No Claude TypeScript policy runtime was added.
 
-- [ ] T05: `Clean up obsolete TypeScript policy ownership and docs` (status:todo)
+- [x] T05: `Clean up obsolete TypeScript policy ownership and docs` (status:done)
   - Task ID: T05
   - Goal: Remove stale source/generated references that claim Claude bash-policy is absent or that TypeScript owns policy enforcement.
   - Boundaries (in/out of scope): In - remove obsolete generated runtime files from generation mappings if replaced by Rust, update context files such as `context/sce/generated-opencode-plugin-registration.md`, `context/sce/bash-tool-policy-enforcement-contract.md`, `context/overview.md`, `context/architecture.md`, and `context/glossary.md` to current-state wording after code changes, and add/update focused context for the new Rust policy command contract if needed. Out - broad unrelated context rewrites or historical plan cleanup.
   - Done when: Durable context accurately states that Rust owns bash-policy evaluation and Claude/OpenCode both call the `sce policy` path; no context file still states Claude bash-policy enforcement is removed/absent as current behavior.
   - Verification notes (commands or checks): Search context/generated sources for `Claude bash-policy enforcement has been removed`, `OpenCode is now the sole target`, and stale TypeScript runtime ownership claims; verify replacements reflect code truth.
+  - Completed: 2026-06-12
+  - Files changed: `AGENTS.md`, `cli/src/services/default_paths.rs`, `cli/src/services/doctor/inspect.rs`, `context/architecture.md`, `context/cli/default-path-catalog.md`, `context/context-map.md`, `context/glossary.md`, `context/overview.md`, `context/patterns.md`, `context/sce/agent-trace-hook-doctor.md`
+  - Evidence: Targeted searches found no current-state matches outside historical plan text for `Claude bash-policy enforcement has been removed`, `OpenCode is now the sole target`, `opencode_runtime`, stale TypeScript policy ownership, stale plugin/runtime OpenCode inventory, or obsolete bash-policy runtime-test wording; remaining `bash-policy/runtime.ts` mentions are current/historical removal notes in context. `nix build .#checks.x86_64-linux.cli-tests .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt` passed; `nix run .#pkl-check-generated` passed.
+  - Notes: Removed the stale doctor/default-path check for the deleted OpenCode `plugins/bash-policy/runtime.ts` asset and updated durable context wording from TypeScript runtime ownership to Rust-owned `sce policy bash` delegation.
 
-- [ ] T06: `Validate migration and cleanup` (status:todo)
+- [x] T06: `Validate migration and cleanup` (status:done)
   - Task ID: T06
   - Goal: Run final repository validation and ensure the migration is coherent across Rust, generated config, OpenCode wrapper, Claude settings, and context.
   - Boundaries (in/out of scope): In - full repo validation, generated parity, targeted Rust/Bun checks if not already run, cleanup of temporary fixtures/artifacts, final review of plan status and context sync. Out - new feature work or additional policy semantics.
   - Done when: `nix run .#pkl-check-generated` and `nix flake check` pass; any narrow checks from earlier tasks pass or have documented reasons; no temporary files remain; the plan records completion evidence.
   - Verification notes (commands or checks): `nix run .#pkl-check-generated`; `nix flake check`; optional final smoke fixtures for Claude deny JSON and OpenCode wrapper delegation.
+  - Completed: 2026-06-12
+  - Files changed: `context/plans/claude-bash-policy-rust-hook.md`
+  - Evidence: `nix run .#pkl-check-generated` passed with generated outputs up to date; `nix flake check` passed all evaluated checks (`cli-tests`, `cli-clippy`, `cli-fmt`, `integrations-install-*`, `pkl-parity`, `npm-*`, and `config-lib-*`). Earlier narrow smoke/targeted checks are recorded on T01-T05; final full flake validation covered the Rust, generated-config, OpenCode wrapper, Claude settings, and context surfaces.
+  - Notes: Worktree was clean before validation and after required checks. `context/tmp/` contains pre-existing ignored Agent Trace/runtime artifacts; no T06-owned temporary tracked or untracked artifacts were introduced during this validation task.
+
+## Validation Report
+
+### Commands run
+
+- `nix run .#pkl-check-generated` -> exit 0; generated outputs are up to date.
+- `nix flake check` -> exit 0; all evaluated checks passed, including `cli-tests`, `cli-clippy`, `cli-fmt`, `integrations-install-tests`, `integrations-install-clippy`, `integrations-install-fmt`, `pkl-parity`, `npm-bun-tests`, `npm-biome-check`, `npm-biome-format`, `config-lib-bun-tests`, `config-lib-biome-check`, and `config-lib-biome-format`.
+
+### Temporary scaffolding/artifacts
+
+- No T06-owned temporary tracked or untracked artifacts were introduced.
+- `context/tmp/` contains pre-existing ignored Agent Trace/runtime artifacts that were not created by this validation task and were left untouched.
+
+### Context sync
+
+- `sce-context-sync` classification: verify-only. T06 only records final validation evidence and does not introduce new behavior, architecture, terminology, or policy changes.
+- Durable context already documents the Rust-owned `sce policy bash` command adapter, OpenCode wrapper delegation, Claude `PreToolUse` hook registration, and context-map discoverability; no context edits were required.
+
+### Success-criteria verification
+
+- [x] Claude generated `.claude/settings.json` includes a `PreToolUse` hook for `Bash` invoking `sce policy bash` -> confirmed during T04 and preserved by final generated-output parity.
+- [x] Claude hook denial JSON uses `hookSpecificOutput.hookEventName = "PreToolUse"`, `permissionDecision = "deny"`, and the canonical SCE denial reason -> confirmed by T02/T04 smoke and targeted test evidence; final flake validation passed.
+- [x] Bash policy evaluation is Rust-owned under `cli/` -> confirmed by current code/context (`cli/src/services/bash_policy.rs`) and T01/T02 evidence; final flake validation passed.
+- [x] OpenCode and Claude delegate to the same Rust policy behavior -> confirmed by T03/T04 evidence and current context; final flake validation passed.
+- [x] Generated outputs come from canonical Pkl/source inputs -> `nix run .#pkl-check-generated` passed with outputs up to date.
+- [x] Obsolete generated Claude bash-policy absence/current TypeScript ownership statements were repaired -> confirmed by T05 search evidence and final context-sync verify-only pass.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- None identified for the completed migration. Full `nix flake check` evaluated the current Linux system and reported omitted incompatible systems (`aarch64-darwin`, `aarch64-linux`, `x86_64-darwin`) per normal Nix output.
 
 ## Open questions
 
-- Exact CLI spelling for the new policy command should be finalized during T02 and then kept stable in generated hooks and context. Recommended default: a hidden/internal `sce policy bash` subcommand with explicit hook/output mode flags.
+- Resolved in T02: the hidden/internal command spelling is `sce policy bash`, with explicit `--input` and `--output` mode flags. Generated Claude settings invoke `sce policy bash` directly; OpenCode wrapper delegation uses `sce policy bash --input normalized --output json`.
