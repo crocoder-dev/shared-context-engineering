@@ -1,6 +1,6 @@
 # CLI Capability Traits
 
-The CLI exposes broad dependency-injection capability traits in `cli/src/services/capabilities.rs` and wires their production implementations through the borrowed `AppContext` view in `cli/src/app.rs`.
+The CLI exposes broad capability traits in `cli/src/services/capabilities.rs` and wires their production implementations through the borrowed, compile-time-typed `AppContext` view in `cli/src/app.rs`.
 
 ## Current contract
 
@@ -10,7 +10,7 @@ The CLI exposes broad dependency-injection capability traits in `cli/src/service
 - `ProcessGitOps` is the production git implementation and shells out to `git`, returning stdout as UTF-8 text with command/directory context on failure.
 - `resolve_repository_root` uses `git rev-parse --show-toplevel`.
 - `resolve_hooks_directory` uses `git rev-parse --git-path hooks` and resolves relative hook paths against the provided repository root.
-- `AppRuntime` owns concrete `StdFsOps` and `ProcessGitOps` production dependencies alongside concrete observability dependencies.
+- `AppRuntime` owns concrete `StdFsOps` and `ProcessGitOps` production dependencies alongside concrete observability dependencies; these dependencies are borrowed by `AppContext` rather than stored behind type-erased runtime containers.
 - `AppContext` is generic over filesystem and git capability implementations and borrows them from the runtime; it is passed through static `RuntimeCommand::execute` (enum defined in `cli/src/services/command_registry.rs`) behind narrow accessor bounds. It exposes `fs()` / `git()` accessors plus `HasLogger`, `HasRepoRoot`, and `ContextWithRepoRoot` capability traits; `ContextWithRepoRoot` derives a repository-scoped context while preserving the borrowed runtime capability objects.
 - Current command execution bounds are capability-oriented: central dispatch requires logger access plus repo-root scoping, context-free commands accept any context, hooks require logger access, and setup/doctor require repo-root scoping.
 - Test-only `UnimplementedFsOps` and `UnimplementedGitOps` stubs are available under `capabilities::test_stubs` for tests that need to satisfy trait bounds before providing focused fakes.

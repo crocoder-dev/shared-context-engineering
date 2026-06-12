@@ -12,7 +12,7 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 - Custom top-level help renderer and known-command classifier: `cli/src/command_surface.rs`
 - Turso adapters: `cli/src/services/auth_db/mod.rs`, `cli/src/services/local_db/mod.rs`, `cli/src/services/agent_trace_db/mod.rs`, and shared infrastructure in `cli/src/services/db/mod.rs`
 - Service domains: `cli/src/services/{agent_trace,agent_trace_db,auth,auth_command,auth_db,completion,config,db,default_paths,hooks,local_db,observability,output_format,resilience,security,setup,style,token_storage,version}` plus the split doctor module at `cli/src/services/doctor/{mod,command,inspect,render,fixes,types}.rs`; service-owned `command.rs` files own command payload structs for help/version/completion/auth/config/setup/doctor/hooks, and `cli/src/services/command_registry.rs` owns the static `RuntimeCommand` enum that dispatches them
-- Service lifecycle: `cli/src/services/lifecycle.rs` defines the `ServiceLifecycle` trait with `diagnose`, `fix`, and `setup` methods; `config`, `hooks`, `local_db`, `auth_db`, and `agent_trace_db` services implement this trait in their respective `lifecycle.rs` files, and `doctor`/`setup` commands aggregate calls across all registered lifecycle providers
+- Service lifecycle: `cli/src/services/lifecycle.rs` defines lifecycle-owned health/setup result types, the `ServiceLifecycle` trait with `diagnose`, `fix`, and `setup` methods for concrete providers, and the static `LifecycleProvider` enum used by `doctor`/`setup` to dispatch across `config`, `local_db`, `auth_db`, `agent_trace_db`, and `hooks` without boxed provider aggregation
 - Shared test temp-path helper: `cli/src/test_support.rs` (`TestTempDir`, test-only module)
 
 ## Onboarding documentation
@@ -114,7 +114,7 @@ A user-invocable `sync` command is not wired in the current CLI surface; local D
 ## ServiceLifecycle trait
 
 - `cli/src/services/lifecycle.rs` defines the `ServiceLifecycle` trait with default no-op `diagnose`, `fix`, and `setup` methods that accept `&dyn HasRepoRoot`.
-- `AppContext` provides the `HasRepoRoot` / `ContextWithRepoRoot` accessors used by service lifecycle operations, while lifecycle providers remain boxed until the static-provider migration task.
+- `AppContext` provides the `HasRepoRoot` / `ContextWithRepoRoot` accessors used by service lifecycle operations, while `LifecycleProvider` provides static enum dispatch over concrete providers without boxed lifecycle-provider aggregation.
 - Services implementing `ServiceLifecycle`:
   - `ConfigLifecycle` in `cli/src/services/config/lifecycle.rs`
   - `HooksLifecycle` in `cli/src/services/hooks/lifecycle.rs`
