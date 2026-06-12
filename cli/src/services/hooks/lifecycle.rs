@@ -32,7 +32,7 @@ impl ServiceLifecycle for HooksLifecycle {
         LifecycleProviderId::Hooks
     }
 
-    fn diagnose<C: HasRepoRoot + ?Sized>(&self, ctx: &C) -> Vec<HealthProblem> {
+    fn diagnose<C: HasRepoRoot>(&self, ctx: &C) -> Vec<HealthProblem> {
         let repository_root = match ctx.repo_root() {
             Some(path) => path.to_path_buf(),
             None => {
@@ -63,11 +63,7 @@ impl ServiceLifecycle for HooksLifecycle {
         })
     }
 
-    fn fix<C: HasRepoRoot + ?Sized>(
-        &self,
-        ctx: &C,
-        problems: &[HealthProblem],
-    ) -> Vec<FixResultRecord> {
+    fn fix<C: HasRepoRoot>(&self, ctx: &C, problems: &[HealthProblem]) -> Vec<FixResultRecord> {
         let should_fix_hooks = problems.iter().any(|problem| {
             problem.category == HealthCategory::HookRollout
                 && problem.fixability == HealthFixability::AutoFixable
@@ -101,7 +97,7 @@ impl ServiceLifecycle for HooksLifecycle {
         }
     }
 
-    fn setup<C: HasRepoRoot + ?Sized>(&self, ctx: &C) -> Result<SetupOutcome> {
+    fn setup<C: HasRepoRoot>(&self, ctx: &C) -> Result<SetupOutcome> {
         let repository_root = ctx
             .repo_root()
             .context("Hooks lifecycle setup requires a resolved repository root")?;

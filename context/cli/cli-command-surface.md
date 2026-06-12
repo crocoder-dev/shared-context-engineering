@@ -113,7 +113,7 @@ A user-invocable `sync` command is not wired in the current CLI surface; local D
 
 ## ServiceLifecycle trait
 
-- `cli/src/services/lifecycle.rs` defines the `ServiceLifecycle` trait with default no-op generic `diagnose`, `fix`, and `setup` methods over `C: HasRepoRoot + ?Sized`.
+- `cli/src/services/lifecycle.rs` defines the `ServiceLifecycle` trait with default no-op generic `diagnose`, `fix`, and `setup` methods over `C: HasRepoRoot`.
 - `AppContext` provides the `HasRepoRoot` / `ContextWithRepoRoot` accessors used by service lifecycle operations, while `LifecycleProvider` provides static enum dispatch over concrete providers without boxed lifecycle-provider aggregation.
 - Services implementing `ServiceLifecycle`:
   - `ConfigLifecycle` in `cli/src/services/config/lifecycle.rs`

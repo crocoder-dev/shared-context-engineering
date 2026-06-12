@@ -5,9 +5,9 @@
 ## Current contract
 
 - `ServiceLifecycle: Send + Sync` exposes three default no-op generic methods against any context implementing the narrow repo-root accessor:
-  - `diagnose<C: HasRepoRoot + ?Sized>(&self, ctx: &C) -> Vec<HealthProblem>`
-  - `fix<C: HasRepoRoot + ?Sized>(&self, ctx: &C, problems: &[HealthProblem]) -> Vec<FixResultRecord>`
-  - `setup<C: HasRepoRoot + ?Sized>(&self, ctx: &C) -> anyhow::Result<SetupOutcome>`
+  - `diagnose<C: HasRepoRoot>(&self, ctx: &C) -> Vec<HealthProblem>`
+  - `fix<C: HasRepoRoot>(&self, ctx: &C, problems: &[HealthProblem]) -> Vec<FixResultRecord>`
+  - `setup<C: HasRepoRoot>(&self, ctx: &C) -> anyhow::Result<SetupOutcome>`
 - `HealthProblem`, `HealthCategory`, `HealthSeverity`, `HealthFixability`, and `HealthProblemKind` are lifecycle-owned types that mirror the current doctor taxonomy without making the trait depend on `doctor` module types.
 - `FixResultRecord` and `FixOutcome` are lifecycle-owned fix result types.
 - `SetupOutcome` is a minimal lifecycle-owned carrier for current setup result shapes:
