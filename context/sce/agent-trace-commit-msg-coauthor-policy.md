@@ -13,9 +13,11 @@
 - Runtime gating conditions:
   - `attribution_hooks_enabled = true`
   - `sce_disabled = false`
+  - `ai_contribution_present = true` at the pure policy seam
 - Runtime gate source mapping:
   - `attribution_hooks_enabled` resolves from opt-out env `SCE_ATTRIBUTION_HOOKS_DISABLED` over config key `policies.attribution_hooks.enabled`, default `true`; the env value is inverted on read, so truthy disables attribution.
   - `sce_disabled` resolves from `SCE_DISABLED` truthy evaluation.
+- `run_commit_msg_subcommand_in_repo` currently passes placeholder `ai_contribution_present = true`, so live commit-msg runtime behavior remains governed by the existing runtime controls until staged-overlap wiring lands.
 - When all gate conditions pass, output commit message MUST contain exactly one canonical SCE trailer.
 - When any gate condition fails, commit message is returned unchanged.
 
@@ -26,7 +28,7 @@
 - Existing trailing newline is preserved when present.
 - Commit-msg runtime writes the file only when policy gates pass and transformed content differs from original content.
 - Human author/committer identity is not rewritten; only commit message trailer content is affected.
-- The current positive path is gate-driven only: when attribution hooks are enabled, `commit-msg` appends the canonical trailer without depending on checkpoint files or other helper state.
+- The current live runtime positive path is gate-driven only: when attribution hooks are enabled, `commit-msg` appends the canonical trailer without depending on checkpoint files or other helper state. The pure transformer seam already accepts the AI-contribution boolean for the later live evidence gate.
 
 ## Staged AI-overlap helper seam
 

@@ -115,7 +115,7 @@ None. All previously-open questions (query scope, fail posture, empty-DB first-c
   - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'`; targeted `nix develop -c sh -c 'cd cli && cargo test services::agent_trace'` was blocked by repo bash policy in favor of `nix flake check`; `nix flake check` passed.
   - Notes: Added fixture-backed unit coverage for `agent_trace::patches_have_overlap` covering matching touched lines, unrelated touched lines, empty/untouched patches, and a Claude `PostToolUse` structured-patch derivation using existing checked-in fixtures. Tests do not touch live Git or AgentTraceDb.
 
-- [ ] T05: `Extend commit-msg policy seam with an AI-contribution presence input` (status:todo)
+- [x] T05: `Extend commit-msg policy seam with an AI-contribution presence input` (status:done)
   - Task ID: T05
   - Goal: Refactor `apply_commit_msg_coauthor_policy` (and its supporting types) so the transformer accepts a single boolean `ai_contribution_present` signal alongside the existing `HookRuntimeState`, without yet wiring the live DB read. The gate becomes `!sce_disabled && attribution_hooks_enabled && ai_contribution_present`. The seam is intentionally a bare `bool` (not a richer status enum) so error-handling decisions are pushed to the caller per Decisions.
   - Boundaries (in/out of scope):
@@ -123,6 +123,10 @@ None. All previously-open questions (query scope, fail posture, empty-DB first-c
     - Out: querying the DB, reading staged files, changing config schema, changing observability surface, introducing any status enum or `Option<bool>` at the seam.
   - Done when: transformer takes the new `bool` input, all four truth-table cases are unit-tested in `cli/src/services/hooks/mod.rs`, existing trailer dedupe/idempotency tests (or newly added equivalents covering the existing behavior) still pass.
   - Verification notes (commands or checks): `cargo test -p sce-cli services::hooks`; `cargo clippy -p sce-cli`; grep that `apply_commit_msg_coauthor_policy` callers in `cli/` are updated.
+  - Completed: 2026-06-16
+  - Files changed: `cli/src/services/hooks/mod.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'`; targeted `nix develop -c sh -c 'cd cli && cargo test services::hooks'` was blocked by repo bash policy in favor of `nix flake check`; `nix flake check` passed after the implementation and again after user-requested test removal; `fff_grep` confirmed all `apply_commit_msg_coauthor_policy` callers under `cli/` pass the new boolean input.
+  - Notes: `apply_commit_msg_coauthor_policy` now accepts `ai_contribution_present: bool` and suppresses the trailer unless the existing runtime gate and AI-contribution signal both pass. `run_commit_msg_subcommand_in_repo` passes placeholder `true` so runtime behavior remains unchanged until T06. User feedback explicitly requested dropping the generated unit tests and helper, so no new tests remain from this task.
 
 - [ ] T06: `Wire staged-diff AI-overlap preflight into commit-msg runtime` (status:todo)
   - Task ID: T06
