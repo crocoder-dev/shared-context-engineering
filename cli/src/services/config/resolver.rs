@@ -16,7 +16,7 @@ use super::types::{
     parse_bool_value_from, ConfigPathSource, ConfigRequest, DatabaseRetryConfig, LoadedConfigPath,
     LogFileMode, LogFormat, LogLevel, ReportFormat, ResolvedAuthRuntimeConfig,
     ResolvedHookRuntimeConfig, ResolvedObservabilityRuntimeConfig, ResolvedOptionalValue,
-    ResolvedValue, ValueSource, ENV_ATTRIBUTION_HOOKS_ENABLED, ENV_LOG_FILE, ENV_LOG_FILE_MODE,
+    ResolvedValue, ValueSource, ENV_ATTRIBUTION_HOOKS_DISABLED, ENV_LOG_FILE, ENV_LOG_FILE_MODE,
     ENV_LOG_FORMAT, ENV_LOG_LEVEL,
 };
 
@@ -426,7 +426,7 @@ where
     }
 
     let mut resolved_attribution_hooks_enabled = ResolvedValue {
-        value: false,
+        value: true,
         source: ValueSource::Default,
     };
     if let Some(value) = file_config.attribution_hooks_enabled {
@@ -435,17 +435,16 @@ where
             source: ValueSource::ConfigFile(value.source),
         };
     }
-    if let Some(raw) = env_lookup(ENV_ATTRIBUTION_HOOKS_ENABLED) {
+    if let Some(raw) = env_lookup(ENV_ATTRIBUTION_HOOKS_DISABLED) {
         resolved_attribution_hooks_enabled = ResolvedValue {
-            value: parse_bool_value_from(
-                ENV_ATTRIBUTION_HOOKS_ENABLED,
+            value: !parse_bool_value_from(
+                ENV_ATTRIBUTION_HOOKS_DISABLED,
                 &raw,
-                ENV_ATTRIBUTION_HOOKS_ENABLED,
+                ENV_ATTRIBUTION_HOOKS_DISABLED,
             )?,
             source: ValueSource::Env,
         };
     }
-
     let resolved_workos_client_id = resolve_optional_auth_config_value(
         WORKOS_CLIENT_ID_KEY,
         file_config.workos_client_id,
@@ -620,5 +619,114 @@ pub(crate) fn init_database_retry_config_from_environment(cwd: &Path) {
         if let Some(config) = runtime.database_retry.value {
             let _ = init_database_retry_config(config);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::*;
+
+    fn path_exists(path: &Path) -> bool {
+        path == Path::new("/tmp/sce-config.json")
+    }
+
+    fn missing_path(_: &Path) -> bool {
+        false
+    }
+
+    fn empty_request() -> ConfigRequest {
+        ConfigRequest {
+            report_format: ReportFormat::Text,
+            config_path: None,
+            log_level: None,
+            timeout_ms: None,
+        }
+    }
+
+    fn explicit_config_request() -> ConfigRequest {
+        ConfigRequest {
+            config_path: Some(PathBuf::from("/tmp/sce-config.json")),
+            ..empty_request()
+        }
+    }
+
+    fn resolve_hooks_with_env_and_config(
+        env: Option<(&'static str, &'static str)>,
+        config: Option<&'static str>,
+    ) -> Result<ResolvedHookRuntimeConfig> {
+        let request = if config.is_some() {
+            explicit_config_request()
+        } else {
+            empty_request()
+        };
+        let path_exists_fn = if config.is_some() {
+            path_exists
+        } else {
+            missing_path
+        };
+
+        let runtime = resolve_runtime_config_with(
+            &request,
+            Path::new("/tmp/repo"),
+            |key| env.and_then(|(env_key, value)| (key == env_key).then_some(value.to_string())),
+            |_| Ok(config.unwrap_or("{}").to_string()),
+            path_exists_fn,
+            || Ok(PathBuf::from("/tmp/missing-global-sce-config.json")),
+        )?;
+
+        Ok(ResolvedHookRuntimeConfig {
+            attribution_hooks_enabled: runtime.attribution_hooks_enabled.value,
+        })
+    }
+
+    #[test]
+    fn attribution_hooks_are_enabled_by_default() {
+        let resolved = resolve_hooks_with_env_and_config(None, None).unwrap();
+
+        assert!(resolved.attribution_hooks_enabled);
+    }
+
+    #[test]
+    fn attribution_hooks_disabled_env_truthy_opts_out() {
+        let resolved =
+            resolve_hooks_with_env_and_config(Some((ENV_ATTRIBUTION_HOOKS_DISABLED, "1")), None)
+                .unwrap();
+
+        assert!(!resolved.attribution_hooks_enabled);
+    }
+
+    #[test]
+    fn explicit_config_false_opts_out() {
+        let resolved = resolve_hooks_with_env_and_config(
+            None,
+            Some(r#"{"policies":{"attribution_hooks":{"enabled":false}}}"#),
+        )
+        .unwrap();
+
+        assert!(!resolved.attribution_hooks_enabled);
+    }
+
+    #[test]
+    fn disabled_env_false_overrides_config_false() {
+        let resolved = resolve_hooks_with_env_and_config(
+            Some((ENV_ATTRIBUTION_HOOKS_DISABLED, "0")),
+            Some(r#"{"policies":{"attribution_hooks":{"enabled":false}}}"#),
+        )
+        .unwrap();
+
+        assert!(resolved.attribution_hooks_enabled);
+    }
+
+    #[test]
+    fn explicit_config_false_preserves_legacy_default_off_opt_out() {
+        let resolved = resolve_hooks_with_env_and_config(
+            None,
+            Some(r#"{"policies":{"attribution_hooks":{"enabled":false}}}"#),
+        )
+        .unwrap();
+
+        assert!(!resolved.attribution_hooks_enabled);
     }
 }

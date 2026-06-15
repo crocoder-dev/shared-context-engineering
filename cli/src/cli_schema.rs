@@ -29,8 +29,10 @@ pub const DOCTOR_TOP_LEVEL_PURPOSE: &str =
     "Inspect SCE operator health and explicit repair readiness";
 pub const DOCTOR_SHOW_IN_TOP_LEVEL_HELP: bool = true;
 
-pub const HOOKS_CLAP_ABOUT: &str = "Run attribution-only git hooks (disabled by default)";
-pub const HOOKS_TOP_LEVEL_PURPOSE: &str = "Run attribution-only git hooks (disabled by default)";
+pub const HOOKS_CLAP_ABOUT: &str =
+    "Run attribution-only git hooks (enabled by default; opt out with SCE_ATTRIBUTION_HOOKS_DISABLED, SCE_DISABLED, or policies.attribution_hooks.enabled=false)";
+pub const HOOKS_TOP_LEVEL_PURPOSE: &str =
+    "Run attribution-only git hooks (enabled by default; opt out with SCE_ATTRIBUTION_HOOKS_DISABLED, SCE_DISABLED, or policies.attribution_hooks.enabled=false)";
 pub const HOOKS_SHOW_IN_TOP_LEVEL_HELP: bool = false;
 
 pub const POLICY_CLAP_ABOUT: &str = "Evaluate SCE policy requests for editor hooks";

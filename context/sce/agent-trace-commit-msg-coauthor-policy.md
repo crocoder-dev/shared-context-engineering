@@ -14,7 +14,7 @@
   - `attribution_hooks_enabled = true`
   - `sce_disabled = false`
 - Runtime gate source mapping:
-  - `attribution_hooks_enabled` resolves from env `SCE_ATTRIBUTION_HOOKS_ENABLED` over config key `policies.attribution_hooks.enabled`, default `false`.
+  - `attribution_hooks_enabled` resolves from opt-out env `SCE_ATTRIBUTION_HOOKS_DISABLED` over config key `policies.attribution_hooks.enabled`, default `true`; the env value is inverted on read, so truthy disables attribution.
   - `sce_disabled` resolves from `SCE_DISABLED` truthy evaluation.
 - When all gate conditions pass, output commit message MUST contain exactly one canonical SCE trailer.
 - When any gate condition fails, commit message is returned unchanged.

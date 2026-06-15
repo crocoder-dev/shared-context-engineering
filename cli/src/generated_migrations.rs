@@ -26,4 +26,3 @@ pub static AUTH_MIGRATIONS: &[(&str, &str)] = &[
     ("001_create_auth_tokens", include_str!("../migrations/auth/001_create_auth_tokens.sql")),
     ("002_create_auth_credentials_updated_at_trigger", include_str!("../migrations/auth/002_create_auth_credentials_updated_at_trigger.sql")),
 ];
-
