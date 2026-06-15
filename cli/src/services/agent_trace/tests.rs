@@ -1,10 +1,11 @@
 use super::{
-    build_agent_trace, validate_agent_trace_value, AgentTraceMetadataInput, AgentTraceVcsType,
-    LineRange, AGENT_TRACE_VERSION,
+    build_agent_trace, patches_have_overlap, validate_agent_trace_value, AgentTraceMetadataInput,
+    AgentTraceVcsType, LineRange, AGENT_TRACE_VERSION,
 };
 use crate::services::{
     agent_trace::agent_trace_conversation_url,
     patch::{combine_patches, parse_patch, ParsedPatch},
+    structured_patch::{derive_claude_structured_patch, ClaudeStructuredPatchDerivationResult},
 };
 use serde_json::{json, Value};
 
@@ -23,6 +24,10 @@ fn parse_fixtures(fixtures: &[&str]) -> Vec<ParsedPatch> {
         .iter()
         .map(|fixture| parse_patch(fixture, None).expect("fixture patch should parse"))
         .collect()
+}
+
+fn parse_fixture(fixture: &str) -> ParsedPatch {
+    parse_patch(fixture, None).expect("fixture patch should parse")
 }
 
 const TEXT_FILE_LIFECYCLE_RECONSTRUCTION_INCREMENTALS: &[&str] = &[
@@ -107,6 +112,66 @@ fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
     );
     assert_eq!(actual_json["vcs"], golden["vcs"]);
     assert_eq!(actual_json["files"], expected_files);
+}
+
+#[test]
+fn patch_overlap_predicate_detects_matching_touched_lines() {
+    let candidate_patch = parse_fixture(include_str!(
+        "fixtures/hello_world_reconstruction/incremental_01.patch"
+    ));
+    let target_patch = parse_fixture(include_str!(
+        "fixtures/hello_world_reconstruction/post_commit.patch"
+    ));
+
+    assert!(patches_have_overlap(&candidate_patch, &target_patch));
+}
+
+#[test]
+fn patch_overlap_predicate_rejects_unrelated_touched_lines() {
+    let candidate_patch = parse_fixture(include_str!(
+        "fixtures/hello_world_reconstruction/incremental_01.patch"
+    ));
+    let target_patch = parse_fixture(include_str!(
+        "fixtures/poem_write_reconstruction/post_commit.patch"
+    ));
+
+    assert!(!patches_have_overlap(&candidate_patch, &target_patch));
+}
+
+#[test]
+fn patch_overlap_predicate_rejects_empty_or_untouched_patches() {
+    let candidate_patch = parse_fixture(include_str!(
+        "fixtures/hello_world_reconstruction/incremental_01.patch"
+    ));
+    let untouched_patch = parse_fixture(include_str!(
+        "../structured_patch/fixtures/write_create_empty/expected.patch"
+    ));
+    let empty_patch = parse_fixture("");
+
+    assert!(!patches_have_overlap(&candidate_patch, &untouched_patch));
+    assert!(!patches_have_overlap(&untouched_patch, &candidate_patch));
+    assert!(!patches_have_overlap(&empty_patch, &candidate_patch));
+    assert!(!patches_have_overlap(&candidate_patch, &empty_patch));
+}
+
+#[test]
+fn patch_overlap_predicate_accepts_claude_structured_patch_derivation() {
+    let payload: Value = serde_json::from_str(include_str!(
+        "../structured_patch/fixtures/edit_single_hunk/claude-post-tool-use.json"
+    ))
+    .expect("Claude structured fixture should parse");
+    let expected_patch = parse_fixture(include_str!(
+        "../structured_patch/fixtures/edit_single_hunk/expected.patch"
+    ));
+    let derived_patch = match derive_claude_structured_patch("PostToolUse", &payload, 1, None) {
+        ClaudeStructuredPatchDerivationResult::Derived(derived) => derived.patch,
+        ClaudeStructuredPatchDerivationResult::Skipped(reason) => {
+            panic!("Claude structured fixture should derive a patch, got {reason}")
+        }
+    };
+
+    assert_eq!(derived_patch, expected_patch);
+    assert!(patches_have_overlap(&derived_patch, &expected_patch));
 }
 
 #[test]

@@ -30,7 +30,7 @@
 
 ## Staged AI-overlap helper seam
 
-- `cli/src/services/agent_trace.rs` owns the pure patch-overlap helper (`patches_have_overlap`) for Agent Trace evidence checks; this is the seam intended for future golden fixture coverage.
+- `cli/src/services/agent_trace.rs` owns the pure patch-overlap helper (`patches_have_overlap`) for Agent Trace evidence checks; fixture-backed unit coverage in `cli/src/services/agent_trace/tests.rs` covers overlap, no-overlap, empty/untouched patches, and Claude structured-patch-derived input.
 - `cli/src/services/hooks/mod.rs` includes a hooks-owned, bool-shaped staged-diff overlap helper for a later commit-msg gate wiring task and delegates pure overlap classification to `agent_trace.rs`.
 - The helper is intentionally not invoked by `run_commit_msg_subcommand_in_repo` yet, so runtime commit-msg behavior is unchanged until the wiring task lands.
 - Live helper path:

@@ -102,7 +102,7 @@ None. All previously-open questions (query scope, fail posture, empty-DB first-c
   - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'`; targeted `nix develop -c sh -c 'cd cli && cargo test services::hooks'` was blocked by repo bash policy in favor of `nix flake check`; `nix flake check` passed before and after follow-up test removal and after moving pure overlap logic into `agent_trace.rs`; `fff_grep` found no new `SELECT EXISTS` query; migration files remain clean.
   - Notes: Added a hooks-owned staged-diff overlap preflight helper with injectable staged-patch/time/recent-trace dependencies. The live helper uses the no-migration Agent Trace DB hook path, the same seven-day recent diff-trace window as post-commit, `git diff --cached --patch --no-ext-diff`, and existing patch combine/intersection primitives. All read/parse/time/query/open/schema no-evidence paths collapse to `false`; helper is intentionally not wired into commit-msg until T05. Follow-up feedback removed the generated unit tests and their test-only helper function, then moved the pure overlap predicate to `agent_trace::patches_have_overlap` so it is ready for future golden fixture tests.
 
-- [ ] T04: `Add golden tests for AI-overlap evidence predicate` (status:todo)
+- [x] T04: `Add golden tests for AI-overlap evidence predicate` (status:done)
   - Task ID: T04
   - Goal: Add fixture-backed golden coverage for `agent_trace::patches_have_overlap` so the commit-msg AI-trace evidence gate is protected by deterministic examples before runtime wiring depends on it.
   - Boundaries (in/out of scope):
@@ -110,6 +110,10 @@ None. All previously-open questions (query scope, fail posture, empty-DB first-c
     - Out: changing `patches_have_overlap` behavior except to fix a test-proven defect, wiring the helper into `commit-msg`, changing AgentTraceDb queries, changing generated config/Pkl, or broad refactors of patch parsing/intersection.
   - Done when: golden tests fail on fixture drift, prove the intended boolean overlap semantics, run without live Git or live AgentTraceDb access, and reuse existing parser/fixture helpers where practical without duplicating large test harnesses.
   - Verification notes (commands or checks): targeted Rust tests for the agent-trace/patch overlap module (for example `nix develop -c sh -c 'cd cli && cargo test services::agent_trace'` if permitted by policy); `nix flake check` as the repo-level validation fallback.
+  - Completed: 2026-06-15
+  - Files changed: `cli/src/services/agent_trace/tests.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'`; targeted `nix develop -c sh -c 'cd cli && cargo test services::agent_trace'` was blocked by repo bash policy in favor of `nix flake check`; `nix flake check` passed.
+  - Notes: Added fixture-backed unit coverage for `agent_trace::patches_have_overlap` covering matching touched lines, unrelated touched lines, empty/untouched patches, and a Claude `PostToolUse` structured-patch derivation using existing checked-in fixtures. Tests do not touch live Git or AgentTraceDb.
 
 - [ ] T05: `Extend commit-msg policy seam with an AI-contribution presence input` (status:todo)
   - Task ID: T05
