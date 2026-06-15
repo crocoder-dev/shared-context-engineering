@@ -346,6 +346,23 @@ pub fn classify_hunk(
     }
 }
 
+#[allow(dead_code)]
+pub(crate) fn patches_have_overlap(
+    candidate_patch: &ParsedPatch,
+    target_patch: &ParsedPatch,
+) -> bool {
+    let intersection_patch = intersect_patches(candidate_patch, target_patch);
+
+    patch_has_touched_lines(&intersection_patch)
+}
+
+pub(crate) fn patch_has_touched_lines(patch: &ParsedPatch) -> bool {
+    patch
+        .files
+        .iter()
+        .any(|file| file.hunks.iter().any(|hunk| !hunk.lines.is_empty()))
+}
+
 /// Check whether two hunks have identical touched lines in the same order.
 fn hunks_match_exactly(left: &PatchHunk, right: &PatchHunk) -> bool {
     if left.lines.len() != right.lines.len() {

@@ -35,6 +35,7 @@
   - Reads the message file as UTF-8.
   - Applies exactly one canonical trailer: `Co-authored-by: SCE <sce@crocoder.dev>`.
   - Writes back only when the attribution gate is enabled, `SCE_DISABLED` is false, and the transformed content differs.
+  - A staged-diff AI-overlap helper seam exists in `hooks/mod.rs` for the planned commit-msg evidence gate, but it is not invoked by the current runtime yet.
 - `pre-commit` is a deterministic no-op entrypoint.
 - **`post-commit` is an active intersection entrypoint** (see [agent-trace-db.md](agent-trace-db.md)):
   - Agent Trace DB access uses `AgentTraceDb::open_for_hooks_without_migrations()` followed by `ensure_schema_ready_for_hooks()` before both recent-patch reads/intersection writes and built Agent Trace persistence.
