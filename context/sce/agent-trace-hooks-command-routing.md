@@ -34,8 +34,10 @@
 - `commit-msg` is the only active attribution path.
   - Reads the message file as UTF-8.
   - Applies exactly one canonical trailer: `Co-authored-by: SCE <sce@crocoder.dev>`.
-  - Writes back only when the attribution gate is enabled, `SCE_DISABLED` is false, and the transformed content differs.
-  - A staged-diff AI-overlap helper seam exists in `hooks/mod.rs` for the planned commit-msg evidence gate, but it is not invoked by the current runtime yet.
+  - Writes back only when the attribution gate is enabled, `SCE_DISABLED` is false, the staged-diff AI-overlap preflight confirms AI/editor evidence (`StagedDiffAiOverlapResult::Overlap`), and the transformed content differs.
+  - The staged-diff AI-overlap preflight is wired into `run_commit_msg_subcommand_in_repo`: it opens Agent Trace DB through the no-migration hook path, captures the staged diff via `git diff --cached`, queries recent diff traces from the past 7 days, and checks overlap through `agent_trace::patches_have_overlap` with short-circuit on first positive match.
+  - When the preflight returns `NoOverlap` or `Error` (including DB open failure, schema not ready, query error, staged diff read failure, or zero overlap), the trailer is not appended; `Error` results are logged via `sce.hooks.commit_msg.ai_overlap_error`.
+  - The preflight is invoked only when the attribution gate passes; when the gate does not pass, no DB read or staged-diff capture occurs.
 - `pre-commit` is a deterministic no-op entrypoint.
 - **`post-commit` is an active intersection entrypoint** (see [agent-trace-db.md](agent-trace-db.md)):
   - Agent Trace DB access uses `AgentTraceDb::open_for_hooks_without_migrations()` followed by `ensure_schema_ready_for_hooks()` before both recent-patch reads/intersection writes and built Agent Trace persistence.

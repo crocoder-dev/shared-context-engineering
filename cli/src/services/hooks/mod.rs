@@ -194,7 +194,7 @@ fn run_hooks_subcommand_in_repo(
     match subcommand {
         HookSubcommand::PreCommit => run_pre_commit_subcommand_with_trace(repository_root),
         HookSubcommand::CommitMsg { message_file } => {
-            run_commit_msg_subcommand_with_trace(repository_root, subcommand, message_file)
+            run_commit_msg_subcommand_with_trace(repository_root, subcommand, message_file, logger)
         }
         HookSubcommand::PostCommit {
             vcs_type,
@@ -1527,6 +1527,7 @@ fn run_pre_commit_subcommand(repository_root: &Path) -> Result<String> {
 fn run_commit_msg_subcommand_in_repo(
     repository_root: &Path,
     message_file: &Path,
+    logger: Option<&dyn Logger>,
 ) -> Result<String> {
     let metadata = fs::metadata(message_file).with_context(|| {
         format!(
@@ -1551,7 +1552,16 @@ fn run_commit_msg_subcommand_in_repo(
     })?;
 
     let gate_passed = commit_msg_policy_gate_passed(&runtime);
-    let transformed = apply_commit_msg_coauthor_policy(&runtime, true, &original);
+    let ai_contribution_present = if gate_passed {
+        match staged_diff_has_ai_overlap(repository_root, logger) {
+            StagedDiffAiOverlapResult::Overlap => true,
+            StagedDiffAiOverlapResult::NoOverlap | StagedDiffAiOverlapResult::Error => false,
+        }
+    } else {
+        false
+    };
+    let transformed =
+        apply_commit_msg_coauthor_policy(&runtime, ai_contribution_present, &original);
     let trailer_applied = gate_passed && transformed != original;
 
     if trailer_applied {
@@ -1575,8 +1585,9 @@ fn run_commit_msg_subcommand_with_trace(
     repository_root: &Path,
     _: &HookSubcommand,
     message_file: &Path,
+    logger: Option<&dyn Logger>,
 ) -> Result<String> {
-    run_commit_msg_subcommand_in_repo(repository_root, message_file)
+    run_commit_msg_subcommand_in_repo(repository_root, message_file, logger)
 }
 
 fn run_post_commit_subcommand(
@@ -1736,58 +1747,107 @@ fn run_post_commit_intersection_flow(
     )
 }
 
-#[allow(dead_code)]
-fn staged_diff_has_ai_overlap(repository_root: &Path) -> bool {
-    let Ok(db) = open_agent_trace_db_for_hook_runtime(
+/// Result of the staged-diff AI-overlap evidence check.
+///
+/// Used by the commit-msg hook to decide whether to append the canonical
+/// co-author trailer. Errors are collapsed to `NoEvidence` at the policy
+/// level (trailer is never appended on error), but the `Error` variant
+/// allows the caller to log a diagnostic event distinguishing error
+/// paths from honest no-overlap.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StagedDiffAiOverlapResult {
+    /// Staged diff overlaps with at least one recent AI/editor diff trace.
+    Overlap,
+    /// No overlap found; staged diff and recent traces were both available
+    /// but share no touched lines.
+    NoOverlap,
+    /// An error occurred (DB open failure, schema not ready, query error,
+    /// staged diff read failure, etc.). The trailer must not be appended.
+    Error,
+}
+
+fn staged_diff_has_ai_overlap(
+    repository_root: &Path,
+    logger: Option<&dyn Logger>,
+) -> StagedDiffAiOverlapResult {
+    let db_open_result = open_agent_trace_db_for_hook_runtime(
         "Failed to open Agent Trace DB for staged AI-overlap evidence check.",
-    ) else {
-        return false;
+    );
+
+    let db = match db_open_result {
+        Ok(db) => db,
+        Err(error) => {
+            if let Some(log) = logger {
+                log.error(
+                    "sce.hooks.commit_msg.ai_overlap_error",
+                    &format!("Staged AI-overlap evidence check failed: {error}."),
+                    &[],
+                );
+            }
+            return StagedDiffAiOverlapResult::Error;
+        }
     };
 
-    staged_diff_has_ai_overlap_with(
+    let result = staged_diff_has_ai_overlap_with(
         repository_root,
         capture_staged_patch_from_git,
         current_unix_time_ms,
         |cutoff_ms, end_ms| db.recent_diff_trace_patches(cutoff_ms, end_ms),
-    )
+    );
+
+    if result == StagedDiffAiOverlapResult::Error {
+        if let Some(log) = logger {
+            log.error(
+                "sce.hooks.commit_msg.ai_overlap_error",
+                "Staged AI-overlap evidence check failed: error during staged-diff or trace query.",
+                &[],
+            );
+        }
+    }
+
+    result
 }
 
-#[allow(dead_code)]
 fn staged_diff_has_ai_overlap_with<C, N, Q>(
     repository_root: &Path,
     capture_staged_patch: C,
     now_ms: N,
     query_recent_patches: Q,
-) -> bool
+) -> StagedDiffAiOverlapResult
 where
     C: FnOnce(&Path) -> Result<ParsedPatch>,
     N: FnOnce() -> Result<i64>,
     Q: FnOnce(i64, i64) -> Result<RecentDiffTracePatches>,
 {
     let Ok(staged_patch) = capture_staged_patch(repository_root) else {
-        return false;
+        return StagedDiffAiOverlapResult::Error;
     };
 
     if !patch_has_touched_lines(&staged_patch) {
-        return false;
+        return StagedDiffAiOverlapResult::NoOverlap;
     }
 
     let Ok(now_ms) = now_ms() else {
-        return false;
+        return StagedDiffAiOverlapResult::Error;
     };
     let cutoff_ms = now_ms - RECENT_DAYS_MILLIS;
 
     let Ok(recent_patches) = query_recent_patches(cutoff_ms, now_ms) else {
-        return false;
+        return StagedDiffAiOverlapResult::Error;
     };
 
-    recent_patches.patches.into_iter().any(|recent_patch| {
+    let has_overlap = recent_patches.patches.into_iter().any(|recent_patch| {
         let combined_recent_patch = combine_patches_fn(&[recent_patch.patch]);
         patches_have_overlap(&combined_recent_patch, &staged_patch)
-    })
+    });
+
+    if has_overlap {
+        StagedDiffAiOverlapResult::Overlap
+    } else {
+        StagedDiffAiOverlapResult::NoOverlap
+    }
 }
 
-#[allow(dead_code)]
 fn capture_staged_patch_from_git(repository_root: &Path) -> Result<ParsedPatch> {
     let patch_text = capture_staged_diff_from_git(repository_root)?;
 
@@ -1803,7 +1863,6 @@ fn capture_staged_patch_from_git(repository_root: &Path) -> Result<ParsedPatch> 
     })
 }
 
-#[allow(dead_code)]
 fn capture_staged_diff_from_git(repository_root: &Path) -> Result<String> {
     run_git_command_capture_stdout(
         repository_root,
@@ -1812,7 +1871,6 @@ fn capture_staged_diff_from_git(repository_root: &Path) -> Result<String> {
     )
 }
 
-#[allow(dead_code)]
 fn staged_patch_error(detail: &str, context: &str) -> String {
     format!("Staged patch capture error: {detail} ({context}).")
 }
