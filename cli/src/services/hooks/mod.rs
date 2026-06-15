@@ -11,8 +11,8 @@ use serde::Serialize;
 use serde_json::{json, to_string as serialize_to_json, Value};
 
 use crate::services::agent_trace::{
-    agent_trace_persisted_url, build_agent_trace, validate_agent_trace_value, AgentTrace,
-    AgentTraceMetadataInput, AgentTraceVcsType,
+    agent_trace_persisted_url, build_agent_trace, patch_has_touched_lines, patches_have_overlap,
+    validate_agent_trace_value, AgentTrace, AgentTraceMetadataInput, AgentTraceVcsType,
 };
 use crate::services::agent_trace_db::{
     AgentTraceDb, AgentTraceInsert, DiffTraceInsert, InsertMessageInsert, InsertPartInsert,
@@ -1734,6 +1734,87 @@ fn run_post_commit_intersection_flow(
             Ok(())
         },
     )
+}
+
+#[allow(dead_code)]
+fn staged_diff_has_ai_overlap(repository_root: &Path) -> bool {
+    let Ok(db) = open_agent_trace_db_for_hook_runtime(
+        "Failed to open Agent Trace DB for staged AI-overlap evidence check.",
+    ) else {
+        return false;
+    };
+
+    staged_diff_has_ai_overlap_with(
+        repository_root,
+        capture_staged_patch_from_git,
+        current_unix_time_ms,
+        |cutoff_ms, end_ms| db.recent_diff_trace_patches(cutoff_ms, end_ms),
+    )
+}
+
+#[allow(dead_code)]
+fn staged_diff_has_ai_overlap_with<C, N, Q>(
+    repository_root: &Path,
+    capture_staged_patch: C,
+    now_ms: N,
+    query_recent_patches: Q,
+) -> bool
+where
+    C: FnOnce(&Path) -> Result<ParsedPatch>,
+    N: FnOnce() -> Result<i64>,
+    Q: FnOnce(i64, i64) -> Result<RecentDiffTracePatches>,
+{
+    let Ok(staged_patch) = capture_staged_patch(repository_root) else {
+        return false;
+    };
+
+    if !patch_has_touched_lines(&staged_patch) {
+        return false;
+    }
+
+    let Ok(now_ms) = now_ms() else {
+        return false;
+    };
+    let cutoff_ms = now_ms - RECENT_DAYS_MILLIS;
+
+    let Ok(recent_patches) = query_recent_patches(cutoff_ms, now_ms) else {
+        return false;
+    };
+
+    recent_patches.patches.into_iter().any(|recent_patch| {
+        let combined_recent_patch = combine_patches_fn(&[recent_patch.patch]);
+        patches_have_overlap(&combined_recent_patch, &staged_patch)
+    })
+}
+
+#[allow(dead_code)]
+fn capture_staged_patch_from_git(repository_root: &Path) -> Result<ParsedPatch> {
+    let patch_text = capture_staged_diff_from_git(repository_root)?;
+
+    if patch_text.trim().is_empty() {
+        return Ok(ParsedPatch { files: Vec::new() });
+    }
+
+    parse_patch_from_text(&patch_text, None).map_err(|error| {
+        anyhow!(staged_patch_error(
+            "failed to parse staged patch",
+            &error.to_string()
+        ))
+    })
+}
+
+#[allow(dead_code)]
+fn capture_staged_diff_from_git(repository_root: &Path) -> Result<String> {
+    run_git_command_capture_stdout(
+        repository_root,
+        &["diff", "--cached", "--patch", "--no-ext-diff"],
+        "Failed to capture staged patch from git.",
+    )
+}
+
+#[allow(dead_code)]
+fn staged_patch_error(detail: &str, context: &str) -> String {
+    format!("Staged patch capture error: {detail} ({context}).")
 }
 
 fn run_post_commit_intersection_flow_with<C, N, Q, P>(

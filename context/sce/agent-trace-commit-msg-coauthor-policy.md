@@ -28,5 +28,18 @@
 - Human author/committer identity is not rewritten; only commit message trailer content is affected.
 - The current positive path is gate-driven only: when attribution hooks are enabled, `commit-msg` appends the canonical trailer without depending on checkpoint files or other helper state.
 
+## Staged AI-overlap helper seam
+
+- `cli/src/services/agent_trace.rs` owns the pure patch-overlap helper (`patches_have_overlap`) for Agent Trace evidence checks; this is the seam intended for future golden fixture coverage.
+- `cli/src/services/hooks/mod.rs` includes a hooks-owned, bool-shaped staged-diff overlap helper for a later commit-msg gate wiring task and delegates pure overlap classification to `agent_trace.rs`.
+- The helper is intentionally not invoked by `run_commit_msg_subcommand_in_repo` yet, so runtime commit-msg behavior is unchanged until the wiring task lands.
+- Live helper path:
+  - opens Agent Trace DB through `AgentTraceDb::open_for_hooks_without_migrations()` and `ensure_schema_ready_for_hooks()`;
+  - captures the staged patch with `git diff --cached --patch --no-ext-diff`;
+  - queries recent diff traces using the same bounded 7-day window as post-commit;
+  - combines each recent patch and checks overlap through `agent_trace::patches_have_overlap`, which uses the existing patch intersection primitive;
+  - short-circuits on the first positive overlap.
+- No-evidence/error posture: DB open/readiness failure, staged-diff capture/parse failure, clock/query failure, empty staged diff, no recent rows, malformed-only rows, or zero overlap all return `false`.
+
 ## Verification evidence
 - `nix flake check`
