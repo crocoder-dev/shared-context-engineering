@@ -82,7 +82,7 @@ impl fmt::Display for ClaudeStructuredPatchSkipReason {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum PatchBuildResult {
+pub(crate) enum PatchBuildResult {
     Built(ParsedPatch),
     Skipped(ClaudeStructuredPatchSkipReason),
 }
@@ -132,7 +132,7 @@ pub fn derive_claude_structured_patch(
     })
 }
 
-fn build_claude_post_tool_use_patch(payload: &Map<String, Value>) -> PatchBuildResult {
+pub(crate) fn build_claude_post_tool_use_patch(payload: &Map<String, Value>) -> PatchBuildResult {
     match string_field(payload, &["tool_name"]).as_deref() {
         Some("Write") => build_write_create_patch(payload),
         Some("Edit") => build_edit_structured_patch(payload),

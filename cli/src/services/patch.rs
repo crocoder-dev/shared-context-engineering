@@ -141,7 +141,6 @@ impl std::error::Error for PatchLoadError {}
 ///
 /// Returns `PatchLoadError` with an actionable message when the input is
 /// not valid JSON or does not match the expected `ParsedPatch` structure.
-#[allow(dead_code)]
 pub fn load_patch_from_json(input: &str) -> Result<ParsedPatch, PatchLoadError> {
     serde_json::from_str(input).map_err(|e| PatchLoadError {
         message: format!("invalid patch JSON: {e}"),

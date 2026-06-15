@@ -22,10 +22,11 @@ use crate::services::agent_trace_db::{
 use crate::services::observability::traits::Logger;
 use crate::services::patch::{
     combine_patches as combine_patches_fn, intersect_patches as intersect_patches_fn,
-    parse_patch as parse_patch_from_text, ParsedPatch,
+    load_patch_from_json, parse_patch as parse_patch_from_text, ParsedPatch,
 };
 use crate::services::structured_patch::{
-    derive_claude_structured_patch, ClaudeStructuredPatchDerivationResult,
+    build_claude_post_tool_use_patch, derive_claude_structured_patch,
+    ClaudeStructuredPatchDerivationResult, PatchBuildResult,
 };
 use crate::services::{config, default_paths::RepoPaths};
 pub mod command;
@@ -574,6 +575,32 @@ fn parse_message_updated_item(
 fn parse_message_part_updated_item(
     payload: &serde_json::Map<String, Value>,
 ) -> Result<InsertPartInsert> {
+    let part_type = parse_part_type(payload)?;
+    let raw_text = required_string_field(payload, "text", conversation_trace_validation_error)?;
+    let text = match part_type {
+        PartType::Patch => {
+            // Try JSON first — if payload.text is already a serialized ParsedPatch, use it directly.
+            if load_patch_from_json(&raw_text).is_ok() {
+                raw_text
+            } else {
+                // Fall back to raw unified-diff parsing.
+                match parse_patch_from_text(&raw_text, None) {
+                    Ok(parsed_patch) => serialize_to_json(&parsed_patch).map_err(|error| {
+                        anyhow!(conversation_trace_validation_error(&format!(
+                            "failed to serialize parsed patch for conversation-trace patch part: {error}"
+                        )))
+                    })?,
+                    Err(diff_error) => {
+                        bail!(conversation_trace_validation_error(&format!(
+                            "field 'text' for patch part is neither valid patch-JSON nor a valid patch: {diff_error}"
+                        )));
+                    }
+                }
+            }
+        }
+        PartType::Text | PartType::Reasoning => raw_text,
+    };
+
     Ok(InsertPartInsert {
         session_id: required_non_empty_string_field(
             payload,
@@ -585,8 +612,8 @@ fn parse_message_part_updated_item(
             "message_id",
             conversation_trace_validation_error,
         )?,
-        part_type: parse_part_type(payload)?,
-        text: required_string_field(payload, "text", conversation_trace_validation_error)?,
+        part_type,
+        text,
         generated_at_unix_ms: required_i64_millisecond_field(
             payload,
             "generated_at_unix_ms",
@@ -2341,80 +2368,33 @@ where
         conversation_trace_validation_error,
     )?;
 
-    let tool_response = required_field(
-        payload,
-        "tool_response",
-        conversation_trace_validation_error,
-    )?;
-    let tool_response_obj = tool_response.as_object().ok_or_else(|| {
-        anyhow!(conversation_trace_validation_error(
-            "field 'tool_response' must be an object"
-        ))
-    })?;
-
     let message_id = generate_message_id().to_string();
     let generated_at_unix_ms = generate_timestamp_ms();
 
-    // Check if tool_response.structuredPatch has any items
-    let structured_patch_has_items = tool_response_obj
-        .get("structuredPatch")
-        .and_then(|v| v.as_array())
-        .is_some_and(|arr| !arr.is_empty());
-
-    let mut items = vec![json!({
-        "type": CONVERSATION_TRACE_MESSAGE_UPDATED,
-        "session_id": session_id,
-        "message_id": message_id,
-        "role": "assistant",
-        "generated_at_unix_ms": generated_at_unix_ms,
-    })];
-
-    if structured_patch_has_items {
-        // Each structuredPatch item produces its own message.part
-        if let Some(patch_items) = tool_response_obj
-            .get("structuredPatch")
-            .and_then(|v| v.as_array())
-        {
-            for patch_item in patch_items {
-                if let Some(patch_item_obj) = patch_item.as_object() {
-                    if let Some(lines) = patch_item_obj.get("lines").and_then(|v| v.as_array()) {
-                        let text: Vec<String> = lines
-                            .iter()
-                            .filter_map(|l| l.as_str().map(String::from))
-                            .collect();
-                        let text = text.join("\n");
-
-                        items.push(json!({
-                            "type": CONVERSATION_TRACE_MESSAGE_PART_UPDATED,
-                            "session_id": session_id,
-                            "message_id": message_id,
-                            "part_type": "patch",
-                            "text": text,
-                            "generated_at_unix_ms": generated_at_unix_ms,
-                        }));
-                    }
-                }
-            }
+    match build_claude_post_tool_use_patch(payload) {
+        PatchBuildResult::Built(parsed_patch) => {
+            let text = serde_json::to_string(&parsed_patch)?;
+            let items = vec![
+                json!({
+                    "type": CONVERSATION_TRACE_MESSAGE_UPDATED,
+                    "session_id": session_id,
+                    "message_id": message_id,
+                    "role": "assistant",
+                    "generated_at_unix_ms": generated_at_unix_ms,
+                }),
+                json!({
+                    "type": CONVERSATION_TRACE_MESSAGE_PART_UPDATED,
+                    "session_id": session_id,
+                    "message_id": message_id,
+                    "part_type": "patch",
+                    "text": text,
+                    "generated_at_unix_ms": generated_at_unix_ms,
+                }),
+            ];
+            Ok(items)
         }
-    } else {
-        // No structured patches — use tool_response.content as the text
-        let text = required_string_field(
-            tool_response_obj,
-            "content",
-            conversation_trace_validation_error,
-        )?;
-
-        items.push(json!({
-            "type": CONVERSATION_TRACE_MESSAGE_PART_UPDATED,
-            "session_id": session_id,
-            "message_id": message_id,
-            "part_type": "patch",
-            "text": text,
-            "generated_at_unix_ms": generated_at_unix_ms,
-        }));
+        PatchBuildResult::Skipped(_) => Ok(vec![]),
     }
-
-    Ok(items)
 }
 
 #[cfg(test)]
@@ -2435,16 +2415,21 @@ mod tests {
         intersection_patch: String,
     }
 
-    fn valid_patch(path: &str, content: &str) -> ParsedPatch {
-        let patch_text = format!(
+    fn valid_patch_text(path: &str, content: &str) -> String {
+        format!(
             "Index: {path}\n===================================================================\n--- {path}\n+++ {path}\n@@ -0,0 +1,1 @@\n+{content}\n"
-        );
+        )
+    }
+
+    fn valid_patch(path: &str, content: &str) -> ParsedPatch {
+        let patch_text = valid_patch_text(path, content);
 
         parse_patch_from_text(&patch_text, None).expect("test patch should parse")
     }
 
     #[test]
     fn conversation_trace_mixed_payload_maps_to_message_and_part_insert_inputs() {
+        let patch_text = valid_patch_text("src/lib.rs", "let answer = 42;");
         let payload = serde_json::json!({
             "payloads": [
                 {
@@ -2461,6 +2446,14 @@ mod tests {
                     "part_type": "reasoning",
                     "text": "thinking through validation",
                     "generated_at_unix_ms": 1_800_000_000_001_i64
+                },
+                {
+                    "type": "message.part",
+                    "session_id": "session-1",
+                    "message_id": "message-1",
+                    "part_type": "patch",
+                    "text": patch_text,
+                    "generated_at_unix_ms": 1_800_000_000_002_i64
                 }
             ]
         });
@@ -2468,7 +2461,7 @@ mod tests {
         let parsed = parse_conversation_trace_payload(&payload.to_string())
             .expect("conversation-trace mixed payload should parse");
 
-        assert_eq!(parsed.attempted_count, 2);
+        assert_eq!(parsed.attempted_count, 3);
         assert!(parsed.skipped.is_empty());
         assert!(parsed.message_updated.skipped.is_empty());
         assert!(parsed.message_part_updated.skipped.is_empty());
@@ -2480,13 +2473,24 @@ mod tests {
         assert_eq!(message.role, MessageRole::Assistant);
         assert_eq!(message.generated_at_unix_ms, 1_800_000_000_000_i64);
 
-        assert_eq!(parsed.message_part_updated.inserts.len(), 1);
-        let part = &parsed.message_part_updated.inserts[0];
-        assert_eq!(part.session_id, "session-1");
-        assert_eq!(part.message_id, "message-1");
-        assert_eq!(part.part_type, PartType::Reasoning);
-        assert_eq!(part.text, "thinking through validation");
-        assert_eq!(part.generated_at_unix_ms, 1_800_000_000_001_i64);
+        assert_eq!(parsed.message_part_updated.inserts.len(), 2);
+        let reasoning_part = &parsed.message_part_updated.inserts[0];
+        assert_eq!(reasoning_part.session_id, "session-1");
+        assert_eq!(reasoning_part.message_id, "message-1");
+        assert_eq!(reasoning_part.part_type, PartType::Reasoning);
+        assert_eq!(reasoning_part.text, "thinking through validation");
+        assert_eq!(reasoning_part.generated_at_unix_ms, 1_800_000_000_001_i64);
+
+        let patch_part = &parsed.message_part_updated.inserts[1];
+        assert_eq!(patch_part.session_id, "session-1");
+        assert_eq!(patch_part.message_id, "message-1");
+        assert_eq!(patch_part.part_type, PartType::Patch);
+        assert_eq!(
+            patch_part.text,
+            serialize_to_json(&valid_patch("src/lib.rs", "let answer = 42;"))
+                .expect("test patch should serialize")
+        );
+        assert_eq!(patch_part.generated_at_unix_ms, 1_800_000_000_002_i64);
     }
 
     #[test]
@@ -2515,13 +2519,21 @@ mod tests {
                     "generated_at_unix_ms": 1_800_000_000_003_i64
                 },
                 {
+                    "type": "message.part",
+                    "session_id": "session-4",
+                    "message_id": "message-4",
+                    "part_type": "patch",
+                    "text": "--- src/main.rs",
+                    "generated_at_unix_ms": 1_800_000_000_004_i64
+                },
+                {
                     "type": "session.started",
-                    "session_id": "session-4"
+                    "session_id": "session-5"
                 },
                 42,
                 {
                     "type": null,
-                    "session_id": "session-5"
+                    "session_id": "session-6"
                 }
             ]
         });
@@ -2529,7 +2541,7 @@ mod tests {
         let parsed = parse_conversation_trace_payload(&payload.to_string())
             .expect("conversation-trace mixed payload should parse with skipped items");
 
-        assert_eq!(parsed.attempted_count, 6);
+        assert_eq!(parsed.attempted_count, 7);
         assert_eq!(parsed.message_updated.inserts.len(), 1);
         assert_eq!(parsed.message_updated.skipped.len(), 1);
         assert_eq!(parsed.message_updated.skipped[0].index, 1);
@@ -2537,19 +2549,23 @@ mod tests {
             .reason
             .contains("field 'role'"));
         assert_eq!(parsed.message_part_updated.inserts.len(), 0);
-        assert_eq!(parsed.message_part_updated.skipped.len(), 1);
+        assert_eq!(parsed.message_part_updated.skipped.len(), 2);
         assert_eq!(parsed.message_part_updated.skipped[0].index, 2);
         assert!(parsed.message_part_updated.skipped[0]
             .reason
             .contains("missing required field 'text'"));
+        assert_eq!(parsed.message_part_updated.skipped[1].index, 3);
+        assert!(parsed.message_part_updated.skipped[1]
+            .reason
+            .contains("neither valid patch-JSON nor a valid patch"));
         assert_eq!(parsed.skipped.len(), 3);
-        assert_eq!(parsed.skipped[0].index, 3);
+        assert_eq!(parsed.skipped[0].index, 4);
         assert!(parsed.skipped[0].reason.contains("field 'type'"));
-        assert_eq!(parsed.skipped[1].index, 4);
+        assert_eq!(parsed.skipped[1].index, 5);
         assert!(parsed.skipped[1]
             .reason
-            .contains("payloads[4] must be an object"));
-        assert_eq!(parsed.skipped[2].index, 5);
+            .contains("payloads[5] must be an object"));
+        assert_eq!(parsed.skipped[2].index, 6);
         assert!(parsed.skipped[2]
             .reason
             .contains("field 'type' must be a string"));
