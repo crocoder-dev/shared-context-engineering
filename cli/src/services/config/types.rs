@@ -17,7 +17,7 @@ pub(crate) const ENV_LOG_LEVEL: &str = "SCE_LOG_LEVEL";
 pub(crate) const ENV_LOG_FORMAT: &str = "SCE_LOG_FORMAT";
 pub(crate) const ENV_LOG_FILE: &str = "SCE_LOG_FILE";
 pub(crate) const ENV_LOG_FILE_MODE: &str = "SCE_LOG_FILE_MODE";
-pub(crate) const ENV_ATTRIBUTION_HOOKS_ENABLED: &str = "SCE_ATTRIBUTION_HOOKS_ENABLED";
+pub(crate) const ENV_ATTRIBUTION_HOOKS_DISABLED: &str = "SCE_ATTRIBUTION_HOOKS_DISABLED";
 
 pub type ReportFormat = OutputFormat;
 

@@ -27,10 +27,10 @@
 ## Current runtime behavior
 
 - Shared enablement gate:
-  - env `SCE_ATTRIBUTION_HOOKS_ENABLED`
+  - opt-out env `SCE_ATTRIBUTION_HOOKS_DISABLED` (inverted on read)
   - config `policies.attribution_hooks.enabled`
   - precedence: env over config file
-  - default: disabled
+  - default: enabled
 - `commit-msg` is the only active attribution path.
   - Reads the message file as UTF-8.
   - Applies exactly one canonical trailer: `Co-authored-by: SCE <sce@crocoder.dev>`.
