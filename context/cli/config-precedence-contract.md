@@ -71,7 +71,8 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `timeout_ms` must be an unsigned integer.
 - `workos_client_id` must be a string when present.
 
-- `policies` must be an object when present and currently allows only `bash`.
+- `policies` must be an object when present and currently allows `attribution_hooks`, `database_retry`, and `bash`.
+- `policies.attribution_hooks` must be an object when present and currently allows `enabled`; the generated schema documents default `true`, and explicit `enabled: false` remains a valid opt-out alongside the runtime `SCE_ATTRIBUTION_HOOKS_DISABLED` environment opt-out.
 - `policies.bash` must be an object when present and currently allows only `presets` and `custom`.
 - `policies.bash.presets` must be an array of unique built-in preset IDs: `forbid-git-all`, `forbid-git-commit`, `use-pnpm-over-npm`, `use-bun-over-npm`, `use-nix-flake-over-cargo`.
 - `use-pnpm-over-npm` and `use-bun-over-npm` are mutually exclusive and fail validation when both are present.

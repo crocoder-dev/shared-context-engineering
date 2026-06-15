@@ -75,7 +75,7 @@ None. All previously-open questions (query scope, fail posture, empty-DB first-c
   - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'`; `nix flake check` passed; `fff_grep` found no `SCE_ATTRIBUTION_HOOKS_ENABLED` matches under `cli/`; direct targeted `cargo test services::config` was blocked by repo bash policy in favor of `nix flake check`.
   - Notes: Resolver default is now enabled, `SCE_ATTRIBUTION_HOOKS_DISABLED` is parsed with inverted opt-out semantics, explicit config `enabled = false` remains honored, and hooks help text now states enabled-by-default opt-out controls.
 
-- [ ] T02: `Sync Pkl base schema and generated JSON schema for opt-out semantics` (status:todo)
+- [x] T02: `Sync Pkl base schema and generated JSON schema for opt-out semantics` (status:done)
   - Task ID: T02
   - Goal: Update `config/pkl/base/sce-config-schema.pkl:88-100` and regenerate `config/schema/sce-config.schema.json:46-57` so the `policies.attribution_hooks.enabled` field documents its new default (`true`) and the env-var section / any embedded operator hints reference `SCE_ATTRIBUTION_HOOKS_DISABLED`.
   - Boundaries (in/out of scope):
@@ -83,6 +83,10 @@ None. All previously-open questions (query scope, fail posture, empty-DB first-c
     - Out: code-side resolver changes (T01), runtime DB probe (T03), context docs (T05).
   - Done when: `pkl` regeneration produces the updated JSON schema with no other diff; `cargo test` schema-related tests pass; the JSON schema still validates a sample config with `enabled` omitted (default-true) and with `enabled: false` (explicit opt-out).
   - Verification notes (commands or checks): run the project's canonical Pkl generation step (see `context/sce/generated-opencode-plugin-registration.md` for the generation contract); `cargo test -p sce-cli`; diff inspection that no unrelated schema fields moved.
+  - Completed: 2026-06-15
+  - Files changed: `config/pkl/base/sce-config-schema.pkl`, `config/schema/sce-config.schema.json`
+  - Evidence: `nix develop -c pkl eval -m . config/pkl/generate.pkl`; `nix run .#pkl-check-generated` passed; targeted `cargo test services::config` was blocked by repo bash policy in favor of `nix flake check`; `nix flake check` passed; sample configs with `policies.attribution_hooks.enabled` omitted and with `enabled=false` both passed `sce config validate` via `SCE_CONFIG_FILE`.
+  - Notes: Generated schema drift is limited to attribution-hooks description/default metadata; no unrelated generated files changed.
 
 - [ ] T03: `Add AgentTraceDb query helper for AI-contribution presence` (status:todo)
   - Task ID: T03
