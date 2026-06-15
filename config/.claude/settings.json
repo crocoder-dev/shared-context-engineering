@@ -6,11 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sce",
-            "args": [
-              "hooks",
-              "session-model"
-            ]
+            "command": "sce hooks session-model"
           }
         ]
       }
@@ -32,11 +28,35 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sce",
-            "args": [
-              "hooks",
-              "diff-trace"
-            ]
+            "command": "sce hooks diff-trace"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sce hooks conversation-trace"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sce hooks conversation-trace"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sce hooks conversation-trace"
           }
         ]
       }

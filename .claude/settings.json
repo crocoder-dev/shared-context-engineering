@@ -6,11 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sce",
-            "args": [
-              "hooks",
-              "session-model"
-            ]
+            "command": "sce hooks session-model"
           }
         ]
       }
@@ -32,11 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sce",
-            "args": [
-              "hooks",
-              "diff-trace"
-            ]
+            "command": "sce hooks diff-trace"
           }
         ]
       },
