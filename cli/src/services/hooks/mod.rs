@@ -1551,7 +1551,7 @@ fn run_commit_msg_subcommand_in_repo(
     })?;
 
     let gate_passed = commit_msg_policy_gate_passed(&runtime);
-    let transformed = apply_commit_msg_coauthor_policy(&runtime, &original);
+    let transformed = apply_commit_msg_coauthor_policy(&runtime, true, &original);
     let trailer_applied = gate_passed && transformed != original;
 
     if trailer_applied {
@@ -2123,9 +2123,10 @@ fn post_rewrite_no_op_reason(runtime: &HookRuntimeState) -> HookNoOpReason {
 
 pub fn apply_commit_msg_coauthor_policy(
     runtime: &HookRuntimeState,
+    ai_contribution_present: bool,
     commit_message: &str,
 ) -> String {
-    if !commit_msg_policy_gate_passed(runtime) {
+    if !commit_msg_policy_gate_passed(runtime) || !ai_contribution_present {
         return commit_message.to_string();
     }
 
