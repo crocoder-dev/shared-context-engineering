@@ -19,6 +19,7 @@ use crate::services::agent_trace_db::{
     MessageRole, PartType, PostCommitPatchIntersectionInsert, RecentDiffTracePatches,
     SessionModelAttribution, SessionModelUpsert, PAYLOAD_TYPE_PATCH, PAYLOAD_TYPE_STRUCTURED,
 };
+use crate::services::checkout;
 use crate::services::observability::traits::Logger;
 use crate::services::patch::{
     combine_patches as combine_patches_fn, intersect_patches as intersect_patches_fn,
@@ -204,14 +205,20 @@ fn run_hooks_subcommand_in_repo(
             run_post_rewrite_subcommand_with_trace(repository_root, subcommand, rewrite_method)
         }
         HookSubcommand::DiffTrace => run_diff_trace_subcommand(repository_root, logger),
-        HookSubcommand::ConversationTrace => run_conversation_trace_subcommand(logger),
+        HookSubcommand::ConversationTrace => {
+            run_conversation_trace_subcommand(repository_root, logger)
+        }
         HookSubcommand::SessionModel => run_session_model_subcommand(repository_root, logger),
     }
 }
 
-fn run_conversation_trace_subcommand(logger: Option<&dyn Logger>) -> Result<String> {
+fn run_conversation_trace_subcommand(
+    repository_root: &Path,
+    logger: Option<&dyn Logger>,
+) -> Result<String> {
     let stdin_payload = read_hook_stdin()?;
-    let result = run_conversation_trace_subcommand_from_payload(&stdin_payload, logger);
+    let result =
+        run_conversation_trace_subcommand_from_payload(repository_root, &stdin_payload, logger);
     if let Err(ref error) = result {
         if let Some(log) = logger {
             log.error(
@@ -225,18 +232,21 @@ fn run_conversation_trace_subcommand(logger: Option<&dyn Logger>) -> Result<Stri
 }
 
 fn run_conversation_trace_subcommand_from_payload(
+    repository_root: &Path,
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
     let payload = parse_conversation_trace_payload(stdin_payload)?;
-    persist_conversation_trace_payload_to_agent_trace_db(payload, logger)
+    persist_conversation_trace_payload_to_agent_trace_db(repository_root, payload, logger)
 }
 
 fn persist_conversation_trace_payload_to_agent_trace_db(
+    repository_root: &Path,
     payload: ConversationTracePayload,
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
     let db = open_agent_trace_db_for_hook_runtime(
+        repository_root,
         "Failed to open Agent Trace DB for conversation-trace persistence.",
     )?;
 
@@ -281,27 +291,13 @@ where
     }
 }
 
-fn open_agent_trace_db_for_hook_runtime(context_message: &'static str) -> Result<AgentTraceDb> {
-    prepare_agent_trace_db_for_hook_runtime_with(
-        AgentTraceDb::open_for_hooks_without_migrations,
-        AgentTraceDb::ensure_schema_ready_for_hooks,
-        context_message,
-    )
-}
-
-fn prepare_agent_trace_db_for_hook_runtime_with<D, O, R>(
-    open_db: O,
-    ensure_schema_ready: R,
+fn open_agent_trace_db_for_hook_runtime(
+    repository_root: &Path,
     context_message: &'static str,
-) -> Result<D>
-where
-    O: FnOnce() -> Result<D>,
-    R: FnOnce(&D) -> Result<()>,
-{
-    let db = open_db().context(context_message)?;
-    ensure_schema_ready(&db).context(context_message)?;
-
-    Ok(db)
+) -> Result<AgentTraceDb> {
+    checkout::resolve_or_create_agent_trace_db_for_checkout(repository_root)
+        .map(|(db, _checkout_id)| db)
+        .context(context_message)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -674,8 +670,11 @@ fn run_diff_trace_subcommand_from_payload(
     };
     let resolve_attribution =
         |tool_name: &str, session_id: &str| -> Result<Option<SessionModelAttribution>> {
-            let db = AgentTraceDb::new()
-                .context("Failed to open Agent Trace DB for model resolution.")?;
+            let db = open_agent_trace_db_for_hook_runtime(
+                repository_root,
+                "Failed to open Agent Trace DB for model resolution.",
+            )
+            .context("Failed to open Agent Trace DB for model resolution.")?;
             let attribution = db
                 .session_model_by_tool_and_session(tool_name, session_id)
                 .context("Failed to query session model attribution from Agent Trace DB.")?;
@@ -713,6 +712,7 @@ where
     }
     persist_diff_trace_payload(repository_root, payload)?;
     let agent_trace_db_result = persist_diff_trace_payload_to_agent_trace_db(
+        repository_root,
         payload,
         resolved_attribution.model_id.as_deref(),
         resolved_attribution.tool_version.as_deref(),
@@ -784,7 +784,7 @@ fn run_session_model_subcommand(
 }
 
 fn run_session_model_subcommand_from_payload(
-    _repository_root: &Path,
+    repository_root: &Path,
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
@@ -805,8 +805,11 @@ fn run_session_model_subcommand_from_payload(
         session_start_time_ms,
     };
 
-    let db = AgentTraceDb::new()
-        .context("Failed to open Agent Trace DB for session-model persistence.")?;
+    let db = open_agent_trace_db_for_hook_runtime(
+        repository_root,
+        "Failed to open Agent Trace DB for session-model persistence.",
+    )
+    .context("Failed to open Agent Trace DB for session-model persistence.")?;
     let result = db
         .upsert_session_model(upsert_payload)
         .context("Failed to persist session model attribution to Agent Trace DB.");
@@ -1357,12 +1360,14 @@ fn persist_diff_trace_payload(
 }
 
 fn persist_diff_trace_payload_to_agent_trace_db(
+    repository_root: &Path,
     payload: &DiffTracePayload,
     model_id: Option<&str>,
     tool_version: Option<&str>,
 ) -> Result<()> {
     persist_diff_trace_payload_to_agent_trace_db_with(payload, model_id, tool_version, |input| {
         let db = open_agent_trace_db_for_hook_runtime(
+            repository_root,
             "Failed to open Agent Trace DB for diff-trace persistence.",
         )?;
         db.insert_diff_trace(input)
@@ -1631,12 +1636,13 @@ where
 }
 
 fn run_post_commit_agent_trace_flow(
-    _repository_root: &Path,
+    repository_root: &Path,
     flow_result: &PostCommitIntersectionFlowResult,
     vcs_type: Option<AgentTraceVcsType>,
     remote_url: &str,
 ) -> Result<AgentTrace> {
     let db = open_agent_trace_db_for_hook_runtime(
+        repository_root,
         "Failed to open Agent Trace DB for post-commit trace.",
     )?;
 
@@ -1727,6 +1733,7 @@ fn run_post_commit_intersection_flow(
     repository_root: &Path,
 ) -> Result<PostCommitIntersectionFlowResult> {
     let db = open_agent_trace_db_for_hook_runtime(
+        repository_root,
         "Failed to open Agent Trace DB for post-commit intersection.",
     )?;
 

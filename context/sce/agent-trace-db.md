@@ -10,7 +10,9 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 
 - `AgentTraceDbSpec`: `DbSpec` implementation for Agent Trace persistence.
 - `AgentTraceDb`: type alias for `TursoDb<AgentTraceDbSpec>`, inheriting shared constructor and operation retry behavior.
+- `open_at(path)`: migration-running explicit-path constructor for per-checkout Agent Trace databases.
 - `open_for_hooks_without_migrations()`: Agent Trace-specific runtime-open API for high-frequency hook paths; opens/connects via `TursoDb::open_without_migrations()` and does not run embedded migrations.
+- `open_for_hooks_without_migrations_at(path)`: explicit-path no-migration runtime-open API used by per-checkout hook resolution.
 - `ensure_schema_ready_for_hooks()`: non-mutating hook-readiness check that delegates to the shared `TursoDb::ensure_schema_ready()` method with the Agent Trace–specific `AGENT_TRACE_SCHEMA_SETUP_GUIDANCE` constant (`"Run 'sce setup'."`); verifies the Agent Trace DB has the expected applied migration metadata in `__sce_migrations` for every ID in `AGENT_TRACE_MIGRATIONS`; missing/incomplete metadata fails with `Run 'sce setup'.` guidance instead of running migrations.
 - `DiffTraceInsert<'a>`: insert payload with `time_ms: i64`, `session_id: &'a str`, `patch: &'a str`, `model_id: Option<&'a str>`, `tool_name: &'a str`, nullable `tool_version: Option<&'a str>`, and `payload_type: &'a str` (using `PAYLOAD_TYPE_PATCH` or `PAYLOAD_TYPE_STRUCTURED` constants).
 - `PAYLOAD_TYPE_PATCH` / `PAYLOAD_TYPE_STRUCTURED`: string constants (`"patch"` / `"structured"`) for the `diff_traces.payload_type` discriminator column; `OpenCode` normalized diff-trace payloads use `patch`, `Claude` structured `PostToolUse` payloads use `structured`.
@@ -44,12 +46,19 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 
 ## Database path
 
-The Agent Trace DB path is resolved from the shared default-path catalog:
+The legacy/global Agent Trace DB path is resolved from the shared default-path catalog and retained as a lifecycle fallback when no checkout context or checkout ID is available:
 
 - Function: `agent_trace_db_path()` in `cli/src/services/default_paths.rs`
 - Path template: `<state_root>/sce/agent-trace.db`
 - Linux: `$XDG_STATE_HOME/sce/agent-trace.db` (defaults to `~/.local/state/sce/agent-trace.db`)
 - Other platforms: platform-equivalent user state root
+
+Active hook runtime resolves per-checkout Agent Trace DB files:
+
+- Function: `agent_trace_db_path_for_checkout(checkout_id)` in `cli/src/services/default_paths.rs`
+- Path template: `<state_root>/sce/agent-trace-{checkout_id}.db`
+- Checkout ID source: `<git-dir>/sce/checkout-id`, where `<git-dir>` comes from `git rev-parse --git-dir`
+- Registry metadata: `<state_root>/sce/checkout-registry.json` stores `database_path` after successful lazy initialization
 
 ## Migrations
 
@@ -74,7 +83,7 @@ The Agent Trace DB path is resolved from the shared default-path catalog:
 
 The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::new()` applies later Agent Trace migrations to an already-created `~/.local/state/sce/agent-trace.db`.
 
-`AgentTraceDb::open_for_hooks_without_migrations()` is the named no-migration Agent Trace open path for hook runtime code. It preserves Turso open/connect retry behavior from the shared adapter but intentionally skips `run_migrations()`, so it neither creates `__sce_migrations` nor applies Agent Trace schema SQL. Active hook callers (`conversation-trace`, `diff-trace`, and both post-commit Agent Trace DB flows) use this path and call `ensure_schema_ready_for_hooks()` before reads/writes; readiness is based on exact migration metadata parity with `AGENT_TRACE_MIGRATIONS`, not table/index/column introspection.
+Per-checkout hook DB resolution first tries `AgentTraceDb::open_for_hooks_without_migrations_at(path)` and `ensure_schema_ready_for_hooks()`. If the DB is missing, metadata is absent, or migrations are incomplete, the checkout resolver falls back to `AgentTraceDb::open_at(path)` so hook invocation lazily creates or upgrades the per-checkout DB before continuing. Readiness is based on exact migration metadata parity with `AGENT_TRACE_MIGRATIONS`, not table/index/column introspection.
 
 The `diff_traces` baseline migration creates:
 
@@ -169,9 +178,9 @@ Both triggers compare `OLD.*` vs `NEW.*` for all mutable columns (excluding `upd
 
 `AgentTraceDbLifecycle` is registered in `cli/src/services/lifecycle.rs` after `LocalDbLifecycle` and before optional `HooksLifecycle`.
 
-- `diagnose()` reports canonical Agent Trace DB path and parent-directory readiness problems through the shared DB path-health helper.
-- `fix()` can bootstrap the canonical Agent Trace DB parent directory for auto-fixable parent-readiness problems.
-- `setup()` creates/reuses the current checkout identity when a repo root is available, registers the checkout in `<state_root>/sce/checkout-registry.json` with `database_path: null`, emits setup messaging with the checkout ID, and still initializes the existing global database with `AgentTraceDb::new()` until the per-checkout DB path switch lands.
+- `diagnose()` reports per-checkout Agent Trace DB path and parent-directory readiness when a repo root has a checkout ID; otherwise it falls back to the legacy global Agent Trace DB path.
+- `fix()` bootstraps the resolved per-checkout DB parent directory for auto-fixable parent-readiness problems, with the same global fallback outside checkout context.
+- `setup()` creates/reuses the current checkout identity when a repo root is available, registers the checkout in `<state_root>/sce/checkout-registry.json` with `database_path: null`, and emits setup messaging with the checkout ID. It does not eagerly initialize the Agent Trace DB; the first hook write lazily creates the per-checkout DB.
 - `sce doctor` now surfaces Agent Trace DB health as a row within the `Configuration` section with `[PASS]`/`[FAIL]`/`[MISS]` status tokens (e.g., `Agent Trace DB (/path/to/agent-trace.db)`), and includes it in JSON output under the `agent_trace_db` field.
 
 ## Runtime writers
@@ -185,7 +194,7 @@ Both triggers compare `OLD.*` vs `NEW.*` for all mutable columns (excluding `upd
 - Command success requires artifact persistence to succeed; AgentTraceDb open/insert failures are logged and reflected in the success text as failed DB persistence instead of discarding the artifact fallback.
 - Existing artifact files are not backfilled into the database.
 
-Post-commit intersection rows are written by the active `post-commit` hook flow through readiness-gated AgentTraceDb access, and the same flow now also inserts built Agent Trace payloads into `agent_traces` via `AgentTraceDb::insert_agent_trace()` (see [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md)). The persisted `trace_json` is the schema-validated `build_agent_trace(...)` output and includes top-level `metadata.sce.version` from the compiled `sce` CLI package version plus `content_hash` on every emitted range. Range `content_hash` values are computed from the touched-line kind/content of the post-commit hunk that produced the persisted range, not from DB IDs, paths, line positions, or runtime metadata.
+Post-commit intersection rows are written by the active `post-commit` hook flow through per-checkout lazy AgentTraceDb access, and the same flow now also inserts built Agent Trace payloads into `agent_traces` via `AgentTraceDb::insert_agent_trace()` (see [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md)). The persisted `trace_json` is the schema-validated `build_agent_trace(...)` output and includes top-level `metadata.sce.version` from the compiled `sce` CLI package version plus `content_hash` on every emitted range. Range `content_hash` values are computed from the touched-line kind/content of the post-commit hunk that produced the persisted range, not from DB IDs, paths, line positions, or runtime metadata.
 
 `sce hooks conversation-trace` is the current runtime writer for `messages` and `parts`.
 
@@ -193,7 +202,7 @@ Post-commit intersection rows are written by the active `post-commit` hook flow 
 - `message` items validate and map payloads without message-level `text`, `agent`, or `summary_diffs` to `InsertMessageInsert`; valid rows are inserted through at most one multi-row `AgentTraceDb::insert_messages(...)` call per invocation so repeated `(session_id, message_id)` events are ignored without failing.
 - `message.part` items validate and map payloads with required part `text` to `InsertPartInsert`; valid rows are inserted through at most one multi-row `AgentTraceDb::insert_parts(...)` call per invocation so parts remain append-only and do not require a pre-existing message row.
 - Unsupported item types, missing/non-string item types, non-object items, and event-specific parser validation failures are retained as skipped-item diagnostics, logged, and counted as skipped while valid sibling items remain eligible for persistence.
-- The hook opens one no-migration `AgentTraceDb` per invocation and checks schema readiness before insertion; DB open or readiness failures remain command-failing because no rows can be attempted.
+- The hook opens one per-checkout `AgentTraceDb` per invocation through lazy checkout DB resolution before insertion; DB open/initialization failures remain command-failing because no rows can be attempted.
 - Multi-row insert failures are logged once and count the whole valid-item batch as skipped without failing the command; the hook does not fall back to row-by-row insertion after a batch failure. Successful inserts contribute to deterministic success output counts (`attempted`, `persisted_messages`, `persisted_parts`, `skipped`). Duplicate parent message inserts preserve the existing `ON CONFLICT DO NOTHING` affected-row semantics.
 - No `context/tmp` artifact is written for conversation traces.
 - The generated OpenCode agent-trace plugin sends mixed-batch envelopes for conversation traces: regular `message` and `message.part` events each carry one per-item `type`, while diff-backed `message` events send one envelope containing the synthetic parent message item plus patch part items.

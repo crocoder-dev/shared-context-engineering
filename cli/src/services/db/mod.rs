@@ -334,6 +334,20 @@ impl<M: DbSpec> TursoDb<M> {
         Ok(db)
     }
 
+    /// Open or create the database at an explicit path.
+    ///
+    /// Parent directories are created automatically. Migrations are run after
+    /// the database connection is established. The service-specific retry and
+    /// migration configuration still comes from `M`.
+    pub fn new_at(db_path: impl AsRef<Path>) -> Result<Self> {
+        let db = Self::open_without_migrations_at(db_path)?;
+
+        db.run_migrations()
+            .with_context(|| format!("failed to run {} migrations", M::db_name()))?;
+
+        Ok(db)
+    }
+
     /// Open or create the database at the spec-provided canonical path without
     /// running embedded migrations.
     ///
@@ -343,6 +357,19 @@ impl<M: DbSpec> TursoDb<M> {
     pub fn open_without_migrations() -> Result<Self> {
         let db_name = M::db_name();
         let db_path = M::db_path().with_context(|| format!("failed to resolve {db_name} path"))?;
+
+        Self::open_without_migrations_at(db_path)
+    }
+
+    /// Open or create the database at an explicit path without running embedded
+    /// migrations.
+    ///
+    /// Parent directories are created automatically and the connection-open
+    /// retry policy is preserved. Runtime callers that use this path are
+    /// responsible for verifying schema readiness before query/write work.
+    pub fn open_without_migrations_at(db_path: impl AsRef<Path>) -> Result<Self> {
+        let db_name = M::db_name();
+        let db_path = db_path.as_ref().to_path_buf();
 
         ensure_db_parent_dir(db_name, &db_path)?;
 

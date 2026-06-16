@@ -17,7 +17,9 @@
 - global config: `<config_root>/sce/config.json`
 - auth DB: `<state_root>/sce/auth.db`
 - local DB: `<state_root>/sce/local.db`
-- agent trace DB: `<state_root>/sce/agent-trace.db`
+- legacy/global agent trace DB fallback: `<state_root>/sce/agent-trace.db`
+- per-checkout agent trace DB: `<state_root>/sce/agent-trace-{checkout_id}.db`
+- checkout registry: `<state_root>/sce/checkout-registry.json`
 
 ### Repo-relative paths
 
@@ -43,5 +45,6 @@
 - `cli/src/services/setup/mod.rs` now resolves setup target directory names and required hook identifiers through `default_paths.rs` constants/accessors instead of owning those path literals locally.
 - `cli/src/services/default_paths.rs` includes a regression test that scans non-test Rust source under `cli/src/` and fails when new centralized production path literals appear outside the default-path service.
 - `cli/src/services/hooks/mod.rs` resolves the collision-safe `context/tmp/` path shape through shared path accessors.
+- `cli/src/services/checkout/mod.rs` resolves per-checkout Agent Trace DB files through `agent_trace_db_path_for_checkout(checkout_id)` and stores the resulting path in the checkout registry after lazy DB initialization.
 
 See also: [cli-command-surface.md](./cli-command-surface.md), [../architecture.md](../architecture.md), [../context-map.md](../context-map.md)
