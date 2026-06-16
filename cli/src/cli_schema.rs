@@ -184,6 +184,9 @@ pub enum Commands {
 
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
+
+        #[command(subcommand)]
+        subcommand: Option<DoctorSubcommand>,
     },
 
     #[command(about = HOOKS_CLAP_ABOUT, hide = !HOOKS_SHOW_IN_TOP_LEVEL_HELP)]
@@ -208,6 +211,15 @@ pub enum Commands {
     Completion {
         #[arg(long, value_enum)]
         shell: CompletionShell,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum DoctorSubcommand {
+    #[command(about = "List registered Agent Trace checkouts and databases")]
+    Dbs {
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
     },
 }
 

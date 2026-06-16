@@ -53,6 +53,7 @@ pub(super) struct HookDoctorReport {
     pub(super) mode: super::DoctorMode,
     pub(super) readiness: Readiness,
     pub(super) state_root: Option<FileLocationHealth>,
+    pub(super) checkout_identity: Option<CheckoutIdentityHealth>,
     pub(super) agent_trace_db: Option<FileLocationHealth>,
     pub(super) repository_root: Option<PathBuf>,
     pub(super) hook_path_source: HookPathSource,
@@ -61,6 +62,13 @@ pub(super) struct HookDoctorReport {
     pub(super) hooks: Vec<HookFileHealth>,
     pub(super) integration_groups: Vec<IntegrationGroupHealth>,
     pub(super) problems: Vec<DoctorProblem>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct CheckoutIdentityHealth {
+    pub(super) checkout_id: String,
+    pub(super) database_path: PathBuf,
+    pub(super) database_state: &'static str,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

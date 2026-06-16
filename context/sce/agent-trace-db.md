@@ -181,7 +181,8 @@ Both triggers compare `OLD.*` vs `NEW.*` for all mutable columns (excluding `upd
 - `diagnose()` reports per-checkout Agent Trace DB path and parent-directory readiness when a repo root has a checkout ID; otherwise it falls back to the legacy global Agent Trace DB path.
 - `fix()` bootstraps the resolved per-checkout DB parent directory for auto-fixable parent-readiness problems, with the same global fallback outside checkout context.
 - `setup()` creates/reuses the current checkout identity when a repo root is available, registers the checkout in `<state_root>/sce/checkout-registry.json` with `database_path: null`, and emits setup messaging with the checkout ID. It does not eagerly initialize the Agent Trace DB; the first hook write lazily creates the per-checkout DB.
-- `sce doctor` now surfaces Agent Trace DB health as a row within the `Configuration` section with `[PASS]`/`[FAIL]`/`[MISS]` status tokens (e.g., `Agent Trace DB (/path/to/agent-trace.db)`), and includes it in JSON output under the `agent_trace_db` field.
+- `sce doctor` surfaces checkout identity and per-checkout Agent Trace DB health in the `Configuration` section when a checkout ID exists, with `[PASS]`/`[FAIL]`/`[MISS]` status tokens. Outside checkout context it falls back to the legacy/global Agent Trace DB row. JSON output includes `checkout_identity` when available plus the resolved `agent_trace_db` field.
+- `sce doctor dbs` lists registered checkout records from `<state_root>/sce/checkout-registry.json` in text or JSON, sorted by `last_seen` descending.
 
 ## Runtime writers
 

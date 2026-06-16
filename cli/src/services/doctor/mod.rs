@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
+use serde_json::json;
 
 use crate::app::{ContextWithRepoRoot, HasRepoRoot};
+use crate::services::checkout::registry::{self, CheckoutRecord};
 use crate::services::default_paths::{resolve_sce_default_locations, resolve_state_data_root};
 use crate::services::lifecycle::{
     lifecycle_providers, FixOutcome, HealthCategory, HealthFixability, HealthProblem,
@@ -41,7 +43,14 @@ pub enum DoctorMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DoctorAction {
+    Report,
+    Dbs,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DoctorRequest {
+    pub action: DoctorAction,
     pub mode: DoctorMode,
     pub format: DoctorFormat,
 }
@@ -69,6 +78,10 @@ pub fn run_doctor_with_context<C>(request: DoctorRequest, context: &C) -> Result
 where
     C: ContextWithRepoRoot,
 {
+    if request.action == DoctorAction::Dbs {
+        return run_doctor_dbs(request.format);
+    }
+
     let repository_root = if let Some(path) = context.repo_root() {
         path.to_path_buf()
     } else {
@@ -79,6 +92,67 @@ where
     let scoped_context = context.with_repo_root(&repository_root);
     let execution = execute_doctor_with_context(request, &repository_root, &scoped_context);
     render_report(request, &execution)
+}
+
+fn run_doctor_dbs(format: DoctorFormat) -> Result<String> {
+    let mut checkouts = registry::list_checkouts().context("failed to read checkout registry")?;
+    sort_checkouts_by_last_seen_desc(&mut checkouts);
+
+    match format {
+        DoctorFormat::Text => Ok(render_doctor_dbs_text(&checkouts)),
+        DoctorFormat::Json => render_doctor_dbs_json(&checkouts),
+    }
+}
+
+fn sort_checkouts_by_last_seen_desc(checkouts: &mut [CheckoutRecord]) {
+    checkouts.sort_by(|left, right| {
+        right
+            .last_seen
+            .cmp(&left.last_seen)
+            .then_with(|| left.checkout_id.cmp(&right.checkout_id))
+    });
+}
+
+fn render_doctor_dbs_text(checkouts: &[CheckoutRecord]) -> String {
+    let mut lines = vec![String::from("SCE doctor dbs")];
+
+    if checkouts.is_empty() {
+        lines.push(String::from("no registered checkouts"));
+        return lines.join("\n");
+    }
+
+    for checkout in checkouts {
+        lines.push(format!("checkout_id: {}", checkout.checkout_id));
+        lines.push(format!("  path: {}", checkout.path));
+        lines.push(format!(
+            "  database_path: {}",
+            checkout.database_path.as_deref().unwrap_or("none")
+        ));
+        lines.push(format!("  last_seen: {}", checkout.last_seen));
+        lines.push(format!(
+            "  remote_url: {}",
+            checkout.remote_url.as_deref().unwrap_or("none")
+        ));
+    }
+
+    lines.join("\n")
+}
+
+fn render_doctor_dbs_json(checkouts: &[CheckoutRecord]) -> Result<String> {
+    let payload = json!({
+        "status": "ok",
+        "command": NAME,
+        "subcommand": "dbs",
+        "checkouts": checkouts.iter().map(|checkout| json!({
+            "checkout_id": checkout.checkout_id,
+            "path": checkout.path,
+            "database_path": checkout.database_path,
+            "last_seen": checkout.last_seen,
+            "remote_url": checkout.remote_url,
+        })).collect::<Vec<_>>(),
+    });
+
+    serde_json::to_string_pretty(&payload).context("failed to serialize doctor dbs report to JSON")
 }
 
 fn execute_doctor_with_context(
