@@ -106,6 +106,7 @@ impl ServiceLifecycle for HooksLifecycle {
 
         Ok(SetupOutcome {
             required_hooks_install: Some(required_hooks_outcome_from_setup(outcome)),
+            ..SetupOutcome::default()
         })
     }
 }

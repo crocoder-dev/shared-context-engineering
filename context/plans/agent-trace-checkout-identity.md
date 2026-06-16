@@ -58,12 +58,16 @@ Give each cloned repository (and linked Git worktree) its own `agent-trace` chec
   - Evidence: `nix flake check` passed. A local `cargo build` reached final `rustc`/link and was terminated by SIGTERM in the environment without Rust diagnostics; the Crane-backed flake validation completed successfully.
   - Notes: Generated unit tests and their temporary helper/dependency were removed after review feedback; T01 now lands the checkout identity infrastructure surface only.
 
-- [ ] T02: `Integrate checkout detection into setup lifecycle` (status:todo)
+- [x] T02: `Integrate checkout detection into setup lifecycle` (status:done)
   - Task ID: T02
   - Goal: `AgentTraceDbLifecycle::setup()` resolves the checkout ID from the repo root, creates or reuses it, and registers the checkout in the central registry. The per-checkout database is **not** eagerly initialized — it will be created lazily on first write (T03).
   - Boundaries (in/out of scope): In — `AgentTraceDbLifecycle::setup()` calls `checkout::resolve_git_dir()` and `checkout::get_or_create_checkout_id()` using `ctx.repo_root()`, then `checkout::registry::register_checkout()`. Setup outcome messaging reports the resolved checkout ID and notes that the DB will be created on first write. The global `agent_trace_db_path()` DB is still opened for now (backward compat) — the switch to per-checkout paths comes in T03. Lifecycle `diagnose()` and `fix()` continue to target the global DB until T03. Out — hook flow changes, per-checkout DB path changes, registry query from doctor.
   - Done when: `sce setup` in a cloned repo prints the checkout ID; a second run reuses the same ID; `cat .git/sce/checkout-id` shows the same UUID; `<state_root>/sce/checkout-registry.json` contains the registered record (with `database_path` still absent/`null` since the DB hasn't been created yet); existing setup tests pass.
   - Verification notes (commands or checks): Manual end-to-end: run `sce setup` in a test repo, inspect `.git/sce/checkout-id` and registry file, re-run `sce setup` and confirm idempotent ID reuse. Run existing setup tests through `nix flake check`.
+  - Completed: 2026-06-16
+  - Files changed: `cli/src/services/agent_trace_db/lifecycle.rs`, `cli/src/services/lifecycle.rs`, `cli/src/services/setup/command.rs`, `cli/src/services/hooks/lifecycle.rs`, `cli/src/generated_migrations.rs`, `context/cli/checkout-identity.md`, `context/cli/service-lifecycle.md`, `context/sce/agent-trace-db.md`, `context/context-map.md`, `context/overview.md`, `context/architecture.md`
+  - Evidence: `nix flake check` passed; `nix run .#pkl-check-generated` passed. Manual end-to-end setup in a temporary git repository ran `sce setup --hooks --repo <repo>` twice with isolated `XDG_STATE_HOME`; both runs printed the same checkout ID, `.git/sce/checkout-id` matched the registry record, and registry `database_path` remained `null`.
+  - Notes: Setup lifecycle now emits a generic lifecycle setup message for Agent Trace checkout identity. The existing global Agent Trace DB setup remains in place until T03, while checkout registry `database_path` stays unset for lazy per-checkout DB creation later.
 
 - [ ] T03: `Enable per-checkout database resolution with lazy initialization` (status:todo)
   - Task ID: T03

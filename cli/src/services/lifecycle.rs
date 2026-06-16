@@ -105,6 +105,7 @@ pub struct RequiredHooksInstallOutcome {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SetupOutcome {
+    pub messages: Vec<String>,
     pub required_hooks_install: Option<RequiredHooksInstallOutcome>,
 }
 
