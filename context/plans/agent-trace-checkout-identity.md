@@ -47,12 +47,16 @@ Give each cloned repository (and linked Git worktree) its own `agent-trace` chec
 
 ## Task stack
 
-- [ ] T01: `Checkout identity infrastructure` (status:todo)
+- [x] T01: `Checkout identity infrastructure` (status:done)
   - Task ID: T01
   - Goal: Add a `cli/src/services/checkout/` module with checkout ID storage (`<git-dir>/sce/checkout-id`) and a central JSON registry (`<state_root>/sce/checkout-registry.json`).
   - Boundaries (in/out of scope): In — new `checkout/mod.rs` with `resolve_git_dir(repo_root)`, `get_or_create_checkout_id(git_dir)`, `read_checkout_id(git_dir)`, and `resolve_checkout_id_for_repo(repo_root)` (convenience combining the two); new `checkout/registry.rs` with `CheckoutRecord` struct carrying `checkout_id`, `path`, `last_seen` (RFC 3339), `remote_url` (optional), and `database_path` (optional); `CheckoutRegistry` with `register_checkout()`, `update_checkout_last_seen()`, `list_checkouts()`, and `remove_checkout()`; atomic write-through-rename for persistence. Checkout ID is a UUIDv7 generated with the `uuid` crate (already a dependency). Out — setup/hook integration, DB path changes, schema changes, doctor changes.
   - Done when: `cargo build` compiles the new modules; focused unit tests for checkout ID create/read/idempotent-reuse, `resolve_git_dir` against a real git repo, and registry register/list/update pass.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo test checkout'` during development; final validation via `nix flake check`.
+  - Completed: 2026-06-16
+  - Files changed: `cli/src/services/checkout/mod.rs`, `cli/src/services/checkout/registry.rs`, `cli/src/services/mod.rs`
+  - Evidence: `nix flake check` passed. A local `cargo build` reached final `rustc`/link and was terminated by SIGTERM in the environment without Rust diagnostics; the Crane-backed flake validation completed successfully.
+  - Notes: Generated unit tests and their temporary helper/dependency were removed after review feedback; T01 now lands the checkout identity infrastructure surface only.
 
 - [ ] T02: `Integrate checkout detection into setup lifecycle` (status:todo)
   - Task ID: T02

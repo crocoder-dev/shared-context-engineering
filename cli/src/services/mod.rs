@@ -7,6 +7,7 @@ pub mod auth_db;
 #[allow(dead_code)]
 pub mod bash_policy;
 pub mod capabilities;
+pub mod checkout;
 pub mod command_registry;
 pub mod completion;
 pub mod config;
