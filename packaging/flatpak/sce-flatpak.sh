@@ -160,7 +160,7 @@ require("id: dev.crocoder.sce" in manifest, "manifest app ID is not dev.crocoder
 require("command: sce" in manifest, "manifest command is not sce")
 require("org.freedesktop.Sdk.Extension.rust-stable" in manifest, "Rust SDK extension is missing")
 require("bash ./scripts/prepare-cli-generated-assets.sh \"$PWD\"" in manifest, "generated-asset preparation command is missing")
-require("cargo --offline build --locked --release --manifest-path cli/Cargo.toml --bin sce" in manifest, "offline locked Cargo source-build command is missing")
+require("cargo --offline build --release --manifest-path cli/Cargo.toml --bin sce" in manifest, "offline Cargo source-build command is missing")
 require("install -Dm755 cli/target/release/sce /app/bin/sce" in manifest, "sce install command is missing")
 require("install -Dm755 packaging/flatpak/git-host-bridge /app/bin/git" in manifest, "host git bridge install command is missing")
 require("--talk-name=org.freedesktop.Flatpak" in manifest, "host Flatpak permission is missing")
@@ -227,7 +227,7 @@ if expected_path not in manifest:
     errors.append("local manifest does not point at the requested checkout path")
 if "nix build .#sce" in manifest or "nix build .#default" in manifest:
     errors.append("local manifest references a Nix-built sce binary")
-if "cargo --offline build --locked --release --manifest-path cli/Cargo.toml --bin sce" not in manifest:
+if "cargo --offline build --release --manifest-path cli/Cargo.toml --bin sce" not in manifest:
     errors.append("local manifest no longer runs the Flatpak Cargo source build")
 
 if errors:
