@@ -142,6 +142,17 @@
           ];
         };
 
+        flatpakPackagingSrc = pkgs.lib.fileset.toSource {
+          root = workspaceRoot;
+          fileset = pkgs.lib.fileset.unions [
+            ./packaging/flatpak/dev.crocoder.sce.yml
+            ./packaging/flatpak/dev.crocoder.sce.metainfo.xml
+            ./packaging/flatpak/git-host-bridge
+            ./packaging/flatpak/cargo-sources.json
+            ./packaging/flatpak/sce-flatpak.sh
+          ];
+        };
+
         # Fixed-output derivation to fetch Bun dependencies
         # The output hash must be updated when package.json or bun.lock changes
         configLibBashPolicyDeps = pkgs.stdenv.mkDerivation {
@@ -781,6 +792,66 @@
           '';
         };
 
+        flatpakToolRuntimeInputs =
+          [
+            pkgs.coreutils
+            pkgs.git
+            pkgs.python3
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.appstream
+            pkgs.flatpak
+            pkgs.flatpak-builder
+          ];
+
+        flatpakToolApp = pkgs.writeShellApplication {
+          name = "sce-flatpak";
+          runtimeInputs = flatpakToolRuntimeInputs;
+          text = ''
+            exec ${pkgs.bash}/bin/bash ${./packaging/flatpak/sce-flatpak.sh} "$@"
+          '';
+        };
+
+        flatpakValidateApp = pkgs.writeShellApplication {
+          name = "flatpak-validate";
+          runtimeInputs = [ flatpakToolApp ];
+          text = ''
+            exec sce-flatpak validate "$@"
+          '';
+        };
+
+        flatpakLocalManifestApp = pkgs.writeShellApplication {
+          name = "flatpak-local-manifest";
+          runtimeInputs = [ flatpakToolApp ];
+          text = ''
+            exec sce-flatpak prepare-local-manifest "$@"
+          '';
+        };
+
+        flatpakBuildApp = pkgs.writeShellApplication {
+          name = "flatpak-build";
+          runtimeInputs = [ flatpakToolApp ];
+          text = ''
+            exec sce-flatpak build "$@"
+          '';
+        };
+
+        flatpakStaticValidationCheck = pkgs.runCommand "flatpak-static-validation"
+          {
+            nativeBuildInputs = [ flatpakToolApp ];
+          }
+          ''
+            set -euo pipefail
+
+            cp -r "${flatpakPackagingSrc}" ./repo
+            chmod -R u+w ./repo
+            cd ./repo
+
+            sce-flatpak validate --repo-root "$PWD" --skip-optional-lint
+
+            mkdir -p "$out"
+          '';
+
         pklParityCheck =
           pkgs.runCommand "pkl-parity-check"
             {
@@ -973,120 +1044,150 @@
           default = scePackage;
         };
 
-        checks = {
-          cli-tests = craneLib.cargoTest (
-            commonCargoArgs
-            // {
-              pname = "sce-cli-tests";
-              inherit cargoArtifacts;
-              doCheck = true;
-              nativeCheckInputs = [ pkgs.git ];
-            }
-          );
+        checks =
+          {
+            cli-tests = craneLib.cargoTest (
+              commonCargoArgs
+              // {
+                pname = "sce-cli-tests";
+                inherit cargoArtifacts;
+                doCheck = true;
+                nativeCheckInputs = [ pkgs.git ];
+              }
+            );
 
-          cli-clippy = craneLib.cargoClippy (
-            commonCargoArgs
-            // {
-              pname = "sce-cli-clippy";
-              inherit cargoArtifacts;
-              cargoClippyExtraArgs = "--all-targets --all-features";
-            }
-          );
+            cli-clippy = craneLib.cargoClippy (
+              commonCargoArgs
+              // {
+                pname = "sce-cli-clippy";
+                inherit cargoArtifacts;
+                cargoClippyExtraArgs = "--all-targets --all-features";
+              }
+            );
 
-          cli-fmt = craneLib.cargoFmt (
-            commonCargoArgs
-            // {
-              pname = "sce-cli-fmt";
-            }
-          );
+            cli-fmt = craneLib.cargoFmt (
+              commonCargoArgs
+              // {
+                pname = "sce-cli-fmt";
+              }
+            );
 
-          integrations-install-tests = craneLib.cargoTest (
-            integrationsInstallCargoArgs
-            // {
-              pname = "sce-integrations-install-tests";
-              cargoArtifacts = integrationsInstallCargoArtifacts;
-            }
-          );
+            integrations-install-tests = craneLib.cargoTest (
+              integrationsInstallCargoArgs
+              // {
+                pname = "sce-integrations-install-tests";
+                cargoArtifacts = integrationsInstallCargoArtifacts;
+              }
+            );
 
-          integrations-install-clippy = craneLib.cargoClippy (
-            integrationsInstallCargoArgs
-            // {
-              pname = "sce-integrations-install-clippy";
-              cargoArtifacts = integrationsInstallCargoArtifacts;
-              cargoClippyExtraArgs = "--all-targets --all-features";
-            }
-          );
+            integrations-install-clippy = craneLib.cargoClippy (
+              integrationsInstallCargoArgs
+              // {
+                pname = "sce-integrations-install-clippy";
+                cargoArtifacts = integrationsInstallCargoArtifacts;
+                cargoClippyExtraArgs = "--all-targets --all-features";
+              }
+            );
 
-          integrations-install-fmt = craneLib.cargoFmt (
-            integrationsInstallCargoArgs
-            // {
-              pname = "sce-integrations-install-fmt";
-            }
-          );
+            integrations-install-fmt = craneLib.cargoFmt (
+              integrationsInstallCargoArgs
+              // {
+                pname = "sce-integrations-install-fmt";
+              }
+            );
 
-          pkl-parity = pklParityCheck;
+            pkl-parity = pklParityCheck;
 
-          npm-bun-tests = npmTests;
-          npm-biome-check = npmBiomeCheck;
-          npm-biome-format = npmBiomeFormat;
+            npm-bun-tests = npmTests;
+            npm-biome-check = npmBiomeCheck;
+            npm-biome-format = npmBiomeFormat;
 
-          config-lib-bun-tests = configLibBunTests;
-          config-lib-biome-check = configLibBiomeCheck;
-          config-lib-biome-format = configLibBiomeFormat;
-        };
-
-        apps = {
-          sce = sceApp;
-          default = sceApp;
-
-          pkl-check-generated = {
-            type = "app";
-            program = "${pklCheckGeneratedApp}/bin/pkl-check-generated";
-            meta = {
-              description = "Run generated-output drift check in dev shell";
-            };
+            config-lib-bun-tests = configLibBunTests;
+            config-lib-biome-check = configLibBiomeCheck;
+            config-lib-biome-format = configLibBiomeFormat;
+          }
+          // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+            flatpak-static-validation = flatpakStaticValidationCheck;
           };
 
-          pkl-generate = {
-            type = "app";
-            program = "${pklGenerateApp}/bin/pkl-generate";
-            meta = {
-              description = "Generate config outputs from Pkl sources";
-            };
-          };
+        apps =
+          {
+            sce = sceApp;
+            default = sceApp;
 
-          release-artifacts = {
-            type = "app";
-            program = "${releaseArtifactsApp}/bin/release-artifacts";
-            meta = {
-              description = "Build current-platform sce release artifacts";
+            pkl-check-generated = {
+              type = "app";
+              program = "${pklCheckGeneratedApp}/bin/pkl-check-generated";
+              meta = {
+                description = "Run generated-output drift check in dev shell";
+              };
             };
-          };
 
-          release-manifest = {
-            type = "app";
-            program = "${releaseManifestApp}/bin/release-manifest";
-            meta = {
-              description = "Assemble sce release manifest";
+            pkl-generate = {
+              type = "app";
+              program = "${pklGenerateApp}/bin/pkl-generate";
+              meta = {
+                description = "Generate config outputs from Pkl sources";
+              };
             };
-          };
 
-          release-npm-package = {
-            type = "app";
-            program = "${releaseNpmPackageApp}/bin/release-npm-package";
-            meta = {
-              description = "Build sce npm package tarball";
+            release-artifacts = {
+              type = "app";
+              program = "${releaseArtifactsApp}/bin/release-artifacts";
+              meta = {
+                description = "Build current-platform sce release artifacts";
+              };
             };
-          };
 
-          install-channel-integration-tests = {
-            type = "app";
-            program = "${installChannelIntegrationTestsApp}/bin/install-channel-integration-tests";
-            meta = {
-              description = "Run opt-in install-channel integration entrypoint";
+            release-manifest = {
+              type = "app";
+              program = "${releaseManifestApp}/bin/release-manifest";
+              meta = {
+                description = "Assemble sce release manifest";
+              };
+            };
+
+            release-npm-package = {
+              type = "app";
+              program = "${releaseNpmPackageApp}/bin/release-npm-package";
+              meta = {
+                description = "Build sce npm package tarball";
+              };
+            };
+
+            install-channel-integration-tests = {
+              type = "app";
+              program = "${installChannelIntegrationTestsApp}/bin/install-channel-integration-tests";
+              meta = {
+                description = "Run opt-in install-channel integration entrypoint";
+              };
+            };
+          }
+          // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+            flatpak-validate = {
+              type = "app";
+              program = "${flatpakValidateApp}/bin/flatpak-validate";
+              meta = {
+                description = "Validate Flatpak packaging metadata and local-source manifest generation";
+              };
+            };
+
+            flatpak-local-manifest = {
+              type = "app";
+              program = "${flatpakLocalManifestApp}/bin/flatpak-local-manifest";
+              meta = {
+                description = "Generate a Flatpak manifest that builds from the current checkout";
+              };
+            };
+
+            flatpak-build = {
+              type = "app";
+              program = "${flatpakBuildApp}/bin/flatpak-build";
+              meta = {
+                description = "Build the sce Flatpak from the current checkout with flatpak-builder";
+              };
             };
           };
-        };
 
         devShells.default = pkgs.mkShell {
           packages =
@@ -1105,6 +1206,11 @@
               rust-analyzer
               scePackage
               tursoPackage
+            ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+              appstream
+              flatpak
+              flatpak-builder
             ]
             ++ [ rustToolchain ];
 
@@ -1132,6 +1238,14 @@
             echo "- release-artifacts: nix run .#release-artifacts -- --help"
             echo "- release-manifest: nix run .#release-manifest -- --help"
             echo "- release-npm-package: nix run .#release-npm-package -- --help"
+            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+              echo "- flatpak: $(version_of flatpak)"
+              echo "- flatpak-builder: $(version_of flatpak-builder)"
+              echo "- appstreamcli: $(version_of appstreamcli)"
+              echo "- flatpak-validate: nix run .#flatpak-validate"
+              echo "- flatpak-local-manifest: nix run .#flatpak-local-manifest"
+              echo "- flatpak-build: nix run .#flatpak-build -- --help"
+            ''}
           '';
         };
       }

@@ -67,4 +67,6 @@ This file captures the current shared release artifact foundation plus the appro
 
 - The implemented npm channel consumes this artifact naming and manifest/checksum shape rather than inventing a channel-specific archive format.
 - The implemented npm channel also depends on the published `sce-v<version>-release-manifest.json.sig` asset so manifest-provided checksums are only trusted after signature verification.
-- Any future additional install channel should reuse this artifact contract unless a later decision explicitly supersedes it.
+- Additional binary-distribution install channels should reuse this artifact contract unless a later decision explicitly supersedes it.
+- Flatpak is the current approved exception to binary-artifact reuse: the Flatpak package for application ID `dev.crocoder.sce` is source-built inside Flatpak, uses a release-source manifest plus a Nix-generated local checkout-source manifest/override for local builds, and must not consume Nix-built, GitHub Release, npm native, or other prebuilt `sce` artifacts.
+- The current Flatpak iteration does not publish GitHub Release Flatpak assets or add CI/Flathub publication automation.

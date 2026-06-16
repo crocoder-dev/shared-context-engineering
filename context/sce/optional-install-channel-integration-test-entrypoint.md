@@ -18,12 +18,12 @@ The repository exposes an explicit opt-in flake app for install-channel integrat
 - The Rust runner now owns the shared harness behavior: channel-scoped temporary roots, isolated `HOME`/`XDG_*`/npm/Bun/Cargo state, executable resolution inside the isolated PATH, and centralized deterministic command assertions for the installed `sce` binary.
 - The npm channel now stages a local `@crocoder-dev/sce@.version` package fixture with the packaged `sce` binary preloaded into `runtime/`, installs that tarball into isolated npm state with download skipping enabled, and then reuses the shared Rust execution path to run both `sce version` and `sce doctor --format json` against the installed npm launcher path; the current `doctor` check only requires successful completion, not output inspection.
 - The Bun channel now reuses the same staged local npm-package fixture shape as npm, performs a real isolated `bun add --global <tarball>` install with download skipping enabled, and then reuses the shared Rust execution path to run deterministic `sce version` against the installed Bun launcher path.
-- The Cargo channel now performs a real isolated `cargo install --path cli --locked` install from the repository root, reuses the shared Rust execution path to run deterministic `sce version` against the installed Cargo binary, and completes the first-wave install-channel coverage for all three supported channels.
+- The Cargo channel now performs a real isolated `cargo install --path cli --locked` install from the repository root, reuses the shared Rust execution path to run deterministic `sce version` against the installed Cargo binary, and completes the existing binary install-channel coverage for npm, Bun, and Cargo.
 
 ## Current execution posture
 
 - The Rust runner already has dedicated default-flake checks: `integrations-install-fmt`, `integrations-install-clippy`, and `integrations-install-tests`.
 - The opt-in app remains outside default `nix flake check`.
-- Real npm, Bun, and Cargo install orchestration now run through the Rust runner behind the unchanged selector contract; all three first-wave channels are implemented.
+- Real npm, Bun, and Cargo install orchestration now run through the Rust runner behind the unchanged selector contract for the existing binary install channels. Flatpak validation/build orchestration is implemented as a separate Nix-owned source-build path (`flatpak-validate`, `flatpak-local-manifest`, `flatpak-build`, and `flatpak-static-validation`) rather than part of this app's current selector contract.
 
 See also: [../overview.md](../overview.md), [../architecture.md](../architecture.md), [../patterns.md](../patterns.md)

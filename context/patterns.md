@@ -27,12 +27,19 @@
 - Current repo command contracts:
 - For flake app outputs, include `meta.description` so `nix flake check` app validation stays warning-free.
 - When install/integration coverage is heavier than the default repository validation baseline, expose it as an explicit opt-in flake app instead of adding it to `checks.<system>` prematurely.
+- For Flatpak local packaging, expose separate flake apps for validation, local-manifest generation, and full `flatpak-builder` execution so contributors can run lightweight checks without accidentally starting a network-heavy build.
 
-## First-wave install/distribution rollout
+## Install/distribution rollout
 
-- Treat the approved first-wave channel set for the current implementation stage as closed: repo-flake Nix, Cargo, and npm only; `Homebrew` remains deferred until a later plan stage restores it explicitly.
+- Treat the approved channel set for the current implementation stage as closed: repo-flake Nix, Cargo, npm, and source-built Flatpak (`dev.crocoder.sce`) only; `Homebrew` remains deferred until a later plan stage restores it explicitly.
 - Standardize new install-facing surfaces on the canonical `sce` name; remove or explicitly map legacy `sce-editor` references when they are touched.
-- Keep Nix-managed build/release entrypoints as the source of truth for downstream install channels.
+- Keep Nix-managed build/release entrypoints as the source of truth for binary downstream install channels.
+- For Flatpak, keep Nix as the preferred local orchestration layer for tooling, generated checkout-source overrides, lint/validation, and local builds, but keep the Flatpak package source-built inside Flatpak rather than consuming Nix-built, GitHub Release, npm native, or other prebuilt `sce` artifacts.
+- Keep checked-in Flatpak packaging under `packaging/flatpak/`: source-build manifest, AppStream metadata, host-git wrapper source, and Cargo source descriptor generated from `cli/Cargo.lock`.
+- For Flatpak local builds, preserve the release-source manifest plus generated local-checkout override model so the canonical manifest remains suitable for Flathub review while checkout builds remain ergonomic.
+- Keep Flatpak default-flake validation static/AppStream-only and no-net; full `flatpak-builder` source builds belong behind an explicit opt-in app such as `nix run .#flatpak-build`.
+- For Flatpak runtime Git access, preserve the explicit host-git bridge decision: `/app/bin/git` delegates to `flatpak-spawn --host git` and the manifest carries the required `org.freedesktop.Flatpak` permission.
+- Do not add Flatpak CI publishing, automatic Flathub submission, GitHub Release Flatpak assets, or workflow-side release-version bumps in the current Flatpak iteration.
 - Treat repo-root `.version` as the canonical checked-in release version source for GitHub Releases, Cargo publication, and npm publication.
 - Expose shared CLI release packaging through root-flake apps so local verification and GitHub release automation consume the same commands (`nix run .#release-artifacts`, `nix run .#release-manifest`, `nix run .#release-npm-package`).
 - Keep GitHub Releases as the canonical publication surface for signed release archives and manifest/checksum assets.

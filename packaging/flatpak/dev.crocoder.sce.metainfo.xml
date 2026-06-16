@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="console-application">
+  <id>dev.crocoder.sce</id>
+  <name>Shared Context Engineering CLI</name>
+  <summary>Manage Shared Context Engineering workflows from the command line</summary>
+  <developer id="dev.crocoder">
+    <name>CroCoder</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <url type="homepage">https://sce.crocoder.dev/</url>
+  <url type="bugtracker">https://github.com/crocoder-dev/shared-context-engineering/issues</url>
+  <description>
+    <p>
+      Shared Context Engineering is AI-assisted software delivery with explicit,
+      versioned context. The sce command line interface installs shared assistant
+      configuration, manages SCE project context, and runs local workflow checks.
+    </p>
+  </description>
+  <provides>
+    <binary>sce</binary>
+  </provides>
+  <releases>
+    <release version="0.2.0" date="2026-06-16" />
+  </releases>
+  <content_rating type="oars-1.1" />
+</component>
