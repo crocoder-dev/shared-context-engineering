@@ -20,7 +20,7 @@ modules:
       env:
         CARGO_HOME: /run/build/sce/cargo
     build-commands:
-      - ./scripts/prepare-cli-generated-assets.sh "$PWD"
+      - bash ./scripts/prepare-cli-generated-assets.sh "$PWD"
       - cargo --offline build --locked --release --manifest-path cli/Cargo.toml --bin sce
       - install -Dm755 cli/target/release/sce /app/bin/sce
       - install -Dm755 packaging/flatpak/git-host-bridge /app/bin/git
