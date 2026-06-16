@@ -2,7 +2,7 @@
 
 The checkout identity service lives in `cli/src/services/checkout/`.
 
-It provides the initial infrastructure for assigning a stable identity to a local Git checkout or linked Git worktree. Integration with setup, hooks, per-checkout Agent Trace database resolution, and doctor reporting is deferred to later tasks in `context/plans/agent-trace-checkout-identity.md`.
+It assigns a stable identity to a local Git checkout or linked Git worktree. The setup lifecycle now creates/reuses this identity and registers the checkout; hook integration, per-checkout Agent Trace database resolution, and doctor reporting are deferred to later tasks in `context/plans/agent-trace-checkout-identity.md`.
 
 ## Current code surface
 
@@ -19,7 +19,14 @@ It provides the initial infrastructure for assigning a stable identity to a loca
 
 ## Current integration state
 
-The module is registered through `cli/src/services/mod.rs` but is not yet called by setup, hooks, doctor, or Agent Trace DB resolution.
+The module is registered through `cli/src/services/mod.rs` and is called by `AgentTraceDbLifecycle::setup()` during `sce setup` after the setup command has derived a repository-root-scoped context.
+
+During setup:
+
+- `checkout::resolve_git_dir(repo_root)` resolves the checkout metadata directory from Git truth.
+- `checkout::get_or_create_checkout_id(git_dir)` creates or reuses `<git-dir>/sce/checkout-id`.
+- `checkout::registry::register_checkout(...)` writes or updates the central registry record with `database_path: null`.
+- Setup output includes the checkout ID and states that the Agent Trace database will be created on first write.
 
 The existing global Agent Trace database path remains the active runtime path until later plan tasks switch consumers to per-checkout database resolution.
 

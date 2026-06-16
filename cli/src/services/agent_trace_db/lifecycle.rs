@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
+use chrono::Utc;
 
 use crate::app::HasRepoRoot;
+use crate::services::checkout::{self, registry};
 use crate::services::db::{bootstrap_db_parent, collect_db_path_health, DbSpec};
 use crate::services::default_paths::agent_trace_db_path;
 use crate::services::lifecycle::{
@@ -50,11 +52,62 @@ impl ServiceLifecycle for AgentTraceDbLifecycle {
         }
     }
 
-    fn setup<C: HasRepoRoot>(&self, _ctx: &C) -> Result<SetupOutcome> {
+    fn setup<C: HasRepoRoot>(&self, ctx: &C) -> Result<SetupOutcome> {
+        let checkout_setup = ctx
+            .repo_root()
+            .map(setup_checkout_identity)
+            .transpose()
+            .context("Agent trace DB lifecycle setup failed while resolving checkout identity")?;
+
         AgentTraceDb::new()
             .context("Agent trace DB lifecycle setup failed while initializing agent trace DB")?;
-        Ok(SetupOutcome::default())
+
+        Ok(SetupOutcome {
+            messages: checkout_setup
+                .iter()
+                .map(format_checkout_identity_setup_message)
+                .collect(),
+            ..SetupOutcome::default()
+        })
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CheckoutIdentitySetup {
+    checkout_id: String,
+}
+
+fn setup_checkout_identity(repo_root: &std::path::Path) -> Result<CheckoutIdentitySetup> {
+    let git_dir = checkout::resolve_git_dir(repo_root).with_context(|| {
+        format!(
+            "failed to resolve git directory for checkout identity from '{}'",
+            repo_root.display()
+        )
+    })?;
+    let checkout_id = checkout::get_or_create_checkout_id(&git_dir).with_context(|| {
+        format!(
+            "failed to get or create checkout identity under '{}'",
+            git_dir.display()
+        )
+    })?;
+
+    registry::register_checkout(registry::CheckoutRecord {
+        checkout_id: checkout_id.clone(),
+        path: repo_root.display().to_string(),
+        last_seen: Utc::now().to_rfc3339(),
+        remote_url: None,
+        database_path: None,
+    })
+    .context("failed to register checkout identity")?;
+
+    Ok(CheckoutIdentitySetup { checkout_id })
+}
+
+fn format_checkout_identity_setup_message(setup: &CheckoutIdentitySetup) -> String {
+    format!(
+        "Agent Trace checkout identity: {}\nAgent Trace database will be created on first write.",
+        setup.checkout_id
+    )
 }
 
 pub fn diagnose_agent_trace_db_health() -> Vec<HealthProblem> {

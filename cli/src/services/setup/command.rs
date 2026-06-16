@@ -49,6 +49,8 @@ impl SetupCommand {
                 .setup(&ctx)
                 .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
 
+            sections.extend(outcome.messages);
+
             if let Some(ref hooks_outcome) = outcome.required_hooks_install {
                 sections.push(setup::format_required_hook_install_success_message(
                     &setup_required_hooks_outcome_from_lifecycle(hooks_outcome),

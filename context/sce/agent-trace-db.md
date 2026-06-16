@@ -171,7 +171,7 @@ Both triggers compare `OLD.*` vs `NEW.*` for all mutable columns (excluding `upd
 
 - `diagnose()` reports canonical Agent Trace DB path and parent-directory readiness problems through the shared DB path-health helper.
 - `fix()` can bootstrap the canonical Agent Trace DB parent directory for auto-fixable parent-readiness problems.
-- `setup()` initializes the database with `AgentTraceDb::new()`, including all ordered Agent Trace migrations and any later migrations not yet recorded in `__sce_migrations`.
+- `setup()` creates/reuses the current checkout identity when a repo root is available, registers the checkout in `<state_root>/sce/checkout-registry.json` with `database_path: null`, emits setup messaging with the checkout ID, and still initializes the existing global database with `AgentTraceDb::new()` until the per-checkout DB path switch lands.
 - `sce doctor` now surfaces Agent Trace DB health as a row within the `Configuration` section with `[PASS]`/`[FAIL]`/`[MISS]` status tokens (e.g., `Agent Trace DB (/path/to/agent-trace.db)`), and includes it in JSON output under the `agent_trace_db` field.
 
 ## Runtime writers

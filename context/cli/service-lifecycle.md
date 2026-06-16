@@ -11,6 +11,7 @@
 - `HealthProblem`, `HealthCategory`, `HealthSeverity`, `HealthFixability`, and `HealthProblemKind` are lifecycle-owned types that mirror the current doctor taxonomy without making the trait depend on `doctor` module types.
 - `FixResultRecord` and `FixOutcome` are lifecycle-owned fix result types.
 - `SetupOutcome` is a minimal lifecycle-owned carrier for current setup result shapes:
+  - generic setup `messages`
   - optional lifecycle-owned `RequiredHooksInstallOutcome`
 - `LifecycleProvider` is a static enum over the concrete provider implementations, and `lifecycle_providers(include_hooks)` is the shared provider catalog/factory used by command orchestrators. The enum owns inherent generic `id`, `diagnose`, `fix`, and `setup` dispatch methods and does not allocate boxed provider trait objects or erase the lifecycle context to `&dyn HasRepoRoot`; provider dispatch remains compile-time typed over the narrow repo-root accessor.
 - Provider order is deterministic: `ConfigLifecycle` → `LocalDbLifecycle` → `AuthDbLifecycle` → `AgentTraceDbLifecycle` → `HooksLifecycle` when hooks are included.
@@ -33,7 +34,7 @@
 - `cli/src/services/agent_trace_db/lifecycle.rs` defines `AgentTraceDbLifecycle`, the Agent Trace DB-owned provider.
 - `AgentTraceDbLifecycle::diagnose` emits canonical Agent Trace DB path and parent-directory readiness lifecycle health problems.
 - `AgentTraceDbLifecycle::fix` bootstraps the canonical Agent Trace DB parent directory for auto-fixable DB parent readiness problems.
-- `AgentTraceDbLifecycle::setup` initializes the Agent Trace DB through `AgentTraceDb::new()` and returns an empty `SetupOutcome` because DB bootstrap currently has no dedicated outcome carrier.
+- `AgentTraceDbLifecycle::setup` resolves the current checkout identity from `ctx.repo_root()` when available, creates or reuses `<git-dir>/sce/checkout-id`, registers the checkout with `database_path: null`, returns setup messaging with the checkout ID, and still initializes the existing global Agent Trace DB through `AgentTraceDb::new()` until per-checkout DB resolution lands.
 - `doctor` runtime execution now aggregates lifecycle providers for diagnosis and repair:
   - `cli/src/services/doctor/command.rs` accepts any context implementing `ContextWithRepoRoot`.
   - `cli/src/services/doctor/mod.rs` resolves the repository root once, creates a repo-root-scoped borrowed context using `with_repo_root()`, and requests the full provider catalog with hooks included.
@@ -43,6 +44,7 @@
 - `setup` runtime execution now aggregates lifecycle providers for setup:
   - `cli/src/services/setup/command.rs` accepts any context implementing `ContextWithRepoRoot`, resolves the repository root, derives a repo-root-scoped borrowed context with `with_repo_root()`, and requests the shared provider catalog with hooks included only when `SetupRequest.install_hooks` is true.
   - Setup lifecycle providers receive only a generic context implementing the narrow repo-root accessor they currently need instead of the full concrete production context type.
+  - Setup command renders generic lifecycle `SetupOutcome.messages` before adapting any hook install outcomes.
   - `HooksLifecycle::setup` returns lifecycle-owned `SetupOutcome.required_hooks_install` from the canonical `install_required_git_hooks` flow, and setup command adapts that result into setup-owned hook install outcomes before rendering.
   - Config asset installation (OpenCode/Claude targets) remains handled by the setup command after lifecycle aggregation.
 
