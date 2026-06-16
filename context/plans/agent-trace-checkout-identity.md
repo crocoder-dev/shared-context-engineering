@@ -69,7 +69,7 @@ Give each cloned repository (and linked Git worktree) its own `agent-trace` chec
   - Evidence: `nix flake check` passed; `nix run .#pkl-check-generated` passed. Manual end-to-end setup in a temporary git repository ran `sce setup --hooks --repo <repo>` twice with isolated `XDG_STATE_HOME`; both runs printed the same checkout ID, `.git/sce/checkout-id` matched the registry record, and registry `database_path` remained `null`.
   - Notes: Setup lifecycle now emits a generic lifecycle setup message for Agent Trace checkout identity. The existing global Agent Trace DB setup remains in place until T03, while checkout registry `database_path` stays unset for lazy per-checkout DB creation later.
 
-- [ ] T03: `Enable per-checkout database resolution with lazy initialization` (status:todo)
+- [x] T03: `Enable per-checkout database resolution with lazy initialization` (status:done)
   - Task ID: T03
   - Goal: Switch all Agent Trace DB consumers from the shared global path to per-checkout paths. Each checkout gets its own `agent-trace-{checkout_id}.db`, created lazily on first write when a hook fires — no explicit setup step needed for the DB itself. Per-checkout DB files provide isolation without any `checkout_id` column in the schema.
   - Boundaries (in/out of scope): In —
@@ -82,6 +82,10 @@ Give each cloned repository (and linked Git worktree) its own `agent-trace` chec
     Out — schema migrations, `checkout_id` columns, data migration from old global DB, doctor checkout identity display.
   - Done when: A fresh clone with `sce setup` run (no hooks yet) has a checkout ID and registry entry but no `agent-trace-{checkout_id}.db` file. The first hook invocation (e.g. post-commit) auto-creates the DB, runs migrations, and updates the registry `database_path`. A `git worktree add` followed by a hook invocation auto-creates a new checkout ID and DB for the worktree. Two checkouts have independent databases with no data leakage. `nix flake check` passes.
   - Verification notes (commands or checks): Manual end-to-end: run `sce setup` in a test repo, verify no per-checkout DB file exists yet, trigger a commit (post-commit hook), verify `agent-trace-{checkout_id}.db` now exists and registry `database_path` is populated. Create a worktree, trigger a hook there, verify a second DB exists independently. Run `nix flake check` for full validation.
+  - Completed: 2026-06-16
+  - Files changed: `cli/src/services/default_paths.rs`, `cli/src/services/db/mod.rs`, `cli/src/services/agent_trace_db/mod.rs`, `cli/src/services/checkout/mod.rs`, `cli/src/services/agent_trace_db/lifecycle.rs`, `cli/src/services/hooks/mod.rs`, `cli/src/services/doctor/inspect.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` passed; `nix flake check` passed; `nix run .#pkl-check-generated` passed. Manual smoke checks with isolated `XDG_STATE_HOME` verified setup creates a checkout ID without creating `agent-trace-{checkout_id}.db`, explicit `sce hooks post-commit --remote-url ...` lazily creates the per-checkout DB and updates registry `database_path`, and a no-setup repository hook invocation creates checkout ID + per-checkout DB in one pass.
+  - Notes: Agent Trace hook DB consumers now resolve through checkout identity and per-checkout lazy DB initialization. `AgentTraceDbLifecycle::setup()` is identity-only; lifecycle diagnose/fix use the per-checkout DB path when an ID exists and otherwise retain the global fallback outside checkout context. Doctor checkout display and registry listing remain deferred to T04.
 
 - [ ] T04: `Surface checkout identity in doctor and add 'sce doctor dbs'` (status:todo)
   - Task ID: T04

@@ -118,6 +118,20 @@ impl DbSpec for AgentTraceDbSpec {
 /// Agent trace Turso database adapter.
 pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 
+impl AgentTraceDb {
+    /// Open or create an Agent Trace database at an explicit path and run all
+    /// embedded migrations.
+    pub fn open_at(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        TursoDb::<AgentTraceDbSpec>::new_at(path)
+    }
+
+    /// Open or create an Agent Trace database at an explicit path without
+    /// running migrations.
+    pub fn open_for_hooks_without_migrations_at(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        TursoDb::<AgentTraceDbSpec>::open_without_migrations_at(path)
+    }
+}
+
 /// Diff trace payload to persist in the agent trace database.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DiffTraceInsert<'a> {
@@ -288,6 +302,7 @@ impl AgentTraceDb {
     /// Setup/lifecycle initialization must continue to use [`AgentTraceDb::new`]
     /// so schema migrations remain explicitly owned by setup flows. Hook callers
     /// must verify schema readiness before reading or writing through this DB.
+    #[allow(dead_code)]
     pub fn open_for_hooks_without_migrations() -> Result<Self> {
         TursoDb::<AgentTraceDbSpec>::open_without_migrations()
     }

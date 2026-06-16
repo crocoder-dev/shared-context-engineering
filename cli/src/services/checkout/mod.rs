@@ -17,7 +17,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
+use chrono::Utc;
 use uuid::{NoContext, Timestamp, Uuid};
+
+use crate::services::{
+    agent_trace_db::AgentTraceDb, default_paths::agent_trace_db_path_for_checkout,
+};
 
 /// Subdirectory inside `<git-dir>/` where SCE checkout metadata lives.
 const SCE_CHECKOUT_DIR: &str = "sce";
@@ -151,4 +156,67 @@ pub fn get_or_create_checkout_id(git_dir: &Path) -> Result<String> {
 pub fn resolve_checkout_id_for_repo(repo_root: &Path) -> Result<String> {
     let git_dir = resolve_git_dir(repo_root)?;
     get_or_create_checkout_id(&git_dir)
+}
+
+/// Resolves or creates the current checkout identity and opens its per-checkout
+/// Agent Trace DB, lazily initializing schema when needed.
+pub fn resolve_or_create_agent_trace_db_for_current_checkout() -> Result<(AgentTraceDb, String)> {
+    let repo_root = std::env::current_dir()
+        .context("Failed to determine current directory for Agent Trace checkout DB resolution")?;
+    resolve_or_create_agent_trace_db_for_checkout(&repo_root)
+}
+
+/// Resolves or creates the checkout identity for `repo_root` and opens its
+/// per-checkout Agent Trace DB, lazily initializing schema when needed.
+pub fn resolve_or_create_agent_trace_db_for_checkout(
+    repo_root: &Path,
+) -> Result<(AgentTraceDb, String)> {
+    let git_dir = resolve_git_dir(repo_root).with_context(|| {
+        format!(
+            "failed to resolve git directory for Agent Trace checkout DB from '{}'",
+            repo_root.display()
+        )
+    })?;
+    let checkout_id = get_or_create_checkout_id(&git_dir).with_context(|| {
+        format!(
+            "failed to get or create checkout identity under '{}'",
+            git_dir.display()
+        )
+    })?;
+    let db_path = agent_trace_db_path_for_checkout(&checkout_id).with_context(|| {
+        format!("failed to resolve Agent Trace DB path for checkout ID {checkout_id}")
+    })?;
+
+    register_checkout_for_db(repo_root, &checkout_id, None)?;
+
+    let fast_open = AgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
+        .and_then(|db| db.ensure_schema_ready_for_hooks().map(|()| db));
+    let db = match fast_open {
+        Ok(db) => db,
+        Err(_) => AgentTraceDb::open_at(&db_path).with_context(|| {
+            format!(
+                "failed to initialize Agent Trace DB for checkout {checkout_id} at '{}'",
+                db_path.display()
+            )
+        })?,
+    };
+
+    register_checkout_for_db(repo_root, &checkout_id, Some(db_path.display().to_string()))?;
+
+    Ok((db, checkout_id))
+}
+
+fn register_checkout_for_db(
+    repo_root: &Path,
+    checkout_id: &str,
+    database_path: Option<String>,
+) -> Result<()> {
+    registry::register_checkout(registry::CheckoutRecord {
+        checkout_id: checkout_id.to_string(),
+        path: repo_root.display().to_string(),
+        last_seen: Utc::now().to_rfc3339(),
+        remote_url: None,
+        database_path,
+    })
+    .context("failed to register checkout identity")
 }

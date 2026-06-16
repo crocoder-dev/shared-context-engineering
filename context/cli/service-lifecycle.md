@@ -32,9 +32,9 @@
 - `LocalDbLifecycle::fix` bootstraps the canonical local DB parent directory for auto-fixable local DB parent readiness problems.
 - `LocalDbLifecycle::setup` initializes the canonical local DB through `LocalDb::new()` and returns an empty `SetupOutcome` because DB bootstrap currently has no dedicated outcome carrier.
 - `cli/src/services/agent_trace_db/lifecycle.rs` defines `AgentTraceDbLifecycle`, the Agent Trace DB-owned provider.
-- `AgentTraceDbLifecycle::diagnose` emits canonical Agent Trace DB path and parent-directory readiness lifecycle health problems.
-- `AgentTraceDbLifecycle::fix` bootstraps the canonical Agent Trace DB parent directory for auto-fixable DB parent readiness problems.
-- `AgentTraceDbLifecycle::setup` resolves the current checkout identity from `ctx.repo_root()` when available, creates or reuses `<git-dir>/sce/checkout-id`, registers the checkout with `database_path: null`, returns setup messaging with the checkout ID, and still initializes the existing global Agent Trace DB through `AgentTraceDb::new()` until per-checkout DB resolution lands.
+- `AgentTraceDbLifecycle::diagnose` emits per-checkout Agent Trace DB path and parent-directory readiness lifecycle health problems when `ctx.repo_root()` has an existing checkout ID; otherwise it falls back to the legacy global Agent Trace DB path.
+- `AgentTraceDbLifecycle::fix` bootstraps the resolved per-checkout Agent Trace DB parent directory for auto-fixable DB parent readiness problems, with the same global fallback outside checkout context.
+- `AgentTraceDbLifecycle::setup` resolves the current checkout identity from `ctx.repo_root()` when available, creates or reuses `<git-dir>/sce/checkout-id`, registers the checkout with `database_path: null`, and returns setup messaging with the checkout ID. It does not initialize an Agent Trace DB file; hook runtime creates or upgrades the per-checkout DB lazily on first use.
 - `doctor` runtime execution now aggregates lifecycle providers for diagnosis and repair:
   - `cli/src/services/doctor/command.rs` accepts any context implementing `ContextWithRepoRoot`.
   - `cli/src/services/doctor/mod.rs` resolves the repository root once, creates a repo-root-scoped borrowed context using `with_repo_root()`, and requests the full provider catalog with hooks included.

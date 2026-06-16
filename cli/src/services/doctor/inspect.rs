@@ -287,7 +287,7 @@ fn collect_global_state_locations(
 }
 
 fn collect_agent_trace_db_health(problems: &mut Vec<DoctorProblem>) -> Option<FileLocationHealth> {
-    let agent_trace_problems = diagnose_agent_trace_db_health();
+    let agent_trace_problems = diagnose_agent_trace_db_health(None);
     let mut agent_trace_db = None;
 
     for problem in &agent_trace_problems {
