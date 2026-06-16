@@ -284,6 +284,8 @@ fn agent_trace_db_status(report: &HookDoctorReport) -> HumanTextStatus {
         }
         if report.problems.iter().any(|p| {
             p.kind == ProblemKind::UnableToResolveStateRoot && p.summary.contains("agent trace")
+                || p.kind == ProblemKind::AgentTraceDbConnectionFailed
+                || p.kind == ProblemKind::AgentTraceDbSchemaNotReady
         }) {
             return HumanTextStatus::Fail;
         }

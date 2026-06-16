@@ -64,6 +64,16 @@ pub fn read_registry() -> Result<CheckoutRegistry> {
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read checkout registry from '{}'", path.display()))?;
 
+    // Empty or whitespace-only files are treated as corrupt — delete and start fresh.
+    if content.trim().is_empty() {
+        let _ = std::fs::remove_file(&path);
+        eprintln!(
+            "[WARN] Empty checkout registry at '{}' — removing and recreating from scratch",
+            path.display()
+        );
+        return Ok(CheckoutRegistry::default());
+    }
+
     let registry: CheckoutRegistry = serde_json::from_str(&content).with_context(|| {
         format!(
             "Failed to parse checkout registry from '{}'",
@@ -94,7 +104,9 @@ pub fn write_registry(registry: &CheckoutRegistry) -> Result<()> {
         .with_context(|| "Failed to serialize checkout registry")?;
 
     // Write to a temporary file first, then rename for atomicity.
-    let temp_path = path.with_extension("json.tmp");
+    // Use a PID-unique suffix so concurrent `sce hooks` processes never
+    // collide on the same temp file.
+    let temp_path = path.with_extension(format!("json.tmp.{}", std::process::id()));
 
     std::fs::write(&temp_path, &content).with_context(|| {
         format!(
@@ -110,6 +122,24 @@ pub fn write_registry(registry: &CheckoutRegistry) -> Result<()> {
             path.display()
         )
     })?;
+
+    // Clean up any stale `.tmp.*` files left behind by previous crashed
+    // processes. The current process's temp file was just renamed, so
+    // anything remaining matching the pattern is orphaned.
+    if let Some(parent) = path.parent() {
+        if let Ok(entries) = std::fs::read_dir(parent) {
+            let stale_prefix = format!("{CHECKOUT_REGISTRY_FILE}.tmp.");
+            for entry in entries {
+                let Ok(entry) = entry else {
+                    continue;
+                };
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with(&stale_prefix) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
 
     Ok(())
 }

@@ -134,6 +134,8 @@ pub(crate) enum ProblemKind {
     OpenCodeAssetMissingOrInvalid,
     HookReadFailed,
     OpenCodeAssetReadFailed,
+    AgentTraceDbConnectionFailed,
+    AgentTraceDbSchemaNotReady,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

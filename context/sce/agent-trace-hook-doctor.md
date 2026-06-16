@@ -126,6 +126,7 @@ The broadened contract for `sce doctor` must cover the following problem invento
 - local DB or checkout/global Agent Trace DB path cannot be resolved
 - local DB and checkout/global Agent Trace DB parent directories are missing or not writable
 - local DB and checkout/global Agent Trace DB bootstrap or health is broken
+- Agent Trace DB file exists but cannot be opened (connection failure) or has incomplete schema (missing/unapplied migrations) — reported as `AgentTraceDbConnectionFailed` / `AgentTraceDbSchemaNotReady` with manual-only remediation directing to `sce setup`
 - Agent Trace checkout ID plus per-checkout DB path/health are reported in `Configuration` section output when a checkout ID exists, with global Agent Trace DB reporting retained as the no-checkout fallback
 
 ### Repository targeting and git readiness

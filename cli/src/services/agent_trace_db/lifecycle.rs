@@ -11,7 +11,7 @@ use crate::services::lifecycle::{
     HealthProblemKind, HealthSeverity, LifecycleProviderId, ServiceLifecycle, SetupOutcome,
 };
 
-use super::AgentTraceDbSpec;
+use super::{AgentTraceDb, AgentTraceDbSpec};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AgentTraceDbLifecycle;
@@ -132,6 +132,46 @@ pub fn diagnose_agent_trace_db_health(repo_root: Option<&Path>) -> Vec<HealthPro
         &db_path,
         &mut problems,
     );
+
+    if db_path.exists() && db_path.is_file() {
+        match AgentTraceDb::open_for_hooks_without_migrations_at(&db_path) {
+            Ok(db) => {
+                if let Err(error) = db.ensure_schema_ready_for_hooks() {
+                    problems.push(HealthProblem {
+                        kind: HealthProblemKind::AgentTraceDbSchemaNotReady,
+                        category: HealthCategory::GlobalState,
+                        severity: HealthSeverity::Error,
+                        fixability: HealthFixability::ManualOnly,
+                        summary: format!(
+                            "Agent Trace database schema at '{}' is not ready: {error}",
+                            db_path.display()
+                        ),
+                        remediation: String::from(
+                            "Re-run 'sce setup' to apply missing migrations, or inspect the database file for corruption.",
+                        ),
+                        next_action: "manual_steps",
+                    });
+                }
+            }
+            Err(error) => {
+                problems.push(HealthProblem {
+                    kind: HealthProblemKind::AgentTraceDbConnectionFailed,
+                    category: HealthCategory::GlobalState,
+                    severity: HealthSeverity::Error,
+                    fixability: HealthFixability::ManualOnly,
+                    summary: format!(
+                        "Unable to open checkout Agent Trace database at '{}': {error}",
+                        db_path.display()
+                    ),
+                    remediation: String::from(
+                        "Verify file permissions and ensure the file is a valid SQLite database. Re-run 'sce setup' to recreate it if needed.",
+                    ),
+                    next_action: "manual_steps",
+                });
+            }
+        }
+    }
+
     problems
 }
 

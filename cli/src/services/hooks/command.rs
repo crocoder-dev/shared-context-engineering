@@ -9,6 +9,6 @@ pub struct HooksCommand {
 impl HooksCommand {
     pub fn execute<C: HasLogger>(&self, context: &C) -> Result<String, ClassifiedError> {
         hooks::run_hooks_subcommand(&self.subcommand, Some(context.logger()))
-            .map_err(|error| ClassifiedError::runtime(error.to_string()))
+            .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))
     }
 }

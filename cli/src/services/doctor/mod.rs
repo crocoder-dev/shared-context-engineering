@@ -381,6 +381,10 @@ fn doctor_problem_kind(kind: HealthProblemKind) -> ProblemKind {
         }
         HealthProblemKind::HookReadFailed => ProblemKind::HookReadFailed,
         HealthProblemKind::OpenCodeAssetReadFailed => ProblemKind::OpenCodeAssetReadFailed,
+        HealthProblemKind::AgentTraceDbConnectionFailed => {
+            ProblemKind::AgentTraceDbConnectionFailed
+        }
+        HealthProblemKind::AgentTraceDbSchemaNotReady => ProblemKind::AgentTraceDbSchemaNotReady,
     }
 }
 
@@ -419,6 +423,10 @@ fn health_problem_kind(kind: ProblemKind) -> HealthProblemKind {
         }
         ProblemKind::HookReadFailed => HealthProblemKind::HookReadFailed,
         ProblemKind::OpenCodeAssetReadFailed => HealthProblemKind::OpenCodeAssetReadFailed,
+        ProblemKind::AgentTraceDbConnectionFailed => {
+            HealthProblemKind::AgentTraceDbConnectionFailed
+        }
+        ProblemKind::AgentTraceDbSchemaNotReady => HealthProblemKind::AgentTraceDbSchemaNotReady,
     }
 }
 
