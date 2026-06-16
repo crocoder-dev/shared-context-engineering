@@ -55,6 +55,8 @@ pub enum HealthProblemKind {
     OpenCodeAssetMissingOrInvalid,
     HookReadFailed,
     OpenCodeAssetReadFailed,
+    AgentTraceDbConnectionFailed,
+    AgentTraceDbSchemaNotReady,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

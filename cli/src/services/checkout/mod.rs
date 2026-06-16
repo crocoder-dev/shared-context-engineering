@@ -193,9 +193,9 @@ pub fn resolve_or_create_agent_trace_db_for_checkout(
         .and_then(|db| db.ensure_schema_ready_for_hooks().map(|()| db));
     let db = match fast_open {
         Ok(db) => db,
-        Err(_) => AgentTraceDb::open_at(&db_path).with_context(|| {
+        Err(fast_error) => AgentTraceDb::open_at(&db_path).with_context(|| {
             format!(
-                "failed to initialize Agent Trace DB for checkout {checkout_id} at '{}'",
+                "failed to initialize Agent Trace DB for checkout {checkout_id} at '{}' (fast-path attempt: {fast_error})",
                 db_path.display()
             )
         })?,

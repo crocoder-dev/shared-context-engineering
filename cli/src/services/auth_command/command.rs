@@ -8,6 +8,6 @@ pub struct AuthCommand {
 impl AuthCommand {
     pub fn execute<C>(&self, _context: &C) -> Result<String, ClassifiedError> {
         auth_command::run_auth_subcommand(self.request)
-            .map_err(|error| ClassifiedError::runtime(error.to_string()))
+            .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))
     }
 }

@@ -4,6 +4,15 @@ The checkout identity service lives in `cli/src/services/checkout/`.
 
 It assigns a stable identity to a local Git checkout or linked Git worktree. The setup lifecycle creates/reuses this identity and registers the checkout. Agent Trace hook runtime now resolves persistence through this identity and lazily initializes a per-checkout database.
 
+## Registry resilience
+
+The registry includes two resilience safeguards against concurrent access and corruption:
+
+- **Empty-file recovery:** `read_registry()` treats empty or whitespace-only registry files as corrupt. It removes the file (best-effort), prints a `[WARN]` to stderr, and returns `CheckoutRegistry::default()`. This prevents `serde_json` parse errors when a previous write was interrupted, leaving a zero-byte file.
+- **PID-unique temp filenames:** `write_registry()` appends the process ID to the temp filename (`checkout-registry.json.tmp.{pid}`) so concurrent `sce hooks` processes never collide on the same temp file. After a successful atomic `rename(2)`, stale `.tmp.*` files left by crashed processes are cleaned up (best-effort, matching `checkout-registry.json.tmp.*` prefix, errors ignored).
+
+These changes are implemented in `cli/src/services/checkout/registry.rs` in the `read_registry()` and `write_registry()` functions. No caller changes were needed.
+
 ## Current code surface
 
 - `cli/src/services/checkout/mod.rs`
