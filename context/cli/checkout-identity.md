@@ -38,7 +38,7 @@ During hook runtime:
 - Missing or incomplete schema falls back to `AgentTraceDb::open_at(path)`, which runs migrations through the shared Turso adapter.
 - Successful DB resolution updates the registry record with `database_path`.
 
-The global `agent-trace.db` path remains only as a lifecycle fallback when no checkout context or checkout ID is available. Doctor checkout identity display and registry listing are deferred to later tasks in `context/plans/agent-trace-checkout-identity.md`.
+The global `agent-trace.db` path remains only as a lifecycle fallback when no checkout context or checkout ID is available. `sce doctor` displays the current checkout ID and per-checkout Agent Trace DB status when a checkout ID exists, and `sce doctor dbs` lists registry records sorted by `last_seen` descending.
 
 ## Testing boundary
 

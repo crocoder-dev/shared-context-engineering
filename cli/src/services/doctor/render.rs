@@ -82,23 +82,7 @@ fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: boo
     ));
 
     lines.push(format!("\n{}:", heading("Configuration")));
-    for location in &report.config_locations {
-        lines.push(format_human_text_row(
-            color_enabled,
-            config_location_status(report, location),
-            location.label,
-            location.path.display().to_string(),
-        ));
-    }
-
-    if let Some(agent_trace_db) = &report.agent_trace_db {
-        lines.push(format_human_text_row(
-            color_enabled,
-            agent_trace_db_status(report),
-            agent_trace_db.label,
-            agent_trace_db.path.display().to_string(),
-        ));
-    }
+    push_configuration_section_rows(report, color_enabled, &mut lines);
 
     lines.push(format!("\n{}:", heading("Repository")));
     lines.push(format_human_text_row(
@@ -148,6 +132,43 @@ fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: boo
     ));
 
     lines.join("\n")
+}
+
+fn push_configuration_section_rows(
+    report: &HookDoctorReport,
+    color_enabled: bool,
+    lines: &mut Vec<String>,
+) {
+    for location in &report.config_locations {
+        lines.push(format_human_text_row(
+            color_enabled,
+            config_location_status(report, location),
+            location.label,
+            location.path.display().to_string(),
+        ));
+    }
+
+    if let Some(identity) = &report.checkout_identity {
+        lines.push(format_human_text_row(
+            color_enabled,
+            HumanTextStatus::Pass,
+            "Checkout identity",
+            identity.checkout_id.clone(),
+        ));
+        lines.push(format_human_text_row(
+            color_enabled,
+            agent_trace_db_status(report),
+            "Agent Trace checkout DB",
+            identity.database_path.display().to_string(),
+        ));
+    } else if let Some(agent_trace_db) = &report.agent_trace_db {
+        lines.push(format_human_text_row(
+            color_enabled,
+            agent_trace_db_status(report),
+            agent_trace_db.label,
+            agent_trace_db.path.display().to_string(),
+        ));
+    }
 }
 
 fn push_git_hooks_section(report: &HookDoctorReport, color_enabled: bool, lines: &mut Vec<String>) {
@@ -441,6 +462,11 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
             "label": location.label,
             "path": location.path.display().to_string(),
             "state": location.state,
+        })),
+        "checkout_identity": report.checkout_identity.as_ref().map(|identity| json!({
+            "checkout_id": identity.checkout_id,
+            "database_path": identity.database_path.display().to_string(),
+            "database_state": identity.database_state,
         })),
         "hook_path_source": match report.hook_path_source {
             HookPathSource::Default => "default",

@@ -4,17 +4,20 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::services::agent_trace_db::lifecycle::diagnose_agent_trace_db_health;
-use crate::services::default_paths::{opencode_asset, InstallTargetPaths, RepoPaths};
+use crate::services::checkout;
+use crate::services::default_paths::{
+    agent_trace_db_path_for_checkout, opencode_asset, InstallTargetPaths, RepoPaths,
+};
 use crate::services::setup::{
     iter_embedded_assets_for_setup_target, iter_required_hook_assets, EmbeddedAsset, SetupTarget,
 };
 
 use super::types::{
-    DoctorProblem, FileLocationHealth, GlobalStateHealth, HookContentState, HookDoctorReport,
-    HookFileHealth, HookPathSource, IntegrationChildHealth, IntegrationContentState,
-    IntegrationGroupHealth, ProblemCategory, ProblemFixability, ProblemKind, ProblemSeverity,
-    Readiness, OPENCODE_AGENTS_LABEL, OPENCODE_COMMANDS_LABEL, OPENCODE_PLUGINS_LABEL,
-    OPENCODE_SKILLS_LABEL,
+    CheckoutIdentityHealth, DoctorProblem, FileLocationHealth, GlobalStateHealth, HookContentState,
+    HookDoctorReport, HookFileHealth, HookPathSource, IntegrationChildHealth,
+    IntegrationContentState, IntegrationGroupHealth, ProblemCategory, ProblemFixability,
+    ProblemKind, ProblemSeverity, Readiness, OPENCODE_AGENTS_LABEL, OPENCODE_COMMANDS_LABEL,
+    OPENCODE_PLUGINS_LABEL, OPENCODE_SKILLS_LABEL,
 };
 use super::{is_executable, DoctorDependencies, DoctorMode, REQUIRED_HOOKS};
 
@@ -26,7 +29,8 @@ pub(super) fn build_report_with_dependencies(
 ) -> HookDoctorReport {
     let mut problems = Vec::new();
     let global_state = collect_global_state_health(repository_root, &mut problems, dependencies);
-    let agent_trace_db = collect_agent_trace_db_health(&mut problems);
+    let checkout_identity = collect_checkout_identity_health(repository_root);
+    let agent_trace_db = collect_agent_trace_db_health(repository_root, &mut problems);
     let git_available = (dependencies.check_git_available)();
 
     let detected_repository_root = if git_available {
@@ -110,6 +114,7 @@ pub(super) fn build_report_with_dependencies(
         mode,
         readiness,
         state_root: global_state.state_root,
+        checkout_identity,
         agent_trace_db,
         repository_root: detected_repository_root,
         hook_path_source,
@@ -133,7 +138,8 @@ pub(super) fn build_report_with_lifecycle_problems(
         dependencies,
         lifecycle_problems,
     );
-    report.agent_trace_db = collect_agent_trace_db_health(&mut report.problems);
+    report.checkout_identity = collect_checkout_identity_health(repository_root);
+    report.agent_trace_db = collect_agent_trace_db_health(repository_root, &mut report.problems);
     report.readiness = if report
         .problems
         .iter()
@@ -153,7 +159,8 @@ fn build_report_without_service_owned_problem_checks(
     mut problems: Vec<DoctorProblem>,
 ) -> HookDoctorReport {
     let global_state = collect_global_state_locations(repository_root, dependencies);
-    let agent_trace_db = collect_agent_trace_db_health(&mut problems);
+    let checkout_identity = collect_checkout_identity_health(repository_root);
+    let agent_trace_db = collect_agent_trace_db_health(repository_root, &mut problems);
     let git_available = (dependencies.check_git_available)();
 
     let detected_repository_root = if git_available {
@@ -228,6 +235,7 @@ fn build_report_without_service_owned_problem_checks(
         mode,
         readiness: Readiness::Ready,
         state_root: global_state.state_root,
+        checkout_identity,
         agent_trace_db,
         repository_root: detected_repository_root,
         hook_path_source,
@@ -286,8 +294,28 @@ fn collect_global_state_locations(
     }
 }
 
-fn collect_agent_trace_db_health(problems: &mut Vec<DoctorProblem>) -> Option<FileLocationHealth> {
-    let agent_trace_problems = diagnose_agent_trace_db_health(None);
+fn collect_checkout_identity_health(repository_root: &Path) -> Option<CheckoutIdentityHealth> {
+    let git_dir = checkout::resolve_git_dir(repository_root).ok()?;
+    let checkout_id = checkout::read_checkout_id(&git_dir).ok()??;
+    let database_path = agent_trace_db_path_for_checkout(&checkout_id).ok()?;
+    let database_state = if database_path.exists() {
+        "present"
+    } else {
+        "expected"
+    };
+
+    Some(CheckoutIdentityHealth {
+        checkout_id,
+        database_path,
+        database_state,
+    })
+}
+
+fn collect_agent_trace_db_health(
+    repository_root: &Path,
+    problems: &mut Vec<DoctorProblem>,
+) -> Option<FileLocationHealth> {
+    let agent_trace_problems = diagnose_agent_trace_db_health(Some(repository_root));
     let mut agent_trace_db = None;
 
     for problem in &agent_trace_problems {
@@ -307,9 +335,9 @@ fn collect_agent_trace_db_health(problems: &mut Vec<DoctorProblem>) -> Option<Fi
             continue;
         }
 
-        let db_path = crate::services::default_paths::agent_trace_db_path().ok()?;
+        let db_path = resolve_agent_trace_db_location(repository_root)?;
         agent_trace_db = Some(FileLocationHealth {
-            label: "Agent Trace DB",
+            label: agent_trace_db_label(repository_root),
             state: if db_path.exists() {
                 "present"
             } else {
@@ -320,9 +348,9 @@ fn collect_agent_trace_db_health(problems: &mut Vec<DoctorProblem>) -> Option<Fi
     }
 
     if agent_trace_db.is_none() {
-        let db_path = crate::services::default_paths::agent_trace_db_path().ok()?;
+        let db_path = resolve_agent_trace_db_location(repository_root)?;
         agent_trace_db = Some(FileLocationHealth {
-            label: "Agent Trace DB",
+            label: agent_trace_db_label(repository_root),
             state: if db_path.exists() {
                 "present"
             } else {
@@ -333,6 +361,20 @@ fn collect_agent_trace_db_health(problems: &mut Vec<DoctorProblem>) -> Option<Fi
     }
 
     agent_trace_db
+}
+
+fn resolve_agent_trace_db_location(repository_root: &Path) -> Option<PathBuf> {
+    collect_checkout_identity_health(repository_root)
+        .map(|identity| identity.database_path)
+        .or_else(|| crate::services::default_paths::agent_trace_db_path().ok())
+}
+
+fn agent_trace_db_label(repository_root: &Path) -> &'static str {
+    if collect_checkout_identity_health(repository_root).is_some() {
+        "Agent Trace checkout DB"
+    } else {
+        "Agent Trace DB"
+    }
 }
 
 fn collect_hook_file_health(directory: &Path) -> Vec<HookFileHealth> {

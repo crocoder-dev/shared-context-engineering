@@ -222,18 +222,11 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
             hooks,
             repo,
         } => convert_setup_command(opencode, claude, both, non_interactive, hooks, repo),
-        cli_schema::Commands::Doctor { fix, format } => Ok(RuntimeCommand::Doctor(
-            services::doctor::command::DoctorCommand {
-                request: services::doctor::DoctorRequest {
-                    mode: if fix {
-                        services::doctor::DoctorMode::Fix
-                    } else {
-                        services::doctor::DoctorMode::Diagnose
-                    },
-                    format,
-                },
-            },
-        )),
+        cli_schema::Commands::Doctor {
+            fix,
+            format,
+            subcommand,
+        } => convert_doctor_command(fix, format, subcommand.as_ref()),
         cli_schema::Commands::Hooks { subcommand } => convert_hooks_subcommand(subcommand),
         cli_schema::Commands::Policy { subcommand } => Ok(convert_policy_subcommand(&subcommand)),
         cli_schema::Commands::Version { format } => Ok(RuntimeCommand::Version(
@@ -249,6 +242,40 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
             },
         )),
     }
+}
+
+fn convert_doctor_command(
+    fix: bool,
+    format: services::output_format::OutputFormat,
+    subcommand: Option<&cli_schema::DoctorSubcommand>,
+) -> Result<RuntimeCommand, ClassifiedError> {
+    let request = match subcommand {
+        Some(cli_schema::DoctorSubcommand::Dbs { format }) => {
+            if fix {
+                return Err(ClassifiedError::validation(
+                    "'sce doctor dbs' cannot be used with '--fix'. Try: run 'sce doctor dbs --format text' or 'sce doctor --fix'.",
+                ));
+            }
+            services::doctor::DoctorRequest {
+                action: services::doctor::DoctorAction::Dbs,
+                mode: services::doctor::DoctorMode::Diagnose,
+                format: *format,
+            }
+        }
+        None => services::doctor::DoctorRequest {
+            action: services::doctor::DoctorAction::Report,
+            mode: if fix {
+                services::doctor::DoctorMode::Fix
+            } else {
+                services::doctor::DoctorMode::Diagnose
+            },
+            format,
+        },
+    };
+
+    Ok(RuntimeCommand::Doctor(
+        services::doctor::command::DoctorCommand { request },
+    ))
 }
 
 fn convert_policy_subcommand(subcommand: &cli_schema::PolicySubcommand) -> RuntimeCommand {

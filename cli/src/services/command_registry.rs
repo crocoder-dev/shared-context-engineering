@@ -139,6 +139,7 @@ pub fn default_runtime_command(name: &str) -> Option<RuntimeCommand> {
         services::doctor::NAME => Some(RuntimeCommand::Doctor(
             services::doctor::command::DoctorCommand {
                 request: services::doctor::DoctorRequest {
+                    action: services::doctor::DoctorAction::Report,
                     mode: services::doctor::DoctorMode::Diagnose,
                     format: services::doctor::DoctorFormat::Text,
                 },

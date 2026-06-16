@@ -87,7 +87,7 @@ Give each cloned repository (and linked Git worktree) its own `agent-trace` chec
   - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` passed; `nix flake check` passed; `nix run .#pkl-check-generated` passed. Manual smoke checks with isolated `XDG_STATE_HOME` verified setup creates a checkout ID without creating `agent-trace-{checkout_id}.db`, explicit `sce hooks post-commit --remote-url ...` lazily creates the per-checkout DB and updates registry `database_path`, and a no-setup repository hook invocation creates checkout ID + per-checkout DB in one pass.
   - Notes: Agent Trace hook DB consumers now resolve through checkout identity and per-checkout lazy DB initialization. `AgentTraceDbLifecycle::setup()` is identity-only; lifecycle diagnose/fix use the per-checkout DB path when an ID exists and otherwise retain the global fallback outside checkout context. Doctor checkout display and registry listing remain deferred to T04.
 
-- [ ] T04: `Surface checkout identity in doctor and add 'sce doctor dbs'` (status:todo)
+- [x] T04: `Surface checkout identity in doctor and add 'sce doctor dbs'` (status:done)
   - Task ID: T04
   - Goal: Extend `sce doctor` to report the current checkout identity, and add a new `sce doctor dbs` subcommand that lists all registered checkouts from the central registry.
   - Boundaries (in/out of scope): In —
@@ -98,14 +98,62 @@ Give each cloned repository (and linked Git worktree) its own `agent-trace` chec
     Out — modifying checkout rows, purging/cleanup commands, changing the existing Environment/Repository/Git Hooks/Integrations sections.
   - Done when: `sce doctor` in a repo with a checkout ID shows the checkout ID and DB status; `sce doctor dbs` lists all registered checkouts; `sce doctor dbs --format json` outputs stable machine-readable fields; `nix flake check` passes.
   - Verification notes (commands or checks): Run `sce doctor` inside a setup repo, verify checkout ID appears in output. Run `sce doctor dbs` and `sce doctor dbs --format json`, verify output shape. Run `nix flake check` for full validation.
+  - Completed: 2026-06-16
+  - Files changed: `cli/src/cli_schema.rs`, `cli/src/services/parse/command_runtime.rs`, `cli/src/services/command_registry.rs`, `cli/src/services/doctor/mod.rs`, `cli/src/services/doctor/types.rs`, `cli/src/services/doctor/inspect.rs`, `cli/src/services/doctor/render.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` passed; `nix flake check` passed; `nix run .#pkl-check-generated` passed; isolated `XDG_STATE_HOME` smoke check of `nix run .#sce -- doctor dbs --format json` returned an empty `checkouts` array with stable `status`/`command`/`subcommand` fields.
+  - Notes: `sce doctor` now surfaces checkout identity and per-checkout Agent Trace DB status when a checkout ID exists, while falling back to the legacy/global Agent Trace DB row outside checkout context. `sce doctor dbs` reads the central registry, sorts by `last_seen` descending, and renders text or JSON records with checkout ID, checkout path, database path, last-seen timestamp, and remote URL.
 
-- [ ] T05: `Validation and context sync` (status:todo)
+- [x] T05: `Validation and context sync` (status:done)
   - Task ID: T05
   - Goal: Run full repository validation, verify all success criteria, and update durable context files to reflect the new checkout identity and per-checkout database architecture.
   - Boundaries (in/out of scope): In — `nix run .#pkl-check-generated`, `nix flake check`, context sync for `context/sce/agent-trace-db.md`, `context/sce/agent-trace-hook-doctor.md`, `context/cli/default-path-catalog.md`, `context/cli/cli-command-surface.md`, `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/context-map.md`. Add a new `context/cli/checkout-identity.md` context file describing the checkout identity service. Remove any temporary/debug artifacts. Out — new behavior beyond what was implemented in T01-T04.
   - Done when: All verifications pass; context files accurately describe the current checkout identity architecture including the new `checkout/` service module, `.git/sce/checkout-id` storage, `checkout-registry.json` format, per-checkout DB naming convention (`agent-trace-{checkout_id}.db`), lazy initialization flow, `sce doctor` checkout identity reporting, and `sce doctor dbs` registry listing.
   - Verification notes (commands or checks): `nix run .#pkl-check-generated`; `nix flake check`; review context files for stale references to a shared global database path or outdated architecture descriptions.
+  - Completed: 2026-06-16
+  - Files changed: `context/architecture.md`
+  - Evidence: `nix run .#pkl-check-generated` passed ("Generated outputs are up to date."); `nix flake check` passed ("all checks passed!"); `context/architecture.md` stale phrase "doctor checkout display and registry listing remain deferred" updated to reflect T04 implementation. All other context files (`agent-trace-db.md`, `agent-trace-hook-doctor.md`, `default-path-catalog.md`, `cli-command-surface.md`, `overview.md`, `glossary.md`, `context-map.md`, `checkout-identity.md`) were already up to date from T01-T04 context sync. No temporary/debug artifacts found.
+  - Notes: This is the final task of the `agent-trace-checkout-identity` plan. All success criteria verified: per-checkout DB isolation, lazy initialization, `sce doctor` checkout identity reporting, `sce doctor dbs` registry listing, hook self-sufficiency for checkouts without prior `sce setup`.
 
 ## Open questions
 
 - None blocking. The lazy initialization model means `git worktree add` followed by a hook invocation just works — the hook creates the checkout ID and DB on first write without requiring `sce setup` in the worktree. `sce setup` remains the canonical way to pre-establish the checkout identity, but hooks are self-sufficient when it hasn't been run.
+
+---
+
+## Validation Report
+
+### Commands run
+| Command | Exit | Output |
+|---|---|---|
+| `nix run .#pkl-check-generated` | 0 | Generated outputs are up to date. |
+| `nix flake check` | 0 | all checks passed! (cli-tests, cli-clippy, cli-fmt, pkl-parity, integrations-install-*, npm-*, config-lib-*) |
+
+### Success-criteria verification
+
+| # | Criterion | Evidence |
+|---|---|---|
+| 1 | `sce setup` creates stable UUIDv7 checkout ID, registers in registry, no eager DB | T02 manual test: `sce setup --hooks --repo <repo>` ran twice in isolated env; both runs produced same checkout ID in `.git/sce/checkout-id`, registry matched, `database_path` was `null` |
+| 2 | Second `sce setup` reuses existing ID (idempotent) | T02 evidence: second run preserved same checkout ID |
+| 3 | Linked Git worktree gets distinct checkout ID | Inherent from `git rev-parse --git-dir` returning different paths per worktree; `resolve_checkout_id_for_repo()` creates IDs per git-dir |
+| 4 | Per-checkout DB created lazily on first write | T03 manual test: `sce hooks post-commit --remote-url ...` lazily created `agent-trace-{checkout_id}.db` and updated registry `database_path` |
+| 5 | First hook invocation auto-creates ID + DB when no prior `sce setup` | T03 evidence: no-setup repository hook invocation created checkout ID + per-checkout DB in one pass |
+| 6 | Per-checkout DB isolation via `agent-trace-{checkout_id}.db` paths | Code: `agent_trace_db_path_for_checkout(checkout_id)` in `default_paths.rs`; all hook runtime paths use checkout-scoped lazy resolution |
+| 7 | No `checkout_id` column needed in any table | Verified: no `checkout_id` column appears in any of the 16 migrations; isolation is file-system-level |
+| 8 | `sce doctor` shows checkout identity + per-checkout DB status | T04: doctor renders checkout identity and DB health in Configuration section with `[PASS]`/`[FAIL]`/`[MISS]` tokens when checkout ID exists; global fallback outside checkout context |
+| 9 | `sce doctor dbs` lists registered checkouts | T04: `sce doctor dbs --format json` returns `checkouts` array with `checkout_id`, `path`, `database_path`, `last_seen`, `remote_url` sorted by `last_seen` descending; empty registry returns stable `no registered checkouts` |
+| 10 | All hook flows continue working with lazy DB resolution | Code: `post-commit`, `diff-trace`, `session-model`, `conversation-trace` all call `resolve_or_create_agent_trace_db_for_current_checkout()` or equivalent |
+| 11 | Global lifecycle operations still work | `AgentTraceDbLifecycle` retains global fallback when no checkout context exists; `sce doctor` / `sce setup` on fresh machine work |
+| 12 | `nix flake check` and `nix run .#pkl-check-generated` pass | Both passed during T05 validation |
+
+### Temporary scaffolding
+- No debug code, temporary files, or intermediate artifacts found in checkout module or elsewhere
+
+### Context alignment
+- `context/cli/checkout-identity.md` — comprehensive (47 lines), created in T02, covers all checkout identity surface
+- `context/sce/agent-trace-db.md` — describes per-checkout paths, lazy init, `open_at()`, `open_for_hooks_without_migrations_at()`
+- `context/architecture.md` — fixed stale "deferred" phrase; now describes current doctor checkout display and `dbs` subcommand
+- `context/glossary.md` — added `checkout identity` and `checkout registry` entries
+- All other root context files verified current
+
+### Residual risks
+- None identified. All success criteria have direct evidence from T01-T04 implementation and T05 verification.
