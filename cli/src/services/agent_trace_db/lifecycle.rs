@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
-use chrono::Utc;
 use std::path::{Path, PathBuf};
 
 use crate::app::HasRepoRoot;
-use crate::services::checkout::{self, registry};
+use crate::services::checkout;
 use crate::services::db::{bootstrap_db_parent, collect_db_path_health, DbSpec};
 use crate::services::default_paths::{agent_trace_db_path, agent_trace_db_path_for_checkout};
 use crate::services::lifecycle::{
@@ -56,14 +55,12 @@ impl ServiceLifecycle for AgentTraceDbLifecycle {
     fn setup<C: HasRepoRoot>(&self, ctx: &C) -> Result<SetupOutcome> {
         let checkout_setup = match ctx.repo_root() {
             Some(repo_root) => {
-                let identity_setup = setup_checkout_identity(repo_root).context(
+                let checkout_id = setup_checkout_identity(repo_root).context(
                     "Agent trace DB lifecycle setup failed while resolving checkout identity",
                 )?;
-                Some(
-                    initialize_checkout_agent_trace_db(repo_root, &identity_setup.checkout_id).context(
-                        "Agent trace DB lifecycle setup failed while initializing checkout database",
-                    )?,
-                )
+                Some(initialize_checkout_agent_trace_db(&checkout_id).context(
+                    "Agent trace DB lifecycle setup failed while initializing checkout database",
+                )?)
             }
             None => None,
         };
@@ -79,17 +76,12 @@ impl ServiceLifecycle for AgentTraceDbLifecycle {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CheckoutIdentitySetup {
-    checkout_id: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 struct CheckoutDatabaseSetup {
     checkout_id: String,
     database_path: PathBuf,
 }
 
-fn setup_checkout_identity(repo_root: &std::path::Path) -> Result<CheckoutIdentitySetup> {
+fn setup_checkout_identity(repo_root: &std::path::Path) -> Result<String> {
     let git_dir = checkout::resolve_git_dir(repo_root).with_context(|| {
         format!(
             "failed to resolve git directory for checkout identity from '{}'",
@@ -102,22 +94,11 @@ fn setup_checkout_identity(repo_root: &std::path::Path) -> Result<CheckoutIdenti
             git_dir.display()
         )
     })?;
-    registry::register_checkout(registry::CheckoutRecord {
-        checkout_id: checkout_id.clone(),
-        path: repo_root.display().to_string(),
-        last_seen: Utc::now().to_rfc3339(),
-        remote_url: None,
-        database_path: None,
-    })
-    .context("failed to register checkout identity")?;
 
-    Ok(CheckoutIdentitySetup { checkout_id })
+    Ok(checkout_id)
 }
 
-fn initialize_checkout_agent_trace_db(
-    repo_root: &Path,
-    checkout_id: &str,
-) -> Result<CheckoutDatabaseSetup> {
+fn initialize_checkout_agent_trace_db(checkout_id: &str) -> Result<CheckoutDatabaseSetup> {
     let db_path = agent_trace_db_path_for_checkout(checkout_id).with_context(|| {
         format!("failed to resolve Agent Trace DB path for checkout ID {checkout_id}")
     })?;
@@ -129,15 +110,6 @@ fn initialize_checkout_agent_trace_db(
             db_path.display()
         )
     })?;
-
-    registry::register_checkout(registry::CheckoutRecord {
-        checkout_id: checkout_id.to_string(),
-        path: repo_root.display().to_string(),
-        last_seen: Utc::now().to_rfc3339(),
-        remote_url: None,
-        database_path: Some(db_path.display().to_string()),
-    })
-    .context("failed to register checkout Agent Trace database path")?;
 
     Ok(CheckoutDatabaseSetup {
         checkout_id: checkout_id.to_string(),

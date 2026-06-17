@@ -5,20 +5,14 @@
 //! string, consistent with the existing `agent_trace_id` convention in this
 //! codebase.
 //!
-//! The central JSON registry at `<state_root>/sce/checkout-registry.json` tracks
-//! all known checkouts with metadata like path, last-seen timestamp, remote URL,
-//! and per-checkout database path.
-
-#![allow(dead_code)]
-
-pub mod registry;
+//! Checkout databases are now discovered via filesystem scan in `sce doctor dbs`
+//! (see `cli/src/services/doctor/mod.rs`). There is no central registry file.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
-use chrono::Utc;
-use uuid::{NoContext, Timestamp, Uuid};
+use uuid::Uuid;
 
 use crate::services::{
     agent_trace_db::AgentTraceDb, default_paths::agent_trace_db_path_for_checkout,
@@ -122,12 +116,7 @@ pub fn get_or_create_checkout_id(git_dir: &Path) -> Result<String> {
         return Ok(existing_id);
     }
 
-    // Generate a new UUIDv7 using the current timestamp.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let timestamp = Timestamp::from_unix(NoContext, now.as_secs(), now.subsec_nanos());
-    let checkout_id = Uuid::new_v7(timestamp).to_string();
+    let checkout_id = Uuid::now_v7().to_string();
 
     let checkout_dir = git_dir.join(SCE_CHECKOUT_DIR);
     std::fs::create_dir_all(&checkout_dir).with_context(|| {
@@ -146,24 +135,6 @@ pub fn get_or_create_checkout_id(git_dir: &Path) -> Result<String> {
     })?;
 
     Ok(checkout_id)
-}
-
-/// Convenience function that resolves the git directory from a repository root
-/// and then gets or creates the checkout ID.
-///
-/// This combines `resolve_git_dir` and `get_or_create_checkout_id` into a
-/// single call for callers that have a repository root but not a git directory.
-pub fn resolve_checkout_id_for_repo(repo_root: &Path) -> Result<String> {
-    let git_dir = resolve_git_dir(repo_root)?;
-    get_or_create_checkout_id(&git_dir)
-}
-
-/// Resolves or creates the current checkout identity and opens its per-checkout
-/// Agent Trace DB, lazily initializing schema when needed.
-pub fn resolve_or_create_agent_trace_db_for_current_checkout() -> Result<(AgentTraceDb, String)> {
-    let repo_root = std::env::current_dir()
-        .context("Failed to determine current directory for Agent Trace checkout DB resolution")?;
-    resolve_or_create_agent_trace_db_for_checkout(&repo_root)
 }
 
 /// Resolves or creates the checkout identity for `repo_root` and opens its
@@ -187,8 +158,6 @@ pub fn resolve_or_create_agent_trace_db_for_checkout(
         format!("failed to resolve Agent Trace DB path for checkout ID {checkout_id}")
     })?;
 
-    register_checkout_for_db(repo_root, &checkout_id, None)?;
-
     let fast_open = AgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
         .and_then(|db| db.ensure_schema_ready_for_hooks().map(|()| db));
     let db = match fast_open {
@@ -201,22 +170,5 @@ pub fn resolve_or_create_agent_trace_db_for_checkout(
         })?,
     };
 
-    register_checkout_for_db(repo_root, &checkout_id, Some(db_path.display().to_string()))?;
-
     Ok((db, checkout_id))
-}
-
-fn register_checkout_for_db(
-    repo_root: &Path,
-    checkout_id: &str,
-    database_path: Option<String>,
-) -> Result<()> {
-    registry::register_checkout(registry::CheckoutRecord {
-        checkout_id: checkout_id.to_string(),
-        path: repo_root.display().to_string(),
-        last_seen: Utc::now().to_rfc3339(),
-        remote_url: None,
-        database_path,
-    })
-    .context("failed to register checkout identity")
 }
