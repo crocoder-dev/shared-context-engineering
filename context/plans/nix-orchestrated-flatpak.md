@@ -79,12 +79,56 @@ Resolved implementation decisions:
   - Files changed: `README.md`
   - Evidence: `git diff --check` clean; static consistency review confirmed all documented commands/paths/IDs match manifest (`dev.crocoder.sce.yml`), metainfo (`dev.crocoder.sce.metainfo.xml`), Nix entrypoints (`flatpak-validate`, `flatpak-local-manifest`, `flatpak-build`), shell script (`sce-flatpak.sh`), host-git bridge (`git-host-bridge`), and cargo sources (`cargo-sources.json`); `nix run .#pkl-check-generated` passed; `nix run .#flatpak-validate -- --skip-optional-lint` passed.
 
-- [ ] T05: `Validate Flatpak distribution and sync context` (status:todo)
+- [x] T05: `Validate Flatpak distribution and sync context` (status:done)
   - Task ID: T05
   - Goal: Run final validation for the Flatpak distribution slice, clean up temporary scaffolding, and ensure durable context matches code truth.
   - Boundaries (in/out of scope): In - full repository validation, Nix-backed Flatpak validation evidence, direct Flatpak-specific validation evidence where practical, cleanup of temporary build files, final plan evidence, and final context sync for Flatpak distribution docs/contracts. Out - publishing to Flathub, creating GitHub Release Flatpak assets, changing existing release channel behavior, or starting a new distribution channel beyond the approved Flatpak slice.
   - Done when: Required repository checks pass or failures are documented with actionable blockers; Nix-backed and Flatpak-specific build/lint/docs checks have evidence; no temporary Flatpak build artifacts are left in the repo; context files accurately describe Flatpak as an official source-built, Nix-orchestrated local build/docs channel with release-source plus local override behavior and host-git bridge semantics.
   - Verification notes (commands or checks): `nix run .#pkl-check-generated`; `nix flake check`; Nix-backed Flatpak command/check introduced by T03; direct Flatpak-specific command(s) introduced or documented by T02-T04, such as AppStream validation and `flatpak-builder --force-clean --user --install-deps-from=flathub <build-dir> <manifest>` when local tooling is available; static search for stale context/docs wording that still says Flatpak is out of scope or implies prebuilt-binary consumption.
+  - Completed: 2026-06-17
+  - Files changed: `context/plans/nix-orchestrated-flatpak.md`, `context/sce/cli-first-install-channels-contract.md`.
+  - Evidence: `nix run .#pkl-check-generated` passed; `nix run .#flatpak-validate -- --skip-optional-lint` passed; `nix build --no-link .#checks.x86_64-linux.flatpak-static-validation` passed; `nix run .#flatpak-local-manifest` passed and emitted a generated checkout-source manifest under `/tmp/nix-shell.xBAUE9/nix-shell.SNEmRO/sce-flatpak-manifest.*`; `nix run .#flatpak-build -- --help` passed; direct `appstreamcli validate --pedantic --no-net packaging/flatpak/dev.crocoder.sce.metainfo.xml` passed; direct `packaging/flatpak/sce-flatpak.sh validate --skip-optional-lint` passed; direct Flatpak tooling was available (`flatpak-builder-1.4.4`, remotes included `flathub`), so the opt-in source build was attempted with `/tmp/nix-shell.xBAUE9/nix-shell.SNEmRO/opencode` build/manifest/state paths, `--install-deps-from flathub`, `--user`, `--state-dir`, `--delete-build-dirs`, and `-y`; it downloaded dependencies and reached `Building module sce` but exceeded the 45-minute task timeout before completion. `nix flake check` was run and failed in the pre-existing `checks.x86_64-linux.cli-fmt` blocker already observed in T02/T03: `cli/src/generated_migrations.rs` needs rustfmt cleanup near the generated auth migration array. Actionable blocker: run `nix develop -c sh -c 'cd cli && cargo fmt'` (or regenerate/fix the formatted generated file if that is the intended owner) and rerun `nix flake check` in a separate approved scope.
+  - Cleanup: Removed the repo-local `.flatpak-builder/` cache and the `/tmp/nix-shell.xBAUE9/nix-shell.SNEmRO/opencode/sce-flatpak-*` build/manifest/state directories left by the timed-out Flatpak build attempt, including stopping the leftover `rofiles-fuse` process before deletion. Final Flatpak artifact check found no `.flatpak-builder*` paths in the repo.
+  - Static review: Stale wording search found no `Flatpak out of scope` wording in `README.md` or `context/sce/*.md`; broader context matches were limited to the active plan's historical/success-criteria text. Packaging prebuilt-artifact search found banned binary-source strings only inside `packaging/flatpak/sce-flatpak.sh` validation denylist checks, not in the manifest, metadata, Cargo source descriptor, or host-git wrapper.
+  - Context sync: completed as a verify-only root pass with one domain-context drift repair; root context already described the implemented source-built Flatpak channel, and `context/sce/cli-first-install-channels-contract.md` was corrected to match the manifest's actual Cargo command (`cargo --offline build --release --manifest-path cli/Cargo.toml --bin sce`, without `--locked`). `git diff --check` passed after the context edit.
+
+## Validation Report - 2026-06-17
+
+### Commands run
+
+- `git diff --check` -> exit 0 (no whitespace errors).
+- `nix run .#pkl-check-generated` -> exit 0 (`Generated outputs are up to date.`).
+- `nix run .#flatpak-validate -- --skip-optional-lint` -> exit 0 (static checks, AppStream validation, and generated local-manifest validation passed).
+- `nix run .#flatpak-validate` -> exit 0 (same validation passed; reported `flatpak-builder-lint not found; optional Flathub lint skipped.`).
+- `nix build --no-link .#checks.x86_64-linux.flatpak-static-validation` -> exit 0 (Flatpak static validation derivation built successfully without creating a `result` symlink).
+- `nix run .#flatpak-local-manifest` -> exit 0 (emitted a generated checkout-source manifest under `/tmp/nix-shell.xBAUE9/nix-shell.SNEmRO/sce-flatpak-manifest.*`).
+- `nix run .#flatpak-build -- --help` -> exit 0 (build app help rendered expected `sce-flatpak build` options).
+- `appstreamcli validate --pedantic --no-net packaging/flatpak/dev.crocoder.sce.metainfo.xml` -> exit 0 (`Validation was successful.`).
+- `packaging/flatpak/sce-flatpak.sh validate --skip-optional-lint` -> exit 0 (direct script validation passed).
+- `flatpak-builder --version && flatpak remotes --columns=name` -> exit 0 (`flatpak-builder-1.4.4`; remotes included `flathub`).
+- `nix run .#flatpak-build -- --build-dir /tmp/nix-shell.xBAUE9/nix-shell.SNEmRO/opencode/sce-flatpak-build/dev.crocoder.sce --manifest-out /tmp/nix-shell.xBAUE9/nix-shell.SNEmRO/opencode/sce-flatpak-manifest --install-deps-from flathub --user -- --state-dir=/tmp/nix-shell.xBAUE9/nix-shell.SNEmRO/opencode/sce-flatpak-state --delete-build-dirs -y` -> timed out after 45 minutes after dependency downloads and reaching `Building module sce`; temporary build/state artifacts were cleaned.
+- `nix flake check` -> exit 1 due to pre-existing `checks.x86_64-linux.cli-fmt` failure in `cli/src/generated_migrations.rs` formatting, matching the blocker already recorded in T02/T03.
+
+### Failed checks and follow-ups
+
+- Full `nix flake check` remains blocked by the existing `cli-fmt` issue in `cli/src/generated_migrations.rs` near the generated auth migration array. Follow-up: in a separately approved scope, run `nix develop -c sh -c 'cd cli && cargo fmt'` (or repair the generated file through its intended generation owner), then rerun `nix flake check`.
+- The opt-in full Flatpak source build exceeded the 45-minute task timeout after reaching the Rust build phase. Follow-up: rerun the same `nix run .#flatpak-build` command with a longer timeout or in an interactive developer environment when full Flatpak build evidence is required.
+- `flatpak-builder-lint` was not available on PATH; the optional lint step was skipped by the validation command without failing the required static/AppStream checks.
+
+### Success-criteria verification
+
+- [x] Flatpak is documented as an official supported source-built channel in durable context (`context/sce/cli-first-install-channels-contract.md`, `context/overview.md`, `context/architecture.md`, `context/patterns.md`, `context/glossary.md`).
+- [x] The checked-in manifest and metadata exist under `packaging/flatpak/` for application ID `dev.crocoder.sce` and expose the `sce` command plus AppStream `<provides><binary>sce</binary></provides>`; confirmed by static validation and AppStream validation.
+- [x] The local build model uses a generated checkout-source manifest instead of a prebuilt binary; confirmed by `nix run .#flatpak-local-manifest`, `sce-flatpak.sh` validation, and static source-build assertions.
+- [x] Nix-backed Flatpak entrypoints exist and validate: `flatpak-validate`, `flatpak-local-manifest`, `flatpak-build`, and `flatpak-static-validation`.
+- [x] Stale wording/static prebuilt-artifact search found no current-state docs claiming Flatpak is out of scope and no Flatpak manifest/metadata/source files consuming prebuilt `sce` artifacts.
+- [x] Temporary Flatpak artifacts introduced or discovered during validation were removed; final artifact check found no repo-local `.flatpak-builder*` paths.
+
+### Residual risks
+
+- Repository-level sign-off is not fully green until the existing `cli-fmt` blocker is fixed.
+- Full Flatpak source-build completion remains unproven in this session due to timeout, although static validation, AppStream validation, local-manifest generation, and build invocation all reached expected stages.
+- Pre-existing unrelated worktree changes remain untouched: `.gitignore` is modified and `claude/` is untracked.
 
 ## Open questions
 

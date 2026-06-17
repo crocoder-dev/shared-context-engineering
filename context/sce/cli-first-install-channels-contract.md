@@ -44,7 +44,7 @@ No other install channels are in scope for the current implementation stage.
 ## Implemented Flatpak packaging surface
 
 - The canonical checked-in Flatpak manifest is `packaging/flatpak/dev.crocoder.sce.yml`.
-- The manifest currently uses `org.freedesktop.Platform` / `org.freedesktop.Sdk` runtime `25.08`, appends the `org.freedesktop.Sdk.Extension.rust-stable` toolchain, and runs `cargo --offline build --locked --release --manifest-path cli/Cargo.toml --bin sce` inside Flatpak.
+- The manifest currently uses `org.freedesktop.Platform` / `org.freedesktop.Sdk` runtime `25.08`, appends the `org.freedesktop.Sdk.Extension.rust-stable` toolchain, and runs `cargo --offline build --release --manifest-path cli/Cargo.toml --bin sce` inside Flatpak.
 - The manifest prepares crate-local generated setup assets by running `scripts/prepare-cli-generated-assets.sh "$PWD"` before Cargo builds, preserving `config/` as the source of truth for generated assistant config inputs.
 - Flatpak Cargo dependency sources are checked in at `packaging/flatpak/cargo-sources.json`, generated from `cli/Cargo.lock`; crates.io dependencies are represented as `.crate` archives with lockfile SHA-256 checksums, and the Turso git dependency is represented as a pinned git source plus local path patches.
 - AppStream metadata lives at `packaging/flatpak/dev.crocoder.sce.metainfo.xml` and declares a console application with `<provides><binary>sce</binary></provides>`.
