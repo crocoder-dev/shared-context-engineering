@@ -54,11 +54,19 @@ impl ServiceLifecycle for AgentTraceDbLifecycle {
     }
 
     fn setup<C: HasRepoRoot>(&self, ctx: &C) -> Result<SetupOutcome> {
-        let checkout_setup = ctx
-            .repo_root()
-            .map(setup_checkout_identity)
-            .transpose()
-            .context("Agent trace DB lifecycle setup failed while resolving checkout identity")?;
+        let checkout_setup = match ctx.repo_root() {
+            Some(repo_root) => {
+                let identity_setup = setup_checkout_identity(repo_root).context(
+                    "Agent trace DB lifecycle setup failed while resolving checkout identity",
+                )?;
+                Some(
+                    initialize_checkout_agent_trace_db(repo_root, &identity_setup.checkout_id).context(
+                        "Agent trace DB lifecycle setup failed while initializing checkout database",
+                    )?,
+                )
+            }
+            None => None,
+        };
 
         Ok(SetupOutcome {
             messages: checkout_setup
@@ -75,6 +83,12 @@ struct CheckoutIdentitySetup {
     checkout_id: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CheckoutDatabaseSetup {
+    checkout_id: String,
+    database_path: PathBuf,
+}
+
 fn setup_checkout_identity(repo_root: &std::path::Path) -> Result<CheckoutIdentitySetup> {
     let git_dir = checkout::resolve_git_dir(repo_root).with_context(|| {
         format!(
@@ -88,7 +102,6 @@ fn setup_checkout_identity(repo_root: &std::path::Path) -> Result<CheckoutIdenti
             git_dir.display()
         )
     })?;
-
     registry::register_checkout(registry::CheckoutRecord {
         checkout_id: checkout_id.clone(),
         path: repo_root.display().to_string(),
@@ -101,10 +114,42 @@ fn setup_checkout_identity(repo_root: &std::path::Path) -> Result<CheckoutIdenti
     Ok(CheckoutIdentitySetup { checkout_id })
 }
 
-fn format_checkout_identity_setup_message(setup: &CheckoutIdentitySetup) -> String {
+fn initialize_checkout_agent_trace_db(
+    repo_root: &Path,
+    checkout_id: &str,
+) -> Result<CheckoutDatabaseSetup> {
+    let db_path = agent_trace_db_path_for_checkout(checkout_id).with_context(|| {
+        format!("failed to resolve Agent Trace DB path for checkout ID {checkout_id}")
+    })?;
+
+    AgentTraceDb::open_at(&db_path).with_context(|| {
+        format!(
+            "failed to initialize Agent Trace DB for checkout {} at '{}'",
+            checkout_id,
+            db_path.display()
+        )
+    })?;
+
+    registry::register_checkout(registry::CheckoutRecord {
+        checkout_id: checkout_id.to_string(),
+        path: repo_root.display().to_string(),
+        last_seen: Utc::now().to_rfc3339(),
+        remote_url: None,
+        database_path: Some(db_path.display().to_string()),
+    })
+    .context("failed to register checkout Agent Trace database path")?;
+
+    Ok(CheckoutDatabaseSetup {
+        checkout_id: checkout_id.to_string(),
+        database_path: db_path,
+    })
+}
+
+fn format_checkout_identity_setup_message(setup: &CheckoutDatabaseSetup) -> String {
     format!(
-        "Agent Trace checkout identity: {}\nAgent Trace database will be created on first write.",
-        setup.checkout_id
+        "Agent Trace checkout identity: {}\nAgent Trace database initialized at '{}'.",
+        setup.checkout_id,
+        setup.database_path.display()
     )
 }
 

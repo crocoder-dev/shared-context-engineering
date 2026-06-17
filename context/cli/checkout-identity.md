@@ -2,7 +2,7 @@
 
 The checkout identity service lives in `cli/src/services/checkout/`.
 
-It assigns a stable identity to a local Git checkout or linked Git worktree. The setup lifecycle creates/reuses this identity and registers the checkout. Agent Trace hook runtime now resolves persistence through this identity and lazily initializes a per-checkout database.
+It assigns a stable identity to a local Git checkout or linked Git worktree. The setup lifecycle creates/reuses this identity, initializes the per-checkout Agent Trace database, and records the database path. Agent Trace hook runtime resolves persistence through this identity and still lazily initializes or upgrades a per-checkout database when setup has not run or schema metadata is incomplete.
 
 ## Registry resilience
 
@@ -36,8 +36,11 @@ During setup:
 
 - `checkout::resolve_git_dir(repo_root)` resolves the checkout metadata directory from Git truth.
 - `checkout::get_or_create_checkout_id(git_dir)` creates or reuses `<git-dir>/sce/checkout-id`.
-- `checkout::registry::register_checkout(...)` writes or updates the central registry record with `database_path: null`.
-- Setup output includes the checkout ID and states that the Agent Trace database will be created on first write.
+- `checkout::registry::register_checkout(...)` first writes or updates the central registry record for the checkout identity.
+- `default_paths::agent_trace_db_path_for_checkout(checkout_id)` computes `<state_root>/sce/agent-trace-{checkout_id}.db`.
+- `AgentTraceDb::open_at(path)` opens or creates the per-checkout DB and applies all embedded migrations before setup completes.
+- `checkout::registry::register_checkout(...)` updates the central registry record with `database_path` after DB initialization succeeds.
+- Setup output includes the checkout ID and initialized Agent Trace database path.
 
 During hook runtime:
 

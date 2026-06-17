@@ -58,11 +58,11 @@ Active hook runtime resolves per-checkout Agent Trace DB files:
 - Function: `agent_trace_db_path_for_checkout(checkout_id)` in `cli/src/services/default_paths.rs`
 - Path template: `<state_root>/sce/agent-trace-{checkout_id}.db`
 - Checkout ID source: `<git-dir>/sce/checkout-id`, where `<git-dir>` comes from `git rev-parse --git-dir`
-- Registry metadata: `<state_root>/sce/checkout-registry.json` stores `database_path` after successful lazy initialization
+- Registry metadata: `<state_root>/sce/checkout-registry.json` stores `database_path` after successful setup-time DB initialization or hook-runtime lazy initialization
 
 ## Migrations
 
-`AgentTraceDbSpec::migrations()` returns `generated_migrations::AGENT_TRACE_MIGRATIONS`, generated from `cli/migrations/agent-trace/` at build time. Migration IDs are the SQL filename stems, sorted by numeric prefix:
+`AgentTraceDbSpec::migrations()` returns `generated_migrations::AGENT_TRACE_MIGRATIONS`, generated from `cli/migrations/agent-trace/` at build time. Setup-time `AgentTraceDb::open_at(path)` and hook-runtime fallback initialization both apply this migration set. Migration IDs are the SQL filename stems, sorted by numeric prefix:
 
 - `001_create_diff_traces.sql`
 - `002_create_post_commit_patch_intersections.sql`
@@ -81,9 +81,9 @@ Active hook runtime resolves per-checkout Agent Trace DB files:
 - `015_create_session_models.sql`
 - `016_add_diff_traces_payload_type.sql` (migration ID `016_add_diff_traces_payload_type`; adds `payload_type TEXT NOT NULL DEFAULT 'patch'` to `diff_traces`)
 
-The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::new()` applies later Agent Trace migrations to an already-created `~/.local/state/sce/agent-trace.db`.
+The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::open_at(path)` applies later Agent Trace migrations to an already-created per-checkout DB.
 
-Per-checkout hook DB resolution first tries `AgentTraceDb::open_for_hooks_without_migrations_at(path)` and `ensure_schema_ready_for_hooks()`. If the DB is missing, metadata is absent, or migrations are incomplete, the checkout resolver falls back to `AgentTraceDb::open_at(path)` so hook invocation lazily creates or upgrades the per-checkout DB before continuing. When the fallback also fails, the error context includes the fast-path failure reason (`(fast-path attempt: {fast_error})`) so both failure causes are visible in diagnostics. Readiness is based on exact migration metadata parity with `AGENT_TRACE_MIGRATIONS`, not table/index/column introspection.
+Per-checkout hook DB resolution first tries `AgentTraceDb::open_for_hooks_without_migrations_at(path)` and `ensure_schema_ready_for_hooks()`. If setup has not initialized the DB, metadata is absent, or migrations are incomplete, the checkout resolver falls back to `AgentTraceDb::open_at(path)` so hook invocation lazily creates or upgrades the per-checkout DB before continuing. When the fallback also fails, the error context includes the fast-path failure reason (`(fast-path attempt: {fast_error})`) so both failure causes are visible in diagnostics. Readiness is based on exact migration metadata parity with `AGENT_TRACE_MIGRATIONS`, not table/index/column introspection.
 
 The `diff_traces` baseline migration creates:
 
@@ -180,7 +180,7 @@ Both triggers compare `OLD.*` vs `NEW.*` for all mutable columns (excluding `upd
 
 - `diagnose()` reports per-checkout Agent Trace DB path and parent-directory readiness when a repo root has a checkout ID; otherwise it falls back to the legacy global Agent Trace DB path. When the DB file exists, it also performs a deep health check: opens the file via `open_for_hooks_without_migrations_at` and verifies schema readiness via `ensure_schema_ready_for_hooks`, reporting `AgentTraceDbConnectionFailed` if open fails or `AgentTraceDbSchemaNotReady` if the schema is incomplete. These deep-check problems are `ManualOnly` (not auto-fixable by `sce doctor --fix`); the remediation directs the operator to re-run `sce setup` or fix file permissions.
 - `fix()` bootstraps the resolved per-checkout DB parent directory for auto-fixable parent-readiness problems, with the same global fallback outside checkout context.
-- `setup()` creates/reuses the current checkout identity when a repo root is available, registers the checkout in `<state_root>/sce/checkout-registry.json` with `database_path: null`, and emits setup messaging with the checkout ID. It does not eagerly initialize the Agent Trace DB; the first hook write lazily creates the per-checkout DB.
+- `setup()` creates/reuses the current checkout identity when a repo root is available, registers the identity, resolves `<state_root>/sce/agent-trace-{checkout_id}.db` through `agent_trace_db_path_for_checkout(checkout_id)`, opens/creates it with `AgentTraceDb::open_at(&db_path)` to apply embedded migrations, updates `<state_root>/sce/checkout-registry.json` with `database_path`, and emits setup messaging with the checkout ID plus initialized DB path. Hook runtime lazy initialization remains available for checkouts where setup has not run or schema metadata is incomplete.
 - `sce doctor` surfaces checkout identity and per-checkout Agent Trace DB health in the `Configuration` section when a checkout ID exists, with `[PASS]`/`[FAIL]`/`[MISS]` status tokens. Outside checkout context it falls back to the legacy/global Agent Trace DB row. JSON output includes `checkout_identity` when available plus the resolved `agent_trace_db` field.
 - `sce doctor dbs` lists registered checkout records from `<state_root>/sce/checkout-registry.json` in text or JSON, sorted by `last_seen` descending.
 
