@@ -8,6 +8,24 @@ Load and follow the `sce-atomic-commit` skill.
 Input:
 `$ARGUMENTS`
 
+## Bypass path (`/commit oneshot` or `/commit skip`)
+
+If `$ARGUMENTS` starts with `oneshot` or `skip` (case-insensitive, first token only):
+
+- **Skip the staging confirmation prompt.** Do not ask the user to stage files or confirm staging.
+- **Validate staged content exists.** Check that `git diff --cached` is non-empty. If no staged changes exist, stop with the error: "No staged changes. Stage changes before commit." Do not proceed.
+- **Skip context-guidance gate classification.** Do not classify staged diff scope as `context/`-only vs mixed. Do not apply context-file guidance gating.
+- **Produce exactly one commit message.** Run `sce-atomic-commit` with these overrides:
+  - Produce exactly one commit message. Do not propose splits. Do not emit split guidance.
+  - When staged changes include `context/plans/*.md`, make a best-effort inference to cite affected plan slug(s) and updated task ID(s). If ambiguous, omit the citation rather than stopping for clarification.
+- **Auto-execute `git commit`.** Use the produced commit message to run `git commit -m "<message>"`.
+  - If `git commit` succeeds, report the commit hash and stop.
+  - If `git commit` fails, stop and report the failure. Do not invent fallback commits, retry, or amend.
+
+## Regular path (no arguments or non-bypass arguments)
+
+If `$ARGUMENTS` does not start with `oneshot` or `skip`:
+
 Behavior:
 - If arguments are empty, treat input as unstated and infer commit intent from staged changes only.
 - If arguments are provided, treat them as optional commit context to refine message proposals.

@@ -14,6 +14,7 @@ For this workflow:
 - propose one or more commit messages when staged changes mix unrelated goals
 - keep each proposed message focused on a single coherent change
 - stay proposal-only: do not create commits automatically
+- in bypass mode (command-invoked), relax proposal-only, split guidance, context-guidance gate, and plan-citation ambiguity rules
 
 ## Inputs
 
@@ -38,6 +39,17 @@ When staged changes include `context/plans/*.md`, each commit body must also inc
 
 If staged `context/plans/*.md` changes do not expose the plan slug or updated task ID clearly enough to cite faithfully, stop and ask for clarification instead of inventing references.
 
+## Bypass mode
+
+When this skill is invoked by the `/commit` command in bypass mode (`/commit oneshot` or `/commit skip`), the command passes overrides that relax the standard rules below:
+
+- **Proposal-only → auto-commit allowed.** Do not block auto-commit; the command will execute `git commit` with the produced message.
+- **Single message only.** Produce exactly one commit message. Do not propose splits. Do not emit split guidance.
+- **Context-guidance gate skipped.** Do not classify staged diff scope as `context/`-only vs mixed. Do not apply context-file guidance gating.
+- **Plan citations: best-effort only.** When staged changes include `context/plans/*.md`, make a best-effort inference to cite affected plan slug(s) and updated task ID(s). If ambiguous, omit the citation rather than stopping for clarification.
+
+When NOT in bypass mode, follow the standard rules in the Procedure and Context-file guidance gating sections below.
+
 ## Procedure
 
 1) Analyze the staged diff for coherent units
@@ -57,17 +69,17 @@ If staged `context/plans/*.md` changes do not expose the plan slug or updated ta
 - Explain what was wrong/missing, why it matters, what changed conceptually, and impact.
 - Add issue references on separate lines.
 
-5) Apply the plan-update body rule when needed
+5) In regular mode: apply the plan-update body rule when needed
 - Check whether staged changes include `context/plans/*.md`.
 - If yes, cite the affected plan slug(s) and updated task ID(s) in the body.
 - If the staged plan diff is ambiguous, stop with actionable guidance asking the user to stage or clarify the plan/task reference explicitly.
 
-6) Propose split guidance when appropriate
+6) In regular mode: propose split guidance when appropriate
 - If staged changes mix unrelated goals (for example: a feature change plus unrelated refactoring), propose separate commit messages for each coherent unit.
 - Explain why the split is recommended and which files belong to each proposed commit.
 - If staged changes represent one coherent unit, propose a single commit message.
 
-7) Validate each proposed message
+7) In regular mode: validate each proposed message
 - Each message should describe its intended change faithfully.
 - The subject should stay concise and technical.
 - The body should add useful why/impact context instead of repeating the subject.
@@ -75,6 +87,7 @@ If staged `context/plans/*.md` changes do not expose the plan slug or updated ta
 
 ## Context-file guidance gating
 
+In regular mode:
 - Check staged diff scope before proposing commit messaging guidance.
 - If staged changes are context-only (`context/**`), context-file-focused guidance is allowed.
 - If staged changes are mixed (`context/**` + non-`context/**`), avoid default context-file commit reminders and prioritize guidance that reflects the full staged scope.
@@ -88,3 +101,4 @@ If staged `context/plans/*.md` changes do not expose the plan slug or updated ta
 - inventing plan slugs or task IDs for staged plan edits
 - proposing splits for changes that are already coherent
 - forcing unrelated changes into a single commit
+- applying split guidance or plan-citation ambiguity stops when the command is in bypass mode
