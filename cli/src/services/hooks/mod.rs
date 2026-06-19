@@ -1778,6 +1778,7 @@ fn staged_diff_has_ai_overlap(
     logger: Option<&dyn Logger>,
 ) -> StagedDiffAiOverlapResult {
     let db_open_result = open_agent_trace_db_for_hook_runtime(
+        repository_root,
         "Failed to open Agent Trace DB for staged AI-overlap evidence check.",
     );
 
