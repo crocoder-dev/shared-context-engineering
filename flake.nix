@@ -177,7 +177,9 @@
           '';
           outputHashMode = "recursive";
           outputHashAlgo = "sha256";
-          outputHash = "sha256-yDKVHH46EzzyiCwBSISEXnJJbqZ2ihvS2H0SGgITaPY=";
+          outputHash = if pkgs.stdenv.isLinux
+            then "sha256-yDKVHH46EzzyiCwBSISEXnJJbqZ2ihvS2H0SGgITaPY="
+            else "sha256-KpUXn9+gHy5whrKWXBt9KZI9RwSpa7DLNfRLL/bMT4Q=";
         };
 
         version = pkgs.lib.strings.trim (builtins.readFile ./.version);

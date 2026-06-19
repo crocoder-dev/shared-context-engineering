@@ -82,6 +82,7 @@ Lightweight post-task verification baseline (required after each completed task)
 ## CI contracts
 
 - No dedicated generated-parity workflow is currently checked in; local/generated-output parity is enforced through `nix run .#pkl-check-generated` and the root `nix flake check` `pkl-parity` derivation.
+- PR validation runs through `.github/workflows/pr-ci.yml` on `pull_request` and `workflow_dispatch`, executing on an `ubuntu-latest` + `macos-latest` matrix (`fail-fast: false`); it installs Nix via `DeterminateSystems/nix-installer-action@main`, enables `DeterminateSystems/magic-nix-cache-action@main` immediately after, then runs `nix flake metadata`, `nix flake check --print-build-logs`, `nix build .#default --print-build-logs`, and `nix run .#sce -- --help` / `nix run .#sce -- version`. Job name renders as `Nix CI (ubuntu-latest)` / `Nix CI (macos-latest)` for use as required branch protection checks. The Nix store cache is the only cache layer; no separate Cargo/Bun/npm/`node_modules` caches.
 
 ## Cross-target parity
 
