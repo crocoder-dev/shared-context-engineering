@@ -1,6 +1,5 @@
 # Shared Context Engineering (SCE)
 
-[![GitHub Actions](https://img.shields.io/github/actions/workflow/status/crocoder-dev/shared-context-engineering/publish-tiles.yml?branch=main&label=github%20actions)](https://github.com/crocoder-dev/shared-context-engineering/actions/workflows/publish-tiles.yml)
 [![crates.io](https://img.shields.io/crates/v/shared-context-engineering?logo=rust)](https://crates.io/crates/shared-context-engineering)
 [![npm](https://img.shields.io/npm/v/%40crocoder-dev%2Fsce?logo=npm)](https://www.npmjs.com/package/@crocoder-dev/sce)
 
