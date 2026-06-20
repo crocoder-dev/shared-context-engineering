@@ -56,7 +56,7 @@ Run the Nix dev-shell integration stale-output test with nix develop -c ./config
 
 > **Coupling note:** `config/pkl/check-generated.sh` must be kept in sync with `config/pkl/generate.pkl`. Whenever `generate.pkl` gains or loses outputs, update the `paths` array in `check-generated.sh` to match so parity checks remain accurate.
 
-GitHub CI runs this same command in `.github/workflows/pkl-generated-parity.yml` for pushes to `main` and pull requests targeting `main`.
+GitHub CI enforces the same parity contract through `.github/workflows/pr-ci.yml`, which runs `nix flake check` (including the `pkl-parity` derivation). For a focused local check without the full flake suite, use `nix run .#pkl-check-generated`.
 
 ---
 

@@ -2,6 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/shared-context-engineering?logo=rust)](https://crates.io/crates/shared-context-engineering)
 [![npm](https://img.shields.io/npm/v/%40crocoder-dev%2Fsce?logo=npm)](https://www.npmjs.com/package/@crocoder-dev/sce)
+[![Nix CI](https://github.com/crocoder-dev/shared-context-engineering/actions/workflows/pr-ci.yml/badge.svg?branch=main)](https://github.com/crocoder-dev/shared-context-engineering/actions/workflows/pr-ci.yml)
 
 Shared Context Engineering is AI-assisted software delivery with explicit, versioned context.
 

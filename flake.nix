@@ -1028,6 +1028,22 @@
               mkdir -p "$out"
             '';
 
+        workflowActionlintCheck =
+          pkgs.runCommand "workflow-actionlint"
+            {
+              nativeBuildInputs = [ pkgs.actionlint ];
+            }
+            ''
+              set -euo pipefail
+
+              cp -r "${./.github/workflows}" ./workflows
+              chmod -R u+w ./workflows
+
+              actionlint ./workflows/*.yml
+
+              mkdir -p "$out"
+            '';
+
         sceApp = {
           type = "app";
           program = "${scePackage}/bin/sce";
@@ -1107,6 +1123,8 @@
             config-lib-bun-tests = configLibBunTests;
             config-lib-biome-check = configLibBiomeCheck;
             config-lib-biome-format = configLibBiomeFormat;
+
+            workflow-actionlint = workflowActionlintCheck;
           }
           // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
             flatpak-static-validation = flatpakStaticValidationCheck;

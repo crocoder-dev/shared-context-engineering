@@ -10,6 +10,8 @@
 - Prefer `nix flake check` for repository-level verification/check flows in contributor guidance.
 - Keep direct Cargo verification commands as secondary targeted-debugging tools rather than the default repo-validation path.
 - Keep `cargo fmt` available for explicit autofix formatting flows; do not present it as the preferred verification command.
+- Gate workflow YAML edits through `checks.<system>.workflow-actionlint` inside root `nix flake check`; run `nix run nixpkgs#actionlint -- .github/workflows/*.yml` for targeted workflow lint during CI workflow edits.
+- Keep PR validation in `.github/workflows/pr-ci.yml` (`Nix CI`): triggers on `pull_request`, `push` to `main`, and `workflow_dispatch`; `ubuntu-latest` + `macos-latest` matrix with `fail-fast: false`; pinned `DeterminateSystems/nix-installer-action@v22` with `DeterminateSystems/magic-nix-cache-action@v14` immediately after install; workflow-level concurrency (`${{ github.workflow }}-${{ github.ref }}`, `cancel-in-progress: true`) and job `timeout-minutes: 90`; quality gates are `nix flake check --print-build-logs`, `nix build .#default --print-build-logs`, and `nix run .#sce` smoke tests only (no diagnostic `nix flake metadata` step); pin third-party Actions to explicit version tags, not `@main`.
 
 ## Root Biome scoping
 
@@ -154,7 +156,7 @@
 - For hosted rewrite mapping seams, resolve candidates deterministically in strict precedence order (patch-id exact, then range-diff score, then fuzzy score), classify top-score ties as `ambiguous`, enforce low-confidence unresolved behavior below `0.60`, and preserve stable outcome ordering via canonical candidate SHA sorting.
 - For hosted reconciliation observability, publish run-level mapped/unmapped counts, confidence histogram buckets, runtime timing, and normalized error-class labels so retry/quality drift can be monitored without requiring a full dashboard surface.
 - Keep crate-local onboarding docs in `cli/README.md` and sanity-check command examples against actual `sce` output whenever command messaging changes.
-- Keep Rust verification in flake checks under stable named derivations re-exported by the root flake: `checks.<system>.cli-tests`, `checks.<system>.cli-clippy`, `checks.<system>.cli-fmt`, `checks.<system>.integrations-install-tests`, `checks.<system>.integrations-install-clippy`, and `checks.<system>.integrations-install-fmt`.
+- Keep Rust verification in flake checks under stable named derivations re-exported by the root flake: `checks.<system>.cli-tests`, `checks.<system>.cli-clippy`, `checks.<system>.cli-fmt`, `checks.<system>.integrations-install-tests`, `checks.<system>.integrations-install-clippy`, `checks.<system>.integrations-install-fmt`, and `checks.<system>.workflow-actionlint`.
 - In `flake.nix`, select the Rust toolchain via an explicit Rust overlay (`rust-overlay`) and thread that toolchain through Crane package/check derivations so CLI builds and checks do not rely on implicit nixpkgs Rust defaults.
 - For installable CLI release surfaces in the root flake, expose an explicit named package plus default alias (`packages.sce` and `packages.default = packages.sce`) and pair it with a runnable app output (`apps.sce`) that points to the packaged binary path.
 - For root-flake CLI release metadata, source the package/check version from repo-root `.version` and trim it at eval time so packaged outputs stay aligned without hardcoded semver strings in `flake.nix`.
