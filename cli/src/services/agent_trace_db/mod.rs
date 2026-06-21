@@ -733,7 +733,7 @@ mod tests {
                 "sce-agent-trace-db-test-{}-{nonce}",
                 std::process::id()
             ))
-            .join("agent-trace.db")
+            .join("project.db")
     }
 
     fn valid_patch(path: &str, content: &str) -> String {

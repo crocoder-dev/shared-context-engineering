@@ -279,9 +279,9 @@ pub fn auth_db_path() -> anyhow::Result<PathBuf> {
         .join("auth.db"))
 }
 
-/// Returns the canonical path to the agent trace Turso database file.
+/// Returns the canonical path to the project Turso database file.
 ///
-/// The path is `<state_root>/sce/agent-trace.db`, where `state_root` comes
+/// The path is `<state_root>/sce/project.db`, where `state_root` comes
 /// from the shared default-path catalog (`XDG_STATE_HOME` or platform
 /// equivalent).
 #[allow(dead_code)]
@@ -290,12 +290,12 @@ pub fn agent_trace_db_path() -> anyhow::Result<PathBuf> {
         .roots()
         .state_root()
         .join("sce")
-        .join("agent-trace.db"))
+        .join("project.db"))
 }
 
-/// Returns the canonical per-checkout Agent Trace Turso database file path.
+/// Returns the canonical per-project Turso database file path.
 ///
-/// The path is `<state_root>/sce/agent-trace-{checkout_id}.db`, where
+/// The path is `<state_root>/sce/project-{checkout_id}.db`, where
 /// `state_root` comes from the shared default-path catalog (`XDG_STATE_HOME` or
 /// platform equivalent).
 #[allow(dead_code)]
@@ -309,7 +309,7 @@ pub fn agent_trace_db_path_for_checkout(checkout_id: &str) -> anyhow::Result<Pat
         .roots()
         .state_root()
         .join("sce")
-        .join(format!("agent-trace-{checkout_id}.db")))
+        .join(format!("project-{checkout_id}.db")))
 }
 
 #[allow(dead_code)]

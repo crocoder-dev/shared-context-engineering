@@ -40,7 +40,7 @@
   - The preflight is invoked only when the attribution gate passes; when the gate does not pass, no DB read or staged-diff capture occurs.
 - `pre-commit` is a deterministic no-op entrypoint.
 - **`post-commit` is an active intersection entrypoint** (see [agent-trace-db.md](agent-trace-db.md)):
-  - Agent Trace DB access resolves the current checkout ID from `<git-dir>/sce/checkout-id`, creating it if missing, then opens `<state_root>/sce/agent-trace-{checkout_id}.db` through the checkout lazy DB resolver.
+  - Agent Trace DB access resolves the current checkout ID from `<git-dir>/sce/checkout-id`, creating it if missing, then opens `<state_root>/sce/project-{checkout_id}.db` through the checkout lazy DB resolver.
   - The resolver tries a no-migration open/readiness check first and falls back to migration-running initialization when the per-checkout DB is absent or schema metadata is incomplete.
   - Captures the current commit's patch from git using `capture_post_commit_patch_from_git()`.
   - Queries recent `diff_traces` patches from the past 7 days via `AgentTraceDb::recent_diff_trace_patches()`.

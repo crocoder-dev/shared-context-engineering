@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -7,13 +8,16 @@ use chrono::{DateTime, Utc};
 use serde_json::json;
 
 use crate::app::{ContextWithRepoRoot, HasRepoRoot};
-use crate::services::default_paths::{resolve_sce_default_locations, resolve_state_data_root};
+use crate::services::default_paths::{
+    auth_db_path, resolve_sce_default_locations, resolve_state_data_root,
+};
 use crate::services::lifecycle::{
     lifecycle_providers, FixOutcome, HealthCategory, HealthFixability, HealthProblem,
     HealthProblemKind, HealthSeverity, LifecycleProvider, LifecycleProviderId,
 };
 use crate::services::output_format::OutputFormat;
 use crate::services::setup;
+use crate::services::style::{supports_color, value, OwoColorize};
 
 mod fixes;
 mod inspect;
@@ -68,7 +72,7 @@ struct DoctorExecution {
     fix_results: Vec<DoctorFixResultRecord>,
 }
 
-/// A checkout discovered from agent-trace-*.db files on disk.
+/// A project DB discovered from project-*.db files on disk.
 #[derive(Clone, Debug)]
 struct DiscoveredCheckout {
     /// Stable `UUIDv7` checkout identity extracted from the filename.
@@ -76,7 +80,27 @@ struct DiscoveredCheckout {
     /// Absolute path to the per-checkout database file.
     database_path: String,
     /// ISO 8601 timestamp from file mtime.
-    last_seen: String,
+    last_opened: String,
+}
+
+#[derive(Clone, Debug)]
+struct ServiceDatabase {
+    name: &'static str,
+    database_path: String,
+    last_opened: String,
+}
+
+#[derive(Clone, Debug)]
+struct DoctorDbsReport {
+    service_databases: Vec<ServiceDatabase>,
+    project_databases: Vec<DiscoveredCheckout>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ServiceDatabaseColumnWidths {
+    name: usize,
+    last_opened: usize,
+    database_path: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -106,17 +130,60 @@ where
 }
 
 fn run_doctor_dbs(format: DoctorFormat) -> Result<String> {
-    let mut checkouts = discover_checkouts_from_filesystem()
+    let mut project_databases = discover_checkouts_from_filesystem()
         .context("failed to discover checkouts from filesystem")?;
-    sort_checkouts_by_last_seen_desc(&mut checkouts);
+    sort_checkouts_by_last_opened_desc(&mut project_databases);
+
+    let report = DoctorDbsReport {
+        service_databases: collect_service_databases()?,
+        project_databases,
+    };
 
     match format {
-        DoctorFormat::Text => Ok(render_doctor_dbs_text(&checkouts)),
-        DoctorFormat::Json => render_doctor_dbs_json(&checkouts),
+        DoctorFormat::Text => Ok(render_doctor_dbs_text(&report)),
+        DoctorFormat::Json => render_doctor_dbs_json(&report),
     }
 }
 
-/// Scans `<state_root>/sce/` for `agent-trace-*.db` files and derives checkout
+fn collect_service_databases() -> Result<Vec<ServiceDatabase>> {
+    let auth_database_path = auth_db_path().context("failed to resolve auth DB path")?;
+
+    Ok(vec![service_database_record(
+        "Auth DB",
+        &auth_database_path,
+    )?])
+}
+
+fn service_database_record(name: &'static str, database_path: &Path) -> Result<ServiceDatabase> {
+    let last_opened = match fs::metadata(database_path) {
+        Ok(metadata) if metadata.is_file() => modified_timestamp(&metadata),
+        Ok(_) => String::from("unknown"),
+        Err(error) if error.kind() == ErrorKind::NotFound => String::from("unknown"),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to read metadata for '{}'", database_path.display())
+            });
+        }
+    };
+
+    Ok(ServiceDatabase {
+        name,
+        database_path: database_path.display().to_string(),
+        last_opened,
+    })
+}
+
+fn modified_timestamp(metadata: &fs::Metadata) -> String {
+    metadata.modified().ok().map_or_else(
+        || String::from("unknown"),
+        |mtime| {
+            let dt: DateTime<Utc> = mtime.into();
+            dt.to_rfc3339()
+        },
+    )
+}
+
+/// Scans `<state_root>/sce/` for `project-*.db` files and derives checkout
 /// metadata from each discovered file.
 fn discover_checkouts_from_filesystem() -> Result<Vec<DiscoveredCheckout>> {
     let state_root = resolve_state_data_root().context("failed to resolve state data root")?;
@@ -138,8 +205,8 @@ fn discover_checkouts_from_filesystem() -> Result<Vec<DiscoveredCheckout>> {
         let file_name = entry.file_name();
         let file_name_str = file_name.to_string_lossy();
 
-        // Match agent-trace-{id}.db
-        let Some(stripped) = file_name_str.strip_prefix("agent-trace-") else {
+        // Match project-{id}.db
+        let Some(stripped) = file_name_str.strip_prefix("project-") else {
             continue;
         };
         let Some(checkout_id) = stripped.strip_suffix(".db") else {
@@ -157,13 +224,7 @@ fn discover_checkouts_from_filesystem() -> Result<Vec<DiscoveredCheckout>> {
             continue;
         }
 
-        let last_seen: String = metadata.modified().ok().map_or_else(
-            || String::from("unknown"),
-            |mtime| {
-                let dt: DateTime<Utc> = mtime.into();
-                dt.to_rfc3339()
-            },
-        );
+        let last_opened = modified_timestamp(&metadata);
 
         let database_path = entry
             .path()
@@ -173,48 +234,227 @@ fn discover_checkouts_from_filesystem() -> Result<Vec<DiscoveredCheckout>> {
         checkouts.push(DiscoveredCheckout {
             checkout_id: checkout_id.to_string(),
             database_path,
-            last_seen,
+            last_opened,
         });
     }
 
     Ok(checkouts)
 }
 
-fn sort_checkouts_by_last_seen_desc(checkouts: &mut [DiscoveredCheckout]) {
+fn sort_checkouts_by_last_opened_desc(checkouts: &mut [DiscoveredCheckout]) {
     checkouts.sort_by(|left, right| {
         right
-            .last_seen
-            .cmp(&left.last_seen)
+            .last_opened
+            .cmp(&left.last_opened)
             .then_with(|| left.checkout_id.cmp(&right.checkout_id))
     });
 }
 
-fn render_doctor_dbs_text(checkouts: &[DiscoveredCheckout]) -> String {
-    let mut lines = vec![String::from("SCE doctor dbs")];
+fn render_doctor_dbs_text(report: &DoctorDbsReport) -> String {
+    render_doctor_dbs_text_with_color_policy(report, supports_color())
+}
 
-    if checkouts.is_empty() {
-        lines.push(String::from("no registered checkouts"));
-        return lines.join("\n");
+fn render_doctor_dbs_text_with_color_policy(
+    report: &DoctorDbsReport,
+    color_enabled: bool,
+) -> String {
+    let mut lines = vec![format!(
+        "{} {}",
+        dbs_label("SCE doctor", color_enabled),
+        value("dbs")
+    )];
+
+    lines.push(format!("\n{}:", dbs_heading("Service DBs", color_enabled)));
+    lines.extend(format_service_database_rows(&report.service_databases));
+
+    if report.project_databases.is_empty() {
+        lines.push(format!("\n{}:", dbs_heading("Project DBs", color_enabled)));
+        lines.push(format!("  {}", value("no discovered project DBs")));
+    } else {
+        lines.push(format!("\n{}:", dbs_heading("Project DBs", color_enabled)));
+        lines.extend(format_discovered_checkout_rows(&report.project_databases));
     }
 
-    for checkout in checkouts {
-        lines.push(format!("checkout_id: {}", checkout.checkout_id));
-        lines.push(format!("  database_path: {}", checkout.database_path));
-        lines.push(format!("  last_seen: {}", checkout.last_seen));
-    }
+    lines.push(format!(
+        "\n{}: {} service DB(s), {} discovered project DB(s)",
+        dbs_label("Summary", color_enabled),
+        value(&report.service_databases.len().to_string()),
+        value(&report.project_databases.len().to_string())
+    ));
 
     lines.join("\n")
 }
 
-fn render_doctor_dbs_json(checkouts: &[DiscoveredCheckout]) -> Result<String> {
+fn dbs_heading(text: &str, color_enabled: bool) -> String {
+    if color_enabled {
+        text.cyan().bold().to_string()
+    } else {
+        text.to_string()
+    }
+}
+
+fn dbs_label(text: &str, color_enabled: bool) -> String {
+    if color_enabled {
+        text.cyan().to_string()
+    } else {
+        text.to_string()
+    }
+}
+
+fn format_service_database_rows(databases: &[ServiceDatabase]) -> Vec<String> {
+    let name_header = "Name";
+    let last_opened_header = "Last Opened";
+    let database_path_header = "Database Path";
+
+    let widths = ServiceDatabaseColumnWidths {
+        name: databases
+            .iter()
+            .map(|database| database.name.len())
+            .max()
+            .unwrap_or(0)
+            .max(name_header.len()),
+        last_opened: databases
+            .iter()
+            .map(|database| database.last_opened.len())
+            .max()
+            .unwrap_or(0)
+            .max(last_opened_header.len()),
+        database_path: databases
+            .iter()
+            .map(|database| database.database_path.len())
+            .max()
+            .unwrap_or(0)
+            .max(database_path_header.len()),
+    };
+
+    let mut rows = vec![
+        format_service_database_row(
+            name_header,
+            last_opened_header,
+            database_path_header,
+            widths,
+        ),
+        format_service_database_row(
+            &"-".repeat(widths.name),
+            &"-".repeat(widths.last_opened),
+            &"-".repeat(widths.database_path),
+            widths,
+        ),
+    ];
+
+    for database in databases {
+        rows.push(format_service_database_row(
+            database.name,
+            &database.last_opened,
+            &database.database_path,
+            widths,
+        ));
+    }
+
+    rows
+}
+
+fn format_service_database_row(
+    name: &str,
+    last_opened: &str,
+    database_path: &str,
+    widths: ServiceDatabaseColumnWidths,
+) -> String {
+    let ServiceDatabaseColumnWidths {
+        name: name_width,
+        last_opened: last_opened_width,
+        database_path: database_path_width,
+    } = widths;
+
+    format!(
+        "  {name:<name_width$}  {last_opened:<last_opened_width$}  {database_path:<database_path_width$}"
+    )
+}
+
+fn format_discovered_checkout_rows(checkouts: &[DiscoveredCheckout]) -> Vec<String> {
+    let checkout_id_header = "Project ID";
+    let last_opened_header = "Last Opened";
+    let database_path_header = "Project DB Path";
+
+    let checkout_id_width = checkouts
+        .iter()
+        .map(|checkout| checkout.checkout_id.len())
+        .max()
+        .unwrap_or(0)
+        .max(checkout_id_header.len());
+    let last_opened_width = checkouts
+        .iter()
+        .map(|checkout| checkout.last_opened.len())
+        .max()
+        .unwrap_or(0)
+        .max(last_opened_header.len());
+    let database_path_width = checkouts
+        .iter()
+        .map(|checkout| checkout.database_path.len())
+        .max()
+        .unwrap_or(0)
+        .max(database_path_header.len());
+
+    let mut rows = vec![
+        format_dbs_table_row(
+            checkout_id_header,
+            last_opened_header,
+            database_path_header,
+            checkout_id_width,
+            last_opened_width,
+            database_path_width,
+        ),
+        format_dbs_table_row(
+            &"-".repeat(checkout_id_width),
+            &"-".repeat(last_opened_width),
+            &"-".repeat(database_path_width),
+            checkout_id_width,
+            last_opened_width,
+            database_path_width,
+        ),
+    ];
+
+    for checkout in checkouts {
+        rows.push(format_dbs_table_row(
+            &checkout.checkout_id,
+            &checkout.last_opened,
+            &checkout.database_path,
+            checkout_id_width,
+            last_opened_width,
+            database_path_width,
+        ));
+    }
+
+    rows
+}
+
+fn format_dbs_table_row(
+    checkout_id: &str,
+    last_opened: &str,
+    database_path: &str,
+    checkout_id_width: usize,
+    last_opened_width: usize,
+    database_path_width: usize,
+) -> String {
+    format!(
+        "  {checkout_id:<checkout_id_width$}  {last_opened:<last_opened_width$}  {database_path:<database_path_width$}"
+    )
+}
+
+fn render_doctor_dbs_json(report: &DoctorDbsReport) -> Result<String> {
     let payload = json!({
         "status": "ok",
         "command": NAME,
         "subcommand": "dbs",
-        "checkouts": checkouts.iter().map(|checkout| json!({
+        "databases": report.service_databases.iter().map(|database| json!({
+            "name": database.name,
+            "database_path": database.database_path,
+            "last_opened": database.last_opened,
+        })).collect::<Vec<_>>(),
+        "checkouts": report.project_databases.iter().map(|checkout| json!({
             "checkout_id": checkout.checkout_id,
             "database_path": checkout.database_path,
-            "last_seen": checkout.last_seen,
+            "last_opened": checkout.last_opened,
         })).collect::<Vec<_>>(),
     });
 

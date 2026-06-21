@@ -17,8 +17,8 @@
 - global config: `<config_root>/sce/config.json`
 - auth DB: `<state_root>/sce/auth.db`
 - local DB: `<state_root>/sce/local.db`
-- legacy/global agent trace DB fallback: `<state_root>/sce/agent-trace.db`
-- per-checkout agent trace DB: `<state_root>/sce/agent-trace-{checkout_id}.db`
+- legacy/global project DB fallback: `<state_root>/sce/project.db`
+- per-checkout project DB: `<state_root>/sce/project-{checkout_id}.db`
 
 ### Repo-relative paths
 
