@@ -96,12 +96,21 @@ The bundle is built from source inside Flatpak (using `flatpak-builder` + `flatp
     - `nix flake check` → exit 0, all checks passed including `workflow-actionlint`
     - Static YAML review confirms step order, artifact naming, file globs, and release notes body are correct
 
-- [ ] T04: `Document .flatpak bundle release assets` (status:todo)
+- [x] T04: `Document .flatpak bundle release assets` (status:done)
   - Task ID: T04
   - Goal: Update user-facing documentation and durable context to describe the new `.flatpak` bundle release assets and the single-command install flow.
   - Boundaries (in/out of scope): In - update `README.md` Flatpak section to describe the new `.flatpak` bundle assets and the `flatpak install --user <url>` install command; update durable context files if not already covered in T01. Out - implementation changes to release tooling/workflows, new install channels, Flathub documentation.
   - Done when: README tells users they can install `sce` from GitHub Release `.flatpak` bundles with `flatpak install --user <url>`, lists the asset names, and states the bundles are source-built (not prebuilt binaries) and not Flathub submissions.
   - Verification notes (commands or checks): Static docs review; search for stale "no .flatpak bundle" wording in current-state docs; confirm new install command is documented accurately.
+  - **Status:** done
+  - **Completed:** 2026-06-22
+  - **Files changed:**
+    - `README.md` — replaced stale "source-manifest assets only" / "not .flatpak bundles" blockquote with current description acknowledging both asset types; added new "GitHub Release bundle assets" subsection with asset names, direct install command, and source-built / not-Flathub qualification
+  - **Evidence:**
+    - Static stale-wording review: no unqualified "source-manifest assets only" or "not .flatpak bundles" remains in README or durable context
+    - Durable context files verified current (T01 coverage confirmed): `context/sce/cli-first-install-channels-contract.md`, `context/sce/cli-release-artifact-contract.md`, `context/architecture.md`, `context/patterns.md`, `context/glossary.md`, `context/overview.md` all reference both asset sets correctly
+    - `nix run .#pkl-check-generated` → exit 0, generated outputs up to date
+    - `nix flake check` → exit 0, all checks passed
 
 - [ ] T05: `Validate bundle release flow and clean up` (status:todo)
   - Task ID: T05

@@ -58,10 +58,12 @@ The `sce` CLI is also available as a **source-built** Flatpak package (`dev.croc
 for Linux. The Flatpak builds `sce` from source inside the Flatpak sandbox using the
 Freedesktop SDK Rust extension — it does not wrap a prebuilt Nix, Cargo, or npm binary.
 
-> **Release scope:** GitHub Releases include Flatpak source-manifest assets only.
-> These assets are packaging metadata and support files for source builds; they are not
-> prebuilt Flatpak apps, `.flatpak` bundles, OSTree repositories, or Flathub submissions.
-> Automatic Flathub publication and release-version bumping remain out of scope.
+> **Release scope:** GitHub Releases now include both Flatpak source-manifest
+> assets (packaging metadata for source builds) and source-built `.flatpak` bundle
+> assets (pre-built Flatpak apps for direct install). The bundles are built from
+> Rust source inside Flatpak — they are not prebuilt binaries, Nix packages, or
+> Flathub submissions. Automatic Flathub publication and release-version bumping
+> remain out of scope.
 
 #### Prerequisites
 
@@ -137,6 +139,25 @@ nix run .#release-flatpak-package -- \
   --version "$(tr -d '\n' < .version)" \
   --out-dir dist/flatpak
 ```
+
+#### GitHub Release bundle assets
+
+Each `sce` GitHub Release also includes source-built `.flatpak` bundles for
+direct installation without cloning the repository or building from source:
+
+- `sce-v<version>-x86_64.flatpak` + `.sha256` + `.json`
+- `sce-v<version>-aarch64.flatpak` + `.sha256` + `.json`
+
+Install directly from the release URL:
+
+```bash
+flatpak install --user \
+  https://github.com/crocoder-dev/shared-context-engineering/releases/download/v<version>/sce-v<version>-x86_64.flatpak
+```
+
+These bundles are **source-built** — the Flatpak builds `sce` from Rust source
+inside the Flatpak sandbox, not from a prebuilt Nix, Cargo, or npm binary.
+They are not Flathub submissions and are published only as GitHub Release assets.
 
 #### Direct flatpak-builder fallback
 
