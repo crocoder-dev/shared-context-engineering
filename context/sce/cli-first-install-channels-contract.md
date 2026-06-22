@@ -30,7 +30,7 @@ No other install channels are in scope for the current implementation stage.
 - `Cargo` is a first-class supported install path and its publish metadata should stay aligned to `.version` without workflow-side version bumping.
 - npm registry publication should also consume the checked-in package version aligned to `.version` without workflow-side version bumping.
 - Flatpak is source-built and must not consume `nix build .#sce`, native GitHub Release binary archives, npm native binaries, or any other prebuilt `sce` artifact.
-- GitHub Release Flatpak assets are approved only as source-manifest package assets for the source-built `dev.crocoder.sce` Flatpak channel; automatic Flathub submission, prebuilt Flatpak binaries/bundles, OSTree repositories, release-version bumping, and Flatpak publication beyond the approved GitHub Release asset upload remain out of scope.
+- GitHub Release Flatpak assets include source-manifest package assets and source-built `.flatpak` bundle assets for the source-built `dev.crocoder.sce` Flatpak channel. Automatic Flathub submission, prebuilt (non-source-built) Flatpak binaries/bundles, OSTree repositories, release-version bumping, and Flatpak publication beyond the approved GitHub Release asset upload remain out of scope.
 - `Homebrew` can return in a later plan stage, but it is not part of current code truth.
 
 ## Flatpak source-build contract
@@ -61,6 +61,18 @@ No other install channels are in scope for the current implementation stage.
 - Flatpak release asset packaging uses repo-root `.version` as the checked-in version authority, refuses version drift against `cli/Cargo.toml`, `npm/package.json`, and Flatpak AppStream release metadata, and fails when a release commit cannot be resolved from a git checkout.
 - `.github/workflows/release-sce.yml` runs `nix run .#release-flatpak-package -- --version <resolved-version> --out-dir dist/flatpak` during GitHub Release assembly and uploads `dist/flatpak/*.tar.gz`, `dist/flatpak/*.sha256`, and `dist/flatpak/*.json` alongside existing CLI/npm assets.
 - Flatpak source-manifest assets are separate from the signed native `sce-v<version>-release-manifest.json` consumed by npm.
+
+## Flatpak GitHub Release bundle assets
+
+- The approved Flatpak GitHub Release asset set now also includes source-built `.flatpak` bundle assets alongside source-manifest packaging metadata.
+- The bundle is built from source inside Flatpak using `flatpak-builder` + `flatpak build-bundle`, not from a Nix-built or pre-compiled binary.
+- Asset names per architecture:
+  - `sce-v<version>-x86_64.flatpak` + `.sha256` + `.json`
+  - `sce-v<version>-aarch64.flatpak` + `.sha256` + `.json`
+- The JSON metadata includes `asset_type: flatpak-bundle`, architecture field (`x86_64` / `aarch64`), and app ID `dev.crocoder.sce`.
+- The bundle is a source-built Flatpak app for direct install, not a prebuilt binary or Flathub submission.
+- Source-built `.flatpak` bundles coexist with existing source-manifest tarball assets; the source-manifest packaging metadata remains unchanged.
+- Later packaging tasks implement the `release-bundle` command in `packaging/flatpak/sce-flatpak.sh` and the GitHub workflow upload for these assets.
 
 ## Implemented Nix-backed Flatpak tooling surface
 

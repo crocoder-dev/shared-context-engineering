@@ -104,6 +104,47 @@ Resolved implementation decisions:
     - Temporary output directory cleaned up.
   - Context-sync classification: verify-only; no root context edits expected since all context files already describe the implemented current state.
 
+## Validation Report
+
+### Commands run
+- `nix run .#release-flatpak-package -- --version 0.2.0 --out-dir <tmp-dir>` → exit 0. Emitted `sce-v0.2.0-flatpak-manifest.tar.gz`, `sce-v0.2.0-flatpak-manifest.tar.gz.sha256`, `sce-v0.2.0-flatpak.json`. Checksum verified (`efb3e869fe69c452f91ce37f6c328ab718faf4666c7808644f22fdb8262766bd`).
+- `nix run .#flatpak-validate -- --skip-optional-lint` → exit 0. Validation successful.
+- `nix run .#pkl-check-generated` → exit 0. Generated outputs are up to date.
+- `nix flake check` → exit 0. All checks passed:
+  - cli-tests: 92/92 passed
+  - cli-clippy: passed (no new warnings)
+  - cli-fmt: passed
+  - flatpak-static-validation: passed
+  - pkl-parity: passed
+  - workflow-actionlint: passed
+  - npm-bun-tests, npm-biome-check, npm-biome-format: passed
+  - config-lib-bun-tests, config-lib-biome-check, config-lib-biome-format: passed
+  - integrations-install-tests, integrations-install-clippy, integrations-install-fmt: passed
+
+### Temporary scaffolding
+- Temporary release output directory cleaned up after inspection.
+- No debug code or temporary artifacts remain in the repository.
+
+### Context verification
+- All root context files (`overview.md`, `architecture.md`, `glossary.md`, `patterns.md`, `context-map.md`) match code truth.
+- Static stale-scope wording review: clean. All "out of scope" / "not a prebuilt" matches in current-state context files are correct contract-boundary descriptions; remaining matches are historical/completed-plan references only.
+- Domain files (`cli-first-install-channels-contract.md`, `cli-release-artifact-contract.md`) correctly describe the implemented asset workflow.
+- Feature is discoverable from `context/context-map.md`.
+
+### Success-criteria verification
+- [x] Root-flake release app exists: `nix run .#release-flatpak-package -- --version <semver> --out-dir <path>` (T02)
+- [x] Version parity validation enforced: checked `.version`, `cli/Cargo.toml`, `npm/package.json`, Flatpak AppStream (T02, re-verified T05)
+- [x] Deterministic tarball with expected content: `sce-v<version>-flatpak-manifest/` directory containing `dev.crocoder.sce.yml`, `dev.crocoder.sce.metainfo.xml`, `cargo-sources.json`, `git-host-bridge` (T02, re-verified T05)
+- [x] Packaged manifest pins release commit without mutating checked-in file (T02, re-verified T05)
+- [x] SHA-256 checksum file and JSON metadata emitted (T02, re-verified T05)
+- [x] `.github/workflows/release-sce.yml` builds from `dist/flatpak` and uploads Flatpak assets (T03)
+- [x] Documentation states Flatpak assets are source-built packaging metadata, not prebuilt binaries (T04)
+- [x] No stale "out of scope" wording remains in current-state context (T05)
+- [x] Temporary output directories cleaned up (T05)
+
+### Residual risks
+- None identified. All acceptance criteria are met; Flatpak source-built semantics are preserved; no Flathub automation, prebuilt binaries, or release-version bumping was introduced.
+
 ## Open questions
 
 - None. The user clarified that this plan should cover GitHub Release Flatpak assets only, not Flathub publication automation.

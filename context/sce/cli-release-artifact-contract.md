@@ -26,7 +26,18 @@ This file captures the current shared release artifact foundation plus the appro
 - The staged packaged manifest pins the release git source to the release commit without mutating the checked-in Flatpak manifest.
 - The metadata JSON describes `asset_type`, `app_id`, `version`, `release_commit`, `manifest_name`, `package_file`, `checksum_file`, `checksum_sha256`, `packaged_support_files`, and `packaged_files`.
 - Flatpak source-manifest assets are not native binary archives and are not included in the signed native `sce-v<version>-release-manifest.json` consumed by npm.
-- The Flatpak asset set does not publish a prebuilt `sce` binary, `.flatpak` bundle, OSTree repository, AppImage, `.deb`, `.rpm`, AUR package, Homebrew asset, or Flathub submission.
+- The Flatpak source-manifest asset set does not publish a prebuilt `sce` binary, `.flatpak` bundle, OSTree repository, AppImage, `.deb`, `.rpm`, AUR package, Homebrew asset, or Flathub submission. Source-built `.flatpak` bundle assets are published in a separate approved asset set (see below).
+
+## Implemented Flatpak bundle artifact set
+
+- Flatpak GitHub Release assets now also include source-built `.flatpak` bundle assets alongside source-manifest packaging metadata.
+- The bundle is built from source inside Flatpak using `flatpak-builder` + `flatpak build-bundle`, not from a Nix-built or pre-compiled binary.
+- Approved bundle asset names per architecture:
+  - `sce-v<version>-x86_64.flatpak` + `.sha256` + `.json`
+  - `sce-v<version>-aarch64.flatpak` + `.sha256` + `.json`
+- The JSON metadata describes `asset_type: flatpak-bundle`, architecture field (`x86_64` / `aarch64`), app ID `dev.crocoder.sce`, version, and SHA-256 checksum.
+- Bundle assets are separate from native binary release archives, the signed native release manifest consumed by npm, and the existing Flatpak source-manifest packaging assets.
+- The release-bundle command (`packaging/flatpak/sce-flatpak.sh release-bundle`) and GitHub workflow upload for these assets are implemented by later packaging tasks in this plan.
 
 ## Archive contents
 
@@ -85,4 +96,4 @@ This file captures the current shared release artifact foundation plus the appro
 - The implemented npm channel also depends on the published `sce-v<version>-release-manifest.json.sig` asset so manifest-provided checksums are only trusted after signature verification.
 - Additional binary-distribution install channels should reuse this artifact contract unless a later decision explicitly supersedes it.
 - Flatpak is the current approved exception to binary-artifact reuse: the Flatpak package for application ID `dev.crocoder.sce` is source-built inside Flatpak, uses a release-source manifest plus a Nix-generated local checkout-source manifest/override for local builds, and must not consume Nix-built, native GitHub Release binary archives, npm native, or other prebuilt `sce` artifacts.
-- GitHub Release Flatpak assets are implemented only as source-manifest package assets and uploaded by the CLI release workflow; automatic Flathub submission and prebuilt Flatpak binary/bundle assets remain out of scope.
+- GitHub Release Flatpak assets include source-manifest package assets and source-built `.flatpak` bundle assets, both uploaded by the CLI release workflow; automatic Flathub submission and prebuilt (non-source-built) Flatpak binary/bundle assets remain out of scope.
