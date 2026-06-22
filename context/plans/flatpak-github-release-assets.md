@@ -88,12 +88,21 @@ Resolved implementation decisions:
   - Evidence: README Flatpak section now describes GitHub Release source-manifest assets, lists the tarball/checksum/metadata asset names, names the packaged manifest/support files, and states the assets are not prebuilt Flatpak apps/bundles, OSTree repositories, Flathub submissions, or npm-consumed native release-manifest content; `git diff --check -- README.md` passed; stale exact wording search for active “GitHub Release Flatpak assets are out of scope/not part of scope” statements found only plan verification/history references.
   - Context-sync result: verify-only localized docs update; `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/patterns.md`, `context/context-map.md`, and release/Flatpak domain context already describe the implemented asset workflow, so no root/domain context edits were needed.
 
-- [ ] T05: `Validate release asset flow and clean up` (status:todo)
+- [x] T05: `Validate release asset flow and clean up` (status:done)
   - Task ID: T05
   - Goal: Run final validation, remove temporary packaging outputs, and ensure durable context matches the implemented Flatpak GitHub Release asset flow.
   - Boundaries (in/out of scope): In - full repository validation where practical, targeted Flatpak release app validation, Flatpak validation command evidence, workflow/docs/context consistency checks, cleanup of temporary release output directories, and final plan evidence. Out - publishing an actual GitHub Release, running Flathub submission, completing a full network-heavy Flatpak build unless explicitly needed and practical.
   - Done when: Required checks pass or any blockers are documented with actionable follow-up; generated Flatpak release assets are proven to have the expected names/content/metadata; no temporary release packaging artifacts remain in the repository; context accurately describes the final current state.
   - Verification notes (commands or checks): `nix run .#release-flatpak-package -- --version "$(tr -d '\n' < .version)" --out-dir <tmp-dir>`; inspect the emitted tarball/checksum/JSON; `nix run .#flatpak-validate -- --skip-optional-lint`; `nix run .#pkl-check-generated`; `nix flake check`; static search for stale Flatpak release-asset scope wording; cleanup temporary output directories.
+  - Completed: 2026-06-22
+  - Evidence:
+    - `nix run .#release-flatpak-package -- --version 0.2.0 --out-dir <tmp-dir>`: emitted `sce-v0.2.0-flatpak-manifest.tar.gz` (37961 bytes), `sce-v0.2.0-flatpak-manifest.tar.gz.sha256`, and `sce-v0.2.0-flatpak.json` with expected fields (app_id, version, release_commit, manifest_name, checksum_sha256, packaged_files). Tarball contains `sce-v0.2.0-flatpak-manifest/` directory with `dev.crocoder.sce.yml`, `dev.crocoder.sce.metainfo.xml`, `cargo-sources.json`, and `git-host-bridge`. SHA-256 checksum `efb3e869fe69c452f91ce37f6c328ab718faf4666c7808644f22fdb8262766bd` verified against tarball.
+    - `nix run .#flatpak-validate -- --skip-optional-lint`: passed (`✔ Validation was successful.`)
+    - `nix run .#pkl-check-generated`: passed (`Generated outputs are up to date.`)
+    - `nix flake check`: all checks passed (92/92 CLI tests, clippy, fmt, flatpak-static-validation, pkl-parity, workflow-actionlint, all npm/config-lib JS checks, integrations-install checks)
+    - Static stale-scope wording search: clean; all Flatpak "out of scope" / "not a prebuilt" matches in current-state context are correct contract-boundary descriptions; remaining matches are historical/completed-plan references only.
+    - Temporary output directory cleaned up.
+  - Context-sync classification: verify-only; no root context edits expected since all context files already describe the implemented current state.
 
 ## Open questions
 
