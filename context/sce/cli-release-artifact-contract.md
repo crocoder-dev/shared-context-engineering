@@ -14,15 +14,17 @@ This file captures the current shared release artifact foundation plus the appro
   - `sce-v<version>-SHA256SUMS`
 - `nix run .#release-manifest` signs the merged release manifest with a non-repo private key supplied via `SCE_RELEASE_MANIFEST_SIGNING_KEY` or `--signing-key-file <path>`.
 
-## Approved Flatpak source-manifest artifact set
+## Implemented Flatpak source-manifest artifact set
 
 - Flatpak GitHub Release assets are approved as source-manifest packaging metadata for the source-built `dev.crocoder.sce` Flatpak channel.
+- `nix run .#release-flatpak-package -- --version <semver> --out-dir <path>` is the Linux root-flake app that emits the Flatpak asset set from checked-in `packaging/flatpak/` source.
 - The approved Flatpak asset names are:
   - `sce-v<version>-flatpak-manifest.tar.gz`
   - `sce-v<version>-flatpak-manifest.tar.gz.sha256`
   - `sce-v<version>-flatpak.json`
 - The Flatpak tarball contains a deterministic top-level `sce-v<version>-flatpak-manifest/` directory with `dev.crocoder.sce.yml`, `dev.crocoder.sce.metainfo.xml`, `cargo-sources.json`, and `git-host-bridge`.
 - The staged packaged manifest pins the release git source to the release commit without mutating the checked-in Flatpak manifest.
+- The metadata JSON describes `asset_type`, `app_id`, `version`, `release_commit`, `manifest_name`, `package_file`, `checksum_file`, `checksum_sha256`, `packaged_support_files`, and `packaged_files`.
 - Flatpak source-manifest assets are not native binary archives and are not included in the signed native `sce-v<version>-release-manifest.json` consumed by npm.
 - The Flatpak asset set does not publish a prebuilt `sce` binary, `.flatpak` bundle, OSTree repository, AppImage, `.deb`, `.rpm`, AUR package, Homebrew asset, or Flathub submission.
 
@@ -40,6 +42,7 @@ This file captures the current shared release artifact foundation plus the appro
 - Tarball creation uses stable file ordering plus fixed ownership and mtime metadata.
 - Gzip output is emitted with deterministic headers.
 - Checksum files use SHA-256 and the standard `<hash><two spaces><filename>` line format.
+- Flatpak source-manifest packaging uses the same stable tar/gzip/checksum conventions while staging only release manifest/support files, not build outputs.
 - Manifest signatures are detached base64-encoded RSA-SHA256 signatures over the exact emitted `sce-v<version>-release-manifest.json` bytes.
 
 ## Workflow topology
@@ -53,6 +56,7 @@ This file captures the current shared release artifact foundation plus the appro
 - Manual GitHub release dispatch resolves the tag from checked-in `.version` and refuses to create the tag when `.version`, `cli/Cargo.toml`, and `npm/package.json` are not already aligned.
 - Tag-triggered release execution also refuses to proceed when the pushed tag does not equal `v<.version>` or when checked-in Cargo/npm package metadata drift from `.version`.
 - `nix run .#release-artifacts` fails fast when the requested `--version` disagrees with `.version`, `cli/Cargo.toml`, `npm/package.json`, or the built CLI `sce version` output.
+- `nix run .#release-flatpak-package` fails fast when the requested `--version` disagrees with `.version`, `cli/Cargo.toml`, `npm/package.json`, or Flatpak AppStream release metadata, and also fails when it cannot resolve a release commit from a git checkout.
 - `nix run .#release-artifacts` also rejects host OS/architecture pairs outside the current three-target release matrix; macOS Intel (`Darwin:x86_64`) is no longer a supported current-platform packaging host.
 - The release orchestrator passes the resolved checked-in version through to the platform builds, merged release-manifest assembly, and npm tarball packaging without mutating package versions during workflow execution.
 - Platform builds are split into separate reusable workflow files:
@@ -80,4 +84,4 @@ This file captures the current shared release artifact foundation plus the appro
 - The implemented npm channel also depends on the published `sce-v<version>-release-manifest.json.sig` asset so manifest-provided checksums are only trusted after signature verification.
 - Additional binary-distribution install channels should reuse this artifact contract unless a later decision explicitly supersedes it.
 - Flatpak is the current approved exception to binary-artifact reuse: the Flatpak package for application ID `dev.crocoder.sce` is source-built inside Flatpak, uses a release-source manifest plus a Nix-generated local checkout-source manifest/override for local builds, and must not consume Nix-built, native GitHub Release binary archives, npm native, or other prebuilt `sce` artifacts.
-- GitHub Release Flatpak assets are approved only as source-manifest package assets; CI publishing, automatic Flathub submission, and prebuilt Flatpak binary/bundle assets remain out of scope.
+- GitHub Release Flatpak assets are implemented only as source-manifest package assets; CI publishing/upload wiring is a later release-workflow task, while automatic Flathub submission and prebuilt Flatpak binary/bundle assets remain out of scope.

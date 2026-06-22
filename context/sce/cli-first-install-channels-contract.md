@@ -54,21 +54,23 @@ No other install channels are in scope for the current implementation stage.
 ## Flatpak GitHub Release source-manifest assets
 
 - The approved Flatpak GitHub Release asset set is source-manifest packaging metadata, not a prebuilt `sce` binary, `.flatpak` bundle, OSTree repository, or Flathub publication.
+- The implemented local release packaging entrypoint is `nix run .#release-flatpak-package -- --version <semver> --out-dir <path>` on Linux; it delegates to `packaging/flatpak/sce-flatpak.sh release-package`.
 - The asset names are `sce-v<version>-flatpak-manifest.tar.gz`, `sce-v<version>-flatpak-manifest.tar.gz.sha256`, and `sce-v<version>-flatpak.json`.
 - The tarball contains a deterministic top-level `sce-v<version>-flatpak-manifest/` directory with `dev.crocoder.sce.yml`, `dev.crocoder.sce.metainfo.xml`, `cargo-sources.json`, and `git-host-bridge`.
 - The packaged manifest pins its git source to the release commit in the staged package copy without mutating the checked-in `packaging/flatpak/dev.crocoder.sce.yml` file.
-- Flatpak release asset packaging must use repo-root `.version` as the checked-in version authority and refuse version drift against `cli/Cargo.toml`, `npm/package.json`, and Flatpak AppStream release metadata.
+- Flatpak release asset packaging uses repo-root `.version` as the checked-in version authority, refuses version drift against `cli/Cargo.toml`, `npm/package.json`, and Flatpak AppStream release metadata, and fails when a release commit cannot be resolved from a git checkout.
 - Flatpak source-manifest assets are separate from the signed native `sce-v<version>-release-manifest.json` consumed by npm.
 
 ## Implemented Nix-backed Flatpak tooling surface
 
-- `packaging/flatpak/sce-flatpak.sh` owns local Flatpak orchestration for this repo: lightweight validation, generated local checkout-source manifests, and opt-in `flatpak-builder` execution.
+- `packaging/flatpak/sce-flatpak.sh` owns local Flatpak orchestration for this repo: lightweight validation, generated local checkout-source manifests, opt-in `flatpak-builder` execution, and deterministic Flatpak source-manifest release packaging.
 - Linux flake apps expose that script as:
   - `nix run .#flatpak-validate` for static source-build checks, local-manifest generation checks, and `appstreamcli validate --pedantic --no-net`.
   - `nix run .#flatpak-local-manifest` for generating a temporary manifest that replaces the release git source with a Flatpak `type: dir` source pointed at the current checkout.
   - `nix run .#flatpak-build -- --help` / `nix run .#flatpak-build -- ...` for explicit local `flatpak-builder` source builds from that generated local manifest.
+  - `nix run .#release-flatpak-package -- --version <semver> --out-dir <path>` for deterministic GitHub Release source-manifest tarball/checksum/JSON assets.
 - `checks.<linux>.flatpak-static-validation` runs the lightweight validation path during default `nix flake check`; it does not run a full Flatpak build or require network access.
-- The Linux dev shell includes `appstreamcli`, `flatpak`, and `flatpak-builder`, and its banner lists the Flatpak flake apps alongside existing repo app entrypoints.
+- The Linux dev shell includes `appstreamcli`, `flatpak`, and `flatpak-builder`, and its banner lists the Flatpak local/release flake apps alongside existing repo app entrypoints.
 - The checked-in release manifest remains Flathub-style and source-built; Nix orchestration only supplies tools and generated local manifests and must not provide a prebuilt `sce` binary to the Flatpak package.
 
 ## Explicitly out of scope in this phase
@@ -81,7 +83,7 @@ No other install channels are in scope for the current implementation stage.
 
 ## Implementation implications for later tasks
 
-- Release assets must be named and published for `sce`, including the approved Flatpak source-manifest asset names when that release packaging flow is implemented.
+- Release assets must be named and published for `sce`, including the Flatpak source-manifest asset names emitted by `release-flatpak-package`; workflow publication of those assets remains a later task.
 - GitHub release packaging must consume the checked-in `.version` value instead of inventing a semver bump during workflow execution.
 - Cargo and npm registry publication belong to separate downstream publish stages rather than the GitHub release-packaging job.
 - Flatpak packaging tasks must preserve source-built semantics and the release-source-plus-local-override model instead of wrapping existing binary release artifacts.
