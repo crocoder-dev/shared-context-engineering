@@ -1,6 +1,6 @@
 # SCE CLI Install Channel Contract
 
-This file captures the current install/distribution contract for the `sce` CLI. It began with the first-wave `Nix`/`Cargo`/`npm` channel contract from `context/plans/sce-cli-first-install-channels.md` task `T01`; the current active model also approves Flatpak as an official source-built channel through `context/plans/nix-orchestrated-flatpak.md` task `T01`.
+This file captures the current install/distribution contract for the `sce` CLI. It began with the first-wave `Nix`/`Cargo`/`npm` channel contract from `context/plans/sce-cli-first-install-channels.md` task `T01`; the current active model also approves Flatpak as an official source-built channel through `context/plans/nix-orchestrated-flatpak.md` task `T01` and approves GitHub Release Flatpak source-manifest assets through `context/plans/flatpak-github-release-assets.md` task `T01`.
 
 ## Canonical naming
 
@@ -25,12 +25,12 @@ No other install channels are in scope for the current implementation stage.
 - Nix-managed build/release entrypoints remain the required build source for existing binary release automation.
 - Nix may also orchestrate Flatpak tooling, local source overrides, validation, and local builds, but the Flatpak package itself must build `sce` from source inside Flatpak.
 - Repo-root `.version` is the canonical checked-in release version authority for the Nix, Cargo, npm, and release-artifact surfaces.
-- GitHub Releases are the canonical publication surface for release archives and manifest/checksum assets produced for the version declared in `.version`.
+- GitHub Releases are the canonical publication surface for release archives, native release manifest/checksum assets, npm package assets, and approved Flatpak source-manifest package assets produced for the version declared in `.version`.
 - `npm` consumes release artifacts produced by Nix-managed build/release flows.
 - `Cargo` is a first-class supported install path and its publish metadata should stay aligned to `.version` without workflow-side version bumping.
 - npm registry publication should also consume the checked-in package version aligned to `.version` without workflow-side version bumping.
-- Flatpak is source-built and must not consume `nix build .#sce`, GitHub Release archives, npm native binaries, or any other prebuilt `sce` artifact.
-- The first Flatpak iteration is Flathub-ready packaging plus Nix-backed local build/check tooling and docs only; CI publishing, automatic Flathub submission, GitHub Release Flatpak assets, and release-version bumping are not part of the current scope.
+- Flatpak is source-built and must not consume `nix build .#sce`, native GitHub Release binary archives, npm native binaries, or any other prebuilt `sce` artifact.
+- GitHub Release Flatpak assets are approved only as source-manifest package assets for the source-built `dev.crocoder.sce` Flatpak channel; CI publishing, automatic Flathub submission, prebuilt Flatpak binaries/bundles, OSTree repositories, and release-version bumping remain out of scope.
 - `Homebrew` can return in a later plan stage, but it is not part of current code truth.
 
 ## Flatpak source-build contract
@@ -50,6 +50,15 @@ No other install channels are in scope for the current implementation stage.
 - AppStream metadata lives at `packaging/flatpak/dev.crocoder.sce.metainfo.xml` and declares a console application with `<provides><binary>sce</binary></provides>`.
 - The host Git bridge source lives at `packaging/flatpak/git-host-bridge`; the manifest installs it as `/app/bin/git`.
 - The current runtime permissions are `--share=network`, `--filesystem=home`, `--talk-name=org.freedesktop.Flatpak`, and `--talk-name=org.freedesktop.secrets`.
+
+## Flatpak GitHub Release source-manifest assets
+
+- The approved Flatpak GitHub Release asset set is source-manifest packaging metadata, not a prebuilt `sce` binary, `.flatpak` bundle, OSTree repository, or Flathub publication.
+- The asset names are `sce-v<version>-flatpak-manifest.tar.gz`, `sce-v<version>-flatpak-manifest.tar.gz.sha256`, and `sce-v<version>-flatpak.json`.
+- The tarball contains a deterministic top-level `sce-v<version>-flatpak-manifest/` directory with `dev.crocoder.sce.yml`, `dev.crocoder.sce.metainfo.xml`, `cargo-sources.json`, and `git-host-bridge`.
+- The packaged manifest pins its git source to the release commit in the staged package copy without mutating the checked-in `packaging/flatpak/dev.crocoder.sce.yml` file.
+- Flatpak release asset packaging must use repo-root `.version` as the checked-in version authority and refuse version drift against `cli/Cargo.toml`, `npm/package.json`, and Flatpak AppStream release metadata.
+- Flatpak source-manifest assets are separate from the signed native `sce-v<version>-release-manifest.json` consumed by npm.
 
 ## Implemented Nix-backed Flatpak tooling surface
 
@@ -72,10 +81,11 @@ No other install channels are in scope for the current implementation stage.
 
 ## Implementation implications for later tasks
 
-- Release assets must be named and published for `sce`.
+- Release assets must be named and published for `sce`, including the approved Flatpak source-manifest asset names when that release packaging flow is implemented.
 - GitHub release packaging must consume the checked-in `.version` value instead of inventing a semver bump during workflow execution.
 - Cargo and npm registry publication belong to separate downstream publish stages rather than the GitHub release-packaging job.
 - Flatpak packaging tasks must preserve source-built semantics and the release-source-plus-local-override model instead of wrapping existing binary release artifacts.
+- Flatpak GitHub Release asset tasks must package only the source manifest/support files, not generated binaries or bundles.
 - Flatpak publication automation remains explicitly deferred until a later approved plan.
 - Unsupported channels in older docs should be removed or explicitly deferred rather than implied as active support.
 - Later packaging tasks should implement the contract above rather than redefining channel scope per channel.
