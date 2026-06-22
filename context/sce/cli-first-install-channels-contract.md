@@ -30,7 +30,7 @@ No other install channels are in scope for the current implementation stage.
 - `Cargo` is a first-class supported install path and its publish metadata should stay aligned to `.version` without workflow-side version bumping.
 - npm registry publication should also consume the checked-in package version aligned to `.version` without workflow-side version bumping.
 - Flatpak is source-built and must not consume `nix build .#sce`, native GitHub Release binary archives, npm native binaries, or any other prebuilt `sce` artifact.
-- GitHub Release Flatpak assets are approved only as source-manifest package assets for the source-built `dev.crocoder.sce` Flatpak channel; CI publishing, automatic Flathub submission, prebuilt Flatpak binaries/bundles, OSTree repositories, and release-version bumping remain out of scope.
+- GitHub Release Flatpak assets are approved only as source-manifest package assets for the source-built `dev.crocoder.sce` Flatpak channel; automatic Flathub submission, prebuilt Flatpak binaries/bundles, OSTree repositories, release-version bumping, and Flatpak publication beyond the approved GitHub Release asset upload remain out of scope.
 - `Homebrew` can return in a later plan stage, but it is not part of current code truth.
 
 ## Flatpak source-build contract
@@ -59,6 +59,7 @@ No other install channels are in scope for the current implementation stage.
 - The tarball contains a deterministic top-level `sce-v<version>-flatpak-manifest/` directory with `dev.crocoder.sce.yml`, `dev.crocoder.sce.metainfo.xml`, `cargo-sources.json`, and `git-host-bridge`.
 - The packaged manifest pins its git source to the release commit in the staged package copy without mutating the checked-in `packaging/flatpak/dev.crocoder.sce.yml` file.
 - Flatpak release asset packaging uses repo-root `.version` as the checked-in version authority, refuses version drift against `cli/Cargo.toml`, `npm/package.json`, and Flatpak AppStream release metadata, and fails when a release commit cannot be resolved from a git checkout.
+- `.github/workflows/release-sce.yml` runs `nix run .#release-flatpak-package -- --version <resolved-version> --out-dir dist/flatpak` during GitHub Release assembly and uploads `dist/flatpak/*.tar.gz`, `dist/flatpak/*.sha256`, and `dist/flatpak/*.json` alongside existing CLI/npm assets.
 - Flatpak source-manifest assets are separate from the signed native `sce-v<version>-release-manifest.json` consumed by npm.
 
 ## Implemented Nix-backed Flatpak tooling surface
@@ -81,13 +82,13 @@ No other install channels are in scope for the current implementation stage.
 - AppImage
 - Other Linux package-manager specific channels not listed above
 
-## Implementation implications for later tasks
+## Implementation implications
 
-- Release assets must be named and published for `sce`, including the Flatpak source-manifest asset names emitted by `release-flatpak-package`; workflow publication of those assets remains a later task.
+- Release assets must be named and published for `sce`, including the Flatpak source-manifest asset names emitted by `release-flatpak-package` and uploaded by `.github/workflows/release-sce.yml`.
 - GitHub release packaging must consume the checked-in `.version` value instead of inventing a semver bump during workflow execution.
 - Cargo and npm registry publication belong to separate downstream publish stages rather than the GitHub release-packaging job.
 - Flatpak packaging tasks must preserve source-built semantics and the release-source-plus-local-override model instead of wrapping existing binary release artifacts.
 - Flatpak GitHub Release asset tasks must package only the source manifest/support files, not generated binaries or bundles.
-- Flatpak publication automation remains explicitly deferred until a later approved plan.
+- Flatpak publication automation beyond GitHub Release source-manifest asset uploads remains explicitly deferred until a later approved plan.
 - Unsupported channels in older docs should be removed or explicitly deferred rather than implied as active support.
 - Later packaging tasks should implement the contract above rather than redefining channel scope per channel.
