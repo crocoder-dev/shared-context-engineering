@@ -77,12 +77,16 @@ Resolved implementation decisions:
   - Evidence: Static YAML review confirmed the release job now builds `dist/flatpak` via `nix run .#release-flatpak-package -- --version "${{ needs.resolve-release.outputs.version }}" --out-dir dist/flatpak` before creating the GitHub Release; release notes describe the Flatpak files as source-built packaging metadata and explicitly not a prebuilt Flatpak app or Flathub publication; `files:` globs include `dist/flatpak/*.tar.gz`, `dist/flatpak/*.sha256`, and `dist/flatpak/*.json`; `nix build .#checks.x86_64-linux.workflow-actionlint` passed; `git diff --check -- <touched workflow/context files>` passed. A direct `nix develop -c actionlint .github/workflows/release-sce.yml` check was attempted first but `actionlint` is not exposed in the dev shell.
   - Context-sync classification: important workflow/release behavior change; root and release/distribution domain context updated to reflect `.github/workflows/release-sce.yml` Flatpak source-manifest asset upload wiring while leaving broader README/user-facing documentation to T04.
 
-- [ ] T04: `Document Flatpak GitHub Release assets` (status:todo)
+- [x] T04: `Document Flatpak GitHub Release assets` (status:done)
   - Task ID: T04
   - Goal: Update user-facing docs and durable context to describe the new GitHub Release Flatpak source-manifest asset workflow accurately.
   - Boundaries (in/out of scope): In - update README/release-facing docs and current-state context to explain the Flatpak GitHub Release assets, how they differ from native archives and npm assets, and that Flatpak remains source-built with no Flathub automation. Out - implementation changes to release tooling/workflows, broad marketing copy, new install channels.
   - Done when: Documentation tells users/contributors that GitHub Releases include `sce-v<version>-flatpak-manifest.tar.gz` plus checksum/metadata, the tarball contains the Flathub-style source manifest and support files, and no docs imply a prebuilt Flatpak binary or automated Flathub publication exists.
   - Verification notes (commands or checks): Static docs review; search README/context for stale current-state statements that GitHub Release Flatpak assets are out of scope; confirm remaining historical references are clearly historical or completed-plan evidence.
+  - Completed: 2026-06-22
+  - Files changed: `README.md`, `context/plans/flatpak-github-release-assets.md`
+  - Evidence: README Flatpak section now describes GitHub Release source-manifest assets, lists the tarball/checksum/metadata asset names, names the packaged manifest/support files, and states the assets are not prebuilt Flatpak apps/bundles, OSTree repositories, Flathub submissions, or npm-consumed native release-manifest content; `git diff --check -- README.md` passed; stale exact wording search for active “GitHub Release Flatpak assets are out of scope/not part of scope” statements found only plan verification/history references.
+  - Context-sync result: verify-only localized docs update; `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/patterns.md`, `context/context-map.md`, and release/Flatpak domain context already describe the implemented asset workflow, so no root/domain context edits were needed.
 
 - [ ] T05: `Validate release asset flow and clean up` (status:todo)
   - Task ID: T05

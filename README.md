@@ -58,9 +58,10 @@ The `sce` CLI is also available as a **source-built** Flatpak package (`dev.croc
 for Linux. The Flatpak builds `sce` from source inside the Flatpak sandbox using the
 Freedesktop SDK Rust extension — it does not wrap a prebuilt Nix, Cargo, or npm binary.
 
-> **First iteration scope:** Flathub-ready manifest, Nix-backed local build/check tooling,
-> and documentation. No CI publishing, automatic Flathub submission, GitHub Release Flatpak
-> assets, or release-version bumping.
+> **Release scope:** GitHub Releases include Flatpak source-manifest assets only.
+> These assets are packaging metadata and support files for source builds; they are not
+> prebuilt Flatpak apps, `.flatpak` bundles, OSTree repositories, or Flathub submissions.
+> Automatic Flathub publication and release-version bumping remain out of scope.
 
 #### Prerequisites
 
@@ -103,6 +104,39 @@ The default `nix flake check` runs lightweight static validation
 (`flatpak-static-validation`) without a full Flatpak build. Full builds
 are opt-in via `nix run .#flatpak-build` and require network access for
 SDK runtime downloads.
+
+#### GitHub Release source-manifest assets
+
+Each `sce` GitHub Release also includes Flatpak source-manifest assets for
+contributors or downstream packagers who want the release-pinned Flatpak build
+inputs:
+
+- `sce-v<version>-flatpak-manifest.tar.gz`
+- `sce-v<version>-flatpak-manifest.tar.gz.sha256`
+- `sce-v<version>-flatpak.json`
+
+The tarball contains a deterministic top-level
+`sce-v<version>-flatpak-manifest/` directory with the Flathub-style source
+manifest and support files:
+
+- `dev.crocoder.sce.yml`
+- `dev.crocoder.sce.metainfo.xml`
+- `cargo-sources.json`
+- `git-host-bridge`
+
+The packaged manifest pins its git source to the release commit without
+mutating the checked-in manifest. The checksum and JSON metadata describe the
+source-manifest package; they are separate from the signed native release
+manifest consumed by npm and do not contain a prebuilt `sce` binary.
+
+Maintainers can build the same asset set locally from a checked-out release
+commit:
+
+```bash
+nix run .#release-flatpak-package -- \
+  --version "$(tr -d '\n' < .version)" \
+  --out-dir dist/flatpak
+```
 
 #### Direct flatpak-builder fallback
 
