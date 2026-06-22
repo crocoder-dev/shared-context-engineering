@@ -29,7 +29,7 @@
 - Current repo command contracts:
 - For flake app outputs, include `meta.description` so `nix flake check` app validation stays warning-free.
 - When install/integration coverage is heavier than the default repository validation baseline, expose it as an explicit opt-in flake app instead of adding it to `checks.<system>` prematurely.
-- For Flatpak local packaging, expose separate flake apps for validation, local-manifest generation, and full `flatpak-builder` execution so contributors can run lightweight checks without accidentally starting a network-heavy build.
+- For Flatpak local/release packaging, expose separate flake apps for validation, local-manifest generation, full `flatpak-builder` execution, and deterministic source-manifest release packaging so contributors can run lightweight checks without accidentally starting a network-heavy build.
 
 ## Install/distribution rollout
 
@@ -45,7 +45,7 @@
 - For Flatpak GitHub Release assets, package only source-manifest metadata/support files (`dev.crocoder.sce.yml`, AppStream metadata, `cargo-sources.json`, and `git-host-bridge`) into `sce-v<version>-flatpak-manifest.tar.gz` plus checksum/JSON metadata; keep these assets separate from native release archives and the signed release manifest consumed by npm.
 - When staging a Flatpak source-manifest release package, pin the packaged manifest's git source to the release commit without mutating the checked-in `packaging/flatpak/dev.crocoder.sce.yml` release-source manifest.
 - Treat repo-root `.version` as the canonical checked-in release version source for GitHub Releases, Cargo publication, and npm publication.
-- Expose shared CLI release packaging through root-flake apps so local verification and GitHub release automation consume the same commands (`nix run .#release-artifacts`, `nix run .#release-manifest`, `nix run .#release-npm-package`).
+- Expose shared CLI release packaging through root-flake apps so local verification and GitHub release automation consume the same commands (`nix run .#release-artifacts`, `nix run .#release-manifest`, `nix run .#release-npm-package`, `nix run .#release-flatpak-package`).
 - Keep GitHub Releases as the canonical publication surface for signed release archives, manifest/checksum assets, npm package assets, and approved Flatpak source-manifest package assets.
 - Keep crates.io and npm registry publication as separate downstream publish stages that consume already-versioned checked-in package metadata rather than inventing workflow-side version bumps.
 - Keep `.github/workflows/publish-crates.yml` scoped to crates.io publication only: it should validate `.version`, `cli/Cargo.toml`, and the release tag before running `cargo publish`, and real publication must require an explicit `CARGO_REGISTRY_TOKEN` secret while manual dispatch can stay on a dry-run path.

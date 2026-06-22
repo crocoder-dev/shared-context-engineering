@@ -798,6 +798,8 @@
           [
             pkgs.coreutils
             pkgs.git
+            pkgs.gnutar
+            pkgs.gzip
             pkgs.python3
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
@@ -835,6 +837,14 @@
           runtimeInputs = [ flatpakToolApp ];
           text = ''
             exec sce-flatpak build "$@"
+          '';
+        };
+
+        releaseFlatpakPackageApp = pkgs.writeShellApplication {
+          name = "release-flatpak-package";
+          runtimeInputs = [ flatpakToolApp ];
+          text = ''
+            exec sce-flatpak release-package "$@"
           '';
         };
 
@@ -1207,6 +1217,14 @@
                 description = "Build the sce Flatpak from the current checkout with flatpak-builder";
               };
             };
+
+            release-flatpak-package = {
+              type = "app";
+              program = "${releaseFlatpakPackageApp}/bin/release-flatpak-package";
+              meta = {
+                description = "Build Flatpak source-manifest GitHub Release assets";
+              };
+            };
           };
 
         devShells.default = pkgs.mkShell {
@@ -1265,6 +1283,7 @@
               echo "- flatpak-validate: nix run .#flatpak-validate"
               echo "- flatpak-local-manifest: nix run .#flatpak-local-manifest"
               echo "- flatpak-build: nix run .#flatpak-build -- --help"
+              echo "- release-flatpak-package: nix run .#release-flatpak-package -- --help"
             ''}
           '';
         };

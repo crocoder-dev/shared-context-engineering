@@ -13,6 +13,7 @@ Commands:
   validate                 Run lightweight Flatpak packaging validation
   prepare-local-manifest   Generate a local-checkout Flatpak manifest
   build                    Build the Flatpak from the local checkout
+  release-package          Package Flatpak source-manifest release assets
 
 validate options:
   --repo-root <path>       Repository checkout to validate (default: git root or cwd)
@@ -32,6 +33,11 @@ build options:
   --install-deps-from <r>  Forward --install-deps-from=<r> to flatpak-builder
   --no-force-clean         Do not pass --force-clean to flatpak-builder
   -- <args...>             Extra arguments forwarded to flatpak-builder
+
+release-package options:
+  --version <semver>       Release version to package; must match checked-in metadata
+  --out-dir <path>         Directory for release tarball, checksum, and JSON metadata
+  --repo-root <path>       Repository checkout to package (default: git root or cwd)
 
 The generated local manifest replaces the checked-in release git source with a
 Flatpak type: dir source pointed at the checkout. It still runs the manifest's
@@ -237,6 +243,128 @@ if errors:
 PY
 }
 
+resolve_release_commit() {
+  local repo_root="$1"
+  local release_commit
+
+  if ! release_commit="$(git -C "${repo_root}" rev-parse --verify "HEAD^{commit}" 2>/dev/null)"; then
+    die "could not resolve release commit from repository checkout: ${repo_root}"
+  fi
+
+  if [[ ! "${release_commit}" =~ ^[0-9a-f]{40}$ ]]; then
+    die "resolved release commit is not a full 40-character git SHA: ${release_commit}"
+  fi
+
+  printf '%s\n' "${release_commit}"
+}
+
+validate_release_version_parity() {
+  local repo_root="$1"
+  local version="$2"
+
+  python3 - "${repo_root}" "${version}" <<'PY'
+import json
+import pathlib
+import re
+import sys
+import xml.etree.ElementTree as ET
+
+repo_root = pathlib.Path(sys.argv[1])
+version = sys.argv[2]
+app_id = "dev.crocoder.sce"
+errors = []
+
+def require(condition, message):
+    if not condition:
+        errors.append(message)
+
+version_path = repo_root / ".version"
+cargo_toml_path = repo_root / "cli" / "Cargo.toml"
+npm_package_path = repo_root / "npm" / "package.json"
+metainfo_path = repo_root / "packaging" / "flatpak" / f"{app_id}.metainfo.xml"
+
+try:
+    checked_in_version = version_path.read_text(encoding="utf-8").strip()
+except OSError as error:
+    raise SystemExit(f"could not read {version_path}: {error}") from error
+
+try:
+    cargo_toml = cargo_toml_path.read_text(encoding="utf-8")
+except OSError as error:
+    raise SystemExit(f"could not read {cargo_toml_path}: {error}") from error
+
+cargo_match = re.search(r'(?m)^version = "([^"]+)"$', cargo_toml)
+require(cargo_match is not None, "cli/Cargo.toml package version is missing")
+cargo_version = cargo_match.group(1) if cargo_match else ""
+
+try:
+    npm_version = json.loads(npm_package_path.read_text(encoding="utf-8")).get("version", "")
+except (OSError, json.JSONDecodeError) as error:
+    raise SystemExit(f"could not parse {npm_package_path}: {error}") from error
+
+try:
+    metainfo_root = ET.parse(metainfo_path).getroot()
+except (OSError, ET.ParseError) as error:
+    raise SystemExit(f"could not parse {metainfo_path}: {error}") from error
+
+release_versions = [
+    release.attrib.get("version", "")
+    for release in metainfo_root.findall("./releases/release")
+]
+require(bool(release_versions), "Flatpak metainfo release metadata is missing")
+flatpak_version = release_versions[0] if release_versions else ""
+
+require(version == checked_in_version, f"requested release version {version} does not match .version {checked_in_version}")
+require(version == cargo_version, f"cli/Cargo.toml version {cargo_version} does not match release version {version}")
+require(version == npm_version, f"npm/package.json version {npm_version} does not match release version {version}")
+require(version == flatpak_version, f"Flatpak metainfo release version {flatpak_version} does not match release version {version}")
+
+if errors:
+    for error in errors:
+        print(f"Flatpak release version validation failed: {error}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
+generate_release_manifest() {
+  local repo_root="$1"
+  local release_commit="$2"
+  local out_dir="$3"
+  local flatpak_dir
+  flatpak_dir="$(flatpak_dir_for "${repo_root}")"
+
+  require_file "${flatpak_dir}/${MANIFEST_NAME}"
+
+  mkdir -p "${out_dir}"
+
+  python3 - "${release_commit}" "${flatpak_dir}/${MANIFEST_NAME}" "${out_dir}/${MANIFEST_NAME}" <<'PY'
+import pathlib
+import re
+import sys
+
+release_commit = sys.argv[1]
+source_manifest = pathlib.Path(sys.argv[2])
+target_manifest = pathlib.Path(sys.argv[3])
+
+if not re.fullmatch(r"[0-9a-f]{40}", release_commit):
+    raise SystemExit("release commit must be a full 40-character lowercase git SHA")
+
+text = source_manifest.read_text(encoding="utf-8")
+release_source = re.compile(
+    r"(?m)^(      - type: git\n"
+    r"        url: https://github\.com/crocoder-dev/shared-context-engineering\.git\n"
+    r"        commit: )[0-9a-f]{40}(\n)"
+)
+text, count = release_source.subn(rf"\g<1>{release_commit}\2", text, count=1)
+if count != 1:
+    raise SystemExit("could not rewrite release git source commit in staged manifest")
+
+target_manifest.write_text(text, encoding="utf-8")
+PY
+
+  printf '%s/%s\n' "${out_dir}" "${MANIFEST_NAME}"
+}
+
 cmd_validate() {
   local repo_root_override=""
   local skip_optional_lint=0
@@ -436,6 +564,150 @@ cmd_build() {
   exec flatpak-builder "${builder_args[@]}"
 }
 
+cmd_release_package() {
+  local repo_root_override=""
+  local version=""
+  local out_dir=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo-root)
+        repo_root_override="${2:-}"
+        [ -n "${repo_root_override}" ] || die "--repo-root requires a path"
+        shift 2
+        ;;
+      --version)
+        version="${2:-}"
+        [ -n "${version}" ] || die "--version requires a semver value"
+        shift 2
+        ;;
+      --out-dir)
+        out_dir="${2:-}"
+        [ -n "${out_dir}" ] || die "--out-dir requires a path"
+        shift 2
+        ;;
+      --help|-h)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown release-package argument: $1"
+        ;;
+    esac
+  done
+
+  if [ -z "${version}" ] || [ -z "${out_dir}" ]; then
+    usage >&2
+    exit 1
+  fi
+
+  local repo_root
+  repo_root="$(resolve_repo_root "${repo_root_override}")"
+  local flatpak_dir
+  flatpak_dir="$(flatpak_dir_for "${repo_root}")"
+
+  require_file "${flatpak_dir}/${MANIFEST_NAME}"
+  require_file "${flatpak_dir}/${METAINFO_NAME}"
+  require_file "${flatpak_dir}/git-host-bridge"
+  require_file "${flatpak_dir}/cargo-sources.json"
+
+  validate_release_version_parity "${repo_root}" "${version}"
+  run_static_checks "${repo_root}"
+
+  local release_commit
+  release_commit="$(resolve_release_commit "${repo_root}")"
+
+  mkdir -p "${out_dir}"
+
+  local tmp_dir
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/sce-flatpak-release.XXXXXX")"
+  cleanup() {
+    if [ -n "${tmp_dir:-}" ]; then
+      rm -rf "${tmp_dir}"
+    fi
+  }
+  trap cleanup EXIT
+
+  local package_root="sce-v${version}-flatpak-manifest"
+  local package_name="${package_root}.tar.gz"
+  local checksum_name="${package_name}.sha256"
+  local metadata_name="sce-v${version}-flatpak.json"
+  local stage_dir="${tmp_dir}/${package_root}"
+  local package_path="${out_dir}/${package_name}"
+  local checksum_path="${out_dir}/${checksum_name}"
+  local metadata_path="${out_dir}/${metadata_name}"
+
+  mkdir -p "${stage_dir}"
+  generate_release_manifest "${repo_root}" "${release_commit}" "${stage_dir}" >/dev/null
+  cp "${flatpak_dir}/${METAINFO_NAME}" "${stage_dir}/${METAINFO_NAME}"
+  cp "${flatpak_dir}/cargo-sources.json" "${stage_dir}/cargo-sources.json"
+  cp "${flatpak_dir}/git-host-bridge" "${stage_dir}/git-host-bridge"
+
+  chmod 0644 "${stage_dir}/${MANIFEST_NAME}" "${stage_dir}/${METAINFO_NAME}" "${stage_dir}/cargo-sources.json"
+  chmod 0755 "${stage_dir}/git-host-bridge"
+
+  tar \
+    --sort=name \
+    --mtime='UTC 1970-01-01' \
+    --owner=0 \
+    --group=0 \
+    --numeric-owner \
+    -C "${tmp_dir}" \
+    -cf - "${package_root}" | gzip -n > "${package_path}"
+
+  local checksum
+  checksum="$(sha256sum "${package_path}" | cut -d ' ' -f 1)"
+  printf '%s  %s\n' "${checksum}" "${package_name}" > "${checksum_path}"
+
+  python3 - \
+    "${metadata_path}" \
+    "${version}" \
+    "${release_commit}" \
+    "${package_name}" \
+    "${checksum_name}" \
+    "${checksum}" \
+    <<'PY'
+import json
+import pathlib
+import sys
+
+metadata_path = pathlib.Path(sys.argv[1])
+version = sys.argv[2]
+release_commit = sys.argv[3]
+package_name = sys.argv[4]
+checksum_name = sys.argv[5]
+checksum = sys.argv[6]
+
+manifest_name = "dev.crocoder.sce.yml"
+support_files = [
+    "dev.crocoder.sce.metainfo.xml",
+    "cargo-sources.json",
+    "git-host-bridge",
+]
+metadata = {
+    "asset_type": "flatpak-source-manifest",
+    "app_id": "dev.crocoder.sce",
+    "version": version,
+    "release_commit": release_commit,
+    "manifest_name": manifest_name,
+    "package_file": package_name,
+    "checksum_file": checksum_name,
+    "checksum_sha256": checksum,
+    "packaged_support_files": support_files,
+    "packaged_files": [manifest_name, *support_files],
+}
+metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+PY
+
+  rm -rf "${tmp_dir}"
+  trap - EXIT
+
+  printf 'Built Flatpak source-manifest release assets:\n'
+  printf '  %s\n' "${package_path}"
+  printf '  %s\n' "${checksum_path}"
+  printf '  %s\n' "${metadata_path}"
+}
+
 main() {
   local command="${1:-}"
   if [ -z "${command}" ]; then
@@ -453,6 +725,9 @@ main() {
       ;;
     build)
       cmd_build "$@"
+      ;;
+    release-package)
+      cmd_release_package "$@"
       ;;
     --help|-h|help)
       usage
