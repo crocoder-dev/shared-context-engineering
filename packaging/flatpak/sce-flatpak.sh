@@ -14,6 +14,7 @@ Commands:
   prepare-local-manifest   Generate a local-checkout Flatpak manifest
   build                    Build the Flatpak from the local checkout
   release-package          Package Flatpak source-manifest release assets
+  release-bundle           Build and bundle Flatpak release assets
 
 validate options:
   --repo-root <path>       Repository checkout to validate (default: git root or cwd)
@@ -38,6 +39,12 @@ release-package options:
   --version <semver>       Release version to package; must match checked-in metadata
   --out-dir <path>         Directory for release tarball, checksum, and JSON metadata
   --repo-root <path>       Repository checkout to package (default: git root or cwd)
+
+release-bundle options:
+  --version <semver>       Release version to bundle; must match checked-in metadata
+  --arch <arch>            Target architecture (default: host arch via uname -m)
+  --out-dir <path>         Directory for bundle, checksum, and JSON metadata
+  --repo-root <path>       Repository checkout to build from (default: git root or cwd)
 
 The generated local manifest replaces the checked-in release git source with a
 Flatpak type: dir source pointed at the checkout. It still runs the manifest's
@@ -708,6 +715,157 @@ PY
   printf '  %s\n' "${metadata_path}"
 }
 
+cmd_release_bundle() {
+  local repo_root_override=""
+  local version=""
+  local arch=""
+  local out_dir=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo-root)
+        repo_root_override="${2:-}"
+        [ -n "${repo_root_override}" ] || die "--repo-root requires a path"
+        shift 2
+        ;;
+      --version)
+        version="${2:-}"
+        [ -n "${version}" ] || die "--version requires a semver value"
+        shift 2
+        ;;
+      --arch)
+        arch="${2:-}"
+        [ -n "${arch}" ] || die "--arch requires an architecture value"
+        shift 2
+        ;;
+      --out-dir)
+        out_dir="${2:-}"
+        [ -n "${out_dir}" ] || die "--out-dir requires a path"
+        shift 2
+        ;;
+      --help|-h)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown release-bundle argument: $1"
+        ;;
+    esac
+  done
+
+  if [ -z "${version}" ] || [ -z "${out_dir}" ]; then
+    usage >&2
+    exit 1
+  fi
+
+  local repo_root
+  repo_root="$(resolve_repo_root "${repo_root_override}")"
+  local flatpak_dir
+  flatpak_dir="$(flatpak_dir_for "${repo_root}")"
+
+  require_file "${flatpak_dir}/${MANIFEST_NAME}"
+  require_file "${flatpak_dir}/${METAINFO_NAME}"
+  require_file "${flatpak_dir}/git-host-bridge"
+  require_file "${flatpak_dir}/cargo-sources.json"
+
+  validate_release_version_parity "${repo_root}" "${version}"
+  run_static_checks "${repo_root}"
+
+  # Resolve architecture (default to host arch)
+  if [ -z "${arch}" ]; then
+    arch="$(uname -m)"
+  fi
+
+  # Validate arch is supported
+  case "${arch}" in
+    x86_64|aarch64)
+      ;;
+    *)
+      die "unsupported architecture: ${arch} (supported: x86_64, aarch64)"
+      ;;
+  esac
+
+  require_command "flatpak-builder" "Use 'nix run .#flatpak-build' or enter 'nix develop'."
+  require_command "flatpak" "Install flatpak or enter 'nix develop'."
+
+  mkdir -p "${out_dir}"
+
+  local tmp_dir
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/sce-flatpak-release-bundle.XXXXXX")"
+  cleanup() {
+    if [ -n "${tmp_dir:-}" ]; then
+      rm -rf "${tmp_dir}"
+    fi
+  }
+  trap cleanup EXIT
+
+  # Generate local manifest into temp staging
+  local local_manifest
+  local_manifest="$(generate_local_manifest "${repo_root}" "${tmp_dir}/manifest")"
+  validate_generated_local_manifest "${repo_root}" "${local_manifest}"
+
+  local build_dir="${tmp_dir}/build"
+  local bundle_name="sce-v${version}-${arch}.flatpak"
+  local bundle_path="${out_dir}/${bundle_name}"
+  local checksum_name="${bundle_name}.sha256"
+  local checksum_path="${out_dir}/${checksum_name}"
+  local metadata_name="sce-v${version}-${arch}.json"
+  local metadata_path="${out_dir}/${metadata_name}"
+
+  # Build Flatpak from source (no --install)
+  printf 'Building %s for %s from local checkout source: %s\n' "${APP_ID}" "${arch}" "${repo_root}"
+  flatpak-builder --force-clean --arch="${arch}" "${build_dir}" "${local_manifest}"
+
+  # Create bundle from the build repository
+  printf 'Creating Flatpak bundle: %s\n' "${bundle_path}"
+  flatpak build-bundle --arch="${arch}" "${build_dir}" "${bundle_path}" "${APP_ID}"
+
+  # Compute SHA-256 checksum
+  local checksum
+  checksum="$(sha256sum "${bundle_path}" | cut -d ' ' -f 1)"
+  printf '%s  %s\n' "${checksum}" "${bundle_name}" > "${checksum_path}"
+
+  # Generate JSON metadata
+  python3 - \
+    "${metadata_path}" \
+    "${version}" \
+    "${arch}" \
+    "${bundle_name}" \
+    "${checksum_name}" \
+    "${checksum}" \
+    <<'PY'
+import json
+import pathlib
+import sys
+
+metadata_path = pathlib.Path(sys.argv[1])
+version = sys.argv[2]
+arch = sys.argv[3]
+bundle_name = sys.argv[4]
+checksum_name = sys.argv[5]
+checksum = sys.argv[6]
+
+metadata = {
+    "asset_type": "flatpak-bundle",
+    "app_id": "dev.crocoder.sce",
+    "version": version,
+    "architecture": arch,
+    "bundle_file": bundle_name,
+    "checksum_file": checksum_name,
+    "checksum_sha256": checksum,
+}
+metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+PY
+
+  rm -rf "${tmp_dir}"
+  trap - EXIT
+
+  printf 'Built Flatpak bundle release assets:\n'
+  printf '  %s\n' "${bundle_path}"
+  printf '  %s\n' "${checksum_path}"
+  printf '  %s\n' "${metadata_path}"
+}
+
 main() {
   local command="${1:-}"
   if [ -z "${command}" ]; then
@@ -728,6 +886,9 @@ main() {
       ;;
     release-package)
       cmd_release_package "$@"
+      ;;
+    release-bundle)
+      cmd_release_bundle "$@"
       ;;
     --help|-h|help)
       usage

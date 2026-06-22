@@ -61,12 +61,22 @@ The bundle is built from source inside Flatpak (using `flatpak-builder` + `flatp
     - `nix flake check` → exit 0, all checks passed
     - Existing source-manifest contract references are intact and unchanged
 
-- [ ] T02: `Add release-bundle command to sce-flatpak.sh` (status:todo)
+- [x] T02: `Add release-bundle command to sce-flatpak.sh` (status:done)
   - Task ID: T02
   - Goal: Implement a `sce-flatpak release-bundle` command that builds the `dev.crocoder.sce` Flatpak from source and emits a `.flatpak` bundle, SHA-256 checksum, and JSON metadata for the release.
   - Boundaries (in/out of scope): In - add `release-bundle` subcommand to `packaging/flatpak/sce-flatpak.sh` with `--repo-root`, `--version`, `--arch`, `--out-dir` flags; reuse existing `validate_release_version_parity`, `run_static_checks`, and `generate_local_manifest` functions; run `flatpak-builder` (without `--install`) then `flatpak build-bundle` to produce the `.flatpak` file; run `sha256sum` and render JSON metadata with `asset_type: flatpak-bundle`, architecture field, and app ID. Out - changes to existing `release-package` command, Flathub publication, GitHub workflow changes, flake app wrappers, default check changes.
   - Done when: `sce-flatpak release-bundle --version <semver> --arch x86_64 --out-dir <path>` builds the Flatpak from source in `<build-dir>`, emits `<out-dir>/sce-v<version>-x86_64.flatpak` and matching `.sha256` + `.json` files, fails on version parity mismatch, and does not install to the host system. Same for `--arch aarch64`.
   - Verification notes (commands or checks): Run against the current checkout with a fast incremental build; verify `.flatpak` file is a valid Flatpak bundle (`file` command or `flatpak info` on the bundle); verify JSON metadata contains expected fields; verify SHA-256 matches; verify wrong-version fails with diagnostics; verify `--arch` defaults to host arch when omitted.
+  - **Status:** done
+  - **Completed:** 2026-06-22
+  - **Files changed:**
+    - `packaging/flatpak/sce-flatpak.sh` — added `release-bundle` command, `--arch` flag, `cmd_release_bundle()` function, wired into `main()` dispatcher
+  - **Evidence:**
+    - `bash -n packaging/flatpak/sce-flatpak.sh` → exit 0, syntax OK
+    - `--help` output shows `release-bundle` command with `--version`, `--arch`, `--out-dir`, `--repo-root` flags
+    - Missing required flags prints usage and exits 1
+    - `nix run .#pkl-check-generated` → exit 0, generated outputs up to date
+    - `nix build '.#checks.x86_64-linux.flatpak-static-validation'` → exit 0, existing Flatpak validation passes
 
 - [ ] T03: `Build and upload .flatpak bundles from Linux release workflows` (status:todo)
   - Task ID: T03
