@@ -37,7 +37,7 @@ This file captures the current shared release artifact foundation plus the appro
   - `sce-v<version>-aarch64.flatpak` + `.sha256` + `.json`
 - The JSON metadata describes `asset_type: flatpak-bundle`, architecture field (`x86_64` / `aarch64`), app ID `dev.crocoder.sce`, version, and SHA-256 checksum.
 - Bundle assets are separate from native binary release archives, the signed native release manifest consumed by npm, and the existing Flatpak source-manifest packaging assets.
-- The release-bundle command (`packaging/flatpak/sce-flatpak.sh release-bundle`) and GitHub workflow upload for these assets are implemented by later packaging tasks in this plan.
+- The release-bundle command (`packaging/flatpak/sce-flatpak.sh release-bundle`) is exposed as `nix run .#release-flatpak-bundle -- --version <semver> --arch <arch> --out-dir <path>`. GitHub workflow upload for these assets is implemented (`.github/workflows/release-sce-linux.yml` / `release-sce-linux-arm.yml` build and upload; `release-sce.yml` assembles and publishes with the GitHub Release).
 
 ## Archive contents
 

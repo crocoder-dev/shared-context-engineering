@@ -78,12 +78,23 @@ The bundle is built from source inside Flatpak (using `flatpak-builder` + `flatp
     - `nix run .#pkl-check-generated` → exit 0, generated outputs up to date
     - `nix build '.#checks.x86_64-linux.flatpak-static-validation'` → exit 0, existing Flatpak validation passes
 
-- [ ] T03: `Build and upload .flatpak bundles from Linux release workflows` (status:todo)
+- [x] T03: `Build and upload .flatpak bundles from Linux release workflows` (status:done)
   - Task ID: T03
   - Goal: Add steps to `release-sce-linux.yml` (x86_64) and `release-sce-linux-arm.yml` (aarch64) to build and upload the source-built `.flatpak` bundle alongside existing native CLI artifacts.
   - Boundaries (in/out of scope): In - add a step in each Linux reusable workflow to run `sce-flatpak release-bundle` against the checked-out release commit, uploading the `.flatpak` / `.sha256` / `.json` files as workflow artifacts. In main `release-sce.yml`: add bundle artifacts to the `files:` glob and update release notes body. Out - macOS Flatpak bundles, new workflow files, Flathub publishing workflow, release-version bumping.
   - Done when: The x86_64 Linux reusable workflow uploads `sce-v<version>-x86_64.flatpak` + `.sha256` + `.json` as a named artifact. The aarch64 Linux reusable workflow uploads `sce-v<version>-aarch64.flatpak` + `.sha256` + `.json` as a named artifact. The `release` job downloads both bundle artifacts and includes `dist/flatpak-bundle/*.flatpak`, `dist/flatpak-bundle/*.sha256`, `dist/flatpak-bundle/*.json` in the GitHub Release file list. Release notes describe the bundle as a source-built Flatpak app (not prebuilt binary).
   - Verification notes (commands or checks): Static YAML review for step order and artifact naming; `workflow-actionlint` check on changed workflow files; confirm release notes body and file globs are correct.
+  - **Status:** done
+  - **Completed:** 2026-06-22
+  - **Files changed:**
+    - `flake.nix` — added `releaseFlatpakBundleApp` wrapping `sce-flatpak release-bundle`, registered `release-flatpak-bundle` flake app, added help text entry
+    - `.github/workflows/release-sce-linux.yml` — added flatpak bundle build/upload step for x86_64, artifact name `sce-flatpak-bundle-x86_64`
+    - `.github/workflows/release-sce-linux-arm.yml` — added flatpak bundle build/upload step for aarch64, artifact name `sce-flatpak-bundle-aarch64`
+    - `.github/workflows/release-sce.yml` — added download step for `sce-flatpak-bundle-*` artifacts, added `dist/flatpak-bundle/*.flatpak`/`.sha256`/`.json` to release file glob, updated release notes body with bundle install description
+  - **Evidence:**
+    - `nix run .#release-flatpak-bundle -- --help` → help output shows `release-bundle` command with `--version`, `--arch`, `--out-dir`, `--repo-root` flags
+    - `nix flake check` → exit 0, all checks passed including `workflow-actionlint`
+    - Static YAML review confirms step order, artifact naming, file globs, and release notes body are correct
 
 - [ ] T04: `Document .flatpak bundle release assets` (status:todo)
   - Task ID: T04

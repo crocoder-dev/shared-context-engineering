@@ -72,7 +72,7 @@ No other install channels are in scope for the current implementation stage.
 - The JSON metadata includes `asset_type: flatpak-bundle`, architecture field (`x86_64` / `aarch64`), and app ID `dev.crocoder.sce`.
 - The bundle is a source-built Flatpak app for direct install, not a prebuilt binary or Flathub submission.
 - Source-built `.flatpak` bundles coexist with existing source-manifest tarball assets; the source-manifest packaging metadata remains unchanged.
-- Later packaging tasks implement the `release-bundle` command in `packaging/flatpak/sce-flatpak.sh` and the GitHub workflow upload for these assets.
+- The `release-bundle` command (`packaging/flatpak/sce-flatpak.sh release-bundle`) and GitHub workflow upload for these assets are implemented (`.github/workflows/release-sce-linux.yml` / `release-sce-linux-arm.yml` build and upload; `release-sce.yml` assembles and publishes with the GitHub Release).
 
 ## Implemented Nix-backed Flatpak tooling surface
 
@@ -82,6 +82,7 @@ No other install channels are in scope for the current implementation stage.
   - `nix run .#flatpak-local-manifest` for generating a temporary manifest that replaces the release git source with a Flatpak `type: dir` source pointed at the current checkout.
   - `nix run .#flatpak-build -- --help` / `nix run .#flatpak-build -- ...` for explicit local `flatpak-builder` source builds from that generated local manifest.
   - `nix run .#release-flatpak-package -- --version <semver> --out-dir <path>` for deterministic GitHub Release source-manifest tarball/checksum/JSON assets.
+  - `nix run .#release-flatpak-bundle -- --version <semver> --arch <arch> --out-dir <path>` for deterministic GitHub Release source-built `.flatpak` bundle/checksum/JSON assets.
 - `checks.<linux>.flatpak-static-validation` runs the lightweight validation path during default `nix flake check`; it does not run a full Flatpak build or require network access.
 - The Linux dev shell includes `appstreamcli`, `flatpak`, and `flatpak-builder`, and its banner lists the Flatpak local/release flake apps alongside existing repo app entrypoints.
 - The checked-in release manifest remains Flathub-style and source-built; Nix orchestration only supplies tools and generated local manifests and must not provide a prebuilt `sce` binary to the Flatpak package.

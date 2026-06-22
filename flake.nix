@@ -848,6 +848,14 @@
           '';
         };
 
+        releaseFlatpakBundleApp = pkgs.writeShellApplication {
+          name = "release-flatpak-bundle";
+          runtimeInputs = [ flatpakToolApp ];
+          text = ''
+            exec sce-flatpak release-bundle "$@"
+          '';
+        };
+
         flatpakStaticValidationCheck = pkgs.runCommand "flatpak-static-validation"
           {
             nativeBuildInputs = [ flatpakToolApp ];
@@ -1225,6 +1233,14 @@
                 description = "Build Flatpak source-manifest GitHub Release assets";
               };
             };
+
+            release-flatpak-bundle = {
+              type = "app";
+              program = "${releaseFlatpakBundleApp}/bin/release-flatpak-bundle";
+              meta = {
+                description = "Build Flatpak bundle GitHub Release assets";
+              };
+            };
           };
 
         devShells.default = pkgs.mkShell {
@@ -1284,6 +1300,7 @@
               echo "- flatpak-local-manifest: nix run .#flatpak-local-manifest"
               echo "- flatpak-build: nix run .#flatpak-build -- --help"
               echo "- release-flatpak-package: nix run .#release-flatpak-package -- --help"
+              echo "- release-flatpak-bundle: nix run .#release-flatpak-bundle -- --help"
             ''}
           '';
         };

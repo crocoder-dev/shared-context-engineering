@@ -210,6 +210,13 @@ jobs:
             --version "${{ needs.resolve-release.outputs.version }}" \
             --out-dir dist/flatpak
 
+      - name: Download Flatpak bundle release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: sce-flatpak-bundle-*
+          path: dist/flatpak-bundle
+          merge-multiple: true
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
@@ -226,6 +233,7 @@ jobs:
             - Combined checksums are published as `sce-v<version>-SHA256SUMS`
             - The npm package tarball is published as `sce-v<version>-npm.tgz`
             - Flatpak source-built packaging metadata is published as `sce-v<version>-flatpak-manifest.tar.gz`, with matching `.sha256` and `.json` metadata assets; this is not a prebuilt Flatpak app or Flathub publication.
+            - Flatpak source-built `.flatpak` bundles are published as `sce-v<version>-x86_64.flatpak` and `sce-v<version>-aarch64.flatpak`, with matching `.sha256` and `.json` metadata assets; install directly with `flatpak install --user <url>`.
           files: |
             dist/cli/*.tar.gz
             dist/cli/*.sha256
@@ -237,3 +245,6 @@ jobs:
             dist/flatpak/*.tar.gz
             dist/flatpak/*.sha256
             dist/flatpak/*.json
+            dist/flatpak-bundle/*.flatpak
+            dist/flatpak-bundle/*.sha256
+            dist/flatpak-bundle/*.json
