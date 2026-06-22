@@ -14,6 +14,18 @@ This file captures the current shared release artifact foundation plus the appro
   - `sce-v<version>-SHA256SUMS`
 - `nix run .#release-manifest` signs the merged release manifest with a non-repo private key supplied via `SCE_RELEASE_MANIFEST_SIGNING_KEY` or `--signing-key-file <path>`.
 
+## Approved Flatpak source-manifest artifact set
+
+- Flatpak GitHub Release assets are approved as source-manifest packaging metadata for the source-built `dev.crocoder.sce` Flatpak channel.
+- The approved Flatpak asset names are:
+  - `sce-v<version>-flatpak-manifest.tar.gz`
+  - `sce-v<version>-flatpak-manifest.tar.gz.sha256`
+  - `sce-v<version>-flatpak.json`
+- The Flatpak tarball contains a deterministic top-level `sce-v<version>-flatpak-manifest/` directory with `dev.crocoder.sce.yml`, `dev.crocoder.sce.metainfo.xml`, `cargo-sources.json`, and `git-host-bridge`.
+- The staged packaged manifest pins the release git source to the release commit without mutating the checked-in Flatpak manifest.
+- Flatpak source-manifest assets are not native binary archives and are not included in the signed native `sce-v<version>-release-manifest.json` consumed by npm.
+- The Flatpak asset set does not publish a prebuilt `sce` binary, `.flatpak` bundle, OSTree repository, AppImage, `.deb`, `.rpm`, AUR package, Homebrew asset, or Flathub submission.
+
 ## Archive contents
 
 - Each archive contains a deterministic top-level directory named `sce-v<version>-<target-triple>/`.
@@ -32,7 +44,7 @@ This file captures the current shared release artifact foundation plus the appro
 
 ## Workflow topology
 
-- GitHub Releases are the canonical publication surface for `sce` release archives, checksums, metadata fragments, and merged release-manifest assets.
+- GitHub Releases are the canonical publication surface for `sce` release archives, checksums, metadata fragments, merged release-manifest assets, npm package assets, and approved Flatpak source-manifest assets.
 - Repo-root `.version` is the canonical checked-in release version source for release tags, archive names, and packaged metadata across the release flow.
 - Release packaging consumes the checked-in version directly; workflow-side semver bump generation is not part of the current contract.
 - Cargo/crates.io and npm registry publication are separate downstream publish stages and are not part of the canonical GitHub release artifact assembly job.
@@ -67,5 +79,5 @@ This file captures the current shared release artifact foundation plus the appro
 - The implemented npm channel consumes this artifact naming and manifest/checksum shape rather than inventing a channel-specific archive format.
 - The implemented npm channel also depends on the published `sce-v<version>-release-manifest.json.sig` asset so manifest-provided checksums are only trusted after signature verification.
 - Additional binary-distribution install channels should reuse this artifact contract unless a later decision explicitly supersedes it.
-- Flatpak is the current approved exception to binary-artifact reuse: the Flatpak package for application ID `dev.crocoder.sce` is source-built inside Flatpak, uses a release-source manifest plus a Nix-generated local checkout-source manifest/override for local builds, and must not consume Nix-built, GitHub Release, npm native, or other prebuilt `sce` artifacts.
-- The current Flatpak iteration does not publish GitHub Release Flatpak assets or add CI/Flathub publication automation.
+- Flatpak is the current approved exception to binary-artifact reuse: the Flatpak package for application ID `dev.crocoder.sce` is source-built inside Flatpak, uses a release-source manifest plus a Nix-generated local checkout-source manifest/override for local builds, and must not consume Nix-built, native GitHub Release binary archives, npm native, or other prebuilt `sce` artifacts.
+- GitHub Release Flatpak assets are approved only as source-manifest package assets; CI publishing, automatic Flathub submission, and prebuilt Flatpak binary/bundle assets remain out of scope.
