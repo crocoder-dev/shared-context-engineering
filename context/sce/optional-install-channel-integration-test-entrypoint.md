@@ -24,6 +24,6 @@ The repository exposes an explicit opt-in flake app for install-channel integrat
 
 - The Rust runner already has dedicated default-flake checks: `integrations-install-fmt`, `integrations-install-clippy`, and `integrations-install-tests`.
 - The opt-in app remains outside default `nix flake check`.
-- Real npm, Bun, and Cargo install orchestration now run through the Rust runner behind the unchanged selector contract for the existing binary install channels. Flatpak validation/build orchestration is implemented as a separate Nix-owned source-build path (`flatpak-validate`, `flatpak-local-manifest`, `flatpak-build`, and `flatpak-static-validation`) rather than part of this app's current selector contract.
+- Real npm, Bun, and Cargo install orchestration now run through the Rust runner behind the unchanged selector contract for the existing binary install channels. Flatpak validation/build orchestration is implemented as a separate Nix-owned source-build path (umbrella `sce-flatpak <subcommand>` for `validate` / `prepare-local-manifest`, `release-flatpak-package`, `release-flatpak-bundle`, and the `flatpak-static-validation` flake check) rather than part of this app's current selector contract.
 
 See also: [../overview.md](../overview.md), [../architecture.md](../architecture.md), [../patterns.md](../patterns.md)

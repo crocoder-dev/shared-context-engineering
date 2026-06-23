@@ -14,6 +14,8 @@
     turso.inputs.flake-utils.follows = "flake-utils";
     turso.inputs.crane.follows = "crane";
     turso.inputs.rust-overlay.follows = "rust-overlay";
+    flatpak-builder-tools.url = "github:flatpak/flatpak-builder-tools";
+    flatpak-builder-tools.flake = false;
   };
 
   outputs =
@@ -26,6 +28,7 @@
       opencode,
       opencode-nixpkgs,
       turso,
+      flatpak-builder-tools,
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -808,35 +811,52 @@
             pkgs.flatpak-builder
           ];
 
+        flatpakManifest = import ./nix/flatpak/manifest.nix {
+          inherit pkgs;
+          checkedInYaml = ./packaging/flatpak/dev.crocoder.sce.yml;
+        };
+
+        flatpakStaticCheckApp = pkgs.writeShellApplication {
+          name = "flatpak-static-check";
+          runtimeInputs = [
+            pkgs.coreutils
+            pkgs.gawk
+            pkgs.jq
+            pkgs.libxml2
+          ];
+          text = builtins.readFile ./nix/flatpak/static-validate.sh;
+        };
+
+        flatpakVersionParityCheckApp = pkgs.writeShellApplication {
+          name = "flatpak-version-parity-check";
+          runtimeInputs = [
+            pkgs.coreutils
+            pkgs.gnused
+            pkgs.jq
+            pkgs.libxml2
+          ];
+          text = builtins.readFile ./nix/flatpak/version-parity.sh;
+        };
+
+        flatpakLocalManifestCheckApp = pkgs.writeShellApplication {
+          name = "flatpak-local-manifest-check";
+          runtimeInputs = [ pkgs.coreutils ];
+          text = builtins.readFile ./nix/flatpak/local-manifest-validate.sh;
+        };
+
         flatpakToolApp = pkgs.writeShellApplication {
           name = "sce-flatpak";
           runtimeInputs = flatpakToolRuntimeInputs;
           text = ''
+            export SCE_FLATPAK_RELEASE_MANIFEST="${flatpakManifest.releaseManifest}"
+            export SCE_FLATPAK_LOCAL_MANIFEST_TEMPLATE="${flatpakManifest.localManifestTemplate}"
+            export SCE_FLATPAK_COMMIT_MANIFEST_TEMPLATE="${flatpakManifest.commitManifestTemplate}"
+            export SCE_FLATPAK_LOCAL_PATH_PLACEHOLDER="${flatpakManifest.localPathPlaceholder}"
+            export SCE_FLATPAK_COMMIT_PLACEHOLDER="${flatpakManifest.commitPlaceholder}"
+            export SCE_FLATPAK_STATIC_CHECK="${flatpakStaticCheckApp}/bin/flatpak-static-check"
+            export SCE_FLATPAK_VERSION_PARITY_CHECK="${flatpakVersionParityCheckApp}/bin/flatpak-version-parity-check"
+            export SCE_FLATPAK_LOCAL_MANIFEST_CHECK="${flatpakLocalManifestCheckApp}/bin/flatpak-local-manifest-check"
             exec ${pkgs.bash}/bin/bash ${./packaging/flatpak/sce-flatpak.sh} "$@"
-          '';
-        };
-
-        flatpakValidateApp = pkgs.writeShellApplication {
-          name = "flatpak-validate";
-          runtimeInputs = [ flatpakToolApp ];
-          text = ''
-            exec sce-flatpak validate "$@"
-          '';
-        };
-
-        flatpakLocalManifestApp = pkgs.writeShellApplication {
-          name = "flatpak-local-manifest";
-          runtimeInputs = [ flatpakToolApp ];
-          text = ''
-            exec sce-flatpak prepare-local-manifest "$@"
-          '';
-        };
-
-        flatpakBuildApp = pkgs.writeShellApplication {
-          name = "flatpak-build";
-          runtimeInputs = [ flatpakToolApp ];
-          text = ''
-            exec sce-flatpak build "$@"
           '';
         };
 
@@ -856,9 +876,16 @@
           '';
         };
 
+        flatpakCargoSources = import ./nix/flatpak/cargo-sources.nix {
+          inherit pkgs;
+          flatpakBuilderToolsSrc = flatpak-builder-tools;
+          cargoLock = ./cli/Cargo.lock;
+          checkedInJson = ./packaging/flatpak/cargo-sources.json;
+        };
+
         flatpakStaticValidationCheck = pkgs.runCommand "flatpak-static-validation"
           {
-            nativeBuildInputs = [ flatpakToolApp ];
+            nativeBuildInputs = [ flatpakStaticCheckApp ];
           }
           ''
             set -euo pipefail
@@ -867,7 +894,7 @@
             chmod -R u+w ./repo
             cd ./repo
 
-            sce-flatpak validate --repo-root "$PWD" --skip-optional-lint
+            flatpak-static-check --repo-root "$PWD"
 
             mkdir -p "$out"
           '';
@@ -1146,6 +1173,8 @@
           }
           // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
             flatpak-static-validation = flatpakStaticValidationCheck;
+            cargo-sources-parity = flatpakCargoSources.parityCheck;
+            flatpak-manifest-parity = flatpakManifest.parityCheck;
           };
 
         apps =
@@ -1202,27 +1231,11 @@
             };
           }
           // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-            flatpak-validate = {
+            sce-flatpak = {
               type = "app";
-              program = "${flatpakValidateApp}/bin/flatpak-validate";
+              program = "${flatpakToolApp}/bin/sce-flatpak";
               meta = {
-                description = "Validate Flatpak packaging metadata and local-source manifest generation";
-              };
-            };
-
-            flatpak-local-manifest = {
-              type = "app";
-              program = "${flatpakLocalManifestApp}/bin/flatpak-local-manifest";
-              meta = {
-                description = "Generate a Flatpak manifest that builds from the current checkout";
-              };
-            };
-
-            flatpak-build = {
-              type = "app";
-              program = "${flatpakBuildApp}/bin/flatpak-build";
-              meta = {
-                description = "Build the sce Flatpak from the current checkout with flatpak-builder";
+                description = "Flatpak packaging umbrella (validate, prepare-local-manifest, release-package, release-bundle)";
               };
             };
 
@@ -1239,6 +1252,46 @@
               program = "${releaseFlatpakBundleApp}/bin/release-flatpak-bundle";
               meta = {
                 description = "Build Flatpak bundle GitHub Release assets";
+              };
+            };
+
+            flatpak-static-check = {
+              type = "app";
+              program = "${flatpakStaticCheckApp}/bin/flatpak-static-check";
+              meta = {
+                description = "Static Flatpak packaging validation (manifest, banned snippets, cargo-sources, metainfo)";
+              };
+            };
+
+            flatpak-version-parity-check = {
+              type = "app";
+              program = "${flatpakVersionParityCheckApp}/bin/flatpak-version-parity-check";
+              meta = {
+                description = "Validate sce release version parity across .version, Cargo.toml, npm package.json, and Flatpak metainfo";
+              };
+            };
+
+            flatpak-local-manifest-check = {
+              type = "app";
+              program = "${flatpakLocalManifestCheckApp}/bin/flatpak-local-manifest-check";
+              meta = {
+                description = "Validate a generated local-checkout Flatpak manifest";
+              };
+            };
+
+            regenerate-cargo-sources = {
+              type = "app";
+              program = "${flatpakCargoSources.regenerateApp}/bin/regenerate-cargo-sources";
+              meta = {
+                description = "Regenerate packaging/flatpak/cargo-sources.json from cli/Cargo.lock";
+              };
+            };
+
+            regenerate-flatpak-manifest = {
+              type = "app";
+              program = "${flatpakManifest.regenerateApp}/bin/regenerate-flatpak-manifest";
+              meta = {
+                description = "Regenerate packaging/flatpak/dev.crocoder.sce.yml from nix/flatpak/manifest.nix";
               };
             };
           };
@@ -1296,9 +1349,7 @@
               echo "- flatpak: $(version_of flatpak)"
               echo "- flatpak-builder: $(version_of flatpak-builder)"
               echo "- appstreamcli: $(version_of appstreamcli)"
-              echo "- flatpak-validate: nix run .#flatpak-validate"
-              echo "- flatpak-local-manifest: nix run .#flatpak-local-manifest"
-              echo "- flatpak-build: nix run .#flatpak-build -- --help"
+              echo "- sce-flatpak: nix run .#sce-flatpak -- --help"
               echo "- release-flatpak-package: nix run .#release-flatpak-package -- --help"
               echo "- release-flatpak-bundle: nix run .#release-flatpak-bundle -- --help"
             ''}

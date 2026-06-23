@@ -1,38 +1,36 @@
+command: sce
+finish-args:
+- --share=network
+- --filesystem=home
+- --talk-name=org.freedesktop.Flatpak
+- --talk-name=org.freedesktop.secrets
 id: dev.crocoder.sce
+modules:
+- build-commands:
+  - bash ./scripts/prepare-cli-generated-assets.sh "$PWD"
+  - cargo --offline build --release --manifest-path cli/Cargo.toml --bin sce
+  - install -Dm755 cli/target/release/sce /app/bin/sce
+  - install -Dm755 packaging/flatpak/git-host-bridge /app/bin/git
+  - install -Dm644 packaging/flatpak/dev.crocoder.sce.metainfo.xml /app/share/metainfo/dev.crocoder.sce.metainfo.xml
+  build-options:
+    append-path: /usr/lib/sdk/rust-stable/bin
+    env:
+      CARGO_HOME: /run/build/sce/cargo
+  buildsystem: simple
+  name: sce
+  sources:
+  - commit: b7f0fa002fca5f5320791ff5e4abfaadfcddf187
+    type: git
+    url: https://github.com/crocoder-dev/shared-context-engineering.git
+  - dest: packaging/flatpak
+    path: dev.crocoder.sce.metainfo.xml
+    type: file
+  - dest: packaging/flatpak
+    path: git-host-bridge
+    type: file
+  - cargo-sources.json
 runtime: org.freedesktop.Platform
-runtime-version: "25.08"
+runtime-version: '25.08'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
-  - org.freedesktop.Sdk.Extension.rust-stable
-command: sce
-
-finish-args:
-  - --share=network
-  - --filesystem=home
-  - --talk-name=org.freedesktop.Flatpak
-  - --talk-name=org.freedesktop.secrets
-
-modules:
-  - name: sce
-    buildsystem: simple
-    build-options:
-      append-path: /usr/lib/sdk/rust-stable/bin
-      env:
-        CARGO_HOME: /run/build/sce/cargo
-    build-commands:
-      - bash ./scripts/prepare-cli-generated-assets.sh "$PWD"
-      - cargo --offline build --release --manifest-path cli/Cargo.toml --bin sce
-      - install -Dm755 cli/target/release/sce /app/bin/sce
-      - install -Dm755 packaging/flatpak/git-host-bridge /app/bin/git
-      - install -Dm644 packaging/flatpak/dev.crocoder.sce.metainfo.xml /app/share/metainfo/dev.crocoder.sce.metainfo.xml
-    sources:
-      - type: git
-        url: https://github.com/crocoder-dev/shared-context-engineering.git
-        commit: b7f0fa002fca5f5320791ff5e4abfaadfcddf187
-      - type: file
-        path: dev.crocoder.sce.metainfo.xml
-        dest: packaging/flatpak
-      - type: file
-        path: git-host-bridge
-        dest: packaging/flatpak
-      - cargo-sources.json
+- org.freedesktop.Sdk.Extension.rust-stable

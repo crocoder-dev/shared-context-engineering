@@ -72,40 +72,41 @@ Freedesktop SDK Rust extension — it does not wrap a prebuilt Nix, Cargo, or np
 - The [Freedesktop SDK](https://docs.flatpak.org/en/latest/available-runtimes.html) runtime
   and SDK extension are downloaded automatically by flatpak-builder when needed.
 
-#### Preferred path: Nix-backed workflow
+#### Preferred path: Nix-native workflow
 
 If you are working from the repository checkout and have Nix available, use the
-Nix-backed entrypoints. They provide Flatpak tooling, generate a local-checkout
-manifest, and run validation without bypassing the Flatpak source build.
+Nix-native entrypoints. Nix owns the checked-in Flatpak manifest generation,
+Cargo source enumeration, and static/version-parity validation; the bash helper
+only orchestrates the imperative `flatpak-builder` / `flatpak build-bundle`
+steps that need network and bubblewrap access.
 
 ```bash
 # Enter the dev shell with Flatpak tooling (Linux only)
 nix develop
 
 # Validate packaging metadata and local-source manifest generation
-nix run .#flatpak-validate
+nix run .#sce-flatpak -- validate --skip-optional-lint
 
 # Generate a Flatpak manifest that builds from the current checkout
-nix run .#flatpak-local-manifest
+nix run .#sce-flatpak -- prepare-local-manifest --repo-root "$PWD" --out-dir /tmp/sce-flatpak-manifest
 
-# Build the Flatpak from the current checkout
-nix run .#flatpak-build -- --help
+# Build release assets from the current checkout
+nix run .#release-flatpak-package -- --help
+nix run .#release-flatpak-bundle -- --help
 ```
 
-The `nix run .#flatpak-build` command accepts the same arguments as
-`sce-flatpak build` (see `--help`). For example, to build and install
-into your user installation:
+Regenerate checked-in Flatpak packaging artifacts after changing their sources:
 
 ```bash
-nix run .#flatpak-build -- \
-  --install --user \
-  --install-deps-from=flathub
+nix run .#regenerate-flatpak-manifest
+nix run .#regenerate-cargo-sources
 ```
 
 The default `nix flake check` runs lightweight static validation
-(`flatpak-static-validation`) without a full Flatpak build. Full builds
-are opt-in via `nix run .#flatpak-build` and require network access for
-SDK runtime downloads.
+(`flatpak-static-validation`) plus manifest and cargo-source parity checks
+without a full Flatpak build. Full source-built bundles remain opt-in through
+`nix run .#release-flatpak-bundle` and require network access for SDK runtime
+downloads.
 
 #### GitHub Release source-manifest assets
 
@@ -187,8 +188,9 @@ flatpak-builder \
   sourced from the checked-in `cargo-sources.json` and are still built offline
   inside Flatpak.
 
-The local manifest is produced by `nix run .#flatpak-local-manifest` or
-`sce-flatpak.sh prepare-local-manifest`. It is never committed; it lives in a
+The local manifest is produced by
+`nix run .#sce-flatpak -- prepare-local-manifest --repo-root "$PWD" --out-dir <dir>`
+or `sce-flatpak.sh prepare-local-manifest`. It is never committed; it lives in a
 temporary or user-specified output directory.
 
 #### Run the Flatpak
