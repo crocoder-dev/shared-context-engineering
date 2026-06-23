@@ -33,6 +33,22 @@
         "type": "github"
       }
     },
+    "flatpak-builder-tools": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1780983860,
+        "narHash": "sha256-fiSSy1858b3V6VFEViQq6nkU57XInnDsB5LByxfpgf4=",
+        "owner": "flatpak",
+        "repo": "flatpak-builder-tools",
+        "rev": "737c0085912f9f7dabf9341d4608e2a77a51a73a",
+        "type": "github"
+      },
+      "original": {
+        "owner": "flatpak",
+        "repo": "flatpak-builder-tools",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1778869304,
@@ -88,6 +104,7 @@
       "inputs": {
         "crane": "crane",
         "flake-utils": "flake-utils",
+        "flatpak-builder-tools": "flatpak-builder-tools",
         "nixpkgs": "nixpkgs",
         "opencode": "opencode",
         "opencode-nixpkgs": [
