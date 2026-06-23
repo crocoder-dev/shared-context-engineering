@@ -4,6 +4,8 @@ set -euo pipefail
 APP_ID="dev.crocoder.sce"
 MANIFEST_NAME="${APP_ID}.yml"
 METAINFO_NAME="${APP_ID}.metainfo.xml"
+FLATHUB_REMOTE_NAME="flathub"
+FLATHUB_REMOTE_URL="https://flathub.org/repo/flathub.flatpakrepo"
 
 usage() {
   cat <<'EOF'
@@ -98,6 +100,11 @@ require_command() {
   if ! command -v "${name}" >/dev/null 2>&1; then
     die "${name} is required. ${guidance}"
   fi
+}
+
+ensure_flatpak_user_remote() {
+  printf 'Ensuring Flatpak user remote %s is configured for SDK/runtime dependencies.\n' "${FLATHUB_REMOTE_NAME}"
+  flatpak --user remote-add --if-not-exists --from "${FLATHUB_REMOTE_NAME}" "${FLATHUB_REMOTE_URL}"
 }
 
 generate_local_manifest() {
@@ -787,6 +794,7 @@ cmd_release_bundle() {
 
   require_command "flatpak-builder" "Use 'nix run .#flatpak-build' or enter 'nix develop'."
   require_command "flatpak" "Install flatpak or enter 'nix develop'."
+  ensure_flatpak_user_remote
 
   mkdir -p "${out_dir}"
 
@@ -805,6 +813,7 @@ cmd_release_bundle() {
   validate_generated_local_manifest "${repo_root}" "${local_manifest}"
 
   local build_dir="${tmp_dir}/build"
+  local export_repo="${tmp_dir}/repo"
   local bundle_name="sce-v${version}-${arch}.flatpak"
   local bundle_path="${out_dir}/${bundle_name}"
   local checksum_name="${bundle_name}.sha256"
@@ -814,11 +823,18 @@ cmd_release_bundle() {
 
   # Build Flatpak from source (no --install)
   printf 'Building %s for %s from local checkout source: %s\n' "${APP_ID}" "${arch}" "${repo_root}"
-  flatpak-builder --force-clean --arch="${arch}" "${build_dir}" "${local_manifest}"
+  flatpak-builder \
+    --force-clean \
+    --user \
+    --install-deps-from="${FLATHUB_REMOTE_NAME}" \
+    --repo="${export_repo}" \
+    --arch="${arch}" \
+    "${build_dir}" \
+    "${local_manifest}"
 
   # Create bundle from the build repository
   printf 'Creating Flatpak bundle: %s\n' "${bundle_path}"
-  flatpak build-bundle --arch="${arch}" "${build_dir}" "${bundle_path}" "${APP_ID}"
+  flatpak build-bundle --arch="${arch}" "${export_repo}" "${bundle_path}" "${APP_ID}"
 
   # Compute SHA-256 checksum
   local checksum
