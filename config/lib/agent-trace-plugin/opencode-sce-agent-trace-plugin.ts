@@ -35,7 +35,7 @@ type ConversationTraceMessagePartUpdatedItem = {
 	type: "message.part";
 	session_id: string;
 	message_id: string;
-	part_type: EventMessagePartUpdated["properties"]["part"]["type"];
+	part_type: "text" | "reasoning" | "patch" | "question";
 	text: unknown;
 	generated_at_unix_ms: number;
 };
@@ -67,6 +67,9 @@ type EventMessagePartUpdated = Extract<
 
 type EventMessagePart = EventMessagePartUpdated["properties"]["part"];
 type EventMessageToolPart = Extract<EventMessagePart, { type: "tool" }>;
+type EventAllowedPart =
+	| Extract<EventMessagePart, { type: "text" }>
+	| Extract<EventMessagePart, { type: "reasoning" }>;
 
 function extractDiffEntries(
 	eventInfo: EventMessageUpdated["properties"]["info"],
@@ -173,10 +176,8 @@ function buildConversationTracePayload(
 }
 
 export function buildMessagePartConversationTracePayload(
-	event: EventMessagePartUpdated,
+	eventPart: EventAllowedPart,
 ): ConversationTracePayload {
-	const eventPart = event.properties.part;
-
 	return {
 		payloads: [
 			{
@@ -206,7 +207,7 @@ function buildQuestionToolConversationTracePayload(
 				type: "message.part",
 				session_id: eventPart.sessionID,
 				message_id: eventPart.messageID,
-				part_type: "text",
+				part_type: "question",
 				text: JSON.stringify(pairedAnswers),
 				generated_at_unix_ms: Date.now(),
 			},
@@ -277,7 +278,7 @@ export async function recordConversationTrace(
 	) {
 		await runConversationTraceHook(
 			repoRoot,
-			buildMessagePartConversationTracePayload(event),
+			buildMessagePartConversationTracePayload(event.properties.part),
 		);
 		return;
 	}

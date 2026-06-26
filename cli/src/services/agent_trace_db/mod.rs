@@ -272,6 +272,7 @@ pub enum PartType {
     Text,
     Reasoning,
     Patch,
+    Question,
 }
 
 impl std::fmt::Display for PartType {
@@ -280,6 +281,7 @@ impl std::fmt::Display for PartType {
             Self::Text => write!(f, "text"),
             Self::Reasoning => write!(f, "reasoning"),
             Self::Patch => write!(f, "patch"),
+            Self::Question => write!(f, "question"),
         }
     }
 }
