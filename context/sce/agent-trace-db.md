@@ -28,7 +28,7 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 - `INSERT_MESSAGE_SQL`: parameterized single-row SQL using `INSERT ... ON CONFLICT (session_id, message_id) DO NOTHING` — leverages the unique index `idx_messages_session_message` so duplicate parent-message events remain non-failing without mutating the existing row.
 - `insert_message(input)`: typed single-row helper that executes the duplicate-ignore parent-message insert; retained as part of the adapter surface.
 - `insert_messages(inputs)`: typed batch helper that generates and executes one parameterized multi-row `messages` insert for valid conversation-trace `message` batches while preserving duplicate-ignore semantics.
-- `PartType` enum: `Text` / `Reasoning` / `Patch` — maps to `parts.type` DB constraint.
+- `PartType` enum: `Text` / `Reasoning` / `Patch` / `Question` — serializes known conversation part kinds for typed inserts. `parts.type` is stored as `TEXT NOT NULL` without a database-level enum `CHECK` constraint.
 - `InsertPartInsert`: owned payload struct with `part_type`, `text`, `session_id`, `message_id`, and `generated_at_unix_ms`.
 - `INSERT_PART_SQL`: parameterized single-row append-only INSERT into `parts` (no upsert; multiple rows per `(session_id, message_id)` allowed).
 - `insert_part(input)`: typed single-row helper that inserts a part row without requiring a matching `messages` row (supports out-of-order writes); retained as part of the adapter surface.
@@ -136,7 +136,7 @@ The `messages` migration creates:
 The `parts` migration creates:
 
 - `id INTEGER PRIMARY KEY`
-- `type TEXT NOT NULL CHECK (type IN ('text', 'reasoning', 'patch'))`
+- `type TEXT NOT NULL`
 - `text TEXT NOT NULL`
 - `message_id TEXT NOT NULL`
 - `session_id TEXT NOT NULL`

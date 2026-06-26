@@ -595,6 +595,7 @@ fn parse_message_part_updated_item(
             }
         }
         PartType::Text | PartType::Reasoning => raw_text,
+        PartType::Question => validate_question_part_text(raw_text)?,
     };
 
     Ok(InsertPartInsert {
@@ -634,10 +635,38 @@ fn parse_part_type(payload: &serde_json::Map<String, Value>) -> Result<PartType>
         "text" => Ok(PartType::Text),
         "reasoning" => Ok(PartType::Reasoning),
         "patch" => Ok(PartType::Patch),
+        "question" => Ok(PartType::Question),
         _ => bail!(conversation_trace_validation_error(
-            "field 'part_type' must be one of 'text', 'reasoning' or 'patch'"
+            "field 'part_type' must be one of 'text', 'reasoning', 'patch' or 'question'"
         )),
     }
+}
+
+fn validate_question_part_text(raw_text: String) -> Result<String> {
+    let parsed: Value = serde_json::from_str(&raw_text).map_err(|_| {
+        anyhow!(conversation_trace_validation_error(
+            "field 'text' for question part must be a JSON array of objects with string 'question' and 'answer' fields"
+        ))
+    })?;
+
+    let items = parsed.as_array().ok_or_else(|| {
+        anyhow!(conversation_trace_validation_error(
+            "field 'text' for question part must be a JSON array of objects with string 'question' and 'answer' fields"
+        ))
+    })?;
+
+    if items.iter().all(|item| {
+        item.as_object().is_some_and(|object| {
+            object.get("question").is_some_and(Value::is_string)
+                && object.get("answer").is_some_and(Value::is_string)
+        })
+    }) {
+        return Ok(raw_text);
+    }
+
+    bail!(conversation_trace_validation_error(
+        "field 'text' for question part must be a JSON array of objects with string 'question' and 'answer' fields"
+    ))
 }
 
 fn conversation_trace_validation_error(detail: &str) -> String {
@@ -2578,6 +2607,13 @@ mod tests {
     #[test]
     fn conversation_trace_mixed_payload_maps_to_message_and_part_insert_inputs() {
         let patch_text = valid_patch_text("src/lib.rs", "let answer = 42;");
+        let question_text = serde_json::json!([
+            {
+                "question": "Proceed?",
+                "answer": "Yes"
+            }
+        ])
+        .to_string();
         let payload = serde_json::json!({
             "payloads": [
                 {
@@ -2602,6 +2638,14 @@ mod tests {
                     "part_type": "patch",
                     "text": patch_text,
                     "generated_at_unix_ms": 1_800_000_000_002_i64
+                },
+                {
+                    "type": "message.part",
+                    "session_id": "session-1",
+                    "message_id": "message-1",
+                    "part_type": "question",
+                    "text": question_text,
+                    "generated_at_unix_ms": 1_800_000_000_003_i64
                 }
             ]
         });
@@ -2609,7 +2653,7 @@ mod tests {
         let parsed = parse_conversation_trace_payload(&payload.to_string())
             .expect("conversation-trace mixed payload should parse");
 
-        assert_eq!(parsed.attempted_count, 3);
+        assert_eq!(parsed.attempted_count, 4);
         assert!(parsed.skipped.is_empty());
         assert!(parsed.message_updated.skipped.is_empty());
         assert!(parsed.message_part_updated.skipped.is_empty());
@@ -2621,7 +2665,7 @@ mod tests {
         assert_eq!(message.role, MessageRole::Assistant);
         assert_eq!(message.generated_at_unix_ms, 1_800_000_000_000_i64);
 
-        assert_eq!(parsed.message_part_updated.inserts.len(), 2);
+        assert_eq!(parsed.message_part_updated.inserts.len(), 3);
         let reasoning_part = &parsed.message_part_updated.inserts[0];
         assert_eq!(reasoning_part.session_id, "session-1");
         assert_eq!(reasoning_part.message_id, "message-1");
@@ -2639,10 +2683,22 @@ mod tests {
                 .expect("test patch should serialize")
         );
         assert_eq!(patch_part.generated_at_unix_ms, 1_800_000_000_002_i64);
+
+        let question_part = &parsed.message_part_updated.inserts[2];
+        assert_eq!(question_part.session_id, "session-1");
+        assert_eq!(question_part.message_id, "message-1");
+        assert_eq!(question_part.part_type, PartType::Question);
+        assert_eq!(question_part.text, question_text);
+        assert_eq!(question_part.generated_at_unix_ms, 1_800_000_000_003_i64);
     }
 
     #[test]
     fn conversation_trace_mixed_payload_skips_malformed_sibling_items() {
+        let invalid_question_text = serde_json::json!({
+            "question": "Proceed?",
+            "answer": "Yes"
+        })
+        .to_string();
         let payload = serde_json::json!({
             "payloads": [
                 {
@@ -2675,13 +2731,21 @@ mod tests {
                     "generated_at_unix_ms": 1_800_000_000_004_i64
                 },
                 {
+                    "type": "message.part",
+                    "session_id": "session-5",
+                    "message_id": "message-5",
+                    "part_type": "question",
+                    "text": invalid_question_text,
+                    "generated_at_unix_ms": 1_800_000_000_005_i64
+                },
+                {
                     "type": "session.started",
-                    "session_id": "session-5"
+                    "session_id": "session-6"
                 },
                 42,
                 {
                     "type": null,
-                    "session_id": "session-6"
+                    "session_id": "session-7"
                 }
             ]
         });
@@ -2689,7 +2753,7 @@ mod tests {
         let parsed = parse_conversation_trace_payload(&payload.to_string())
             .expect("conversation-trace mixed payload should parse with skipped items");
 
-        assert_eq!(parsed.attempted_count, 7);
+        assert_eq!(parsed.attempted_count, 8);
         assert_eq!(parsed.message_updated.inserts.len(), 1);
         assert_eq!(parsed.message_updated.skipped.len(), 1);
         assert_eq!(parsed.message_updated.skipped[0].index, 1);
@@ -2697,7 +2761,7 @@ mod tests {
             .reason
             .contains("field 'role'"));
         assert_eq!(parsed.message_part_updated.inserts.len(), 0);
-        assert_eq!(parsed.message_part_updated.skipped.len(), 2);
+        assert_eq!(parsed.message_part_updated.skipped.len(), 3);
         assert_eq!(parsed.message_part_updated.skipped[0].index, 2);
         assert!(parsed.message_part_updated.skipped[0]
             .reason
@@ -2706,14 +2770,18 @@ mod tests {
         assert!(parsed.message_part_updated.skipped[1]
             .reason
             .contains("neither valid patch-JSON nor a valid patch"));
+        assert_eq!(parsed.message_part_updated.skipped[2].index, 4);
+        assert!(parsed.message_part_updated.skipped[2]
+            .reason
+            .contains("question part must be a JSON array"));
         assert_eq!(parsed.skipped.len(), 3);
-        assert_eq!(parsed.skipped[0].index, 4);
+        assert_eq!(parsed.skipped[0].index, 5);
         assert!(parsed.skipped[0].reason.contains("field 'type'"));
-        assert_eq!(parsed.skipped[1].index, 5);
+        assert_eq!(parsed.skipped[1].index, 6);
         assert!(parsed.skipped[1]
             .reason
-            .contains("payloads[5] must be an object"));
-        assert_eq!(parsed.skipped[2].index, 6);
+            .contains("payloads[6] must be an object"));
+        assert_eq!(parsed.skipped[2].index, 7);
         assert!(parsed.skipped[2]
             .reason
             .contains("field 'type' must be a string"));
