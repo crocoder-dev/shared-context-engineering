@@ -48,6 +48,13 @@ type ConversationTracePayload = {
 	payloads: ConversationTraceItem[];
 };
 
+type QuestionToolAnswer = {
+	question: string;
+	answer: string;
+};
+
+const QUESTION_TOOL_ANSWER_SEPARATOR = ", ";
+
 type EventMessageUpdated = Extract<
 	NonNullable<TraceInput["event"]>,
 	{ type: "message.updated" }
@@ -57,6 +64,9 @@ type EventMessagePartUpdated = Extract<
 	NonNullable<TraceInput["event"]>,
 	{ type: "message.part.updated" }
 >;
+
+type EventMessagePart = EventMessagePartUpdated["properties"]["part"];
+type EventMessageToolPart = Extract<EventMessagePart, { type: "tool" }>;
 
 function extractDiffEntries(
 	eventInfo: EventMessageUpdated["properties"]["info"],
@@ -105,6 +115,45 @@ function shouldCaptureEvent(eventType: OpenCodeEvent["type"]): boolean {
 	return ALL_CAPTURED_EVENTS.has(eventType);
 }
 
+function extractQuestionToolAnswers(
+	eventPart: EventMessageToolPart,
+): QuestionToolAnswer[] | undefined {
+	const state = eventPart.state;
+
+	if (state.status !== "completed") {
+		return undefined;
+	}
+
+	const questions =
+		"questions" in state.input && Array.isArray(state.input.questions)
+			? state.input.questions
+			: [];
+	const answers =
+		"answers" in state.metadata && Array.isArray(state.metadata.answers)
+			? state.metadata.answers
+			: [];
+
+	if (questions.length === 0 || questions.length !== answers.length) {
+		return undefined;
+	}
+
+	const result: QuestionToolAnswer[] = [];
+
+	questions.forEach((q, index) => {
+		const question =
+			"question" in q && typeof q.question === "string" ? q.question : "";
+		if (question) {
+			const answer = Array.isArray(answers[index]) ? answers[index] : [];
+			result.push({
+				question,
+				answer: answer.join(QUESTION_TOOL_ANSWER_SEPARATOR),
+			});
+		}
+	});
+
+	return result;
+}
+
 function buildConversationTracePayload(
 	event: EventMessageUpdated,
 ): ConversationTracePayload {
@@ -136,6 +185,29 @@ export function buildMessagePartConversationTracePayload(
 				message_id: eventPart.messageID,
 				part_type: eventPart.type,
 				text: "text" in eventPart ? eventPart.text : "",
+				generated_at_unix_ms: Date.now(),
+			},
+		],
+	};
+}
+
+function buildQuestionToolConversationTracePayload(
+	eventPart: EventMessageToolPart,
+): ConversationTracePayload | undefined {
+	const pairedAnswers = extractQuestionToolAnswers(eventPart);
+
+	if (pairedAnswers === undefined) {
+		return undefined;
+	}
+
+	return {
+		payloads: [
+			{
+				type: "message.part",
+				session_id: eventPart.sessionID,
+				message_id: eventPart.messageID,
+				part_type: "text",
+				text: JSON.stringify(pairedAnswers),
 				generated_at_unix_ms: Date.now(),
 			},
 		],
@@ -183,6 +255,20 @@ export async function recordConversationTrace(
 	repoRoot: string,
 	event: EventMessageUpdated | EventMessagePartUpdated,
 ): Promise<void> {
+	if (
+		event.type === "message.part.updated" &&
+		event.properties.part.type === "tool" &&
+		event.properties.part.tool === "question"
+	) {
+		const questionToolPayload = buildQuestionToolConversationTracePayload(
+			event.properties.part,
+		);
+		if (questionToolPayload !== undefined) {
+			await runConversationTraceHook(repoRoot, questionToolPayload);
+			return;
+		}
+	}
+
 	if (
 		event.type === "message.part.updated" &&
 		(event.properties.part.type === "reasoning" ||
