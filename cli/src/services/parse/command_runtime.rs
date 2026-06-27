@@ -241,7 +241,24 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
                 },
             },
         )),
+        cli_schema::Commands::Trace { subcommand } => Ok(convert_trace_subcommand(subcommand)),
     }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn convert_trace_subcommand(subcommand: cli_schema::TraceSubcommand) -> RuntimeCommand {
+    let request = match subcommand {
+        cli_schema::TraceSubcommand::Db {
+            subcommand: cli_schema::TraceDbSubcommand::List { format },
+        } => services::trace::TraceRequest {
+            subcommand: services::trace::TraceSubcommandRequest::DbList { format },
+        },
+        cli_schema::TraceSubcommand::Status { all, format } => services::trace::TraceRequest {
+            subcommand: services::trace::TraceSubcommandRequest::Status { all, format },
+        },
+    };
+
+    RuntimeCommand::Trace(services::trace::command::TraceCommand { request })
 }
 
 fn convert_doctor_command(

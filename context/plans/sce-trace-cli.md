@@ -50,7 +50,11 @@ All three commands support `--format text` (default) and `--format json`, matchi
   - Done when: `cargo check` and `cargo test -p sce -- services::trace::discovery` pass; unit tests cover (a) alias assignment ordering by mtime, (b) `ready` for a full-schema DB, (c) `skipped` with the missing-table reason. Module is registered in `services/mod.rs` but unused by any command yet.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo test services::trace::discovery'`; `nix develop -c sh -c 'cd cli && cargo clippy --all-targets -- -D warnings'`.
 
-- [ ] T02: `Add trace command clap surface and registry stub` (status:todo)
+- [x] T02: `Add trace command clap surface and registry stub` (status:done)
+  - Completed: 2026-06-27
+  - Files changed: `cli/src/cli_schema.rs`, `cli/src/services/trace/mod.rs`, `cli/src/services/trace/command.rs` (new), `cli/src/services/command_registry.rs`, `cli/src/services/parse/command_runtime.rs`
+  - Evidence: `nix flake check` → all checks passed (cli-tests, cli-clippy, cli-fmt, pkl-parity). `nix run .#pkl-check-generated` → "Generated outputs are up to date.".
+  - Notes: Stub `TraceCommand::execute` returns `sce trace <subcommand>: not implemented` for both `db list` and `status` (and `status --all`). `default_registry_lists_all_commands_deterministically` test updated to include `"trace"`. Clippy `unnecessary_wraps` allowed on stub `execute` because T05 introduces error paths.
   - Task ID: T02
   - Goal: Add `Commands::Trace { subcommand: TraceSubcommand }` to `cli_schema.rs` with `TraceSubcommand::Db { subcommand: TraceDbSubcommand::List { format } }` and `TraceSubcommand::Status { all: bool, format }`. Add `TRACE_*` top-level metadata constants and a `TopLevelCommandMetadata` entry (`show_in_top_level_help: true`). Add a `services::trace::NAME = "trace"` constant and stub `TraceCommand` `RuntimeCommand` impl that returns `"not implemented"` for now. Wire it into `parse::command_runtime` so `sce trace db list` / `sce trace status` parse cleanly and dispatch to the stub.
   - Boundaries (in/out of scope): In — clap enums, top-level metadata entry, registry registration, stub command. Out — actual rendering, stat queries, removing `doctor dbs`.

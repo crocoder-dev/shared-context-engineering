@@ -13,6 +13,7 @@ const DEFAULT_COMMAND_NAMES: &[&str] = &[
     services::hooks::NAME,
     services::bash_policy::NAME,
     services::setup::NAME,
+    services::trace::NAME,
     services::version::NAME,
 ];
 
@@ -32,6 +33,7 @@ pub enum RuntimeCommand {
     Policy(services::bash_policy::command::PolicyCommand),
     Version(services::version::command::VersionCommand),
     Completion(services::completion::command::CompletionCommand),
+    Trace(services::trace::command::TraceCommand),
 }
 
 impl RuntimeCommand {
@@ -47,6 +49,7 @@ impl RuntimeCommand {
             Self::Policy(_) => Cow::Borrowed(services::bash_policy::NAME),
             Self::Version(_) => Cow::Borrowed(services::version::NAME),
             Self::Completion(_) => Cow::Borrowed(services::completion::NAME),
+            Self::Trace(_) => Cow::Borrowed(services::trace::NAME),
         }
     }
 
@@ -65,6 +68,7 @@ impl RuntimeCommand {
             Self::Policy(command) => command.execute(),
             Self::Version(command) => command.execute(context),
             Self::Completion(command) => Ok(command.execute(context)),
+            Self::Trace(command) => command.execute(context),
         }
     }
 }
@@ -172,6 +176,15 @@ pub fn default_runtime_command(name: &str) -> Option<RuntimeCommand> {
                 },
             },
         )),
+        services::trace::NAME => Some(RuntimeCommand::Trace(
+            services::trace::command::TraceCommand {
+                request: services::trace::TraceRequest {
+                    subcommand: services::trace::TraceSubcommandRequest::DbList {
+                        format: services::output_format::OutputFormat::Text,
+                    },
+                },
+            },
+        )),
         _ => None,
     }
 }
@@ -195,6 +208,7 @@ mod tests {
                 "hooks",
                 "policy",
                 "setup",
+                "trace",
                 "version"
             ]
         );
