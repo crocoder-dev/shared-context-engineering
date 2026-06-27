@@ -2,7 +2,7 @@
 
 Top-level CLI command group exposing Agent Trace database visibility for operators.
 
-Lives under `cli/src/services/trace/` with three planned subcommands:
+Lives under `cli/src/services/trace/` with three subcommands:
 
 - `sce trace db list` — discover per-checkout Agent Trace DBs under `<state_root>/sce/agent-trace-*.db` and render an alias / status / path table.
 - `sce trace status` — render counts and last-activity for the cwd's checkout DB.
@@ -197,14 +197,10 @@ agent_trace_2  skipped: missing 'post_commit_patch_intersections'  -      -     
 
 `totals.last_activity` is `null` when no ready DB has activity. Skipped DB entries omit per-database counts and `last_activity` and add `skip_reason`.
 
-## Pending follow-ups
-
-- T07 — removal of `sce doctor dbs` and its filesystem-discovery helpers (currently the active operator surface for the same data, documented in [cli-command-surface.md](cli-command-surface.md) and [checkout-identity.md](checkout-identity.md)).
-
 ## Related context
 
 - [cli-command-surface.md](cli-command-surface.md) — full CLI command surface and dispatch contract.
-- [checkout-identity.md](checkout-identity.md) — per-checkout Agent Trace DB path resolution and current `sce doctor dbs` discovery surface.
+- [checkout-identity.md](checkout-identity.md) — per-checkout Agent Trace DB path resolution and `sce trace db list` discovery surface.
 - [default-path-catalog.md](default-path-catalog.md) — `<state_root>/sce/agent-trace-*.db` path ownership.
 - [styling-service.md](styling-service.md) — heading helper used by the text renderer.
 - [../sce/agent-trace-db.md](../sce/agent-trace-db.md) — Agent Trace DB schema and migration ownership.
