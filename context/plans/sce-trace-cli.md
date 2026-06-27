@@ -61,7 +61,11 @@ All three commands support `--format text` (default) and `--format json`, matchi
   - Done when: `sce trace --help`, `sce trace db --help`, `sce trace db list --help`, `sce trace status --help` all render without error; `sce trace db list` prints the stub message; `cargo check` passes and `nix run .#pkl-check-generated` passes (cli surface regenerated if needed).
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo run -- trace db list'`; `nix develop -c sh -c 'cd cli && cargo run -- trace status --help'`; `nix run .#pkl-check-generated`.
 
-- [ ] T03: `Implement sce trace db list rendering (text + json)` (status:todo)
+- [x] T03: `Implement sce trace db list rendering (text + json)` (status:done)
+  - Completed: 2026-06-27
+  - Files changed: `cli/src/services/trace/mod.rs`, `cli/src/services/trace/command.rs`, `cli/src/services/trace/render_list.rs` (new)
+  - Evidence: `nix flake check` → all checks passed (cli-tests, cli-clippy, cli-fmt, pkl-parity). Unit tests added under `services::trace::render_list::tests` cover empty-state text+json, mixed-fixture text table with ready+skipped rows, and mixed-fixture json shape (alias, checkout_id, status, skip_reason, mtime).
+  - Notes: `TraceCommand::execute` now dispatches `DbList { format }` to `discover_agent_trace_dbs()` + `render_list::render`. JSON shape is `{"status":"ok","command":"trace","subcommand":"db.list","databases":[{alias,checkout_id,path,status,skip_reason?,mtime}]}`. Text table uses dynamic column widths and the `services::style::heading` helper. Status subcommand still returns the not-implemented stub (T05/T06).
   - Task ID: T03
   - Goal: Wire `sce trace db list` to call `discover_agent_trace_dbs()` and render the documented table for `--format text` (columns: Alias, Status, Path; status `ready` or `skipped <reason>`) and the JSON shape `{"status":"ok","command":"trace","subcommand":"db.list","databases":[{alias,checkout_id,path,status,skip_reason?,mtime}]}` for `--format json`. Use the styling helpers in `services::style` for headings consistent with other commands.
   - Boundaries (in/out of scope): In — `services/trace/render_list.rs`, text and json renderers, command handler dispatch for this subcommand only, snapshot tests for both outputs against a tempdir fixture. Out — `status` subcommand, removing `doctor dbs`.

@@ -2,6 +2,7 @@
 
 pub mod command;
 pub mod discovery;
+pub mod render_list;
 
 pub const NAME: &str = "trace";
 
