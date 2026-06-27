@@ -31,7 +31,7 @@ During hook runtime:
 - `AgentTraceDb::open_for_hooks_without_migrations_at(path)` is tried first; `ensure_schema_ready_for_hooks()` decides whether the schema is current.
 - Missing or incomplete schema falls back to `AgentTraceDb::open_at(path)`, which runs migrations through the shared Turso adapter.
 
-The global `agent-trace.db` path remains only as a lifecycle fallback when no checkout context or checkout ID is available. `sce doctor` displays the current checkout ID and per-checkout Agent Trace DB status when a checkout ID exists, and `sce doctor dbs` discovers checkouts by scanning `<state_root>/sce/agent-trace-*.db` files on disk, sorted by mtime descending.
+The global `agent-trace.db` path remains only as a lifecycle fallback when no checkout context or checkout ID is available. `sce doctor` displays the current checkout ID and per-checkout Agent Trace DB status when a checkout ID exists, and `sce trace db list` discovers checkouts by scanning `<state_root>/sce/agent-trace-*.db` files on disk, sorted by mtime descending.
 
 ## Testing boundary
 
