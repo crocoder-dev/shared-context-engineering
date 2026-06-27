@@ -4,8 +4,10 @@ pub mod command;
 pub mod discovery;
 pub mod render_list;
 pub mod render_status;
+pub mod render_status_all;
 pub mod stats;
 pub mod status;
+pub mod status_all;
 
 pub const NAME: &str = "trace";
 

@@ -6,7 +6,7 @@ Lives under `cli/src/services/trace/` with three planned subcommands:
 
 - `sce trace db list` — discover per-checkout Agent Trace DBs under `<state_root>/sce/agent-trace-*.db` and render an alias / status / path table.
 - `sce trace status` — render counts and last-activity for the cwd's checkout DB.
-- `sce trace status --all` — aggregate counts across every discovered DB (stub).
+- `sce trace status --all` — aggregate counts across every discovered DB.
 
 All three subcommands declare `--format text|json` via `services::output_format::OutputFormat`. Clap surface is defined in `cli/src/cli_schema.rs` (`Commands::Trace`, `TraceSubcommand`, `TraceDbSubcommand`) and dispatched through `services::command_registry` to `services::trace::command::TraceCommand`.
 
@@ -123,13 +123,82 @@ When `last_activity` is `None` the value is rendered as `never`. When the DB exi
 
 For `db_status: "skipped"`, `stats` and `last_activity` are omitted and a `skip_reason: "missing table: <name>"` field is added.
 
-### `sce trace status --all` (not yet implemented)
+### `sce trace status --all` aggregation — `services::trace::status_all`
 
-`TraceCommand::execute` currently returns `sce trace status --all: not implemented` for `TraceSubcommandRequest::Status { all: true, .. }`. Aggregation across every discovered DB lands in T06.
+`aggregate_current_status_all()` resolves `<state_root>/sce/` and delegates to `aggregate_status_all_in(sce_dir)`, which walks `discover_agent_trace_dbs_in`, runs `collect_agent_trace_db_stats` on each `Readiness::Ready` DB, and accumulates `Totals` (sum of the six row counts plus the max of per-DB `last_activity`). `Readiness::Skipped` DBs are excluded from totals but counted in the discovery summary and surfaced as breakdown rows with a `missing_table` reason. Returns `StatusAllReport { discovery: DiscoverySummary { discovered, ready, skipped }, totals: Totals, databases: Vec<DatabaseRow> }`.
+
+### `sce trace status --all` rendering — `services::trace::render_status_all`
+
+**Text** — heading `SCE trace status (all)` followed by three blocks: discovery summary line, `Totals` block (same six counts plus `Last activity`), and an optional `By database` block omitted when no databases are discovered:
+
+```
+SCE trace status (all)
+Databases: 3 discovered, 2 ready, 1 skipped
+
+Totals
+Diff traces: N
+Messages: N
+Parts: N
+Session models: N
+Agent traces: N
+Post-commit intersections: N
+Last activity: 2026-06-28T...
+
+By database
+Alias          Status                                              Diffs  Messages  Parts  Models  Traces  Intersections
+agent_trace_0  ready                                               3      2         4      0       0       0
+agent_trace_1  ready                                               1      1         1      0       0       0
+agent_trace_2  skipped: missing 'post_commit_patch_intersections'  -      -         -      -       -       -
+```
+
+`Last activity` renders `never` when no DB carries activity. Skipped rows fill count cells with `-`.
+
+**JSON** — stable shape:
+
+```json
+{
+  "status": "ok",
+  "command": "trace",
+  "subcommand": "status.all",
+  "discovery": { "discovered": N, "ready": N, "skipped": N },
+  "totals": {
+    "diff_traces": N,
+    "messages": N,
+    "parts": N,
+    "session_models": N,
+    "agent_traces": N,
+    "post_commit_patch_intersections": N,
+    "last_activity": "2026-06-28T..."
+  },
+  "databases": [
+    {
+      "alias": "agent_trace_0",
+      "checkout_id": "aaaa",
+      "path": "/.../agent-trace-aaaa.db",
+      "status": "ready",
+      "diff_traces": N,
+      "messages": N,
+      "parts": N,
+      "session_models": N,
+      "agent_traces": N,
+      "post_commit_patch_intersections": N,
+      "last_activity": "2026-06-28T..."
+    },
+    {
+      "alias": "agent_trace_2",
+      "checkout_id": "cccc",
+      "path": "/.../agent-trace-cccc.db",
+      "status": "skipped",
+      "skip_reason": "missing table: post_commit_patch_intersections"
+    }
+  ]
+}
+```
+
+`totals.last_activity` is `null` when no ready DB has activity. Skipped DB entries omit per-database counts and `last_activity` and add `skip_reason`.
 
 ## Pending follow-ups
 
-- T06 — `sce trace status --all` aggregation rendering.
 - T07 — removal of `sce doctor dbs` and its filesystem-discovery helpers (currently the active operator surface for the same data, documented in [cli-command-surface.md](cli-command-surface.md) and [checkout-identity.md](checkout-identity.md)).
 
 ## Related context

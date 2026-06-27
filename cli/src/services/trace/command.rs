@@ -3,7 +3,9 @@ use crate::services::error::ClassifiedError;
 use crate::services::trace::discovery::discover_agent_trace_dbs;
 use crate::services::trace::render_list;
 use crate::services::trace::render_status;
+use crate::services::trace::render_status_all;
 use crate::services::trace::status::{resolve_current_status, StatusErrorOrRuntime};
+use crate::services::trace::status_all::aggregate_current_status_all;
 use crate::services::trace::{TraceRequest, TraceSubcommandRequest};
 
 pub struct TraceCommand {
@@ -22,8 +24,11 @@ impl TraceCommand {
                 render_list::render(&databases, *format)
                     .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))
             }
-            TraceSubcommandRequest::Status { all: true, .. } => {
-                Ok(String::from("sce trace status --all: not implemented"))
+            TraceSubcommandRequest::Status { all: true, format } => {
+                let report = aggregate_current_status_all()
+                    .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
+                render_status_all::render(&report, *format)
+                    .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))
             }
             TraceSubcommandRequest::Status { all: false, format } => {
                 let repo_root = if let Some(path) = context.repo_root() {
