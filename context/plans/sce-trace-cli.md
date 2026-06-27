@@ -72,7 +72,11 @@ All three commands support `--format text` (default) and `--format json`, matchi
   - Done when: Running against a fixture state root with two ready DBs and one missing-table DB produces the table shown in the change request body; JSON snapshot test passes; `cargo test` and `cargo clippy` pass.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo test services::trace::render_list'`; manual: `XDG_DATA_HOME=$(mktemp -d) cargo run -- trace db list` returns empty-state message.
 
-- [ ] T04: `Add stat-query layer for per-checkout AgentTraceDb counts` (status:todo)
+- [x] T04: `Add stat-query layer for per-checkout AgentTraceDb counts` (status:done)
+  - Completed: 2026-06-28
+  - Files changed: `cli/src/services/trace/mod.rs`, `cli/src/services/trace/stats.rs` (new)
+  - Evidence: `nix flake check` → all checks passed (cli-tests, cli-clippy, cli-fmt, pkl-parity). Unit tests added under `services::trace::stats::tests`: `collect_stats_returns_counts_and_last_activity` (seeded migrated DB with diff traces, messages, parts, session model, agent trace, intersection — asserts the six counts and last_activity ≥ the latest diff trace timestamp), `collect_stats_on_empty_db_returns_zero_counts_and_no_activity`, `parse_iso_millis_handles_sqlite_strftime_output`.
+  - Notes: `AgentTraceDbStats` carries `#[allow(dead_code)]` until T05 wires the renderer. `last_activity` is computed in Rust by maxing `MAX(diff_traces.time_ms)` (millis → `DateTime::from_timestamp_millis`) with parsed `MAX(messages.updated_at)` and `MAX(agent_traces.created_at)` (ISO8601 via RFC3339 with a fallback `%Y-%m-%dT%H:%M:%S%.fZ` parser). Counts use `SELECT COUNT(*)` per table.
   - Task ID: T04
   - Goal: Add `services::trace::stats` with a function `collect_agent_trace_db_stats(path: &Path) -> Result<AgentTraceDbStats>` returning the six row counts (`diff_traces`, `messages`, `parts`, `session_models`, `agent_traces`, `post_commit_patch_intersections`) and a `last_activity` `Option<DateTime<Utc>>` derived from `MAX(diff_traces.time_ms, messages.updated_at, agent_traces.created_at)` (whichever columns exist). Read-only sqlite open; errors propagate. No command wiring.
   - Boundaries (in/out of scope): In — pure stat query module, unit test that seeds a tempdir DB with the real migrations and asserts counts and last-activity. Out — rendering, command dispatch, multi-DB aggregation.
