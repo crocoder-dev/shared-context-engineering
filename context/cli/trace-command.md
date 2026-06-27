@@ -5,7 +5,7 @@ Top-level CLI command group exposing Agent Trace database visibility for operato
 Lives under `cli/src/services/trace/` with three planned subcommands:
 
 - `sce trace db list` — discover per-checkout Agent Trace DBs under `<state_root>/sce/agent-trace-*.db` and render an alias / status / path table.
-- `sce trace status` — render counts and last-activity for the cwd's checkout DB (stub).
+- `sce trace status` — render counts and last-activity for the cwd's checkout DB.
 - `sce trace status --all` — aggregate counts across every discovered DB (stub).
 
 All three subcommands declare `--format text|json` via `services::output_format::OutputFormat`. Clap surface is defined in `cli/src/cli_schema.rs` (`Commands::Trace`, `TraceSubcommand`, `TraceDbSubcommand`) and dispatched through `services::command_registry` to `services::trace::command::TraceCommand`.
@@ -72,14 +72,63 @@ Empty-state output is the heading plus `no agent-trace databases discovered`.
 
 `skip_reason` is omitted when `status == "ready"`. `mtime` is RFC3339 derived from the discovery `SystemTime`.
 
-### Status subcommands (not yet implemented)
+### `sce trace status` resolution — `services::trace::status`
 
-`TraceCommand::execute` currently returns `sce trace status: not implemented` / `sce trace status --all: not implemented` for `TraceSubcommandRequest::Status`. Per-DB stat queries and rendering land in later plan tasks (T04–T06).
+`resolve_current_status(repo_root)` resolves the cwd's git directory via `services::checkout::resolve_git_dir`, reads the stored checkout id via `read_checkout_id`, computes the canonical `<state_root>/sce/agent-trace-{id}.db` path, and probes schema readiness (reusing the discovery-layer probe). When ready it also collects row counts and last-activity via `services::trace::stats::collect_agent_trace_db_stats`. Returns either a `StatusReport { checkout_id, database_path, db_status: DbStatus::{Ready { stats, last_activity }, Skipped { missing_table }} }` or a `StatusErrorOrRuntime`.
+
+Three user-actionable error variants (`StatusError::{NotInGitRepo, NoCheckoutId, DbMissing}`) are mapped at the command boundary to `ClassifiedError::validation` (exit code 3) with stable messages directing the user to cd into a git repo, run `sce setup`, or wait for traces to be recorded. Sqlite/IO failures stay runtime-class (exit 4).
+
+A `resolve_current_status_in(repo_root, sce_dir)` variant takes the `sce` directory explicitly for unit-test fixtures.
+
+### `sce trace status` rendering — `services::trace::render_status`
+
+**Text** — `services::style::heading("SCE trace status")` followed by:
+
+```
+Checkout: <uuid>
+Database: <absolute path>
+Status: ready
+Diff traces: N
+Messages: N
+Parts: N
+Session models: N
+Agent traces: N
+Post-commit intersections: N
+Last activity: 2026-06-27T22:39:03.926+00:00
+```
+
+When `last_activity` is `None` the value is rendered as `never`. When the DB exists but a required table is missing, the per-checkout block ends after `Status: skipped: missing table '<name>'` with no stats lines (exit 0).
+
+**JSON** — stable shape:
+
+```json
+{
+  "status": "ok",
+  "command": "trace",
+  "subcommand": "status",
+  "checkout_id": "01900000-...",
+  "database_path": "/.../agent-trace-{id}.db",
+  "db_status": "ready",
+  "stats": {
+    "diff_traces": N,
+    "messages": N,
+    "parts": N,
+    "session_models": N,
+    "agent_traces": N,
+    "post_commit_patch_intersections": N
+  },
+  "last_activity": "2026-06-27T22:39:03.926+00:00"
+}
+```
+
+For `db_status: "skipped"`, `stats` and `last_activity` are omitted and a `skip_reason: "missing table: <name>"` field is added.
+
+### `sce trace status --all` (not yet implemented)
+
+`TraceCommand::execute` currently returns `sce trace status --all: not implemented` for `TraceSubcommandRequest::Status { all: true, .. }`. Aggregation across every discovered DB lands in T06.
 
 ## Pending follow-ups
 
-- T04 — `services::trace::stats` per-DB row counts + last-activity derivation.
-- T05 — `sce trace status` per-checkout rendering and checkout-id resolution error paths.
 - T06 — `sce trace status --all` aggregation rendering.
 - T07 — removal of `sce doctor dbs` and its filesystem-discovery helpers (currently the active operator surface for the same data, documented in [cli-command-surface.md](cli-command-surface.md) and [checkout-identity.md](checkout-identity.md)).
 
