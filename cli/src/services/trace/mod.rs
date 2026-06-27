@@ -3,6 +3,7 @@
 pub mod command;
 pub mod discovery;
 pub mod render_list;
+pub mod stats;
 
 pub const NAME: &str = "trace";
 
