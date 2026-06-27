@@ -1,0 +1,92 @@
+# sce trace command
+
+Top-level CLI command group exposing Agent Trace database visibility for operators.
+
+Lives under `cli/src/services/trace/` with three planned subcommands:
+
+- `sce trace db list` — discover per-checkout Agent Trace DBs under `<state_root>/sce/agent-trace-*.db` and render an alias / status / path table.
+- `sce trace status` — render counts and last-activity for the cwd's checkout DB (stub).
+- `sce trace status --all` — aggregate counts across every discovered DB (stub).
+
+All three subcommands declare `--format text|json` via `services::output_format::OutputFormat`. Clap surface is defined in `cli/src/cli_schema.rs` (`Commands::Trace`, `TraceSubcommand`, `TraceDbSubcommand`) and dispatched through `services::command_registry` to `services::trace::command::TraceCommand`.
+
+## Implemented behavior
+
+### Discovery — `services::trace::discovery`
+
+`discover_agent_trace_dbs()` scans the resolved `<state_root>/sce/` directory for `agent-trace-{checkout_id}.db` files, sorts by file mtime descending (ties broken by `checkout_id` ascending), and assigns positional `agent_trace_{N}` aliases. Each entry carries an mtime-derived `SystemTime`, the parsed `checkout_id`, and a `Readiness` verdict (`Ready` or `Skipped { missing_table }`).
+
+Readiness is probed read-only via `AgentTraceDb::open_for_hooks_without_migrations_at` and a `sqlite_master` lookup for each required table in declared order:
+
+```
+diff_traces
+post_commit_patch_intersections
+agent_traces
+messages
+parts
+session_models
+```
+
+The first missing table is reported as the skip reason. The discovery module returns an empty Vec when the `sce` directory does not exist; callers do not need to special-case that.
+
+### `sce trace db list` rendering — `services::trace::render_list`
+
+`render(databases, format)` dispatches to the text or JSON renderer.
+
+**Text** — `services::style::heading("SCE trace db list")` followed by a 3-column padded table:
+
+```
+Alias          Status                                              Path
+agent_trace_0  ready                                               /path/to/agent-trace-aaaa.db
+agent_trace_1  skipped: missing table 'post_commit_patch_intersections'  /path/to/agent-trace-bbbb.db
+```
+
+Empty-state output is the heading plus `no agent-trace databases discovered`.
+
+**JSON** — stable shape:
+
+```json
+{
+  "status": "ok",
+  "command": "trace",
+  "subcommand": "db.list",
+  "databases": [
+    {
+      "alias": "agent_trace_0",
+      "checkout_id": "aaaa",
+      "path": "/path/to/agent-trace-aaaa.db",
+      "status": "ready",
+      "mtime": "2026-06-27T12:34:56+00:00"
+    },
+    {
+      "alias": "agent_trace_1",
+      "checkout_id": "bbbb",
+      "path": "/path/to/agent-trace-bbbb.db",
+      "status": "skipped",
+      "skip_reason": "missing table: post_commit_patch_intersections",
+      "mtime": "2026-06-27T12:34:51+00:00"
+    }
+  ]
+}
+```
+
+`skip_reason` is omitted when `status == "ready"`. `mtime` is RFC3339 derived from the discovery `SystemTime`.
+
+### Status subcommands (not yet implemented)
+
+`TraceCommand::execute` currently returns `sce trace status: not implemented` / `sce trace status --all: not implemented` for `TraceSubcommandRequest::Status`. Per-DB stat queries and rendering land in later plan tasks (T04–T06).
+
+## Pending follow-ups
+
+- T04 — `services::trace::stats` per-DB row counts + last-activity derivation.
+- T05 — `sce trace status` per-checkout rendering and checkout-id resolution error paths.
+- T06 — `sce trace status --all` aggregation rendering.
+- T07 — removal of `sce doctor dbs` and its filesystem-discovery helpers (currently the active operator surface for the same data, documented in [cli-command-surface.md](cli-command-surface.md) and [checkout-identity.md](checkout-identity.md)).
+
+## Related context
+
+- [cli-command-surface.md](cli-command-surface.md) — full CLI command surface and dispatch contract.
+- [checkout-identity.md](checkout-identity.md) — per-checkout Agent Trace DB path resolution and current `sce doctor dbs` discovery surface.
+- [default-path-catalog.md](default-path-catalog.md) — `<state_root>/sce/agent-trace-*.db` path ownership.
+- [styling-service.md](styling-service.md) — heading helper used by the text renderer.
+- [../sce/agent-trace-db.md](../sce/agent-trace-db.md) — Agent Trace DB schema and migration ownership.
