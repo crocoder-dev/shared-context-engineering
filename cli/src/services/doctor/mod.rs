@@ -3,8 +3,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
-use serde_json::json;
 
 use crate::app::{ContextWithRepoRoot, HasRepoRoot};
 use crate::services::default_paths::{resolve_sce_default_locations, resolve_state_data_root};
@@ -43,14 +41,7 @@ pub enum DoctorMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DoctorAction {
-    Report,
-    Dbs,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DoctorRequest {
-    pub action: DoctorAction,
     pub mode: DoctorMode,
     pub format: DoctorFormat,
 }
@@ -68,17 +59,6 @@ struct DoctorExecution {
     fix_results: Vec<DoctorFixResultRecord>,
 }
 
-/// A checkout discovered from agent-trace-*.db files on disk.
-#[derive(Clone, Debug)]
-struct DiscoveredCheckout {
-    /// Stable `UUIDv7` checkout identity extracted from the filename.
-    checkout_id: String,
-    /// Absolute path to the per-checkout database file.
-    database_path: String,
-    /// ISO 8601 timestamp from file mtime.
-    last_seen: String,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ProviderDoctorProblem {
     provider_id: LifecycleProviderId,
@@ -89,10 +69,6 @@ pub fn run_doctor_with_context<C>(request: DoctorRequest, context: &C) -> Result
 where
     C: ContextWithRepoRoot,
 {
-    if request.action == DoctorAction::Dbs {
-        return run_doctor_dbs(request.format);
-    }
-
     let repository_root = if let Some(path) = context.repo_root() {
         path.to_path_buf()
     } else {
@@ -103,122 +79,6 @@ where
     let scoped_context = context.with_repo_root(&repository_root);
     let execution = execute_doctor_with_context(request, &repository_root, &scoped_context);
     render_report(request, &execution)
-}
-
-fn run_doctor_dbs(format: DoctorFormat) -> Result<String> {
-    let mut checkouts = discover_checkouts_from_filesystem()
-        .context("failed to discover checkouts from filesystem")?;
-    sort_checkouts_by_last_seen_desc(&mut checkouts);
-
-    match format {
-        DoctorFormat::Text => Ok(render_doctor_dbs_text(&checkouts)),
-        DoctorFormat::Json => render_doctor_dbs_json(&checkouts),
-    }
-}
-
-/// Scans `<state_root>/sce/` for `agent-trace-*.db` files and derives checkout
-/// metadata from each discovered file.
-fn discover_checkouts_from_filesystem() -> Result<Vec<DiscoveredCheckout>> {
-    let state_root = resolve_state_data_root().context("failed to resolve state data root")?;
-    let sce_dir = state_root.join("sce");
-
-    if !sce_dir.is_dir() {
-        return Ok(Vec::new());
-    }
-
-    let mut checkouts: Vec<DiscoveredCheckout> = Vec::new();
-
-    for entry in fs::read_dir(&sce_dir)
-        .with_context(|| format!("failed to read sce directory '{}'", sce_dir.display()))?
-    {
-        let entry = entry.with_context(|| {
-            format!("failed to read directory entry in '{}'", sce_dir.display())
-        })?;
-
-        let file_name = entry.file_name();
-        let file_name_str = file_name.to_string_lossy();
-
-        // Match agent-trace-{id}.db
-        let Some(stripped) = file_name_str.strip_prefix("agent-trace-") else {
-            continue;
-        };
-        let Some(checkout_id) = stripped.strip_suffix(".db") else {
-            continue;
-        };
-        if checkout_id.is_empty() {
-            continue;
-        }
-
-        let metadata = entry
-            .metadata()
-            .with_context(|| format!("failed to read metadata for '{}'", entry.path().display()))?;
-
-        if !metadata.is_file() {
-            continue;
-        }
-
-        let last_seen: String = metadata.modified().ok().map_or_else(
-            || String::from("unknown"),
-            |mtime| {
-                let dt: DateTime<Utc> = mtime.into();
-                dt.to_rfc3339()
-            },
-        );
-
-        let database_path = entry
-            .path()
-            .to_str()
-            .map_or_else(|| String::from("unknown"), String::from);
-
-        checkouts.push(DiscoveredCheckout {
-            checkout_id: checkout_id.to_string(),
-            database_path,
-            last_seen,
-        });
-    }
-
-    Ok(checkouts)
-}
-
-fn sort_checkouts_by_last_seen_desc(checkouts: &mut [DiscoveredCheckout]) {
-    checkouts.sort_by(|left, right| {
-        right
-            .last_seen
-            .cmp(&left.last_seen)
-            .then_with(|| left.checkout_id.cmp(&right.checkout_id))
-    });
-}
-
-fn render_doctor_dbs_text(checkouts: &[DiscoveredCheckout]) -> String {
-    let mut lines = vec![String::from("SCE doctor dbs")];
-
-    if checkouts.is_empty() {
-        lines.push(String::from("no registered checkouts"));
-        return lines.join("\n");
-    }
-
-    for checkout in checkouts {
-        lines.push(format!("checkout_id: {}", checkout.checkout_id));
-        lines.push(format!("  database_path: {}", checkout.database_path));
-        lines.push(format!("  last_seen: {}", checkout.last_seen));
-    }
-
-    lines.join("\n")
-}
-
-fn render_doctor_dbs_json(checkouts: &[DiscoveredCheckout]) -> Result<String> {
-    let payload = json!({
-        "status": "ok",
-        "command": NAME,
-        "subcommand": "dbs",
-        "checkouts": checkouts.iter().map(|checkout| json!({
-            "checkout_id": checkout.checkout_id,
-            "database_path": checkout.database_path,
-            "last_seen": checkout.last_seen,
-        })).collect::<Vec<_>>(),
-    });
-
-    serde_json::to_string_pretty(&payload).context("failed to serialize doctor dbs report to JSON")
 }
 
 fn execute_doctor_with_context(

@@ -105,7 +105,11 @@ All three commands support `--format text` (default) and `--format json`, matchi
   - Done when: Fixture test asserts the exact text block and JSON snapshot; running against an empty state root prints `Databases: 0 discovered, 0 ready, 0 skipped` with zeroed totals and no per-database rows; `cargo test` and `cargo clippy` pass.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo test services::trace::status_all'`.
 
-- [ ] T07: `Remove sce doctor dbs command and dead code` (status:todo)
+- [x] T07: `Remove sce doctor dbs command and dead code` (status:done)
+  - Completed: 2026-06-28
+  - Files changed: `cli/src/cli_schema.rs`, `cli/src/services/doctor/mod.rs`, `cli/src/services/parse/command_runtime.rs`, `cli/src/services/command_registry.rs`, `cli/src/services/checkout/mod.rs`
+  - Evidence: `nix flake check` → all checks passed (cli-tests, cli-clippy, cli-fmt, pkl-parity). `nix run .#pkl-check-generated` → "Generated outputs are up to date.". `rg "doctor dbs|DoctorSubcommand|DoctorAction|run_doctor_dbs|DiscoveredCheckout|discover_checkouts_from_filesystem|sort_checkouts_by_last_seen_desc|render_doctor_dbs_(text|json)" cli/src` → no hits.
+  - Notes: Removed `DoctorSubcommand` enum, `DoctorAction` enum, `DiscoveredCheckout`, `run_doctor_dbs`, `discover_checkouts_from_filesystem`, `sort_checkouts_by_last_seen_desc`, `render_doctor_dbs_text`, `render_doctor_dbs_json`, and the `action` field from `DoctorRequest`. `convert_doctor_command` simplified to a non-`Result` return now that the only validation branch (`--fix` + `dbs`) is gone. Stale doc-comment in `services::checkout` updated to point at `sce trace db list`. Removed `chrono::{DateTime, Utc}` and `serde_json::json` imports from `doctor/mod.rs`.
   - Task ID: T07
   - Goal: Remove `DoctorSubcommand::Dbs`, `DoctorAction::Dbs`, `run_doctor_dbs`, `discover_checkouts_from_filesystem`, `sort_checkouts_by_last_seen_desc`, `render_doctor_dbs_text`, `render_doctor_dbs_json`, and `DiscoveredCheckout` from `services::doctor`. Update `parse::command_runtime` to drop the `Dbs` arm. Update help text generation and any tests referencing `sce doctor dbs`. Confirm `sce doctor` (report mode) and `sce doctor --fix` are unaffected.
   - Boundaries (in/out of scope): In — single-purpose removal commit: schema, dispatch, helpers, tests, help. Out — moving discovery logic (already moved in T01), adding new behavior.

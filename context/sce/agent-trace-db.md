@@ -58,7 +58,7 @@ Active hook runtime resolves per-checkout Agent Trace DB files:
 - Function: `agent_trace_db_path_for_checkout(checkout_id)` in `cli/src/services/default_paths.rs`
 - Path template: `<state_root>/sce/agent-trace-{checkout_id}.db`
 - Checkout ID source: `<git-dir>/sce/checkout-id`, where `<git-dir>` comes from `git rev-parse --git-dir`
-- Checkouts are discovered by `sce doctor dbs` via filesystem scan of `<state_root>/sce/agent-trace-*.db` files; there is no central registry file.
+- Checkouts are discovered by `sce trace db list` via filesystem scan of `<state_root>/sce/agent-trace-*.db` files; there is no central registry file.
 
 ## Migrations
 
@@ -182,7 +182,7 @@ Both triggers compare `OLD.*` vs `NEW.*` for all mutable columns (excluding `upd
 - `fix()` bootstraps the resolved per-checkout DB parent directory for auto-fixable parent-readiness problems, with the same global fallback outside checkout context.
 - `setup()` creates/reuses the current checkout identity when a repo root is available, resolves `<state_root>/sce/agent-trace-{checkout_id}.db` through `agent_trace_db_path_for_checkout(checkout_id)`, opens/creates it with `AgentTraceDb::open_at(&db_path)` to apply embedded migrations, and emits setup messaging with the checkout ID plus initialized DB path. Hook runtime lazy initialization remains available for checkouts where setup has not run or schema metadata is incomplete.
 - `sce doctor` surfaces checkout identity and per-checkout Agent Trace DB health in the `Configuration` section when a checkout ID exists, with `[PASS]`/`[FAIL]`/`[MISS]` status tokens. Outside checkout context it falls back to the legacy/global Agent Trace DB row. JSON output includes `checkout_identity` when available plus the resolved `agent_trace_db` field.
-- `sce doctor dbs` discovers checkouts by scanning `<state_root>/sce/agent-trace-*.db` files on disk, reporting them in text or JSON sorted by mtime descending.
+- `sce trace db list` discovers checkouts by scanning `<state_root>/sce/agent-trace-*.db` files on disk, reporting them in text or JSON sorted by mtime descending. See [context/cli/trace-command.md](../cli/trace-command.md).
 
 ## Runtime writers
 
