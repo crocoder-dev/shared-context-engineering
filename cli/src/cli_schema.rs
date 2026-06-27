@@ -47,6 +47,10 @@ pub const COMPLETION_CLAP_ABOUT: &str = "Generate deterministic shell completion
 pub const COMPLETION_TOP_LEVEL_PURPOSE: &str = "Generate deterministic shell completion scripts";
 pub const COMPLETION_SHOW_IN_TOP_LEVEL_HELP: bool = true;
 
+pub const TRACE_CLAP_ABOUT: &str = "Inspect Agent Trace databases and recorded activity";
+pub const TRACE_TOP_LEVEL_PURPOSE: &str = "Inspect Agent Trace databases and recorded activity";
+pub const TRACE_SHOW_IN_TOP_LEVEL_HELP: bool = true;
+
 pub const TOP_LEVEL_COMMANDS: &[TopLevelCommandMetadata] = &[
     TopLevelCommandMetadata {
         name: crate::services::auth_command::NAME,
@@ -87,6 +91,11 @@ pub const TOP_LEVEL_COMMANDS: &[TopLevelCommandMetadata] = &[
         name: crate::services::completion::NAME,
         purpose: COMPLETION_TOP_LEVEL_PURPOSE,
         show_in_top_level_help: COMPLETION_SHOW_IN_TOP_LEVEL_HELP,
+    },
+    TopLevelCommandMetadata {
+        name: crate::services::trace::NAME,
+        purpose: TRACE_TOP_LEVEL_PURPOSE,
+        show_in_top_level_help: TRACE_SHOW_IN_TOP_LEVEL_HELP,
     },
 ];
 
@@ -211,6 +220,39 @@ pub enum Commands {
     Completion {
         #[arg(long, value_enum)]
         shell: CompletionShell,
+    },
+
+    #[command(about = TRACE_CLAP_ABOUT, hide = !TRACE_SHOW_IN_TOP_LEVEL_HELP)]
+    Trace {
+        #[command(subcommand)]
+        subcommand: TraceSubcommand,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum TraceSubcommand {
+    #[command(about = "Inspect discovered Agent Trace databases")]
+    Db {
+        #[command(subcommand)]
+        subcommand: TraceDbSubcommand,
+    },
+
+    #[command(about = "Show Agent Trace activity for the current checkout (or all with --all)")]
+    Status {
+        #[arg(long)]
+        all: bool,
+
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum TraceDbSubcommand {
+    #[command(about = "List discovered Agent Trace databases with readiness")]
+    List {
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
     },
 }
 

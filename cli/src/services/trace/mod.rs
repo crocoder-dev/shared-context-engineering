@@ -1,9 +1,22 @@
 //! Agent Trace database discovery, readiness probing, and stats services.
-//!
-//! Module is registered but not yet wired into the CLI command surface; the
-//! `sce trace` command group is introduced in a later plan task.
 
+pub mod command;
 pub mod discovery;
+
+pub const NAME: &str = "trace";
 
 #[allow(unused_imports)]
 pub use discovery::{discover_agent_trace_dbs, DiscoveredAgentTraceDb, Readiness};
+
+use crate::services::output_format::OutputFormat;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TraceSubcommandRequest {
+    DbList { format: OutputFormat },
+    Status { all: bool, format: OutputFormat },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TraceRequest {
+    pub subcommand: TraceSubcommandRequest,
+}
