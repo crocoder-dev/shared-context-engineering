@@ -13,7 +13,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use crate::services::agent_trace_db::AgentTraceDb;
 
 /// Aggregated per-checkout Agent Trace DB row counts and last activity.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 #[allow(dead_code)]
 pub struct AgentTraceDbStats {
     pub diff_traces: u64,

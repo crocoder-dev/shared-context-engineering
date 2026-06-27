@@ -12,7 +12,7 @@ All three commands support `--format text` (default) and `--format json`, matchi
 
 ## Success criteria
 
-- `sce trace db list` prints the documented table (Alias, Status, Path) with `agent_trace_{index}` aliases sorted by file mtime descending, `ready` for DBs whose required tables all exist, and `skipped` with a short reason (e.g. `missing table: agent_traces`) for DBs that fail schema probing.
+- `sce trace db list` prints the documented table (Alias, Status, Path, Updated at) with `agent_trace_{index}` aliases sorted by file mtime descending, `ready` for DBs whose required tables all exist, and `skipped` with a short reason (e.g. `missing table: agent_traces`) for DBs that fail schema probing.
 - `sce trace status` (no `--all`) prints the documented per-checkout block for the current cwd's checkout and exits non-zero with a clear message when no DB exists for the resolved checkout id.
 - `sce trace status --all` prints the documented Databases / Totals / By database blocks aggregating across every discovered DB (skipped DBs are excluded from totals but counted in the `Databases:` summary line).
 - `--format json` is supported on all three subcommands and emits a stable JSON shape under `{"status":"ok","command":"trace","subcommand":...}` analogous to `sce doctor dbs --format json`.

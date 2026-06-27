@@ -33,12 +33,12 @@ The first missing table is reported as the skip reason. The discovery module ret
 
 `render(databases, format)` dispatches to the text or JSON renderer.
 
-**Text** — `services::style::heading("SCE trace db list")` followed by a 3-column padded table:
+**Text** — `services::style::heading("SCE trace db list")` followed by a 4-column padded table:
 
 ```
-Alias          Status                                              Path
-agent_trace_0  ready                                               /path/to/agent-trace-aaaa.db
-agent_trace_1  skipped: missing table 'post_commit_patch_intersections'  /path/to/agent-trace-bbbb.db
+Alias          Status                                              Updated at              Path
+agent_trace_0  ready                                               2026-06-27 12:34:56 UTC /path/to/agent-trace-aaaa.db
+agent_trace_1  skipped: missing table 'post_commit_patch_intersections'  2026-06-27 12:34:51 UTC /path/to/agent-trace-bbbb.db
 ```
 
 Empty-state output is the heading plus `no agent-trace databases discovered`.
@@ -56,7 +56,7 @@ Empty-state output is the heading plus `no agent-trace databases discovered`.
       "checkout_id": "aaaa",
       "path": "/path/to/agent-trace-aaaa.db",
       "status": "ready",
-      "mtime": "2026-06-27T12:34:56+00:00"
+      "updated_at": "2026-06-27T12:34:56+00:00"
     },
     {
       "alias": "agent_trace_1",
@@ -64,13 +64,13 @@ Empty-state output is the heading plus `no agent-trace databases discovered`.
       "path": "/path/to/agent-trace-bbbb.db",
       "status": "skipped",
       "skip_reason": "missing table: post_commit_patch_intersections",
-      "mtime": "2026-06-27T12:34:51+00:00"
+      "updated_at": "2026-06-27T12:34:51+00:00"
     }
   ]
 }
 ```
 
-`skip_reason` is omitted when `status == "ready"`. `mtime` is RFC3339 derived from the discovery `SystemTime`.
+`skip_reason` is omitted when `status == "ready"`. Text `Updated at` is rendered as `YYYY-MM-DD HH:MM:SS UTC` from the discovery file mtime; JSON `updated_at` is RFC3339.
 
 ### `sce trace status` resolution — `services::trace::status`
 

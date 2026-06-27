@@ -16,6 +16,7 @@ const EMPTY_MESSAGE: &str = "no agent-trace databases discovered";
 
 const COL_ALIAS: &str = "Alias";
 const COL_STATUS: &str = "Status";
+const COL_UPDATED_AT: &str = "Updated at";
 const COL_PATH: &str = "Path";
 
 pub fn render(databases: &[DiscoveredAgentTraceDb], format: OutputFormat) -> Result<String> {
@@ -33,27 +34,29 @@ fn render_text(databases: &[DiscoveredAgentTraceDb]) -> String {
         return lines.join("\n");
     }
 
-    let rows: Vec<(String, String, String)> = databases
+    let rows: Vec<(String, String, String, String)> = databases
         .iter()
         .map(|db| {
             (
                 db.alias.clone(),
                 status_label(&db.readiness),
+                mtime_to_human_readable(db.mtime),
                 db.path.display().to_string(),
             )
         })
         .collect();
 
-    let alias_width = column_width(COL_ALIAS, rows.iter().map(|(a, _, _)| a.as_str()));
-    let status_width = column_width(COL_STATUS, rows.iter().map(|(_, s, _)| s.as_str()));
+    let alias_width = column_width(COL_ALIAS, rows.iter().map(|(a, _, _, _)| a.as_str()));
+    let status_width = column_width(COL_STATUS, rows.iter().map(|(_, s, _, _)| s.as_str()));
+    let updated_at_width = column_width(COL_UPDATED_AT, rows.iter().map(|(_, _, u, _)| u.as_str()));
 
     lines.push(format!(
-        "{COL_ALIAS:<alias_width$}  {COL_STATUS:<status_width$}  {COL_PATH}"
+        "{COL_ALIAS:<alias_width$}  {COL_STATUS:<status_width$}  {COL_UPDATED_AT:<updated_at_width$}  {COL_PATH}"
     ));
 
-    for (alias, status, path) in &rows {
+    for (alias, status, updated_at, path) in &rows {
         lines.push(format!(
-            "{alias:<alias_width$}  {status:<status_width$}  {path}"
+            "{alias:<alias_width$}  {status:<status_width$}  {updated_at:<updated_at_width$}  {path}"
         ));
     }
 
@@ -75,7 +78,7 @@ fn render_json(databases: &[DiscoveredAgentTraceDb]) -> Result<String> {
                 "checkout_id": db.checkout_id,
                 "path": db.path.display().to_string(),
                 "status": status,
-                "mtime": mtime_to_rfc3339(db.mtime),
+                "updated_at": mtime_to_rfc3339(db.mtime),
             });
             if let Some(reason) = skip_reason {
                 entry
@@ -110,6 +113,11 @@ fn status_label(readiness: &Readiness) -> String {
 fn mtime_to_rfc3339(mtime: SystemTime) -> String {
     let dt: DateTime<Utc> = mtime.into();
     dt.to_rfc3339()
+}
+
+fn mtime_to_human_readable(mtime: SystemTime) -> String {
+    let dt: DateTime<Utc> = mtime.into();
+    dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()
 }
 
 fn column_width<'a, I: Iterator<Item = &'a str>>(header: &str, values: I) -> usize {
@@ -202,6 +210,7 @@ mod tests {
         assert!(rendered.contains("Alias"));
         assert!(rendered.contains("Status"));
         assert!(rendered.contains("Path"));
+        assert!(rendered.contains("Updated at"));
         assert!(rendered.contains("agent_trace_0"));
         assert!(rendered.contains("agent_trace_1"));
         assert!(rendered.contains("agent_trace_2"));
@@ -239,7 +248,7 @@ mod tests {
         assert_eq!(databases[0]["status"], "ready");
         assert!(databases[0].get("skip_reason").is_none());
         assert_eq!(databases[0]["path"], ready.display().to_string());
-        assert!(databases[0]["mtime"].is_string());
+        assert!(databases[0]["updated_at"].is_string());
 
         assert_eq!(databases[1]["alias"], "agent_trace_1");
         assert_eq!(databases[1]["checkout_id"], "bbbb");

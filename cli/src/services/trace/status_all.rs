@@ -8,7 +8,6 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 
 use crate::services::default_paths::resolve_state_data_root;
 use crate::services::trace::discovery::{discover_agent_trace_dbs_in, Readiness};
@@ -21,16 +20,8 @@ pub struct DiscoverySummary {
     pub skipped: usize,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct Totals {
-    pub diff_traces: u64,
-    pub messages: u64,
-    pub parts: u64,
-    pub session_models: u64,
-    pub agent_traces: u64,
-    pub post_commit_patch_intersections: u64,
-    pub last_activity: Option<DateTime<Utc>>,
-}
+/// Aggregated totals across all discovered Agent Trace DBs.
+pub type Totals = AgentTraceDbStats;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DatabaseRowStatus {
