@@ -120,7 +120,7 @@ pub fn discover_agent_trace_dbs_in(sce_dir: &Path) -> Result<Vec<DiscoveredAgent
 /// Opens the database without running migrations and queries `sqlite_master`
 /// for each required table in declared order. Returns `Skipped` with the first
 /// missing table reported; otherwise `Ready`.
-fn probe_readiness(path: &Path) -> Result<Readiness> {
+pub(super) fn probe_readiness(path: &Path) -> Result<Readiness> {
     let db = AgentTraceDb::open_for_hooks_without_migrations_at(path)
         .with_context(|| format!("failed to open agent trace DB '{}'", path.display()))?;
 
