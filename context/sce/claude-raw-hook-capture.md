@@ -7,7 +7,7 @@ The `sce hooks claude-capture <event-name>` CLI route, `ClaudeCaptureEvent`, `Ho
 Rust now exposes only normalized intakes for Claude/OpenCode editor runtimes:
 
 - `sce hooks session-model` — STDIN JSON intake for normalized model attribution upsert in `session_models`, keyed by `(tool_name, session_id)`. No raw hook artifacts are written.
-- `sce hooks diff-trace` — STDIN JSON intake for normalized or Claude structured diff-trace payloads with optional/nullable attribution. When `model_id` or `tool_version` is missing, Rust resolves available values from `session_models` by `(tool_name, session_id)` and otherwise persists nullable attribution without skipping artifact or DB persistence.
+- `sce hooks diff-trace` — STDIN JSON intake for normalized or Claude structured diff-trace payloads with optional/nullable attribution. When `model_id` or `tool_version` is missing, Rust resolves available values from `session_models` by `(tool_name, session_id)` and otherwise persists nullable attribution to AgentTraceDb without writing raw hook artifacts.
 
 ## Historical artifact contract
 
