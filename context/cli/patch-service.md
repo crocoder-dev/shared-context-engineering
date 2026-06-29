@@ -86,7 +86,7 @@ Patch reconstruction tests use deterministic fixture suites under `cli/src/servi
   - `claude-post-tool-use.json` containing a sanitized synthetic Claude `PostToolUse` payload shaped for `derive_claude_structured_patch(...)`
   - `expected.patch` containing the expected unified diff output
   - No `input.json` sidecar is part of the active fixture contract for this suite.
-  - Covered scenarios: simple/empty/no-newline/multiline Write create flows and single-hunk/multi-hunk/additions-only/deletions-only Edit flows
+  - Covered scenarios: Write structured-update hunk derivation, empty/no-newline/multiline Write content-create fallback flows, and single-hunk/multi-hunk/additions-only/deletions-only Edit flows
   - Rust golden tests in `cli/src/services/structured_patch/tests.rs` discover and validate all scenarios at test time, failing on missing or extra fixtures.
 - The current tmp-hunks scenario is materialized as `text_file_lifecycle_reconstruction/` with:
   - `incremental_01.patch` .. `incremental_26.patch` reconstructed from `tmp_hunks/*-message.part.json` in lexical filename order

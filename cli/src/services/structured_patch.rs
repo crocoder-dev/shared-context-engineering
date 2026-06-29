@@ -148,9 +148,7 @@ fn build_write_create_patch(payload: &Map<String, Value>) -> PatchBuildResult {
         return skipped_build(ClaudeStructuredPatchSkipReason::UnsupportedWritePayload);
     };
 
-    if value_field(tool_response, &["originalFile", "original_file"]) != Some(&Value::Null) {
-        return skipped_build(ClaudeStructuredPatchSkipReason::UnsupportedWritePayload);
-    }
+    let structured_patch = value_field(tool_response, &["structuredPatch", "structured_patch"]);
 
     let file_path = normalize_patch_path(
         string_field(tool_input, &["file_path", "filePath"])
@@ -162,7 +160,15 @@ fn build_write_create_patch(payload: &Map<String, Value>) -> PatchBuildResult {
         return skipped_build(ClaudeStructuredPatchSkipReason::MissingFilePath);
     };
 
-    let Some(content) = string_value_field(tool_input, &["content", "newFile", "new_file"]) else {
+    if let Some(structured_patch) = structured_patch.filter(|patch| !patch.is_null()) {
+        if let Some(patch) =
+            modified_patch_from_structured_hunks(file_path.clone(), structured_patch)
+        {
+            return PatchBuildResult::Built(patch);
+        }
+    }
+
+    let Some(content) = string_value_field(tool_input, &["content"]) else {
         return skipped_build(ClaudeStructuredPatchSkipReason::MissingFileContent);
     };
 
@@ -187,29 +193,30 @@ fn build_edit_structured_patch(payload: &Map<String, Value>) -> PatchBuildResult
     }
 
     let file_path = normalize_patch_path(
-        string_field(tool_input, &["file_path", "filePath"])
-            .or_else(|| {
-                structured_patch
-                    .as_object()
-                    .and_then(|patch| string_field(patch, &["file_path", "filePath", "path"]))
-            })
-            .as_deref(),
+        string_field(tool_input, &["file_path", "filePath"]).as_deref(),
         string_field(payload, &["cwd"]).as_deref(),
     );
     let Some(file_path) = file_path else {
         return skipped_build(ClaudeStructuredPatchSkipReason::MissingFilePath);
     };
 
+    let Some(patch) = modified_patch_from_structured_hunks(file_path, structured_patch) else {
+        return skipped_build(ClaudeStructuredPatchSkipReason::UnsupportedEditPayload);
+    };
+
+    PatchBuildResult::Built(patch)
+}
+
+fn modified_patch_from_structured_hunks(
+    file_path: String,
+    structured_patch: &Value,
+) -> Option<ParsedPatch> {
     let hunks: Vec<PatchHunk> = structured_patch_hunks(structured_patch)
         .into_iter()
         .filter_map(parse_structured_patch_hunk)
         .collect();
 
-    if hunks.is_empty() {
-        return skipped_build(ClaudeStructuredPatchSkipReason::UnsupportedEditPayload);
-    }
-
-    PatchBuildResult::Built(ParsedPatch {
+    (!hunks.is_empty()).then_some(ParsedPatch {
         files: vec![PatchFileChange {
             old_path: file_path.clone(),
             new_path: file_path,

@@ -1,12 +1,28 @@
 {
   "hook_event_name": "PostToolUse",
-  "session_id": "test-write-create-simple",
+  "session_id": "test-write-update-structured-patch",
   "tool_name": "Write",
   "tool_input": {
-    "file_path": "hunks/hello.ts",
-    "content": "function helloWorld(): void {\n  console.log(\"Hello World\");\n}\n\nhelloWorld();\n"
+    "file_path": "docs/status.md",
+    "content": "# Status\n\nThis full content fallback must not be used.\n"
   },
   "tool_response": {
-    "originalFile": null
+    "originalFile": "# Status\n\nThe old state is pending.\n",
+    "structuredPatch": {
+      "hunks": [
+        {
+          "oldStart": 1,
+          "oldCount": 3,
+          "newStart": 1,
+          "newCount": 3,
+          "lines": [
+            " # Status",
+            " ",
+            "-The old state is pending.",
+            "+The new state is complete."
+          ]
+        }
+      ]
+    }
   }
 }
