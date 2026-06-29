@@ -73,12 +73,38 @@ The current code truth shows `sce hooks diff-trace` still writes parsed payload 
   - Evidence: Updated stale current-state wording in `context/overview.md` so `diff-trace` is described as AgentTraceDb-only persistence without `context/tmp` parsed-payload artifacts; clarified `context/patterns.md` diff-trace attribution guidance so unresolved attribution is persisted as `NULL` in AgentTraceDb rather than referring to artifacts; clarified removed Claude raw capture context so current `diff-trace` persists nullable attribution to AgentTraceDb without raw hook artifacts. `nix run .#pkl-check-generated` passed with generated outputs up to date, and passed again after context-sync review. `git diff --check` passed. Targeted non-plan search for obsolete phrases (`collision-safe timestamp+attempt artifact filenames`, `without skipping artifact`, `skipping the artifact`, `context/tmp/<timestamp>-000000-diff-trace.json`, and `Claude hook capture artifact`) returned no matches; remaining non-plan `context/tmp/*-diff-trace.json` references either state no artifact is written or are historical/non-goal notes, and `post-commit.json` appears only in a checked-in fixture reconstruction context, not as current hook-runtime `context/tmp` output.
   - Notes: Classified this as an important context-sync task because it corrects root current-state docs. No runtime/code changes were made.
 
-- [ ] T05: `Validate and cleanup` (status:todo)
+- [x] T05: `Validate and cleanup` (status:done)
   - Task ID: T05
   - Goal: Run full validation, generated-output parity checks, and final cleanup review for the artifact-removal change.
   - Boundaries (in/out of scope): In — repository validation, generated-output parity, final stale-reference search, verification that no task-owned temporary scaffolding remains, and plan evidence update. Out — unrelated refactors, deleting SCE logs, deleting generic `context/tmp` scratch/session files, or changing behavior beyond the plan scope.
   - Done when: `nix run .#pkl-check-generated` and `nix flake check` pass; stale hook-runtime artifact references are absent from current-state docs/code; `context/tmp/` contains no hook-runtime artifacts targeted by this plan; SCE logs remain untouched.
   - Verification notes (commands or checks): `nix run .#pkl-check-generated`; `nix flake check`; targeted search for `context/tmp` hook artifact references; final `context/tmp/` cleanup inspection preserving `sce.log`/`*.log`.
+  - Completed: 2026-06-29
+  - Files changed: `context/plans/remove-hook-runtime-context-tmp-artifacts.md`
+  - Evidence: `nix run .#pkl-check-generated` passed ("Generated outputs are up to date."); `nix flake check` passed (all 4 flake checks passed including cli-tests, cli-clippy, cli-fmt, and pkl-parity); targeted Rust code search for `context/tmp/*-diff-trace.json` and `context/tmp/*-post-commit.json` patterns found no matches; targeted context doc search for `context/tmp` hook-artifact references found only correct current-state descriptions (context-map.md, overview.md, cli-command-surface.md) stating no artifacts are written; residual hook-runtime artifact files in `context/tmp/` (2 diff-trace, 2 post-commit JSON files from earlier task testing) were removed; `context/tmp/` now contains only `.env`, `.gitignore`, `claude-crof.sh`, and `sce.log`; `sce.log` remains untouched. This was a verify-only context-sync task (no code changes, no durable context drift).
+
+## Validation Report
+
+### Commands run
+- `nix flake check` → exit 0 (all checks passed: cli-tests, cli-clippy, cli-fmt, pkl-parity, integrations-install-*, npm-*, config-lib-*, workflow-actionlint, flatpak-*)
+- `nix run .#pkl-check-generated` → exit 0 ("Generated outputs are up to date.")
+- Targeted Rust code search for `context/tmp/*-diff-trace.json` and `context/tmp/*-post-commit.json` → no matches
+- Targeted context doc search (outside `context/plans/`) for `context/tmp` hook-artifact references → only correct current-state descriptions found
+- Final `context/tmp/` cleanup → removed 4 residual JSON artifacts (2 diff-trace, 2 post-commit); `sce.log` preserved; remaining files: `.env`, `.gitignore`, `claude-crof.sh`, `sce.log`
+
+### Success-criteria verification
+- [x] `sce hooks diff-trace` no longer writes `context/tmp/*-diff-trace.json` artifacts → T01 removed writer; verified by stale search
+- [x] Hook runtime success/error text no longer advertises `context/tmp` artifact fallback persistence → T01 updated text; verified by code search
+- [x] Agent Trace persistence remains DB-backed → confirmed; post-commit/diff-trace/session-model all use AgentTraceDb
+- [x] No active hook path writes JSON/log artifacts under `context/tmp/` → T02 audited and removed all active writers; verified by stale search
+- [x] Existing hook-runtime artifacts removed from `context/tmp/` → T03 removed bulk; T05 removed 4 residual artifacts from earlier task testing
+- [x] `context/tmp/` remains available for SCE scratch/session files → preserved; `.gitignore`, `.env`, `claude-crof.sh` intact
+- [x] SCE log files not deleted or modified → `context/tmp/sce.log` present and untouched
+- [x] Durable context no longer describes hook-runtime `context/tmp` artifact writes as current behavior → T04 synced; T05 verified root files match code truth
+- [x] Repository validation passes → `nix flake check` and `nix run .#pkl-check-generated` both pass
+
+### Residual risks
+- None identified. All tasks completed, all writers removed, context synced, validation passes.
 
 ## Open questions
 
