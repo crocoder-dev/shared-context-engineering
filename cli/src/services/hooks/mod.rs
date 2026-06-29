@@ -1,6 +1,5 @@
-use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
-use std::io::{self, ErrorKind, Read, Write};
+use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -20,6 +19,7 @@ use crate::services::agent_trace_db::{
     SessionModelAttribution, SessionModelUpsert, PAYLOAD_TYPE_PATCH, PAYLOAD_TYPE_STRUCTURED,
 };
 use crate::services::checkout;
+use crate::services::config;
 use crate::services::observability::traits::Logger;
 use crate::services::patch::{
     combine_patches as combine_patches_fn, intersect_patches as intersect_patches_fn,
@@ -29,7 +29,6 @@ use crate::services::structured_patch::{
     build_claude_post_tool_use_patch, derive_claude_structured_patch,
     ClaudeStructuredPatchDerivationResult, PatchBuildResult,
 };
-use crate::services::{config, default_paths::RepoPaths};
 pub mod command;
 pub mod lifecycle;
 
@@ -37,7 +36,6 @@ pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
 const CLAUDE_CLI_BINARY: &str = "claude";
 
-const MAX_TRACE_FILE_CREATE_ATTEMPTS: u64 = 1_000_000;
 type PayloadValidationError = fn(&str) -> String;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -158,13 +156,6 @@ impl ConversationTracePersistenceSummary {
     }
 }
 
-#[allow(dead_code)]
-struct TraceArtifactPayload {
-    trace_directory: PathBuf,
-    trace_name: String,
-    serialized: String,
-    artifact_description: &'static str,
-}
 /// Required `sce hooks diff-trace` STDIN payload shape:
 /// `{ sessionID, diff, time, model_id?, tool_name, tool_version }`.
 ///
@@ -200,7 +191,9 @@ fn run_hooks_subcommand_in_repo(
         HookSubcommand::PostCommit {
             vcs_type,
             remote_url,
-        } => run_post_commit_subcommand_with_trace(repository_root, *vcs_type, remote_url.clone()),
+        } => {
+            run_post_commit_subcommand_with_trace(repository_root, *vcs_type, remote_url.as_deref())
+        }
         HookSubcommand::PostRewrite { rewrite_method } => {
             run_post_rewrite_subcommand_with_trace(repository_root, subcommand, rewrite_method)
         }
@@ -1416,115 +1409,6 @@ fn diff_trace_db_time_ms(time: u64) -> Result<i64> {
     })
 }
 
-fn persist_serialized_trace_payload(
-    trace_directory: &Path,
-    trace_name: &str,
-    serialized: &str,
-    artifact_description: &str,
-) -> Result<PathBuf> {
-    persist_serialized_trace_payload_at(
-        trace_directory,
-        trace_name,
-        serialized,
-        artifact_description,
-        Utc::now(),
-    )
-}
-
-fn persist_serialized_trace_payload_at(
-    trace_directory: &Path,
-    trace_name: &str,
-    serialized: &str,
-    artifact_description: &str,
-    timestamp: DateTime<Utc>,
-) -> Result<PathBuf> {
-    fs::create_dir_all(trace_directory).with_context(|| {
-        format!(
-            "Failed to create hook trace directory '{}'.",
-            trace_directory.display()
-        )
-    })?;
-
-    persist_trace_payload_with_retries(
-        trace_directory,
-        trace_name,
-        serialized,
-        artifact_description,
-        timestamp,
-        persist_trace_payload_to_file,
-    )
-}
-
-fn persist_trace_payload_with_retries<P>(
-    trace_directory: &Path,
-    trace_name: &str,
-    serialized: &str,
-    artifact_description: &str,
-    timestamp: DateTime<Utc>,
-    mut persist_file: P,
-) -> Result<PathBuf>
-where
-    P: FnMut(&Path, &str) -> io::Result<()>,
-{
-    for attempt in 0..MAX_TRACE_FILE_CREATE_ATTEMPTS {
-        let file_path = trace_directory.join(build_trace_file_name(trace_name, timestamp, attempt));
-
-        match persist_file(&file_path, serialized) {
-            Ok(()) => return Ok(file_path),
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "Failed to write {artifact_description} file '{}'.",
-                        file_path.display()
-                    )
-                });
-            }
-        }
-    }
-
-    bail!(
-        "Failed to write {artifact_description} file in '{}': exhausted {} collision-safe filename attempts.",
-        trace_directory.display(),
-        MAX_TRACE_FILE_CREATE_ATTEMPTS
-    )
-}
-
-fn persist_trace_payload_to_file(file_path: &Path, serialized: &str) -> io::Result<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(file_path)?;
-    file.write_all(serialized.as_bytes())?;
-
-    Ok(())
-}
-
-fn format_trace_timestamp(timestamp: DateTime<Utc>) -> String {
-    timestamp.format("%Y-%m-%dT%H-%M-%S-%3fZ").to_string()
-}
-
-fn build_trace_file_name(trace_name: &str, timestamp: DateTime<Utc>, attempt: u64) -> String {
-    let safe_name = sanitize_trace_name(trace_name);
-
-    format!(
-        "{}-{:06}-{}.json",
-        format_trace_timestamp(timestamp),
-        attempt,
-        safe_name
-    )
-}
-
-fn sanitize_trace_name(trace_name: &str) -> String {
-    trace_name
-        .chars()
-        .map(|character| match character {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '-' => character,
-            _ => '_',
-        })
-        .collect()
-}
-
 fn run_pre_commit_subcommand_with_trace(repository_root: &Path) -> Result<String> {
     run_pre_commit_subcommand(repository_root)
 }
@@ -1963,19 +1847,9 @@ fn current_unix_time_ms() -> Result<i64> {
 fn run_post_commit_subcommand_with_trace(
     repository_root: &Path,
     vcs_type: Option<AgentTraceVcsType>,
-    remote_url: Option<String>,
+    remote_url: Option<&str>,
 ) -> Result<String> {
-    let remote_url_value = remote_url.clone().unwrap_or_default();
-    let subcommand = HookSubcommand::PostCommit {
-        vcs_type,
-        remote_url,
-    };
-    let input = build_hook_trace_input_for_post_commit(repository_root);
-    let outcome = run_post_commit_subcommand(repository_root, vcs_type, &remote_url_value);
-
-    let _ = persist_hook_trace(repository_root, &subcommand, &input, &outcome);
-
-    outcome
+    run_post_commit_subcommand(repository_root, vcs_type, remote_url.unwrap_or_default())
 }
 
 fn run_post_rewrite_subcommand(repository_root: &Path, rewrite_method: &str) -> Result<String> {
@@ -2009,120 +1883,12 @@ fn hook_runtime_invocation_name(subcommand: &HookSubcommand) -> &'static str {
     }
 }
 
-fn persist_hook_trace(
-    repository_root: &Path,
-    subcommand: &HookSubcommand,
-    input: &Value,
-    outcome: &Result<String>,
-) -> Result<()> {
-    let trace_directory = RepoPaths::new(repository_root).context_tmp_dir();
-    let body = match outcome {
-        Ok(output) => json!({
-            "input": input,
-            "output": output,
-        }),
-        Err(error) => json!({
-            "input": input,
-            "error": error.to_string(),
-        }),
-    };
-
-    let serialized = format!(
-        "{}\n",
-        serde_json::to_string_pretty(&body).context("Failed to serialize hook trace.")?
-    );
-    persist_serialized_trace_payload(
-        &trace_directory,
-        hook_trace_name(subcommand),
-        &serialized,
-        "hook trace",
-    )?;
-
-    Ok(())
-}
-
-fn hook_trace_name(subcommand: &HookSubcommand) -> &'static str {
-    match subcommand {
-        HookSubcommand::PreCommit => "pre-commit",
-        HookSubcommand::CommitMsg { .. } => "commit-msg",
-        HookSubcommand::PostCommit { .. } => "post-commit",
-        HookSubcommand::PostRewrite { .. } => "post-rewrite",
-        HookSubcommand::DiffTrace => "diff-trace",
-        HookSubcommand::ConversationTrace => "conversation-trace",
-        HookSubcommand::SessionModel => "session-model",
-    }
-}
-
-fn build_hook_trace_input_for_post_commit(repository_root: &Path) -> Value {
-    let mut input = build_base_hook_trace_input("post-commit");
-    insert_head_commit_from_git(repository_root, &mut input);
-    Value::Object(input)
-}
-
-fn build_base_hook_trace_input(hook_name: &str) -> serde_json::Map<String, Value> {
-    let mut input = serde_json::Map::new();
-    input.insert("hook".to_string(), Value::String(hook_name.to_string()));
-    input.insert(
-        "git_env".to_string(),
-        Value::Object(
-            collect_git_environment()
-                .into_iter()
-                .map(|(key, value)| (key, Value::String(value)))
-                .collect(),
-        ),
-    );
-    input
-}
-
-fn collect_git_environment() -> BTreeMap<String, String> {
-    std::env::vars()
-        .filter(|(key, _)| key.starts_with("GIT_"))
-        .collect()
-}
-
 fn read_hook_stdin() -> Result<String> {
     let mut stdin_payload = String::new();
     io::stdin()
         .read_to_string(&mut stdin_payload)
         .context("Failed to read hook input from STDIN.")?;
     Ok(stdin_payload)
-}
-
-fn insert_head_commit_from_git(repository_root: &Path, input: &mut serde_json::Map<String, Value>) {
-    insert_git_output(
-        repository_root,
-        &["rev-parse", "HEAD"],
-        "Failed to capture HEAD revision from git.",
-        input,
-        "head_oid_from_git",
-        "head_oid_from_git_read_error",
-    );
-    insert_git_output(
-        repository_root,
-        &["show", "--format=", "--patch", "--no-ext-diff", "HEAD"],
-        "Failed to capture HEAD patch from git.",
-        input,
-        "head_patch_from_git",
-        "head_patch_from_git_read_error",
-    );
-}
-
-fn insert_git_output(
-    repository_root: &Path,
-    args: &[&str],
-    context_message: &str,
-    input: &mut serde_json::Map<String, Value>,
-    output_key: &str,
-    error_key: &str,
-) {
-    match run_git_command_capture_stdout(repository_root, args, context_message) {
-        Ok(stdout) => {
-            input.insert(output_key.to_string(), Value::String(stdout));
-        }
-        Err(error) => {
-            input.insert(error_key.to_string(), Value::String(error.to_string()));
-        }
-    }
 }
 
 fn run_git_command_capture_stdout(

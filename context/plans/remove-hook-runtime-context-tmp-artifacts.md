@@ -40,12 +40,16 @@ The current code truth shows `sce hooks diff-trace` still writes parsed payload 
   - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'`; `nix flake check` (all checks passed); `nix run .#pkl-check-generated` (generated outputs are up to date). Re-run after review feedback removing the temporary injected helper: same command chain passed. A direct focused Cargo test command was attempted first and blocked by repository bash policy in favor of `nix flake check`.
   - Notes: Removed the `diff-trace` `context/tmp` artifact write path and updated diff-trace status text to mention AgentTraceDb only; avoided adding extra injected runtime helpers after review feedback; synced durable current-state context for AgentTraceDb-only diff-trace persistence.
 
-- [ ] T02: `Audit and remove remaining hook artifact writers` (status:todo)
+- [x] T02: `Audit and remove remaining hook artifact writers` (status:done)
   - Task ID: T02
   - Goal: Confirm no active post-commit, post-rewrite, Claude, or Agent Trace hook runtime writes JSON/log artifacts into `context/tmp/`.
   - Boundaries (in/out of scope): In — code/config search for `context/tmp`, `post-commit.json`, `post-rewrite`, Claude hook capture artifact paths, and hook artifact writer helpers; removal of active hook-runtime artifact writes if found. Out — generic SCE scratch/session guidance, `context/tmp` bootstrap, Pkl preview output path under `context/tmp/pkl-generated`, and SCE log files.
   - Done when: Search results show no active hook-runtime artifact writes to `context/tmp/`; any remaining `context/tmp` references are either generic scratch/session guidance, non-runtime preview output, historical plan evidence, or explicitly non-hook behavior.
   - Verification notes (commands or checks): Search code and generated config for `context/tmp`, `diff-trace.json`, `post-commit.json`, `post-rewrite`, and Claude capture artifact references; run targeted tests for any touched runtime paths.
+  - Completed: 2026-06-29
+  - Files changed: `cli/src/services/hooks/mod.rs`, `context/plans/remove-hook-runtime-context-tmp-artifacts.md`
+  - Evidence: Targeted searches found and removed the active post-commit hook trace writer that persisted `context/tmp/*-post-commit.json`; after removal, `cli/**/*.rs` search for `persist_serialized_trace_payload`, `persist_hook_trace`, `diff-trace.json`, and `post-commit.json` found no matches, with only the generic `RepoPaths::context_tmp_dir()` accessor remaining. Generated config search for `context/tmp`, `diff-trace.json`, `post-commit.json`, `post-rewrite`, and Claude capture terms found only generic scratch/session guidance, automated session logging guidance, Pkl preview output under `context/tmp/pkl-generated`, or non-artifact hook command references. `nix develop -c sh -c 'cd cli && cargo fmt'` passed. First `nix flake check` exposed a clippy `needless_pass_by_value` issue introduced while removing trace persistence; after fixing it, rerun `nix flake check` passed. `nix run .#pkl-check-generated` passed with generated outputs up to date.
+  - Notes: Removed the remaining active hook-runtime artifact writer and its now-unused collision-safe JSON artifact helper stack. Existing files under `context/tmp/` were intentionally left for T03.
 
 - [ ] T03: `Remove existing hook runtime artifacts from context/tmp` (status:todo)
   - Task ID: T03

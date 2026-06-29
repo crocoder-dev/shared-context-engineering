@@ -43,7 +43,7 @@
 - `cli/src/services/doctor/inspect.rs` also resolves OpenCode manifest/plugin/preset locations through shared `RepoPaths` and `InstallTargetPaths` accessors instead of owning those paths locally.
 - `cli/src/services/setup/mod.rs` now resolves setup target directory names and required hook identifiers through `default_paths.rs` constants/accessors instead of owning those path literals locally.
 - `cli/src/services/default_paths.rs` includes a regression test that scans non-test Rust source under `cli/src/` and fails when new centralized production path literals appear outside the default-path service.
-- `cli/src/services/hooks/mod.rs` resolves the collision-safe `context/tmp/` path shape through shared path accessors.
+- Active hook runtime no longer resolves or writes collision-safe JSON artifacts under `context/tmp/`; `context/tmp/` remains a repo-relative scratch/session path owned by the default path catalog.
 - `cli/src/services/agent_trace_db/lifecycle.rs` and `cli/src/services/checkout/mod.rs` resolve per-checkout Agent Trace DB files through `agent_trace_db_path_for_checkout(checkout_id)` after setup-time DB initialization or hook-runtime lazy initialization.
 
 See also: [cli-command-surface.md](./cli-command-surface.md), [../architecture.md](../architecture.md), [../context-map.md](../context-map.md)
