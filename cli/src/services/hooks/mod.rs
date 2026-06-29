@@ -739,7 +739,6 @@ where
             );
         }
     }
-    persist_diff_trace_payload(repository_root, payload)?;
     let agent_trace_db_result = persist_diff_trace_payload_to_agent_trace_db(
         repository_root,
         payload,
@@ -762,11 +761,11 @@ where
 
     if agent_trace_db_persisted {
         Ok(String::from(
-            "diff-trace hook intake persisted payload to AgentTraceDb and context/tmp.",
+            "diff-trace hook intake persisted payload to AgentTraceDb.",
         ))
     } else {
         Ok(String::from(
-            "diff-trace hook intake persisted payload to context/tmp; AgentTraceDb persistence failed.",
+            "diff-trace hook intake completed; AgentTraceDb persistence failed.",
         ))
     }
 }
@@ -1367,25 +1366,6 @@ fn required_field<'a>(
             "missing required field '{field_name}'"
         )))
     })
-}
-
-fn persist_diff_trace_payload(
-    repository_root: &Path,
-    payload: &DiffTracePayload,
-) -> Result<PathBuf> {
-    let trace_directory = RepoPaths::new(repository_root).context_tmp_dir();
-    let serialized = format!(
-        "{}\n",
-        serde_json::to_string_pretty(payload)
-            .context("Failed to serialize diff-trace payload for persistence.")?
-    );
-
-    persist_serialized_trace_payload(
-        &trace_directory,
-        "diff-trace",
-        &serialized,
-        "diff-trace payload",
-    )
 }
 
 fn persist_diff_trace_payload_to_agent_trace_db(
