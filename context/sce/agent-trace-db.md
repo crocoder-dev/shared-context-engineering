@@ -33,9 +33,9 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 - `INSERT_PART_SQL`: parameterized single-row append-only INSERT into `parts` (no upsert; multiple rows per `(session_id, message_id)` allowed).
 - `insert_part(input)`: typed single-row helper that inserts a part row without requiring a matching `messages` row (supports out-of-order writes); retained as part of the adapter surface.
 - `insert_parts(inputs)`: typed batch helper that generates and executes one parameterized multi-row append-only `parts` insert for valid conversation-trace `message.part` batches.
-- `SessionModelUpsert<'a>`: upsert payload with `tool_name`, `session_id`, `model_id`, nullable `tool_version`, and `session_start_time_ms`.
+- `SessionModelUpsert<'a>`: upsert payload with `tool_name`, `session_id`, nullable `model_id`, nullable `tool_version`, and `session_start_time_ms`.
 - `upsert_session_model()`: domain-specific upsert helper for `session_models` keyed by `(tool_name, session_id)`.
-- `SessionModelAttribution`: durable session model attribution row returned from `session_models` lookups, carrying `model_id` plus nullable `tool_version` for later diff-trace fallback.
+- `SessionModelAttribution`: durable session model attribution row returned from `session_models` lookups, carrying nullable `model_id` plus nullable `tool_version` for later diff-trace fallback.
 - `session_model_by_tool_and_session()`: lookup helper for model/tool-version attribution by `(tool_name, session_id)`.
 - `lifecycle.rs`: service lifecycle provider for setup/doctor integration.
 
@@ -151,7 +151,7 @@ The `session_models` migration creates durable editor session model attribution:
 - `id INTEGER PRIMARY KEY`
 - `tool_name TEXT NOT NULL`
 - `session_id TEXT NOT NULL`
-- `model_id TEXT NOT NULL`
+- `model_id TEXT` (nullable)
 - `tool_version TEXT` (nullable)
 - `session_start_time_ms INTEGER NOT NULL`
 - `created_at TEXT NOT NULL DEFAULT (...)`
@@ -208,7 +208,7 @@ Post-commit intersection rows are written by the active `post-commit` hook flow 
 - No `context/tmp` artifact is written for conversation traces.
 - The generated OpenCode agent-trace plugin sends mixed-batch envelopes for conversation traces: regular `message` and `message.part` events each carry one per-item `type`, while diff-backed `message` events send one envelope containing the synthetic parent message item plus patch part items.
 
-The `sce hooks session-model` command route writes session-model attribution payloads into `session_models` via STDIN JSON intake with required `sessionID`/`time`/`model_id`/`tool_name` and nullable `tool_version`; Claude `SessionStart` raw payloads may fill missing version metadata from a best-effort `claude --version` probe before upsert. The stored nullable `session_models.tool_version` is the durable fallback reused by later diff-trace persistence when the incoming payload omits version metadata. `(tool_name, session_id)` is the unique upsert key: subsequent upserts for the same tool/session pair replace `model_id`, `tool_version`, and `session_start_time_ms` while updating `updated_at`. See [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md).
+The `sce hooks session-model` command route writes session-model attribution payloads into `session_models` via STDIN JSON intake. Current parsing still requires normalized OpenCode payloads to provide `sessionID`/`time`/`model_id`/`tool_name` while allowing nullable `tool_version`; Claude `SessionStart` raw payloads require session identity but accept absent/empty model attribution and may fill missing version metadata from a best-effort `claude --version` probe before upsert. Storage accepts nullable `model_id` and nullable `tool_version` so missing attribution can be represented as `NULL` instead of a placeholder. The stored nullable `session_models.model_id` and `session_models.tool_version` values are durable fallbacks reused by later diff-trace persistence only when available and when incoming payloads omit that metadata. `(tool_name, session_id)` is the unique upsert key: subsequent upserts for the same tool/session pair replace `model_id`, `tool_version`, and `session_start_time_ms` while updating `updated_at`. See [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md).
 
 ## Recent patch reads
 

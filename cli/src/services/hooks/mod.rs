@@ -63,7 +63,7 @@ struct SessionModelPayload {
     #[serde(rename = "sessionID")]
     session_id: String,
     time: u64,
-    model_id: String,
+    model_id: Option<String>,
     tool_name: String,
     tool_version: Option<String>,
 }
@@ -788,7 +788,7 @@ where
         model_id: payload.model_id.clone().or_else(|| {
             session_attribution
                 .as_ref()
-                .map(|attribution| attribution.model_id.clone())
+                .and_then(|attribution| attribution.model_id.clone())
         }),
         tool_version: payload.tool_version.clone().or_else(|| {
             session_attribution
@@ -818,7 +818,6 @@ fn run_session_model_subcommand_from_payload(
     logger: Option<&dyn Logger>,
 ) -> Result<String> {
     let payload = parse_session_model_payload(stdin_payload)?;
-
     // Convert the u64 time to i64 for DB storage.
     let session_start_time_ms = i64::try_from(payload.time).map_err(|_| {
         anyhow!(StdinPayloadKind::SessionModel.validation_error(
@@ -829,7 +828,7 @@ fn run_session_model_subcommand_from_payload(
     let upsert_payload = SessionModelUpsert {
         tool_name: &payload.tool_name,
         session_id: &payload.session_id,
-        model_id: &payload.model_id,
+        model_id: payload.model_id.as_deref(),
         tool_version: payload.tool_version.as_deref(),
         session_start_time_ms,
     };
@@ -1001,8 +1000,9 @@ where
         payload_kind.validation_error(d)
     })?;
     let time = required_u64_millisecond_field(payload, "time", payload_kind)?;
-    let model_id =
-        required_non_empty_string_field(payload, "model_id", |d| payload_kind.validation_error(d))?;
+    let model_id = Some(required_non_empty_string_field(payload, "model_id", |d| {
+        payload_kind.validation_error(d)
+    })?);
     let tool_name = required_non_empty_string_field(payload, "tool_name", |d| {
         payload_kind.validation_error(d)
     })?;
@@ -1041,7 +1041,7 @@ fn parse_claude_session_model_payload(
     }
 
     let session_id = required_claude_session_id(payload, payload_kind)?;
-    let model_id = required_claude_model_id(payload, payload_kind)?;
+    let model_id = optional_claude_model_id(payload);
     let time = extract_claude_event_time(payload);
     let tool_name = "claude".to_string();
     let tool_version = extract_claude_tool_version_from_payload(payload).or_else(|| {
@@ -1076,17 +1076,14 @@ fn required_claude_session_id(
     ))
 }
 
-fn required_claude_model_id(
-    payload: &serde_json::Map<String, Value>,
-    payload_kind: StdinPayloadKind,
-) -> Result<String> {
+fn optional_claude_model_id(payload: &serde_json::Map<String, Value>) -> Option<String> {
     // Try direct string fields first.
     for key in ["model", "model_id", "modelId"] {
         if let Some(value) = payload.get(key) {
             if let Some(s) = value.as_str() {
                 let trimmed = s.trim();
                 if !trimmed.is_empty() {
-                    return Ok(normalize_claude_model_id(trimmed));
+                    return Some(normalize_claude_model_id(trimmed));
                 }
             }
             // If model is an object, try nested identifier fields.
@@ -1096,7 +1093,7 @@ fn required_claude_model_id(
                         if let Some(s) = nested_value.as_str() {
                             let trimmed = s.trim();
                             if !trimmed.is_empty() {
-                                return Ok(normalize_claude_model_id(trimmed));
+                                return Some(normalize_claude_model_id(trimmed));
                             }
                         }
                     }
@@ -1105,9 +1102,7 @@ fn required_claude_model_id(
         }
     }
 
-    bail!(payload_kind.validation_error(
-        "missing non-empty model identifier (model, model_id, or model.id) for Claude SessionStart"
-    ))
+    None
 }
 
 fn normalize_claude_model_id(model: &str) -> String {
@@ -2821,13 +2816,13 @@ mod tests {
     }
 
     fn session_model_attribution(
-        model_id: &str,
+        model_id: Option<&str>,
         tool_version: Option<&str>,
     ) -> SessionModelAttribution {
         SessionModelAttribution {
             tool_name: String::from("claude"),
             session_id: String::from("session-123"),
-            model_id: model_id.to_string(),
+            model_id: model_id.map(String::from),
             tool_version: tool_version.map(String::from),
             session_start_time_ms: 1_800_000_000_000_i64,
         }
@@ -2845,7 +2840,7 @@ mod tests {
         .expect("Claude SessionStart payload should parse");
 
         assert_eq!(output.session_id, "session-123");
-        assert_eq!(output.model_id, "claude/sonnet-4");
+        assert_eq!(output.model_id, Some(String::from("claude/sonnet-4")));
         assert_eq!(output.tool_name, "claude");
         assert_eq!(output.tool_version, Some(String::from("1.2.3")));
     }
@@ -2897,7 +2892,7 @@ mod tests {
             assert_eq!(tool_name, "claude");
             assert_eq!(session_id, "session-123");
             Ok(Some(session_model_attribution(
-                "session-model",
+                Some("session-model"),
                 Some("Claude Code 1.2.3"),
             )))
         })
@@ -2916,7 +2911,7 @@ mod tests {
 
         let resolved = resolve_diff_trace_attribution(&payload, |_tool_name, _session_id| {
             Ok(Some(session_model_attribution(
-                "session-model",
+                Some("session-model"),
                 Some("stored-version"),
             )))
         })

@@ -149,7 +149,7 @@ pub struct DiffTraceInsert<'a> {
 pub struct SessionModelUpsert<'a> {
     pub tool_name: &'a str,
     pub session_id: &'a str,
-    pub model_id: &'a str,
+    pub model_id: Option<&'a str>,
     pub tool_version: Option<&'a str>,
     pub session_start_time_ms: i64,
 }
@@ -159,7 +159,7 @@ pub struct SessionModelUpsert<'a> {
 pub struct SessionModelAttribution {
     pub tool_name: String,
     pub session_id: String,
-    pub model_id: String,
+    pub model_id: Option<String>,
     pub tool_version: Option<String>,
     pub session_start_time_ms: i64,
 }
@@ -783,6 +783,69 @@ mod tests {
             |row| row.get::<String>(0).map_err(Into::into),
         )
         .expect("migration metadata query should succeed")
+    }
+
+    fn session_models_model_id_notnull<M: DbSpec>(db: &TursoDb<M>) -> i64 {
+        db.query_map("PRAGMA table_info(session_models)", (), |row| {
+            let name = row.get::<String>(1)?;
+            let not_null = row.get::<i64>(3)?;
+            Ok((name, not_null))
+        })
+        .expect("session_models table info should load")
+        .into_iter()
+        .find_map(|(name, not_null)| (name == "model_id").then_some(not_null))
+        .expect("session_models.model_id column should exist")
+    }
+
+    #[test]
+    fn session_model_upsert_and_lookup_round_trip_nullable_and_present_model_ids() {
+        let db_path = unique_test_db_path();
+        let db = AgentTraceDb::open_at(&db_path).expect("test DB should open");
+
+        assert_eq!(session_models_model_id_notnull(&db), 0);
+
+        db.upsert_session_model(SessionModelUpsert {
+            tool_name: "claude",
+            session_id: "missing-model-session",
+            model_id: None,
+            tool_version: None,
+            session_start_time_ms: 1_800_000_000_000_i64,
+        })
+        .expect("nullable model session upsert should succeed");
+        db.upsert_session_model(SessionModelUpsert {
+            tool_name: "claude",
+            session_id: "model-present-session",
+            model_id: Some("claude/sonnet-4"),
+            tool_version: Some("Claude Code 1.2.3"),
+            session_start_time_ms: 1_800_000_001_000_i64,
+        })
+        .expect("model-present session upsert should succeed");
+
+        let missing_model = db
+            .session_model_by_tool_and_session("claude", "missing-model-session")
+            .expect("nullable model session lookup should succeed")
+            .expect("nullable model session row should exist");
+        assert_eq!(missing_model.model_id, None);
+        assert_eq!(missing_model.tool_version, None);
+        assert_eq!(missing_model.session_start_time_ms, 1_800_000_000_000_i64);
+
+        let model_present = db
+            .session_model_by_tool_and_session("claude", "model-present-session")
+            .expect("model-present session lookup should succeed")
+            .expect("model-present session row should exist");
+        assert_eq!(
+            model_present.model_id,
+            Some(String::from("claude/sonnet-4"))
+        );
+        assert_eq!(
+            model_present.tool_version,
+            Some(String::from("Claude Code 1.2.3"))
+        );
+
+        drop(db);
+        if let Some(parent) = db_path.parent() {
+            fs::remove_dir_all(parent).expect("test DB directory should be removed");
+        }
     }
 
     #[test]
