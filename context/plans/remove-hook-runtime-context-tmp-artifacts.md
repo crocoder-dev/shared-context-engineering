@@ -51,12 +51,16 @@ The current code truth shows `sce hooks diff-trace` still writes parsed payload 
   - Evidence: Targeted searches found and removed the active post-commit hook trace writer that persisted `context/tmp/*-post-commit.json`; after removal, `cli/**/*.rs` search for `persist_serialized_trace_payload`, `persist_hook_trace`, `diff-trace.json`, and `post-commit.json` found no matches, with only the generic `RepoPaths::context_tmp_dir()` accessor remaining. Generated config search for `context/tmp`, `diff-trace.json`, `post-commit.json`, `post-rewrite`, and Claude capture terms found only generic scratch/session guidance, automated session logging guidance, Pkl preview output under `context/tmp/pkl-generated`, or non-artifact hook command references. `nix develop -c sh -c 'cd cli && cargo fmt'` passed. First `nix flake check` exposed a clippy `needless_pass_by_value` issue introduced while removing trace persistence; after fixing it, rerun `nix flake check` passed. `nix run .#pkl-check-generated` passed with generated outputs up to date.
   - Notes: Removed the remaining active hook-runtime artifact writer and its now-unused collision-safe JSON artifact helper stack. Existing files under `context/tmp/` were intentionally left for T03.
 
-- [ ] T03: `Remove existing hook runtime artifacts from context/tmp` (status:todo)
+- [x] T03: `Remove existing hook runtime artifacts from context/tmp` (status:done)
   - Task ID: T03
   - Goal: Delete existing Agent Trace / hook runtime artifacts from `context/tmp/` without deleting SCE logs or generic scratch/session files.
   - Boundaries (in/out of scope): In — narrow cleanup of timestamped `*-diff-trace.json`, timestamped `*-post-commit.json`, `post-rewrite/` hook artifacts, and Claude hook JSON artifact directories/files if present. Out — `context/tmp/.gitignore`, `.env`, `sce.log`, `*.log`, unrelated scratch files, and generated agent bootstrap/guidance.
   - Done when: `context/tmp/` no longer contains hook-runtime JSON artifact files/directories; SCE log files remain untouched; cleanup is reflected only as deletion of intended ignored/tracked artifacts.
   - Verification notes (commands or checks): Before deletion, inspect candidate paths and exclude logs; after deletion, list or glob `context/tmp/` for `*-diff-trace.json`, `*-post-commit.json`, `post-rewrite/`, and Claude hook JSON artifacts; verify `sce.log` still exists if it existed before.
+  - Completed: 2026-06-29
+  - Files changed: `context/plans/remove-hook-runtime-context-tmp-artifacts.md`; user manually removed ignored hook-runtime artifacts under `context/tmp/`
+  - Evidence: Before cleanup, review found many `context/tmp/*-diff-trace.json` files, many `context/tmp/*-post-commit.json` files, `context/tmp/post-rewrite/`, and `context/tmp/claude/`, with `context/tmp/sce.log` present and explicitly preserved. After user-performed cleanup, targeted globs for `context/tmp/**/*-diff-trace.json`, `context/tmp/**/*-post-commit.json`, and `context/tmp/**/post-rewrite/**` returned no files; `context/tmp/` contained only `.env`, `.gitignore`, `claude-crof.sh`, and `sce.log`; `context/tmp/sce.log` remained present. `git status --short` was clean before the plan evidence update because cleaned artifacts were ignored/untracked.
+  - Notes: Per user direction, this session did not delete artifacts directly and did not touch `sce.log` or any logic related to its creation.
 
 - [ ] T04: `Sync durable context for DB-only hook persistence` (status:todo)
   - Task ID: T04
