@@ -24,7 +24,7 @@ The generated-config pipeline now has one canonical Pkl-authored source for Open
 ## Claude boundary
 
 - Claude does not consume the OpenCode `plugin` manifest surface.
-- Claude agent-trace event handling is registered through generated `.claude/settings.json` command hooks that call `.claude/hooks/run-sce-or-show-install-guidance.sh` before invoking `sce hooks`: `SessionStart` → `sce hooks session-model`, matched `PostToolUse Write|Edit|MultiEdit|NotebookEdit` → `sce hooks diff-trace`, and supported conversation events → `sce hooks conversation-trace`.
+- Claude agent-trace event handling is registered through generated `.claude/settings.json` command hooks that call `.claude/hooks/run-sce-or-show-install-guidance.sh` before invoking `sce hooks`: matched `PostToolUse Write|Edit|MultiEdit|NotebookEdit` → `sce hooks diff-trace`, and supported conversation events → `sce hooks conversation-trace`. `SessionStart` is no longer registered and `sce hooks session-model` is no longer supported.
 - The Rust CLI receives raw Claude hook event JSON on STDIN and handles extraction, validation, and persistence without a TypeScript translation layer.
 - Claude bash-policy enforcement is registered through generated `.claude/settings.json` as a `PreToolUse` `Bash` command hook that calls the same generated helper before running `sce policy bash` and passing raw hook event JSON on STDIN.
 - The Claude helper emits `sce CLI not found. Install it from https://sce.crocoder.dev/docs/getting-started#install-cli` and exits successfully when `sce` is missing, preserving fail-open hook behavior; when `sce` exists it `exec`s the original command arguments.

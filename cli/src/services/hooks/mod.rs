@@ -16,7 +16,7 @@ use crate::services::agent_trace::{
 use crate::services::agent_trace_db::{
     AgentTraceDb, AgentTraceInsert, DiffTraceInsert, InsertMessageInsert, InsertPartInsert,
     MessageRole, PartType, PostCommitPatchIntersectionInsert, RecentDiffTracePatches,
-    SessionModelAttribution, SessionModelUpsert, PAYLOAD_TYPE_PATCH, PAYLOAD_TYPE_STRUCTURED,
+    SessionModelAttribution, PAYLOAD_TYPE_PATCH, PAYLOAD_TYPE_STRUCTURED,
 };
 use crate::services::checkout;
 use crate::services::config;
@@ -34,8 +34,6 @@ pub mod lifecycle;
 
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
-const CLAUDE_CLI_BINARY: &str = "claude";
-
 type PayloadValidationError = fn(&str) -> String;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,17 +51,6 @@ pub enum HookSubcommand {
     },
     DiffTrace,
     ConversationTrace,
-    SessionModel,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-struct SessionModelPayload {
-    #[serde(rename = "sessionID")]
-    session_id: String,
-    time: u64,
-    model_id: String,
-    tool_name: String,
-    tool_version: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -94,14 +81,12 @@ struct ResolvedDiffTraceAttribution {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StdinPayloadKind {
     DiffTrace,
-    SessionModel,
 }
 
 impl StdinPayloadKind {
     fn label(self) -> &'static str {
         match self {
             Self::DiffTrace => "diff-trace",
-            Self::SessionModel => "session-model",
         }
     }
 
@@ -201,7 +186,6 @@ fn run_hooks_subcommand_in_repo(
         HookSubcommand::ConversationTrace => {
             Ok(run_conversation_trace_subcommand(repository_root, logger))
         }
-        HookSubcommand::SessionModel => run_session_model_subcommand(repository_root, logger),
     }
 }
 
@@ -804,70 +788,6 @@ where
     })
 }
 
-fn run_session_model_subcommand(
-    repository_root: &Path,
-    logger: Option<&dyn Logger>,
-) -> Result<String> {
-    let stdin_payload = read_hook_stdin()?;
-    let result = run_session_model_subcommand_from_payload(repository_root, &stdin_payload, logger);
-    if let Err(ref error) = result {
-        if let Some(log) = logger {
-            log.error("sce.hooks.session_model.error", &error.to_string(), &[]);
-        }
-    }
-    result
-}
-
-fn run_session_model_subcommand_from_payload(
-    repository_root: &Path,
-    stdin_payload: &str,
-    logger: Option<&dyn Logger>,
-) -> Result<String> {
-    let payload = parse_session_model_payload(stdin_payload)?;
-
-    // Convert the u64 time to i64 for DB storage.
-    let session_start_time_ms = i64::try_from(payload.time).map_err(|_| {
-        anyhow!(StdinPayloadKind::SessionModel.validation_error(
-            "field 'time' must fit in a signed 64-bit Unix epoch millisecond value for Agent Trace DB storage"
-        ))
-    })?;
-
-    let upsert_payload = SessionModelUpsert {
-        tool_name: &payload.tool_name,
-        session_id: &payload.session_id,
-        model_id: &payload.model_id,
-        tool_version: payload.tool_version.as_deref(),
-        session_start_time_ms,
-    };
-
-    let db = open_agent_trace_db_for_hook_runtime(
-        repository_root,
-        "Failed to open Agent Trace DB for session-model persistence.",
-    )
-    .context("Failed to open Agent Trace DB for session-model persistence.")?;
-    let result = db
-        .upsert_session_model(upsert_payload)
-        .context("Failed to persist session model attribution to Agent Trace DB.");
-
-    match result {
-        Ok(_) => Ok(String::from(
-            "session-model hook intake persisted session model attribution to AgentTraceDb.",
-        )),
-        Err(error) => {
-            if let Some(log) = logger {
-                log.warn(
-                    "sce.hooks.session_model.agent_trace_db_write_failed",
-                    &error.to_string(),
-                    &[],
-                );
-            }
-            Ok(String::from(
-                "session-model hook intake completed; AgentTraceDb persistence failed.",
-            ))
-        }
-    }
-}
-
 fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTraceParseResult> {
     let payload_kind = StdinPayloadKind::DiffTrace;
     let parsed: Value = serde_json::from_str(stdin_payload)
@@ -977,216 +897,6 @@ fn extract_claude_event_time(payload: &serde_json::Map<String, Value>) -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
-}
-
-fn parse_session_model_payload(stdin_payload: &str) -> Result<SessionModelPayload> {
-    parse_session_model_payload_with(stdin_payload, capture_claude_cli_version)
-}
-
-fn parse_session_model_payload_with<V>(
-    stdin_payload: &str,
-    claude_tool_version: V,
-) -> Result<SessionModelPayload>
-where
-    V: FnOnce() -> Option<String>,
-{
-    let payload_kind = StdinPayloadKind::SessionModel;
-    let parsed: Value = serde_json::from_str(stdin_payload)
-        .with_context(|| payload_kind.validation_error("expected valid JSON"))?;
-    let payload = parsed
-        .as_object()
-        .ok_or_else(|| anyhow!(payload_kind.validation_error("expected a JSON object")))?;
-
-    // Classify: Claude structured payloads carry hook_event_name.
-    if payload.contains_key("hook_event_name") {
-        return parse_claude_session_model_payload(payload, payload_kind, claude_tool_version);
-    }
-
-    // Original OpenCode/session-model normalized payload — unchanged.
-    let session_id = required_non_empty_string_field(payload, "sessionID", |d| {
-        payload_kind.validation_error(d)
-    })?;
-    let time = required_u64_millisecond_field(payload, "time", payload_kind)?;
-    let model_id =
-        required_non_empty_string_field(payload, "model_id", |d| payload_kind.validation_error(d))?;
-    let tool_name = required_non_empty_string_field(payload, "tool_name", |d| {
-        payload_kind.validation_error(d)
-    })?;
-    let tool_version =
-        required_nullable_or_non_empty_string_field(payload, "tool_version", payload_kind)?;
-
-    Ok(SessionModelPayload {
-        session_id,
-        time,
-        model_id,
-        tool_name,
-        tool_version,
-    })
-}
-
-/// Parse a raw Claude `SessionStart` hook event payload into a session-model intake result.
-///
-/// Extracts `session_id`, `model_id`, `time`, and `tool_version` from the raw
-/// Claude hook event format (which uses `snake_case` fields and nested model objects)
-/// so that Claude settings can pipe hook events directly to `sce hooks session-model`.
-const CLAUDE_MODEL_ID_PREFIX: &str = "claude/";
-
-fn parse_claude_session_model_payload(
-    payload: &serde_json::Map<String, Value>,
-    payload_kind: StdinPayloadKind,
-    claude_tool_version: impl FnOnce() -> Option<String>,
-) -> Result<SessionModelPayload> {
-    let event_name = required_non_empty_string_field(payload, "hook_event_name", |d| {
-        payload_kind.validation_error(d)
-    })?;
-
-    if event_name != "SessionStart" {
-        bail!(payload_kind.validation_error(&format!(
-            "Claude '{event_name}' event is not supported for session-model intake (expected SessionStart)"
-        )));
-    }
-
-    let session_id = required_claude_session_id(payload, payload_kind)?;
-    let model_id = required_claude_model_id(payload, payload_kind)?;
-    let time = extract_claude_event_time(payload);
-    let tool_name = "claude".to_string();
-    let tool_version = extract_claude_tool_version_from_payload(payload).or_else(|| {
-        claude_tool_version().and_then(|version| normalize_claude_tool_version(&version))
-    });
-
-    Ok(SessionModelPayload {
-        session_id,
-        time,
-        model_id,
-        tool_name,
-        tool_version,
-    })
-}
-
-fn required_claude_session_id(
-    payload: &serde_json::Map<String, Value>,
-    payload_kind: StdinPayloadKind,
-) -> Result<String> {
-    for key in ["session_id", "sessionID"] {
-        if let Some(value) = payload.get(key) {
-            if let Some(s) = value.as_str() {
-                let trimmed = s.trim();
-                if !trimmed.is_empty() {
-                    return Ok(trimmed.to_string());
-                }
-            }
-        }
-    }
-    bail!(payload_kind.validation_error(
-        "missing non-empty 'session_id' or 'sessionID' field for Claude SessionStart"
-    ))
-}
-
-fn required_claude_model_id(
-    payload: &serde_json::Map<String, Value>,
-    payload_kind: StdinPayloadKind,
-) -> Result<String> {
-    // Try direct string fields first.
-    for key in ["model", "model_id", "modelId"] {
-        if let Some(value) = payload.get(key) {
-            if let Some(s) = value.as_str() {
-                let trimmed = s.trim();
-                if !trimmed.is_empty() {
-                    return Ok(normalize_claude_model_id(trimmed));
-                }
-            }
-            // If model is an object, try nested identifier fields.
-            if let Some(model_obj) = value.as_object() {
-                for nested_key in ["id", "model", "name"] {
-                    if let Some(nested_value) = model_obj.get(nested_key) {
-                        if let Some(s) = nested_value.as_str() {
-                            let trimmed = s.trim();
-                            if !trimmed.is_empty() {
-                                return Ok(normalize_claude_model_id(trimmed));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    bail!(payload_kind.validation_error(
-        "missing non-empty model identifier (model, model_id, or model.id) for Claude SessionStart"
-    ))
-}
-
-fn normalize_claude_model_id(model: &str) -> String {
-    if model.starts_with(CLAUDE_MODEL_ID_PREFIX) {
-        model.to_string()
-    } else {
-        format!("{CLAUDE_MODEL_ID_PREFIX}{model}")
-    }
-}
-
-fn extract_claude_tool_version_from_payload(
-    payload: &serde_json::Map<String, Value>,
-) -> Option<String> {
-    for key in ["tool_version", "claude_version", "version"] {
-        match payload.get(key) {
-            Some(Value::String(s)) => return normalize_claude_tool_version(s),
-            Some(Value::Null) => return None,
-            Some(_) | None => {} // non-string, non-null, or missing → skip
-        }
-    }
-    None
-}
-
-fn capture_claude_cli_version() -> Option<String> {
-    let output = Command::new(CLAUDE_CLI_BINARY)
-        .arg("--version")
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8(output.stdout).ok()?;
-    normalize_claude_tool_version(&stdout)
-}
-
-fn normalize_claude_tool_version(version: &str) -> Option<String> {
-    let trimmed = version.trim();
-
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    // Extract the first version-like pattern: a contiguous sequence of digits
-    // and dots that starts with a digit, ends with a digit, and contains at
-    // least one dot. This handles formats like "2.1.170 (Claude Code)" →
-    // "2.1.170" or "Claude Code 1.2.3" → "1.2.3".
-    let mut result = String::new();
-    let mut in_version = false;
-
-    for ch in trimmed.chars() {
-        if ch.is_ascii_digit() {
-            in_version = true;
-            result.push(ch);
-        } else if ch == '.' && in_version {
-            result.push(ch);
-        } else if in_version {
-            // Non-digit, non-dot while in a version sequence — check for match
-            if result.ends_with(|c: char| c.is_ascii_digit()) && result.contains('.') {
-                return Some(result);
-            }
-            in_version = false;
-            result.clear();
-        }
-    }
-
-    // Check at end of input
-    if in_version && result.ends_with(|c: char| c.is_ascii_digit()) && result.contains('.') {
-        Some(result)
-    } else {
-        None
-    }
 }
 
 fn required_nullable_or_non_empty_string_field(
@@ -1893,7 +1603,6 @@ fn hook_runtime_invocation_name(subcommand: &HookSubcommand) -> &'static str {
         HookSubcommand::PostRewrite { .. } => "post-rewrite runtime invocation",
         HookSubcommand::DiffTrace => "diff-trace runtime invocation",
         HookSubcommand::ConversationTrace => "conversation-trace runtime invocation",
-        HookSubcommand::SessionModel => "session-model runtime invocation",
     }
 }
 
@@ -2547,27 +2256,6 @@ mod tests {
             .contains("field 'type' must be a string"));
     }
 
-    fn claude_session_start_payload(extra_fields: &Value) -> String {
-        let mut payload = serde_json::json!({
-            "hook_event_name": "SessionStart",
-            "session_id": "session-123",
-            "model": "sonnet-4",
-            "time": 1_800_000_000_000_u64,
-        });
-        let payload_object = payload
-            .as_object_mut()
-            .expect("base test payload should be a JSON object");
-        let extra_object = extra_fields
-            .as_object()
-            .expect("extra test payload fields should be a JSON object");
-
-        for (key, value) in extra_object {
-            payload_object.insert(key.clone(), value.clone());
-        }
-
-        payload.to_string()
-    }
-
     fn diff_trace_payload(model_id: Option<&str>, tool_version: Option<&str>) -> DiffTracePayload {
         DiffTracePayload {
             session_id: String::from("session-123"),
@@ -2591,62 +2279,6 @@ mod tests {
             tool_version: tool_version.map(String::from),
             session_start_time_ms: 1_800_000_000_000_i64,
         }
-    }
-
-    #[test]
-    fn claude_session_model_payload_prefers_payload_tool_version_without_cli_probe() {
-        let payload = claude_session_start_payload(&serde_json::json!({
-            "tool_version": "  Claude Code 1.2.3\n",
-        }));
-
-        let output = parse_session_model_payload_with(&payload, || {
-            panic!("payload tool_version should avoid Claude CLI version probe")
-        })
-        .expect("Claude SessionStart payload should parse");
-
-        assert_eq!(output.session_id, "session-123");
-        assert_eq!(output.model_id, "claude/sonnet-4");
-        assert_eq!(output.tool_name, "claude");
-        assert_eq!(output.tool_version, Some(String::from("1.2.3")));
-    }
-
-    #[test]
-    fn claude_session_model_payload_prefers_payload_claude_version_without_cli_probe() {
-        let payload = claude_session_start_payload(&serde_json::json!({
-            "claude_version": "Claude Code 1.2.4",
-        }));
-
-        let output = parse_session_model_payload_with(&payload, || {
-            panic!("payload claude_version should avoid Claude CLI version probe")
-        })
-        .expect("Claude SessionStart payload should parse");
-
-        assert_eq!(output.tool_version, Some(String::from("1.2.4")));
-    }
-
-    #[test]
-    fn claude_session_model_payload_uses_cli_version_when_payload_version_missing() {
-        let payload = claude_session_start_payload(&serde_json::json!({}));
-
-        let output = parse_session_model_payload_with(&payload, || {
-            Some(String::from("\nClaude Code 2.0.0  "))
-        })
-        .expect("Claude SessionStart payload should parse");
-
-        assert_eq!(output.tool_version, Some(String::from("2.0.0")));
-    }
-
-    #[test]
-    fn claude_session_model_payload_keeps_none_for_failed_or_empty_cli_version() {
-        let payload = claude_session_start_payload(&serde_json::json!({}));
-
-        let unavailable = parse_session_model_payload_with(&payload, || None)
-            .expect("Claude SessionStart payload should parse with unavailable CLI version");
-        assert_eq!(unavailable.tool_version, None);
-
-        let empty = parse_session_model_payload_with(&payload, || Some(String::from("\n  \t")))
-            .expect("Claude SessionStart payload should parse with empty CLI version");
-        assert_eq!(empty.tool_version, None);
     }
 
     #[test]

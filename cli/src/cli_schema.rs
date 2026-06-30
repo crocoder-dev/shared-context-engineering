@@ -347,12 +347,6 @@ pub enum HooksSubcommand {
 
     #[command(about = "Run conversation-trace hook (reads JSON payload from STDIN)")]
     ConversationTrace,
-
-    #[command(
-        name = "session-model",
-        about = "Ingest editor session model attribution (reads JSON payload from STDIN)"
-    )]
-    SessionModel,
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]

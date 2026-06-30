@@ -62,16 +62,6 @@ settings = new common.RenderedTextFile {
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\(sceHookCommand("sce hooks session-model"))"
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
