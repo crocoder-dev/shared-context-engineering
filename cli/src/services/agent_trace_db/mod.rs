@@ -146,6 +146,7 @@ pub struct DiffTraceInsert<'a> {
 
 /// Session model attribution payload to upsert into the agent trace database.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
 pub struct SessionModelUpsert<'a> {
     pub tool_name: &'a str,
     pub session_id: &'a str,
@@ -339,6 +340,7 @@ impl AgentTraceDb {
     }
 
     /// Upsert editor session model attribution into the `session_models` table.
+    #[allow(dead_code)]
     pub fn upsert_session_model(&self, input: SessionModelUpsert<'_>) -> Result<u64> {
         upsert_session_model_with(self, input)
     }
@@ -487,6 +489,7 @@ fn insert_part_with<M: DbSpec>(db: &TursoDb<M>, input: InsertPartInsert) -> Resu
     )
 }
 
+#[allow(dead_code)]
 fn upsert_session_model_with<M: DbSpec>(
     db: &TursoDb<M>,
     input: SessionModelUpsert<'_>,

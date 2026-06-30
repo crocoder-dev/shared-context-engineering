@@ -13,7 +13,6 @@
 - `sce hooks post-rewrite <amend|rebase|other>`
 - `sce hooks diff-trace`
 - `sce hooks conversation-trace`
-- `sce hooks session-model` for normalized model attribution intake
 
 ## Parser and dispatch behavior
 
@@ -70,16 +69,12 @@
   - When `model_id` or `tool_version` is missing/nullable in the parsed payload, Rust looks up AgentTraceDb `session_models` by `(tool_name, session_id)` and uses the stored attribution values for missing fields when available. Direct payload `model_id` and `tool_version` values keep precedence over stored values.
   - If no matching session row exists, missing attribution fields remain `None`; the hook still attempts the AgentTraceDb insert with nullable attribution.
   - Persistence: resolves the current per-checkout AgentTraceDb lazily and inserts the parsed payload fields via `DiffTraceInsert` + `insert_diff_trace()` using nullable/resolved `model_id` and `tool_version`. No parsed-payload artifact is written under `context/tmp`.
-  - If no matching session row exists, missing attribution fields remain `None`; the hook still persists the parsed-payload artifact and attempts the AgentTraceDb insert with nullable attribution.
-  - Persistence: writes one parsed-payload artifact per invocation to `context/tmp/<timestamp>-000000-diff-trace.json` with atomic create-new retry semantics, resolves the current per-checkout AgentTraceDb lazily, and inserts the parsed payload fields via `DiffTraceInsert` + `insert_diff_trace()` using nullable/resolved `model_id` and `tool_version`.
-  - Fail-open boundary: STDIN read failures, JSON parse/validation errors, attribution lookup failures, artifact persistence failures, and AgentTraceDb setup/persistence failures are logged through `sce.hooks.diff_trace.error` and converted to command success with `diff-trace hook intake failed open; error logged.` so hook callers do not receive app-level classified errors or non-zero exits for intake failures.
-  - Valid payload success output is unchanged: full artifact + AgentTraceDb success still returns `diff-trace hook intake persisted payload to AgentTraceDb and context/tmp.`, and the existing AgentTraceDb write-warning path still logs `sce.hooks.diff_trace.agent_trace_db_write_failed` and returns `diff-trace hook intake persisted payload to context/tmp; AgentTraceDb persistence failed.`
-  - Current TypeScript producers are the OpenCode agent-trace plugin and the generated Claude `sce hooks` command hooks (no TypeScript intermediary).
+  - Current producers are the OpenCode agent-trace plugin and the generated Claude `sce hooks` command hooks (no TypeScript intermediary).
   - OpenCode forwards user-message `message` diffs with `tool_name="opencode"`, always including `model_id`, and nullable OpenCode client-version metadata.
-  - Claude forwards supported `PostToolUse` `Write` structured-update/content-create and `Edit` structured-patch diffs with `tool_name="claude"` and no direct `model_id`; any explicit payload version metadata is preserved, and missing `model_id` / `tool_version` values are resolved from `session_models` when available.
+  - Claude generated settings no longer register `SessionStart`; supported `PostToolUse` `Write|Edit|MultiEdit|NotebookEdit` events are routed directly to `sce hooks diff-trace`. Missing `model_id` / `tool_version` values are resolved from pre-existing `session_models` rows when available until the later fallback-removal task lands.
   - Neither TypeScript runtime writes `context/tmp/*-diff-trace.json` artifacts or AgentTraceDb rows directly.
 - `diff-trace` command success reports AgentTraceDb persistence only. AgentTraceDb open/insert failures are logged through `sce.hooks.diff_trace.agent_trace_db_write_failed` and reflected in deterministic success text as failed DB persistence; no parsed-payload artifact fallback is created.
-- `diff-trace` command success no longer requires artifact persistence to succeed on intake failure paths. The strict valid-payload path still writes the parsed-payload artifact before AgentTraceDb insertion; failures before or during that strict path are logged through `sce.hooks.diff_trace.error` and returned as hook success, while the existing post-artifact AgentTraceDb write-warning success path remains unchanged.
+- `diff-trace` producer-facing intake failures are logged through `sce.hooks.diff_trace.error` and returned as hook success; the valid-payload path is DB-only and does not write parsed-payload artifacts.
 - `conversation-trace` is a recognized hook subcommand routed through `HookSubcommand::ConversationTrace`. Rust intake classifies incoming STDIN JSON by the presence of a top-level `hook_event_name` field: raw Claude hook events are routed through `transform_claude_user_prompt_submit`, `transform_claude_stop`, or `transform_claude_post_tool_use` depending on the event name, while payloads without `hook_event_name` follow the existing mixed-batch `{ payloads: [...] }` path.
   - **Raw Claude `UserPromptSubmit` events** (detected by `hook_event_name = "UserPromptSubmit"`): the raw event payload is validated and transformed by `transform_claude_user_prompt_submit` before being forwarded to `parse_conversation_trace_payloads`.
     - Validates that `hook_event_name` is exactly `"UserPromptSubmit"` and the required `session_id` and `prompt` fields are present and non-empty.
@@ -115,10 +110,7 @@
     - Current valid-payload success output reports deterministic mixed-batch accounting: `conversation-trace hook persisted mixed payload batch to AgentTraceDb: attempted=<n>, persisted_messages=<n>, persisted_parts=<n>, skipped=<n>.` The hook does not persist `context/tmp` artifacts.
     - Fail-open output for conversation-trace intake failures is `conversation-trace hook intake failed open; error logged.` so hook callers do not receive app-level classified errors or non-zero exits for intake failures.
     - The generated OpenCode agent-trace plugin emits this mixed-batch shape for conversation-trace handoff: ordinary message/part events produce one-item mixed envelopes, completed question-tool parts produce `message.part` items with `part_type: "question"`, and diff-backed message events produce one envelope containing the synthetic parent `message` item plus patch `message.part` items.
-- `session-model` reads STDIN JSON and classifies the payload:
-  - **Claude `SessionStart` payloads** (detected by presence of top-level `hook_event_name`): extracts `session_id` from `session_id`/`sessionID`, `model_id` from `model`/`model_id` (including nested `model.id`/`model.model`/`model.name` with `claude/` prefix normalization), `time` from `time`/`timestamp` (falls back to current system time), `tool_name="claude"`, and `tool_version` from `tool_version`/`claude_version`/`version`; when no non-empty payload version is present, Rust best-effort runs `claude --version`, trims stdout, and uses that value if non-empty, otherwise leaving `tool_version` nullable without failing intake.
-  - **OpenCode normalized payloads** (no `hook_event_name`): existing `{ sessionID, time, model_id, tool_name, tool_version }` validation applies unchanged.
-  - Valid payloads are upserted into the per-checkout AgentTraceDb `session_models` via `SessionModelUpsert` using `(tool_name, session_id)` as the unique key. No raw hook artifacts are written. DB open/insert failures are logged through `sce.hooks.session_model.agent_trace_db_write_failed` and reported in the success text as failed persistence.
+- `session-model` is no longer a supported `sce hooks` subcommand and generated Claude settings no longer produce `SessionStart` model-attribution events. The `session_models` DB API/table and diff-trace fallback remain temporarily in code for the later planned cleanup tasks, but there is no active runtime route that writes new rows.
 
 ## Explicit non-goals in the current baseline
 

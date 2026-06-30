@@ -1,16 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash .claude/hooks/run-sce-or-show-install-guidance.sh sce hooks session-model"
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
