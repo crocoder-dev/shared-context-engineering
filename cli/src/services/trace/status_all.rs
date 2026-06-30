@@ -160,8 +160,8 @@ mod tests {
                 generated_at_unix_ms: 1_000 + i64::try_from(i).expect("msg index fits in i64"),
             })
             .expect("message");
-            for j in 0..parts_per_message {
-                db.insert_part(InsertPartInsert {
+            let parts = (0..parts_per_message)
+                .map(|j| InsertPartInsert {
                     part_type: PartType::Text,
                     text: format!("p{i}{j}"),
                     session_id: "s1".into(),
@@ -169,16 +169,19 @@ mod tests {
                     generated_at_unix_ms: 1_000
                         + i64::try_from(i * parts_per_message + j).expect("part index fits in i64"),
                 })
-                .expect("part");
-            }
+                .collect();
+            db.insert_parts(parts).expect("parts");
         }
     }
 
     fn seed_partial_db(path: &Path) {
         let db = AgentTraceDb::open_for_hooks_without_migrations_at(path)
             .expect("open without migrations");
-        db.execute("CREATE TABLE diff_traces (id INTEGER PRIMARY KEY)", ())
-            .expect("create diff_traces");
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS diff_traces (id INTEGER PRIMARY KEY)",
+            (),
+        )
+        .expect("create diff_traces");
         // Intentionally missing post_commit_patch_intersections so readiness
         // probe reports skipped with the first missing table.
         drop(db);

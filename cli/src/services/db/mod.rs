@@ -11,6 +11,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use turso::Value as TursoValue;
 
 use crate::services::lifecycle::{
     HealthCategory, HealthFixability, HealthProblem, HealthProblemKind, HealthSeverity,
@@ -312,6 +313,15 @@ pub struct TursoDb<M: DbSpec> {
     core: TursoConnectionCore<M>,
 }
 
+/// Fully fetched SQL query result for deterministic rendering outside the
+/// async Turso row iterator lifetime.
+#[derive(Clone, Debug, PartialEq)]
+#[allow(dead_code)]
+pub struct QueryRows {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<TursoValue>>,
+}
+
 /// Generic encrypted Turso database adapter.
 ///
 /// Mirrors the structural seams of [`TursoDb`] while reserving encrypted local
@@ -464,6 +474,57 @@ impl<M: DbSpec> TursoDb<M> {
                         .query(sql, params.clone())
                         .await
                         .map_err(|e| anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name()))
+                })
+            },
+        )
+    }
+
+    /// Execute a SQL query and synchronously fetch column names plus raw values.
+    #[allow(dead_code)]
+    pub fn query_values(
+        &self,
+        sql: &str,
+        params: impl turso::params::IntoParams,
+    ) -> Result<QueryRows> {
+        let params = turso::params::IntoParams::into_params(params).map_err(|e| {
+            anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
+        })?;
+        let operation_name = format!("query and fetch {} database values", M::db_name());
+
+        run_with_retry_sync(
+            resolve_query_retry_policy::<M>(),
+            &operation_name,
+            QUERY_RETRY_HINT,
+            |_| {
+                self.core.runtime.block_on(async {
+                    let mut rows =
+                        self.core
+                            .conn
+                            .query(sql, params.clone())
+                            .await
+                            .map_err(|e| {
+                                anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name())
+                            })?;
+                    let columns = rows.column_names();
+                    let column_count = rows.column_count();
+                    let mut fetched_rows = Vec::new();
+
+                    while let Some(row) = rows.next().await.map_err(|e| {
+                        anyhow::anyhow!("{} row fetch failed: {sql}: {e}", M::db_name())
+                    })? {
+                        let mut values = Vec::with_capacity(column_count);
+                        for column_index in 0..column_count {
+                            values.push(row.get_value(column_index).map_err(|e| {
+                                anyhow::anyhow!("{} value fetch failed: {sql}: {e}", M::db_name())
+                            })?);
+                        }
+                        fetched_rows.push(values);
+                    }
+
+                    Ok(QueryRows {
+                        columns,
+                        rows: fetched_rows,
+                    })
                 })
             },
         )

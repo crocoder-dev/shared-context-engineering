@@ -13,6 +13,8 @@ use anyhow::{Context, Result};
 use crate::services::agent_trace_db::AgentTraceDb;
 use crate::services::default_paths::resolve_state_data_root;
 
+const LIST_GUIDANCE: &str = "Run `sce trace db list` to see available Agent Trace databases.";
+
 /// Tables that must exist for an Agent Trace DB to be considered `ready`.
 ///
 /// Order is significant: the first missing table is reported as the skip
@@ -42,6 +44,89 @@ pub struct DiscoveredAgentTraceDb {
     pub path: PathBuf,
     pub mtime: SystemTime,
     pub readiness: Readiness,
+}
+
+/// User-actionable failures while resolving an Agent Trace DB identifier.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub enum ResolveAgentTraceDbError {
+    UnknownIdentifier {
+        identifier: String,
+    },
+    AmbiguousIdentifier {
+        identifier: String,
+    },
+    SkippedDatabase {
+        identifier: String,
+        alias: String,
+        checkout_id: String,
+        missing_table: String,
+    },
+}
+
+impl ResolveAgentTraceDbError {
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::UnknownIdentifier { identifier } => format!(
+                "sce trace db shell: no agent-trace database matches '{identifier}'. {LIST_GUIDANCE}"
+            ),
+            Self::AmbiguousIdentifier { identifier } => format!(
+                "sce trace db shell: identifier '{identifier}' matches more than one agent-trace database. {LIST_GUIDANCE}"
+            ),
+            Self::SkippedDatabase {
+                identifier,
+                alias,
+                checkout_id,
+                missing_table,
+            } => format!(
+                "sce trace db shell: database '{identifier}' ({alias}, checkout {checkout_id}) is not schema-ready: missing table '{missing_table}'. Run `sce setup` or inspect `sce trace db list` before opening a shell."
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for ResolveAgentTraceDbError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.user_message())
+    }
+}
+
+impl std::error::Error for ResolveAgentTraceDbError {}
+
+/// Resolve an alias or checkout ID to one ready discovered Agent Trace DB.
+#[allow(dead_code)]
+pub fn resolve_agent_trace_db_identifier(
+    databases: &[DiscoveredAgentTraceDb],
+    identifier: &str,
+) -> Result<DiscoveredAgentTraceDb, ResolveAgentTraceDbError> {
+    let matches: Vec<&DiscoveredAgentTraceDb> = databases
+        .iter()
+        .filter(|db| db.alias == identifier || db.checkout_id == identifier)
+        .collect();
+
+    let db = match matches.as_slice() {
+        [] => {
+            return Err(ResolveAgentTraceDbError::UnknownIdentifier {
+                identifier: identifier.to_string(),
+            });
+        }
+        [db] => *db,
+        _ => {
+            return Err(ResolveAgentTraceDbError::AmbiguousIdentifier {
+                identifier: identifier.to_string(),
+            });
+        }
+    };
+
+    match &db.readiness {
+        Readiness::Ready => Ok(db.clone()),
+        Readiness::Skipped { missing_table } => Err(ResolveAgentTraceDbError::SkippedDatabase {
+            identifier: identifier.to_string(),
+            alias: db.alias.clone(),
+            checkout_id: db.checkout_id.clone(),
+            missing_table: missing_table.clone(),
+        }),
+    }
 }
 
 /// Discover Agent Trace DBs under the resolved state-data root.
@@ -198,8 +283,11 @@ mod tests {
 
         let db = AgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
             .expect("agent trace DB should open without migrations");
-        db.execute("CREATE TABLE diff_traces (id INTEGER PRIMARY KEY)", ())
-            .expect("create diff_traces");
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS diff_traces (id INTEGER PRIMARY KEY)",
+            (),
+        )
+        .expect("create diff_traces");
         db.execute(
             "CREATE TABLE post_commit_patch_intersections (id INTEGER PRIMARY KEY)",
             (),

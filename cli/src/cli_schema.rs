@@ -251,6 +251,12 @@ pub enum TraceDbSubcommand {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
+
+    #[command(about = "Open an embedded SQL shell for a discovered Agent Trace database")]
+    Shell {
+        #[arg(value_name = "uuid-or-alias")]
+        identifier: String,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]

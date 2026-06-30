@@ -155,8 +155,11 @@ mod tests {
     fn create_partial_schema_db(path: &std::path::Path) {
         let db = AgentTraceDb::open_for_hooks_without_migrations_at(path)
             .expect("agent trace DB should open without migrations");
-        db.execute("CREATE TABLE diff_traces (id INTEGER PRIMARY KEY)", ())
-            .expect("create diff_traces");
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS diff_traces (id INTEGER PRIMARY KEY)",
+            (),
+        )
+        .expect("create diff_traces");
         // Intentionally missing post_commit_patch_intersections.
         drop(db);
     }

@@ -278,8 +278,11 @@ mod tests {
 
         let db = AgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
             .expect("open without migrations");
-        db.execute("CREATE TABLE diff_traces (id INTEGER PRIMARY KEY)", ())
-            .expect("create diff_traces");
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS diff_traces (id INTEGER PRIMARY KEY)",
+            (),
+        )
+        .expect("create diff_traces");
         drop(db);
 
         let report =

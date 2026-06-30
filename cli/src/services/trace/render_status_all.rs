@@ -245,8 +245,11 @@ mod tests {
     fn seed_partial_db(path: &std::path::Path) {
         let db = AgentTraceDb::open_for_hooks_without_migrations_at(path)
             .expect("open without migrations");
-        db.execute("CREATE TABLE diff_traces (id INTEGER PRIMARY KEY)", ())
-            .expect("create diff_traces");
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS diff_traces (id INTEGER PRIMARY KEY)",
+            (),
+        )
+        .expect("create diff_traces");
         drop(db);
     }
 

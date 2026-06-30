@@ -2,13 +2,14 @@
 
 Top-level CLI command group exposing Agent Trace database visibility for operators.
 
-Lives under `cli/src/services/trace/` with three subcommands:
+Lives under `cli/src/services/trace/` with these subcommands:
 
 - `sce trace db list` — discover per-checkout Agent Trace DBs under `<state_root>/sce/agent-trace-*.db` and render an alias / status / path table.
+- `sce trace db shell <uuid-or-alias>` — resolve a discovered ready DB by positional alias or checkout ID and open an embedded in-process SQL shell.
 - `sce trace status` — render counts and last-activity for the cwd's checkout DB.
 - `sce trace status --all` — aggregate counts across every discovered DB.
 
-All three subcommands declare `--format text|json` via `services::output_format::OutputFormat`. Clap surface is defined in `cli/src/cli_schema.rs` (`Commands::Trace`, `TraceSubcommand`, `TraceDbSubcommand`) and dispatched through `services::command_registry` to `services::trace::command::TraceCommand`.
+The list/status subcommands declare `--format text|json` via `services::output_format::OutputFormat`; `db shell` is interactive and uses standard input/output directly after successful resolution. Clap surface is defined in `cli/src/cli_schema.rs` (`Commands::Trace`, `TraceSubcommand`, `TraceDbSubcommand`) and dispatched through `services::command_registry` to `services::trace::command::TraceCommand`.
 
 ## Implemented behavior
 
@@ -28,6 +29,25 @@ session_models
 ```
 
 The first missing table is reported as the skip reason. The discovery module returns an empty Vec when the `sce` directory does not exist; callers do not need to special-case that.
+
+`resolve_agent_trace_db_identifier(databases, identifier)` is the pure resolver seam used by `sce trace db shell <uuid-or-alias>`. It accepts either an `agent_trace_N` alias or a full `checkout_id`, returns a cloned ready `DiscoveredAgentTraceDb`, rejects unknown identifiers with guidance to run `sce trace db list`, rejects ambiguous alias/checkout-ID collisions, and rejects skipped databases with the stored missing-table readiness reason.
+
+### Embedded shell core — `services::trace::shell`
+
+`run_agent_trace_db_shell(target, input, output)` opens the resolved Agent Trace DB path in-process with `AgentTraceDb::open_for_hooks_without_migrations_at`, verifies `ensure_schema_ready_for_hooks()`, prints the resolved alias, checkout ID, and database path, then runs a minimal SQL shell over caller-provided `BufRead`/`Write` streams. The core supports `.help`, `.tables`, `.exit`, and `.quit`, splits single-line input on semicolons, executes query statements through `TursoDb::query_values`, executes non-query statements through `execute`, and renders deterministic text rows as `column | column`, `--- | ---`, row values, and `(N rows)`. SQL errors are rendered as shell diagnostics and do not terminate the loop.
+
+`.tables` queries `sqlite_schema` for every visible table with `type = 'table'`, orders by table name, and prints one table name per line without counts or schema details. Internal SCE tables such as `__sce_migrations` are included when present.
+
+The shell command is embedded-only and does not invoke the external `turso` CLI. `TraceCommand` discovers DBs, resolves `<uuid-or-alias>` through `resolve_agent_trace_db_identifier`, maps resolver failures to validation-class CLI errors, then hands locked stdin/stdout to `run_agent_trace_db_shell`. The command returns an empty payload after shell exit so the normal app renderer does not duplicate shell output.
+
+Operator contract:
+
+- Run `sce trace db list` first to find the current positional alias (`agent_trace_N`) or copy the full checkout ID. Aliases follow discovery order and may change when DB mtimes change.
+- Start the shell with `sce trace db shell <uuid-or-alias>`, where the identifier must resolve to exactly one ready discovered DB. Unknown, ambiguous, or skipped/not-ready DB identifiers fail before the shell starts with validation-class guidance to inspect `sce trace db list`.
+- On startup, the shell prints the resolved alias, checkout ID, and database path before accepting SQL.
+- `.help` lists supported dot commands; `.tables` lists table names only in deterministic order; `.exit` and `.quit` terminate the shell.
+- Piped stdin is supported for deterministic automation, for example `SELECT COUNT(*) FROM diff_traces;` followed by `.exit`.
+- The implementation is an in-process Rust/Turso shell only; it never shells out to `turso`, `sqlite3`, or another external database CLI.
 
 ### `sce trace db list` rendering — `services::trace::render_list`
 

@@ -244,10 +244,13 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
 #[allow(clippy::needless_pass_by_value)]
 fn convert_trace_subcommand(subcommand: cli_schema::TraceSubcommand) -> RuntimeCommand {
     let request = match subcommand {
-        cli_schema::TraceSubcommand::Db {
-            subcommand: cli_schema::TraceDbSubcommand::List { format },
-        } => services::trace::TraceRequest {
-            subcommand: services::trace::TraceSubcommandRequest::DbList { format },
+        cli_schema::TraceSubcommand::Db { subcommand } => match subcommand {
+            cli_schema::TraceDbSubcommand::List { format } => services::trace::TraceRequest {
+                subcommand: services::trace::TraceSubcommandRequest::DbList { format },
+            },
+            cli_schema::TraceDbSubcommand::Shell { identifier } => services::trace::TraceRequest {
+                subcommand: services::trace::TraceSubcommandRequest::DbShell { identifier },
+            },
         },
         cli_schema::TraceSubcommand::Status { all, format } => services::trace::TraceRequest {
             subcommand: services::trace::TraceSubcommandRequest::Status { all, format },
@@ -482,5 +485,49 @@ fn parse_optional_hook_remote_url(remote_url: Option<String>) -> Result<String, 
     match remote_url {
         Some(url) if !url.trim().is_empty() => Ok(url),
         _ => Err("Missing required option '--remote-url' for 'sce hooks post-commit'.".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> RuntimeCommand {
+        parse_runtime_command(
+            args.iter().map(|arg| (*arg).to_string()),
+            &CommandRegistry::default(),
+            None,
+        )
+        .expect("command should parse")
+    }
+
+    #[test]
+    fn trace_db_shell_parses_to_trace_shell_request() {
+        let command = parse(&["sce", "trace", "db", "shell", "agent_trace_0"]);
+
+        let RuntimeCommand::Trace(command) = command else {
+            panic!("expected trace command");
+        };
+
+        assert_eq!(
+            command.request.subcommand,
+            services::trace::TraceSubcommandRequest::DbShell {
+                identifier: String::from("agent_trace_0"),
+            }
+        );
+    }
+
+    #[test]
+    fn trace_db_help_lists_shell_subcommand() {
+        let command = parse(&["sce", "trace", "db", "--help"]);
+
+        let RuntimeCommand::HelpText(command) = command else {
+            panic!("expected help text command");
+        };
+
+        assert!(command.text.contains("shell"));
+        assert!(command
+            .text
+            .contains("Open an embedded SQL shell for a discovered Agent Trace database"));
     }
 }
