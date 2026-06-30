@@ -14,8 +14,9 @@ The Claude TypeScript agent-trace runtime was removed in T07 of the `claude-rust
   - **When diffs exist**: builds one mixed `-patch` conversation-trace envelope containing the synthetic parent `message` item with `message_id = "${id}-patch"` plus all per-diff `message.part` patch items, then invokes `sce hooks conversation-trace` once. The original `message` event is replaced — no original `message` payload is sent.
   - **When no diffs exist**: builds one mixed envelope containing a single `message` item via `buildConversationTracePayload` and invokes `sce hooks conversation-trace` over STDIN JSON.
 - For captured `message.part` events, the plugin dispatches only supported part shapes to `sce hooks conversation-trace`: ordinary `text` and `reasoning` parts with non-empty `text`, plus completed OpenCode `question` tool parts emitted as first-class `part_type: "question"` payloads.
+- Both `runConversationTraceHook` and `runDiffTraceHook` fail open at the plugin level: they ignore the child process stderr (`stdio: ["pipe", "ignore", "ignore"]`) and resolve unconditionally on error or close, so spawn errors, non-zero exits, and sce intake errors (connection refused, timeout, etc.) never produce unhandled promise rejections or leak sce stderr into the OpenCode TUI.
 - Existing diff-trace capture remains filtered to user messages with usable diffs.
-- When diff extraction succeeds, the plugin invokes `sce hooks diff-trace` after conversation-trace handoff and sends `{ sessionID, diff, time, model_id, tool_name, tool_version }` over STDIN JSON (`tool_name` is always `"opencode"`; `tool_version` is captured from session lifecycle events when available).
+- When diff extraction succeeds, the plugin invokes `sce hooks diff-trace` after conversation-trace handoff and sends `{ sessionID, diff, time, model_id, tool_name, tool_version }` over STDIN JSON (`tool_name` is always `"opencode"`; `tool_version` is captured from session lifecycle events when available). `runDiffTraceHook` fails open at the plugin level (ignored stderr, unconditional resolve), so callers do not need try/catch.
 - The plugin no longer writes diff-trace artifacts or database rows directly; the Rust `diff-trace` hook path owns AgentTraceDb insertion plus collision-safe timestamp+attempt artifact writes.
 
 ## In-memory dedup cache
@@ -95,6 +96,7 @@ When extraction succeeds, `buildQuestionToolConversationTracePayload(eventPart)`
 
 ## Current usage boundary
 
+- The plugin-level fail-open applies to both `runDiffTraceHook` and `runConversationTraceHook`: both functions ignore the child process stderr and resolve unconditionally on any outcome. This prevents sce intake errors from appearing as messages in the OpenCode TUI, since callers await these functions without try/catch.
 - `recordConversationTrace(repoRoot, event)` branches on event type:
   - For `message` events: calls `buildPatchConversationTracePayload` first.
     - If a patch payload is returned (diff entries exist), dispatches it once — the original `message` payload is not sent.
@@ -106,7 +108,7 @@ When extraction succeeds, `buildQuestionToolConversationTracePayload(eventPart)`
 - The diff extraction seam is internal to the source module and is used by `buildTrace` at runtime.
 - `buildTrace` exits early when extraction returns `undefined` (non-user role, empty diffs array, or no usable patch entries), so no diff-trace hook invocation occurs for those events.
 - The plugin tracks OpenCode client version per session ID from `session.created` / `session.updated` events and forwards it as `tool_version` when available.
-- When extraction succeeds, `buildTrace` forwards the extracted payload with required `tool_name="opencode"` and required `tool_version` (nullable when session version is unavailable) to `sce hooks diff-trace` via STDIN JSON; the Rust hook runtime validates required non-empty `sessionID`/`diff`/`tool_name`, optional `model_id`, required nullable/non-empty `tool_version`, plus required `time`, resolves missing/nullable attribution fields from `session_models` when available while preserving direct payload precedence, and persists DB-backed diff-trace fields through AgentTraceDb `diff_traces` insertion.
+- When extraction succeeds, `buildTrace` forwards the extracted payload with required `tool_name="opencode"` and required `tool_version` (nullable when session version is unavailable) to `sce hooks diff-trace` via STDIN JSON; the Rust hook runtime validates required non-empty `sessionID`/`diff`/`tool_name`, optional `model_id`, required nullable/non-empty `tool_version`, plus required `time`, resolves missing/nullable attribution fields from `session_models` when available while preserving direct payload precedence, persists DB-backed diff-trace fields through AgentTraceDb `diff_traces` insertion on the valid path, and fails open for runtime intake failures by logging `sce.hooks.diff_trace.error` while returning hook success to the producer.
 
 ## Shared boundary with Claude runtime
 

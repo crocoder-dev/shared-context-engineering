@@ -197,9 +197,9 @@ fn run_hooks_subcommand_in_repo(
         HookSubcommand::PostRewrite { rewrite_method } => {
             run_post_rewrite_subcommand_with_trace(repository_root, subcommand, rewrite_method)
         }
-        HookSubcommand::DiffTrace => run_diff_trace_subcommand(repository_root, logger),
+        HookSubcommand::DiffTrace => Ok(run_diff_trace_subcommand(repository_root, logger)),
         HookSubcommand::ConversationTrace => {
-            run_conversation_trace_subcommand(repository_root, logger)
+            Ok(run_conversation_trace_subcommand(repository_root, logger))
         }
         HookSubcommand::SessionModel => run_session_model_subcommand(repository_root, logger),
     }
@@ -208,20 +208,16 @@ fn run_hooks_subcommand_in_repo(
 fn run_conversation_trace_subcommand(
     repository_root: &Path,
     logger: Option<&dyn Logger>,
-) -> Result<String> {
-    let stdin_payload = read_hook_stdin()?;
-    let result =
-        run_conversation_trace_subcommand_from_payload(repository_root, &stdin_payload, logger);
-    if let Err(ref error) = result {
-        if let Some(log) = logger {
-            log.error(
-                "sce.hooks.conversation_trace.error",
-                &error.to_string(),
-                &[],
-            );
-        }
+) -> String {
+    let stdin_payload = match read_hook_stdin() {
+        Ok(payload) => payload,
+        Err(error) => return log_conversation_trace_fail_open(&error, logger),
+    };
+
+    match run_conversation_trace_subcommand_from_payload(repository_root, &stdin_payload, logger) {
+        Ok(output) => output,
+        Err(error) => log_conversation_trace_fail_open(&error, logger),
     }
-    result
 }
 
 fn run_conversation_trace_subcommand_from_payload(
@@ -231,6 +227,18 @@ fn run_conversation_trace_subcommand_from_payload(
 ) -> Result<String> {
     let payload = parse_conversation_trace_payload(stdin_payload)?;
     persist_conversation_trace_payload_to_agent_trace_db(repository_root, payload, logger)
+}
+
+fn log_conversation_trace_fail_open(error: &anyhow::Error, logger: Option<&dyn Logger>) -> String {
+    if let Some(log) = logger {
+        log.error(
+            "sce.hooks.conversation_trace.error",
+            &error.to_string(),
+            &[],
+        );
+    }
+
+    String::from("conversation-trace hook intake failed open; error logged.")
 }
 
 fn persist_conversation_trace_payload_to_agent_trace_db(
@@ -666,18 +674,16 @@ fn conversation_trace_validation_error(detail: &str) -> String {
     format!("Invalid conversation-trace payload from STDIN: {detail}.")
 }
 
-fn run_diff_trace_subcommand(
-    repository_root: &Path,
-    logger: Option<&dyn Logger>,
-) -> Result<String> {
-    let stdin_payload = read_hook_stdin()?;
-    let result = run_diff_trace_subcommand_from_payload(repository_root, &stdin_payload, logger);
-    if let Err(ref error) = result {
-        if let Some(log) = logger {
-            log.error("sce.hooks.diff_trace.error", &error.to_string(), &[]);
-        }
+fn run_diff_trace_subcommand(repository_root: &Path, logger: Option<&dyn Logger>) -> String {
+    let stdin_payload = match read_hook_stdin() {
+        Ok(payload) => payload,
+        Err(error) => return log_diff_trace_fail_open(&error, logger),
+    };
+
+    match run_diff_trace_subcommand_from_payload(repository_root, &stdin_payload, logger) {
+        Ok(output) => output,
+        Err(error) => log_diff_trace_fail_open(&error, logger),
     }
-    result
 }
 
 fn run_diff_trace_subcommand_from_payload(
@@ -709,6 +715,14 @@ fn run_diff_trace_subcommand_from_payload(
         logger,
         resolve_attribution,
     )
+}
+
+fn log_diff_trace_fail_open(error: &anyhow::Error, logger: Option<&dyn Logger>) -> String {
+    if let Some(log) = logger {
+        log.error("sce.hooks.diff_trace.error", &error.to_string(), &[]);
+    }
+
+    String::from("diff-trace hook intake failed open; error logged.")
 }
 
 fn run_diff_trace_subcommand_from_payload_with<R>(

@@ -323,26 +323,17 @@ async function runDiffTraceHook(
 		tool_version: string | null;
 	},
 ): Promise<void> {
-	await new Promise<void>((resolve, reject) => {
+	await new Promise<void>((resolve) => {
 		const child = spawn("sce", ["hooks", "diff-trace"], {
 			cwd: repoRoot,
-			stdio: ["pipe", "ignore", "inherit"],
+			// Fail-open: stderr is ignored so that sce intake errors
+			// (connection refused, timeout, etc.) do not leak into the
+			// OpenCode TUI. Resolve unconditionally on any outcome.
+			stdio: ["pipe", "ignore", "ignore"],
 		});
 
-		child.on("error", reject);
-
-		child.on("close", (code, signal) => {
-			if (code === 0) {
-				resolve();
-				return;
-			}
-
-			const reason =
-				signal === null ? `exit code ${String(code)}` : `signal ${signal}`;
-			reject(
-				new Error(`Command 'sce hooks diff-trace' failed with ${reason}.`),
-			);
-		});
+		child.on("error", () => resolve());
+		child.on("close", () => resolve());
 
 		child.stdin.end(`${JSON.stringify(payload)}\n`);
 	});
@@ -352,28 +343,17 @@ async function runConversationTraceHook(
 	repoRoot: string,
 	payload: ConversationTracePayload,
 ): Promise<void> {
-	await new Promise<void>((resolve, reject) => {
+	await new Promise<void>((resolve) => {
 		const child = spawn("sce", ["hooks", "conversation-trace"], {
 			cwd: repoRoot,
-			stdio: ["pipe", "ignore", "inherit"],
+			// Fail-open: stderr is ignored so that sce intake errors
+			// (connection refused, timeout, etc.) do not leak into the
+			// OpenCode TUI. Resolve unconditionally on any outcome.
+			stdio: ["pipe", "ignore", "ignore"],
 		});
 
-		child.on("error", reject);
-
-		child.on("close", (code, signal) => {
-			if (code === 0) {
-				resolve();
-				return;
-			}
-
-			const reason =
-				signal === null ? `exit code ${String(code)}` : `signal ${signal}`;
-			reject(
-				new Error(
-					`Command 'sce hooks conversation-trace' failed with ${reason}.`,
-				),
-			);
-		});
+		child.on("error", () => resolve());
+		child.on("close", () => resolve());
 
 		child.stdin.end(`${JSON.stringify(payload)}\n`);
 	});
