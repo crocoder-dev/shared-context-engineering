@@ -17,7 +17,6 @@ const COL_STATUS: &str = "Status";
 const COL_DIFFS: &str = "Diffs";
 const COL_MESSAGES: &str = "Messages";
 const COL_PARTS: &str = "Parts";
-const COL_MODELS: &str = "Models";
 const COL_TRACES: &str = "Traces";
 const COL_INTERSECTIONS: &str = "Intersections";
 const SKIPPED_PLACEHOLDER: &str = "-";
@@ -41,7 +40,6 @@ fn render_text(report: &StatusAllReport) -> String {
     lines.push(format!("Diff traces: {}", report.totals.diff_traces));
     lines.push(format!("Messages: {}", report.totals.messages));
     lines.push(format!("Parts: {}", report.totals.parts));
-    lines.push(format!("Session models: {}", report.totals.session_models));
     lines.push(format!("Agent traces: {}", report.totals.agent_traces));
     lines.push(format!(
         "Post-commit intersections: {}",
@@ -65,11 +63,10 @@ fn render_text(report: &StatusAllReport) -> String {
             COL_DIFFS,
             COL_MESSAGES,
             COL_PARTS,
-            COL_MODELS,
             COL_TRACES,
             COL_INTERSECTIONS,
         ];
-        let rows: Vec<[String; 8]> = report.databases.iter().map(format_row).collect();
+        let rows: Vec<[String; 7]> = report.databases.iter().map(format_row).collect();
 
         let widths: Vec<usize> = (0..headers.len())
             .map(|col| {
@@ -90,7 +87,7 @@ fn render_text(report: &StatusAllReport) -> String {
     lines.join("\n")
 }
 
-fn join_row(cells: &[String; 8], widths: &[usize]) -> String {
+fn join_row(cells: &[String; 7], widths: &[usize]) -> String {
     cells
         .iter()
         .enumerate()
@@ -101,7 +98,7 @@ fn join_row(cells: &[String; 8], widths: &[usize]) -> String {
         .to_string()
 }
 
-fn format_row(row: &DatabaseRow) -> [String; 8] {
+fn format_row(row: &DatabaseRow) -> [String; 7] {
     match &row.status {
         DatabaseRowStatus::Ready { stats } => [
             row.alias.clone(),
@@ -109,14 +106,12 @@ fn format_row(row: &DatabaseRow) -> [String; 8] {
             stats.diff_traces.to_string(),
             stats.messages.to_string(),
             stats.parts.to_string(),
-            stats.session_models.to_string(),
             stats.agent_traces.to_string(),
             stats.post_commit_patch_intersections.to_string(),
         ],
         DatabaseRowStatus::Skipped { missing_table } => [
             row.alias.clone(),
             format!("skipped: missing '{missing_table}'"),
-            SKIPPED_PLACEHOLDER.to_string(),
             SKIPPED_PLACEHOLDER.to_string(),
             SKIPPED_PLACEHOLDER.to_string(),
             SKIPPED_PLACEHOLDER.to_string(),
@@ -139,7 +134,6 @@ fn render_json(report: &StatusAllReport) -> Result<String> {
                 "diff_traces": stats.diff_traces,
                 "messages": stats.messages,
                 "parts": stats.parts,
-                "session_models": stats.session_models,
                 "agent_traces": stats.agent_traces,
                 "post_commit_patch_intersections": stats.post_commit_patch_intersections,
                 "last_activity": stats
@@ -169,7 +163,6 @@ fn render_json(report: &StatusAllReport) -> Result<String> {
             "diff_traces": report.totals.diff_traces,
             "messages": report.totals.messages,
             "parts": report.totals.parts,
-            "session_models": report.totals.session_models,
             "agent_traces": report.totals.agent_traces,
             "post_commit_patch_intersections": report.totals.post_commit_patch_intersections,
             "last_activity": report

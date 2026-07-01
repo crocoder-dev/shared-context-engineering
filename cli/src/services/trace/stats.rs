@@ -19,7 +19,6 @@ pub struct AgentTraceDbStats {
     pub diff_traces: u64,
     pub messages: u64,
     pub parts: u64,
-    pub session_models: u64,
     pub agent_traces: u64,
     pub post_commit_patch_intersections: u64,
     pub last_activity: Option<DateTime<Utc>>,
@@ -39,7 +38,6 @@ pub fn collect_agent_trace_db_stats(path: &Path) -> Result<AgentTraceDbStats> {
     let diff_traces = count_rows(&db, "diff_traces", path)?;
     let messages = count_rows(&db, "messages", path)?;
     let parts = count_rows(&db, "parts", path)?;
-    let session_models = count_rows(&db, "session_models", path)?;
     let agent_traces = count_rows(&db, "agent_traces", path)?;
     let post_commit_patch_intersections = count_rows(&db, "post_commit_patch_intersections", path)?;
 
@@ -70,7 +68,6 @@ pub fn collect_agent_trace_db_stats(path: &Path) -> Result<AgentTraceDbStats> {
         diff_traces,
         messages,
         parts,
-        session_models,
         agent_traces,
         post_commit_patch_intersections,
         last_activity,
@@ -139,7 +136,7 @@ mod tests {
 
     use crate::services::agent_trace_db::{
         AgentTraceDb, AgentTraceInsert, DiffTraceInsert, InsertMessageInsert, InsertPartInsert,
-        MessageRole, PartType, PostCommitPatchIntersectionInsert, SessionModelUpsert,
+        MessageRole, PartType, PostCommitPatchIntersectionInsert,
     };
 
     fn unique_temp_dir(label: &str) -> PathBuf {
@@ -232,16 +229,6 @@ mod tests {
             .collect();
         db.insert_parts(parts).expect("parts");
 
-        // 1 session_model
-        db.upsert_session_model(SessionModelUpsert {
-            tool_name: "claude",
-            session_id: "s1",
-            model_id: "m1",
-            tool_version: Some("1"),
-            session_start_time_ms: 500,
-        })
-        .expect("session model");
-
         latest_diff_ms
     }
 
@@ -257,7 +244,6 @@ mod tests {
         assert_eq!(stats.diff_traces, 2);
         assert_eq!(stats.messages, 2);
         assert_eq!(stats.parts, 3);
-        assert_eq!(stats.session_models, 1);
         assert_eq!(stats.agent_traces, 1);
         assert_eq!(stats.post_commit_patch_intersections, 1);
 
@@ -282,7 +268,6 @@ mod tests {
         assert_eq!(stats.diff_traces, 0);
         assert_eq!(stats.messages, 0);
         assert_eq!(stats.parts, 0);
-        assert_eq!(stats.session_models, 0);
         assert_eq!(stats.agent_traces, 0);
         assert_eq!(stats.post_commit_patch_intersections, 0);
         assert!(stats.last_activity.is_none());

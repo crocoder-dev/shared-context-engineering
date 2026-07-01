@@ -71,7 +71,6 @@ pub fn aggregate_status_all_in(sce_dir: &Path) -> Result<StatusAllReport> {
                 totals.diff_traces += stats.diff_traces;
                 totals.messages += stats.messages;
                 totals.parts += stats.parts;
-                totals.session_models += stats.session_models;
                 totals.agent_traces += stats.agent_traces;
                 totals.post_commit_patch_intersections += stats.post_commit_patch_intersections;
                 if let Some(dt) = stats.last_activity {
@@ -224,7 +223,6 @@ mod tests {
         assert_eq!(report.totals.diff_traces, 4);
         assert_eq!(report.totals.messages, 3);
         assert_eq!(report.totals.parts, 5);
-        assert_eq!(report.totals.session_models, 0);
         assert_eq!(report.totals.agent_traces, 0);
         assert_eq!(report.totals.post_commit_patch_intersections, 0);
 

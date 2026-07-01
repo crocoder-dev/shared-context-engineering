@@ -255,7 +255,6 @@ mod tests {
                 assert_eq!(stats.diff_traces, 0);
                 assert_eq!(stats.messages, 0);
                 assert_eq!(stats.parts, 0);
-                assert_eq!(stats.session_models, 0);
                 assert_eq!(stats.agent_traces, 0);
                 assert_eq!(stats.post_commit_patch_intersections, 0);
                 assert!(last_activity.is_none());

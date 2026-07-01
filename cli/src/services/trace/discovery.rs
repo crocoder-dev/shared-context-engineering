@@ -25,7 +25,6 @@ const REQUIRED_TABLES: &[&str] = &[
     "agent_traces",
     "messages",
     "parts",
-    "session_models",
 ];
 
 /// Schema-readiness verdict for a discovered Agent Trace DB.
@@ -298,8 +297,6 @@ mod tests {
             .expect("create messages");
         db.execute("CREATE TABLE parts (id INTEGER PRIMARY KEY)", ())
             .expect("create parts");
-        db.execute("CREATE TABLE session_models (id INTEGER PRIMARY KEY)", ())
-            .expect("create session_models");
         drop(db);
 
         let discovered = discover_agent_trace_dbs_in(&dir).expect("discovery should succeed");

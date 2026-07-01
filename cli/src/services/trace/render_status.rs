@@ -31,7 +31,6 @@ fn render_text(report: &StatusReport) -> String {
             lines.push(format!("Diff traces: {}", stats.diff_traces));
             lines.push(format!("Messages: {}", stats.messages));
             lines.push(format!("Parts: {}", stats.parts));
-            lines.push(format!("Session models: {}", stats.session_models));
             lines.push(format!("Agent traces: {}", stats.agent_traces));
             lines.push(format!(
                 "Post-commit intersections: {}",
@@ -72,7 +71,6 @@ fn render_json(report: &StatusReport) -> Result<String> {
                     "diff_traces": stats.diff_traces,
                     "messages": stats.messages,
                     "parts": stats.parts,
-                    "session_models": stats.session_models,
                     "agent_traces": stats.agent_traces,
                     "post_commit_patch_intersections": stats.post_commit_patch_intersections,
                 }),
@@ -116,7 +114,6 @@ mod tests {
                     diff_traces: 7,
                     messages: 4,
                     parts: 11,
-                    session_models: 2,
                     agent_traces: 3,
                     post_commit_patch_intersections: 1,
                     last_activity: Some(last),
@@ -146,7 +143,6 @@ mod tests {
         assert!(rendered.contains("Diff traces: 7"));
         assert!(rendered.contains("Messages: 4"));
         assert!(rendered.contains("Parts: 11"));
-        assert!(rendered.contains("Session models: 2"));
         assert!(rendered.contains("Agent traces: 3"));
         assert!(rendered.contains("Post-commit intersections: 1"));
         assert!(rendered.contains("Last activity: 2026-06-28T"));
@@ -186,7 +182,6 @@ mod tests {
         assert_eq!(value["stats"]["diff_traces"], 7);
         assert_eq!(value["stats"]["messages"], 4);
         assert_eq!(value["stats"]["parts"], 11);
-        assert_eq!(value["stats"]["session_models"], 2);
         assert_eq!(value["stats"]["agent_traces"], 3);
         assert_eq!(value["stats"]["post_commit_patch_intersections"], 1);
         assert!(value["last_activity"].is_string());
