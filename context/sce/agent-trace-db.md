@@ -76,7 +76,7 @@ Active hook runtime resolves per-checkout Agent Trace DB files:
 - `014_create_parts_updated_at_trigger.sql`
 - `015_add_diff_traces_payload_type.sql` (migration ID `015_add_diff_traces_payload_type`; adds `payload_type TEXT NOT NULL DEFAULT 'patch'` to `diff_traces`)
 
-The former `015_create_session_models` migration is retired from the fresh schema and listed through `AgentTraceDbSpec::retired_migration_ids()` so already-upgraded databases that recorded that ID are not treated as having an unexpected migration. Current development state does not preserve compatibility with databases that recorded a previous `016_add_diff_traces_payload_type` ID; deleting and recreating the local Agent Trace DB is acceptable for this migration renumbering.
+The former `015_create_session_models` migration was removed from the fresh schema when the `remove-session-models-direct-claude-model-id` plan cleaned up session-models support. The `retired_migration_ids()` compat mechanism and `RETIRED_AGENT_TRACE_MIGRATION_IDS` constant that previously accommodated upgraded databases with that migration ID were subsequently removed in the `remove-retired-migration-ids` plan, since all development databases have been recreated and no ongoing compatibility is needed. Current migration IDs go directly from `014_create_parts_updated_at_trigger` to `015_add_diff_traces_payload_type`.
 
 The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::open_at(path)` applies later Agent Trace migrations to an already-created per-checkout DB.
 

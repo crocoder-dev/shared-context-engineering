@@ -34,7 +34,6 @@ pub mod lifecycle;
 
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
-const MAX_TRACE_FILE_CREATE_ATTEMPTS: u64 = 1_000_000;
 const CLAUDE_MODEL_ID_PREFIX: &str = "claude/";
 type PayloadValidationError = fn(&str) -> String;
 

@@ -53,12 +53,6 @@ pub trait DbSpec {
     /// Ordered embedded migration SQL files as `(id, sql)` pairs.
     fn migrations() -> &'static [(&'static str, &'static str)];
 
-    /// Migration IDs that are no longer applied to fresh databases but may be
-    /// present in already-upgraded databases.
-    fn retired_migration_ids() -> &'static [&'static str] {
-        &[]
-    }
-
     /// Config-file lookup key under `policies.database_retry`.
     /// One of `"local_db"`, `"agent_trace_db"`, `"auth_db"`.
     fn db_config_key() -> &'static str;
@@ -645,11 +639,9 @@ impl<M: DbSpec> TursoDb<M> {
             problems.push(format!("missing migrations {}", missing_ids.join(", ")));
         }
 
-        let retired_ids = M::retired_migration_ids();
         let unexpected_ids = applied_ids
             .iter()
             .filter(|applied_id| !expected_ids.iter().any(|id| id == &applied_id.as_str()))
-            .filter(|applied_id| !retired_ids.iter().any(|id| id == &applied_id.as_str()))
             .map(String::as_str)
             .collect::<Vec<_>>();
         if !unexpected_ids.is_empty() {

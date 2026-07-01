@@ -69,8 +69,6 @@ pub const INSERT_PART_SQL: &str =
     "INSERT INTO parts (type, text, message_id, session_id, generated_at_unix_ms)
 VALUES (?1, ?2, ?3, ?4, ?5)";
 
-const RETIRED_AGENT_TRACE_MIGRATION_IDS: &[&str] = &["015_create_session_models"];
-
 /// Agent trace database configuration.
 pub struct AgentTraceDbSpec;
 
@@ -85,10 +83,6 @@ impl DbSpec for AgentTraceDbSpec {
 
     fn migrations() -> &'static [(&'static str, &'static str)] {
         generated_migrations::AGENT_TRACE_MIGRATIONS
-    }
-
-    fn retired_migration_ids() -> &'static [&'static str] {
-        RETIRED_AGENT_TRACE_MIGRATION_IDS
     }
 
     fn db_config_key() -> &'static str {
@@ -594,10 +588,6 @@ mod tests {
             generated_migrations::AGENT_TRACE_MIGRATIONS
         }
 
-        fn retired_migration_ids() -> &'static [&'static str] {
-            RETIRED_AGENT_TRACE_MIGRATION_IDS
-        }
-
         fn db_config_key() -> &'static str {
             "agent_trace_db"
         }
@@ -619,10 +609,6 @@ mod tests {
 
         fn migrations() -> &'static [(&'static str, &'static str)] {
             generated_migrations::AGENT_TRACE_MIGRATIONS
-        }
-
-        fn retired_migration_ids() -> &'static [&'static str] {
-            RETIRED_AGENT_TRACE_MIGRATION_IDS
         }
 
         fn db_config_key() -> &'static str {
