@@ -3,6 +3,9 @@ import type { Hooks, Plugin } from "@opencode-ai/plugin";
 
 type OpenCodeEvent = Parameters<NonNullable<Hooks["event"]>>[0]["event"];
 
+const SCE_INSTALL_URL =
+	"https://sce.crocoder.dev/docs/getting-started#install-cli";
+
 const REQUIRED_EVENTS: Set<OpenCodeEvent["type"]> = new Set([
 	"message.updated",
 	"message.part.updated",
@@ -332,7 +335,12 @@ async function runDiffTraceHook(
 			stdio: ["pipe", "ignore", "ignore"],
 		});
 
-		child.on("error", () => resolve());
+		child.on("error", (err: NodeJS.ErrnoException) => {
+			if (err.code === "ENOENT") {
+				console.warn(`sce CLI not found. Install it from ${SCE_INSTALL_URL}`);
+			}
+			resolve();
+		});
 		child.on("close", () => resolve());
 
 		child.stdin.end(`${JSON.stringify(payload)}\n`);
@@ -352,7 +360,12 @@ async function runConversationTraceHook(
 			stdio: ["pipe", "ignore", "ignore"],
 		});
 
-		child.on("error", () => resolve());
+		child.on("error", (err: NodeJS.ErrnoException) => {
+			if (err.code === "ENOENT") {
+				console.warn(`sce CLI not found. Install it from ${SCE_INSTALL_URL}`);
+			}
+			resolve();
+		});
 		child.on("close", () => resolve());
 
 		child.stdin.end(`${JSON.stringify(payload)}\n`);

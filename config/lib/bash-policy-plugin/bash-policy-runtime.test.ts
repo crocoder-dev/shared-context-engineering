@@ -34,11 +34,12 @@ mock.module("node:child_process", () => ({
 		}
 
 		if (mockSpawnSyncResult.error) {
+			const err = mockSpawnSyncResult.error;
 			return {
 				status: 1,
 				stdout: "",
 				stderr: "",
-				error: mockSpawnSyncResult.error,
+				error: Object.assign(err, { code: "ENOENT" }),
 			};
 		}
 

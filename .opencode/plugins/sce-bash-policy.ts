@@ -10,6 +10,9 @@ interface JsonPolicyResult {
 	policy_id?: string;
 }
 
+const SCE_INSTALL_URL =
+	"https://sce.crocoder.dev/docs/getting-started#install-cli";
+
 /**
  * Evaluate a bash command against SCE bash-tool policy by delegating to the
  * Rust `sce policy bash` command. Returns the parsed JSON result, or null if
@@ -28,6 +31,11 @@ function evaluateBashCommandPolicy(command: string): JsonPolicyResult | null {
 		);
 
 		if (result.error) {
+			if ((result.error as NodeJS.ErrnoException).code === "ENOENT") {
+				console.warn(
+					`sce CLI not found. Install it from ${SCE_INSTALL_URL}`,
+				);
+			}
 			return null;
 		}
 
