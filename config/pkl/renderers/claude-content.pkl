@@ -2,6 +2,12 @@ import "../base/shared-content.pkl" as shared
 import "common.pkl" as common
 import "claude-metadata.pkl" as metadata
 
+local missingSceInstallMessage = "sce CLI not found. Install it from https://sce.crocoder.dev/docs/getting-started#install-cli"
+
+local claudeSceHookScriptPath = ".claude/hooks/run-sce-or-show-install-guidance.sh"
+
+local function sceHookCommand(arguments: String): String = "bash \(claudeSceHookScriptPath) \(arguments)"
+
 local agentFrontmatterBySlug = new Mapping {
   for (unitSlug, _ in shared.agents) {
     [unitSlug] = """
@@ -61,7 +67,7 @@ settings = new common.RenderedTextFile {
         "hooks": [
           {
             "type": "command",
-            "command": "sce hooks session-model"
+            "command": "\(sceHookCommand("sce hooks session-model"))"
           }
         ]
       }
@@ -72,7 +78,7 @@ settings = new common.RenderedTextFile {
         "hooks": [
           {
             "type": "command",
-            "command": "sce policy bash"
+            "command": "\(sceHookCommand("sce policy bash"))"
           }
         ]
       }
@@ -83,7 +89,7 @@ settings = new common.RenderedTextFile {
         "hooks": [
           {
             "type": "command",
-            "command": "sce hooks diff-trace"
+            "command": "\(sceHookCommand("sce hooks diff-trace"))"
           }
         ]
       },
@@ -91,7 +97,7 @@ settings = new common.RenderedTextFile {
         "hooks": [
           {
             "type": "command",
-            "command": "sce hooks conversation-trace"
+            "command": "\(sceHookCommand("sce hooks conversation-trace"))"
           }
         ]
       }
@@ -101,7 +107,7 @@ settings = new common.RenderedTextFile {
         "hooks": [
           {
             "type": "command",
-            "command": "sce hooks conversation-trace"
+            "command": "\(sceHookCommand("sce hooks conversation-trace"))"
           }
         ]
       }
@@ -111,13 +117,28 @@ settings = new common.RenderedTextFile {
         "hooks": [
           {
             "type": "command",
-            "command": "sce hooks conversation-trace"
+            "command": "\(sceHookCommand("sce hooks conversation-trace"))"
           }
         ]
       }
     ]
   }
 }
+"""
+}
+
+sceHookScript = new common.RenderedTextFile {
+  slug = "sce-hook"
+  rendered = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v sce >/dev/null 2>&1; then
+  echo "\(missingSceInstallMessage)" >&2
+  exit 0
+fi
+
+exec "$@"
 """
 }
 

@@ -24,9 +24,10 @@ The generated-config pipeline now has one canonical Pkl-authored source for Open
 ## Claude boundary
 
 - Claude does not consume the OpenCode `plugin` manifest surface.
-- Claude agent-trace event handling is registered through generated `.claude/settings.json` command hooks that call `sce hooks` directly: `SessionStart` → `sce hooks session-model`, matched `PostToolUse Write|Edit|MultiEdit|NotebookEdit` → `sce hooks diff-trace`.
+- Claude agent-trace event handling is registered through generated `.claude/settings.json` command hooks that call `.claude/hooks/run-sce-or-show-install-guidance.sh` before invoking `sce hooks`: `SessionStart` → `sce hooks session-model`, matched `PostToolUse Write|Edit|MultiEdit|NotebookEdit` → `sce hooks diff-trace`, and supported conversation events → `sce hooks conversation-trace`.
 - The Rust CLI receives raw Claude hook event JSON on STDIN and handles extraction, validation, and persistence without a TypeScript translation layer.
-- Claude bash-policy enforcement is registered through generated `.claude/settings.json` as a `PreToolUse` `Bash` command hook that runs `sce policy bash` and passes raw hook event JSON on STDIN.
+- Claude bash-policy enforcement is registered through generated `.claude/settings.json` as a `PreToolUse` `Bash` command hook that calls the same generated helper before running `sce policy bash` and passing raw hook event JSON on STDIN.
+- The Claude helper emits `sce CLI not found. Install it from https://sce.crocoder.dev/docs/getting-started#install-cli` and exits successfully when `sce` is missing, preserving fail-open hook behavior; when `sce` exists it `exec`s the original command arguments.
 - OpenCode bash-policy enforcement delegates to the same Rust `sce policy bash` command through a thin generated plugin wrapper; the former TypeScript runtime (`bash-policy/runtime.ts`) has been removed from generated outputs.
 
 ## Ownership and edit policy
@@ -39,6 +40,6 @@ The generated-config pipeline now has one canonical Pkl-authored source for Open
 
 - Inspect `config/.opencode/opencode.json` and `config/automated/.opencode/opencode.json` for the generated `plugin` field.
 - Inspect `config/.opencode/plugins/sce-bash-policy.ts`, `config/.opencode/plugins/sce-agent-trace.ts`, `config/automated/.opencode/plugins/sce-bash-policy.ts`, and `config/automated/.opencode/plugins/sce-agent-trace.ts` for the generated plugin implementations.
-- Verify `config/.claude/settings.json` contains the generated `PreToolUse` `Bash` policy hook and that `config/.claude/` still contains no Claude bash-policy TypeScript runtime files.
+- Verify `config/.claude/settings.json` contains the generated `PreToolUse` `Bash` policy hook, verify `config/.claude/hooks/run-sce-or-show-install-guidance.sh` contains the missing-CLI guidance path, and verify `config/.claude/` still contains no Claude bash-policy TypeScript runtime files.
 
 See also: [../overview.md](../overview.md), [../architecture.md](../architecture.md), [../glossary.md](../glossary.md)

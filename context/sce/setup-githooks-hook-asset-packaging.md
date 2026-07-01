@@ -16,7 +16,8 @@ These templates are emitted into `OUT_DIR/setup_embedded_assets.rs` as `HOOK_EMB
 
 Current `post-commit` template behavior is:
 
-- set `remote_name` to `origin`; if `git remote get-url "$remote_name"` returns a non-empty URL, invoke `sce hooks post-commit --vcs git --remote-url "$remote_url" "$@"`
+- resolve `origin` with `git remote get-url origin`; if `sce` is not on `PATH`, print `sce CLI not found. Install it from https://sce.crocoder.dev/docs/getting-started#install-cli` to stderr and exit successfully so missing local CLI installation does not block the commit
+- if the remote lookup returns a non-empty URL, invoke `sce hooks post-commit --vcs git --remote-url "$remote_url" "$@"`
 - otherwise still invoke `sce hooks post-commit --vcs git "$@"`; Rust-side validation fails this missing-URL path without blocking git commit completion under the hook script policy.
 
 ## Setup-service accessor surface

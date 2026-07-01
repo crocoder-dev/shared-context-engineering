@@ -44,6 +44,9 @@ output {
     ["config/.claude/settings.json"] {
       text = claude.settings.rendered
     }
+    ["config/.claude/hooks/run-sce-or-show-install-guidance.sh"] {
+      text = claude.sceHookScript.rendered
+    }
 
     for (slug, document in opencode.skills) {
       ["config/.opencode/skills/\(slug)/SKILL.md"] {

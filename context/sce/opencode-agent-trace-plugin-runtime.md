@@ -4,7 +4,7 @@ Current TypeScript runtime source:
 
 - `config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts`
 
-The Claude TypeScript agent-trace runtime was removed in T07 of the `claude-rust-diff-trace` plan. Claude now routes through generated `.claude/settings.json` command hooks that call `sce hooks` directly with raw hook event JSON on STDIN; Rust handles extraction, validation, and persistence without a TypeScript intermediary.
+The Claude TypeScript agent-trace runtime was removed in T07 of the `claude-rust-diff-trace` plan. Claude now routes through generated `.claude/settings.json` command hooks that call `.claude/hooks/run-sce-or-show-install-guidance.sh` before invoking `sce hooks` with raw hook event JSON on STDIN; Rust handles extraction, validation, and persistence without a TypeScript intermediary.
 
 ## Event capture baseline
 
@@ -113,7 +113,7 @@ When extraction succeeds, `buildQuestionToolConversationTracePayload(eventPart)`
 ## Shared boundary with Claude runtime
 
 - OpenCode uses a generated TypeScript event runtime as an event-shape adapter before handing normalized diff-trace payloads to the shared Rust hook intake.
-- Claude registration uses generated `.claude/settings.json` command hooks that call `sce hooks` directly (no TypeScript runtime intermediary): `SessionStart` pipes the raw Claude hook event JSON to `sce hooks session-model`, and matched `PostToolUse Write|Edit|MultiEdit|NotebookEdit` pipes the raw hook event to `sce hooks diff-trace`.
+- Claude registration uses generated `.claude/settings.json` command hooks that call `.claude/hooks/run-sce-or-show-install-guidance.sh` before `sce hooks` (no TypeScript runtime intermediary): `SessionStart` pipes the raw Claude hook event JSON to `sce hooks session-model`, matched `PostToolUse Write|Edit|MultiEdit|NotebookEdit` pipes the raw hook event to `sce hooks diff-trace`, and supported conversation events pipe raw hook events to `sce hooks conversation-trace`.
 - Rust `diff-trace` intake detects Claude payloads via `hook_event_name` and derives structured patches from the raw JSON with `payload_type="structured"`; OpenCode normalized payloads (no `hook_event_name`) are stored as `payload_type="patch"`.
 - Rust `session-model` intake detects Claude `SessionStart` payloads via `hook_event_name`, extracts `session_id`/`model_id`/`time` from the raw Claude event format, uses explicit payload version fields (`tool_version`/`claude_version`/`version`) when present, and otherwise best-effort fills `tool_version` from trimmed `claude --version` stdout when available.
 - The shared Rust boundary is `sce hooks diff-trace` and `sce hooks session-model`: Rust remains the only writer of AgentTraceDb `diff_traces`/`session_models` rows and no longer writes parsed `context/tmp/*-diff-trace.json` artifacts.

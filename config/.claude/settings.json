@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sce hooks session-model"
+            "command": "bash .claude/hooks/run-sce-or-show-install-guidance.sh sce hooks session-model"
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sce policy bash"
+            "command": "bash .claude/hooks/run-sce-or-show-install-guidance.sh sce policy bash"
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sce hooks diff-trace"
+            "command": "bash .claude/hooks/run-sce-or-show-install-guidance.sh sce hooks diff-trace"
           }
         ]
       },
@@ -36,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sce hooks conversation-trace"
+            "command": "bash .claude/hooks/run-sce-or-show-install-guidance.sh sce hooks conversation-trace"
           }
         ]
       }
@@ -46,7 +46,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sce hooks conversation-trace"
+            "command": "bash .claude/hooks/run-sce-or-show-install-guidance.sh sce hooks conversation-trace"
           }
         ]
       }
@@ -56,7 +56,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sce hooks conversation-trace"
+            "command": "bash .claude/hooks/run-sce-or-show-install-guidance.sh sce hooks conversation-trace"
           }
         ]
       }
