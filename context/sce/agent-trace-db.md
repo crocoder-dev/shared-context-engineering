@@ -33,10 +33,6 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 - `INSERT_PART_SQL`: parameterized single-row append-only INSERT into `parts` (no upsert; multiple rows per `(session_id, message_id)` allowed).
 - `insert_part(input)`: typed single-row helper that inserts a part row without requiring a matching `messages` row (supports out-of-order writes); retained as part of the adapter surface.
 - `insert_parts(inputs)`: typed batch helper that generates and executes one parameterized multi-row append-only `parts` insert for valid conversation-trace `message.part` batches.
-- `SessionModelUpsert<'a>`: upsert payload with `tool_name`, `session_id`, `model_id`, nullable `tool_version`, and `session_start_time_ms`.
-- `upsert_session_model()`: domain-specific upsert helper for `session_models` keyed by `(tool_name, session_id)`.
-- `SessionModelAttribution`: durable session model attribution row returned from `session_models` lookups, carrying `model_id` plus nullable `tool_version` for later diff-trace fallback.
-- `session_model_by_tool_and_session()`: lookup helper for model/tool-version attribution by `(tool_name, session_id)`.
 - `lifecycle.rs`: service lifecycle provider for setup/doctor integration.
 
 ## Non-goals
@@ -147,18 +143,6 @@ The `parts` migration creates:
 
 No foreign keys exist between `messages` and `parts`; rows may be written out of order. The data model uses natural identifiers (`session_id`, `message_id`) for joins rather than DB-level referential integrity.
 
-The `session_models` migration creates durable editor session model attribution:
-
-- `id INTEGER PRIMARY KEY`
-- `tool_name TEXT NOT NULL`
-- `session_id TEXT NOT NULL`
-- `model_id TEXT NOT NULL`
-- `tool_version TEXT` (nullable)
-- `session_start_time_ms INTEGER NOT NULL`
-- `created_at TEXT NOT NULL DEFAULT (...)`
-- `updated_at TEXT NOT NULL DEFAULT (...)`
-- `UNIQUE (tool_name, session_id)`
-
 Lookup indexes created by the baseline migration set:
 
 - `idx_diff_traces_time_ms_id` on `(time_ms, id)`
@@ -189,10 +173,10 @@ Both triggers compare `OLD.*` vs `NEW.*` for all mutable columns (excluding `upd
 
 `sce hooks diff-trace` is the current runtime writer for `diff_traces`.
 
-- The hook path validates required STDIN `{ sessionID, diff, time, tool_name, tool_version }` before persistence, with `model_id` accepted as optional (absent or `null`) and `tool_version` accepted as nullable. When either attribution field is missing/nullable, Rust queries `session_models` by `(tool_name, session_id)` and fills missing `model_id` / `tool_version` from the stored row when available.
-- Direct payload `model_id` and `tool_version` values pass into `DiffTraceInsert` with precedence over stored session values. If no matching session row exists, missing attribution remains `None` and persistence continues with nullable fields. The `payload_type` field is set to `PAYLOAD_TYPE_PATCH` for `OpenCode` normalized diff-trace payloads and `PAYLOAD_TYPE_STRUCTURED` for Claude structured `PostToolUse` payloads.
+- The hook path validates required STDIN `{ sessionID, diff, time, tool_name, tool_version }` before persistence, with `model_id` accepted as optional (absent or `null`) and `tool_version` accepted as nullable. Missing attribution remains `None`; there is no session-level fallback lookup.
+- Direct payload `model_id` and `tool_version` values pass into `DiffTraceInsert` as-is. The `payload_type` field is set to `PAYLOAD_TYPE_PATCH` for `OpenCode` normalized diff-trace payloads and `PAYLOAD_TYPE_STRUCTURED` for Claude structured `PostToolUse` payloads. Claude structured intake extracts direct `model`/`model_id`/`modelId` metadata, including nested `model.id` / `model.model` / `model.name`, and normalizes values with the `claude/` prefix when present.
 - `time` is accepted as a `u64` Unix epoch millisecond input and must fit the signed `i64` `time_ms` column before any persistence starts.
-- The hook inserts the parsed payload fields plus resolved nullable attribution through `AgentTraceDb::insert_diff_trace()` without writing a parsed-payload artifact under `context/tmp`.
+- The hook inserts the parsed payload fields plus nullable direct attribution through `AgentTraceDb::insert_diff_trace()` without writing a parsed-payload artifact under `context/tmp`.
 - AgentTraceDb open/insert failures are logged and reflected in deterministic success text as failed DB persistence; no artifact fallback is created.
 - The hook writes the existing collision-safe `context/tmp/<timestamp>-000000-diff-trace.json` parsed-payload artifact, then attempts to insert the parsed payload fields plus resolved nullable attribution through `AgentTraceDb::insert_diff_trace()`.
 - The strict valid-payload path writes the artifact before AgentTraceDb insertion. `diff-trace` intake failures, including artifact persistence failures and AgentTraceDb setup/persistence failures before the existing post-artifact DB-warning branch, are logged through `sce.hooks.diff_trace.error` and returned as command success; the existing post-artifact AgentTraceDb write-warning path still logs and returns the failed-DB-persistence success text.
@@ -211,7 +195,7 @@ Post-commit intersection rows are written by the active `post-commit` hook flow 
 - No `context/tmp` artifact is written for conversation traces.
 - The generated OpenCode agent-trace plugin sends mixed-batch envelopes for conversation traces: regular `message` and `message.part` events each carry one per-item `type`, while diff-backed `message` events send one envelope containing the synthetic parent message item plus patch part items.
 
-`sce hooks session-model` is no longer a supported command route, and generated Claude settings no longer produce `SessionStart` model-attribution events. The `session_models` table/API and diff-trace fallback lookup remain temporarily in the DB adapter for the later planned cleanup tasks, so existing rows may still be read by `diff-trace` when direct payload attribution is missing, but no active route writes new rows. See [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md).
+`sce hooks session-model` is no longer a supported command route, generated Claude settings no longer produce `SessionStart` model-attribution events, and the Agent Trace DB adapter no longer exposes a `session_models` API or fresh-schema table. See [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md).
 
 ## Recent patch reads
 

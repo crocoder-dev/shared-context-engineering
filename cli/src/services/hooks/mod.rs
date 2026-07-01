@@ -34,6 +34,8 @@ pub mod lifecycle;
 
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
+const MAX_TRACE_FILE_CREATE_ATTEMPTS: u64 = 1_000_000;
+const CLAUDE_MODEL_ID_PREFIX: &str = "claude/";
 type PayloadValidationError = fn(&str) -> String;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -795,7 +797,7 @@ fn parse_claude_diff_trace_payload(
                 session_id: patch.session_id,
                 diff: stdin_payload.to_string(),
                 time: patch.time,
-                model_id: None,
+                model_id: extract_direct_claude_model_id(payload),
                 tool_name: patch.tool_name,
                 tool_version: patch.tool_version,
                 payload_type: PAYLOAD_TYPE_STRUCTURED.to_string(),
@@ -806,6 +808,44 @@ fn parse_claude_diff_trace_payload(
                 "diff-trace hook intake: Claude PostToolUse event skipped ({reason:?}); no-op."
             )))
         }
+    }
+}
+
+fn extract_direct_claude_model_id(payload: &serde_json::Map<String, Value>) -> Option<String> {
+    direct_claude_model_id_string(payload, &["model", "model_id", "modelId"])
+        .or_else(|| {
+            payload
+                .get("model")
+                .and_then(Value::as_object)
+                .and_then(|model| direct_claude_model_id_string(model, &["id", "model", "name"]))
+        })
+        .and_then(|model| normalize_claude_model_id(&model))
+}
+
+fn direct_claude_model_id_string(
+    payload: &serde_json::Map<String, Value>,
+    keys: &[&str],
+) -> Option<String> {
+    keys.iter().find_map(|key| {
+        payload
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn normalize_claude_model_id(model: &str) -> Option<String> {
+    let normalized = model.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if normalized.starts_with(CLAUDE_MODEL_ID_PREFIX) {
+        Some(normalized.to_string())
+    } else {
+        Some(format!("{CLAUDE_MODEL_ID_PREFIX}{normalized}"))
     }
 }
 
