@@ -92,7 +92,7 @@ This intentionally accepts the known Claude limitation that some events, especia
   - Verification notes (commands or checks): `nix run .#pkl-check-generated`; focused grep for `session_models`/`session-model` in current-state docs to ensure remaining references are intentional historical references or removed.
   - Completion evidence (2026-07-01): Refreshed current-state Agent Trace docs to state that `diff_traces.model_id` is the only active model-attribution storage for diff traces, direct payload `model_id`/`tool_version` values are persisted as-is, and Claude structured `PostToolUse` intake performs best-effort direct model metadata extraction while leaving `model_id` nullable when omitted. Updated `context/sce/agent-trace-db.md`, `context/sce/agent-trace-hooks-command-routing.md`, `context/sce/claude-raw-hook-capture.md`, and stale root overview text that still described active `session-model` intake. Context sync classified the task as an important localized Agent Trace runtime-contract documentation update with root overview repair required; architecture/glossary/patterns/context-map already matched current code truth. `nix run .#pkl-check-generated` passed (`Generated outputs are up to date.`). Focused current-state-doc grep for `session_models|session-model|SessionModel` found only intentional removed/retired/fallback-removed references plus historical plan text.
 
-- [ ] T06: `Validation and cleanup` (status:todo)
+- [x] T06: `Validation and cleanup` (status:done)
   - Task ID: T06
   - Goal: Run full repository validation and clean up stale artifacts after the session-model removal.
   - Boundaries (in/out of scope):
@@ -100,7 +100,34 @@ This intentionally accepts the known Claude limitation that some events, especia
     - Out — New product behavior beyond the planned session-model removal and direct Claude diff-trace model capture.
   - Done when: `nix run .#pkl-check-generated` and `nix flake check` pass; no dead `session_models` runtime references remain; plan execution evidence is recorded.
   - Verification notes (commands or checks): `nix run .#pkl-check-generated`; `nix flake check`; optional targeted grep for `session_models`, `SessionModel`, and `session-model` to verify only intentional historical/docs references remain.
+  - Completion evidence (2026-07-01): Final validation and cleanup completed. Initial worktree was clean. Focused runtime/current-state search for `session_models|SessionModel|session-model` outside active plan/tmp files found only intentional current-state documentation references plus the runtime-retained retired migration ID (`RETIRED_AGENT_TRACE_MIGRATION_IDS`) and fresh-schema absence assertion in `agent_trace_db` tests; no dead active session-model runtime API/route references were found, so no code cleanup was required. `nix run .#pkl-check-generated` passed (`Generated outputs are up to date.`). `nix flake check` passed (`all checks passed`).
+
+## Validation Report
+
+### Commands run
+
+- `rg -n "session_models|SessionModel|session-model" --glob '!context/plans/**' --glob '!context/tmp/**' --glob '!target/**' --glob '!cli/target/**'` -> exit 0; matches are intentional current-state documentation references plus `RETIRED_AGENT_TRACE_MIGRATION_IDS` and a fresh-schema absence assertion in `agent_trace_db` tests.
+- `nix run .#pkl-check-generated` -> exit 0; output included `Generated outputs are up to date.`
+- `nix flake check` -> exit 0; output included `all checks passed`.
+
+### Success-criteria verification
+
+- [x] `session_models` is no longer part of the Agent Trace DB schema for fresh databases -> confirmed by T02 evidence and final grep showing only retired migration metadata plus fresh-schema absence assertion remain in runtime code.
+- [x] Rust Agent Trace DB code no longer exposes session-model API helpers -> confirmed by final grep and prior T02 evidence.
+- [x] `sce hooks session-model` is removed from CLI parsing/runtime/generated producers -> confirmed by T01 evidence and final context/code search showing only removed-route documentation references.
+- [x] `sce hooks diff-trace` no longer looks up missing attribution from `session_models` -> confirmed by T04 evidence and final grep.
+- [x] Claude structured diff-trace parsing attempts direct model extraction -> confirmed by T03 evidence and current context in `context/sce/agent-trace-hooks-command-routing.md`.
+- [x] `diff_traces.model_id` remains nullable and receives direct payload-derived model attribution only -> confirmed by T03/T04 evidence and current context in `context/sce/agent-trace-db.md`.
+- [x] Agent Trace JSON remains valid when `model_id` is absent -> covered by successful `nix flake check` and T03/T04 missing-model evidence.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- Existing upgraded user databases may still physically contain the retired `session_models` table; runtime no longer reads or writes it, and `AgentTraceDbSpec::retired_migration_ids()` prevents readiness warnings for that retired migration ID.
 
 ## Open questions
 
-- Should existing user databases with an already-created `session_models` table actively drop it via a new migration, or is it acceptable to leave the unused table in upgraded databases while removing it from the active runtime/fresh schema? This should be decided during T02 before changing migrations.
+- None remaining. T02 resolved the migration strategy by retiring `015_create_session_models` from the fresh schema while allowing already-upgraded databases to retain the unused table without runtime reads/writes.
