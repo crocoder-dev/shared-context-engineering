@@ -675,7 +675,11 @@ fn run_diff_trace_subcommand_from_payload(
         DiffTraceParseResult::Persist(payload) => payload,
         DiffTraceParseResult::NoOp(message) => return Ok(message),
     };
-    run_diff_trace_subcommand_from_payload_with(repository_root, &payload, logger)
+    Ok(run_diff_trace_subcommand_from_payload_with(
+        repository_root,
+        &payload,
+        logger,
+    ))
 }
 
 fn log_diff_trace_fail_open(error: &anyhow::Error, logger: Option<&dyn Logger>) -> String {
@@ -690,7 +694,7 @@ fn run_diff_trace_subcommand_from_payload_with(
     repository_root: &Path,
     payload: &DiffTracePayload,
     logger: Option<&dyn Logger>,
-) -> Result<String> {
+) -> String {
     if let Err(error) = diff_trace_db_time_ms(payload.time) {
         if let Some(log) = logger {
             log.warn(
@@ -721,13 +725,9 @@ fn run_diff_trace_subcommand_from_payload_with(
     };
 
     if agent_trace_db_persisted {
-        Ok(String::from(
-            "diff-trace hook intake persisted payload to AgentTraceDb.",
-        ))
+        String::from("diff-trace hook intake persisted payload to AgentTraceDb.")
     } else {
-        Ok(String::from(
-            "diff-trace hook intake completed; AgentTraceDb persistence failed.",
-        ))
+        String::from("diff-trace hook intake completed; AgentTraceDb persistence failed.")
     }
 }
 
