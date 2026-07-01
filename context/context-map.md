@@ -64,6 +64,7 @@ Feature/domain context:
 - `context/sce/cli-release-artifact-contract.md` (shared `sce` binary release artifact naming, checksum/manifest outputs, GitHub Releases as the canonical artifact publication surface, manual dispatch `prerelease` flag behavior, the current three-target Linux/macOS release workflow topology, implemented Flatpak source-manifest and source-built `.flatpak` bundle package assets uploaded by `.github/workflows/release-sce.yml`, and Flatpak's explicit source-built non-binary exception)
 - `context/sce/cli-npm-distribution-contract.md` (implemented `sce` npm launcher package, release-manifest/checksum-verified native binary install flow, the supported darwin/arm64 plus linux x64+arm64 npm platform matrix, and dedicated `.github/workflows/publish-npm.yml` downstream npm publish-stage contract)
 - `context/sce/cli-cargo-distribution-contract.md` (implemented `sce` Cargo publication posture plus supported crates.io, git, and local checkout install guidance, dedicated crates.io publish workflow, and ephemeral crate-local generated-asset mirror requirement for published builds)
+- `context/sce/flatpak-distribution-patterns.md` (implementation conventions for the source-built `dev.crocoder.sce` Flatpak channel: manifest generation, flake app surface, local and release builds, release assets, runtime Git access via host-git bridge, and general distribution patterns)
 
 Working areas:
 
