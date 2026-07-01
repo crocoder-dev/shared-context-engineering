@@ -62,7 +62,7 @@ This intentionally accepts the known Claude limitation that some events, especia
     - `SessionModelUpsert`, `SessionModelAttribution`, `ResolvedDiffTraceAttribution`, `resolve_diff_trace_attribution`, `session_model_by_tool_and_session`, `upsert_session_model` no longer exist in the codebase.
     - `nix flake check` passed: all 84 tests pass, clippy clean, fmt clean, pkl-parity up to date.
 
-- [ ] T03: `Write direct Claude model_id into DiffTracePayload` (status:todo)
+- [x] T03: `Write direct Claude model_id into DiffTracePayload` (status:done)
   - Task ID: T03
   - Goal: Populate `DiffTracePayload.model_id` directly from supported Claude `PostToolUse` payloads when model metadata is present.
   - Boundaries (in/out of scope):
@@ -70,6 +70,7 @@ This intentionally accepts the known Claude limitation that some events, especia
     - Out — Session-level fallback lookup; placeholder model values; Agent Trace schema changes.
   - Done when: Claude structured `DiffTracePayload` carries `Some(model_id)` when the raw `PostToolUse` payload includes model metadata and `None` when it does not; persisted `diff_traces.model_id` mirrors that direct value; tests cover present and omitted Claude model metadata.
   - Verification notes (commands or checks): targeted hooks tests for Claude diff-trace payload parsing/persistence; inspect `parse_claude_diff_trace_payload` no longer hardcodes `model_id: None` when payload has extractable model info.
+  - Completion evidence (2026-07-01): Added direct Claude model extraction in `cli/src/services/hooks/mod.rs` for supported structured `PostToolUse` diff-trace payloads. The parser now reads direct `model`/`model_id`/`modelId` strings or nested `model.id`/`model.model`/`model.name`, trims non-empty values, normalizes them with the existing `claude/` prefix rule, and leaves `model_id=None` when absent. Added hooks tests covering direct model extraction plus DB insert mirroring, nested already-prefixed extraction, and omitted model metadata. Context sync classified this as an important localized Agent Trace runtime-contract change and refreshed current-state hook/DB context files plus root summaries. `cargo test claude_diff_trace_payload -- --exact` was attempted but blocked by the repository bash policy requiring `nix flake check`; `nix flake check` passed (`all checks passed`), and `nix run .#pkl-check-generated` passed (`Generated outputs are up to date.`).
 
 - [ ] T04: `Remove diff-trace session fallback and repair tests` (status:todo)
   - Task ID: T04
