@@ -2251,7 +2251,7 @@ mod tests {
     }
 
     #[test]
-    fn diff_trace_db_persistence_uses_resolved_tool_version() {
+    fn diff_trace_db_persistence_uses_direct_payload_model_and_tool_version() {
         let payload = diff_trace_payload(Some("direct-model"), None);
 
         persist_diff_trace_payload_to_agent_trace_db_with(
@@ -2269,7 +2269,7 @@ mod tests {
                 Ok(())
             },
         )
-        .expect("resolved diff-trace attribution should be persisted");
+        .expect("direct diff-trace attribution should be persisted");
     }
 
     #[test]
