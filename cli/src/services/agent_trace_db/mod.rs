@@ -69,30 +69,7 @@ pub const INSERT_PART_SQL: &str =
     "INSERT INTO parts (type, text, message_id, session_id, generated_at_unix_ms)
 VALUES (?1, ?2, ?3, ?4, ?5)";
 
-/// Parameterized SQL for upserting editor session model attribution.
-pub const UPSERT_SESSION_MODEL_SQL: &str = "INSERT INTO session_models (
-    tool_name,
-    session_id,
-    model_id,
-    tool_version,
-    session_start_time_ms
-) VALUES (?1, ?2, ?3, ?4, ?5)
-ON CONFLICT(tool_name, session_id) DO UPDATE SET
-    model_id = excluded.model_id,
-    tool_version = excluded.tool_version,
-    session_start_time_ms = excluded.session_start_time_ms,
-    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
-
-/// Parameterized SQL for retrieving editor session model attribution.
-pub const SELECT_SESSION_MODEL_SQL: &str = "SELECT
-    tool_name,
-    session_id,
-    model_id,
-    tool_version,
-    session_start_time_ms
-FROM session_models
-WHERE tool_name = ?1 AND session_id = ?2
-LIMIT 1";
+const RETIRED_AGENT_TRACE_MIGRATION_IDS: &[&str] = &["015_create_session_models"];
 
 /// Agent trace database configuration.
 pub struct AgentTraceDbSpec;
@@ -108,6 +85,10 @@ impl DbSpec for AgentTraceDbSpec {
 
     fn migrations() -> &'static [(&'static str, &'static str)] {
         generated_migrations::AGENT_TRACE_MIGRATIONS
+    }
+
+    fn retired_migration_ids() -> &'static [&'static str] {
+        RETIRED_AGENT_TRACE_MIGRATION_IDS
     }
 
     fn db_config_key() -> &'static str {
@@ -142,27 +123,6 @@ pub struct DiffTraceInsert<'a> {
     pub tool_name: &'a str,
     pub tool_version: Option<&'a str>,
     pub payload_type: &'a str,
-}
-
-/// Session model attribution payload to upsert into the agent trace database.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
-pub struct SessionModelUpsert<'a> {
-    pub tool_name: &'a str,
-    pub session_id: &'a str,
-    pub model_id: &'a str,
-    pub tool_version: Option<&'a str>,
-    pub session_start_time_ms: i64,
-}
-
-/// Durable session model attribution row read from the agent trace database.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SessionModelAttribution {
-    pub tool_name: String,
-    pub session_id: String,
-    pub model_id: String,
-    pub tool_version: Option<String>,
-    pub session_start_time_ms: i64,
 }
 
 /// Raw diff trace row read from the agent trace database.
@@ -339,21 +299,6 @@ impl AgentTraceDb {
         insert_agent_trace_with(self, input)
     }
 
-    /// Upsert editor session model attribution into the `session_models` table.
-    #[allow(dead_code)]
-    pub fn upsert_session_model(&self, input: SessionModelUpsert<'_>) -> Result<u64> {
-        upsert_session_model_with(self, input)
-    }
-
-    /// Retrieve editor session model attribution by `(tool_name, session_id)`.
-    pub fn session_model_by_tool_and_session(
-        &self,
-        tool_name: &str,
-        session_id: &str,
-    ) -> Result<Option<SessionModelAttribution>> {
-        session_model_by_tool_and_session_with(self, tool_name, session_id)
-    }
-
     /// Query and parse recent diff trace patches within the inclusive time window.
     pub fn recent_diff_trace_patches(
         &self,
@@ -489,23 +434,6 @@ fn insert_part_with<M: DbSpec>(db: &TursoDb<M>, input: InsertPartInsert) -> Resu
     )
 }
 
-#[allow(dead_code)]
-fn upsert_session_model_with<M: DbSpec>(
-    db: &TursoDb<M>,
-    input: SessionModelUpsert<'_>,
-) -> Result<u64> {
-    db.execute(
-        UPSERT_SESSION_MODEL_SQL,
-        (
-            input.tool_name,
-            input.session_id,
-            input.model_id,
-            input.tool_version,
-            input.session_start_time_ms,
-        ),
-    )
-}
-
 fn insert_parts_with<M: DbSpec>(db: &TursoDb<M>, inputs: Vec<InsertPartInsert>) -> Result<u64> {
     if inputs.is_empty() {
         return Ok(0);
@@ -539,40 +467,6 @@ fn numbered_placeholders(start: usize, count: usize) -> String {
         .join(", ");
 
     format!("({placeholders})")
-}
-
-fn session_model_by_tool_and_session_with<M: DbSpec>(
-    db: &TursoDb<M>,
-    tool_name: &str,
-    session_id: &str,
-) -> Result<Option<SessionModelAttribution>> {
-    let rows = db.query_map(
-        SELECT_SESSION_MODEL_SQL,
-        (tool_name, session_id),
-        session_model_attribution_from_turso,
-    )?;
-
-    Ok(rows.into_iter().next())
-}
-
-fn session_model_attribution_from_turso(row: &turso::Row) -> Result<SessionModelAttribution> {
-    Ok(SessionModelAttribution {
-        tool_name: row
-            .get(0)
-            .context("failed to read session_models.tool_name")?,
-        session_id: row
-            .get(1)
-            .context("failed to read session_models.session_id")?,
-        model_id: row
-            .get(2)
-            .context("failed to read session_models.model_id")?,
-        tool_version: row
-            .get(3)
-            .context("failed to read session_models.tool_version")?,
-        session_start_time_ms: row
-            .get(4)
-            .context("failed to read session_models.session_start_time_ms")?,
-    })
 }
 
 fn recent_diff_trace_patches_with<M: DbSpec>(
@@ -700,6 +594,10 @@ mod tests {
             generated_migrations::AGENT_TRACE_MIGRATIONS
         }
 
+        fn retired_migration_ids() -> &'static [&'static str] {
+            RETIRED_AGENT_TRACE_MIGRATION_IDS
+        }
+
         fn db_config_key() -> &'static str {
             "agent_trace_db"
         }
@@ -721,6 +619,10 @@ mod tests {
 
         fn migrations() -> &'static [(&'static str, &'static str)] {
             generated_migrations::AGENT_TRACE_MIGRATIONS
+        }
+
+        fn retired_migration_ids() -> &'static [&'static str] {
+            RETIRED_AGENT_TRACE_MIGRATION_IDS
         }
 
         fn db_config_key() -> &'static str {
@@ -921,7 +823,7 @@ mod tests {
         ));
         assert!(sqlite_object_exists(&db, "table", "messages"));
         assert!(sqlite_object_exists(&db, "table", "parts"));
-        assert!(sqlite_object_exists(&db, "table", "session_models"));
+        assert!(!sqlite_object_exists(&db, "table", "session_models"));
         assert!(sqlite_object_exists(
             &db,
             "index",

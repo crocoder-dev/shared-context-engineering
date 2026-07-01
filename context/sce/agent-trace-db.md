@@ -78,8 +78,9 @@ Active hook runtime resolves per-checkout Agent Trace DB files:
 - `012_create_parts_session_message_order_index.sql`
 - `013_create_messages_updated_at_trigger.sql`
 - `014_create_parts_updated_at_trigger.sql`
-- `015_create_session_models.sql`
-- `016_add_diff_traces_payload_type.sql` (migration ID `016_add_diff_traces_payload_type`; adds `payload_type TEXT NOT NULL DEFAULT 'patch'` to `diff_traces`)
+- `015_add_diff_traces_payload_type.sql` (migration ID `015_add_diff_traces_payload_type`; adds `payload_type TEXT NOT NULL DEFAULT 'patch'` to `diff_traces`)
+
+The former `015_create_session_models` migration is retired from the fresh schema and listed through `AgentTraceDbSpec::retired_migration_ids()` so already-upgraded databases that recorded that ID are not treated as having an unexpected migration. Current development state does not preserve compatibility with databases that recorded a previous `016_add_diff_traces_payload_type` ID; deleting and recreating the local Agent Trace DB is acceptable for this migration renumbering.
 
 The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::open_at(path)` applies later Agent Trace migrations to an already-created per-checkout DB.
 
@@ -96,7 +97,7 @@ The `diff_traces` baseline migration creates:
 - `tool_name TEXT`
 - `tool_version TEXT`
 
-Migration `016_add_diff_traces_payload_type` adds:
+Migration `015_add_diff_traces_payload_type` adds:
 
 - `payload_type TEXT NOT NULL DEFAULT 'patch'` — discriminator for source payload format; `patch` for `OpenCode` unified-diff payloads, `structured` for `Claude` `PostToolUse` structured payloads.
 

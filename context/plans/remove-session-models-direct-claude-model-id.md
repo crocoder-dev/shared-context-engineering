@@ -37,14 +37,30 @@ This intentionally accepts the known Claude limitation that some events, especia
   - Verification notes (commands or checks): `nix run .#pkl-check-generated`; targeted parser/help tests if existing; generated config diff inspection for removed session-model hook commands.
   - Completion evidence (2026-06-30 rerun): Removed the `session-model` hooks subcommand from clap parsing/runtime conversion and `HookSubcommand` dispatch, deleted the session-model hook runtime/parser from `hooks/mod.rs`, and removed generated Claude `SessionStart -> sce hooks session-model` registration from canonical Pkl plus regenerated `config/.claude/settings.json`. Left Agent Trace DB `session_models` API/schema and diff-trace fallback in place for later tasks; temporarily marked now-unused session-model DB upsert APIs with `#[allow(dead_code)]` to preserve T02 scope. `nix run .#pkl-check-generated` passed (`Generated outputs are up to date.`). `nix flake check` passed (`all checks passed`).
 
-- [ ] T02: `Remove session_models database API and schema dependency` (status:todo)
+- [x] T02: `Remove session_models database API and schema dependency` (status:done)
   - Task ID: T02
   - Goal: Remove Rust DB adapter support for `session_models` and ensure fresh Agent Trace DB schema no longer creates or requires that table.
   - Boundaries (in/out of scope):
     - In — Remove session-model SQL constants, structs, upsert/lookup methods, row mappers, and tests; remove or supersede migration `015_create_session_models.sql` from the fresh schema path using the repository's migration policy; update migration readiness expectations accordingly.
     - Out — Diff-trace parser behavior; generated hook config; unrelated message/part tables.
   - Done when: `agent_trace_db` compiles without any session-model API; fresh Agent Trace DB creation no longer includes `session_models`; migration/readiness tests reflect the new schema contract.
-  - Verification notes (commands or checks): targeted Agent Trace DB tests if available; `nix develop -c sh -c 'cd cli && cargo test agent_trace_db'` if a narrow module test is practical; otherwise `nix flake check` in final validation.
+  - Verification notes (commands or checks): `nix flake check` (all checks passed).
+  - Completion evidence (2026-06-30):
+    - Deleted `cli/migrations/agent-trace/015_create_session_models.sql` from fresh schema path.
+    - Kept `diff_traces.payload_type` in the fresh schema path as `cli/migrations/agent-trace/015_add_diff_traces_payload_type.sql`; existing development databases with a previous `016_add_diff_traces_payload_type` metadata ID may be deleted/recreated during this migration renumbering.
+    - Added `DbSpec::retired_migration_ids()` to `cli/src/services/db/mod.rs` so existing upgraded DBs with applied `015_create_session_models` are not flagged as having unexpected migrations.
+    - Removed `SessionModelUpsert`, `SessionModelAttribution`, `UPSERT_SESSION_MODEL_SQL`, `SELECT_SESSION_MODEL_SQL`, `upsert_session_model`, `session_model_by_tool_and_session`, `upsert_session_model_with`, `session_model_by_tool_and_session_with`, and `session_model_attribution_from_turso` from `cli/src/services/agent_trace_db/mod.rs`.
+    - Added `AgentTraceDbSpec::retired_migration_ids()` returning `&["015_create_session_models"]` (also added to both test spec impls).
+    - Updated baseline migration test: `assert!(!sqlite_object_exists(&db, "table", "session_models"))` confirms fresh DB no longer creates the table.
+    - Removed hook-side session-model fallback attribution from `cli/src/services/hooks/mod.rs`:
+      - `ResolvedDiffTraceAttribution` struct removed.
+      - `resolve_diff_trace_attribution` function removed.
+      - `resolve_attribution` closure in `run_diff_trace_subcommand_from_payload` removed.
+      - `run_diff_trace_subcommand_from_payload_with` simplified to non-generic, passing `payload.model_id`/`payload.tool_version` directly to persistence.
+      - Removed `session_model_attribution` test helper and four session-model resolution tests.
+      - Removed `SessionModelAttribution` import.
+    - `SessionModelUpsert`, `SessionModelAttribution`, `ResolvedDiffTraceAttribution`, `resolve_diff_trace_attribution`, `session_model_by_tool_and_session`, `upsert_session_model` no longer exist in the codebase.
+    - `nix flake check` passed: all 84 tests pass, clippy clean, fmt clean, pkl-parity up to date.
 
 - [ ] T03: `Write direct Claude model_id into DiffTracePayload` (status:todo)
   - Task ID: T03
