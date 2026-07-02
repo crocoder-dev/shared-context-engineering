@@ -7,8 +7,9 @@ use super::types::{
     fix_result_outcome, problem_category, problem_fixability, problem_severity, FileLocationHealth,
     HookContentState, HookDoctorReport, HookFileHealth, HookPathSource, HumanTextStatus,
     IntegrationChildHealth, IntegrationContentState, IntegrationGroupHealth, ProblemKind,
-    ProblemSeverity, Readiness, OPENCODE_AGENTS_LABEL, OPENCODE_COMMANDS_LABEL,
-    OPENCODE_PLUGINS_LABEL, OPENCODE_SKILLS_LABEL,
+    ProblemSeverity, Readiness, CLAUDE_AGENTS_LABEL, CLAUDE_COMMANDS_LABEL, CLAUDE_PLUGINS_LABEL,
+    CLAUDE_SKILLS_LABEL, OPENCODE_AGENTS_LABEL, OPENCODE_COMMANDS_LABEL, OPENCODE_PLUGINS_LABEL,
+    OPENCODE_SKILLS_LABEL,
 };
 use super::{DoctorExecution, DoctorFormat, DoctorMode, DoctorRequest, NAME, REQUIRED_HOOKS};
 
@@ -360,6 +361,22 @@ fn integration_groups_for_text(report: &HookDoctorReport) -> Vec<IntegrationGrou
             },
             IntegrationGroupHealth {
                 label: OPENCODE_SKILLS_LABEL,
+                children: Vec::new(),
+            },
+            IntegrationGroupHealth {
+                label: CLAUDE_PLUGINS_LABEL,
+                children: Vec::new(),
+            },
+            IntegrationGroupHealth {
+                label: CLAUDE_AGENTS_LABEL,
+                children: Vec::new(),
+            },
+            IntegrationGroupHealth {
+                label: CLAUDE_COMMANDS_LABEL,
+                children: Vec::new(),
+            },
+            IntegrationGroupHealth {
+                label: CLAUDE_SKILLS_LABEL,
                 children: Vec::new(),
             },
         ];

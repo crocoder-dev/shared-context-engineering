@@ -270,7 +270,6 @@ pub fn local_db_path() -> anyhow::Result<PathBuf> {
 /// The path is `<state_root>/sce/auth.db`, where `state_root` comes
 /// from the shared default-path catalog (`XDG_STATE_HOME` or platform
 /// equivalent).
-#[allow(dead_code)]
 pub fn auth_db_path() -> anyhow::Result<PathBuf> {
     Ok(resolve_sce_default_locations()?
         .roots()
@@ -284,7 +283,6 @@ pub fn auth_db_path() -> anyhow::Result<PathBuf> {
 /// The path is `<state_root>/sce/agent-trace.db`, where `state_root` comes
 /// from the shared default-path catalog (`XDG_STATE_HOME` or platform
 /// equivalent).
-#[allow(dead_code)]
 pub fn agent_trace_db_path() -> anyhow::Result<PathBuf> {
     Ok(resolve_sce_default_locations()?
         .roots()
@@ -298,7 +296,6 @@ pub fn agent_trace_db_path() -> anyhow::Result<PathBuf> {
 /// The path is `<state_root>/sce/agent-trace-{checkout_id}.db`, where
 /// `state_root` comes from the shared default-path catalog (`XDG_STATE_HOME` or
 /// platform equivalent).
-#[allow(dead_code)]
 pub fn agent_trace_db_path_for_checkout(checkout_id: &str) -> anyhow::Result<PathBuf> {
     let checkout_id = checkout_id.trim();
     if checkout_id.is_empty() {
@@ -378,11 +375,13 @@ pub(crate) mod opencode_asset {
     pub const AGENTS_DIR: &str = "agents";
 }
 
-#[allow(dead_code)]
 pub(crate) mod claude_asset {
     pub const CLAUDE_DIR: &str = "claude";
+    pub const SETTINGS_FILE: &str = "settings.json";
+    pub const HOOKS_DIR: &str = "hooks";
     pub const SKILLS_DIR: &str = "skills";
     pub const AGENTS_DIR: &str = "agents";
+    pub const COMMANDS_DIR: &str = "commands";
 }
 
 #[allow(dead_code)]
@@ -410,7 +409,6 @@ pub(crate) mod schema {
     pub const SCE_CONFIG_SCHEMA: &str = "sce-config.schema.json";
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RepoPaths {
     root: PathBuf,

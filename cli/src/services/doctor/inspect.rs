@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use crate::services::agent_trace_db::lifecycle::diagnose_agent_trace_db_health;
 use crate::services::checkout;
 use crate::services::default_paths::{
-    agent_trace_db_path_for_checkout, opencode_asset, InstallTargetPaths, RepoPaths,
+    agent_trace_db_path_for_checkout, claude_asset, opencode_asset, InstallTargetPaths, RepoPaths,
 };
 use crate::services::setup::{
     iter_embedded_assets_for_setup_target, iter_required_hook_assets, EmbeddedAsset, SetupTarget,
@@ -16,7 +16,8 @@ use super::types::{
     CheckoutIdentityHealth, DoctorProblem, FileLocationHealth, GlobalStateHealth, HookContentState,
     HookDoctorReport, HookFileHealth, HookPathSource, IntegrationChildHealth,
     IntegrationContentState, IntegrationGroupHealth, ProblemCategory, ProblemFixability,
-    ProblemKind, ProblemSeverity, Readiness, OPENCODE_AGENTS_LABEL, OPENCODE_COMMANDS_LABEL,
+    ProblemKind, ProblemSeverity, Readiness, CLAUDE_AGENTS_LABEL, CLAUDE_COMMANDS_LABEL,
+    CLAUDE_PLUGINS_LABEL, CLAUDE_SKILLS_LABEL, OPENCODE_AGENTS_LABEL, OPENCODE_COMMANDS_LABEL,
     OPENCODE_PLUGINS_LABEL, OPENCODE_SKILLS_LABEL,
 };
 use super::{is_executable, DoctorDependencies, DoctorMode, REQUIRED_HOOKS};
@@ -509,8 +510,14 @@ fn inspect_repository_integrations(
         return Vec::new();
     };
 
-    let integration_groups = collect_opencode_integration_groups(resolved_root);
-    inspect_opencode_integration_health(resolved_root, &integration_groups, problems);
+    let opencode_groups = collect_opencode_integration_groups(resolved_root);
+    inspect_opencode_integration_health(resolved_root, &opencode_groups, problems);
+
+    let claude_groups = collect_claude_integration_groups(resolved_root);
+    inspect_claude_integration_health(&claude_groups, problems);
+
+    let mut integration_groups = opencode_groups;
+    integration_groups.extend(claude_groups);
     integration_groups
 }
 
@@ -731,6 +738,15 @@ fn inspect_opencode_integration_health(
     inspect_opencode_plugin_dependency_health(&install_targets, problems);
 }
 
+fn inspect_claude_integration_health(
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
+    push_claude_integration_missing_problems(integration_groups, problems);
+    push_claude_integration_mismatch_problems(integration_groups, problems);
+    push_claude_integration_read_fail_problems(integration_groups, problems);
+}
+
 fn push_opencode_integration_missing_problems(
     integration_groups: &[IntegrationGroupHealth],
     problems: &mut Vec<DoctorProblem>,
@@ -821,6 +837,109 @@ fn push_opencode_integration_read_fail_problems(
                 fixability: ProblemFixability::ManualOnly,
                 summary: format!(
                     "Unable to read OpenCode asset '{}' at '{}': {error}",
+                    child.relative_path,
+                    child.path.display()
+                ),
+                remediation: format!(
+                    "Verify that '{}' is readable before rerunning 'sce doctor'.",
+                    child.path.display()
+                ),
+                next_action: "manual_steps",
+            });
+        }
+    }
+}
+
+fn push_claude_integration_missing_problems(
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
+    for group in integration_groups {
+        let missing_children = group
+            .children
+            .iter()
+            .filter(|child| matches!(&child.content_state, IntegrationContentState::Missing))
+            .collect::<Vec<_>>();
+        if missing_children.is_empty() {
+            continue;
+        }
+
+        let missing_paths = missing_children
+            .iter()
+            .map(|child| format!("'{}'", child.path.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        problems.push(DoctorProblem {
+            kind: ProblemKind::ClaudeIntegrationFilesMissing,
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "{} required file(s) are missing: {}.",
+                group.label, missing_paths
+            ),
+            remediation: format!(
+                "Reinstall repo-root Claude assets to restore the missing {} file(s), then rerun 'sce doctor'.",
+                group.label.to_ascii_lowercase()
+            ),
+            next_action: "manual_steps",
+        });
+    }
+}
+
+fn push_claude_integration_mismatch_problems(
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
+    for group in integration_groups {
+        let mismatched_children = group
+            .children
+            .iter()
+            .filter(|child| matches!(&child.content_state, IntegrationContentState::Mismatch))
+            .collect::<Vec<_>>();
+        if mismatched_children.is_empty() {
+            continue;
+        }
+
+        let mismatched_paths = mismatched_children
+            .iter()
+            .map(|child| format!("'{}'", child.path.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        problems.push(DoctorProblem {
+            kind: ProblemKind::ClaudeIntegrationContentMismatch,
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "{} file(s) differ from the canonical embedded content: {}.",
+                group.label, mismatched_paths
+            ),
+            remediation: format!(
+                "Reinstall repo-root Claude assets to restore the canonical {} content, then rerun 'sce doctor'.",
+                group.label.to_ascii_lowercase()
+            ),
+            next_action: "manual_steps",
+        });
+    }
+}
+
+fn push_claude_integration_read_fail_problems(
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
+    for group in integration_groups {
+        for child in &group.children {
+            let IntegrationContentState::ReadFailed(error) = &child.content_state else {
+                continue;
+            };
+            problems.push(DoctorProblem {
+                kind: ProblemKind::ClaudeAssetReadFailed,
+                category: ProblemCategory::FilesystemPermissions,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "Unable to read Claude asset '{}' at '{}': {error}",
                     child.relative_path,
                     child.path.display()
                 ),
@@ -1000,16 +1119,78 @@ fn collect_opencode_integration_groups(repository_root: &Path) -> Vec<Integratio
     ]
 }
 
+fn collect_claude_integration_groups(repository_root: &Path) -> Vec<IntegrationGroupHealth> {
+    let repo_paths = RepoPaths::new(repository_root);
+    let claude_root = repo_paths.claude_dir();
+    let embedded_assets =
+        iter_embedded_assets_for_setup_target(SetupTarget::Claude).collect::<Vec<_>>();
+    let mut plugin_children = Vec::new();
+    let mut agent_children = Vec::new();
+    let mut command_children = Vec::new();
+    let mut skill_children = Vec::new();
+
+    for asset in embedded_assets {
+        let child = build_integration_child_from_asset(&claude_root, asset);
+
+        if child.relative_path == claude_asset::SETTINGS_FILE
+            || child
+                .relative_path
+                .starts_with(&format!("{}/", claude_asset::HOOKS_DIR))
+        {
+            plugin_children.push(child);
+        } else if child
+            .relative_path
+            .starts_with(&format!("{}/", claude_asset::AGENTS_DIR))
+        {
+            agent_children.push(child);
+        } else if child
+            .relative_path
+            .starts_with(&format!("{}/", claude_asset::COMMANDS_DIR))
+        {
+            command_children.push(child);
+        } else if child
+            .relative_path
+            .starts_with(&format!("{}/", claude_asset::SKILLS_DIR))
+        {
+            skill_children.push(child);
+        }
+    }
+
+    sort_integration_children(&mut plugin_children);
+    sort_integration_children(&mut agent_children);
+    sort_integration_children(&mut command_children);
+    sort_integration_children(&mut skill_children);
+
+    vec![
+        IntegrationGroupHealth {
+            label: CLAUDE_PLUGINS_LABEL,
+            children: plugin_children,
+        },
+        IntegrationGroupHealth {
+            label: CLAUDE_AGENTS_LABEL,
+            children: agent_children,
+        },
+        IntegrationGroupHealth {
+            label: CLAUDE_COMMANDS_LABEL,
+            children: command_children,
+        },
+        IntegrationGroupHealth {
+            label: CLAUDE_SKILLS_LABEL,
+            children: skill_children,
+        },
+    ]
+}
+
 fn sort_integration_children(children: &mut [IntegrationChildHealth]) {
     children.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
 }
 
 fn build_integration_child_from_asset(
-    opencode_root: &Path,
+    integration_root: &Path,
     asset: &EmbeddedAsset,
 ) -> IntegrationChildHealth {
-    let path = opencode_root.join(asset.relative_path);
-    let content_state = inspect_opencode_asset_state(&path, &asset.sha256);
+    let path = integration_root.join(asset.relative_path);
+    let content_state = inspect_integration_asset_state(&path, &asset.sha256);
     IntegrationChildHealth {
         relative_path: asset.relative_path.to_string(),
         path,
@@ -1033,7 +1214,7 @@ fn build_integration_child_presence_only(
     }
 }
 
-fn inspect_opencode_asset_state(
+fn inspect_integration_asset_state(
     path: &Path,
     expected_sha256: &[u8; 32],
 ) -> IntegrationContentState {

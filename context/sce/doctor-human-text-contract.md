@@ -50,10 +50,21 @@ Human text output for `Integrations` must use exactly these groups:
 - `OpenCode agents`
 - `OpenCode commands`
 - `OpenCode skills`
+- `ClaudeCode plugins`
+- `ClaudeCode agents`
+- `ClaudeCode commands`
+- `ClaudeCode skills`
 
 Integration checks for this contract inspect installed repo-root artifacts only.
-They validate file presence and content hashes against embedded OpenCode assets.
-Generated `config/.opencode/**` trees are out of scope for doctor integration checks in this change stream.
+They validate file presence and content hashes against embedded OpenCode and Claude setup assets.
+Generated `config/.opencode/**` and `config/.claude/**` trees are out of scope for doctor integration checks in this change stream.
+
+Claude installed assets are grouped by repo-root `.claude/` relative path:
+
+- `settings.json` and `hooks/**` -> `ClaudeCode plugins` (including `hooks/run-sce-or-show-install-guidance.sh`)
+- `agents/**` -> `ClaudeCode agents`
+- `commands/**` -> `ClaudeCode commands`
+- `skills/**` -> `ClaudeCode skills`
 
 For `agents`, `commands`, and `skills`, the installed repo-root trees are required inventory.
 If any required file in an integration group is missing or mismatched:
@@ -71,7 +82,6 @@ Integration child rows render as `[STATUS] relative/path (absolute/path)` in tex
 
 - no JSON output shape or semantic changes
 - no `sce doctor --fix` behavior changes
-- no Claude integration content validation
-- no new integration group names
+- no Claude plugin registry or preset-catalog checks
 
 See also: [doctor operator contract](agent-trace-hook-doctor.md), [CLI command surface](../cli/cli-command-surface.md).

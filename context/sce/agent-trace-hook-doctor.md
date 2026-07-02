@@ -41,9 +41,9 @@ The runtime in `cli/src/services/doctor/mod.rs` exposes the approved doctor comm
 - top-level-only human text hook rows for `pre-commit`, `commit-msg`, and `post-commit`, with nested `content` / `executable` detail removed from text mode
 - required hook presence and executable permissions for `pre-commit`, `commit-msg`, and `post-commit` when repo-scoped checks apply (delegated to `HooksLifecycle::diagnose`)
 - byte-for-byte stale-content detection for required hook payloads against canonical embedded SCE-managed hook assets (delegated to `HooksLifecycle::diagnose`)
-- repo-root installed OpenCode integration inventory for `OpenCode plugins`, `OpenCode agents`, `OpenCode commands`, and `OpenCode skills`
-- integration child-row reporting for those four groups now validates file content against embedded SHA-256; missing files render as `[MISS]`, content mismatches render as `[FAIL]`, and any affected parent group renders as `[FAIL]`
-- repo-root OpenCode plugin inventory includes the installed manifest file plus plugin/preset artifacts as required presence-only files; generated `config/.opencode/**` trees are not inspected by doctor
+- repo-root installed OpenCode integration inventory for `OpenCode plugins`, `OpenCode agents`, `OpenCode commands`, and `OpenCode skills`, plus Claude integration inventory for `ClaudeCode plugins`, `ClaudeCode agents`, `ClaudeCode commands`, and `ClaudeCode skills`
+- integration child-row reporting validates installed files against embedded SHA-256 content; missing files render as `[MISS]`, content mismatches render as `[FAIL]`, and any affected parent group renders as `[FAIL]`
+- OpenCode plugin inventory includes the installed manifest file plus plugin/preset artifacts as required presence-only files; Claude groups are derived from embedded `.claude` assets (`settings.json` and `hooks/**` under `ClaudeCode plugins`, including `.claude/hooks/run-sce-or-show-install-guidance.sh`, then `agents/**`, `commands/**`, and `skills/**`); generated `config/.opencode/**` and `config/.claude/**` trees are not inspected by doctor
 - repair-mode delegation to `ServiceLifecycle::fix` implementations: `HooksLifecycle::fix` reuses `install_required_git_hooks` for missing hooks directories plus missing, stale, or non-executable required hooks; `LocalDbLifecycle::fix`, `AuthDbLifecycle::fix`, and `AgentTraceDbLifecycle::fix` handle bootstrap of missing canonical SCE-owned DB parent directories
 
 ## Approved human text-mode contract

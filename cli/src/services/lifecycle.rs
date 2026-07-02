@@ -51,10 +51,13 @@ pub enum HealthProblemKind {
     HookContentStale,
     OpenCodeIntegrationFilesMissing,
     OpenCodeIntegrationContentMismatch,
+    ClaudeIntegrationFilesMissing,
+    ClaudeIntegrationContentMismatch,
     OpenCodePluginRegistryInvalid,
     OpenCodeAssetMissingOrInvalid,
     HookReadFailed,
     OpenCodeAssetReadFailed,
+    ClaudeAssetReadFailed,
     AgentTraceDbConnectionFailed,
     AgentTraceDbSchemaNotReady,
 }
@@ -111,8 +114,8 @@ pub struct SetupOutcome {
     pub required_hooks_install: Option<RequiredHooksInstallOutcome>,
 }
 
-#[allow(dead_code)]
 pub trait ServiceLifecycle: Send + Sync {
+    #[allow(dead_code)]
     fn id(&self) -> LifecycleProviderId;
 
     fn diagnose<C: HasRepoRoot>(&self, _ctx: &C) -> Vec<HealthProblem> {

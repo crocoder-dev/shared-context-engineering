@@ -4,6 +4,10 @@ pub(super) const OPENCODE_PLUGINS_LABEL: &str = "OpenCode plugins";
 pub(super) const OPENCODE_AGENTS_LABEL: &str = "OpenCode agents";
 pub(super) const OPENCODE_COMMANDS_LABEL: &str = "OpenCode commands";
 pub(super) const OPENCODE_SKILLS_LABEL: &str = "OpenCode skills";
+pub(super) const CLAUDE_PLUGINS_LABEL: &str = "ClaudeCode plugins";
+pub(super) const CLAUDE_AGENTS_LABEL: &str = "ClaudeCode agents";
+pub(super) const CLAUDE_COMMANDS_LABEL: &str = "ClaudeCode commands";
+pub(super) const CLAUDE_SKILLS_LABEL: &str = "ClaudeCode skills";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Readiness {
@@ -130,10 +134,13 @@ pub(crate) enum ProblemKind {
     HookContentStale,
     OpenCodeIntegrationFilesMissing,
     OpenCodeIntegrationContentMismatch,
+    ClaudeIntegrationFilesMissing,
+    ClaudeIntegrationContentMismatch,
     OpenCodePluginRegistryInvalid,
     OpenCodeAssetMissingOrInvalid,
     HookReadFailed,
     OpenCodeAssetReadFailed,
+    ClaudeAssetReadFailed,
     AgentTraceDbConnectionFailed,
     AgentTraceDbSchemaNotReady,
 }
