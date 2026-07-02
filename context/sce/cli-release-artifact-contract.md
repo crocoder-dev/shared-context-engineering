@@ -4,7 +4,8 @@ This file captures the current shared release artifact foundation plus the appro
 
 ## Canonical artifact set
 
-- `nix run .#release-artifacts -- --version <semver> --out-dir <path>` builds the current-platform packaged CLI release assets.
+- `nix run .#release-artifacts -- --version <semver> --out-dir <path>` builds the current-platform packaged CLI release assets, prepares the copied `bin/sce` binary, and audits it before archive creation.
+- `nix run .#native-portability-audit -- --binary <path> [--platform auto|linux|macos]` audits a native `sce` binary for forbidden `/nix/store/` runtime references and reports offending references; macOS uses dynamic library install-name inspection, while Linux combines ELF dynamic metadata with focused binary-string scanning for shared-object references.
 - The per-platform archive name is `sce-v<version>-<target-triple>.tar.gz`.
 - The matching per-platform checksum file is `sce-v<version>-<target-triple>.tar.gz.sha256`.
 - The matching per-platform metadata fragment is `sce-v<version>-<target-triple>.json`.
@@ -47,6 +48,14 @@ This file captures the current shared release artifact foundation plus the appro
   - `LICENSE`
   - `README.md`
 
+## Native binary portability gate
+
+- `release-artifacts` copies `result/bin/sce` into the staged archive tree before mutation/audit so the Nix build output remains unchanged.
+- On macOS release hosts, the staged binary is inspected with `otool -L`; Nix-store `libiconv.*.dylib` install names are rewritten to `/usr/lib/...` with `install_name_tool`, and a mutated binary is ad-hoc re-signed with `codesign --force --sign -` before audit.
+- Any remaining macOS `/nix/store/` install name fails packaging before tarball creation.
+- On Linux release hosts, the staged binary is audited before tarball creation; forbidden `/nix/store/` references in ELF dynamic metadata or shared-object string references fail packaging before uploadable artifacts are emitted.
+- After preparation/audit, `release-artifacts` smoke-checks the staged binary with `sce version --format json` before archiving.
+
 ## Determinism rules
 
 - Release archives are built from the root flake package output (`nix build .#default`).
@@ -67,7 +76,8 @@ This file captures the current shared release artifact foundation plus the appro
 - The release orchestrator also runs `nix run .#release-flatpak-package -- --version <resolved-version> --out-dir dist/flatpak` and uploads `dist/flatpak/*.tar.gz`, `dist/flatpak/*.sha256`, and `dist/flatpak/*.json` to the GitHub Release.
 - Manual GitHub release dispatch resolves the tag from checked-in `.version` and refuses to create the tag when `.version`, `cli/Cargo.toml`, and `npm/package.json` are not already aligned. Manual dispatch also exposes a boolean pre-release checkbox that is passed only to `softprops/action-gh-release` as the GitHub Release-level `prerelease` flag; it does not change tag naming, release title/body/notes, generated release notes, artifact names, or version validation.
 - Tag-triggered release execution also refuses to proceed when the pushed tag does not equal `v<.version>` or when checked-in Cargo/npm package metadata drift from `.version`.
-- `nix run .#release-artifacts` fails fast when the requested `--version` disagrees with `.version`, `cli/Cargo.toml`, `npm/package.json`, or the built CLI `sce version` output.
+- `nix run .#release-artifacts` fails fast when the requested `--version` disagrees with `.version`, `cli/Cargo.toml`, `npm/package.json`, the built CLI `sce version` output, the prepared binary's `sce version` output, or the native portability audit.
+- `checks.<system>.native-portability-audit` exercises the native portability audit against deterministic clean/failing Linux string-scan fixtures and clean/failing macOS `otool -L` fixtures.
 - `nix run .#release-flatpak-package` fails fast when the requested `--version` disagrees with `.version`, `cli/Cargo.toml`, `npm/package.json`, or Flatpak AppStream release metadata, and also fails when it cannot resolve a release commit from a git checkout.
 - `nix run .#release-artifacts` also rejects host OS/architecture pairs outside the current three-target release matrix; macOS Intel (`Darwin:x86_64`) is no longer a supported current-platform packaging host.
 - The release orchestrator passes the resolved checked-in version through to the platform builds, merged release-manifest assembly, npm tarball packaging, and Flatpak source-manifest packaging without mutating package versions during workflow execution.
@@ -75,6 +85,7 @@ This file captures the current shared release artifact foundation plus the appro
   - `.github/workflows/release-sce-linux.yml`
   - `.github/workflows/release-sce-linux-arm.yml`
   - `.github/workflows/release-sce-macos-arm.yml`
+- Each native reusable workflow validates its generated archive before native artifact upload by deriving the expected target-specific archive name from the resolved version, extracting it, asserting `bin/sce` is executable, running `sce version --format json`, and invoking `nix run .#native-portability-audit` with the lane's platform (`linux` or `macos`).
 - The reusable Linux ARM workflow builds canonical `aarch64-unknown-linux-gnu` artifacts on an ARM Linux runner, and the top-level release orchestrator now requires and publishes that lane alongside the other platform workflows.
 
 ## Current orchestrated release targets in automation
@@ -94,6 +105,7 @@ This file captures the current shared release artifact foundation plus the appro
 
 - The implemented npm channel consumes this artifact naming and manifest/checksum shape rather than inventing a channel-specific archive format.
 - The implemented npm channel also depends on the published `sce-v<version>-release-manifest.json.sig` asset so manifest-provided checksums are only trusted after signature verification.
+- Native archives listed in the signed release manifest for npm-supported targets must already be portable: no forbidden `/nix/store/` runtime references may remain after macOS sanitization or Linux/macOS audit, and each reusable native workflow must smoke-run the extracted `bin/sce` before upload. npm consumes those published archives as-is and does not patch dynamic-link metadata.
 - Additional binary-distribution install channels should reuse this artifact contract unless a later decision explicitly supersedes it.
 - Flatpak is the current approved exception to binary-artifact reuse: the Flatpak package for application ID `dev.crocoder.sce` is source-built inside Flatpak, uses a release-source manifest plus a Nix-generated local checkout-source manifest/override for local builds, and must not consume Nix-built, native GitHub Release binary archives, npm native, or other prebuilt `sce` artifacts.
 - GitHub Release Flatpak assets include source-manifest package assets and source-built `.flatpak` bundle assets, both uploaded by the CLI release workflow; automatic Flathub submission and prebuilt (non-source-built) Flatpak binary/bundle assets remain out of scope.

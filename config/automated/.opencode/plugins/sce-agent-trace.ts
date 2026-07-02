@@ -337,9 +337,7 @@ async function runDiffTraceHook(
 
 		child.on("error", (err: NodeJS.ErrnoException) => {
 			if (err.code === "ENOENT") {
-				console.warn(
-					`sce CLI not found. Install it from ${SCE_INSTALL_URL}`,
-				);
+				console.warn(`sce CLI not found. Install it from ${SCE_INSTALL_URL}`);
 			}
 			resolve();
 		});
@@ -364,9 +362,7 @@ async function runConversationTraceHook(
 
 		child.on("error", (err: NodeJS.ErrnoException) => {
 			if (err.code === "ENOENT") {
-				console.warn(
-					`sce CLI not found. Install it from ${SCE_INSTALL_URL}`,
-				);
+				console.warn(`sce CLI not found. Install it from ${SCE_INSTALL_URL}`);
 			}
 			resolve();
 		});

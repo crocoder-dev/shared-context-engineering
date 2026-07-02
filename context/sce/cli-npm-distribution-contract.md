@@ -6,6 +6,7 @@ This file captures the implemented npm distribution slice from `context/plans/sc
 
 - The npm package name is `@crocoder-dev/sce`.
 - The committed package source lives under `npm/`.
+- `npm/README.md` documents the package as a thin launcher, lists the supported npm platform-to-target-triple matrix, and distinguishes npm `postinstall`/download/signature/checksum/permission failures from runtime loader failures caused by bad native release artifact linkage.
 - `npm/package.json` exposes the `sce` binary through `bin/sce.js`.
 - The npm package is a thin launcher package, not a separate build pipeline.
 
@@ -33,6 +34,7 @@ This file captures the implemented npm distribution slice from `context/plans/sc
   - `sce-v<version>-npm.json`
 - The helper also refuses to proceed when checked-in `.version`, `cli/Cargo.toml`, and `npm/package.json` are not already aligned.
 - `.github/workflows/release-sce.yml` publishes those npm assets alongside the canonical CLI archives, `sce-v<version>-release-manifest.json`, and `sce-v<version>-release-manifest.json.sig`.
+- Native archive portability is a release-artifact prerequisite for every npm-supported target triple. Archives selected through the signed release manifest must have passed macOS/Linux native portability audit and extracted-binary `sce version --format json` smoke validation before upload.
 
 ## Registry publication topology
 
@@ -47,6 +49,7 @@ This file captures the implemented npm distribution slice from `context/plans/sc
 - Real publication requires `NPM_TOKEN`; manual dispatch can remain on a dry-run path via `npm publish --dry-run`.
 - The npm publish workflow publishes the already-versioned checked-in `npm/` package and does not invent or bump a release version during workflow execution.
 - The npm installer continues to trust GitHub Releases as the canonical host for signed manifest and native binary artifacts.
+- Native binary portability hygiene is owned by the shared release artifact surface before archive publication, including macOS `libiconv` install-name sanitization, Linux/macOS forbidden `/nix/store/` audits, and reusable-workflow extracted-binary smoke validation; npm continues to consume the signed release manifest and checksum-verified native archive without adding a separate npm-native build or dylib repair path.
 
 ## Verification baseline
 

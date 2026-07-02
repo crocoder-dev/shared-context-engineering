@@ -36,6 +36,36 @@ jobs:
             --version "${{ inputs.release_version }}" \
             --out-dir dist
 
+      - name: Validate packaged Linux ARM CLI release artifact
+        run: |
+          set -euo pipefail
+
+          version="${{ inputs.release_version }}"
+          target_triple="aarch64-unknown-linux-gnu"
+          archive_root="sce-v${version}-${target_triple}"
+          archive_path="dist/${archive_root}.tar.gz"
+
+          if [ ! -f "$archive_path" ]; then
+            printf 'Expected release archive at %s\n' "$archive_path" >&2
+            exit 1
+          fi
+
+          extract_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/sce-release-validate.XXXXXX")"
+          cleanup() {
+            rm -rf "$extract_dir"
+          }
+          trap cleanup EXIT
+
+          tar -xzf "$archive_path" -C "$extract_dir"
+          release_binary="$extract_dir/$archive_root/bin/sce"
+          if [ ! -x "$release_binary" ]; then
+            printf 'Expected executable release binary at %s\n' "$release_binary" >&2
+            exit 1
+          fi
+
+          "$release_binary" version --format json
+          nix run .#native-portability-audit -- --platform linux --binary "$release_binary"
+
       - name: Allow Flatpak build sandbox
         run: |
           sudo sysctl -w kernel.unprivileged_userns_clone=1

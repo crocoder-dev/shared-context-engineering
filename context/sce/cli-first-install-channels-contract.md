@@ -23,10 +23,11 @@ No other install channels are in scope for the current implementation stage.
 
 - `flake.nix` is the first-class Nix run/install surface for this rollout.
 - Nix-managed build/release entrypoints remain the required build source for existing binary release automation.
+- Nix also exposes the native release portability audit app/check used to detect forbidden `/nix/store/` runtime references in npm-supported native release binaries; `release-artifacts` runs that audit against the staged binary before archive creation and performs macOS-only `libiconv` install-name rewriting/ad-hoc re-signing when needed.
 - Nix may also orchestrate Flatpak tooling, local source overrides, validation, and local builds, but the Flatpak package itself must build `sce` from source inside Flatpak.
 - Repo-root `.version` is the canonical checked-in release version authority for the Nix, Cargo, npm, and release-artifact surfaces.
 - GitHub Releases are the canonical publication surface for release archives, native release manifest/checksum assets, npm package assets, and approved Flatpak source-manifest package assets produced for the version declared in `.version`. Manual release dispatch may set the GitHub Release-level `prerelease` flag explicitly, but tag/version semantics and asset names still come from `.version`.
-- `npm` consumes release artifacts produced by Nix-managed build/release flows.
+- `npm` consumes release artifacts produced by Nix-managed build/release flows; npm-supported native archives must already be free of forbidden `/nix/store/` runtime references and smoke-validated before upload because the npm installer does not patch native dynamic-link metadata.
 - `Cargo` is a first-class supported install path and its publish metadata should stay aligned to `.version` without workflow-side version bumping.
 - npm registry publication should also consume the checked-in package version aligned to `.version` without workflow-side version bumping.
 - Flatpak is source-built and must not consume `nix build .#sce`, native GitHub Release binary archives, npm native binaries, or any other prebuilt `sce` artifact.

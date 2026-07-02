@@ -310,7 +310,9 @@
             pkgs.jq
             pkgs.nix
             pkgs.nodejs
-          ];
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.binutils ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.cctools ];
           text = ''
             set -euo pipefail
 
@@ -412,6 +414,78 @@
               esac
             }
 
+            audit_platform_for_os() {
+              case "$1" in
+                Linux)
+                  printf 'linux'
+                  ;;
+                Darwin)
+                  printf 'macos'
+                  ;;
+                *)
+                  printf 'Unsupported release audit platform for os=%s\n' "$1" >&2
+                  exit 1
+                  ;;
+              esac
+            }
+
+            sanitize_macos_binary() {
+              local release_binary="$1"
+              local otool_bin="''${NATIVE_PORTABILITY_AUDIT_OTOOL:-otool}"
+              local install_name_tool_bin="''${SCE_RELEASE_INSTALL_NAME_TOOL:-install_name_tool}"
+              local codesign_bin="''${SCE_RELEASE_CODESIGN:-codesign}"
+              local otool_output="$tmp_dir/otool-before-sanitize.txt"
+              local changed=0
+
+              if ! command -v "$otool_bin" >/dev/null 2>&1; then
+                printf 'macOS release binary sanitization failed: otool is required for install-name inspection\n' >&2
+                exit 1
+              fi
+
+              if ! command -v "$install_name_tool_bin" >/dev/null 2>&1; then
+                printf 'macOS release binary sanitization failed: install_name_tool is required to rewrite Nix store dylib references\n' >&2
+                exit 1
+              fi
+
+              if ! "$otool_bin" -L "$release_binary" > "$otool_output" 2> "$tmp_dir/otool-before-sanitize.err"; then
+                printf 'macOS release binary sanitization failed: otool -L could not inspect %s\n' "$release_binary" >&2
+                cat "$tmp_dir/otool-before-sanitize.err" >&2
+                exit 1
+              fi
+
+              while IFS= read -r line; do
+                local install_name="''${line%% (*}"
+                install_name="''${install_name#"''${install_name%%[![:space:]]*}"}"
+
+                if [[ "$install_name" != /nix/store/* ]]; then
+                  continue
+                fi
+
+                case "$install_name" in
+                  */lib/libiconv.*.dylib)
+                    local replacement
+                    replacement="/usr/lib/$(basename "$install_name")"
+                    printf 'Rewriting macOS release install name: %s -> %s\n' "$install_name" "$replacement"
+                    "$install_name_tool_bin" -change "$install_name" "$replacement" "$release_binary"
+                    changed=1
+                    ;;
+                  *)
+                    printf 'macOS release binary sanitization failed: unsupported Nix store install name %s\n' "$install_name" >&2
+                    exit 1
+                    ;;
+                esac
+              done < "$otool_output"
+
+              if [[ "$changed" -eq 1 ]]; then
+                if ! command -v "$codesign_bin" >/dev/null 2>&1; then
+                  printf 'macOS release binary sanitization failed: codesign is required after mutating install names\n' >&2
+                  exit 1
+                fi
+
+                "$codesign_bin" --force --sign - "$release_binary"
+              fi
+            }
+
             os_name="$(uname -s)"
             arch_name="$(normalize_arch "$(uname -m)")"
             target_triple="$(detect_target_triple "$os_name" "$arch_name")"
@@ -446,6 +520,21 @@
             cp "$binary_path" "$tmp_dir/$archive_root/bin/sce"
             cp "LICENSE" "$tmp_dir/$archive_root/LICENSE"
             cp "README.md" "$tmp_dir/$archive_root/README.md"
+
+            release_binary_path="$tmp_dir/$archive_root/bin/sce"
+            audit_platform="$(audit_platform_for_os "$os_name")"
+
+            if [[ "$audit_platform" == "macos" ]]; then
+              sanitize_macos_binary "$release_binary_path"
+            fi
+
+            bash ${./nix/release/native-portability-audit.sh} --platform "$audit_platform" --binary "$release_binary_path"
+
+            release_binary_version="$($release_binary_path version --format json | ${pkgs.jq}/bin/jq -r '.version')"
+            if [[ "$release_binary_version" != "$version" ]]; then
+              printf 'Prepared release CLI version %s does not match release version %s\n' "$release_binary_version" "$version" >&2
+              exit 1
+            fi
 
             archive_path="$out_dir/$archive_name"
             checksum_path="$out_dir/$checksum_name"
@@ -487,6 +576,17 @@
             printf '  %s\n' "$archive_path"
             printf '  %s\n' "$checksum_path"
             printf '  %s\n' "$manifest_path"
+          '';
+        };
+
+        nativePortabilityAuditApp = pkgs.writeShellApplication {
+          name = "native-portability-audit";
+          runtimeInputs =
+            [ pkgs.coreutils ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.binutils ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.darwin.cctools ];
+          text = ''
+            exec bash ${./nix/release/native-portability-audit.sh} "$@"
           '';
         };
 
@@ -1008,6 +1108,87 @@
               mkdir -p "$out"
             '';
 
+        nativePortabilityAuditCheck =
+          pkgs.runCommand "native-portability-audit-check"
+            { }
+            ''
+              set -euo pipefail
+
+              audit=${./nix/release/native-portability-audit.sh}
+
+              cat > ./fake-strings <<EOF
+              #!${pkgs.bash}/bin/bash
+              set -euo pipefail
+
+              if [[ "\$1" != "-a" ]]; then
+                exit 2
+              fi
+
+              cat "\$2"
+              EOF
+              chmod +x ./fake-strings
+
+              cat > ./fake-readelf <<EOF
+              #!${pkgs.bash}/bin/bash
+              set -euo pipefail
+              exit 0
+              EOF
+              chmod +x ./fake-readelf
+
+              printf 'portable binary fixture\n' > ./linux-clean.bin
+              NATIVE_PORTABILITY_AUDIT_READELF="$PWD/fake-readelf" NATIVE_PORTABILITY_AUDIT_STRINGS="$PWD/fake-strings" bash "$audit" --platform linux --binary ./linux-clean.bin
+
+              printf 'bad /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-libbad-1/lib/libbad.so reference\n' > ./linux-bad.bin
+              if NATIVE_PORTABILITY_AUDIT_READELF="$PWD/fake-readelf" NATIVE_PORTABILITY_AUDIT_STRINGS="$PWD/fake-strings" bash "$audit" --platform linux --binary ./linux-bad.bin > ./linux-bad.out 2> ./linux-bad.err; then
+                printf 'expected Linux forbidden-reference fixture to fail\n' >&2
+                exit 1
+              fi
+              grep -F 'Native binary portability audit failed:' ./linux-bad.err >/dev/null
+              grep -F '/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-libbad-1/lib/libbad.so' ./linux-bad.err >/dev/null
+
+              cat > ./fake-otool <<EOF
+              #!${pkgs.bash}/bin/bash
+              set -euo pipefail
+
+              if [[ "\$1" != "-L" ]]; then
+                exit 2
+              fi
+
+              case "\$2" in
+                *macos-clean*)
+                  cat <<'OUT'
+              ./macos-clean.bin:
+                /usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1336.0.0)
+              OUT
+                  ;;
+                *macos-bad*)
+                  cat <<'OUT'
+              ./macos-bad.bin:
+                /nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-libiconv-50/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)
+                /usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1336.0.0)
+              OUT
+                  ;;
+                *)
+                  exit 3
+                  ;;
+              esac
+              EOF
+              chmod +x ./fake-otool
+
+              printf 'macos clean fixture\n' > ./macos-clean.bin
+              NATIVE_PORTABILITY_AUDIT_OTOOL="$PWD/fake-otool" bash "$audit" --platform macos --binary ./macos-clean.bin
+
+              printf 'macos bad fixture\n' > ./macos-bad.bin
+              if NATIVE_PORTABILITY_AUDIT_OTOOL="$PWD/fake-otool" bash "$audit" --platform macos --binary ./macos-bad.bin > ./macos-bad.out 2> ./macos-bad.err; then
+                printf 'expected macOS forbidden-reference fixture to fail\n' >&2
+                exit 1
+              fi
+              grep -F 'Native binary portability audit failed:' ./macos-bad.err >/dev/null
+              grep -F '/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-libiconv-50/lib/libiconv.2.dylib' ./macos-bad.err >/dev/null
+
+              mkdir -p "$out"
+            '';
+
         sceApp = {
           type = "app";
           program = "${scePackage}/bin/sce";
@@ -1063,6 +1244,7 @@
             config-lib-biome-format = configLibBiomeFormat;
 
             workflow-actionlint = workflowActionlintCheck;
+            native-portability-audit = nativePortabilityAuditCheck;
           }
           // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
             flatpak-static-validation = flatpakStaticValidationCheck;
@@ -1096,6 +1278,14 @@
               program = "${releaseArtifactsApp}/bin/release-artifacts";
               meta = {
                 description = "Build current-platform sce release artifacts";
+              };
+            };
+
+            native-portability-audit = {
+              type = "app";
+              program = "${nativePortabilityAuditApp}/bin/native-portability-audit";
+              meta = {
+                description = "Audit native release binaries for forbidden Nix store runtime references";
               };
             };
 
@@ -1221,6 +1411,7 @@
             echo "- pkl-generate: nix run .#pkl-generate"
             echo "- pkl-check-generated: nix run .#pkl-check-generated"
             echo "- release-artifacts: nix run .#release-artifacts -- --help"
+            echo "- native-portability-audit: nix run .#native-portability-audit -- --help"
             echo "- release-manifest: nix run .#release-manifest -- --help"
             echo "- release-npm-package: nix run .#release-npm-package -- --help"
             ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
