@@ -7,8 +7,6 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
     crane.url = "github:ipetkov/crane";
-    opencode.url = "github:anomalyco/opencode/dev";
-    opencode-nixpkgs.follows = "opencode/nixpkgs";
     turso.url = "github:tursodatabase/turso/1ebe80ff228f3a56cb521d44b12dc9a7bd04b027";
     turso.inputs.nixpkgs.follows = "nixpkgs";
     turso.inputs.flake-utils.follows = "flake-utils";
@@ -25,8 +23,6 @@
       flake-utils,
       rust-overlay,
       crane,
-      opencode,
-      opencode-nixpkgs,
       turso,
       flatpak-builder-tools,
     }:
@@ -36,12 +32,6 @@
         pkgs = import nixpkgs {
           inherit system;
           overlays = [ rust-overlay.overlays.default ];
-          config.allowUnfreePredicate =
-            pkg: builtins.elem (pkgs.lib.getName pkg) [ "claude-code" ];
-        };
-
-        opencodePkgs = import opencode-nixpkgs {
-          inherit system;
         };
 
         bunVersion = "1.3.14";
@@ -284,16 +274,6 @@
             };
           }
         );
-
-        opencodePackage = opencode.packages.${system}.opencode.overrideAttrs (oldAttrs: {
-          postPatch = (oldAttrs.postPatch or "") + ''
-            substituteInPlace package.json \
-              --replace-fail '"packageManager": "bun@1.3.14"' \
-              '"packageManager": "bun@${opencodePkgs.bun.version}"'
-          '';
-        });
-
-        claudeCodePackage = pkgs.claude-code;
 
         tursoCargoArgs = {
           pname = "turso";
@@ -1101,8 +1081,6 @@
         packages = {
           sce = scePackage;
           bun = bunPackage;
-          opencode = opencodePackage;
-          claude-code = claudeCodePackage;
           turso = tursoPackage;
           default = scePackage;
         };
@@ -1308,8 +1286,6 @@
               typescript
               typescript-language-server
               vscode-json-languageserver
-              opencodePackage
-              claudeCodePackage
               rust-analyzer
               scePackage
               tursoPackage
@@ -1325,10 +1301,6 @@
             version_of() {
               "$1" --version 2>/dev/null | awk 'match($0, /[0-9]+(\.[0-9]+)+/) { print substr($0, RSTART, RLENGTH); exit }'
             }
-
-            alias claude="${claudeCodePackage}/bin/claude"
-            alias cc="${claudeCodePackage}/bin/claude"
-
             echo "- bun: $(version_of bun)"
             echo "- biome: $(version_of biome)"
             echo "- pkl: $(version_of pkl)"
@@ -1337,8 +1309,6 @@
             echo "- tsserver-lsp: $(version_of typescript-language-server)"
             echo "- rust: $(version_of rustc)"
             echo "- sce: $(version_of sce)"
-            echo "- opencode: $(version_of opencode)"
-            echo "- claude-code: $(version_of claude)"
             echo "- turso: $(version_of turso)"
             echo "- pkl-generate: nix run .#pkl-generate"
             echo "- pkl-check-generated: nix run .#pkl-check-generated"

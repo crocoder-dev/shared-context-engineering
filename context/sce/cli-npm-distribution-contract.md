@@ -42,6 +42,8 @@ This file captures the implemented npm distribution slice from `context/plans/sc
 - It validates parity across repo-root `.version`, checked-in `npm/package.json`, and the target release tag before attempting publication.
 - It downloads the canonical `sce-v<version>-npm.tgz` asset from the corresponding GitHub release rather than rebuilding or mutating package metadata during publish.
 - It verifies the downloaded tarball still declares package name `@crocoder-dev/sce` and version `<.version>` before `npm publish`.
+- For GitHub prerelease events, manual dispatches marked `prerelease: true`, or checked-in semver prerelease versions containing `-`, the workflow publishes with npm dist-tag `next` so the package does not become `latest`.
+- When a publish run is explicitly marked prerelease, the workflow requires `.version` to be a semver prerelease version and fails before publishing if it is not.
 - Real publication requires `NPM_TOKEN`; manual dispatch can remain on a dry-run path via `npm publish --dry-run`.
 - The npm publish workflow publishes the already-versioned checked-in `npm/` package and does not invent or bump a release version during workflow execution.
 - The npm installer continues to trust GitHub Releases as the canonical host for signed manifest and native binary artifacts.

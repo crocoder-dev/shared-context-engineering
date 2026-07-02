@@ -14,6 +14,11 @@ on:
         required: false
         default: true
         type: boolean
+      prerelease:
+        description: "Publish with the next dist-tag instead of latest; version must include semver prerelease metadata"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -29,6 +34,7 @@ jobs:
       DISPATCH_RELEASE_TAG: ${{ inputs.release_tag }}
       EVENT_RELEASE_TAG: ${{ github.event.release.tag_name }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+      PRE_RELEASE: ${{ github.event_name == 'release' && github.event.release.prerelease || github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
       GH_TOKEN: ${{ github.token }}
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
@@ -74,7 +80,21 @@ jobs:
             exit 1
           fi
 
-          printf 'Publishing checked-in npm package version %s from tag %s\n' "$version" "$release_tag"
+          case "$version" in
+            *-*) version_is_prerelease=true ;;
+            *) version_is_prerelease=false ;;
+          esac
+
+          if [ "${PRE_RELEASE:-false}" = "true" ] && [ "$version_is_prerelease" != "true" ]; then
+            printf 'Prerelease npm publication requires a semver prerelease version, but .version is %s\n' "$version" >&2
+            exit 1
+          fi
+
+          if [ "${PRE_RELEASE:-false}" = "true" ] || [ "$version_is_prerelease" = "true" ]; then
+            printf 'Publishing checked-in npm prerelease package version %s from tag %s with npm dist-tag next\n' "$version" "$release_tag"
+          else
+            printf 'Publishing checked-in npm package version %s from tag %s with npm dist-tag latest\n' "$version" "$release_tag"
+          fi
 
       - name: Download canonical npm release asset
         shell: bash
@@ -120,7 +140,14 @@ jobs:
         if: env.DRY_RUN == 'true'
         run: |
           version="$(tr -d '\n' < .version)"
-          npm publish "dist/npm/sce-v${version}-npm.tgz" --access public --dry-run
+          npm_tag="latest"
+          case "$version" in
+            *-*) npm_tag="next" ;;
+          esac
+          if [ "${PRE_RELEASE:-false}" = "true" ]; then
+            npm_tag="next"
+          fi
+          npm publish "dist/npm/sce-v${version}-npm.tgz" --access public --tag "$npm_tag" --dry-run
 
       - name: Ensure npm token is configured
         if: env.DRY_RUN != 'true'
@@ -138,4 +165,11 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           version="$(tr -d '\n' < .version)"
-          npm publish "dist/npm/sce-v${version}-npm.tgz" --access public
+          npm_tag="latest"
+          case "$version" in
+            *-*) npm_tag="next" ;;
+          esac
+          if [ "${PRE_RELEASE:-false}" = "true" ]; then
+            npm_tag="next"
+          fi
+          npm publish "dist/npm/sce-v${version}-npm.tgz" --access public --tag "$npm_tag"

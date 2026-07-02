@@ -16,6 +16,8 @@ This file captures the implemented Cargo distribution slice from `context/plans/
 - It validates parity across the requested release tag (`v<version>`), repo-root `.version`, and `cli/Cargo.toml` before any publish step runs.
 - It copies the checked-out repository into a temporary clean workspace, prepares the ephemeral `cli/assets/generated/` mirror there from canonical `config/` outputs, and runs Cargo packaging/publish from that clean workspace.
 - Manual dispatch supports `dry_run: true` by default so maintainers can verify packaging without publishing.
+- Manual dispatch also supports `prerelease: true`; GitHub prerelease events are treated as prerelease publish runs automatically.
+- When a publish run is marked prerelease, the workflow requires `.version` to include semver prerelease metadata such as `-alpha.1`, `-beta.1`, or `-rc.1` before publishing. Crates.io has no npm-style dist-tag channel, so the semver prerelease version is the crate prerelease marker.
 - Real publication requires the `CARGO_REGISTRY_TOKEN` secret and runs `nix develop -c cargo publish --manifest-path <temp-copy>/cli/Cargo.toml --locked` from the clean temporary workspace without mutating package metadata.
 
 ## Supported Cargo install paths

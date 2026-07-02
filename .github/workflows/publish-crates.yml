@@ -14,6 +14,11 @@ on:
         required: false
         default: true
         type: boolean
+      prerelease:
+        description: "Treat this as a prerelease publication; version must include semver prerelease metadata"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -29,6 +34,7 @@ jobs:
       DISPATCH_RELEASE_TAG: ${{ inputs.release_tag }}
       EVENT_RELEASE_TAG: ${{ github.event.release.tag_name }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+      PRE_RELEASE: ${{ github.event_name == 'release' && github.event.release.prerelease || github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -70,7 +76,21 @@ jobs:
             exit 1
           fi
 
-          printf 'Publishing checked-in crate version %s from tag %s\n' "$version" "$release_tag"
+          case "$version" in
+            *-*) version_is_prerelease=true ;;
+            *) version_is_prerelease=false ;;
+          esac
+
+          if [ "${PRE_RELEASE:-false}" = "true" ] && [ "$version_is_prerelease" != "true" ]; then
+            printf 'Prerelease crate publication requires a semver prerelease version, but .version is %s\n' "$version" >&2
+            exit 1
+          fi
+
+          if [ "$version_is_prerelease" = "true" ]; then
+            printf 'Publishing checked-in semver prerelease crate version %s from tag %s\n' "$version" "$release_tag"
+          else
+            printf 'Publishing checked-in crate version %s from tag %s\n' "$version" "$release_tag"
+          fi
 
       - name: Prepare crate-local generated assets
         env:
