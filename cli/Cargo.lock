@@ -3405,7 +3405,7 @@ dependencies = [
 
 [[package]]
 name = "shared-context-engineering"
-version = "0.3.0-pre-alpha-v3"
+version = "0.3.0-pre-alpha-v4"
 dependencies = [
  "anyhow",
  "apple-native-keyring-store",
