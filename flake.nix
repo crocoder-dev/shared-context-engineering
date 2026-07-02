@@ -196,6 +196,7 @@
             cp -R ${./config/.claude} "$sourceRoot/cli/assets/generated/config/claude"
             mkdir -p "$sourceRoot/cli/assets/generated/config/schema"
             cp ${./config/schema/sce-config.schema.json} "$sourceRoot/cli/assets/generated/config/schema/sce-config.schema.json"
+            cp ${./config/schema/agent-trace.schema.json} "$sourceRoot/cli/assets/generated/config/schema/agent-trace.schema.json"
 
             cd "$sourceRoot/cli"
             sourceRoot="."

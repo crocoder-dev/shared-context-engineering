@@ -133,10 +133,8 @@ fn parse_commit_timestamp(commit_timestamp: &str) -> Result<DateTime<FixedOffset
 #[allow(dead_code)]
 const AGENT_TRACE_SCHEMA_PATH: &str = "config/schema/agent-trace.schema.json";
 #[allow(dead_code)]
-pub(crate) const AGENT_TRACE_SCHEMA_JSON: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../config/schema/agent-trace.schema.json"
-));
+pub(crate) const AGENT_TRACE_SCHEMA_JSON: &str =
+    include_str!("../../assets/generated/config/schema/agent-trace.schema.json");
 
 #[allow(dead_code)]
 static AGENT_TRACE_SCHEMA_VALIDATOR: OnceLock<Validator> = OnceLock::new();

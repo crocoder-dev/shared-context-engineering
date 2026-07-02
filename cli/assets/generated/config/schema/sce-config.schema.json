@@ -1,0 +1,349 @@
+{
+  "$id": "https://sce.crocoder.dev/config.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SCE Config",
+  "description": "Canonical JSON Schema for global and repo-local sce/config.json files.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "const": "https://sce.crocoder.dev/config.json"
+    },
+    "log_level": {
+      "type": "string",
+      "enum": [
+        "error",
+        "warn",
+        "info",
+        "debug"
+      ]
+    },
+    "log_format": {
+      "type": "string",
+      "enum": [
+        "text",
+        "json"
+      ]
+    },
+    "log_file": {
+      "type": "string",
+      "minLength": 1
+    },
+    "log_file_mode": {
+      "type": "string",
+      "enum": [
+        "truncate",
+        "append"
+      ]
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "workos_client_id": {
+      "type": "string"
+    },
+    "policies": {
+      "type": "object",
+      "properties": {
+        "attribution_hooks": {
+          "description": "Attribution hook policy. Commit-msg attribution is enabled by default and can be suppressed with SCE_ATTRIBUTION_HOOKS_DISABLED=1 or by setting enabled to false.",
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "description": "Enable SCE attribution hooks. Defaults to true when omitted; set false as an explicit opt-out. Environment opt-out: SCE_ATTRIBUTION_HOOKS_DISABLED.",
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        "database_retry": {
+          "type": "object",
+          "properties": {
+            "local_db": {
+              "type": "object",
+              "properties": {
+                "connection_open": {
+                  "type": "object",
+                  "properties": {
+                    "max_attempts": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "initial_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "max_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "max_attempts",
+                    "timeout_ms",
+                    "initial_backoff_ms",
+                    "max_backoff_ms"
+                  ]
+                },
+                "query": {
+                  "type": "object",
+                  "properties": {
+                    "max_attempts": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "initial_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "max_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "max_attempts",
+                    "timeout_ms",
+                    "initial_backoff_ms",
+                    "max_backoff_ms"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "agent_trace_db": {
+              "type": "object",
+              "properties": {
+                "connection_open": {
+                  "type": "object",
+                  "properties": {
+                    "max_attempts": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "initial_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "max_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "max_attempts",
+                    "timeout_ms",
+                    "initial_backoff_ms",
+                    "max_backoff_ms"
+                  ]
+                },
+                "query": {
+                  "type": "object",
+                  "properties": {
+                    "max_attempts": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "initial_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "max_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "max_attempts",
+                    "timeout_ms",
+                    "initial_backoff_ms",
+                    "max_backoff_ms"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "auth_db": {
+              "type": "object",
+              "properties": {
+                "connection_open": {
+                  "type": "object",
+                  "properties": {
+                    "max_attempts": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "initial_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "max_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "max_attempts",
+                    "timeout_ms",
+                    "initial_backoff_ms",
+                    "max_backoff_ms"
+                  ]
+                },
+                "query": {
+                  "type": "object",
+                  "properties": {
+                    "max_attempts": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "timeout_ms": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "initial_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "max_backoff_ms": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "additionalProperties": false,
+                  "required": [
+                    "max_attempts",
+                    "timeout_ms",
+                    "initial_backoff_ms",
+                    "max_backoff_ms"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "bash": {
+          "type": "object",
+          "properties": {
+            "presets": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "forbid-git-all",
+                  "forbid-git-commit",
+                  "use-pnpm-over-npm",
+                  "use-bun-over-npm",
+                  "use-nix-flake-over-cargo"
+                ]
+              },
+              "uniqueItems": true,
+              "allOf": [
+                {
+                  "not": {
+                    "allOf": [
+                      {
+                        "contains": {
+                          "const": "use-pnpm-over-npm"
+                        }
+                      },
+                      {
+                        "contains": {
+                          "const": "use-bun-over-npm"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "custom": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "not": {
+                      "enum": [
+                        "forbid-git-all",
+                        "forbid-git-commit",
+                        "use-pnpm-over-npm",
+                        "use-bun-over-npm",
+                        "use-nix-flake-over-cargo"
+                      ]
+                    }
+                  },
+                  "match": {
+                    "type": "object",
+                    "properties": {
+                      "argv_prefix": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "minItems": 1
+                      }
+                    },
+                    "additionalProperties": false,
+                    "required": [
+                      "argv_prefix"
+                    ]
+                  },
+                  "message": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "match",
+                  "message"
+                ]
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "dependentRequired": {
+    "log_file_mode": [
+      "log_file"
+    ]
+  }
+}
