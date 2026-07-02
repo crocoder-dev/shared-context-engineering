@@ -35,7 +35,30 @@ pub mod lifecycle;
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
 const CLAUDE_MODEL_ID_PREFIX: &str = "claude/";
+#[allow(dead_code)]
+pub(crate) const DIFF_TRACE_OPENCODE_SESSION_ID_PREFIX: &str = "oc_";
+#[allow(dead_code)]
+pub(crate) const DIFF_TRACE_CLAUDE_SESSION_ID_PREFIX: &str = "cc_";
+#[allow(dead_code)]
+const OPENCODE_TOOL_NAME: &str = "opencode";
+#[allow(dead_code)]
+const CLAUDE_TOOL_NAME: &str = "claude";
 type PayloadValidationError = fn(&str) -> String;
+
+#[allow(dead_code)]
+pub(crate) fn prefixed_diff_trace_session_id(tool_name: &str, raw_session_id: &str) -> String {
+    let prefix = match tool_name {
+        OPENCODE_TOOL_NAME => DIFF_TRACE_OPENCODE_SESSION_ID_PREFIX,
+        CLAUDE_TOOL_NAME => DIFF_TRACE_CLAUDE_SESSION_ID_PREFIX,
+        _ => return raw_session_id.to_string(),
+    };
+
+    if raw_session_id.starts_with(prefix) {
+        raw_session_id.to_string()
+    } else {
+        format!("{prefix}{raw_session_id}")
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HookSubcommand {
@@ -2269,6 +2292,34 @@ mod tests {
             },
         )
         .expect("direct diff-trace attribution should be persisted");
+    }
+
+    #[test]
+    fn prefixed_diff_trace_session_id_adds_opencode_prefix() {
+        assert_eq!(
+            prefixed_diff_trace_session_id("opencode", "session-123"),
+            "oc_session-123"
+        );
+    }
+
+    #[test]
+    fn prefixed_diff_trace_session_id_adds_claude_prefix() {
+        assert_eq!(
+            prefixed_diff_trace_session_id("claude", "session-123"),
+            "cc_session-123"
+        );
+    }
+
+    #[test]
+    fn prefixed_diff_trace_session_id_is_idempotent_for_same_tool_prefix() {
+        assert_eq!(
+            prefixed_diff_trace_session_id("opencode", "oc_session-123"),
+            "oc_session-123"
+        );
+        assert_eq!(
+            prefixed_diff_trace_session_id("claude", "cc_session-123"),
+            "cc_session-123"
+        );
     }
 
     #[test]
