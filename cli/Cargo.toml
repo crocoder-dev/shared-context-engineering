@@ -1,6 +1,6 @@
 [package]
 name = "shared-context-engineering"
-version = "0.3.0-pre-alpha-v4"
+version = "0.3.0-pre-alpha-v5"
 edition = "2021"
 description = "Shared Context Engineering CLI"
 license = "Apache-2.0"
