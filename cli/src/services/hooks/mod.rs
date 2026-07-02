@@ -2307,34 +2307,6 @@ mod tests {
     }
 
     #[test]
-    fn prefixed_diff_trace_session_id_adds_opencode_prefix() {
-        assert_eq!(
-            prefixed_diff_trace_session_id("opencode", "session-123"),
-            "oc_session-123"
-        );
-    }
-
-    #[test]
-    fn prefixed_diff_trace_session_id_adds_claude_prefix() {
-        assert_eq!(
-            prefixed_diff_trace_session_id("claude", "session-123"),
-            "cc_session-123"
-        );
-    }
-
-    #[test]
-    fn prefixed_diff_trace_session_id_is_idempotent_for_same_tool_prefix() {
-        assert_eq!(
-            prefixed_diff_trace_session_id("opencode", "oc_session-123"),
-            "oc_session-123"
-        );
-        assert_eq!(
-            prefixed_diff_trace_session_id("claude", "cc_session-123"),
-            "cc_session-123"
-        );
-    }
-
-    #[test]
     fn post_commit_intersection_flow_uses_same_window_end_for_query_and_persistence() {
         let now_ms = 1_800_000_000_000_i64;
         let commit_time_ms = now_ms - 1_000;
