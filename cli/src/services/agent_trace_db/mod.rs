@@ -691,18 +691,18 @@ mod tests {
         let end_patch = valid_patch("notes/end.md", "at end");
         let after_end_patch = valid_patch("notes/after.md", "after end");
 
-        insert_test_diff_trace(&db, 999, "before-cutoff", &before_cutoff_patch);
-        insert_test_diff_trace(&db, 1000, "at-cutoff", &cutoff_patch);
+        insert_test_diff_trace(&db, 999, "oc_before-cutoff", &before_cutoff_patch);
+        insert_test_diff_trace(&db, 1000, "oc_at-cutoff", &cutoff_patch);
         insert_test_diff_trace(
             &db,
             1500,
-            "malformed",
+            "oc_malformed",
             "Index: notes/malformed.md\n===================================================================\n--- notes/malformed.md\n+++ notes/malformed.md\n@@ malformed @@\n+bad\n",
         );
-        insert_test_diff_trace(&db, 1500, "same-time-a", &first_same_time_patch);
-        insert_test_diff_trace(&db, 1500, "same-time-b", &second_same_time_patch);
-        insert_test_diff_trace(&db, 2000, "at-end", &end_patch);
-        insert_test_diff_trace(&db, 2001, "after-end", &after_end_patch);
+        insert_test_diff_trace(&db, 1500, "oc_same-time-a", &first_same_time_patch);
+        insert_test_diff_trace(&db, 1500, "oc_same-time-b", &second_same_time_patch);
+        insert_test_diff_trace(&db, 2000, "oc_at-end", &end_patch);
+        insert_test_diff_trace(&db, 2001, "oc_after-end", &after_end_patch);
 
         let result = recent_diff_trace_patches_with(&db, 1000, 2000)
             .expect("recent diff trace patches should load");
@@ -716,10 +716,10 @@ mod tests {
                 .map(|patch| (patch.id, patch.time_ms, patch.session_id.as_str()))
                 .collect::<Vec<_>>(),
             vec![
-                (2, 1000, "at-cutoff"),
-                (4, 1500, "same-time-a"),
-                (5, 1500, "same-time-b"),
-                (6, 2000, "at-end"),
+                (2, 1000, "oc_at-cutoff"),
+                (4, 1500, "oc_same-time-a"),
+                (5, 1500, "oc_same-time-b"),
+                (6, 2000, "oc_at-end"),
             ]
         );
         assert_eq!(
@@ -763,7 +763,7 @@ mod tests {
         );
         assert_eq!(result.skipped[0].id, 3);
         assert_eq!(result.skipped[0].time_ms, 1500);
-        assert_eq!(result.skipped[0].session_id, "malformed");
+        assert_eq!(result.skipped[0].session_id, "oc_malformed");
         assert!(
             result.skipped[0].reason.contains("invalid hunk header"),
             "unexpected skipped reason: {}",

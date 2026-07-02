@@ -2359,7 +2359,7 @@ mod tests {
                     patches: vec![ParsedDiffTracePatch {
                         id: 7,
                         time_ms: now_ms - 500,
-                        session_id: String::from("valid-session"),
+                        session_id: String::from("oc_valid-session"),
                         patch: valid_patch("src/lib.rs", "shared line"),
                         tool_name: Some(String::from("opencode")),
                         tool_version: Some(String::from("1.2.3")),
@@ -2368,7 +2368,7 @@ mod tests {
                     skipped: vec![SkippedDiffTracePatch {
                         id: 8,
                         time_ms: now_ms - 250,
-                        session_id: String::from("malformed-session"),
+                        session_id: String::from("oc_malformed-session"),
                         reason: String::from("invalid hunk header"),
                     }],
                 })

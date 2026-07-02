@@ -17,7 +17,7 @@ The Claude TypeScript agent-trace runtime was removed in T07 of the `claude-rust
 - Both `runConversationTraceHook` and `runDiffTraceHook` fail open at the plugin level: they ignore the child process stderr (`stdio: ["pipe", "ignore", "ignore"]`) and resolve unconditionally on error or close, so spawn errors, non-zero exits, and sce intake errors (connection refused, timeout, etc.) never produce unhandled promise rejections or leak sce stderr into the OpenCode TUI.
 - Existing diff-trace capture remains filtered to user messages with usable diffs.
 - When diff extraction succeeds, the plugin invokes `sce hooks diff-trace` after conversation-trace handoff and sends `{ sessionID, diff, time, model_id, tool_name, tool_version }` over STDIN JSON (`tool_name` is always `"opencode"`; `tool_version` is captured from session lifecycle events when available). `runDiffTraceHook` fails open at the plugin level (ignored stderr, unconditional resolve), so callers do not need try/catch.
-- The plugin no longer writes diff-trace artifacts or database rows directly; the Rust `diff-trace` hook path owns AgentTraceDb insertion plus collision-safe timestamp+attempt artifact writes.
+- The plugin no longer writes diff-trace artifacts or database rows directly; the Rust `diff-trace` hook path owns DB-only AgentTraceDb insertion, including `oc_`-prefixed stored `diff_traces.session_id` values for OpenCode payloads.
 
 ## In-memory dedup cache
 
