@@ -35,17 +35,12 @@ pub mod lifecycle;
 pub const NAME: &str = "hooks";
 pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
 const CLAUDE_MODEL_ID_PREFIX: &str = "claude/";
-#[allow(dead_code)]
 pub(crate) const DIFF_TRACE_OPENCODE_SESSION_ID_PREFIX: &str = "oc_";
-#[allow(dead_code)]
 pub(crate) const DIFF_TRACE_CLAUDE_SESSION_ID_PREFIX: &str = "cc_";
-#[allow(dead_code)]
 const OPENCODE_TOOL_NAME: &str = "opencode";
-#[allow(dead_code)]
 const CLAUDE_TOOL_NAME: &str = "claude";
 type PayloadValidationError = fn(&str) -> String;
 
-#[allow(dead_code)]
 pub(crate) fn prefixed_diff_trace_session_id(tool_name: &str, raw_session_id: &str) -> String {
     let prefix = match tool_name {
         OPENCODE_TOOL_NAME => DIFF_TRACE_OPENCODE_SESSION_ID_PREFIX,
@@ -1117,10 +1112,11 @@ where
     F: FnOnce(DiffTraceInsert<'_>) -> Result<()>,
 {
     let time_ms = diff_trace_db_time_ms(payload.time)?;
+    let session_id = prefixed_diff_trace_session_id(&payload.tool_name, &payload.session_id);
 
     insert_fn(DiffTraceInsert {
         time_ms,
-        session_id: &payload.session_id,
+        session_id: &session_id,
         patch: &payload.diff,
         model_id,
         tool_name: &payload.tool_name,
@@ -2261,14 +2257,30 @@ mod tests {
     }
 
     fn diff_trace_payload(model_id: Option<&str>, tool_version: Option<&str>) -> DiffTracePayload {
+        diff_trace_payload_with(
+            "claude",
+            "session-123",
+            PAYLOAD_TYPE_STRUCTURED,
+            model_id,
+            tool_version,
+        )
+    }
+
+    fn diff_trace_payload_with(
+        tool_name: &str,
+        session_id: &str,
+        payload_type: &str,
+        model_id: Option<&str>,
+        tool_version: Option<&str>,
+    ) -> DiffTracePayload {
         DiffTracePayload {
-            session_id: String::from("session-123"),
+            session_id: String::from(session_id),
             diff: String::from("diff text"),
             time: 1_800_000_000_000_u64,
             model_id: model_id.map(String::from),
-            tool_name: String::from("claude"),
+            tool_name: String::from(tool_name),
             tool_version: tool_version.map(String::from),
-            payload_type: String::from(PAYLOAD_TYPE_STRUCTURED),
+            payload_type: String::from(payload_type),
         }
     }
 
@@ -2282,7 +2294,7 @@ mod tests {
             Some("Claude Code 1.2.3"),
             |input| {
                 assert_eq!(input.time_ms, 1_800_000_000_000_i64);
-                assert_eq!(input.session_id, "session-123");
+                assert_eq!(input.session_id, "cc_session-123");
                 assert_eq!(input.model_id, Some("direct-model"));
                 assert_eq!(input.tool_name, "claude");
                 assert_eq!(input.tool_version, Some("Claude Code 1.2.3"));
