@@ -86,18 +86,18 @@ This file captures the current shared release artifact foundation plus the appro
   - `.github/workflows/release-sce-linux-arm.yml`
   - `.github/workflows/release-sce-macos-arm.yml`
 - Each native reusable workflow validates its generated archive before native artifact upload by deriving the expected target-specific archive name from the resolved version, extracting it, asserting `bin/sce` is executable, running `sce version --format json`, and invoking `nix run .#native-portability-audit` with the lane's platform (`linux` or `macos`).
-- The reusable Linux ARM workflow builds canonical `aarch64-unknown-linux-gnu` artifacts on an ARM Linux runner, and the top-level release orchestrator now requires and publishes that lane alongside the other platform workflows.
+- The reusable Linux ARM workflow builds canonical `aarch64-unknown-linux-musl` artifacts on an ARM Linux runner, and the top-level release orchestrator now requires and publishes that lane alongside the other platform workflows.
 
 ## Current orchestrated release targets in automation
 
-- `x86_64-unknown-linux-gnu`
-- `aarch64-unknown-linux-gnu`
+- `x86_64-unknown-linux-musl`
+- `aarch64-unknown-linux-musl`
 - `aarch64-apple-darwin`
 
 ## Current supported release matrix
 
-- Linux x64 release artifacts are published as `x86_64-unknown-linux-gnu`.
-- Linux ARM release artifacts are published as `aarch64-unknown-linux-gnu`.
+- Linux x64 release artifacts are published as `x86_64-unknown-linux-musl`.
+- Linux ARM release artifacts are published as `aarch64-unknown-linux-musl`.
 - macOS ARM release artifacts are published as `aarch64-apple-darwin`.
 - The merged release manifest and combined checksum outputs include those three current targets for each published `sce` release.
 

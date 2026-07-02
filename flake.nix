@@ -79,6 +79,60 @@
 
         craneLib = (crane.mkLib pkgs).overrideToolchain (_: rustToolchain);
 
+        # Rust target triple for fully static musl Linux builds.
+        # null on non-Linux systems where the musl pipeline is never referenced.
+        muslTarget =
+          if pkgs.stdenv.isLinux then
+            if pkgs.stdenv.hostPlatform.isAarch64 then
+              "aarch64-unknown-linux-musl"
+            else if pkgs.stdenv.hostPlatform.isx86_64 then
+              "x86_64-unknown-linux-musl"
+            else
+              throw "Unsupported Linux architecture for musl build"
+          else
+            null;
+
+        # Per-target environment variables that tell cc-rs (and CMake) to
+        # compile C/C++ dependencies with the musl toolchain rather than the
+        # host glibc toolchain.  Without these, native deps like aws-lc-sys
+        # and zstd-sys emit glibc symbols that musl cannot satisfy.
+        # Nix's musl gcc wrapper exposes target-prefixed binaries
+        # (e.g. x86_64-unknown-linux-musl-cc), not bin/cc.
+        # Use cc.targetPrefix to construct the correct path.
+        muslEnvVars =
+          let
+            staticPkgs = pkgs.pkgsStatic;
+            cc = staticPkgs.stdenv.cc;
+            bintools = staticPkgs.stdenv.cc.bintools;
+            ts = pkgs.lib.replaceStrings [ "-" ] [ "_" ] muslTarget;
+            tsUpper = pkgs.lib.toUpper ts;
+          in
+          {
+            "CC_${ts}" = "${cc}/bin/${cc.targetPrefix}cc";
+            "CXX_${ts}" = "${cc}/bin/${cc.targetPrefix}c++";
+            "AR_${ts}" = "${bintools}/bin/${bintools.targetPrefix}ar";
+            "CARGO_TARGET_${tsUpper}_LINKER" =
+              "${cc}/bin/${cc.targetPrefix}cc";
+            "CFLAGS_${ts}" =
+              "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0";
+            "CXXFLAGS_${ts}" =
+              "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0";
+          };
+
+        # Separate toolchain that adds the musl target alongside the host target.
+        # Host-targeted checks (cli-tests, cli-clippy, cli-fmt) continue to use
+        # rustToolchain and are completely unaffected by this addition.
+        rustToolchainMusl = pkgs.rust-bin.stable.${rustVersion}.default.override {
+          extensions = [
+            "rustfmt"
+            "clippy"
+            "rust-src"
+          ];
+          targets = pkgs.lib.optional (muslTarget != null) muslTarget;
+        };
+
+        craneLibMusl = (crane.mkLib pkgs).overrideToolchain (_: rustToolchainMusl);
+
         tursoCraneLib = (crane.mkLib pkgs).overrideToolchain (_: tursoToolchain);
 
         workspaceRoot = ./.;
@@ -229,6 +283,64 @@
             };
           }
         );
+
+        # Separate Crane pipeline that builds a fully static musl binary on Linux.
+        # On macOS this derivation is never referenced (sceReleasePackage selects
+        # scePackage), so the null muslTarget is harmless.
+        cargoDepsArgsMusl =
+          (cargoDepsArgs // muslEnvVars)
+          // {
+            pname = "sce-deps-musl";
+            nativeBuildInputs = [
+              rustToolchainMusl
+              pkgs.cmake
+              pkgs.perl
+              pkgs.pkg-config
+              pkgs.pkgsStatic.stdenv.cc
+              pkgs.pkgsStatic.binutils
+            ];
+            CARGO_BUILD_TARGET = muslTarget;
+          };
+
+        cargoArtifactsMusl = craneLibMusl.buildDepsOnly cargoDepsArgsMusl;
+
+        scePackageMusl = craneLibMusl.buildPackage (
+          (commonCargoArgs // muslEnvVars)
+          // {
+            inherit cargoArtifactsMusl;
+            nativeBuildInputs = [
+              rustToolchainMusl
+              pkgs.cmake
+              pkgs.perl
+              pkgs.pkg-config
+              pkgs.pkgsStatic.stdenv.cc
+              pkgs.pkgsStatic.binutils
+            ];
+            CARGO_BUILD_TARGET = muslTarget;
+
+            # libloading (pulled by turso_core) emits `-ldl`, but musl has no
+            # separate libdl — the symbols live in libc.  Provide a stub archive
+            # so the linker can satisfy `-ldl` without pulling in glibc.
+            preBuild = ''
+              mkdir -p /tmp/musl-dl-shim
+              cat > /tmp/musl-dl-shim/dl.c <<'CEOF'
+              void __dummy_libdl(void) {}
+              CEOF
+              $CC -c /tmp/musl-dl-shim/dl.c -o /tmp/musl-dl-shim/dl.o
+              ar rcs /tmp/musl-dl-shim/libdl.a /tmp/musl-dl-shim/dl.o
+              export LIBRARY_PATH="/tmp/musl-dl-shim:$LIBRARY_PATH"
+            '';
+
+            meta = {
+              mainProgram = "sce";
+              description = "Shared Context Engineering CLI (static musl)";
+            };
+          }
+        );
+
+        # Release package selection: musl on Linux (fully static, no /nix/store
+        # runtime references), gnu on macOS (unchanged).
+        sceReleasePackage = if pkgs.stdenv.isLinux then scePackageMusl else scePackage;
 
         tursoCargoArgs = {
           pname = "turso";
@@ -400,10 +512,10 @@
 
               case "$os:$arch" in
                 Linux:x86_64)
-                  printf 'x86_64-unknown-linux-gnu'
+                  printf 'x86_64-unknown-linux-musl'
                   ;;
                 Linux:aarch64)
-                  printf 'aarch64-unknown-linux-gnu'
+                  printf 'aarch64-unknown-linux-musl'
                   ;;
                 Darwin:aarch64)
                   printf 'aarch64-apple-darwin'
@@ -1192,7 +1304,7 @@
 
         sceApp = {
           type = "app";
-          program = "${scePackage}/bin/sce";
+          program = "${sceReleasePackage}/bin/sce";
           meta = {
             description = "Run the packaged sce CLI";
           };
@@ -1200,10 +1312,10 @@
       in
       {
         packages = {
-          sce = scePackage;
+          sce = sceReleasePackage;
           bun = bunPackage;
           turso = tursoPackage;
-          default = scePackage;
+          default = sceReleasePackage;
         };
 
         checks =

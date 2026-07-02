@@ -7,11 +7,11 @@ const SUPPORTED_TARGETS = new Map([
 	],
 	[
 		"linux:arm64",
-		{ targetTriple: "aarch64-unknown-linux-gnu", os: "linux", arch: "arm64" },
+		{ targetTriple: "aarch64-unknown-linux-musl", os: "linux", arch: "arm64" },
 	],
 	[
 		"linux:x64",
-		{ targetTriple: "x86_64-unknown-linux-gnu", os: "linux", arch: "x64" },
+		{ targetTriple: "x86_64-unknown-linux-musl", os: "linux", arch: "x64" },
 	],
 ]);
 

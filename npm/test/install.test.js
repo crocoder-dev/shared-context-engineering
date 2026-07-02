@@ -22,7 +22,7 @@ function createManifestFixture(overrides = {}) {
 	const manifest = {
 		version: "0.1.0",
 		artifacts: [
-			{ target_triple: "x86_64-unknown-linux-gnu", checksum_sha256: "abc123" },
+			{ target_triple: "x86_64-unknown-linux-musl", checksum_sha256: "abc123" },
 		],
 		...overrides,
 	};
@@ -247,7 +247,7 @@ describe("npm installer trust flow", () => {
 		await expect(
 			installBinaryWithDependencies({
 				supportedPlatform: {
-					targetTriple: "x86_64-unknown-linux-gnu",
+					targetTriple: "x86_64-unknown-linux-musl",
 					os: "linux",
 					arch: "x64",
 				},
@@ -276,7 +276,7 @@ describe("npm installer trust flow", () => {
 		await expect(
 			installBinaryWithDependencies({
 				supportedPlatform: {
-					targetTriple: "x86_64-unknown-linux-gnu",
+					targetTriple: "x86_64-unknown-linux-musl",
 					os: "linux",
 					arch: "x64",
 				},
@@ -310,7 +310,7 @@ describe("npm installer trust flow", () => {
 		const { manifestPayload, publicKey, signature } = createManifestFixture({
 			artifacts: [
 				{
-					target_triple: "x86_64-unknown-linux-gnu",
+					target_triple: "x86_64-unknown-linux-musl",
 					checksum_sha256: expectedChecksum,
 				},
 			],
@@ -320,7 +320,7 @@ describe("npm installer trust flow", () => {
 		await expect(
 			installBinaryWithDependencies({
 				supportedPlatform: {
-					targetTriple: "x86_64-unknown-linux-gnu",
+					targetTriple: "x86_64-unknown-linux-musl",
 					os: "linux",
 					arch: "x64",
 				},
@@ -346,7 +346,7 @@ describe("npm installer trust flow", () => {
 
 	test("installs after verifying the manifest signature and archive checksum", async () => {
 		const version = "0.1.0";
-		const targetTriple = "x86_64-unknown-linux-gnu";
+		const targetTriple = "x86_64-unknown-linux-musl";
 		const archiveContents = "verified-archive";
 		const checksum = createHash("sha256").update(archiveContents).digest("hex");
 		const { manifestPayload, publicKey, signature } = createManifestFixture({

@@ -20,7 +20,7 @@ describe("resolveSupportedPlatform", () => {
 
 	test("maps supported linux x64", () => {
 		expect(resolveSupportedPlatform("linux", "x64")).toEqual({
-			targetTriple: "x86_64-unknown-linux-gnu",
+			targetTriple: "x86_64-unknown-linux-musl",
 			os: "linux",
 			arch: "x64",
 		});
@@ -28,7 +28,7 @@ describe("resolveSupportedPlatform", () => {
 
 	test("maps supported linux arm64", () => {
 		expect(resolveSupportedPlatform("linux", "arm64")).toEqual({
-			targetTriple: "aarch64-unknown-linux-gnu",
+			targetTriple: "aarch64-unknown-linux-musl",
 			os: "linux",
 			arch: "arm64",
 		});
@@ -62,11 +62,11 @@ describe("resolveSupportedPlatform", () => {
 
 describe("release naming helpers", () => {
 	test("derive archive names from version and target triple", () => {
-		expect(getArchiveRoot("0.1.0", "x86_64-unknown-linux-gnu")).toBe(
-			"sce-v0.1.0-x86_64-unknown-linux-gnu",
+		expect(getArchiveRoot("0.1.0", "x86_64-unknown-linux-musl")).toBe(
+			"sce-v0.1.0-x86_64-unknown-linux-musl",
 		);
-		expect(getArchiveName("0.1.0", "x86_64-unknown-linux-gnu")).toBe(
-			"sce-v0.1.0-x86_64-unknown-linux-gnu.tar.gz",
+		expect(getArchiveName("0.1.0", "x86_64-unknown-linux-musl")).toBe(
+			"sce-v0.1.0-x86_64-unknown-linux-musl.tar.gz",
 		);
 		expect(getReleaseManifestName("0.1.0")).toBe(
 			"sce-v0.1.0-release-manifest.json",
@@ -80,10 +80,10 @@ describe("selectReleaseArtifact", () => {
 			{
 				artifacts: [
 					{ target_triple: "aarch64-apple-darwin", archive: "macos.tgz" },
-					{ target_triple: "x86_64-unknown-linux-gnu", archive: "linux.tgz" },
+					{ target_triple: "x86_64-unknown-linux-musl", archive: "linux.tgz" },
 				],
 			},
-			"x86_64-unknown-linux-gnu",
+			"x86_64-unknown-linux-musl",
 		);
 
 		expect(artifact.archive).toBe("linux.tgz");
@@ -97,10 +97,10 @@ describe("selectReleaseArtifact", () => {
 						{ target_triple: "aarch64-apple-darwin", archive: "macos.tgz" },
 					],
 				},
-				"x86_64-unknown-linux-gnu",
+				"x86_64-unknown-linux-musl",
 			),
 		).toThrow(
-			"No sce release artifact found for target x86_64-unknown-linux-gnu.",
+			"No sce release artifact found for target x86_64-unknown-linux-musl.",
 		);
 	});
 });
