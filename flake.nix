@@ -970,6 +970,15 @@
           text = builtins.readFile ./nix/flatpak/version-parity.sh;
         };
 
+        bumpVersionApp = pkgs.writeShellApplication {
+          name = "bump-version";
+          runtimeInputs = [
+            pkgs.coreutils
+            pkgs.gnused
+          ];
+          text = builtins.readFile ./nix/bump-version.sh;
+        };
+
         flatpakLocalManifestCheckApp = pkgs.writeShellApplication {
           name = "flatpak-local-manifest-check";
           runtimeInputs = [ pkgs.coreutils ];
@@ -1415,6 +1424,14 @@
               program = "${releaseNpmPackageApp}/bin/release-npm-package";
               meta = {
                 description = "Build sce npm package tarball";
+              };
+            };
+
+            bump-version = {
+              type = "app";
+              program = "${bumpVersionApp}/bin/bump-version";
+              meta = {
+                description = "Bump the checked-in version in .version, Cargo.toml, Cargo.lock, npm package.json, and Flatpak metainfo";
               };
             };
 
