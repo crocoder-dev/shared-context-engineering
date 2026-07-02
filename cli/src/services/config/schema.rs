@@ -17,7 +17,10 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::policy::{parse_bash_policy_presets, parse_custom_bash_policies, CustomBashPolicyEntry};
-use super::types::{ConfigPathSource, DatabaseRetryConfig, LogFileMode, LogFormat, LogLevel};
+use super::types::{
+    ConfigPathSource, DatabaseRetryConfig, IntegrationTargetId, IntegrationsConfig, LogFileMode,
+    LogFormat, LogLevel,
+};
 use crate::services::resilience::RetryPolicy;
 
 pub(crate) const SCE_CONFIG_SCHEMA_JSON: &str =
@@ -34,10 +37,11 @@ pub(crate) const TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "timeout_ms",
     super::resolver::WORKOS_CLIENT_ID_KEY.config_key,
     "policies",
+    "integrations",
 ];
 
 pub(crate) const TOP_LEVEL_CONFIG_KEYS_DESCRIPTION: &str =
-    "$schema, log_level, log_format, log_file, log_file_mode, timeout_ms, workos_client_id, policies";
+    "$schema, log_level, log_format, log_file, log_file_mode, timeout_ms, workos_client_id, policies, integrations";
 
 static CONFIG_SCHEMA_VALIDATOR: OnceLock<Validator> = OnceLock::new();
 
@@ -68,6 +72,12 @@ pub(crate) struct ParsedFileConfigDocument {
     pub(crate) timeout_ms: Option<u64>,
     pub(crate) workos_client_id: Option<String>,
     pub(crate) policies: Option<ParsedPoliciesConfigDocument>,
+    pub(crate) integrations: Option<ParsedIntegrationsConfigDocument>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct ParsedIntegrationsConfigDocument {
+    pub(crate) target: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -141,6 +151,7 @@ pub(crate) struct FileConfig {
     pub(crate) bash_policy_presets: Option<FileConfigValue<Vec<String>>>,
     pub(crate) bash_policy_custom: Option<FileConfigValue<Vec<CustomBashPolicyEntry>>>,
     pub(crate) database_retry: Option<FileConfigValue<DatabaseRetryConfig>>,
+    pub(crate) integrations: Option<FileConfigValue<IntegrationsConfig>>,
 }
 
 pub(crate) type ParsedBashPolicyConfig = (
@@ -285,6 +296,7 @@ pub(crate) fn parse_file_config(
         .map(|value| FileConfigValue { value, source });
     let (attribution_hooks_enabled, bash_policy_presets, bash_policy_custom, database_retry) =
         map_policies_config(typed.policies.as_ref(), object, path, source)?;
+    let integrations = map_integrations_config(typed.integrations.as_ref(), object, path, source)?;
 
     Ok(FileConfig {
         log_level,
@@ -297,6 +309,7 @@ pub(crate) fn parse_file_config(
         bash_policy_presets,
         bash_policy_custom,
         database_retry,
+        integrations,
     })
 }
 
@@ -566,6 +579,46 @@ pub(crate) fn map_database_retry_config(
             agent_trace_db: build_per_db("agent_trace_db")?,
             auth_db: build_per_db("auth_db")?,
         },
+        source,
+    }))
+}
+
+fn map_integrations_config(
+    typed: Option<&ParsedIntegrationsConfigDocument>,
+    object: &serde_json::Map<String, Value>,
+    path: &Path,
+    source: ConfigPathSource,
+) -> Result<Option<FileConfigValue<IntegrationsConfig>>> {
+    let Some(integrations_value) = object.get("integrations") else {
+        return Ok(None);
+    };
+
+    let integrations_object = integrations_value.as_object().with_context(|| {
+        format!(
+            "Config key 'integrations' in '{}' must be an object.",
+            path.display()
+        )
+    })?;
+
+    validate_object_keys(
+        integrations_object,
+        path,
+        Some("integrations"),
+        &["target"],
+        "target",
+    )?;
+
+    let Some(raw_targets) = typed.and_then(|config| config.target.as_ref()) else {
+        return Ok(None);
+    };
+
+    let targets: Vec<IntegrationTargetId> = raw_targets
+        .iter()
+        .map(|raw| IntegrationTargetId::parse(raw, &format!("config file '{}'", path.display())))
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(Some(FileConfigValue {
+        value: IntegrationsConfig { target: targets },
         source,
     }))
 }

@@ -61,7 +61,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - Startup/runtime config resolution now degrades gracefully only for default-discovered files: invalid discovered files are skipped and reported via collected `validation_errors`, while explicit `--config` / `SCE_CONFIG_FILE` targets still fail immediately on the same parse or validation errors.
 
 - Config file content must be valid JSON with a top-level object.
-- Allowed keys: `$schema`, `log_level`, `log_format`, `log_file`, `log_file_mode`, `timeout_ms`, `workos_client_id`, `policies`.
+- Allowed keys: `$schema`, `log_level`, `log_format`, `log_file`, `log_file_mode`, `timeout_ms`, `workos_client_id`, `policies`, `integrations`.
 - Unknown keys fail validation.
 - `log_level` must be one of `error|warn|info|debug`.
 - `log_format` must be `text` or `json` when present.
@@ -70,6 +70,11 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `log_file_mode` requires `log_file`.
 - `timeout_ms` must be an unsigned integer.
 - `workos_client_id` must be a string when present.
+
+- `integrations` must be an object when present and currently allows only `target`.
+- `integrations.target` must be an array of unique canonical target IDs when present.
+- Supported target ID values: `opencode`, `claude`.
+- Unknown target IDs fail schema validation.
 
 - `policies` must be an object when present and currently allows `attribution_hooks`, `database_retry`, and `bash`.
 - `policies.attribution_hooks` must be an object when present and currently allows `enabled`; the generated schema documents default `true`, and explicit `enabled: false` remains a valid opt-out alongside the runtime `SCE_ATTRIBUTION_HOOKS_DISABLED` environment opt-out.

@@ -5,6 +5,8 @@ use sha2::{Digest, Sha256};
 
 use crate::services::agent_trace_db::lifecycle::diagnose_agent_trace_db_health;
 use crate::services::checkout;
+use crate::services::config::schema::parse_file_config;
+use crate::services::config::{ConfigPathSource, IntegrationTargetId};
 use crate::services::default_paths::{
     agent_trace_db_path_for_checkout, claude_asset, opencode_asset, InstallTargetPaths, RepoPaths,
 };
@@ -21,111 +23,6 @@ use super::types::{
     OPENCODE_PLUGINS_LABEL, OPENCODE_SKILLS_LABEL,
 };
 use super::{is_executable, DoctorDependencies, DoctorMode, REQUIRED_HOOKS};
-
-#[allow(dead_code)]
-pub(super) fn build_report_with_dependencies(
-    mode: DoctorMode,
-    repository_root: &Path,
-    dependencies: &DoctorDependencies<'_>,
-) -> HookDoctorReport {
-    let mut problems = Vec::new();
-    let global_state = collect_global_state_health(repository_root, &mut problems, dependencies);
-    let checkout_identity = collect_checkout_identity_health(repository_root);
-    let agent_trace_db = collect_agent_trace_db_health(repository_root, &mut problems);
-    let git_available = (dependencies.check_git_available)();
-
-    let detected_repository_root = if git_available {
-        (dependencies.run_git_command)(repository_root, &["rev-parse", "--show-toplevel"])
-            .map(PathBuf::from)
-    } else {
-        None
-    };
-
-    let bare_repository = if git_available {
-        (dependencies.run_git_command)(repository_root, &["rev-parse", "--is-bare-repository"])
-            .is_some_and(|value| value == "true")
-    } else {
-        false
-    };
-
-    let local_hooks_path = if git_available {
-        (dependencies.run_git_command)(
-            repository_root,
-            &["config", "--local", "--get", "core.hooksPath"],
-        )
-    } else {
-        None
-    };
-    let global_hooks_path = if git_available {
-        (dependencies.run_git_command)(
-            repository_root,
-            &["config", "--global", "--get", "core.hooksPath"],
-        )
-    } else {
-        None
-    };
-
-    let hook_path_source = if local_hooks_path.is_some() {
-        HookPathSource::LocalConfig
-    } else if global_hooks_path.is_some() {
-        HookPathSource::GlobalConfig
-    } else {
-        HookPathSource::Default
-    };
-
-    let hooks_directory = detected_repository_root.as_ref().and_then(|resolved_root| {
-        (dependencies.run_git_command)(resolved_root, &["rev-parse", "--git-path", "hooks"]).map(
-            |value| {
-                let path = PathBuf::from(value);
-                if path.is_absolute() {
-                    path
-                } else {
-                    resolved_root.join(path)
-                }
-            },
-        )
-    });
-
-    let hooks = inspect_repository_hooks(
-        repository_root,
-        git_available,
-        bare_repository,
-        detected_repository_root.as_deref(),
-        hooks_directory.as_deref(),
-        &mut problems,
-    );
-
-    let integration_groups = inspect_repository_integrations(
-        git_available,
-        bare_repository,
-        detected_repository_root.as_deref(),
-        &mut problems,
-    );
-
-    let readiness = if problems
-        .iter()
-        .any(|problem| problem.severity == ProblemSeverity::Error)
-    {
-        Readiness::NotReady
-    } else {
-        Readiness::Ready
-    };
-
-    HookDoctorReport {
-        mode,
-        readiness,
-        state_root: global_state.state_root,
-        checkout_identity,
-        agent_trace_db,
-        repository_root: detected_repository_root,
-        hook_path_source,
-        hooks_directory,
-        config_locations: global_state.config_locations,
-        hooks,
-        integration_groups,
-        problems,
-    }
-}
 
 pub(super) fn build_report_with_lifecycle_problems(
     mode: DoctorMode,
@@ -225,6 +122,11 @@ fn build_report_without_service_owned_problem_checks(
         Vec::new()
     };
 
+    let integration_targets_absent = should_show_no_integrations_message(
+        git_available,
+        bare_repository,
+        detected_repository_root.as_deref(),
+    );
     let integration_groups = inspect_repository_integrations(
         git_available,
         bare_repository,
@@ -244,6 +146,7 @@ fn build_report_without_service_owned_problem_checks(
         config_locations: global_state.config_locations,
         hooks,
         integration_groups,
+        integration_targets_absent,
         problems,
     }
 }
@@ -496,6 +399,57 @@ fn inspect_repository_hooks(
     Vec::new()
 }
 
+/// Returns `true` when the doctor was able to check for integration targets
+/// and found none (neither configured in `.sce/config.json` nor detected
+/// via repo-root `.opencode/` / `.claude/` directories).
+fn should_show_no_integrations_message(
+    git_available: bool,
+    bare_repository: bool,
+    detected_repository_root: Option<&Path>,
+) -> bool {
+    if !git_available || bare_repository {
+        return false;
+    }
+    let Some(root) = detected_repository_root else {
+        return false;
+    };
+    resolve_doctor_integration_targets(root).is_empty()
+}
+
+fn resolve_doctor_integration_targets(repository_root: &Path) -> Vec<IntegrationTargetId> {
+    let repo_paths = RepoPaths::new(repository_root);
+    let config_path = repo_paths.sce_config_file();
+
+    // Try reading config first
+    if config_path.exists() {
+        if let Ok(raw) = std::fs::read_to_string(&config_path) {
+            if let Ok(config) =
+                parse_file_config(&raw, &config_path, ConfigPathSource::DefaultDiscoveredLocal)
+            {
+                if let Some(integrations) = config.integrations {
+                    // integrations key present with a target property
+                    if integrations.value.target.is_empty() {
+                        // Empty target array — user has not recorded any integration targets
+                        return Vec::new();
+                    }
+                    // Non-empty configured targets
+                    return integrations.value.target;
+                }
+            }
+        }
+    }
+
+    // Fallback: no integrations config — detect installed directories
+    let mut detected = Vec::new();
+    if repo_paths.opencode_dir().exists() {
+        detected.push(IntegrationTargetId::Opencode);
+    }
+    if repo_paths.claude_dir().exists() {
+        detected.push(IntegrationTargetId::Claude);
+    }
+    detected
+}
+
 fn inspect_repository_integrations(
     git_available: bool,
     bare_repository: bool,
@@ -510,14 +464,40 @@ fn inspect_repository_integrations(
         return Vec::new();
     };
 
-    let opencode_groups = collect_opencode_integration_groups(resolved_root);
-    inspect_opencode_integration_health(resolved_root, &opencode_groups, problems);
+    let targets = resolve_doctor_integration_targets(resolved_root);
+    if targets.is_empty() {
+        problems.push(DoctorProblem {
+            kind: ProblemKind::NoIntegrationsInstalled,
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: String::from(
+                "No integrations are installed. Run 'sce setup' to install OpenCode and/or Claude integration assets.",
+            ),
+            remediation: String::from(
+                "Run 'sce setup --opencode', 'sce setup --claude', or 'sce setup --both' to install integration assets.",
+            ),
+            next_action: "manual_steps",
+        });
+        return Vec::new();
+    }
+    let mut integration_groups = Vec::new();
 
-    let claude_groups = collect_claude_integration_groups(resolved_root);
-    inspect_claude_integration_health(&claude_groups, problems);
+    for target in &targets {
+        match target {
+            IntegrationTargetId::Opencode => {
+                let opencode_groups = collect_opencode_integration_groups(resolved_root);
+                inspect_opencode_integration_health(resolved_root, &opencode_groups, problems);
+                integration_groups.extend(opencode_groups);
+            }
+            IntegrationTargetId::Claude => {
+                let claude_groups = collect_claude_integration_groups(resolved_root);
+                inspect_claude_integration_health(&claude_groups, problems);
+                integration_groups.extend(claude_groups);
+            }
+        }
+    }
 
-    let mut integration_groups = opencode_groups;
-    integration_groups.extend(claude_groups);
     integration_groups
 }
 

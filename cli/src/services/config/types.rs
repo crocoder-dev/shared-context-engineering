@@ -264,3 +264,26 @@ pub(crate) struct PerDbRetryConfig {
     pub(crate) connection_open: Option<RetryPolicy>,
     pub(crate) query: Option<RetryPolicy>,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum IntegrationTargetId {
+    Opencode,
+    Claude,
+}
+
+impl IntegrationTargetId {
+    pub(crate) fn parse(raw: &str, source: &str) -> anyhow::Result<Self> {
+        match raw {
+            "opencode" => Ok(Self::Opencode),
+            "claude" => Ok(Self::Claude),
+            _ => anyhow::bail!(
+                "Invalid integration target '{raw}' from {source}. Valid values: opencode, claude."
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct IntegrationsConfig {
+    pub(crate) target: Vec<IntegrationTargetId>,
+}

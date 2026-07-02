@@ -13,9 +13,20 @@ Task `setup-repo-gate-and-local-config-bootstrap` T02 and `turso-local-db-sync` 
 - The setup flow also bootstraps the canonical local DB through `LocalDbLifecycle::setup` and the Agent Trace DB through `AgentTraceDbLifecycle::setup`; both use the shared `TursoDb<M: DbSpec>` adapter.
 - The bootstrap runs after the git-repo gate (`ensure_git_repository`) and before config/hooks dispatch, so it applies to all setup modes: config-only, hooks-only, combined, and interactive.
 
+## Post-install integration target persistence
+
+After config asset installation succeeds for a non-interactive target (`--opencode`, `--claude`, or `--both`), setup persists the selected target(s) into `.sce/config.json` under `integrations.target`:
+
+- `--opencode` records `["opencode"]`.
+- `--claude` adds `"claude"` to an existing array (e.g. `["opencode"]` → `["opencode", "claude"]`).
+- `--both` records both `["opencode", "claude"]` atomically.
+- Repeated runs are idempotent — existing targets are deduplicated; previously unrelated config keys (`$schema`, `log_level`, etc.) are preserved.
+- If the config file does not exist, it is bootstrapped first, then the targets are written.
+- `--hooks` only setup does not modify `integrations.target`.
+
 ## Implementation
 
-- `cli/src/services/setup/mod.rs` exports `bootstrap_repo_local_config(repository_root: &Path) -> Result<()>`.
+- `cli/src/services/setup/mod.rs` exports `bootstrap_repo_local_config(repository_root: &Path) -> Result<()>` and `persist_integration_targets(repository_root: &Path, target: SetupTarget) -> Result<()>`.
 - `cli/src/services/local_db/lifecycle.rs` implements `LocalDbLifecycle::setup()` for local DB initialization.
 - `cli/src/services/agent_trace_db/lifecycle.rs` implements `AgentTraceDbLifecycle::setup()` for Agent Trace DB initialization.
 - The function uses `RepoPaths::sce_config_file()` and `RepoPaths::sce_dir()` from `default_paths` for path resolution.

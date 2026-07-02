@@ -65,6 +65,7 @@ pub(super) struct HookDoctorReport {
     pub(super) config_locations: Vec<FileLocationHealth>,
     pub(super) hooks: Vec<HookFileHealth>,
     pub(super) integration_groups: Vec<IntegrationGroupHealth>,
+    pub(super) integration_targets_absent: bool,
     pub(super) problems: Vec<DoctorProblem>,
 }
 
@@ -132,6 +133,7 @@ pub(crate) enum ProblemKind {
     RequiredHookMissing,
     HookNotExecutable,
     HookContentStale,
+    NoIntegrationsInstalled,
     OpenCodeIntegrationFilesMissing,
     OpenCodeIntegrationContentMismatch,
     ClaudeIntegrationFilesMissing,

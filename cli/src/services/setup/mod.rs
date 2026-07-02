@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use serde_json::json;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -183,6 +184,14 @@ pub fn run_setup_for_mode(repository_root: &Path, mode: SetupMode) -> Result<Str
     let outcome = install_embedded_setup_assets(repository_root, target).with_context(|| {
         format!(
             "Setup installation failed for {}",
+            setup_target_label(target)
+        )
+    })?;
+
+    // Persist selected integration targets in repo-local config.
+    persist_integration_targets(repository_root, target).with_context(|| {
+        format!(
+            "Setup assets were installed for {} but failed to update repo-local config",
             setup_target_label(target)
         )
     })?;
@@ -396,6 +405,93 @@ pub(crate) fn concrete_targets_for(target: SetupTarget) -> &'static [SetupTarget
         SetupTarget::Claude => &[SetupTarget::Claude],
         SetupTarget::Both => &[SetupTarget::OpenCode, SetupTarget::Claude],
     }
+}
+
+/// Convert a concrete [`SetupTarget`] (not `Both`) to its canonical
+/// `integrations.target` string representation.
+fn integration_target_id_str(target: SetupTarget) -> &'static str {
+    match target {
+        SetupTarget::OpenCode => "opencode",
+        SetupTarget::Claude => "claude",
+        SetupTarget::Both => {
+            unreachable!("integration_target_id_str must not be called with SetupTarget::Both")
+        }
+    }
+}
+
+/// Persist a successfully installed setup target into the repo-local config file.
+///
+/// Reads the existing `.sce/config.json`, merges the new concrete target(s) into
+/// `integrations.target` (deduped, preserving existing unrelated fields),
+/// and writes the file back. Creates the file with the bootstrap payload
+/// if it does not already exist.
+pub fn persist_integration_targets(repository_root: &Path, target: SetupTarget) -> Result<()> {
+    let repo_paths = RepoPaths::new(repository_root);
+    let config_file = repo_paths.sce_config_file();
+
+    // Read existing config or start with bootstrap payload.
+    let raw = if config_file.exists() {
+        fs::read_to_string(&config_file)
+            .with_context(|| format!("Failed to read config file '{}'", config_file.display()))?
+    } else {
+        bootstrap_repo_local_config(repository_root)?;
+        fs::read_to_string(&config_file)
+            .with_context(|| format!("Failed to read config file '{}'", config_file.display()))?
+    };
+
+    let mut config: serde_json::Value = serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "Config file '{}' must contain valid JSON.",
+            config_file.display()
+        )
+    })?;
+
+    let config_obj = config.as_object_mut().with_context(|| {
+        format!(
+            "Config file '{}' must contain a top-level JSON object.",
+            config_file.display()
+        )
+    })?;
+
+    // Collect existing integration target values, if any.
+    let mut existing_targets: Vec<String> = config_obj
+        .get("integrations")
+        .and_then(|i| i.get("target"))
+        .and_then(|t| t.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Add new concrete targets (expanding Both), deduping as we go.
+    let new_targets = concrete_targets_for(target);
+    for concrete in new_targets {
+        let id_str = integration_target_id_str(*concrete);
+        let id_owned = id_str.to_string();
+        if !existing_targets.contains(&id_owned) {
+            existing_targets.push(id_owned);
+        }
+    }
+
+    // Write the merged integrations block back.
+    config_obj.insert(
+        "integrations".to_string(),
+        json!({ "target": existing_targets }),
+    );
+
+    let updated = serde_json::to_string_pretty(&config).with_context(|| {
+        format!(
+            "Failed to serialize updated config for '{}'",
+            config_file.display()
+        )
+    })? + "\n";
+
+    fs::write(&config_file, updated)
+        .with_context(|| format!("Failed to write config file '{}'", config_file.display()))?;
+
+    Ok(())
 }
 
 mod install {

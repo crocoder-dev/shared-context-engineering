@@ -49,6 +49,7 @@ pub enum HealthProblemKind {
     RequiredHookMissing,
     HookNotExecutable,
     HookContentStale,
+    NoIntegrationsInstalled,
     OpenCodeIntegrationFilesMissing,
     OpenCodeIntegrationContentMismatch,
     ClaudeIntegrationFilesMissing,

@@ -13,6 +13,10 @@ use super::types::{
 };
 use super::{DoctorExecution, DoctorFormat, DoctorMode, DoctorRequest, NAME, REQUIRED_HOOKS};
 
+/// Guidance message rendered in the Integrations section when no integration
+/// targets are configured, detected, or both.
+const NO_INTEGRATIONS_MESSAGE: &str = "No integrations installed; run 'sce setup'";
+
 pub(super) fn render_report(request: DoctorRequest, execution: &DoctorExecution) -> Result<String> {
     match request.format {
         DoctorFormat::Text => Ok(format_execution(execution)),
@@ -108,20 +112,29 @@ fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: boo
     push_git_hooks_section(report, color_enabled, &mut lines);
 
     lines.push(format!("\n{}:", heading("Integrations")));
-    for group in integration_groups_for_text(report) {
+    if report.integration_targets_absent {
         lines.push(format_human_text_row(
             color_enabled,
-            integration_group_status(&group, report.repository_root.is_some()),
-            group.label,
+            HumanTextStatus::Fail,
+            NO_INTEGRATIONS_MESSAGE,
             "",
         ));
-        for child in &group.children {
-            lines.push(format_human_text_child_row(
+    } else {
+        for group in integration_groups_for_text(report) {
+            lines.push(format_human_text_row(
                 color_enabled,
-                integration_child_status(child, report.repository_root.is_some()),
-                &child.relative_path,
-                integration_child_detail(child),
+                integration_group_status(&group, report.repository_root.is_some()),
+                group.label,
+                "",
             ));
+            for child in &group.children {
+                lines.push(format_human_text_child_row(
+                    color_enabled,
+                    integration_child_status(child, report.repository_root.is_some()),
+                    &child.relative_path,
+                    integration_child_detail(child),
+                ));
+            }
         }
     }
 

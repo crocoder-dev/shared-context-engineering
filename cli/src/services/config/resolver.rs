@@ -276,6 +276,7 @@ where
         bash_policy_presets: None,
         bash_policy_custom: None,
         database_retry: None,
+        integrations: None,
     };
     let mut validation_errors = Vec::new();
     for loaded_path in &loaded_config_paths {
@@ -317,6 +318,9 @@ where
         }
         if let Some(database_retry) = layer.database_retry {
             file_config.database_retry = Some(database_retry);
+        }
+        if let Some(integrations) = layer.integrations {
+            file_config.integrations = Some(integrations);
         }
     }
 

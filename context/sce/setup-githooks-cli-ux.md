@@ -36,6 +36,20 @@ Target-install mode contract:
 - legacy one-purpose invocations remain valid (`sce setup --hooks` for hooks-only, and `sce setup --opencode|--claude|--both` for config-only)
 - interactive setup without a TTY returns actionable guidance to rerun with `--non-interactive` plus a target flag
 
+## Integration target persistence
+
+Non-interactive `--opencode`, `--claude`, and `--both` target installs persist the selected target(s) into `.sce/config.json` under `integrations.target` after successful config asset installation:
+
+- `--opencode` records `["opencode"]`.
+- `--claude` adds `"claude"` to an existing array (e.g. `["opencode"]` → `["opencode", "claude"]`).
+- `--both` records both `["opencode", "claude"]` atomically.
+- Repeated runs are idempotent — existing targets are deduplicated; previously unrelated config keys (`$schema`, `log_level`, etc.) are preserved.
+- If the config file does not exist, it is bootstrapped first, then the targets are written.
+- `--hooks` only setup (`sce setup --hooks`) does not modify `integrations.target`.
+- Interactive `sce setup` (no target flag) persists the interactively selected target(s) the same way as non-interactive flag equivalents.
+
+Hooks-only setup and failed installs do not update `integrations.target`.
+
 ## Output contract
 
 Successful hook setup emits deterministic human/automation-friendly output including:

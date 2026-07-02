@@ -1,15 +1,19 @@
 {
   "$schema": "https://sce.crocoder.dev/config.json",
-  "log_level": "error",
+  "integrations": {
+    "target": [
+      "claude",
+      "opencode"
+    ]
+  },
   "log_file": "context/tmp/sce.log",
   "log_file_mode": "append",
+  "log_level": "error",
   "policies": {
     "attribution_hooks": {
       "enabled": true
     },
     "bash": {
-      "presets": [
-      ],
       "custom": [
         {
           "id": "use-nix-flake-check-over-cargo-test",
@@ -42,7 +46,8 @@
           },
           "message": "This repository prefers `nix flake check` over direct `cargo check`. Run `nix flake check` instead."
         }
-      ]
+      ],
+      "presets": []
     }
   }
 }

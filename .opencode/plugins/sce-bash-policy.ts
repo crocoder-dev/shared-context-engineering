@@ -32,9 +32,7 @@ function evaluateBashCommandPolicy(command: string): JsonPolicyResult | null {
 
 		if (result.error) {
 			if ((result.error as NodeJS.ErrnoException).code === "ENOENT") {
-				console.warn(
-					`sce CLI not found. Install it from ${SCE_INSTALL_URL}`,
-				);
+				console.warn(`sce CLI not found. Install it from ${SCE_INSTALL_URL}`);
 			}
 			return null;
 		}

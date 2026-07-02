@@ -293,6 +293,7 @@ fn doctor_problem_kind(kind: HealthProblemKind) -> ProblemKind {
         HealthProblemKind::RequiredHookMissing => ProblemKind::RequiredHookMissing,
         HealthProblemKind::HookNotExecutable => ProblemKind::HookNotExecutable,
         HealthProblemKind::HookContentStale => ProblemKind::HookContentStale,
+        HealthProblemKind::NoIntegrationsInstalled => ProblemKind::NoIntegrationsInstalled,
         HealthProblemKind::OpenCodeIntegrationFilesMissing => {
             ProblemKind::OpenCodeIntegrationFilesMissing
         }
@@ -342,6 +343,7 @@ fn health_problem_kind(kind: ProblemKind) -> HealthProblemKind {
         ProblemKind::RequiredHookMissing => HealthProblemKind::RequiredHookMissing,
         ProblemKind::HookNotExecutable => HealthProblemKind::HookNotExecutable,
         ProblemKind::HookContentStale => HealthProblemKind::HookContentStale,
+        ProblemKind::NoIntegrationsInstalled => HealthProblemKind::NoIntegrationsInstalled,
         ProblemKind::OpenCodeIntegrationFilesMissing => {
             HealthProblemKind::OpenCodeIntegrationFilesMissing
         }

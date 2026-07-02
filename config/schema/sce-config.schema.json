@@ -338,6 +338,23 @@
         }
       },
       "additionalProperties": false
+    },
+    "integrations": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "opencode",
+              "claude"
+            ]
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false,

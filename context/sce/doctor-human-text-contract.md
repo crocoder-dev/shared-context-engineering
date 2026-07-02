@@ -44,7 +44,14 @@ This simplification is text-mode only and does not change JSON output requiremen
 
 ## Integrations text contract
 
-Human text output for `Integrations` must use exactly these groups:
+Integration checks are target-scoped. The doctor resolves which integration targets to inspect using the following priority:
+
+1. **Configured targets**: If `.sce/config.json` has `integrations.target` with a non-empty array, only the listed targets (`opencode`, `claude`) are inspected.
+2. **Empty target array**: If `integrations.target` exists but is an empty array `[]`, the user has not recorded any integration targets. The doctor returns no targets and renders a guidance message instead of group rows.
+3. **Directory detection fallback**: When config has no `integrations` property or `integrations.target` property is absent, the doctor falls back to detecting installed repo-root directories — `.opencode/` is detected as OpenCode, `.claude/` is detected as Claude.
+4. **No targets**: When directory detection identifies no installed directories either, the `Integrations` section renders `[FAIL] No integrations installed; run 'sce setup'` and a blocking `NoIntegrationsInstalled` problem is recorded, so the Summary counts it as a blocking problem.
+
+Human text output renders group rows only for the resolved targets:
 
 - `OpenCode plugins`
 - `OpenCode agents`

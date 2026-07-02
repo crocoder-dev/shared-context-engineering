@@ -163,6 +163,20 @@ local sceConfigSchema = new JsonSchema {
         }
       }
     }
+    ["integrations"] = new JsonSchema {
+      type = "object"
+      additionalProperties = false
+      properties {
+        ["target"] = new JsonSchema {
+          type = "array"
+          uniqueItems = true
+          items = new JsonSchema {
+            type = "string"
+            enum = new { "opencode"; "claude" }
+          }
+        }
+      }
+    }
   }
   dependentRequired {
     ["log_file_mode"] = new { "log_file" }
