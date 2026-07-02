@@ -51,7 +51,7 @@ The Bash replacements should preserve the current command-line contracts and val
   - Verification notes (commands or checks): Run the release-version parity wrapper/check that invokes this validator with the current `.version`; run the relevant Flatpak release-package dry/narrow validation if available; include `nix flake check` before handoff if feasible.
   - Completed: 2026-06-23
   - Files changed: `nix/flatpak/version-parity.sh`, `nix/flatpak/version-parity.py`, `flake.nix`
-  - Evidence: `nix develop -c bash nix/flatpak/version-parity.sh --repo-root . --version 0.3.0-pre-alpha-v1` passed; `nix run .#flatpak-version-parity-check -- --repo-root . --version 0.3.0-pre-alpha-v1` passed; negative `nix run .#flatpak-version-parity-check -- --repo-root . --version 0.0.0` failed with `Flatpak release version validation failed:` diagnostics; `nix run .#release-flatpak-package -- --version 0.3.0-pre-alpha-v1 --out-dir /tmp/opencode/sce-flatpak-t02` passed; `nix run .#pkl-check-generated` passed; `nix flake check` passed.
+  - Evidence: `nix develop -c bash nix/flatpak/version-parity.sh --repo-root . --version 0.3.0-pre-alpha-v2` passed; `nix run .#flatpak-version-parity-check -- --repo-root . --version 0.3.0-pre-alpha-v2` passed; negative `nix run .#flatpak-version-parity-check -- --repo-root . --version 0.0.0` failed with `Flatpak release version validation failed:` diagnostics; `nix run .#release-flatpak-package -- --version 0.3.0-pre-alpha-v2 --out-dir /tmp/opencode/sce-flatpak-t02` passed; `nix run .#pkl-check-generated` passed; `nix flake check` passed.
   - Notes: Bash replacement preserves the release-version parity contract, uses `jq` for npm JSON and `xmllint` for AppStream XML, and `flake.nix` now builds `flatpak-version-parity-check` from the Bash script via `pkgs.writeShellApplication`.
 
 - [x] T03: `Port static Flatpak validator to Bash` (status:done)
@@ -73,7 +73,7 @@ The Bash replacements should preserve the current command-line contracts and val
   - Verification notes (commands or checks): Search for `static-validate.py`, `version-parity.py`, and `local-manifest-validate.py`; run `nix run .#pkl-check-generated` if generated/config context changed; run targeted Flatpak checks as appropriate.
   - Completed: 2026-06-23
   - Files changed: `context/glossary.md`, `context/plans/flatpak-python-validators-to-bash.md`
-  - Evidence: `rg -n "static-validate\.py|version-parity\.py|local-manifest-validate\.py|Python validator|Python-owned|python-owned" .` reports only historical plan target/evidence references plus this task's note; `rg -n "static-validate\.py|version-parity\.py|local-manifest-validate\.py|writers\.writePython3Bin|python3 - <<'PY'|python3 -" flake.nix nix packaging .github README.md` produced no matches; `nix run .#flatpak-static-check -- --repo-root .` passed; `nix run .#flatpak-version-parity-check -- --repo-root . --version 0.3.0-pre-alpha-v1` passed; `nix run .#pkl-check-generated` passed; `git diff --check` passed.
+  - Evidence: `rg -n "static-validate\.py|version-parity\.py|local-manifest-validate\.py|Python validator|Python-owned|python-owned" .` reports only historical plan target/evidence references plus this task's note; `rg -n "static-validate\.py|version-parity\.py|local-manifest-validate\.py|writers\.writePython3Bin|python3 - <<'PY'|python3 -" flake.nix nix packaging .github README.md` produced no matches; `nix run .#flatpak-static-check -- --repo-root .` passed; `nix run .#flatpak-version-parity-check -- --repo-root . --version 0.3.0-pre-alpha-v2` passed; `nix run .#pkl-check-generated` passed; `git diff --check` passed.
   - Notes: Remaining literal `.py` validator filename references are intentionally historical plan target/evidence references, including this plan's change summary/T01-T03 evidence and the earlier completed `nix-native-flatpak-release` plan's historical T04 record. Durable current-state context now describes Bash validator ownership and no current Nix/check dependency references the Python validator scripts. Context-sync classification: localized cleanup/current-state wording update; root context edit limited to removing stale Python-validator phrasing from `context/glossary.md`.
 
 - [x] T05: `Validate Flatpak Bash validator migration` (status:done)
@@ -84,7 +84,7 @@ The Bash replacements should preserve the current command-line contracts and val
   - Verification notes (commands or checks): Prefer `nix flake check`; run `nix run .#pkl-check-generated`; run any Flatpak-specific wrapper checks needed to exercise the local-manifest, version-parity, and static validators.
   - Completed: 2026-06-23
   - Files changed: `context/plans/flatpak-python-validators-to-bash.md`
-  - Evidence: `nix run .#flatpak-static-check -- --repo-root .` passed; `nix run .#flatpak-version-parity-check -- --repo-root . --version 0.3.0-pre-alpha-v1` passed; `nix run .#sce-flatpak -- prepare-local-manifest --repo-root . --out-dir /tmp/opencode/sce-flatpak-t05` passed and printed `/tmp/opencode/sce-flatpak-t05/dev.crocoder.sce.yml`; `/tmp/opencode/sce-flatpak-t05` was removed after the local-manifest check; `nix run .#pkl-check-generated` passed; `nix flake check` passed; `git diff --check` passed.
+  - Evidence: `nix run .#flatpak-static-check -- --repo-root .` passed; `nix run .#flatpak-version-parity-check -- --repo-root . --version 0.3.0-pre-alpha-v2` passed; `nix run .#sce-flatpak -- prepare-local-manifest --repo-root . --out-dir /tmp/opencode/sce-flatpak-t05` passed and printed `/tmp/opencode/sce-flatpak-t05/dev.crocoder.sce.yml`; `/tmp/opencode/sce-flatpak-t05` was removed after the local-manifest check; `nix run .#pkl-check-generated` passed; `nix flake check` passed; `git diff --check` passed.
   - Notes: Final validation covered all three Bash validator entrypoints plus generated-output parity and the full default flake check suite. Context-sync classification: verify-only/current-state confirmation; no additional durable context wording change was needed for this validation-only task.
 
 ## Open questions
@@ -96,7 +96,7 @@ The Bash replacements should preserve the current command-line contracts and val
 ### Commands run
 
 - `nix run .#flatpak-static-check -- --repo-root .` -> exit 0.
-- `nix run .#flatpak-version-parity-check -- --repo-root . --version 0.3.0-pre-alpha-v1` -> exit 0.
+- `nix run .#flatpak-version-parity-check -- --repo-root . --version 0.3.0-pre-alpha-v2` -> exit 0.
 - `nix run .#sce-flatpak -- prepare-local-manifest --repo-root . --out-dir /tmp/opencode/sce-flatpak-t05` -> exit 0; printed `/tmp/opencode/sce-flatpak-t05/dev.crocoder.sce.yml`.
 - `rm -rf /tmp/opencode/sce-flatpak-t05` -> exit 0; temporary local-manifest output removed.
 - `nix run .#pkl-check-generated` -> exit 0; generated outputs are up to date.
