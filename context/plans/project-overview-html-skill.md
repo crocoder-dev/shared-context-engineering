@@ -55,12 +55,17 @@ This plan uses a two-phase staging approach:
 
 ### Phase 2 — Promote skill to canonical Pkl pipeline
 
-- [ ] T02: `Author sce-project-overview-html skill body in shared-content-code.pkl` (status:todo)
+- [x] T02: `Author sce-project-overview-html skill body in shared-content-code.pkl` (status:done)
   - Task ID: T02
   - Goal: Add the `sce-project-overview-html` skill `UnitSpec` (title + canonicalBody) to the `skills` Mapping in `config/pkl/base/shared-content-code.pkl`, and the mirrored entry in `config/pkl/base/shared-content-automated-code.pkl`. Use the skill body validated in T01 as the canonical source.
   - Boundaries (in/out of scope): In - new `UnitSpec` entry in both manual and automated code Pkl modules. Out - aggregation surface changes (T03), metadata registration (T04), generated output regeneration (T05), context-map update (T06).
   - Done when: Both `shared-content-code.pkl` and `shared-content-automated-code.pkl` contain a `["sce-project-overview-html"]` entry in their `skills` Mapping with identical `title` and `canonicalBody` (skill body is shared between profiles; only agent permission/metadata differs).
   - Verification notes (commands or checks): `grep -n 'sce-project-overview-html' config/pkl/base/shared-content-code.pkl config/pkl/base/shared-content-automated-code.pkl` returns the new entry in both files; diff of the two `canonicalBody` strings shows identical content.
+  - **Status:** done
+  - **Completed:** 2026-07-04
+  - **Files changed:** `config/pkl/base/shared-content-code.pkl`, `config/pkl/base/shared-content-automated-code.pkl`
+  - **Evidence:** `grep -n 'sce-project-overview-html'` returns line 295 in `shared-content-code.pkl` and line 282 in `shared-content-automated-code.pkl`; `diff` of the extracted `["sce-project-overview-html"]` entries from both files shows identical content; `nix run .#pkl-check-generated` prints `Generated outputs are up to date.` (Pkl syntax valid; generated trees unchanged because aggregation surfaces are T03).
+  - **Notes:** New entry placed last in each `skills` Mapping (after `["sce-validation"]`) to preserve existing ordering and minimize diff noise. `title = "SCE Project Overview HTML"` follows the `UpperCamelCase` convention of other `UnitSpec` titles. The `canonicalBody` is the T01-validated skill body (content after YAML frontmatter). No triple-double-quote sequences in the body, so no Pkl escaping needed.
 
 - [ ] T03: `Register skill in shared-content aggregation surfaces` (status:todo)
   - Task ID: T03
