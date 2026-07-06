@@ -1,0 +1,102 @@
+# Plan: project-overview-html-skill
+
+## Change summary
+
+Add a new SCE skill `sce-project-overview-html` that generates a single self-contained HTML document from the project's `context/` Markdown files, helping a human reader quickly understand the project and how it works. The HTML embeds Mermaid.js (client-side, CDN) so existing Mermaid diagrams in context render in-browser, and includes CSS styling for a clean, readable layout. Output is written to `context/tmp/project-overview.html` (disposable, gitignored).
+
+This plan uses a two-phase staging approach:
+- **Phase 1 (T01):** Hand-author the skill directly in the repo-root `.opencode/skills/` active runtime tree so the user can manually test it with OpenCode immediately.
+- **Phase 2 (T02–T07):** Once manually validated, promote the skill into the canonical Pkl source layer, register it across all metadata/renderers, regenerate the generated config trees, update context discoverability, and validate.
+
+## Success criteria
+
+- A new skill `sce-project-overview-html` exists in the repo-root `.opencode/skills/sce-project-overview-html/SKILL.md` and is manually testable via OpenCode (Phase 1).
+- The skill is promoted to canonical Pkl sources and generated into all three target trees (manual OpenCode, automated OpenCode, Claude) with parity verified (Phase 2).
+- The skill body instructs the agent to read `context/overview.md`, `context/architecture.md`, `context/patterns.md`, `context/glossary.md`, and `context/context-map.md`, plus any linked domain files referenced in `context-map.md`, and render them into a single self-contained HTML document.
+- The generated HTML includes:
+  - Embedded Mermaid.js (CDN `<script>`) so existing Mermaid blocks in context render in-browser.
+  - Inline CSS for readable typography, section navigation, code block styling, and responsive layout.
+  - Sectioned content (Overview, Architecture, Patterns, Glossary, Context Map) with anchor navigation.
+  - Mermaid diagram blocks preserved as `<pre class="mermaid">` so the client-side library renders them.
+- Output is written to `context/tmp/project-overview.html` (disposable, gitignored by existing `context/tmp/.gitignore`).
+- `nix run .#pkl-check-generated` passes (generated outputs match canonical Pkl sources).
+- `nix flake check` passes.
+- The skill is invocable by the Shared Context Code agent (registered in its `skill:` permission allowlist in both manual and automated OpenCode metadata).
+- `context/context-map.md` is updated with a discoverability link to the new skill's canonical description (in `context/sce/`).
+
+## Constraints and non-goals
+
+- **Source of truth is `context/` only.** The skill does not scan or analyze application code. It renders the current-state context memory into HTML.
+- **No new runtime dependencies.** Mermaid.js is loaded from CDN at view time; no vendoring, no build step, no Node tooling added to the repo.
+- **No new CLI command.** This is a skill, not a `sce` subcommand. It is invoked via the Shared Context Code agent loading the skill.
+- **Output is disposable.** `context/tmp/project-overview.html` is regenerated on demand and is not committed (covered by existing `context/tmp/.gitignore` with `*` ignore).
+- **No offline support in this plan.** Mermaid.js CDN requires internet to view diagrams. Vendoring/offline is a non-goal for this iteration.
+- **No pre-rendering to SVG.** No `mermaid-cli` or headless browser build dependency is introduced.
+- **No code scanning or enrichment beyond context/.** If context is stale, the HTML reflects stale context; the skill should note this in its instructions but not attempt to repair context (that is `sce-context-sync`'s job).
+- **No changes to the `sce` Rust CLI.** This plan touches only the repo-root `.opencode/skills/` tree (Phase 1), Pkl sources, generated config outputs, and context files (Phase 2).
+- **Phase 1 does not touch `config/.opencode/`.** The repo-root `.opencode/skills/` is the active runtime tree; `config/.opencode/skills/` is Pkl-generated and is only updated in Phase 2 via regeneration. Phase 1 and Phase 2 must not both edit the same generated path by hand.
+
+## Task stack
+
+### Phase 1 — Stage skill in active runtime tree for manual testing
+
+- [ ] T01: `Create sce-project-overview-html skill in repo-root .opencode/skills/` (status:todo)
+  - Task ID: T01
+  - Goal: Hand-author `.opencode/skills/sce-project-overview-html/SKILL.md` with OpenCode skill frontmatter (`name`, `description`, `compatibility: opencode`) and the full skill body (when to use, source files to read, HTML structure contract, Mermaid.js CDN embedding, inline CSS guidance, output path `context/tmp/project-overview.html`, disposable-output note, stale-context caveat). This makes the skill immediately loadable and testable by OpenCode in this repo.
+  - Boundaries (in/out of scope): In - new `.opencode/skills/sce-project-overview-html/SKILL.md` file only. Out - `config/.opencode/` generated tree (Phase 2), Pkl sources (Phase 2), metadata files (Phase 2), context files (Phase 2). Do not edit any other `.opencode/` files.
+  - Done when: `.opencode/skills/sce-project-overview-html/SKILL.md` exists with valid frontmatter and the complete skill body; OpenCode can discover the skill (visible in skill list / invocable).
+  - Verification notes (commands or checks): `ls .opencode/skills/sce-project-overview-html/SKILL.md`; `head -6 .opencode/skills/sce-project-overview-html/SKILL.md` shows correct frontmatter; user manually invokes the skill in OpenCode and confirms it produces `context/tmp/project-overview.html`.
+  - **Manual test gate:** Do not start T02 until the user confirms the skill works as expected in OpenCode.
+
+### Phase 2 — Promote skill to canonical Pkl pipeline
+
+- [ ] T02: `Author sce-project-overview-html skill body in shared-content-code.pkl` (status:todo)
+  - Task ID: T02
+  - Goal: Add the `sce-project-overview-html` skill `UnitSpec` (title + canonicalBody) to the `skills` Mapping in `config/pkl/base/shared-content-code.pkl`, and the mirrored entry in `config/pkl/base/shared-content-automated-code.pkl`. Use the skill body validated in T01 as the canonical source.
+  - Boundaries (in/out of scope): In - new `UnitSpec` entry in both manual and automated code Pkl modules. Out - aggregation surface changes (T03), metadata registration (T04), generated output regeneration (T05), context-map update (T06).
+  - Done when: Both `shared-content-code.pkl` and `shared-content-automated-code.pkl` contain a `["sce-project-overview-html"]` entry in their `skills` Mapping with identical `title` and `canonicalBody` (skill body is shared between profiles; only agent permission/metadata differs).
+  - Verification notes (commands or checks): `grep -n 'sce-project-overview-html' config/pkl/base/shared-content-code.pkl config/pkl/base/shared-content-automated-code.pkl` returns the new entry in both files; diff of the two `canonicalBody` strings shows identical content.
+
+- [ ] T03: `Register skill in shared-content aggregation surfaces` (status:todo)
+  - Task ID: T03
+  - Goal: Add `["sce-project-overview-html"]` entries to the `skills` Mapping in both `config/pkl/base/shared-content.pkl` (manual) and `config/pkl/base/shared-content-automated.pkl` (automated), referencing the new `UnitSpec` from `code.skills["sce-project-overview-html"]`.
+  - Boundaries (in/out of scope): In - the two aggregation surface Pkl files. Out - renderer files (T04), Pkl regeneration (T05).
+  - Done when: Both aggregation files contain a `["sce-project-overview-html"]` entry in `skills` that references `code.skills["sce-project-overview-html"]` with `id = "skill.sce-project-overview-html"`, `kind = "skill"`, `slug = "sce-project-overview-html"`, and the correct `title`/`canonicalBody` forwarding.
+  - Verification notes (commands or checks): `grep -n 'sce-project-overview-html' config/pkl/base/shared-content.pkl config/pkl/base/shared-content-automated.pkl` returns the new entry in both files.
+
+- [ ] T04: `Register skill descriptions and permissions in all four metadata files` (status:todo)
+  - Task ID: T04
+  - Goal: Add the `sce-project-overview-html` description to `skillDescriptions` in all four metadata files (`config/pkl/renderers/opencode-metadata.pkl`, `config/pkl/renderers/opencode-automated-metadata.pkl`, `config/pkl/renderers/claude-metadata.pkl`, `config/pkl/renderers/common.pkl`) and add `sce-project-overview-html` to the Shared Context Code agent `skill:` allowlist in both `opencode-metadata.pkl` and `opencode-automated-metadata.pkl` permission blocks.
+  - Boundaries (in/out of scope): In - the four metadata/renderer files plus the Shared Context Code permission allowlists. Out - skill body content (T02), aggregation (T03), regeneration (T05).
+  - Done when: All four metadata files have a `["sce-project-overview-html"]` entry in `skillDescriptions`; both OpenCode metadata files list `"sce-project-overview-html": allow` under the `shared-context-code` agent's `skill:` block; `common.pkl` `skillDescriptions` Mapping includes the new slug.
+  - Verification notes (commands or checks): `grep -n 'sce-project-overview-html' config/pkl/renderers/opencode-metadata.pkl config/pkl/renderers/opencode-automated-metadata.pkl config/pkl/renderers/claude-metadata.pkl config/pkl/renderers/common.pkl` returns entries in all four files; `grep -A2 'sce-project-overview-html' config/pkl/renderers/opencode-metadata.pkl` shows it under the `shared-context-code` permission block.
+
+- [ ] T05: `Regenerate generated config outputs and verify parity` (status:todo)
+  - Task ID: T05
+  - Goal: Run `nix develop -c pkl eval -m . config/pkl/generate.pkl` to regenerate `config/.opencode/skills/sce-project-overview-html/SKILL.md`, `config/automated/.opencode/skills/sce-project-overview-html/SKILL.md`, and `config/.claude/skills/sce-project-overview-html/SKILL.md`, then verify parity with `nix run .#pkl-check-generated`. Also sync the repo-root `.opencode/skills/sce-project-overview-html/SKILL.md` with the regenerated `config/.opencode/` version so the active runtime tree matches the canonical generated output.
+  - Boundaries (in/out of scope): In - running Pkl regeneration, the parity check, and syncing the repo-root `.opencode/skills/` copy with the regenerated `config/.opencode/skills/` output. Out - editing generated files by hand (generated trees are build artifacts), editing Pkl sources (covered by T02-T04).
+  - Done when: `nix run .#pkl-check-generated` prints `Generated outputs are up to date.` and exits 0; the three generated `SKILL.md` files exist with correct frontmatter (`name`, `description`, `compatibility`) and the authored body; the repo-root `.opencode/skills/sce-project-overview-html/SKILL.md` matches `config/.opencode/skills/sce-project-overview-html/SKILL.md`.
+  - Verification notes (commands or checks): `nix run .#pkl-check-generated`; `ls config/.opencode/skills/sce-project-overview-html/SKILL.md config/automated/.opencode/skills/sce-project-overview-html/SKILL.md config/.claude/skills/sce-project-overview-html/SKILL.md`; `diff .opencode/skills/sce-project-overview-html/SKILL.md config/.opencode/skills/sce-project-overview-html/SKILL.md` shows no differences.
+
+- [ ] T06: `Update context-map.md with new skill discoverability link` (status:todo)
+  - Task ID: T06
+  - Goal: Add a `context/sce/project-overview-html-skill.md` domain file describing the new skill's current-state contract, and add a discoverability link to it in `context/context-map.md` under the SCE working-area or feature/domain section.
+  - Boundaries (in/out of scope): In - new `context/sce/project-overview-html-skill.md` file and one new bullet in `context/context-map.md`. Out - editing other context files, editing `context/overview.md` (this is a localized skill addition, verify-only for root context per `sce-context-sync` gating).
+  - Done when: `context/sce/project-overview-html-skill.md` exists with a concise current-state description of the skill (purpose, source files, output path, Mermaid.js CDN dependency, disposable-output policy); `context/context-map.md` contains a bullet linking to it.
+  - Verification notes (commands or checks): `ls context/sce/project-overview-html-skill.md`; `grep -n 'project-overview-html' context/context-map.md`.
+
+- [ ] T07: `Validation and cleanup` (status:todo)
+  - Task ID: T07
+  - Goal: Run full repo validation (`nix flake check`), confirm all success criteria are met, and verify no stray temporary artifacts were left behind.
+  - Boundaries (in/out of scope): In - `nix flake check`, success-criteria walkthrough, cleanup of any `context/tmp/` scratch files produced during planning/testing. Out - new code or context edits beyond cleanup.
+  - Done when: `nix flake check` passes; each success criterion above has concrete evidence (command output or file path); no unexpected files exist under `context/tmp/` other than `.gitignore`.
+  - Verification notes (commands or checks): `nix flake check`; `git status` shows only intended changes (repo-root `.opencode/skills/` new file, Pkl sources, generated config, new context file, updated context-map).
+
+## Open questions
+
+None. All blocking ambiguities were resolved during the clarification gate:
+- Source of truth: `context/` files only.
+- Output location: `context/tmp/project-overview.html` (disposable, gitignored).
+- Diagram rendering: Mermaid.js client-side via CDN.
+- Skill ownership: Shared Context Code agent.
+- Staging: Phase 1 in repo-root `.opencode/skills/` for manual testing, Phase 2 promotes to Pkl canonical pipeline.
