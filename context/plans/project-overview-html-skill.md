@@ -48,10 +48,10 @@ This plan uses a two-phase staging approach:
   - Verification notes (commands or checks): `ls .opencode/skills/sce-project-overview-html/SKILL.md`; `head -6 .opencode/skills/sce-project-overview-html/SKILL.md` shows correct frontmatter; user manually invokes the skill in OpenCode and confirms it produces `context/tmp/project-overview.html`.
   - **Manual test gate:** Do not start T02 until the user confirms the skill works as expected in OpenCode.
   - **Status:** done
-  - **Completed:** 2026-07-01
-  - **Files changed:** `.opencode/skills/sce-project-overview-html/SKILL.md` (new)
+  - **Completed:** 2026-07-01 (revised 2026-07-02)
+  - **Files changed:** `.opencode/skills/sce-project-overview-html/SKILL.md` (new, then revised)
   - **Evidence:** `ls` confirms file exists; `head -6` shows valid frontmatter (`name`, `description`, `compatibility: opencode`); `nix run .#pkl-check-generated` prints `Generated outputs are up to date.` (repo-root `.opencode/skills/` is not part of generated parity); `git status` shows only the new untracked skill directory.
-  - **Notes:** Skill body follows the same frontmatter shape and section structure (`What I do` / `When to use` / `How to run this` / `Expected output` / `Related skills`) as existing repo-root skills. Awaiting user manual test confirmation before T02.
+  - **Notes:** Skill body follows the same frontmatter shape and section structure (`What I do` / `When to use` / `How to run this` / `Expected output` / `Related skills`) as existing repo-root skills. Revised after user feedback: skill now explicitly instructs the agent to author the HTML directly with its own file tools (no Python/conversion script generation) and uses a left-side navigation sidebar layout. Awaiting user manual test confirmation before T02.
 
 ### Phase 2 — Promote skill to canonical Pkl pipeline
 
