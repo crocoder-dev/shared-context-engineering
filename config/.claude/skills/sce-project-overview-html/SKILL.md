@@ -2,7 +2,7 @@
 name: sce-project-overview-html
 description: |
   Generates a single self-contained HTML document from the project's `context/` Markdown files so a human reader can quickly understand the project and how it works. Embeds Mermaid.js (client-side, CDN) so existing Mermaid diagrams in context render in-browser, and includes inline CSS for a clean, readable layout. Output is written to `context/tmp/project-overview.html` (disposable, gitignored). Use when the user wants a project overview as HTML, a readable project summary page, a shareable project walkthrough, or to visualize the context memory as a single document.
-compatibility: opencode
+compatibility: claude
 ---
 
 ## What I do
