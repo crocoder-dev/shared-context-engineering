@@ -495,6 +495,8 @@ fn inspect_repository_integrations(
                 inspect_claude_integration_health(&claude_groups, problems);
                 integration_groups.extend(claude_groups);
             }
+            // Pi doctor coverage lands in a later task; compile-only arm for now.
+            IntegrationTargetId::Pi => {}
         }
     }
 

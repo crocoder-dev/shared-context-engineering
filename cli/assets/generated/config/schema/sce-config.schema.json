@@ -348,7 +348,8 @@
             "type": "string",
             "enum": [
               "opencode",
-              "claude"
+              "claude",
+              "pi"
             ]
           },
           "uniqueItems": true

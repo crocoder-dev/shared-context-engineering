@@ -269,6 +269,7 @@ pub(crate) struct PerDbRetryConfig {
 pub(crate) enum IntegrationTargetId {
     Opencode,
     Claude,
+    Pi,
 }
 
 impl IntegrationTargetId {
@@ -276,8 +277,9 @@ impl IntegrationTargetId {
         match raw {
             "opencode" => Ok(Self::Opencode),
             "claude" => Ok(Self::Claude),
+            "pi" => Ok(Self::Pi),
             _ => anyhow::bail!(
-                "Invalid integration target '{raw}' from {source}. Valid values: opencode, claude."
+                "Invalid integration target '{raw}' from {source}. Valid values: opencode, claude, pi."
             ),
         }
     }
@@ -286,4 +288,36 @@ impl IntegrationTargetId {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct IntegrationsConfig {
     pub(crate) target: Vec<IntegrationTargetId>,
+}
+
+#[cfg(test)]
+mod integration_target_id_tests {
+    use super::IntegrationTargetId;
+
+    #[test]
+    fn parses_known_target_ids() {
+        assert_eq!(
+            IntegrationTargetId::parse("opencode", "test").unwrap(),
+            IntegrationTargetId::Opencode
+        );
+        assert_eq!(
+            IntegrationTargetId::parse("claude", "test").unwrap(),
+            IntegrationTargetId::Claude
+        );
+        assert_eq!(
+            IntegrationTargetId::parse("pi", "test").unwrap(),
+            IntegrationTargetId::Pi
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_target_id_and_lists_valid_values() {
+        let error = IntegrationTargetId::parse("cursor", "test source")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "Invalid integration target 'cursor' from test source. Valid values: opencode, claude, pi."
+        );
+    }
 }

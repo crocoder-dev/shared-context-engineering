@@ -58,8 +58,12 @@ Decisions resolved with the user (2026-07-13):
   - Done when: `./scripts/prepare-cli-generated-assets.sh` produces `cli/assets/generated/config/pi/` matching `config/.pi/`, and `cargo build -p` the CLI crate succeeds with the new embedded asset set compiled in.
   - Verification notes (commands or checks): `./scripts/prepare-cli-generated-assets.sh && diff -r config/.pi cli/assets/generated/config/pi`; `cargo build` in `cli/`; `cargo test` for any asset-embedding tests.
 
-- [ ] T03: `Add "pi" integration target ID to config types and schema` (status:todo)
+- [x] T03: `Add "pi" integration target ID to config types and schema` (status:done)
   - Task ID: T03
+  - Completed: 2026-07-13
+  - Files changed: cli/src/services/config/types.rs (Pi variant + parse + unit tests), cli/src/services/doctor/inspect.rs (compile-only no-op Pi match arm; full doctor behavior in T05), config/pkl/base/sce-config-schema.pkl (target enum + "pi"), config/schema/sce-config.schema.json (regenerated), cli/assets/generated/config/schema/sce-config.schema.json (re-synced mirror)
+  - Evidence: `nix flake check` passed (tests, clippy, fmt, pkl-parity); Pkl regen + asset-prep re-run diff-clean beyond intended schema enum change; mirror `diff` clean; new unit tests cover `"pi"` parse and unknown-ID rejection message listing `opencode, claude, pi`
+  - Notes: Approved scope additions during review — Pkl-owned JSON schema enum update (runtime validates against the embedded schema) and the minimal doctor Pi arm required for exhaustive-match compilation
   - Goal: Teach the config layer about the `pi` target so `.sce/config.json` can persist and validate it.
   - Boundaries (in/out of scope): In — add `Pi` variant to `IntegrationTargetId` (`cli/src/services/config/types.rs:269-289`) with `parse()`/string round-trip as `"pi"`, and update `integrations.target` schema validation (`cli/src/services/config/schema.rs:586-624`) including its error message listing valid IDs. Out — setup flags, doctor detection.
   - Done when: `"pi"` parses and serializes; unknown IDs still rejected with the updated valid-values message; unit tests cover the new variant.
