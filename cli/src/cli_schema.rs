@@ -167,14 +167,17 @@ pub enum Commands {
 
     #[command(about = SETUP_CLAP_ABOUT, hide = !SETUP_SHOW_IN_TOP_LEVEL_HELP)]
     Setup {
-        #[arg(long, conflicts_with_all = ["claude", "both"])]
+        #[arg(long, conflicts_with_all = ["claude", "pi", "all"])]
         opencode: bool,
 
-        #[arg(long, conflicts_with_all = ["opencode", "both"])]
+        #[arg(long, conflicts_with_all = ["opencode", "pi", "all"])]
         claude: bool,
 
-        #[arg(long, conflicts_with_all = ["opencode", "claude"])]
-        both: bool,
+        #[arg(long, conflicts_with_all = ["opencode", "claude", "all"])]
+        pi: bool,
+
+        #[arg(long, conflicts_with_all = ["opencode", "claude", "pi"])]
+        all: bool,
 
         #[arg(long)]
         non_interactive: bool,

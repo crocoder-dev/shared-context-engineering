@@ -25,6 +25,7 @@
 - `.sce/`, `.sce/config.json`, `.sce/sce.log`
 - `.opencode/`, `.opencode/opencode.json`
 - `.claude/`
+- `.pi/`
 - `.git/`, `.git/hooks/`, `.git/COMMIT_EDITMSG`
 - `context/`, `context/plans/`, `context/decisions/`, `context/handovers/`, `context/tmp/`
 

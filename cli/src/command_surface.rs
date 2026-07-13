@@ -50,7 +50,8 @@ const HELP_SECTIONS: &[HelpSection] = &[
         title: "Setup Usage:",
         body: &[HelpSectionBodyLine::Command {
             cmd: "  sce setup",
-            suffix: " [--opencode|--claude|--both] [--non-interactive] [--hooks] [--repo <path>]",
+            suffix:
+                " [--opencode|--claude|--pi|--all] [--non-interactive] [--hooks] [--repo <path>]",
         }],
     },
     HelpSection {

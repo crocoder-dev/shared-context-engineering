@@ -336,6 +336,7 @@ pub(crate) mod repo_dir {
     pub const SCE: &str = ".sce";
     pub const OPENCODE: &str = ".opencode";
     pub const CLAUDE: &str = ".claude";
+    pub const PI: &str = ".pi";
     pub const GIT: &str = ".git";
 }
 
@@ -593,6 +594,10 @@ impl InstallTargetPaths {
 
     pub(crate) fn claude_target_dir(&self) -> PathBuf {
         self.repo_root.join(repo_dir::CLAUDE)
+    }
+
+    pub(crate) fn pi_target_dir(&self) -> PathBuf {
+        self.repo_root.join(repo_dir::PI)
     }
 
     pub(crate) fn opencode_plugin_target(&self) -> PathBuf {

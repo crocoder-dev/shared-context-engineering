@@ -25,7 +25,8 @@ pub const NAME: &str = "setup";
 pub enum SetupTarget {
     OpenCode,
     Claude,
-    Both,
+    Pi,
+    All,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,37 +63,47 @@ pub fn get_required_hook_asset(hook: RequiredHookAsset) -> Option<&'static Embed
         .find(|asset| asset.relative_path == hook_name)
 }
 
-pub enum EmbeddedAssetSelectionIter {
-    One(std::slice::Iter<'static, EmbeddedAsset>),
-    Both(
-        std::iter::Chain<
-            std::slice::Iter<'static, EmbeddedAsset>,
-            std::slice::Iter<'static, EmbeddedAsset>,
-        >,
-    ),
+pub struct EmbeddedAssetSelectionIter {
+    asset_slices: std::vec::IntoIter<&'static [EmbeddedAsset]>,
+    current: std::slice::Iter<'static, EmbeddedAsset>,
+}
+
+impl EmbeddedAssetSelectionIter {
+    fn new(asset_slices: Vec<&'static [EmbeddedAsset]>) -> Self {
+        Self {
+            asset_slices: asset_slices.into_iter(),
+            current: [].iter(),
+        }
+    }
 }
 
 impl Iterator for EmbeddedAssetSelectionIter {
     type Item = &'static EmbeddedAsset;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::One(iter) => iter.next(),
-            Self::Both(iter) => iter.next(),
+        loop {
+            if let Some(asset) = self.current.next() {
+                return Some(asset);
+            }
+            self.current = self.asset_slices.next()?.iter();
         }
     }
 }
 
 pub fn iter_embedded_assets_for_setup_target(target: SetupTarget) -> EmbeddedAssetSelectionIter {
-    match target {
-        SetupTarget::OpenCode => EmbeddedAssetSelectionIter::One(OPENCODE_EMBEDDED_ASSETS.iter()),
-        SetupTarget::Claude => EmbeddedAssetSelectionIter::One(CLAUDE_EMBEDDED_ASSETS.iter()),
-        SetupTarget::Both => EmbeddedAssetSelectionIter::Both(
-            OPENCODE_EMBEDDED_ASSETS
-                .iter()
-                .chain(CLAUDE_EMBEDDED_ASSETS.iter()),
-        ),
-    }
+    let asset_slices = concrete_targets_for(target)
+        .iter()
+        .map(|concrete| match concrete {
+            SetupTarget::OpenCode => OPENCODE_EMBEDDED_ASSETS,
+            SetupTarget::Claude => CLAUDE_EMBEDDED_ASSETS,
+            SetupTarget::Pi => PI_EMBEDDED_ASSETS,
+            SetupTarget::All => {
+                unreachable!("meta targets are expanded into concrete targets")
+            }
+        })
+        .collect();
+
+    EmbeddedAssetSelectionIter::new(asset_slices)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -114,7 +125,8 @@ pub struct SetupCliOptions {
     pub non_interactive: bool,
     pub opencode: bool,
     pub claude: bool,
-    pub both: bool,
+    pub pi: bool,
+    pub all: bool,
     pub hooks: bool,
     pub repo_path: Option<PathBuf>,
 }
@@ -141,19 +153,22 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
     if options.claude {
         selected_targets.push(SetupTarget::Claude);
     }
-    if options.both {
-        selected_targets.push(SetupTarget::Both);
+    if options.pi {
+        selected_targets.push(SetupTarget::Pi);
+    }
+    if options.all {
+        selected_targets.push(SetupTarget::All);
     }
 
     if selected_targets.len() > 1 {
         bail!(
-            "Options '--opencode', '--claude', and '--both' are mutually exclusive. Try: choose exactly one target flag (for example 'sce setup --opencode --non-interactive') or omit all target flags for interactive mode."
+            "Options '--opencode', '--claude', '--pi', and '--all' are mutually exclusive. Try: choose exactly one target flag (for example 'sce setup --opencode --non-interactive') or omit all target flags for interactive mode."
         );
     }
 
     if options.non_interactive && selected_targets.is_empty() && !options.hooks {
         bail!(
-            "Option '--non-interactive' requires a target flag. Try: 'sce setup --opencode --non-interactive', 'sce setup --claude --non-interactive', or 'sce setup --both --non-interactive'."
+            "Option '--non-interactive' requires a target flag. Try: 'sce setup --opencode --non-interactive', 'sce setup --claude --non-interactive', 'sce setup --pi --non-interactive', or 'sce setup --all --non-interactive'."
         );
     }
 
@@ -316,7 +331,8 @@ fn setup_target_label(target: SetupTarget) -> &'static str {
     match target {
         SetupTarget::OpenCode => "OpenCode",
         SetupTarget::Claude => "Claude",
-        SetupTarget::Both => "Both",
+        SetupTarget::Pi => "Pi",
+        SetupTarget::All => "All",
     }
 }
 
@@ -403,18 +419,20 @@ pub(crate) fn concrete_targets_for(target: SetupTarget) -> &'static [SetupTarget
     match target {
         SetupTarget::OpenCode => &[SetupTarget::OpenCode],
         SetupTarget::Claude => &[SetupTarget::Claude],
-        SetupTarget::Both => &[SetupTarget::OpenCode, SetupTarget::Claude],
+        SetupTarget::Pi => &[SetupTarget::Pi],
+        SetupTarget::All => &[SetupTarget::OpenCode, SetupTarget::Claude, SetupTarget::Pi],
     }
 }
 
-/// Convert a concrete [`SetupTarget`] (not `Both`) to its canonical
+/// Convert a concrete [`SetupTarget`] (not `All`) to its canonical
 /// `integrations.target` string representation.
 fn integration_target_id_str(target: SetupTarget) -> &'static str {
     match target {
         SetupTarget::OpenCode => "opencode",
         SetupTarget::Claude => "claude",
-        SetupTarget::Both => {
-            unreachable!("integration_target_id_str must not be called with SetupTarget::Both")
+        SetupTarget::Pi => "pi",
+        SetupTarget::All => {
+            unreachable!("integration_target_id_str must not be called with meta targets")
         }
     }
 }
@@ -465,7 +483,7 @@ pub fn persist_integration_targets(repository_root: &Path, target: SetupTarget) 
         })
         .unwrap_or_default();
 
-    // Add new concrete targets (expanding Both), deduping as we go.
+    // Add new concrete targets (expanding All), deduping as we go.
     let new_targets = concrete_targets_for(target);
     for concrete in new_targets {
         let id_str = integration_target_id_str(*concrete);
@@ -899,7 +917,10 @@ mod install {
         let destination_root = match target {
             SetupTarget::OpenCode => install_targets.opencode_target_dir(),
             SetupTarget::Claude => install_targets.claude_target_dir(),
-            SetupTarget::Both => unreachable!("both is expanded into concrete targets"),
+            SetupTarget::Pi => install_targets.pi_target_dir(),
+            SetupTarget::All => {
+                unreachable!("meta targets are expanded into concrete targets")
+            }
         };
         let staging_root = create_staging_root(repository_root, target)?;
 
@@ -1015,7 +1036,10 @@ mod install {
         let target_dir = match target {
             SetupTarget::OpenCode => install_targets.opencode_target_dir(),
             SetupTarget::Claude => install_targets.claude_target_dir(),
-            SetupTarget::Both => unreachable!("both is expanded into concrete targets"),
+            SetupTarget::Pi => install_targets.pi_target_dir(),
+            SetupTarget::All => {
+                unreachable!("meta targets are expanded into concrete targets")
+            }
         };
         let target_label = target_dir
             .file_name()
@@ -1071,7 +1095,8 @@ impl SetupTargetPrompter for InquireSetupTargetPrompter {
 enum SetupPromptTarget {
     OpenCode,
     Claude,
-    Both,
+    Pi,
+    All,
 }
 
 impl std::fmt::Display for SetupPromptTarget {
@@ -1111,7 +1136,8 @@ mod prompt {
         let options = vec![
             SetupPromptTarget::OpenCode,
             SetupPromptTarget::Claude,
-            SetupPromptTarget::Both,
+            SetupPromptTarget::Pi,
+            SetupPromptTarget::All,
         ];
 
         let selection = Select::new(&setup_prompt_title(), options).prompt();
@@ -1123,14 +1149,17 @@ mod prompt {
             Ok(SetupPromptTarget::Claude) => {
                 Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(SetupTarget::Claude)))
             }
-            Ok(SetupPromptTarget::Both) => {
-                Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(SetupTarget::Both)))
+            Ok(SetupPromptTarget::Pi) => {
+                Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(SetupTarget::Pi)))
+            }
+            Ok(SetupPromptTarget::All) => {
+                Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(SetupTarget::All)))
             }
             Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
                 Ok(SetupDispatch::Cancelled)
             }
             Err(InquireError::NotTTY) => bail!(
-                "Interactive setup requires a TTY. Re-run with '--non-interactive' and one of '--opencode', '--claude', or '--both'."
+                "Interactive setup requires a TTY. Re-run with '--non-interactive' and one of '--opencode', '--claude', '--pi', or '--all'."
             ),
             Err(error) => Err(error.into()),
         }
@@ -1154,7 +1183,8 @@ mod prompt {
         let label = match target {
             SetupPromptTarget::OpenCode => "OpenCode",
             SetupPromptTarget::Claude => "Claude",
-            SetupPromptTarget::Both => "Both",
+            SetupPromptTarget::Pi => "Pi",
+            SetupPromptTarget::All => "All (OpenCode + Claude + Pi)",
         };
 
         prompt_value_with_color_policy(label, color_enabled)
@@ -1180,4 +1210,90 @@ where
 
 pub fn setup_cancelled_text() -> String {
     value("Setup cancelled. No files were changed.")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options_with(mutate: impl FnOnce(&mut SetupCliOptions)) -> SetupCliOptions {
+        let mut options = SetupCliOptions::default();
+        mutate(&mut options);
+        options
+    }
+
+    #[test]
+    fn resolve_setup_request_accepts_pi_target() {
+        let request = resolve_setup_request(options_with(|options| {
+            options.pi = true;
+            options.non_interactive = true;
+        }))
+        .expect("pi target should resolve");
+
+        assert_eq!(
+            request.config_mode,
+            Some(SetupMode::NonInteractive(SetupTarget::Pi))
+        );
+    }
+
+    #[test]
+    fn resolve_setup_request_accepts_all_target() {
+        let request = resolve_setup_request(options_with(|options| {
+            options.all = true;
+            options.non_interactive = true;
+        }))
+        .expect("all target should resolve");
+
+        assert_eq!(
+            request.config_mode,
+            Some(SetupMode::NonInteractive(SetupTarget::All))
+        );
+    }
+
+    #[test]
+    fn resolve_setup_request_rejects_combined_target_flags() {
+        let error = resolve_setup_request(options_with(|options| {
+            options.pi = true;
+            options.all = true;
+        }))
+        .expect_err("combined target flags must be rejected");
+
+        assert!(error.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn resolve_setup_request_non_interactive_error_lists_pi_and_all() {
+        let error = resolve_setup_request(options_with(|options| {
+            options.non_interactive = true;
+        }))
+        .expect_err("non-interactive without target must be rejected");
+
+        let message = error.to_string();
+        assert!(message.contains("--pi"));
+        assert!(message.contains("--all"));
+    }
+
+    #[test]
+    fn concrete_targets_for_all_expands_to_three_targets() {
+        assert_eq!(
+            concrete_targets_for(SetupTarget::All),
+            &[SetupTarget::OpenCode, SetupTarget::Claude, SetupTarget::Pi]
+        );
+    }
+
+    #[test]
+    fn integration_target_id_str_maps_pi() {
+        assert_eq!(integration_target_id_str(SetupTarget::Pi), "pi");
+    }
+
+    #[test]
+    fn iter_embedded_assets_for_all_covers_each_concrete_target() {
+        let all_count = iter_embedded_assets_for_setup_target(SetupTarget::All).count();
+        let concrete_sum = iter_embedded_assets_for_setup_target(SetupTarget::OpenCode).count()
+            + iter_embedded_assets_for_setup_target(SetupTarget::Claude).count()
+            + iter_embedded_assets_for_setup_target(SetupTarget::Pi).count();
+
+        assert!(iter_embedded_assets_for_setup_target(SetupTarget::Pi).count() > 0);
+        assert_eq!(all_count, concrete_sum);
+    }
 }

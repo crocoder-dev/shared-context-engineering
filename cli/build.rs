@@ -22,8 +22,7 @@ const TARGETS: &[TargetSpec] = &[
     TargetSpec {
         const_name: "PI_EMBEDDED_ASSETS",
         relative_root: "assets/generated/config/pi",
-        // Unused until setup --pi wiring lands; drop this once consumed.
-        allow_dead_code: true,
+        allow_dead_code: false,
     },
     TargetSpec {
         const_name: "HOOK_EMBEDDED_ASSETS",
