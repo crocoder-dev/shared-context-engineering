@@ -9,7 +9,7 @@
 SCE treats the *why* behind your code, architecture, decisions, constraints, as a versioned, shared artifact that both your team and your AI agents work from.
 
 - a repo-owned `context/` directory holding the architecture, decisions, and constraints AI agents otherwise re-derive every session
-- generated configs that make OpenCode and Claude Code actually read it
+- generated configs that make OpenCode, Claude Code, and Pi actually read it
 - a Bash policy that keeps agents inside your repo's rules
 - hooks that capture agent activity at the commit boundary
 - a local Agent Trace SQLite database linking each commit to the session that produced it
@@ -36,7 +36,7 @@ sce setup     # install generated assistant config, hooks, and bash policy
 sce doctor    # verify the install is healthy
 ```
 
-`sce setup` writes the OpenCode and/or Claude config into your repo, installs the required git hooks, and initializes the per-repo Agent Trace database. `sce doctor` is read-only by default; `sce doctor --fix` will repair the issues it knows how to repair (missing or stale hooks, missing canonical DB parent directories) and report the rest for manual follow-up.
+`sce setup` writes OpenCode, Claude Code, and/or Pi config into your repo, installs the required git hooks, and initializes the per-repo Agent Trace database. Use `sce setup --pi` for Pi only, or `sce setup --all` for OpenCode + Claude Code + Pi. `sce doctor` is read-only by default; `sce doctor --fix` will repair the issues it knows how to repair (missing or stale hooks, missing canonical DB parent directories) and report the rest for manual follow-up.
 
 ## Bash policy
 
@@ -54,15 +54,15 @@ SCE writes a local, per-repo audit trail conforming to the [Agent Trace](https:/
 
 ## Supported integrations
 
-| Feature | OpenCode | Claude Code |
-|---|---|---|
-| Generated config | ✓ | ✓ |
-| Hooks + Bash policy | ✓ | ✓ |
-| Conversation + diff trace | ✓ | ✓ |
-| Model / session attribution | full | full |
-| Shared `context/` | ✓ | ✓ |
+| Feature | OpenCode | Claude Code | Pi |
+|---|---|---|---|
+| Generated config | ✓ | ✓ | ✓ |
+| Hooks + Bash policy | ✓ | ✓ | — |
+| Conversation + diff trace | ✓ | ✓ | — |
+| Model / session attribution | full | full | — |
+| Shared `context/` | ✓ | ✓ | ✓ |
 
-OpenCode and Claude Code are first-class. Other agents can read `context/` but don't get generated config, hooks, or Bash policy enforcement.
+OpenCode, Claude Code, and Pi are first-class generated config targets. Pi receives `.pi/prompts/` command and agent-role prompt templates plus `.pi/skills/` packages; hooks and Bash policy enforcement remain OpenCode/Claude-only.
 
 ## Why this exists
 
