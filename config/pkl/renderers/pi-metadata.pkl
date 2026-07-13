@@ -1,0 +1,22 @@
+agentDescriptions = new Mapping {
+  ["shared-context-plan"] = "Act in the shared-context-plan role to create or update an SCE plan before implementation."
+  ["shared-context-code"] = "Act in the shared-context-code role to execute one approved SCE task and sync context."
+}
+
+agentArgumentHints = new Mapping {
+  ["shared-context-plan"] = "<change request>"
+  ["shared-context-code"] = "<plan-name> [T0X]"
+}
+
+agentSkillReferences = new Mapping {
+  ["shared-context-plan"] = "sce-plan-authoring"
+  ["shared-context-code"] = "sce-task-execution"
+}
+
+commandArgumentHints = new Mapping {
+  ["next-task"] = "<plan-name> [T0X]"
+  ["change-to-plan"] = "<change request>"
+  ["handover"] = "[task context]"
+  ["commit"] = "[oneshot|skip]"
+  ["validate"] = "<plan-name>"
+}

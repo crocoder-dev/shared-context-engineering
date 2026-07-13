@@ -1,6 +1,7 @@
 import "renderers/opencode-content.pkl" as opencode
 import "renderers/opencode-automated-content.pkl" as opencode_automated
 import "renderers/claude-content.pkl" as claude
+import "renderers/pi-content.pkl" as pi
 import "renderers/common.pkl" as common
 import "base/sce-config-schema.pkl" as sce_config_schema
 import "base/bash-policy-presets.pkl" as bash_policy_presets
@@ -60,6 +61,21 @@ output {
     }
     for (slug, document in claude.skills) {
       ["config/.claude/skills/\(slug)/SKILL.md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in pi.commands) {
+      ["config/.pi/prompts/\(slug).md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in pi.agentPrompts) {
+      ["config/.pi/prompts/agent-\(slug).md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in pi.skills) {
+      ["config/.pi/skills/\(slug)/SKILL.md"] {
         text = document.rendered
       }
     }

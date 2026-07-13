@@ -4,6 +4,7 @@ import "common.pkl" as common
 import "opencode-metadata.pkl" as opencode
 import "opencode-automated-metadata.pkl" as opencodeAutomated
 import "claude-metadata.pkl" as claude
+import "pi-metadata.pkl" as pi
 
 opencodeAgentCoverage {
   for (unitSlug, _ in shared.agents) {
@@ -58,6 +59,33 @@ claudeSkillCoverage {
     [unitSlug] = new {
       description = common.skillDescriptions[unitSlug]
       compatibility = claude.skillCompatibility
+    }
+  }
+}
+
+piAgentPromptCoverage {
+  for (unitSlug, _ in shared.agents) {
+    [unitSlug] = new {
+      description = pi.agentDescriptions[unitSlug]
+      argumentHint = pi.agentArgumentHints[unitSlug]
+      skillReference = pi.agentSkillReferences[unitSlug]
+    }
+  }
+}
+
+piCommandCoverage {
+  for (unitSlug, _ in shared.commands) {
+    [unitSlug] = new {
+      description = common.commandDescriptions[unitSlug]
+      argumentHint = pi.commandArgumentHints[unitSlug]
+    }
+  }
+}
+
+piSkillCoverage {
+  for (unitSlug, _ in shared.skills) {
+    [unitSlug] = new {
+      description = common.skillDescriptions[unitSlug]
     }
   }
 }

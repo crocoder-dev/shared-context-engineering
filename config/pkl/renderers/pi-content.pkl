@@ -1,0 +1,82 @@
+import "../base/shared-content.pkl" as shared
+import "common.pkl" as common
+import "pi-metadata.pkl" as metadata
+
+local commandFrontmatterBySlug = new Mapping {
+  for (unitSlug, _ in shared.commands) {
+    [unitSlug] = """
+---
+description: "\(common.commandDescriptions[unitSlug])"
+argument-hint: "\(metadata.commandArgumentHints[unitSlug])"
+---
+"""
+  }
+}
+
+local agentPromptFrontmatterBySlug = new Mapping {
+  for (unitSlug, _ in shared.agents) {
+    [unitSlug] = """
+---
+description: "\(metadata.agentDescriptions[unitSlug])"
+argument-hint: "\(metadata.agentArgumentHints[unitSlug])"
+---
+"""
+  }
+}
+
+local agentPromptBodyBySlug = new Mapping {
+  for (unitSlug, unit in shared.agents) {
+    [unitSlug] = """
+Act as the \(unit.title) agent for the rest of this session. Load and follow the `\(metadata.agentSkillReferences[unitSlug])` skill when its workflow applies. Stay within this role's rules below until the task completes.
+
+Input:
+`$ARGUMENTS`
+
+\(unit.canonicalBody)
+"""
+  }
+}
+
+local skillFrontmatterBySlug = new Mapping {
+  for (unitSlug, _ in shared.skills) {
+    [unitSlug] = """
+---
+name: \(unitSlug)
+description: \(common.skillDescriptions[unitSlug])
+---
+"""
+  }
+}
+
+agentPrompts {
+  for (unitSlug, unit in shared.agents) {
+    [unitSlug] = new common.RenderedTargetDocument {
+      slug = unitSlug
+      title = unit.title
+      frontmatter = agentPromptFrontmatterBySlug[unitSlug]
+      body = agentPromptBodyBySlug[unitSlug]
+    }
+  }
+}
+
+commands {
+  for (unitSlug, unit in shared.commands) {
+    [unitSlug] = new common.RenderedTargetDocument {
+      slug = unitSlug
+      title = unit.title
+      frontmatter = commandFrontmatterBySlug[unitSlug]
+      body = unit.canonicalBody
+    }
+  }
+}
+
+skills {
+  for (unitSlug, unit in shared.skills) {
+    [unitSlug] = new common.RenderedTargetDocument {
+      slug = unitSlug
+      title = unit.title
+      frontmatter = skillFrontmatterBySlug[unitSlug]
+      body = unit.canonicalBody
+    }
+  }
+}
