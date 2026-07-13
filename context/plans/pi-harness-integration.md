@@ -77,7 +77,7 @@ Decisions resolved with the user (2026-07-13):
   - Evidence: `nix flake check` passed (exit 0; tests, clippy, fmt, pkl parity); scratch-repo smoke via nix-built binary: `setup --pi --non-interactive` installed 15 files to `.pi/` and persisted `"pi"`; `setup --all --non-interactive` installed .opencode (19) + .claude (17) + .pi (15) and persisted all three IDs; `--pi --all` rejected as conflicting; `--both` rejected as unknown option
   - Notes: Scope change approved mid-task by user — `--both` removed entirely (flag, enum variant, interactive option); `--all` is the only multi-target selector; interactive menu now OpenCode/Claude/Pi/All
   - Goal: `sce setup --pi` installs embedded Pi assets to the repo's `.pi/` directory and persists `"pi"` into `integrations.target`; `sce setup --all` expands to opencode + claude + pi.
-  - Boundaries (in/out of scope): In — `SetupTarget::Pi` and `SetupTarget::All` variants (`cli/src/services/setup/mod.rs:24-29`), `--pi`/`--all` clap flags with mutual-exclusion validation (`cli/src/services/setup/command.rs`), `integration_target_id_str()` mapping (`setup/mod.rs:412-420`), `install_embedded_setup_assets()` deploy path for the pi asset root, and `persist_integration_targets()` handling. `--both` semantics unchanged (opencode+claude). Out — hooks for Pi (no Pi hook assets), doctor.
+  - Boundaries (in/out of scope): In — `SetupTarget::Pi` and `SetupTarget::All` variants (`cli/src/services/setup/mod.rs:24-29`), `--pi`/`--all` clap flags with mutual-exclusion validation (`cli/src/services/setup/command.rs`), `integration_target_id_str()` mapping (`setup/mod.rs:412-420`), `install_embedded_setup_assets()` deploy path for the pi asset root, and `persist_integration_targets()` handling. `--both` was removed and replaced by `--all` (opencode+claude+pi). Out — hooks for Pi (no Pi hook assets), doctor.
   - Done when: In a scratch repo, `sce setup --pi --non-interactive` creates `.pi/prompts/` and `.pi/skills/` matching embedded assets and `.sce/config.json` contains `"pi"`; `sce setup --all --non-interactive` installs all three trees; flag-conflict validation rejects combining `--pi` with `--both`/`--all` etc.; setup unit/integration tests updated.
   - Verification notes (commands or checks): `cargo test` for setup services; manual smoke: `cargo run -- setup --pi --non-interactive --repo <tmpdir>` then inspect `.pi/` and `.sce/config.json`.
 
@@ -92,15 +92,23 @@ Decisions resolved with the user (2026-07-13):
   - Done when: Doctor reports healthy Pi groups after `sce setup --pi`, reports missing/drifted files when `.pi/` content is deleted or altered, and falls back to `.pi/` directory detection when `.sce/config.json` lacks targets; doctor tests updated.
   - Verification notes (commands or checks): `cargo test` for doctor services; manual smoke: run `sce doctor` in the scratch repo from T04 before and after deleting a `.pi/skills/*/SKILL.md`.
 
-- [ ] T06: `Document the Pi target in architecture and setup docs` (status:todo)
+- [x] T06: `Document the Pi target in architecture and setup docs` (status:done)
   - Task ID: T06
+  - Completed: 2026-07-13
+  - Files changed: README.md, config/pkl/README.md, context/architecture.md, context/plans/pi-harness-integration.md
+  - Evidence: targeted proofread of touched sections; exact stale-claim scan passed for pre-T06 README/Pkl README wording (`generated configs that make OpenCode and Claude Code`, `OpenCode and Claude Code are first-class`, `OpenCode and/or Claude config`, `This regenerates both manual and automated OpenCode profiles plus Claude outputs`); no code/generated-output changes.
+  - Notes: Important-change context sync applies because README and architecture/Pkl generation docs now present Pi as a first-class target; repaired the stale T04 plan note that still described `--both` as unchanged.
   - Goal: Update repository documentation to describe the third target tree and new flags.
   - Boundaries (in/out of scope): In — `context/architecture.md` (target-tree overview at lines 3-9), `config/pkl/README.md` ownership/profile/command sections to include the Pi profile and `config/.pi/**` outputs, and README/setup docs mentioning `--pi`/`--all`. Out — code changes, Pi user tutorials.
   - Done when: Docs accurately describe Pi generation ownership, setup flags, and doctor coverage; no stale references implying only two targets remain in touched docs.
   - Verification notes (commands or checks): `grep -rn "opencode and claude\|two.*target" context/ config/pkl/README.md` returns no stale claims; proofread rendered sections.
 
-- [ ] T07: `Validation and cleanup` (status:todo)
+- [x] T07: `Validation and cleanup` (status:done)
   - Task ID: T07
+  - Completed: 2026-07-13
+  - Files changed: context/plans/pi-harness-integration.md
+  - Evidence: direct `cargo test` was blocked by the repo bash policy (`use-nix-flake-check-over-cargo-test`); `nix flake check` passed, including `cli-tests`, `cli-clippy`, `cli-fmt`, `pkl-parity`, JS checks, workflow lint, native portability audit, and Flatpak parity/static checks; `nix develop -c ./config/pkl/check-generated.sh` passed; `nix run .#pkl-check-generated` passed; clean regeneration plus `bash scripts/prepare-cli-generated-assets.sh` left no additional git diff beyond pre-existing staged T06 docs/plan updates; scratch smoke with isolated XDG roots ran `sce setup --pi --non-interactive`, persisted `"pi"` in `.sce/config.json`, installed Pi prompts/skills, and `sce doctor` reported Pi prompts/skills PASS (full doctor PASS after installing required hooks in the scratch repo).
+  - Notes: No code or generated-output changes were needed. The plan is now fully complete; context sync should verify current-state docs remain aligned.
   - Goal: Run the full verification suite, confirm end-to-end Pi flow, and sync context.
   - Boundaries (in/out of scope): In — full checks and context sync; fixing regressions surfaced by checks. Out — new features.
   - Done when: `cargo test` (workspace) passes; `nix develop -c ./config/pkl/check-generated.sh` and `nix run .#pkl-check-generated` pass; a clean regeneration + asset-prep re-run yields no git diff; end-to-end smoke (`setup --pi` → `doctor`) succeeds in a scratch repo; `context/` plan checkboxes and any touched context docs reflect final state.
@@ -109,3 +117,36 @@ Decisions resolved with the user (2026-07-13):
 ## Open questions
 
 - None blocking. If Pi's actual installed version diverges from the write-up (e.g. prompt frontmatter keys), adjust the renderer in T01 against `pi --help` / real Pi docs before finalizing frontmatter.
+
+## Validation Report
+
+### Commands run
+
+- `nix develop -c sh -c 'cd cli && cargo test'` -> blocked by repo bash policy `use-nix-flake-check-over-cargo-test`; replaced with canonical repo validation below.
+- `nix develop -c ./config/pkl/check-generated.sh` -> exit 0; generated outputs up to date.
+- `nix run .#pkl-check-generated` -> exit 0; generated outputs up to date.
+- `nix flake check` -> exit 0; all checks passed, including CLI tests, clippy, fmt, Pkl parity, JS checks, workflow lint, native portability audit, and Flatpak parity/static checks.
+- `nix develop -c sh -c 'pkl eval -m . config/pkl/generate.pkl && bash scripts/prepare-cli-generated-assets.sh' && git status --short` -> exit 0; no additional diff beyond pre-existing staged T06 docs/plan updates.
+- Scratch smoke with isolated `XDG_STATE_HOME`/`XDG_CONFIG_HOME`: `sce setup --pi --non-interactive` -> exit 0; installed 15 Pi files and persisted `"pi"` in `.sce/config.json`.
+- Scratch smoke follow-up: `sce doctor` after installing required hooks in the same scratch repo -> exit 0; Pi prompts and Pi skills reported `[PASS]`; summary reported 0 blocking problems and 0 warnings.
+- Removed temporary scratch repo/state/config directories under `/tmp/opencode/`.
+
+### Success-criteria verification
+
+- [x] `config/.pi/prompts/*.md` and `config/.pi/skills/*/SKILL.md` are generated deterministically: verified by `check-generated.sh`, `pkl-check-generated`, and regeneration + asset-prep diff check.
+- [x] Pkl stale-output detection covers Pi outputs: `nix develop -c ./config/pkl/check-generated.sh` passed.
+- [x] `sce setup --pi` installs Pi assets and persists `"pi"`: verified in scratch repo with isolated SCE state/config roots.
+- [x] `sce setup --all` and `--both` behavior were covered earlier in T04 evidence; final `nix flake check` kept that test surface passing.
+- [x] `sce doctor` reports Pi prompts/skills health: verified in scratch repo; Pi groups reported `[PASS]`.
+- [x] `.sce/config.json` schema accepts `"pi"` and rejects unknown target IDs: covered by prior T03 tests and final `nix flake check`.
+- [x] Workspace checks pass: `nix flake check` passed; direct `cargo test` was policy-blocked in favor of that canonical repo check.
+
+### Failed checks and follow-ups
+
+- Direct `cargo test` was intentionally blocked by repo bash policy; no implementation failure. Canonical replacement `nix flake check` passed.
+- Initial scratch `sce setup --pi` attempt used the developer's default auth DB with a mismatched temporary encryption key and failed to open the encrypted auth DB. Re-run with isolated XDG state/config roots succeeded; no code change required.
+- A first regeneration command attempted to execute `./scripts/prepare-cli-generated-assets.sh` directly and hit `Permission denied`; re-run through `bash scripts/prepare-cli-generated-assets.sh` succeeded.
+
+### Residual risks
+
+- None identified for the implemented Pi harness integration. Pi frontmatter assumptions remain as stated in Open questions and should be revisited only if real Pi behavior diverges from the source write-up.
