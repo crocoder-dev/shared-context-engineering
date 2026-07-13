@@ -3,7 +3,8 @@
   "integrations": {
     "target": [
       "claude",
-      "opencode"
+      "opencode",
+      "pi"
     ]
   },
   "log_file": "context/tmp/sce.log",
