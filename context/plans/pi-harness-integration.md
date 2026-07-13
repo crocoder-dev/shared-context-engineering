@@ -48,8 +48,11 @@ Decisions resolved with the user (2026-07-13):
   - Done when: `nix develop -c pkl eval -m . config/pkl/generate.pkl` writes the `config/.pi/` tree; re-running produces no diff; `nix develop -c ./config/pkl/check-generated.sh` passes and covers Pi paths; generated prompt frontmatter contains valid `description` (and `argument-hint` where the source command takes arguments).
   - Verification notes (commands or checks): `nix develop -c pkl eval -m . config/pkl/generate.pkl`; `git status --short config/.pi`; `nix develop -c ./config/pkl/check-generated.sh`; manual read of one command prompt, one agent-role prompt, and one SKILL.md for correct Pi frontmatter and argument syntax.
 
-- [ ] T02: `Sync and embed Pi assets into the CLI binary` (status:todo)
+- [x] T02: `Sync and embed Pi assets into the CLI binary` (status:done)
   - Task ID: T02
+  - Completed: 2026-07-13
+  - Files changed: scripts/prepare-cli-generated-assets.sh, cli/build.rs, flake.nix (Nix-build asset staging for config/.pi), cli/assets/generated/config/pi/** (synced: 7 prompts, 8 SKILL.md), cli/assets/generated/config/schema/sce-config.schema.json (pre-existing mirror drift from 641c4e7 picked up by re-sync)
+  - Evidence: `bash scripts/prepare-cli-generated-assets.sh && diff -r config/.pi cli/assets/generated/config/pi` clean; `cargo build` succeeded (3m21s) after adding `#[allow(dead_code)]` emission for the unused-until-T04 `PI_EMBEDDED_ASSETS`; `nix flake check` passed (exit 0)
   - Goal: Make the generated Pi tree available as embedded CLI assets.
   - Boundaries (in/out of scope): In — extend `scripts/prepare-cli-generated-assets.sh` to copy `config/.pi/` into `cli/assets/generated/config/pi/`, add a `PI_EMBEDDED_ASSETS` target entry in `cli/build.rs` (alongside the opencode/claude entries at `cli/build.rs:11-24`), and commit the synced `cli/assets/generated/config/pi/` tree. Out — setup command wiring, doctor.
   - Done when: `./scripts/prepare-cli-generated-assets.sh` produces `cli/assets/generated/config/pi/` matching `config/.pi/`, and `cargo build -p` the CLI crate succeeds with the new embedded asset set compiled in.

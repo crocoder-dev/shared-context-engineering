@@ -8,16 +8,18 @@ fi
 
 source_opencode="${repo_root}/config/.opencode"
 source_claude="${repo_root}/config/.claude"
+source_pi="${repo_root}/config/.pi"
 source_schema="${repo_root}/config/schema/sce-config.schema.json"
 source_agent_trace_schema="${repo_root}/config/schema/agent-trace.schema.json"
 target_root="${repo_root}/cli/assets/generated/config"
 
-if [ ! -d "${source_opencode}" ] || [ ! -d "${source_claude}" ] || [ ! -f "${source_schema}" ] || [ ! -f "${source_agent_trace_schema}" ]; then
+if [ ! -d "${source_opencode}" ] || [ ! -d "${source_claude}" ] || [ ! -d "${source_pi}" ] || [ ! -f "${source_schema}" ] || [ ! -f "${source_agent_trace_schema}" ]; then
   cat >&2 <<EOF
 Missing generated config inputs required for CLI crate asset preparation.
 Expected:
   ${source_opencode}
   ${source_claude}
+  ${source_pi}
   ${source_schema}
   ${source_agent_trace_schema}
 EOF
@@ -28,6 +30,7 @@ rm -rf "${repo_root}/cli/assets/generated"
 mkdir -p "${target_root}"
 cp -R "${source_opencode}" "${target_root}/opencode"
 cp -R "${source_claude}" "${target_root}/claude"
+cp -R "${source_pi}" "${target_root}/pi"
 mkdir -p "${target_root}/schema"
 cp "${source_schema}" "${target_root}/schema/sce-config.schema.json"
 cp "${source_agent_trace_schema}" "${target_root}/schema/agent-trace.schema.json"
