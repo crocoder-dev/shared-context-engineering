@@ -46,6 +46,8 @@ paths=(
   "config/.claude/agents"
   "config/.claude/commands"
   "config/.claude/skills"
+  "config/.pi/prompts"
+  "config/.pi/skills"
   "config/schema/sce-config.schema.json"
 )
 

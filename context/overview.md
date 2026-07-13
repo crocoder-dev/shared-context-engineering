@@ -1,6 +1,6 @@
 # Overview
 
-This repository maintains shared assistant configuration for OpenCode and Claude from a single canonical Pkl authoring source. It validates that generated outputs stay deterministic and in sync via `nix run .#pkl-check-generated` and `nix flake check`. It supports both manual and automated profile variants; the automated profile applies deterministic non-interactive behavior for CI/automation workflows.
+This repository maintains shared assistant configuration for OpenCode, Claude, and Pi from a single canonical Pkl authoring source. It validates that generated outputs stay deterministic and in sync via `nix run .#pkl-check-generated` and `nix flake check`. It supports both manual and automated profile variants; the automated profile applies deterministic non-interactive behavior for CI/automation workflows.
 
 It also includes a Rust CLI (`sce`) for Shared Context Engineering workflows: auth, config inspection, setup, doctor, agent-trace hooks, bash-policy evaluation, and trace database inspection. See `context/architecture.md` for module-level boundaries and `context/context-map.md` for the full domain file index.
 
@@ -71,12 +71,12 @@ The setup command parser/dispatch now also supports composable setup+hooks runs 
 
 - Author once in canonical Pkl content organized by concern: `config/pkl/base/shared-content-{common,plan,code,commit}.pkl` for manual profile and `config/pkl/base/shared-content-automated-{common,plan,code,commit}.pkl` for automated profile; aggregation surfaces `config/pkl/base/shared-content.pkl` and `config/pkl/base/shared-content-automated.pkl` import from these grouped modules for downstream renderers.
 - Apply target-specific metadata/rendering in `config/pkl/renderers/`.
-- Generate derived artifacts into `config/.opencode/**` (manual profile), `config/automated/.opencode/**` (automated profile), and `config/.claude/**` via `config/pkl/generate.pkl`.
+- Generate derived artifacts into `config/.opencode/**` (manual profile), `config/automated/.opencode/**` (automated profile), `config/.claude/**`, and `config/.pi/**` (Pi prompts/skills, manual profile only) via `config/pkl/generate.pkl`.
 - Treat generated outputs as build artifacts, not primary editing surfaces.
 
 ## Ownership boundaries
 
-- Generation-owned paths are authored config artifacts under `config/.opencode/**`, `config/automated/.opencode/**`, and `config/.claude/**` (agents, commands, skills, shared runtime libraries, OpenCode plugin files, generated OpenCode package manifests, generated OpenCode `opencode.json` manifests including SCE plugin registration, and Claude hook/settings assets).
+- Generation-owned paths are authored config artifacts under `config/.opencode/**`, `config/automated/.opencode/**`, `config/.claude/**`, and `config/.pi/**` (agents, commands, skills, shared runtime libraries, OpenCode plugin files, generated OpenCode package manifests, generated OpenCode `opencode.json` manifests including SCE plugin registration, Claude hook/settings assets, and Pi prompt/skill assets).
 - Runtime/install artifacts are not generation-owned (for example `node_modules`, lockfiles, install outputs).
 - Code and behavior changes must be made in canonical sources and renderer metadata, then regenerated.
 
@@ -101,7 +101,7 @@ Lightweight post-task verification baseline (required after each completed task)
 
 ## Cross-target parity
 
-- OpenCode and Claude are generated from the same canonical content with per-target capability mapping.
+- OpenCode, Claude, and Pi are generated from the same canonical content with per-target capability mapping (Pi renders SCE agents as agent-role prompt templates because it has no native sub-agent format).
 - When capabilities differ, parity is implemented by supported target-specific behavior rather than forcing unsupported fields.
 
 ## Context navigation

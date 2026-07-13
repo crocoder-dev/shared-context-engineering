@@ -2,10 +2,11 @@
 
 ## Config generation boundary (current approved design)
 
-The repository keeps two parallel config target trees:
+The repository keeps three parallel config target trees:
 
 - `config/.opencode`
 - `config/.claude`
+- `config/.pi`
 
 For authored config content, generation is standardized around one canonical Pkl source model with target-specific rendering applied later in the pipeline.
 
@@ -29,10 +30,12 @@ Current target renderer helper modules:
 - `config/pkl/renderers/opencode-content.pkl`
 - `config/pkl/renderers/opencode-automated-content.pkl`
 - `config/pkl/renderers/claude-content.pkl`
+- `config/pkl/renderers/pi-content.pkl`
 - `config/pkl/renderers/common.pkl`
 - `config/pkl/renderers/opencode-metadata.pkl`
 - `config/pkl/renderers/opencode-automated-metadata.pkl`
 - `config/pkl/renderers/claude-metadata.pkl`
+- `config/pkl/renderers/pi-metadata.pkl`
 - `config/pkl/renderers/metadata-coverage-check.pkl`
 - `config/pkl/generate.pkl` (single multi-file generation entrypoint)
 - `config/pkl/check-generated.sh` (dev-shell integration stale-output detection against committed generated files)
@@ -45,12 +48,13 @@ Renderer modules apply target-specific metadata/frontmatter rules while reusing 
 
 - OpenCode renderer emits frontmatter with `agent`/`permission`/`compatibility: opencode` conventions; targeted SCE commands also emit machine-readable `entry-skill` and ordered `skills` metadata when the renderer explicitly defines that mapping.
 - Claude renderer emits frontmatter with `allowed-tools`/`model`/`compatibility: claude` conventions.
+- Pi renderer emits prompt-template frontmatter with `description`/`argument-hint` conventions: commands render to `config/.pi/prompts/{slug}.md`, SCE agents render as agent-role prompt templates at `config/.pi/prompts/agent-{slug}.md` (act-as-role preamble + `$ARGUMENTS` input + canonical agent body), and skills render to Agent Skills-format `config/.pi/skills/{slug}/SKILL.md`. Pi has no native sub-agent format, no hooks, and no settings/plugin manifest in the current slice.
 - Shared renderer contracts (`RenderedTargetDocument`, command descriptions) live in `config/pkl/renderers/common.pkl`.
 - The canonical OpenCode plugin-registration source for generated SCE plugins lives in `config/pkl/base/opencode.pkl`; `config/pkl/renderers/common.pkl` re-exports the shared plugin list and JSON-ready paths for OpenCode renderers, and the current generated registration scope is limited to SCE-managed plugins emitted by this repo (`sce-bash-policy` and `sce-agent-trace`).
-- Target-specific metadata tables, including skill frontmatter descriptions, are isolated in `config/pkl/renderers/opencode-metadata.pkl`, `config/pkl/renderers/opencode-automated-metadata.pkl`, and `config/pkl/renderers/claude-metadata.pkl`.
-- Metadata key coverage is enforced by `config/pkl/renderers/metadata-coverage-check.pkl`, which resolves all required lookup keys for both targets and fails evaluation on missing entries.
+- Target-specific metadata tables, including skill frontmatter descriptions, are isolated in `config/pkl/renderers/opencode-metadata.pkl`, `config/pkl/renderers/opencode-automated-metadata.pkl`, `config/pkl/renderers/claude-metadata.pkl`, and `config/pkl/renderers/pi-metadata.pkl` (Pi agent descriptions, argument hints, skill references, and command argument hints; Pi skill/command descriptions reuse the shared tables in `common.pkl`).
+- Metadata key coverage is enforced by `config/pkl/renderers/metadata-coverage-check.pkl`, which resolves all required lookup keys for all targets (OpenCode manual/automated, Claude, Pi) and fails evaluation on missing entries.
 - Both renderers expose per-class rendered document objects (`agents`, `commands`, `skills`) consumed by `config/pkl/generate.pkl`.
-- `config/pkl/generate.pkl` emits deterministic `output.files` mappings for all authored generated targets: OpenCode/Claude agents, commands, skills, Claude project settings, the Claude hook helper script at `config/.claude/hooks/run-sce-or-show-install-guidance.sh`, shared bash-policy preset assets under `lib/`, the OpenCode plugin entrypoints under `plugins/` (currently `sce-bash-policy.ts` and `sce-agent-trace.ts`), generated OpenCode `package.json` and `opencode.json` manifests for manual and automated profiles, and the generated `sce/config.json` schema artifact at `config/schema/sce-config.schema.json`.
+- `config/pkl/generate.pkl` emits deterministic `output.files` mappings for all authored generated targets: OpenCode/Claude agents, commands, skills, Claude project settings, the Claude hook helper script at `config/.claude/hooks/run-sce-or-show-install-guidance.sh`, shared bash-policy preset assets under `lib/`, the OpenCode plugin entrypoints under `plugins/` (currently `sce-bash-policy.ts` and `sce-agent-trace.ts`), generated OpenCode `package.json` and `opencode.json` manifests for manual and automated profiles, the Pi target tree (`config/.pi/prompts/{slug}.md` command prompts, `config/.pi/prompts/agent-{slug}.md` agent-role prompts, `config/.pi/skills/{slug}/SKILL.md`), and the generated `sce/config.json` schema artifact at `config/schema/sce-config.schema.json`.
 - Generated-file warning markers are not injected by the generator: Markdown outputs render deterministic frontmatter + body, and shared library outputs are emitted without a leading generated warning header.
 - `config/pkl/check-generated.sh` is intentionally dev-shell scoped (`nix develop -c ...`): it requires `IN_NIX_SHELL`, runs `pkl eval -m <tmp> config/pkl/generate.pkl`, and fails when generated-owned paths drift.
 
