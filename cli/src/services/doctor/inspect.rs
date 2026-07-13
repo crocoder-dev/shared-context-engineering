@@ -8,7 +8,8 @@ use crate::services::checkout;
 use crate::services::config::schema::parse_file_config;
 use crate::services::config::{ConfigPathSource, IntegrationTargetId};
 use crate::services::default_paths::{
-    agent_trace_db_path_for_checkout, claude_asset, opencode_asset, InstallTargetPaths, RepoPaths,
+    agent_trace_db_path_for_checkout, claude_asset, opencode_asset, pi_asset, InstallTargetPaths,
+    RepoPaths,
 };
 use crate::services::setup::{
     iter_embedded_assets_for_setup_target, iter_required_hook_assets, EmbeddedAsset, SetupTarget,
@@ -20,7 +21,7 @@ use super::types::{
     IntegrationContentState, IntegrationGroupHealth, ProblemCategory, ProblemFixability,
     ProblemKind, ProblemSeverity, Readiness, CLAUDE_AGENTS_LABEL, CLAUDE_COMMANDS_LABEL,
     CLAUDE_PLUGINS_LABEL, CLAUDE_SKILLS_LABEL, OPENCODE_AGENTS_LABEL, OPENCODE_COMMANDS_LABEL,
-    OPENCODE_PLUGINS_LABEL, OPENCODE_SKILLS_LABEL,
+    OPENCODE_PLUGINS_LABEL, OPENCODE_SKILLS_LABEL, PI_PROMPTS_LABEL, PI_SKILLS_LABEL,
 };
 use super::{is_executable, DoctorDependencies, DoctorMode, REQUIRED_HOOKS};
 
@@ -401,7 +402,7 @@ fn inspect_repository_hooks(
 
 /// Returns `true` when the doctor was able to check for integration targets
 /// and found none (neither configured in `.sce/config.json` nor detected
-/// via repo-root `.opencode/` / `.claude/` directories).
+/// via repo-root `.opencode/` / `.claude/` / `.pi/` directories).
 fn should_show_no_integrations_message(
     git_available: bool,
     bare_repository: bool,
@@ -447,6 +448,9 @@ fn resolve_doctor_integration_targets(repository_root: &Path) -> Vec<Integration
     if repo_paths.claude_dir().exists() {
         detected.push(IntegrationTargetId::Claude);
     }
+    if repo_paths.pi_dir().exists() {
+        detected.push(IntegrationTargetId::Pi);
+    }
     detected
 }
 
@@ -472,10 +476,10 @@ fn inspect_repository_integrations(
             severity: ProblemSeverity::Error,
             fixability: ProblemFixability::ManualOnly,
             summary: String::from(
-                "No integrations are installed. Run 'sce setup' to install OpenCode and/or Claude integration assets.",
+                "No integrations are installed. Run 'sce setup' to install OpenCode, Claude, and/or Pi integration assets.",
             ),
             remediation: String::from(
-                "Run 'sce setup --opencode', 'sce setup --claude', or 'sce setup --all' to install integration assets.",
+                "Run 'sce setup --opencode', 'sce setup --claude', 'sce setup --pi', or 'sce setup --all' to install integration assets.",
             ),
             next_action: "manual_steps",
         });
@@ -495,8 +499,11 @@ fn inspect_repository_integrations(
                 inspect_claude_integration_health(&claude_groups, problems);
                 integration_groups.extend(claude_groups);
             }
-            // Pi doctor coverage lands in a later task; compile-only arm for now.
-            IntegrationTargetId::Pi => {}
+            IntegrationTargetId::Pi => {
+                let pi_groups = collect_pi_integration_groups(resolved_root);
+                inspect_pi_integration_health(&pi_groups, problems);
+                integration_groups.extend(pi_groups);
+            }
         }
     }
 
@@ -729,6 +736,15 @@ fn inspect_claude_integration_health(
     push_claude_integration_read_fail_problems(integration_groups, problems);
 }
 
+fn inspect_pi_integration_health(
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
+    push_pi_integration_missing_problems(integration_groups, problems);
+    push_pi_integration_mismatch_problems(integration_groups, problems);
+    push_pi_integration_read_fail_problems(integration_groups, problems);
+}
+
 fn push_opencode_integration_missing_problems(
     integration_groups: &[IntegrationGroupHealth],
     problems: &mut Vec<DoctorProblem>,
@@ -922,6 +938,109 @@ fn push_claude_integration_read_fail_problems(
                 fixability: ProblemFixability::ManualOnly,
                 summary: format!(
                     "Unable to read Claude asset '{}' at '{}': {error}",
+                    child.relative_path,
+                    child.path.display()
+                ),
+                remediation: format!(
+                    "Verify that '{}' is readable before rerunning 'sce doctor'.",
+                    child.path.display()
+                ),
+                next_action: "manual_steps",
+            });
+        }
+    }
+}
+
+fn push_pi_integration_missing_problems(
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
+    for group in integration_groups {
+        let missing_children = group
+            .children
+            .iter()
+            .filter(|child| matches!(&child.content_state, IntegrationContentState::Missing))
+            .collect::<Vec<_>>();
+        if missing_children.is_empty() {
+            continue;
+        }
+
+        let missing_paths = missing_children
+            .iter()
+            .map(|child| format!("'{}'", child.path.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        problems.push(DoctorProblem {
+            kind: ProblemKind::PiIntegrationFilesMissing,
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "{} required file(s) are missing: {}.",
+                group.label, missing_paths
+            ),
+            remediation: format!(
+                "Reinstall repo-root Pi assets to restore the missing {} file(s), then rerun 'sce doctor'.",
+                group.label.to_ascii_lowercase()
+            ),
+            next_action: "manual_steps",
+        });
+    }
+}
+
+fn push_pi_integration_mismatch_problems(
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
+    for group in integration_groups {
+        let mismatched_children = group
+            .children
+            .iter()
+            .filter(|child| matches!(&child.content_state, IntegrationContentState::Mismatch))
+            .collect::<Vec<_>>();
+        if mismatched_children.is_empty() {
+            continue;
+        }
+
+        let mismatched_paths = mismatched_children
+            .iter()
+            .map(|child| format!("'{}'", child.path.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        problems.push(DoctorProblem {
+            kind: ProblemKind::PiIntegrationContentMismatch,
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "{} file(s) differ from the canonical embedded content: {}.",
+                group.label, mismatched_paths
+            ),
+            remediation: format!(
+                "Reinstall repo-root Pi assets to restore the canonical {} content, then rerun 'sce doctor'.",
+                group.label.to_ascii_lowercase()
+            ),
+            next_action: "manual_steps",
+        });
+    }
+}
+
+fn push_pi_integration_read_fail_problems(
+    integration_groups: &[IntegrationGroupHealth],
+    problems: &mut Vec<DoctorProblem>,
+) {
+    for group in integration_groups {
+        for child in &group.children {
+            let IntegrationContentState::ReadFailed(error) = &child.content_state else {
+                continue;
+            };
+            problems.push(DoctorProblem {
+                kind: ProblemKind::PiAssetReadFailed,
+                category: ProblemCategory::FilesystemPermissions,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "Unable to read Pi asset '{}' at '{}': {error}",
                     child.relative_path,
                     child.path.display()
                 ),
@@ -1158,6 +1277,45 @@ fn collect_claude_integration_groups(repository_root: &Path) -> Vec<IntegrationG
         },
         IntegrationGroupHealth {
             label: CLAUDE_SKILLS_LABEL,
+            children: skill_children,
+        },
+    ]
+}
+
+fn collect_pi_integration_groups(repository_root: &Path) -> Vec<IntegrationGroupHealth> {
+    let repo_paths = RepoPaths::new(repository_root);
+    let pi_root = repo_paths.pi_dir();
+    let embedded_assets =
+        iter_embedded_assets_for_setup_target(SetupTarget::Pi).collect::<Vec<_>>();
+    let mut prompt_children = Vec::new();
+    let mut skill_children = Vec::new();
+
+    for asset in embedded_assets {
+        let child = build_integration_child_from_asset(&pi_root, asset);
+
+        if child
+            .relative_path
+            .starts_with(&format!("{}/", pi_asset::PROMPTS_DIR))
+        {
+            prompt_children.push(child);
+        } else if child
+            .relative_path
+            .starts_with(&format!("{}/", pi_asset::SKILLS_DIR))
+        {
+            skill_children.push(child);
+        }
+    }
+
+    sort_integration_children(&mut prompt_children);
+    sort_integration_children(&mut skill_children);
+
+    vec![
+        IntegrationGroupHealth {
+            label: PI_PROMPTS_LABEL,
+            children: prompt_children,
+        },
+        IntegrationGroupHealth {
+            label: PI_SKILLS_LABEL,
             children: skill_children,
         },
     ]

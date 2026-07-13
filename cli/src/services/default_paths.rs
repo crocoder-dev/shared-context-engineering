@@ -385,6 +385,11 @@ pub(crate) mod claude_asset {
     pub const COMMANDS_DIR: &str = "commands";
 }
 
+pub(crate) mod pi_asset {
+    pub const PROMPTS_DIR: &str = "prompts";
+    pub const SKILLS_DIR: &str = "skills";
+}
+
 #[allow(dead_code)]
 pub(crate) mod context_dir {
     pub const CONTEXT_ROOT: &str = "context";
@@ -443,6 +448,10 @@ impl RepoPaths {
 
     pub(crate) fn claude_dir(&self) -> PathBuf {
         self.root.join(repo_dir::CLAUDE)
+    }
+
+    pub(crate) fn pi_dir(&self) -> PathBuf {
+        self.root.join(repo_dir::PI)
     }
 
     pub(crate) fn git_dir(&self) -> PathBuf {
