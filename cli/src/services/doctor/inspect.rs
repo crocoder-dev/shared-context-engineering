@@ -475,7 +475,7 @@ fn inspect_repository_integrations(
                 "No integrations are installed. Run 'sce setup' to install OpenCode and/or Claude integration assets.",
             ),
             remediation: String::from(
-                "Run 'sce setup --opencode', 'sce setup --claude', or 'sce setup --both' to install integration assets.",
+                "Run 'sce setup --opencode', 'sce setup --claude', or 'sce setup --all' to install integration assets.",
             ),
             next_action: "manual_steps",
         });

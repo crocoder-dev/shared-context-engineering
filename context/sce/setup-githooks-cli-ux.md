@@ -10,7 +10,8 @@ Task `sce-setup-githooks-any-repo` `T04` defines the `sce setup` command-surface
 - `sce setup --hooks --repo <path>`
 - `sce setup --opencode --hooks`
 - `sce setup --claude --hooks`
-- `sce setup --both --hooks`
+- `sce setup --pi --hooks`
+- `sce setup --all --hooks`
 - `sce setup` (interactive target selection plus hook install in one run)
 
 `--hooks` runs required-hook installation (`pre-commit`, `commit-msg`, `post-commit`) through the setup service hook installer.
@@ -31,18 +32,19 @@ Target-install mode contract:
 
 - `sce setup` defaults to interactive target selection
 - default interactive `sce setup` installs selected config assets and required hooks in one run
-- `--opencode`, `--claude`, and `--both` remain mutually exclusive for non-interactive target install
-- `--non-interactive` is an explicit fail-fast control that disables prompting and requires one target flag (`--opencode`, `--claude`, or `--both`)
-- legacy one-purpose invocations remain valid (`sce setup --hooks` for hooks-only, and `sce setup --opencode|--claude|--both` for config-only)
+- `--opencode`, `--claude`, `--pi`, and `--all` are mutually exclusive for non-interactive target install; `--both` was removed and now fails as an unknown option (use `--all` for multi-target installs)
+- `--non-interactive` is an explicit fail-fast control that disables prompting and requires one target flag (`--opencode`, `--claude`, `--pi`, or `--all`)
+- legacy one-purpose invocations remain valid (`sce setup --hooks` for hooks-only, and `sce setup --opencode|--claude|--pi|--all` for config-only)
 - interactive setup without a TTY returns actionable guidance to rerun with `--non-interactive` plus a target flag
 
 ## Integration target persistence
 
-Non-interactive `--opencode`, `--claude`, and `--both` target installs persist the selected target(s) into `.sce/config.json` under `integrations.target` after successful config asset installation:
+Non-interactive `--opencode`, `--claude`, `--pi`, and `--all` target installs persist the selected target(s) into `.sce/config.json` under `integrations.target` after successful config asset installation:
 
 - `--opencode` records `["opencode"]`.
 - `--claude` adds `"claude"` to an existing array (e.g. `["opencode"]` → `["opencode", "claude"]`).
-- `--both` records both `["opencode", "claude"]` atomically.
+- `--pi` adds `"pi"` the same way.
+- `--all` records `["opencode", "claude", "pi"]` atomically.
 - Repeated runs are idempotent — existing targets are deduplicated; previously unrelated config keys (`$schema`, `log_level`, etc.) are preserved.
 - If the config file does not exist, it is bootstrapped first, then the targets are written.
 - `--hooks` only setup (`sce setup --hooks`) does not modify `integrations.target`.

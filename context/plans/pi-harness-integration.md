@@ -9,7 +9,8 @@ The change follows the existing target pattern end to end: a new Pkl renderer pr
 Decisions resolved with the user (2026-07-13):
 - Generate a dedicated `.pi/skills/` tree from Pkl (no `.pi/settings.json` redirection to `.claude/skills`).
 - Render SCE agents as agent-role prompt templates in `.pi/prompts/`.
-- CLI: add `--pi` and a new `--all` flag; `--both` keeps its current opencode+claude meaning for backwards compatibility.
+- CLI: add `--pi` and a new `--all` flag.
+- Updated during T04 (2026-07-13, user decision): remove `--both` entirely (flag, `SetupTarget::Both`, and interactive option); `--all` (opencode+claude+pi) replaces it. Interactive prompt offers OpenCode, Claude, Pi, All.
 - Do not generate or append `AGENTS.md`; skills and prompts carry the workflow.
 
 ## Success criteria
@@ -17,7 +18,7 @@ Decisions resolved with the user (2026-07-13):
 - `nix develop -c pkl eval -m . config/pkl/generate.pkl` deterministically emits `config/.pi/prompts/*.md` (commands + agent-role prompts) and `config/.pi/skills/*/SKILL.md`, and a clean re-run produces no diff.
 - `nix develop -c ./config/pkl/check-generated.sh` covers the new Pi outputs and passes.
 - `sce setup --pi` installs the Pi assets into the target repo's `.pi/` directory and persists `"pi"` in `.sce/config.json` `integrations.target`.
-- `sce setup --all` installs opencode, claude, and pi targets; `--both` behavior is unchanged.
+- `sce setup --all` installs opencode, claude, and pi targets; `--both` is removed and rejected as an unknown flag.
 - `sce doctor` reports Pi integration health (prompts, skills) when `"pi"` is configured or a `.pi/` directory is detected, and its remediation text mentions `sce setup --pi`.
 - `.sce/config.json` schema validation accepts `"pi"` and still rejects unknown target IDs.
 - Full workspace checks pass (`cargo test`, pkl parity via `nix run .#pkl-check-generated` or `nix flake check`).
@@ -28,7 +29,7 @@ Decisions resolved with the user (2026-07-13):
 - No hooks for Pi (Pi extensions are out of scope per the source write-up; the Claude hook mechanism has no Pi analogue here).
 - No `.pi/SYSTEM.md`, `.pi/APPEND_SYSTEM.md`, `.pi/settings.json`, or root `AGENTS.md` generation.
 - No Pi packaging (`pi install` npm/Git package) support.
-- Do not change existing OpenCode/Claude generated outputs or `--both` semantics.
+- Do not change existing OpenCode/Claude generated outputs. (`--both` removal was explicitly approved during T04.)
 - Do not hand-edit generated artifacts; all content changes go through Pkl sources.
 
 ## Assumptions
@@ -69,8 +70,12 @@ Decisions resolved with the user (2026-07-13):
   - Done when: `"pi"` parses and serializes; unknown IDs still rejected with the updated valid-values message; unit tests cover the new variant.
   - Verification notes (commands or checks): `cargo test` scoped to config services (e.g. `cargo test -p <cli-crate> config`); check schema error text lists `opencode`, `claude`, `pi`.
 
-- [ ] T04: `Add sce setup --pi and --all flags with Pi asset installation` (status:todo)
+- [x] T04: `Add sce setup --pi and --all flags with Pi asset installation` (status:done)
   - Task ID: T04
+  - Completed: 2026-07-13
+  - Files changed: cli/src/cli_schema.rs (flags: --pi/--all added, --both removed), cli/src/services/parse/command_runtime.rs, cli/src/services/setup/mod.rs (SetupTarget::{Pi,All}, Both removed, interactive prompt gains Pi + All, generalized EmbeddedAssetSelectionIter, new unit tests), cli/src/services/setup/command.rs (untouched; request flow unchanged), cli/src/services/default_paths.rs (repo_dir::PI + pi_target_dir), cli/src/command_surface.rs (setup usage line), cli/src/services/doctor/inspect.rs (remediation text --both → --all), cli/build.rs (PI_EMBEDDED_ASSETS no longer dead_code)
+  - Evidence: `nix flake check` passed (exit 0; tests, clippy, fmt, pkl parity); scratch-repo smoke via nix-built binary: `setup --pi --non-interactive` installed 15 files to `.pi/` and persisted `"pi"`; `setup --all --non-interactive` installed .opencode (19) + .claude (17) + .pi (15) and persisted all three IDs; `--pi --all` rejected as conflicting; `--both` rejected as unknown option
+  - Notes: Scope change approved mid-task by user — `--both` removed entirely (flag, enum variant, interactive option); `--all` is the only multi-target selector; interactive menu now OpenCode/Claude/Pi/All
   - Goal: `sce setup --pi` installs embedded Pi assets to the repo's `.pi/` directory and persists `"pi"` into `integrations.target`; `sce setup --all` expands to opencode + claude + pi.
   - Boundaries (in/out of scope): In — `SetupTarget::Pi` and `SetupTarget::All` variants (`cli/src/services/setup/mod.rs:24-29`), `--pi`/`--all` clap flags with mutual-exclusion validation (`cli/src/services/setup/command.rs`), `integration_target_id_str()` mapping (`setup/mod.rs:412-420`), `install_embedded_setup_assets()` deploy path for the pi asset root, and `persist_integration_targets()` handling. `--both` semantics unchanged (opencode+claude). Out — hooks for Pi (no Pi hook assets), doctor.
   - Done when: In a scratch repo, `sce setup --pi --non-interactive` creates `.pi/prompts/` and `.pi/skills/` matching embedded assets and `.sce/config.json` contains `"pi"`; `sce setup --all --non-interactive` installs all three trees; flag-conflict validation rejects combining `--pi` with `--both`/`--all` etc.; setup unit/integration tests updated.
