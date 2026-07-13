@@ -12,14 +12,23 @@ const TARGETS: &[TargetSpec] = &[
     TargetSpec {
         const_name: "OPENCODE_EMBEDDED_ASSETS",
         relative_root: "assets/generated/config/opencode",
+        allow_dead_code: false,
     },
     TargetSpec {
         const_name: "CLAUDE_EMBEDDED_ASSETS",
         relative_root: "assets/generated/config/claude",
+        allow_dead_code: false,
+    },
+    TargetSpec {
+        const_name: "PI_EMBEDDED_ASSETS",
+        relative_root: "assets/generated/config/pi",
+        // Unused until setup --pi wiring lands; drop this once consumed.
+        allow_dead_code: true,
     },
     TargetSpec {
         const_name: "HOOK_EMBEDDED_ASSETS",
         relative_root: "assets/hooks",
+        allow_dead_code: false,
     },
 ];
 
@@ -29,6 +38,7 @@ const GENERATED_MIGRATIONS_PATH: &str = "src/generated_migrations.rs";
 struct TargetSpec {
     const_name: &'static str,
     relative_root: &'static str,
+    allow_dead_code: bool,
 }
 
 fn main() {
@@ -178,6 +188,9 @@ fn generate_embedded_asset_manifest() -> io::Result<()> {
         collect_files(&source_root, &source_root, &mut files)?;
         files.sort_unstable_by(|a, b| a.relative_path.cmp(&b.relative_path));
 
+        if target.allow_dead_code {
+            output.push_str("#[allow(dead_code)]\n");
+        }
         writeln!(
             output,
             "pub static {}: &[EmbeddedAsset] = &[",
