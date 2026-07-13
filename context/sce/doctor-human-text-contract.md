@@ -46,9 +46,9 @@ This simplification is text-mode only and does not change JSON output requiremen
 
 Integration checks are target-scoped. The doctor resolves which integration targets to inspect using the following priority:
 
-1. **Configured targets**: If `.sce/config.json` has `integrations.target` with a non-empty array, only the listed targets (`opencode`, `claude`) are inspected.
+1. **Configured targets**: If `.sce/config.json` has `integrations.target` with a non-empty array, only the listed targets (`opencode`, `claude`, `pi`) are inspected.
 2. **Empty target array**: If `integrations.target` exists but is an empty array `[]`, the user has not recorded any integration targets. The doctor returns no targets and renders a guidance message instead of group rows.
-3. **Directory detection fallback**: When config has no `integrations` property or `integrations.target` property is absent, the doctor falls back to detecting installed repo-root directories — `.opencode/` is detected as OpenCode, `.claude/` is detected as Claude.
+3. **Directory detection fallback**: When config has no `integrations` property or `integrations.target` property is absent, the doctor falls back to detecting installed repo-root directories — `.opencode/` is detected as OpenCode, `.claude/` is detected as Claude, and `.pi/` is detected as Pi.
 4. **No targets**: When directory detection identifies no installed directories either, the `Integrations` section renders `[FAIL] No integrations installed; run 'sce setup'` and a blocking `NoIntegrationsInstalled` problem is recorded, so the Summary counts it as a blocking problem.
 
 Human text output renders group rows only for the resolved targets:
@@ -61,10 +61,12 @@ Human text output renders group rows only for the resolved targets:
 - `ClaudeCode agents`
 - `ClaudeCode commands`
 - `ClaudeCode skills`
+- `Pi prompts`
+- `Pi skills`
 
 Integration checks for this contract inspect installed repo-root artifacts only.
-They validate file presence and content hashes against embedded OpenCode and Claude setup assets.
-Generated `config/.opencode/**` and `config/.claude/**` trees are out of scope for doctor integration checks in this change stream.
+They validate file presence and content hashes against embedded OpenCode, Claude, and Pi setup assets.
+Generated `config/.opencode/**`, `config/.claude/**`, and `config/.pi/**` trees are out of scope for doctor integration checks in this change stream.
 
 Claude installed assets are grouped by repo-root `.claude/` relative path:
 
@@ -73,7 +75,12 @@ Claude installed assets are grouped by repo-root `.claude/` relative path:
 - `commands/**` -> `ClaudeCode commands`
 - `skills/**` -> `ClaudeCode skills`
 
-For `agents`, `commands`, and `skills`, the installed repo-root trees are required inventory.
+Pi installed assets are grouped by repo-root `.pi/` relative path:
+
+- `prompts/**` -> `Pi prompts`
+- `skills/**` -> `Pi skills`
+
+For each resolved target, the grouped installed repo-root asset trees are required inventory.
 If any required file in an integration group is missing or mismatched:
 
 - missing child rows render `[MISS]`

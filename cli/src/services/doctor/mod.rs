@@ -306,6 +306,10 @@ fn doctor_problem_kind(kind: HealthProblemKind) -> ProblemKind {
         HealthProblemKind::ClaudeIntegrationContentMismatch => {
             ProblemKind::ClaudeIntegrationContentMismatch
         }
+        HealthProblemKind::PiIntegrationFilesMissing => ProblemKind::PiIntegrationFilesMissing,
+        HealthProblemKind::PiIntegrationContentMismatch => {
+            ProblemKind::PiIntegrationContentMismatch
+        }
         HealthProblemKind::OpenCodePluginRegistryInvalid => {
             ProblemKind::OpenCodePluginRegistryInvalid
         }
@@ -315,6 +319,7 @@ fn doctor_problem_kind(kind: HealthProblemKind) -> ProblemKind {
         HealthProblemKind::HookReadFailed => ProblemKind::HookReadFailed,
         HealthProblemKind::OpenCodeAssetReadFailed => ProblemKind::OpenCodeAssetReadFailed,
         HealthProblemKind::ClaudeAssetReadFailed => ProblemKind::ClaudeAssetReadFailed,
+        HealthProblemKind::PiAssetReadFailed => ProblemKind::PiAssetReadFailed,
         HealthProblemKind::AgentTraceDbConnectionFailed => {
             ProblemKind::AgentTraceDbConnectionFailed
         }
@@ -356,6 +361,10 @@ fn health_problem_kind(kind: ProblemKind) -> HealthProblemKind {
         ProblemKind::ClaudeIntegrationContentMismatch => {
             HealthProblemKind::ClaudeIntegrationContentMismatch
         }
+        ProblemKind::PiIntegrationFilesMissing => HealthProblemKind::PiIntegrationFilesMissing,
+        ProblemKind::PiIntegrationContentMismatch => {
+            HealthProblemKind::PiIntegrationContentMismatch
+        }
         ProblemKind::OpenCodePluginRegistryInvalid => {
             HealthProblemKind::OpenCodePluginRegistryInvalid
         }
@@ -365,6 +374,7 @@ fn health_problem_kind(kind: ProblemKind) -> HealthProblemKind {
         ProblemKind::HookReadFailed => HealthProblemKind::HookReadFailed,
         ProblemKind::OpenCodeAssetReadFailed => HealthProblemKind::OpenCodeAssetReadFailed,
         ProblemKind::ClaudeAssetReadFailed => HealthProblemKind::ClaudeAssetReadFailed,
+        ProblemKind::PiAssetReadFailed => HealthProblemKind::PiAssetReadFailed,
         ProblemKind::AgentTraceDbConnectionFailed => {
             HealthProblemKind::AgentTraceDbConnectionFailed
         }

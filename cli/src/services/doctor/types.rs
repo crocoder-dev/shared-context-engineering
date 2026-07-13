@@ -8,6 +8,8 @@ pub(super) const CLAUDE_PLUGINS_LABEL: &str = "ClaudeCode plugins";
 pub(super) const CLAUDE_AGENTS_LABEL: &str = "ClaudeCode agents";
 pub(super) const CLAUDE_COMMANDS_LABEL: &str = "ClaudeCode commands";
 pub(super) const CLAUDE_SKILLS_LABEL: &str = "ClaudeCode skills";
+pub(super) const PI_PROMPTS_LABEL: &str = "Pi prompts";
+pub(super) const PI_SKILLS_LABEL: &str = "Pi skills";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Readiness {
@@ -138,11 +140,14 @@ pub(crate) enum ProblemKind {
     OpenCodeIntegrationContentMismatch,
     ClaudeIntegrationFilesMissing,
     ClaudeIntegrationContentMismatch,
+    PiIntegrationFilesMissing,
+    PiIntegrationContentMismatch,
     OpenCodePluginRegistryInvalid,
     OpenCodeAssetMissingOrInvalid,
     HookReadFailed,
     OpenCodeAssetReadFailed,
     ClaudeAssetReadFailed,
+    PiAssetReadFailed,
     AgentTraceDbConnectionFailed,
     AgentTraceDbSchemaNotReady,
 }

@@ -81,8 +81,12 @@ Decisions resolved with the user (2026-07-13):
   - Done when: In a scratch repo, `sce setup --pi --non-interactive` creates `.pi/prompts/` and `.pi/skills/` matching embedded assets and `.sce/config.json` contains `"pi"`; `sce setup --all --non-interactive` installs all three trees; flag-conflict validation rejects combining `--pi` with `--both`/`--all` etc.; setup unit/integration tests updated.
   - Verification notes (commands or checks): `cargo test` for setup services; manual smoke: `cargo run -- setup --pi --non-interactive --repo <tmpdir>` then inspect `.pi/` and `.sce/config.json`.
 
-- [ ] T05: `Add Pi integration health checks to sce doctor` (status:todo)
+- [x] T05: `Add Pi integration health checks to sce doctor` (status:done)
   - Task ID: T05
+  - Completed: 2026-07-13
+  - Files changed: cli/src/services/doctor/inspect.rs (Pi detection/group inspection/problems), cli/src/services/doctor/types.rs (Pi labels/problem kinds), cli/src/services/doctor/mod.rs and cli/src/services/lifecycle.rs (problem-kind plumbing), cli/src/services/default_paths.rs (Pi repo path/asset constants)
+  - Evidence: targeted `cargo test doctor::inspect::tests` was blocked by the repo bash policy preferring `nix flake check`; `nix flake check` passed (cli-tests, clippy, fmt, pkl parity, JS checks, workflow lint, Flatpak parity/static checks); `nix run .#pkl-check-generated` passed with generated outputs up to date.
+  - Notes: Pi doctor coverage uses the existing integration group-health model with `Pi prompts` and `Pi skills` groups; `.pi/` directory fallback detection works when no integration target is configured; no Pi hooks or new problem categories were added. A temporary `cli/tests/doctor_pi.rs` integration test file was removed after user feedback.
   - Goal: `sce doctor` detects and inspects the Pi integration.
   - Boundaries (in/out of scope): In — include `Pi` in `resolve_doctor_integration_targets()` with `.pi/` directory fallback detection (`cli/src/services/doctor/inspect.rs:419-451`), add `collect_pi_integration_groups()` covering prompts and skills groups, iterate it in `inspect_repository_integrations()` (`inspect.rs:453-502`), and extend `NoIntegrationsInstalled` remediation to mention `sce setup --pi`. Out — new problem categories beyond the existing group-health model.
   - Done when: Doctor reports healthy Pi groups after `sce setup --pi`, reports missing/drifted files when `.pi/` content is deleted or altered, and falls back to `.pi/` directory detection when `.sce/config.json` lacks targets; doctor tests updated.
