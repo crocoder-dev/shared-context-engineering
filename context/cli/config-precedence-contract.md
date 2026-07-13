@@ -73,7 +73,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 
 - `integrations` must be an object when present and currently allows only `target`.
 - `integrations.target` must be an array of unique canonical target IDs when present.
-- Supported target ID values: `opencode`, `claude`.
+- Supported target ID values: `opencode`, `claude`, `pi`.
 - Unknown target IDs fail schema validation.
 
 - `policies` must be an object when present and currently allows `attribution_hooks`, `database_retry`, and `bash`.

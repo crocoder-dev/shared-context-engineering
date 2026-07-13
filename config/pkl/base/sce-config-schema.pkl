@@ -172,7 +172,7 @@ local sceConfigSchema = new JsonSchema {
           uniqueItems = true
           items = new JsonSchema {
             type = "string"
-            enum = new { "opencode"; "claude" }
+            enum = new { "opencode"; "claude"; "pi" }
           }
         }
       }
