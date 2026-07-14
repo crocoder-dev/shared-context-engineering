@@ -79,7 +79,7 @@
 - Keep generated-output parity anchored to `nix run .#pkl-check-generated` and the root `nix flake check` `pkl-parity` derivation; no dedicated generated-parity workflow is currently checked in.
 - Treat `nix run .#pkl-check-generated` and `nix flake check` as the lightweight post-task verification baseline and run both after each completed task.
 - For non-destructive verification during development, run `nix develop -c pkl eval -m context/tmp/t04-generated config/pkl/generate.pkl` and inspect emitted paths under `context/tmp/`.
-- Keep `output.files` limited to generated-owned paths only (`config/{opencode_root}/{agent,command,skills,lib,plugins}`, generated `config/{opencode_root}/package.json`, `config/{claude_root}/{agents,commands,skills,hooks,settings.json}`, and `config/{pi_root}/{prompts,skills}`, where roots map to `.opencode`, `.claude`, and `.pi`).
+- Keep `output.files` limited to generated-owned paths only (`config/{opencode_root}/{agent,command,skills,lib,plugins}`, generated `config/{opencode_root}/package.json`, `config/{claude_root}/{agents,commands,skills,hooks,settings.json}`, and `config/{pi_root}/{prompts,skills,extensions}`, where roots map to `.opencode`, `.claude`, and `.pi`).
 - For OpenCode pre-execution bash-policy hooks, keep the generated plugin entrypoint thin (`plugins/sce-bash-policy.ts`) and delegate policy evaluation to the Rust `sce policy bash --input normalized --output json` command so OpenCode and Claude share one evaluator.
 
 ## Internal subagent parity mapping
