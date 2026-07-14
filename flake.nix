@@ -136,6 +136,13 @@
         tursoCraneLib = (crane.mkLib pkgs).overrideToolchain (_: tursoToolchain);
 
         workspaceRoot = ./.;
+        generatedConfigFileset = pkgs.lib.fileset.unions [
+          (pkgs.lib.fileset.maybeMissing ./config/.opencode)
+          (pkgs.lib.fileset.maybeMissing ./config/.claude)
+          (pkgs.lib.fileset.maybeMissing ./config/.pi)
+          ./config/schema/sce-config.schema.json
+          ./config/schema/agent-trace.schema.json
+        ];
         workspaceSrc = pkgs.lib.fileset.toSource {
           root = workspaceRoot;
           fileset = pkgs.lib.fileset.unions [
@@ -146,9 +153,8 @@
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/patch/fixtures)
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/structured_patch/fixtures)
             (pkgs.lib.fileset.maybeMissing ./cli/migrations)
-            ./config
+            generatedConfigFileset
             (pkgs.lib.fileset.maybeMissing ./cli/assets/hooks)
-            (pkgs.lib.fileset.maybeMissing ./scripts/prepare-cli-generated-assets.sh)
           ];
         };
 
@@ -191,6 +197,27 @@
           ];
         };
 
+        pklParitySrc = pkgs.lib.fileset.toSource {
+          root = workspaceRoot;
+          fileset = pkgs.lib.fileset.unions [
+            ./config/pkl
+            (pkgs.lib.fileset.maybeMissing ./config/.opencode/agent)
+            (pkgs.lib.fileset.maybeMissing ./config/.opencode/command)
+            (pkgs.lib.fileset.maybeMissing ./config/.opencode/skills)
+            (pkgs.lib.fileset.maybeMissing ./config/.opencode/lib/drift-collectors.js)
+            (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/agent)
+            (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/command)
+            (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/skills)
+            (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/lib/drift-collectors.js)
+            (pkgs.lib.fileset.maybeMissing ./config/.claude/agents)
+            (pkgs.lib.fileset.maybeMissing ./config/.claude/commands)
+            (pkgs.lib.fileset.maybeMissing ./config/.claude/skills)
+            (pkgs.lib.fileset.maybeMissing ./config/schema/sce-config.schema.json)
+            ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
+            ./config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts
+          ];
+        };
+
         # Fixed-output derivation to fetch Bun dependencies
         # The output hash must be updated when package.json or bun.lock changes
         configLibBashPolicyDeps = pkgs.stdenv.mkDerivation {
@@ -230,19 +257,19 @@
             "unknown";
         shortGitCommit = builtins.substring 0 12 gitCommit;
 
-        commonCargoArgs = {
-          pname = "sce";
+        cargoBaseArgs = {
           inherit version;
-          src = workspaceSrc;
           cargoToml = ./cli/Cargo.toml;
           cargoLock = ./cli/Cargo.lock;
           strictDeps = true;
           doCheck = false;
-          SCE_GIT_COMMIT = shortGitCommit;
+          nativeBuildInputs = [ rustToolchain ];
+        };
 
-          nativeBuildInputs = [
-            rustToolchain
-          ];
+        commonCargoArgs = cargoBaseArgs // {
+          pname = "sce";
+          src = workspaceSrc;
+          SCE_GIT_COMMIT = shortGitCommit;
 
           postUnpack = ''
             mkdir -p "$sourceRoot/cli/assets/generated/config"
@@ -257,18 +284,9 @@
           '';
         };
 
-        cargoDepsArgs = {
+        cargoDepsArgs = cargoBaseArgs // {
           pname = "sce-deps";
-          inherit version;
           src = craneLib.cleanCargoSource ./cli;
-          cargoToml = ./cli/Cargo.toml;
-          cargoLock = ./cli/Cargo.lock;
-          strictDeps = true;
-          doCheck = false;
-
-          nativeBuildInputs = [
-            rustToolchain
-          ];
         };
 
         cargoArtifacts = craneLib.buildDepsOnly cargoDepsArgs;
@@ -1051,8 +1069,10 @@
             ''
               set -euo pipefail
 
-              # Copy source files
-              cp -r "${./.}" ./repo
+              # Copy only the Pkl authoring inputs and generated outputs that
+              # this parity check reads, so unrelated repository changes do not
+              # invalidate the cheap generated-output drift check.
+              cp -r "${pklParitySrc}" ./repo
               chmod -R u+w ./repo
               cd ./repo
 
@@ -1107,112 +1127,100 @@
               mkdir -p "$out"
             '';
 
-        configLibBunTests =
-          pkgs.runCommand "config-lib-bun-tests"
+        mkCopiedSourceCheck =
+          { name
+          , src
+          , workdir
+          , nativeBuildInputs
+          , beforeCheck ? ""
+          , checkCommand
+          }:
+          pkgs.runCommand name
             {
-              nativeBuildInputs = [ pkgs.bun ];
+              inherit nativeBuildInputs;
             }
             ''
               set -euo pipefail
 
-              # Copy source files
-              cp -r "${configLibBashPolicySrc}" ./repo
+              cp -r "${src}" ./repo
               chmod -R u+w ./repo
-              cd ./repo/config/lib
+              cd ./repo/${workdir}
 
-              # Use pre-fetched dependencies from FOD
-              cp -r "${configLibBashPolicyDeps}/node_modules" ./
-
-              # Run tests
-              bun test
+              ${beforeCheck}
+              ${checkCommand}
 
               mkdir -p "$out"
             '';
 
-        configLibBiomeCheck =
-          pkgs.runCommand "config-lib-biome-check"
-            {
-              nativeBuildInputs = [ pkgs.biome ];
-            }
-            ''
-              set -euo pipefail
+        mkBunCheck =
+          { name
+          , src
+          , workdir
+          , testCommand
+          , beforeCheck ? ""
+          }:
+          mkCopiedSourceCheck {
+            inherit name src workdir beforeCheck;
+            nativeBuildInputs = [ pkgs.bun ];
+            checkCommand = testCommand;
+          };
 
-              cp -r "${configLibBashPolicySrc}" ./repo
-              chmod -R u+w ./repo
-              cd ./repo/config/lib
+        mkBiomeCheck =
+          { name
+          , src
+          , workdir
+          , mode
+          }:
+          mkCopiedSourceCheck {
+            inherit name src workdir;
+            nativeBuildInputs = [ pkgs.biome ];
+            checkCommand = "biome check --${mode}-enabled=false .";
+          };
 
-              biome check --formatter-enabled=false .
+        configLibBunTests = mkBunCheck {
+          name = "config-lib-bun-tests";
+          src = configLibBashPolicySrc;
+          workdir = "config/lib";
+          beforeCheck = ''
+            cp -r "${configLibBashPolicyDeps}/node_modules" ./
+          '';
+          testCommand = "bun test";
+        };
 
-              mkdir -p "$out"
-            '';
+        configLibBiomeCheck = mkBiomeCheck {
+          name = "config-lib-biome-check";
+          src = configLibBashPolicySrc;
+          workdir = "config/lib";
+          mode = "formatter";
+        };
 
-        configLibBiomeFormat =
-          pkgs.runCommand "config-lib-biome-format"
-            {
-              nativeBuildInputs = [ pkgs.biome ];
-            }
-            ''
-              set -euo pipefail
+        configLibBiomeFormat = mkBiomeCheck {
+          name = "config-lib-biome-format";
+          src = configLibBashPolicySrc;
+          workdir = "config/lib";
+          mode = "linter";
+        };
 
-              cp -r "${configLibBashPolicySrc}" ./repo
-              chmod -R u+w ./repo
-              cd ./repo/config/lib
+        npmTests = mkBunCheck {
+          name = "npm-bun-tests";
+          src = npmSrc;
+          workdir = "npm";
+          testCommand = "bun test ./test/*.test.js";
+        };
 
-              biome check --linter-enabled=false .
+        npmBiomeCheck = mkBiomeCheck {
+          name = "npm-biome-check";
+          src = npmSrc;
+          workdir = "npm";
+          mode = "formatter";
+        };
 
-              mkdir -p "$out"
-            '';
-
-        npmTests =
-          pkgs.runCommand "npm-bun-tests"
-            {
-              nativeBuildInputs = [ pkgs.bun ];
-            }
-            ''
-              set -euo pipefail
-
-              cp -r "${npmSrc}" ./repo
-              chmod -R u+w ./repo
-              cd ./repo/npm
-
-              bun test ./test/*.test.js
-
-              mkdir -p "$out"
-            '';
-
-        npmBiomeCheck =
-          pkgs.runCommand "npm-biome-check"
-            {
-              nativeBuildInputs = [ pkgs.biome ];
-            }
-            ''
-              set -euo pipefail
-
-              cp -r "${npmSrc}" ./repo
-              chmod -R u+w ./repo
-              cd ./repo/npm
-
-              biome check --formatter-enabled=false .
-
-              mkdir -p "$out"
-            '';
-
-        npmBiomeFormat =
-          pkgs.runCommand "npm-biome-format"
-            {
-              nativeBuildInputs = [ pkgs.biome ];
-            }
-            ''
-              set -euo pipefail
-
-              cp -r "${npmSrc}" ./repo
-              chmod -R u+w ./repo
-              cd ./repo/npm
-
-              biome check --linter-enabled=false .
-
-              mkdir -p "$out"
-            '';
+        npmBiomeFormat = mkBiomeCheck {
+          name = "npm-biome-format";
+          src = npmSrc;
+          workdir = "npm";
+          mode = "linter";
+        };
 
         workflowActionlintCheck =
           pkgs.runCommand "workflow-actionlint"
@@ -1349,7 +1357,7 @@
             );
 
             cli-fmt = craneLib.cargoFmt (
-              commonCargoArgs
+              cargoDepsArgs
               // {
                 pname = "sce-cli-fmt";
               }

@@ -41,12 +41,11 @@ jobs:
           use-gha-cache: true
 
       - name: Run flake checks
-        run: nix flake check --print-build-logs
-
-      - name: Build default package
-        run: nix build .#default --print-build-logs
-
-      - name: Smoke-test CLI
         run: |
-          nix run .#sce -- --help
-          nix run .#sce -- version
+          time nix flake check --print-build-logs
+
+      - name: Build and smoke-test CLI
+        run: |
+          time nix build .#default --out-link result --print-build-logs
+          ./result/bin/sce --help
+          ./result/bin/sce version
