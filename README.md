@@ -57,12 +57,10 @@ SCE writes a local, per-repo audit trail conforming to the [Agent Trace](https:/
 | Feature | OpenCode | Claude Code | Pi |
 |---|---|---|---|
 | Generated config | ✓ | ✓ | ✓ |
-| Hooks + Bash policy | ✓ | ✓ | — |
-| Conversation + diff trace | ✓ | ✓ | — |
-| Model / session attribution | full | full | — |
+| Hooks + Bash policy | ✓ | ✓ | ✓ |
+| Conversation + diff trace | ✓ | ✓ | ✓ |
+| Model / session attribution | full | full | full |
 | Shared `context/` | ✓ | ✓ | ✓ |
-
-OpenCode, Claude Code, and Pi are first-class generated config targets. Pi receives `.pi/prompts/` command and agent-role prompt templates plus `.pi/skills/` packages; hooks and Bash policy enforcement remain OpenCode/Claude-only.
 
 ## Why this exists
 

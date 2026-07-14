@@ -93,12 +93,23 @@ via the `"pi"` arm in `prefixed_diff_trace_session_id()`
 (`cli/src/services/hooks/mod.rs`). Unknown tool names still pass through
 unprefixed.
 
-## Planned extensions (not yet implemented)
+## Asset pipeline, install, and doctor coverage
 
-Asset sync/embedding and doctor coverage
-are tracked in `context/plans/pi-extension-sce-integration.md` (T05–T07).
-Deferred non-goals: user-shell `!`/`!!` policy enforcement and bash-mutation
-diff tracing.
+- `scripts/prepare-cli-generated-assets.sh` copies the whole `config/.pi` tree
+  (including `extensions/sce/index.ts`) into
+  `cli/assets/generated/config/pi/`; `cli/build.rs` embeds that tree wholesale
+  as `PI_EMBEDDED_ASSETS`, so `sce setup --pi` installs the extension to
+  repo-root `.pi/extensions/sce/index.ts` with no per-asset enumeration.
+- `sce doctor` buckets embedded Pi assets under `extensions/` into a
+  `Pi extensions` integration group (`collect_pi_integration_groups()` in
+  `cli/src/services/doctor/inspect.rs`, `pi_asset::EXTENSIONS_DIR`), reporting
+  present/missing/content-mismatch through the existing Pi integration problem
+  kinds.
+
+## Deferred non-goals
+
+User-shell `!`/`!!` policy enforcement and bash-mutation diff tracing are
+deferred (see `context/plans/pi-extension-sce-integration.md`).
 
 See also: [generated-opencode-plugin-registration.md](generated-opencode-plugin-registration.md),
 [bash-tool-policy-enforcement-contract.md](bash-tool-policy-enforcement-contract.md)
