@@ -85,10 +85,18 @@ verbatim by `config/pkl/generate.pkl` to `config/.pi/extensions/sce/index.ts`
 - Regeneration must be diff-clean; edit the `config/lib/pi-plugin/` source,
   never the generated copy.
 
+## Rust-side session provenance
+
+Rust `diff-trace` intake prefixes stored `diff_traces.session_id` values for
+`tool_name: "pi"` payloads with `pi_` (idempotent for already-prefixed IDs),
+via the `"pi"` arm in `prefixed_diff_trace_session_id()`
+(`cli/src/services/hooks/mod.rs`). Unknown tool names still pass through
+unprefixed.
+
 ## Planned extensions (not yet implemented)
 
-`pi_` session-ID prefixing in Rust, asset sync/embedding, and doctor coverage
-are tracked in `context/plans/pi-extension-sce-integration.md` (T04–T07).
+Asset sync/embedding and doctor coverage
+are tracked in `context/plans/pi-extension-sce-integration.md` (T05–T07).
 Deferred non-goals: user-shell `!`/`!!` policy enforcement and bash-mutation
 diff tracing.
 

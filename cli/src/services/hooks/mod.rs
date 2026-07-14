@@ -37,14 +37,17 @@ pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@croco
 const CLAUDE_MODEL_ID_PREFIX: &str = "claude/";
 pub(crate) const DIFF_TRACE_OPENCODE_SESSION_ID_PREFIX: &str = "oc_";
 pub(crate) const DIFF_TRACE_CLAUDE_SESSION_ID_PREFIX: &str = "cc_";
+pub(crate) const DIFF_TRACE_PI_SESSION_ID_PREFIX: &str = "pi_";
 const OPENCODE_TOOL_NAME: &str = "opencode";
 const CLAUDE_TOOL_NAME: &str = "claude";
+const PI_TOOL_NAME: &str = "pi";
 type PayloadValidationError = fn(&str) -> String;
 
 pub(crate) fn prefixed_diff_trace_session_id(tool_name: &str, raw_session_id: &str) -> String {
     let prefix = match tool_name {
         OPENCODE_TOOL_NAME => DIFF_TRACE_OPENCODE_SESSION_ID_PREFIX,
         CLAUDE_TOOL_NAME => DIFF_TRACE_CLAUDE_SESSION_ID_PREFIX,
+        PI_TOOL_NAME => DIFF_TRACE_PI_SESSION_ID_PREFIX,
         _ => return raw_session_id.to_string(),
     };
 
@@ -2282,6 +2285,103 @@ mod tests {
             tool_version: tool_version.map(String::from),
             payload_type: String::from(payload_type),
         }
+    }
+
+    #[test]
+    fn prefixed_diff_trace_session_id_prefixes_fresh_pi_session_id() {
+        assert_eq!(
+            prefixed_diff_trace_session_id("pi", "session-123"),
+            "pi_session-123"
+        );
+    }
+
+    #[test]
+    fn prefixed_diff_trace_session_id_keeps_already_prefixed_pi_session_id() {
+        assert_eq!(
+            prefixed_diff_trace_session_id("pi", "pi_session-123"),
+            "pi_session-123"
+        );
+    }
+
+    #[test]
+    fn pi_normalized_diff_trace_payload_persists_with_pi_prefixed_session_id() {
+        let stdin_payload = serde_json::json!({
+            "sessionID": "session-123",
+            "diff": "diff text",
+            "time": 1_800_000_000_000_u64,
+            "model_id": "anthropic/claude-opus-4",
+            "tool_name": "pi",
+            "tool_version": null
+        })
+        .to_string();
+
+        let parsed = parse_diff_trace_payload(&stdin_payload)
+            .expect("normalized Pi diff-trace payload should parse");
+        let payload = match parsed {
+            DiffTraceParseResult::Persist(payload) => payload,
+            DiffTraceParseResult::NoOp(message) => {
+                panic!("Pi payload should persist, got no-op: {message}")
+            }
+        };
+
+        assert_eq!(payload.tool_name, "pi");
+        assert_eq!(payload.model_id.as_deref(), Some("anthropic/claude-opus-4"));
+        assert_eq!(payload.tool_version, None);
+
+        persist_diff_trace_payload_to_agent_trace_db_with(
+            &payload,
+            payload.model_id.as_deref(),
+            payload.tool_version.as_deref(),
+            |input| {
+                assert_eq!(input.time_ms, 1_800_000_000_000_i64);
+                assert_eq!(input.session_id, "pi_session-123");
+                assert_eq!(input.model_id, Some("anthropic/claude-opus-4"));
+                assert_eq!(input.tool_name, "pi");
+                assert_eq!(input.tool_version, None);
+                assert_eq!(input.payload_type, PAYLOAD_TYPE_PATCH);
+
+                Ok(())
+            },
+        )
+        .expect("Pi diff-trace payload should be persisted");
+    }
+
+    #[test]
+    fn post_commit_intersection_flow_preserves_pi_provenance() {
+        let now_ms = 1_800_000_000_000_i64;
+        let commit_time_ms = now_ms - 1_000;
+
+        let output = run_post_commit_intersection_flow_with(
+            Path::new("/repo"),
+            |_| {
+                Ok(PostCommitPatchData {
+                    commit_oid: String::from("def456"),
+                    commit_time_ms,
+                    parsed_patch: valid_patch("src/lib.rs", "shared line"),
+                })
+            },
+            || Ok(now_ms),
+            |_, _| {
+                Ok(RecentDiffTracePatches {
+                    patches: vec![ParsedDiffTracePatch {
+                        id: 9,
+                        time_ms: now_ms - 500,
+                        session_id: String::from("pi_valid-session"),
+                        patch: valid_patch("src/lib.rs", "shared line"),
+                        tool_name: Some(String::from("pi")),
+                        tool_version: None,
+                        payload_type: String::from(PAYLOAD_TYPE_PATCH),
+                    }],
+                    skipped: vec![],
+                })
+            },
+            |_| Ok(()),
+        )
+        .expect("post-commit intersection flow should succeed");
+
+        assert_eq!(output.combined_recent_patch.files.len(), 1);
+        assert_eq!(output.tool_name, Some(String::from("pi")));
+        assert_eq!(output.tool_version, None);
     }
 
     #[test]

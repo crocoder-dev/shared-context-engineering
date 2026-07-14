@@ -78,8 +78,11 @@ Decisions resolved with the user (2026-07-13):
   - Done when: In a scratch-repo Pi session, a `write` of a new file and an `edit` of an existing file each produce a `diff_traces` row with a valid unified diff, `tool_name: "pi"`, and correct `model_id`, plus a conversation `patch` part; failed edits and no-op writes produce no rows; regeneration is diff-clean.
   - Verification notes (commands or checks): regenerate + `check-generated.sh`; scratch smoke covering: new-file write, existing-file edit, edit emptying a file, failed edit, write producing identical content; inspect `diff_traces` rows for diff validity, `tool_name`, `model_id`, `tool_version`; confirm no temp files leak (`ls /tmp` pattern used by the helper).
 
-- [ ] T04: `Add pi_ session prefix and Pi ingestion coverage in Rust` (status:todo)
+- [x] T04: `Add pi_ session prefix and Pi ingestion coverage in Rust` (status:done, completed 2026-07-14)
   - Task ID: T04
+  - Files changed: `cli/src/services/hooks/mod.rs` (`PI_TOOL_NAME` + `DIFF_TRACE_PI_SESSION_ID_PREFIX` constants, `"pi"` match arm in `prefixed_diff_trace_session_id()`, 4 tests).
+  - Evidence: `nix flake check` passes ("all checks passed!"). Tests cover fresh `pi_` prefixing, already-prefixed idempotency, normalized `tool_name: "pi"` payload parse + persistence (`pi_` session ID, `model_id`, null `tool_version`, `patch` payload type), and post-commit intersection flow preserving `tool_name: Some("pi")` provenance.
+  - Notes: Unknown-`tool_name` passthrough unchanged; `oc_`/`cc_` arms untouched. An extra unknown-tool passthrough test was added then dropped per user request — coverage limited to plan-required cases.
   - Goal: Give Pi diff traces distinct provenance by prefixing normalized Pi session IDs with `pi_`.
   - Boundaries (in/out of scope): In — add `PI_TOOL_NAME` / `DIFF_TRACE_PI_SESSION_ID_PREFIX` ("pi_") and a `"pi"` match arm to `prefixed_diff_trace_session_id()` (`cli/src/services/hooks/mod.rs:38-56`); unit tests for fresh and already-prefixed Pi IDs; an ingestion test asserting a normalized payload with `tool_name: "pi"` persists a `diff_traces` row with the `pi_` session ID, `model_id`, and nullable `tool_version`; a post-commit intersection test (or extension of an existing one) confirming Pi provenance survives into the final Agent Trace. Out — unknown-`tool_name` fallback changes, conversation-trace session prefixing changes, extension code.
   - Done when: New tests pass; existing `oc_`/`cc_` behavior and unknown-tool passthrough are unchanged; `nix flake check` passes.
