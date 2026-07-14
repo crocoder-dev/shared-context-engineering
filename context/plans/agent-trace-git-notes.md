@@ -60,19 +60,29 @@ The default notes ref is dedicated to SCE Agent Trace data and is configurable.
   - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` passed; targeted `cargo test` was blocked by SCE bash policy preferring `nix flake check`; `nix flake check` passed; `nix run .#pkl-check-generated` passed ("Generated outputs are up to date.").
   - Notes: User approved Option A scope expansion to include the minimal Pkl/generated schema update required for explicit config-file override validation. Git-note writing and post-commit hook wiring remain out of scope for T01.
 
-- [ ] T02: `Sync Pkl schema and generated config docs for git-notes ref` (status:todo)
+- [x] T02: `Sync Pkl schema and generated config docs for git-notes ref` (status:done)
   - Task ID: T02
   - Goal: Update canonical Pkl config schema and regenerate generated JSON/config artifacts so the Agent Trace git-notes ref is documented and parity checks pass.
   - Boundaries (in/out of scope): In - Pkl source, generated JSON schema/config outputs, default/description text for the new ref. Out - Rust resolver logic from T01, hook runtime behavior from later tasks.
   - Done when: generated outputs include the new config field/default; `nix run .#pkl-check-generated` passes; no unrelated generated drift is present.
   - Verification notes (commands or checks): `nix develop -c pkl eval -m . config/pkl/generate.pkl`; `nix run .#pkl-check-generated`.
+  - Status: done
+  - Completed: 2026-07-14
+  - Files changed: `context/plans/agent-trace-git-notes.md`
+  - Evidence: `nix develop -c pkl eval -m . config/pkl/generate.pkl` completed and rewrote no files; `nix run .#pkl-check-generated` passed ("Generated outputs are up to date."); `git status --short` after regeneration showed no generated drift.
+  - Notes: Canonical Pkl and generated schema already included `policies.agent_trace.git_notes_ref` with default `refs/notes/sce-agent-trace`; T02 was a verification/regeneration task only.
 
-- [ ] T03: `Introduce git-notes writer helper for Agent Trace JSON` (status:todo)
+- [x] T03: `Introduce git-notes writer helper for Agent Trace JSON` (status:done)
   - Task ID: T03
   - Goal: Add a small, testable helper that writes full Agent Trace JSON to a git note for a commit/ref using replace/upsert semantics.
   - Boundaries (in/out of scope): In - helper surface in the hooks or git utility layer, command construction for `git notes --ref <ref> add -f -F <tempfile-or-stdin> <commit>`, validation that commit/ref/content inputs are non-empty, unit tests with injected command runner covering success, configured ref, existing-note replacement flag, and command failure. Out - calling the helper from post-commit runtime, changing Agent Trace build/validation, adding a DB migration.
   - Done when: helper is deterministic, avoids shell interpolation, handles multiline JSON safely, returns structured success/error for caller-side logging, and has focused tests.
   - Verification notes (commands or checks): targeted hooks/git-helper tests if permitted; `nix develop -c sh -c 'cd cli && cargo fmt'`; `nix flake check` as fallback.
+  - Status: done
+  - Completed: 2026-07-14
+  - Files changed: `cli/src/services/hooks/mod.rs`, `context/plans/agent-trace-git-notes.md`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` passed; targeted `cargo test git_note_writer` was blocked by SCE bash policy preferring `nix flake check`; first `nix flake check` caught a clippy issue and then a git-note writer test failure, both fixed; final `nix flake check` passed; `nix run .#pkl-check-generated` passed ("Generated outputs are up to date.").
+  - Notes: Added an injectable helper that validates non-blank ref/commit/content, invokes `git notes --ref <ref> add -f -F - <commit>` without shell interpolation, pipes Agent Trace JSON through stdin preserving content bytes, returns `GitNoteWriteOutcome`, and includes focused unit coverage for command construction, configured refs, blank input rejection, and command failure context. The helper is intentionally not wired into post-commit runtime until T04.
 
 - [ ] T04: `Wire git-note persistence into post-commit Agent Trace flow` (status:todo)
   - Task ID: T04
