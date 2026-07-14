@@ -247,7 +247,7 @@
           outputHashAlgo = "sha256";
           outputHash = if pkgs.stdenv.isLinux
             then "sha256-jQAnW/deCeux0/oxmH27lBXmJoK3RGNJDtIGM+Eepmo="
-            else "sha256-KpUXn9+gHy5whrKWXBt9KZI9RwSpa7DLNfRLL/bMT4Q=";
+            else "sha256-ia8V9TQM4pHR+A7jEjsARGMX1vljmZDp30M87Wi4oWA=";
         };
 
         version = pkgs.lib.strings.trim (builtins.readFile ./.version);
