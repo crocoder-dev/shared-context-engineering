@@ -84,7 +84,13 @@ pub(crate) struct ParsedIntegrationsConfigDocument {
 pub(crate) struct ParsedPoliciesConfigDocument {
     pub(crate) bash: Option<ParsedBashPolicyConfigDocument>,
     pub(crate) attribution_hooks: Option<ParsedAttributionHooksConfigDocument>,
+    pub(crate) agent_trace: Option<ParsedAgentTracePolicyConfigDocument>,
     pub(crate) database_retry: Option<ParsedDatabaseRetryConfigDocument>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct ParsedAgentTracePolicyConfigDocument {
+    pub(crate) git_notes_ref: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -147,6 +153,7 @@ pub(crate) struct FileConfig {
     pub(crate) log_file_mode: Option<FileConfigValue<LogFileMode>>,
     pub(crate) timeout_ms: Option<FileConfigValue<u64>>,
     pub(crate) attribution_hooks_enabled: Option<FileConfigValue<bool>>,
+    pub(crate) agent_trace_git_notes_ref: Option<FileConfigValue<String>>,
     pub(crate) workos_client_id: Option<FileConfigValue<String>>,
     pub(crate) bash_policy_presets: Option<FileConfigValue<Vec<String>>>,
     pub(crate) bash_policy_custom: Option<FileConfigValue<Vec<CustomBashPolicyEntry>>>,
@@ -163,6 +170,7 @@ pub(crate) type ParsedFilePolicies = (
     Option<FileConfigValue<bool>>,
     Option<FileConfigValue<Vec<String>>>,
     Option<FileConfigValue<Vec<CustomBashPolicyEntry>>>,
+    Option<FileConfigValue<String>>,
     Option<FileConfigValue<DatabaseRetryConfig>>,
 );
 
@@ -294,8 +302,13 @@ pub(crate) fn parse_file_config(
     let workos_client_id = typed
         .workos_client_id
         .map(|value| FileConfigValue { value, source });
-    let (attribution_hooks_enabled, bash_policy_presets, bash_policy_custom, database_retry) =
-        map_policies_config(typed.policies.as_ref(), object, path, source)?;
+    let (
+        attribution_hooks_enabled,
+        bash_policy_presets,
+        bash_policy_custom,
+        agent_trace_git_notes_ref,
+        database_retry,
+    ) = map_policies_config(typed.policies.as_ref(), object, path, source)?;
     let integrations = map_integrations_config(typed.integrations.as_ref(), object, path, source)?;
 
     Ok(FileConfig {
@@ -305,6 +318,7 @@ pub(crate) fn parse_file_config(
         log_file_mode,
         timeout_ms,
         attribution_hooks_enabled,
+        agent_trace_git_notes_ref,
         workos_client_id,
         bash_policy_presets,
         bash_policy_custom,
@@ -320,7 +334,7 @@ pub(crate) fn map_policies_config(
     source: ConfigPathSource,
 ) -> Result<ParsedFilePolicies> {
     let Some(policies_value) = object.get("policies") else {
-        return Ok((None, None, None, None));
+        return Ok((None, None, None, None, None));
     };
 
     let policies_object = policies_value.as_object().with_context(|| {
@@ -334,8 +348,8 @@ pub(crate) fn map_policies_config(
         policies_object,
         path,
         Some("policies"),
-        &["bash", "attribution_hooks", "database_retry"],
-        "bash, attribution_hooks, database_retry",
+        &["bash", "attribution_hooks", "agent_trace", "database_retry"],
+        "bash, attribution_hooks, agent_trace, database_retry",
     )?;
 
     let bash = typed.and_then(|config| config.bash.as_ref());
@@ -347,6 +361,12 @@ pub(crate) fn map_policies_config(
     )?;
     let (bash_policy_presets, bash_policy_custom) =
         map_bash_policy_config(bash, policies_object, path, source)?;
+    let agent_trace_git_notes_ref = map_agent_trace_policy_config(
+        typed.and_then(|config| config.agent_trace.as_ref()),
+        policies_object,
+        path,
+        source,
+    )?;
     let database_retry = map_database_retry_config(
         typed.and_then(|config| config.database_retry.as_ref()),
         policies_object,
@@ -358,6 +378,7 @@ pub(crate) fn map_policies_config(
         attribution_hooks_enabled,
         bash_policy_presets,
         bash_policy_custom,
+        agent_trace_git_notes_ref,
         database_retry,
     ))
 }
@@ -390,6 +411,50 @@ pub(crate) fn map_attribution_hooks_config(
     Ok(typed
         .and_then(|config| config.enabled)
         .map(|value| FileConfigValue { value, source }))
+}
+
+pub(crate) fn map_agent_trace_policy_config(
+    typed: Option<&ParsedAgentTracePolicyConfigDocument>,
+    policies_object: &serde_json::Map<String, Value>,
+    path: &Path,
+    source: ConfigPathSource,
+) -> Result<Option<FileConfigValue<String>>> {
+    let Some(agent_trace_value) = policies_object.get("agent_trace") else {
+        return Ok(None);
+    };
+
+    let agent_trace_object = agent_trace_value.as_object().with_context(|| {
+        format!(
+            "Config key 'policies.agent_trace' in '{}' must be an object.",
+            path.display()
+        )
+    })?;
+
+    validate_object_keys(
+        agent_trace_object,
+        path,
+        Some("policies.agent_trace"),
+        &["git_notes_ref"],
+        "git_notes_ref",
+    )?;
+
+    typed
+        .and_then(|config| config.git_notes_ref.as_ref())
+        .map(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                bail!(
+                    "Config key 'policies.agent_trace.git_notes_ref' in '{}' must not be empty.",
+                    path.display()
+                );
+            }
+
+            Ok(FileConfigValue {
+                value: trimmed.to_string(),
+                source,
+            })
+        })
+        .transpose()
 }
 
 pub(crate) fn map_bash_policy_config(

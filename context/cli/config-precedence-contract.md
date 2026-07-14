@@ -25,6 +25,8 @@ Resolved runtime values follow this deterministic order:
 
 Repo-configured bash-tool policy values are config-file only in this task slice: they load from `policies.bash` in the selected config files, merge `global -> local` alongside the rest of the config object, and currently have no flag or environment override layer.
 
+Agent Trace hook policy currently includes `policies.agent_trace.git_notes_ref`, which resolves as config-file value over default `refs/notes/sce-agent-trace`. It has no flag or environment override layer in the current implementation slice. The resolved value is exposed through hook runtime config for later post-commit git-note persistence wiring; current post-commit runtime behavior is not yet changed by this config field.
+
 Resolved observability values that currently have no CLI flag layer follow the same lower-precedence chain without a flag step:
 
 1. environment values (`SCE_LOG_FORMAT`, `SCE_LOG_FILE`, `SCE_LOG_FILE_MODE`)
@@ -56,7 +58,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - The canonical JSON Schema artifact for both global and repo-local `sce/config.json` files is authored in `config/pkl/base/sce-config-schema.pkl` and generated to `config/schema/sce-config.schema.json`.
 - `cli/src/services/config/schema.rs` embeds that generated artifact at compile time as `SCE_CONFIG_SCHEMA_JSON` and uses it for runtime schema validation before mapping parsed files into typed serde DTOs.
 - `sce config validate` and `sce doctor` both validate config-file structure against that shared generated schema before applying Rust-owned semantic checks such as duplicate custom `argv_prefix` detection and redundancy warnings.
-- After schema validation, `cli/src/services/config/schema.rs` deserializes top-level and nested config structure (`policies`, `policies.bash`, `policies.attribution_hooks`) into typed serde DTOs and applies focused Rust-owned mapping helpers for enum conversion and source attribution; policy-specific semantic checks are owned by `cli/src/services/config/policy.rs`.
+- After schema validation, `cli/src/services/config/schema.rs` deserializes top-level and nested config structure (`policies`, `policies.bash`, `policies.attribution_hooks`, `policies.agent_trace`) into typed serde DTOs and applies focused Rust-owned mapping helpers for enum conversion and source attribution; policy-specific semantic checks are owned by `cli/src/services/config/policy.rs`.
 - The canonical top-level schema declaration `"$schema": "https://sce.crocoder.dev/config.json"` is a supported config key for both explicit and discovered `sce/config.json` files, including command-startup paths like `sce version` and other config-loading commands that parse config before normal command dispatch.
 - Startup/runtime config resolution now degrades gracefully only for default-discovered files: invalid discovered files are skipped and reported via collected `validation_errors`, while explicit `--config` / `SCE_CONFIG_FILE` targets still fail immediately on the same parse or validation errors.
 
@@ -76,8 +78,9 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - Supported target ID values: `opencode`, `claude`, `pi`.
 - Unknown target IDs fail schema validation.
 
-- `policies` must be an object when present and currently allows `attribution_hooks`, `database_retry`, and `bash`.
+- `policies` must be an object when present and currently allows `attribution_hooks`, `agent_trace`, `database_retry`, and `bash`.
 - `policies.attribution_hooks` must be an object when present and currently allows `enabled`; the generated schema documents default `true`, and explicit `enabled: false` remains a valid opt-out alongside the runtime `SCE_ATTRIBUTION_HOOKS_DISABLED` environment opt-out.
+- `policies.agent_trace` must be an object when present and currently allows `git_notes_ref`; the generated schema documents default `refs/notes/sce-agent-trace`, and Rust mapping rejects blank/whitespace-only refs.
 - `policies.bash` must be an object when present and currently allows only `presets` and `custom`.
 - `policies.bash.presets` must be an array of unique built-in preset IDs: `forbid-git-all`, `forbid-git-commit`, `use-pnpm-over-npm`, `use-bun-over-npm`, `use-nix-flake-over-cargo`.
 - `use-pnpm-over-npm` and `use-bun-over-npm` are mutually exclusive and fail validation when both are present.

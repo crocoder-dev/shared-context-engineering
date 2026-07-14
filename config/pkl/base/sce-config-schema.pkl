@@ -101,6 +101,19 @@ local sceConfigSchema = new JsonSchema {
             }
           }
         }
+        ["agent_trace"] = new JsonSchema {
+          type = "object"
+          description = "Agent Trace hook policy. Controls where post-commit Agent Trace JSON is mirrored as a git note."
+          additionalProperties = false
+          properties {
+            ["git_notes_ref"] = new JsonSchema {
+              type = "string"
+              minLength = 1
+              description = "Git notes ref used for Agent Trace JSON persistence. Defaults to refs/notes/sce-agent-trace."
+              default = "refs/notes/sce-agent-trace"
+            }
+          }
+        }
         ["database_retry"] = new JsonSchema {
           type = "object"
           additionalProperties = false
