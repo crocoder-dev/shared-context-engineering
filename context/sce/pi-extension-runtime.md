@@ -52,6 +52,32 @@ verbatim by `config/pkl/generate.pkl` to `config/.pi/extensions/sce/index.ts`
   ENOENT logs install guidance, the promise resolves on every outcome and is
   not awaited by the handler.
 
+## Implemented slice: edit/write diff capture
+
+- `pi.on("tool_call", ...)` narrowed to `edit`/`write` records a pending
+  mutation keyed by `toolCallId`: absolute target path (resolved against
+  `ctx.cwd`), a repo-relative diff label (absolute when outside `cwd`), and
+  prior file contents (`undefined` when the file does not exist yet).
+- `pi.on("tool_result", ...)` looks up and deletes the pending entry first
+  (cleanup on every result, including errors and duplicates), skips
+  `isError` results, then re-reads the file; missing post-contents or
+  unchanged contents are no-ops.
+- Unified diffs come from writing before/after contents to `mkdtemp` temp
+  files and spawning `git diff --no-index --no-ext-diff` — no npm
+  dependencies. Only exit status 1 ("files differ") is accepted; the temp dir
+  is always removed in `finally`. Header labels (`diff --git`, `---`, `+++`)
+  are rewritten to the diff label only before the first `@@` marker so
+  content lines are never touched; file creation rewrites to `--- /dev/null`.
+- Each diff is emitted twice, both fire-and-forget fail-open spawns:
+  - `sce hooks conversation-trace`: a mixed batch with a synthetic assistant
+    `message` (`message_id` = `${toolCallId}-patch`) plus one
+    `part_type: "patch"` part, mirroring the OpenCode patch-batch shape.
+  - `sce hooks diff-trace`: normalized `{ sessionID, diff, time, model_id,
+    tool_name: "pi", tool_version }` where `model_id` is
+    `${ctx.model.provider}/${ctx.model.id}` or null, and `tool_version` is
+    resolved from the installed Pi package (walking up from the resolved
+    entry point, since `package.json` is not in Pi's `exports` map), nullable.
+
 ## Verification
 
 - `nix develop -c ./config/pkl/check-generated.sh` covers
@@ -61,9 +87,8 @@ verbatim by `config/pkl/generate.pkl` to `config/.pi/extensions/sce/index.ts`
 
 ## Planned extensions (not yet implemented)
 
-Edit/write diff capture (`sce hooks diff-trace`, `tool_name: "pi"`), `pi_`
-session-ID prefixing in Rust, asset sync/embedding, and doctor coverage are
-tracked in `context/plans/pi-extension-sce-integration.md` (T03–T07).
+`pi_` session-ID prefixing in Rust, asset sync/embedding, and doctor coverage
+are tracked in `context/plans/pi-extension-sce-integration.md` (T04–T07).
 Deferred non-goals: user-shell `!`/`!!` policy enforcement and bash-mutation
 diff tracing.
 
