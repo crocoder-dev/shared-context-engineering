@@ -213,6 +213,7 @@
             (pkgs.lib.fileset.maybeMissing ./config/.claude/commands)
             (pkgs.lib.fileset.maybeMissing ./config/.claude/skills)
             (pkgs.lib.fileset.maybeMissing ./config/schema/sce-config.schema.json)
+            ./config/lib/pi-plugin/sce-pi-extension.ts
             ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
             ./config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts
           ];
