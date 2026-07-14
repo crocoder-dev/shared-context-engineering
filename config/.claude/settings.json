@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/run-sce-or-show-install-guidance.sh sce policy bash"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-show-install-guidance.sh\" sce policy bash"
           }
         ]
       }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/run-sce-or-show-install-guidance.sh sce hooks diff-trace"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-show-install-guidance.sh\" sce hooks diff-trace"
           }
         ]
       },
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/run-sce-or-show-install-guidance.sh sce hooks conversation-trace"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-show-install-guidance.sh\" sce hooks conversation-trace"
           }
         ]
       }
@@ -36,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/run-sce-or-show-install-guidance.sh sce hooks conversation-trace"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-show-install-guidance.sh\" sce hooks conversation-trace"
           }
         ]
       }
@@ -46,7 +46,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/run-sce-or-show-install-guidance.sh sce hooks conversation-trace"
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-show-install-guidance.sh\" sce hooks conversation-trace"
           }
         ]
       }

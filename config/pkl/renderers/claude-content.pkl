@@ -4,9 +4,9 @@ import "claude-metadata.pkl" as metadata
 
 local missingSceInstallMessage = "sce CLI not found. Install it from https://sce.crocoder.dev/docs/getting-started#install-cli"
 
-local claudeSceHookScriptPath = ".claude/hooks/run-sce-or-show-install-guidance.sh"
+local claudeSceHookScriptPath = "$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-show-install-guidance.sh"
 
-local function sceHookCommand(arguments: String): String = "bash \(claudeSceHookScriptPath) \(arguments)"
+local function sceHookCommand(arguments: String): String = "bash \\\"\(claudeSceHookScriptPath)\\\" \(arguments)"
 
 local agentFrontmatterBySlug = new Mapping {
   for (unitSlug, _ in shared.agents) {
