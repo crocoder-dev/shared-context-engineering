@@ -7,7 +7,7 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
     crane.url = "github:ipetkov/crane";
-    turso.url = "github:tursodatabase/turso/1ebe80ff228f3a56cb521d44b12dc9a7bd04b027";
+    turso.url = "github:tursodatabase/turso/e7cb62a8bd2f3655a661a621ee389365c1a1e43e";
     turso.inputs.nixpkgs.follows = "nixpkgs";
     turso.inputs.flake-utils.follows = "flake-utils";
     turso.inputs.crane.follows = "crane";
@@ -344,7 +344,7 @@
 
         tursoCargoArgs = {
           pname = "turso";
-          version = "0.7.0-pre.10";
+          version = "0.7.0";
           src = turso;
           strictDeps = true;
 
