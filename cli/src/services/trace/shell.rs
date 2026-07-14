@@ -262,7 +262,8 @@ mod tests {
 
     #[test]
     fn shell_tables_lists_table_names_in_deterministic_order() {
-        let output = run_shell("CREATE TABLE z_shell_smoke (id INTEGER);\n.tables\n.exit\n");
+        let output =
+            run_shell("CREATE TABLE IF NOT EXISTS z_shell_smoke (id INTEGER);\n.tables\n.exit\n");
         let table_lines = output_after_startup(&output)
             .lines()
             .skip_while(|line| !line.starts_with("OK ("))
@@ -302,7 +303,7 @@ mod tests {
 
     #[test]
     fn shell_renders_non_query_statement_success() {
-        let output = run_shell("CREATE TABLE shell_smoke (id INTEGER);\nINSERT INTO shell_smoke (id) VALUES (7);\nSELECT id FROM shell_smoke;\n.exit\n");
+        let output = run_shell("CREATE TABLE IF NOT EXISTS shell_smoke (id INTEGER);\nINSERT INTO shell_smoke (id) VALUES (7);\nSELECT id FROM shell_smoke;\n.exit\n");
 
         assert!(output.contains("OK (0 rows affected)\n"));
         assert!(output.contains("OK (1 rows affected)\n"));

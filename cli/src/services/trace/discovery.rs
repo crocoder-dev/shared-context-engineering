@@ -288,15 +288,21 @@ mod tests {
         )
         .expect("create diff_traces");
         db.execute(
-            "CREATE TABLE post_commit_patch_intersections (id INTEGER PRIMARY KEY)",
+            "CREATE TABLE IF NOT EXISTS post_commit_patch_intersections (id INTEGER PRIMARY KEY)",
             (),
         )
         .expect("create post_commit_patch_intersections");
         // Intentionally skip `agent_traces` to exercise the first-missing-table report.
-        db.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY)", ())
-            .expect("create messages");
-        db.execute("CREATE TABLE parts (id INTEGER PRIMARY KEY)", ())
-            .expect("create parts");
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY)",
+            (),
+        )
+        .expect("create messages");
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS parts (id INTEGER PRIMARY KEY)",
+            (),
+        )
+        .expect("create parts");
         drop(db);
 
         let discovered = discover_agent_trace_dbs_in(&dir).expect("discovery should succeed");
