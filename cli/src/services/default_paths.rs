@@ -388,6 +388,7 @@ pub(crate) mod claude_asset {
 pub(crate) mod pi_asset {
     pub const PROMPTS_DIR: &str = "prompts";
     pub const SKILLS_DIR: &str = "skills";
+    pub const EXTENSIONS_DIR: &str = "extensions";
 }
 
 #[allow(dead_code)]
