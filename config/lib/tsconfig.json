@@ -11,6 +11,10 @@
 		"allowImportingTsExtensions": true,
 		"skipLibCheck": true
 	},
-	"include": ["agent-trace-plugin/**/*.ts", "bash-policy-plugin/**/*.ts"],
+	"include": [
+		"agent-trace-plugin/**/*.ts",
+		"bash-policy-plugin/**/*.ts",
+		"pi-plugin/**/*.ts"
+	],
 	"exclude": ["node_modules"]
 }

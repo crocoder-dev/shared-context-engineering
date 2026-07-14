@@ -232,6 +232,9 @@
           };
           nativeBuildInputs = [ bunPackage ];
           dontBuild = true;
+          # Shebang patching would embed the bash store path, breaking the
+          # fixed-output hash whenever bash changes.
+          dontFixup = true;
           installPhase = ''
             bun install --frozen-lockfile --no-progress
             # Remove Bun's cache symlinks that point to build directory
@@ -243,7 +246,7 @@
           outputHashMode = "recursive";
           outputHashAlgo = "sha256";
           outputHash = if pkgs.stdenv.isLinux
-            then "sha256-yDKVHH46EzzyiCwBSISEXnJJbqZ2ihvS2H0SGgITaPY="
+            then "sha256-jQAnW/deCeux0/oxmH27lBXmJoK3RGNJDtIGM+Eepmo="
             else "sha256-KpUXn9+gHy5whrKWXBt9KZI9RwSpa7DLNfRLL/bMT4Q=";
         };
 
