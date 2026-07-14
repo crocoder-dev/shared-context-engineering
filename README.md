@@ -57,12 +57,12 @@ SCE writes a local, per-repo audit trail conforming to the [Agent Trace](https:/
 | Feature | OpenCode | Claude Code | Pi |
 |---|---|---|---|
 | Generated config | ✓ | ✓ | ✓ |
-| Hooks + Bash policy | ✓ | ✓ | — |
-| Conversation + diff trace | ✓ | ✓ | — |
-| Model / session attribution | full | full | — |
+| Hooks + Bash policy | ✓ | ✓ | ✓ |
+| Conversation + diff trace | ✓ | ✓ | ✓ |
+| Model / session attribution | full | full | `pi_` session prefix |
 | Shared `context/` | ✓ | ✓ | ✓ |
 
-OpenCode, Claude Code, and Pi are first-class generated config targets. Pi receives `.pi/prompts/` command and agent-role prompt templates plus `.pi/skills/` packages; hooks and Bash policy enforcement remain OpenCode/Claude-only.
+OpenCode, Claude Code, and Pi are first-class generated config targets. Pi receives `.pi/prompts/` command and agent-role prompt templates, `.pi/skills/` packages, and a project-local `.pi/extensions/sce/index.ts` extension. The Pi extension delegates Bash policy checks to `sce policy bash`, sends conversation text and reasoning to `sce hooks conversation-trace`, and records edit/write diffs through `sce hooks diff-trace` with `pi_`-prefixed session IDs. Pi user-shell `!`/`!!` policy enforcement and bash-mutation diff tracing are deferred gaps.
 
 ## Why this exists
 

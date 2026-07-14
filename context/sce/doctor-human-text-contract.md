@@ -63,6 +63,7 @@ Human text output renders group rows only for the resolved targets:
 - `ClaudeCode skills`
 - `Pi prompts`
 - `Pi skills`
+- `Pi extensions`
 
 Integration checks for this contract inspect installed repo-root artifacts only.
 They validate file presence and content hashes against embedded OpenCode, Claude, and Pi setup assets.
@@ -79,6 +80,7 @@ Pi installed assets are grouped by repo-root `.pi/` relative path:
 
 - `prompts/**` -> `Pi prompts`
 - `skills/**` -> `Pi skills`
+- `extensions/**` -> `Pi extensions`
 
 For each resolved target, the grouped installed repo-root asset trees are required inventory.
 If any required file in an integration group is missing or mismatched:

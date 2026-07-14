@@ -88,15 +88,21 @@ Decisions resolved with the user (2026-07-13):
   - Done when: New tests pass; existing `oc_`/`cc_` behavior and unknown-tool passthrough are unchanged; `nix flake check` passes.
   - Verification notes (commands or checks): `nix flake check` (repo policy blocks direct `cargo test`); review test assertions cover both prefix idempotency cases and end-to-end ingestion with `tool_name: "pi"`.
 
-- [ ] T05: `Sync, embed, and doctor-check the Pi extension asset` (status:todo)
+- [x] T05: `Sync, embed, and doctor-check the Pi extension asset` (status:done, completed 2026-07-14)
   - Task ID: T05
+  - Files changed: `cli/assets/generated/config/pi/extensions/sce/index.ts` (new, synced), `cli/src/services/default_paths.rs` (`pi_asset::EXTENSIONS_DIR`), `cli/src/services/doctor/types.rs` (`PI_EXTENSIONS_LABEL`), `cli/src/services/doctor/inspect.rs` (`extensions/` bucket + `Pi extensions` group in `collect_pi_integration_groups()`).
+  - Evidence: `prepare-cli-generated-assets.sh` + `diff -r config/.pi cli/assets/generated/config/pi` clean; `nix flake check` passes; scratch smoke (isolated XDG roots): `sce setup --pi --non-interactive` installs `.pi/extensions/sce/index.ts`, doctor shows `[PASS] Pi extensions`, deleted file → `[FAIL]` group with `[MISS]` child, tampered file → `[FAIL]` content mismatch.
+  - Notes: No script or setup enumeration changes needed — the sync script already copies the whole `config/.pi` tree and `cli/build.rs` embeds `assets/generated/config/pi` wholesale into `PI_EMBEDDED_ASSETS`. Health problems flow through existing `push_pi_integration_*` functions unchanged. Unit tests for group bucketing were added then removed per user request.
   - Goal: Ship the extension through the asset pipeline and surface its health in `sce doctor`.
   - Boundaries (in/out of scope): In — run `bash scripts/prepare-cli-generated-assets.sh` and commit `cli/assets/generated/config/pi/extensions/sce/index.ts` (the script already copies the whole `config/.pi` tree; extend it only if the copy misses the new subdirectory); verify `sce setup --pi` installs the extension via the existing embedded whole-tree deploy, adjusting setup asset enumeration only if needed; add a `Pi extensions` group (or extend existing Pi groups) in `collect_pi_integration_groups()` (`cli/src/services/doctor/inspect.rs`) so doctor reports the extension present/missing/drifted; update doctor tests. Out — new doctor problem categories, extension content changes, docs (T06).
   - Done when: `bash scripts/prepare-cli-generated-assets.sh && diff -r config/.pi cli/assets/generated/config/pi` is clean; scratch `sce setup --pi --non-interactive` installs `.pi/extensions/sce/index.ts`; `sce doctor` passes after setup and flags a deleted or modified extension file; `nix flake check` passes.
   - Verification notes (commands or checks): asset diff command above; scratch smoke: setup, `sce doctor` (PASS), delete `.pi/extensions/sce/index.ts`, `sce doctor` (reports the problem with `sce setup --pi` remediation); `nix flake check`.
 
-- [ ] T06: `Document the Pi extension integration` (status:todo)
+- [x] T06: `Document the Pi extension integration` (status:done, completed 2026-07-14)
   - Task ID: T06
+  - Files changed: `README.md` (supported integrations table + Pi extension coverage/gaps), `context/architecture.md` (generation classes + Pi bash-policy caller ownership), `config/pkl/README.md` (Pi extension generation ownership and regeneration paths).
+  - Evidence: targeted stale-claim search across `README.md`, `context/architecture.md`, and `config/pkl/README.md` returned 0 matches for `No hooks for Pi`, `extensions are out of scope`, and `only OpenCode`; proofread touched sections confirm Pi bash policy + Agent Trace coverage, `pi_` session prefix, and deferred `!`/`!!` policy plus bash-mutation tracing gaps are documented.
+  - Notes: Documentation-only task; no code or generated artifacts changed.
   - Goal: Update docs so Pi is described as covered by bash policy and Agent Trace, including scope limits.
   - Boundaries (in/out of scope): In — README and `context/architecture.md` sections describing integrations/policy/trace coverage; `config/pkl/README.md` ownership notes for `config/lib/pi-plugin` → `config/.pi/extensions`; note the deferred gaps (no `!`/`!!` policy, no bash-mutation tracing) where integration coverage is described. Out — code changes, Pi user tutorials.
   - Done when: Touched docs accurately state Pi extension coverage, the `pi_` session prefix, and the deferred gaps; no stale claims that Pi has no hooks/extensions remain in touched docs.

@@ -10,6 +10,7 @@ pub(super) const CLAUDE_COMMANDS_LABEL: &str = "ClaudeCode commands";
 pub(super) const CLAUDE_SKILLS_LABEL: &str = "ClaudeCode skills";
 pub(super) const PI_PROMPTS_LABEL: &str = "Pi prompts";
 pub(super) const PI_SKILLS_LABEL: &str = "Pi skills";
+pub(super) const PI_EXTENSIONS_LABEL: &str = "Pi extensions";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Readiness {

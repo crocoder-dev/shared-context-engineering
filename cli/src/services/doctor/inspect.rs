@@ -21,7 +21,8 @@ use super::types::{
     IntegrationContentState, IntegrationGroupHealth, ProblemCategory, ProblemFixability,
     ProblemKind, ProblemSeverity, Readiness, CLAUDE_AGENTS_LABEL, CLAUDE_COMMANDS_LABEL,
     CLAUDE_PLUGINS_LABEL, CLAUDE_SKILLS_LABEL, OPENCODE_AGENTS_LABEL, OPENCODE_COMMANDS_LABEL,
-    OPENCODE_PLUGINS_LABEL, OPENCODE_SKILLS_LABEL, PI_PROMPTS_LABEL, PI_SKILLS_LABEL,
+    OPENCODE_PLUGINS_LABEL, OPENCODE_SKILLS_LABEL, PI_EXTENSIONS_LABEL, PI_PROMPTS_LABEL,
+    PI_SKILLS_LABEL,
 };
 use super::{is_executable, DoctorDependencies, DoctorMode, REQUIRED_HOOKS};
 
@@ -1289,6 +1290,7 @@ fn collect_pi_integration_groups(repository_root: &Path) -> Vec<IntegrationGroup
         iter_embedded_assets_for_setup_target(SetupTarget::Pi).collect::<Vec<_>>();
     let mut prompt_children = Vec::new();
     let mut skill_children = Vec::new();
+    let mut extension_children = Vec::new();
 
     for asset in embedded_assets {
         let child = build_integration_child_from_asset(&pi_root, asset);
@@ -1303,11 +1305,17 @@ fn collect_pi_integration_groups(repository_root: &Path) -> Vec<IntegrationGroup
             .starts_with(&format!("{}/", pi_asset::SKILLS_DIR))
         {
             skill_children.push(child);
+        } else if child
+            .relative_path
+            .starts_with(&format!("{}/", pi_asset::EXTENSIONS_DIR))
+        {
+            extension_children.push(child);
         }
     }
 
     sort_integration_children(&mut prompt_children);
     sort_integration_children(&mut skill_children);
+    sort_integration_children(&mut extension_children);
 
     vec![
         IntegrationGroupHealth {
@@ -1317,6 +1325,10 @@ fn collect_pi_integration_groups(repository_root: &Path) -> Vec<IntegrationGroup
         IntegrationGroupHealth {
             label: PI_SKILLS_LABEL,
             children: skill_children,
+        },
+        IntegrationGroupHealth {
+            label: PI_EXTENSIONS_LABEL,
+            children: extension_children,
         },
     ]
 }
