@@ -51,8 +51,11 @@ The push is best-effort and silent on failure: if the push cannot complete, the 
   - Done when: runtime config exposes a resolved auto-push boolean; default resolution is enabled; explicit config disable is honored; generated schema/parity covers the new field; invalid config shapes fail validation consistently with existing config policy fields.
   - Verification notes (commands or checks): `nix develop -c pkl eval -m . config/pkl/generate.pkl`; targeted config tests if appropriate; `nix run .#pkl-check-generated`; `nix flake check`.
 
-- [ ] T02: `Introduce git-notes push helper` (status:todo)
+- [x] T02: `Introduce git-notes push helper` (status:done)
   - Task ID: T02
+  - Completed: 2026-07-15
+  - Files changed: `cli/src/services/hooks/mod.rs`
+  - Evidence: Direct targeted `cargo test` was blocked by repository bash policy; `nix develop -c sh -c 'cd cli && cargo fmt'`; `nix flake check --print-build-logs` passed (148 Rust tests, clippy/fmt/parity checks clean).
   - Goal: Add a small, injectable helper that attempts to push the configured Agent Trace notes ref to the chosen git remote without shell interpolation.
   - Boundaries (in/out of scope): In - helper function/type near existing git-note writer logic, command construction for pushing one notes ref, validation of non-blank remote/ref inputs, tests for command args and failure outcome. Out - deciding when to call the helper, config resolution, backfill/fetch/retry behavior.
   - Done when: helper constructs a deterministic `git push <remote> <ref>`-equivalent invocation for the configured notes ref, returns a structured success/failure outcome, does not emit user-facing output directly, and focused tests cover success and git-command failure.

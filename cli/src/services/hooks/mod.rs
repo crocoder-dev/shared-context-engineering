@@ -1652,6 +1652,12 @@ pub struct GitNoteWriteOutcome {
     pub notes_ref: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitNotesPushOutcome {
+    pub remote: String,
+    pub notes_ref: String,
+}
+
 #[allow(dead_code)]
 fn write_agent_trace_git_note(
     repository_root: &Path,
@@ -1705,6 +1711,41 @@ where
     })
 }
 
+#[allow(dead_code)]
+fn push_agent_trace_git_notes_ref(
+    repository_root: &Path,
+    remote: &str,
+    notes_ref: &str,
+) -> Result<GitNotesPushOutcome> {
+    push_agent_trace_git_notes_ref_with(
+        repository_root,
+        remote,
+        notes_ref,
+        run_git_notes_push_command,
+    )
+}
+
+#[allow(dead_code)]
+fn push_agent_trace_git_notes_ref_with<F>(
+    repository_root: &Path,
+    remote: &str,
+    notes_ref: &str,
+    run_git_push: F,
+) -> Result<GitNotesPushOutcome>
+where
+    F: FnOnce(&Path, &[String]) -> Result<()>,
+{
+    let remote = non_empty_git_note_input("git remote", remote)?;
+    let notes_ref = non_empty_git_note_input("git notes ref", notes_ref)?;
+    let args = vec![String::from("push"), remote.clone(), notes_ref.clone()];
+
+    run_git_push(repository_root, &args).with_context(|| {
+        format!("Failed to push Agent Trace git notes ref '{notes_ref}' to remote '{remote}'.")
+    })?;
+
+    Ok(GitNotesPushOutcome { remote, notes_ref })
+}
+
 fn non_empty_git_note_input(label: &str, value: &str) -> Result<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -1720,6 +1761,34 @@ fn non_empty_git_note_content(trace_json: &str) -> Result<String> {
     }
 
     Ok(trace_json.to_string())
+}
+
+fn run_git_notes_push_command(repository_root: &Path, args: &[String]) -> Result<()> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repository_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| {
+            format!(
+                "Failed to spawn git notes push command in directory '{}'.",
+                repository_root.display()
+            )
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let diagnostic = if stderr.is_empty() {
+            String::from("git notes push command exited with a non-zero status")
+        } else {
+            stderr
+        };
+        bail!("Failed to push Agent Trace git notes: {diagnostic}");
+    }
+
+    Ok(())
 }
 
 fn run_git_notes_add_command(
@@ -2898,6 +2967,91 @@ mod tests {
             captured_content.into_inner(),
             "{\n  \"version\": \"0.1.0\"\n}\n"
         );
+    }
+
+    #[test]
+    fn git_notes_push_helper_builds_push_command() {
+        let captured_args = RefCell::new(Vec::<String>::new());
+
+        let outcome = push_agent_trace_git_notes_ref_with(
+            Path::new("/repo"),
+            "origin",
+            "refs/notes/sce-agent-trace",
+            |root, args| {
+                assert_eq!(root, Path::new("/repo"));
+                *captured_args.borrow_mut() = args.to_vec();
+                Ok(())
+            },
+        )
+        .expect("git-notes push helper should succeed");
+
+        assert_eq!(outcome.remote, "origin");
+        assert_eq!(outcome.notes_ref, "refs/notes/sce-agent-trace");
+        assert_eq!(
+            captured_args.into_inner(),
+            vec!["push", "origin", "refs/notes/sce-agent-trace"]
+        );
+    }
+
+    #[test]
+    fn git_notes_push_helper_honors_configured_ref() {
+        let captured_args = RefCell::new(Vec::<String>::new());
+
+        push_agent_trace_git_notes_ref_with(
+            Path::new("/repo"),
+            "origin",
+            "refs/notes/custom-agent-trace",
+            |_, args| {
+                *captured_args.borrow_mut() = args.to_vec();
+                Ok(())
+            },
+        )
+        .expect("git-notes push helper should succeed");
+
+        assert_eq!(
+            captured_args.into_inner(),
+            vec!["push", "origin", "refs/notes/custom-agent-trace"]
+        );
+    }
+
+    #[test]
+    fn git_notes_push_helper_rejects_blank_inputs() {
+        let error = push_agent_trace_git_notes_ref_with(
+            Path::new("/repo"),
+            " ",
+            "refs/notes/sce-agent-trace",
+            |_, _| panic!("runner should not be called for invalid input"),
+        )
+        .expect_err("blank remote should fail");
+        assert!(error
+            .to_string()
+            .contains("Invalid Agent Trace git-note git remote"));
+
+        let error =
+            push_agent_trace_git_notes_ref_with(Path::new("/repo"), "origin", "\t", |_, _| {
+                panic!("runner should not be called for invalid input")
+            })
+            .expect_err("blank ref should fail");
+        assert!(error
+            .to_string()
+            .contains("Invalid Agent Trace git-note git notes ref"));
+    }
+
+    #[test]
+    fn git_notes_push_helper_returns_command_failure_with_context() {
+        let error = push_agent_trace_git_notes_ref_with(
+            Path::new("/repo"),
+            "origin",
+            "refs/notes/sce-agent-trace",
+            |_, _| bail!("simulated git push failure"),
+        )
+        .expect_err("git push failure should fail helper");
+
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains(
+            "Failed to push Agent Trace git notes ref 'refs/notes/sce-agent-trace' to remote 'origin'."
+        ));
+        assert!(rendered.contains("simulated git push failure"));
     }
 
     #[test]
