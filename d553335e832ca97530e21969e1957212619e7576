@@ -1,0 +1,34 @@
+{
+  "version": "0.1.0",
+  "id": "019f65a9-9b50-7e8a-bf9b-8405f03ae0cd",
+  "timestamp": "2026-07-15T12:04:02+00:00",
+  "vcs": {
+    "type": "git",
+    "revision": "d553335e832ca97530e21969e1957212619e7576"
+  },
+  "metadata": {
+    "sce": {
+      "version": "0.3.1"
+    }
+  },
+  "files": [
+    {
+      "path": "file",
+      "conversations": [
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f65a9-9b50-7e8a-bf9b-8405f03ae0cd",
+          "contributor": {
+            "type": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 1,
+              "content_hash": "murmur3:0f3aa798"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
