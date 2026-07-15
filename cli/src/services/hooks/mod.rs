@@ -1281,6 +1281,7 @@ fn run_post_commit_agent_trace_flow(
         repository_root,
         vcs_type,
         git_notes_ref: &hook_config.agent_trace_git_notes_ref,
+        push_notes_enabled: hook_config.agent_trace_push_notes_enabled,
         logger,
     };
 
@@ -1302,6 +1303,7 @@ fn run_post_commit_agent_trace_flow(
             Ok(())
         },
         write_agent_trace_git_note,
+        push_agent_trace_git_notes_ref,
     )
 }
 
@@ -1316,21 +1318,24 @@ struct PostCommitGitNotePersistence<'a> {
     repository_root: &'a Path,
     vcs_type: Option<AgentTraceVcsType>,
     git_notes_ref: &'a str,
+    push_notes_enabled: bool,
     logger: Option<&'a dyn Logger>,
 }
 
-fn run_post_commit_agent_trace_flow_with<V, I, G>(
+fn run_post_commit_agent_trace_flow_with<V, I, G, P>(
     git_note_persistence: &PostCommitGitNotePersistence<'_>,
     flow_result: &PostCommitIntersectionFlowResult,
     remote_url: &str,
     validate_agent_trace: V,
     persist_agent_trace: I,
     write_git_note: G,
+    push_git_notes: P,
 ) -> Result<PostCommitAgentTraceFlowResult>
 where
     V: FnOnce(&Value) -> Result<()>,
     I: for<'a> FnOnce(AgentTraceInsert<'a>) -> Result<()>,
     G: FnOnce(&Path, &str, &str, &str) -> Result<GitNoteWriteOutcome>,
+    P: FnOnce(&Path, &str, &str) -> Result<GitNotesPushOutcome>,
 {
     let commit_timestamp =
         DateTime::<Utc>::from_timestamp_millis(flow_result.post_commit_data.commit_time_ms)
@@ -1379,18 +1384,28 @@ where
     persist_agent_trace(insert_input)?;
 
     if should_write_agent_trace_git_note(git_note_persistence.vcs_type) {
-        if let Err(error) = write_git_note(
+        match write_git_note(
             git_note_persistence.repository_root,
             git_note_persistence.git_notes_ref,
             &flow_result.post_commit_data.commit_oid,
             &serialized,
         ) {
-            log_agent_trace_git_note_write_failure(
-                git_note_persistence.logger,
-                &flow_result.post_commit_data.commit_oid,
-                git_note_persistence.git_notes_ref,
-                &error,
-            );
+            Ok(_) if git_note_persistence.push_notes_enabled => {
+                let _ = push_git_notes(
+                    git_note_persistence.repository_root,
+                    remote_url,
+                    git_note_persistence.git_notes_ref,
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                log_agent_trace_git_note_write_failure(
+                    git_note_persistence.logger,
+                    &flow_result.post_commit_data.commit_oid,
+                    git_note_persistence.git_notes_ref,
+                    &error,
+                );
+            }
         }
     }
 
@@ -2392,6 +2407,7 @@ mod tests {
             repository_root: Path::new("/repo"),
             vcs_type: Some(AgentTraceVcsType::Git),
             git_notes_ref: "refs/notes/sce-agent-trace",
+            push_notes_enabled: true,
             logger: None,
         };
         let result = run_post_commit_agent_trace_flow_with(
@@ -2418,10 +2434,18 @@ mod tests {
                     notes_ref: notes_ref.to_string(),
                 })
             },
+            |root, remote, notes_ref| {
+                order.borrow_mut().push(String::from("push"));
+                assert_eq!(root, Path::new("/repo"));
+                Ok(GitNotesPushOutcome {
+                    remote: remote.to_string(),
+                    notes_ref: notes_ref.to_string(),
+                })
+            },
         )
         .expect("Agent Trace flow should persist DB row and git note");
 
-        assert_eq!(order.into_inner(), vec!["db", "note"]);
+        assert_eq!(order.into_inner(), vec!["db", "note", "push"]);
         let (notes_ref, commit_id, trace_json) = captured_note
             .into_inner()
             .expect("git note write should be attempted");
@@ -2439,6 +2463,7 @@ mod tests {
             repository_root: Path::new("/repo"),
             vcs_type: Some(AgentTraceVcsType::Git),
             git_notes_ref: "refs/notes/custom-sce",
+            push_notes_enabled: true,
             logger: None,
         };
         run_post_commit_agent_trace_flow_with(
@@ -2457,10 +2482,104 @@ mod tests {
                         .expect("git-note content should be full Agent Trace JSON"),
                 })
             },
+            |_, remote, notes_ref| {
+                assert_eq!(remote, "https://example.test/repo.git");
+                assert_eq!(notes_ref, "refs/notes/custom-sce");
+                Ok(GitNotesPushOutcome {
+                    remote: remote.to_string(),
+                    notes_ref: notes_ref.to_string(),
+                })
+            },
         )
         .expect("Agent Trace flow should succeed with configured git-notes ref");
 
         assert_eq!(captured_ref.into_inner(), "refs/notes/custom-sce");
+    }
+
+    #[test]
+    fn post_commit_agent_trace_flow_skips_push_when_config_disabled() {
+        let order = RefCell::new(Vec::<String>::new());
+
+        let git_note_persistence = PostCommitGitNotePersistence {
+            repository_root: Path::new("/repo"),
+            vcs_type: Some(AgentTraceVcsType::Git),
+            git_notes_ref: "refs/notes/sce-agent-trace",
+            push_notes_enabled: false,
+            logger: None,
+        };
+        run_post_commit_agent_trace_flow_with(
+            &git_note_persistence,
+            &post_commit_flow_result(),
+            "https://example.test/repo.git",
+            |_| Ok(()),
+            |_| {
+                order.borrow_mut().push(String::from("db"));
+                Ok(())
+            },
+            |_, notes_ref, commit_id, _| {
+                order.borrow_mut().push(String::from("note"));
+                Ok(GitNoteWriteOutcome {
+                    commit_id: commit_id.to_string(),
+                    notes_ref: notes_ref.to_string(),
+                })
+            },
+            |_, _, _| {
+                order.borrow_mut().push(String::from("push"));
+                Ok(GitNotesPushOutcome {
+                    remote: String::from("https://example.test/repo.git"),
+                    notes_ref: String::from("refs/notes/sce-agent-trace"),
+                })
+            },
+        )
+        .expect("Agent Trace flow should succeed with notes push disabled");
+
+        assert_eq!(order.into_inner(), vec!["db", "note"]);
+    }
+
+    #[test]
+    fn post_commit_agent_trace_flow_swallows_git_notes_push_failure() {
+        let logger = CapturingLogger::default();
+        let order = RefCell::new(Vec::<String>::new());
+
+        let git_note_persistence = PostCommitGitNotePersistence {
+            repository_root: Path::new("/repo"),
+            vcs_type: Some(AgentTraceVcsType::Git),
+            git_notes_ref: "refs/notes/sce-agent-trace",
+            push_notes_enabled: true,
+            logger: Some(&logger),
+        };
+        let result = run_post_commit_agent_trace_flow_with(
+            &git_note_persistence,
+            &post_commit_flow_result(),
+            "https://example.test/repo.git",
+            |_| Ok(()),
+            |_| {
+                order.borrow_mut().push(String::from("db"));
+                Ok(())
+            },
+            |_, notes_ref, commit_id, _| {
+                order.borrow_mut().push(String::from("note"));
+                Ok(GitNoteWriteOutcome {
+                    commit_id: commit_id.to_string(),
+                    notes_ref: notes_ref.to_string(),
+                })
+            },
+            |_, remote, notes_ref| {
+                order.borrow_mut().push(String::from("push"));
+                assert_eq!(remote, "https://example.test/repo.git");
+                assert_eq!(notes_ref, "refs/notes/sce-agent-trace");
+                bail!("simulated git push failure")
+            },
+        )
+        .expect("git-notes push failure should not fail post-commit Agent Trace flow");
+
+        assert_eq!(order.into_inner(), vec!["db", "note", "push"]);
+        assert!(result.trace_json.contains("\"version\": \"0.1.0\""));
+        assert!(logger
+            .errors
+            .lock()
+            .expect("test logger mutex should not be poisoned")
+            .is_empty());
     }
 
     #[test]
@@ -2472,6 +2591,7 @@ mod tests {
             repository_root: Path::new("/repo"),
             vcs_type: Some(AgentTraceVcsType::Git),
             git_notes_ref: "refs/notes/sce-agent-trace",
+            push_notes_enabled: true,
             logger: Some(&logger),
         };
         let result = run_post_commit_agent_trace_flow_with(
@@ -2486,6 +2606,13 @@ mod tests {
             |_, _, _, _| {
                 order.borrow_mut().push(String::from("note"));
                 bail!("simulated git notes failure")
+            },
+            |_, _, _| {
+                order.borrow_mut().push(String::from("push"));
+                Ok(GitNotesPushOutcome {
+                    remote: String::from("https://example.test/repo.git"),
+                    notes_ref: String::from("refs/notes/sce-agent-trace"),
+                })
             },
         )
         .expect("git-note failure should not fail post-commit Agent Trace flow");

@@ -25,7 +25,7 @@ Resolved runtime values follow this deterministic order:
 
 Repo-configured bash-tool policy values are config-file only in this task slice: they load from `policies.bash` in the selected config files, merge `global -> local` alongside the rest of the config object, and currently have no flag or environment override layer.
 
-Agent Trace hook policy currently includes `policies.agent_trace.git_notes_ref`, which resolves as config-file value over default `refs/notes/sce-agent-trace`, and `policies.agent_trace.push_notes.enabled`, which resolves as config-file value over default `true`. These keys have no flag or environment override layer in the current implementation slice. The resolved notes ref is consumed by the post-commit Agent Trace flow when writing the validated full Agent Trace JSON to git notes after Agent Trace DB persistence succeeds. The resolved push-notes boolean is exposed through hook runtime config for the follow-on auto-push wiring task; current post-commit hook behavior does not push git notes yet.
+Agent Trace hook policy currently includes `policies.agent_trace.git_notes_ref`, which resolves as config-file value over default `refs/notes/sce-agent-trace`, and `policies.agent_trace.push_notes.enabled`, which resolves as config-file value over default `true`. These keys have no flag or environment override layer in the current implementation slice. The resolved notes ref is consumed by the post-commit Agent Trace flow when writing the validated full Agent Trace JSON to git notes after Agent Trace DB persistence succeeds and when pushing that same notes ref. The resolved push-notes boolean gates the post-commit best-effort `git push <remote-url> <git_notes_ref>` attempt; explicit `false` skips the push.
 
 Resolved observability values that currently have no CLI flag layer follow the same lower-precedence chain without a flag step:
 
@@ -81,7 +81,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `policies` must be an object when present and currently allows `attribution_hooks`, `agent_trace`, `database_retry`, and `bash`.
 - `policies.attribution_hooks` must be an object when present and currently allows `enabled`; the generated schema documents default `true`, and explicit `enabled: false` remains a valid opt-out alongside the runtime `SCE_ATTRIBUTION_HOOKS_DISABLED` environment opt-out.
 - `policies.agent_trace` must be an object when present and currently allows `git_notes_ref` and `push_notes`; the generated schema documents default `refs/notes/sce-agent-trace`, and Rust mapping rejects blank/whitespace-only refs.
-- `policies.agent_trace.push_notes` must be an object when present and currently allows `enabled`; the generated schema documents default `true`, and explicit `enabled: false` is a valid opt-out value for the follow-on Agent Trace notes auto-push wiring.
+- `policies.agent_trace.push_notes` must be an object when present and currently allows `enabled`; the generated schema documents default `true`, and explicit `enabled: false` opts out of post-commit Agent Trace notes auto-push.
 - `policies.bash` must be an object when present and currently allows only `presets` and `custom`.
 - `policies.bash.presets` must be an array of unique built-in preset IDs: `forbid-git-all`, `forbid-git-commit`, `use-pnpm-over-npm`, `use-bun-over-npm`, `use-nix-flake-over-cargo`.
 - `use-pnpm-over-npm` and `use-bun-over-npm` are mutually exclusive and fail validation when both are present.

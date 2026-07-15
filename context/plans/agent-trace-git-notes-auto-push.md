@@ -61,8 +61,11 @@ The push is best-effort and silent on failure: if the push cannot complete, the 
   - Done when: helper constructs a deterministic `git push <remote> <ref>`-equivalent invocation for the configured notes ref, returns a structured success/failure outcome, does not emit user-facing output directly, and focused tests cover success and git-command failure.
   - Verification notes (commands or checks): targeted hook/helper tests if appropriate; `nix develop -c sh -c 'cd cli && cargo fmt'`; `nix flake check`.
 
-- [ ] T03: `Wire silent auto-push into post-commit Agent Trace flow` (status:todo)
+- [x] T03: `Wire silent auto-push into post-commit Agent Trace flow` (status:done)
   - Task ID: T03
+  - Completed: 2026-07-15
+  - Files changed: `cli/src/services/hooks/mod.rs`, `context/overview.md`, `context/glossary.md`, `context/context-map.md`, `context/cli/config-precedence-contract.md`, `context/sce/agent-trace-hooks-command-routing.md`, `context/sce/setup-githooks-hook-asset-packaging.md`
+  - Evidence: Direct targeted `cargo test post_commit_agent_trace_flow` was blocked by repository bash policy; `nix develop -c sh -c 'cd cli && cargo fmt'`; `nix flake check --print-build-logs` passed (150 Rust tests, clippy/fmt/parity checks clean); `git diff --check`; `nix run .#pkl-check-generated` passed.
   - Goal: After successful local Agent Trace git-note persistence, conditionally attempt a best-effort notes push when auto-push config is enabled.
   - Boundaries (in/out of scope): In - post-commit flow ordering, config gate, git-only behavior, existing remote context reuse, fail-open/silent handling, tests proving enabled/default attempt, disabled skip, configured ref use, and push failure does not change hook success. Out - retry queue, user-facing command output changes, fetch/backfill, non-git VCS note pushing.
   - Done when: default git post-commit flow attempts the push after local note write; explicit config disable skips the push; configured notes ref is used; push failure is swallowed from hook success/output and can be retried by a later hook invocation.
