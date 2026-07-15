@@ -84,12 +84,17 @@ The default notes ref is dedicated to SCE Agent Trace data and is configurable.
   - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` passed; targeted `cargo test git_note_writer` was blocked by SCE bash policy preferring `nix flake check`; first `nix flake check` caught a clippy issue and then a git-note writer test failure, both fixed; final `nix flake check` passed; `nix run .#pkl-check-generated` passed ("Generated outputs are up to date.").
   - Notes: Added an injectable helper that validates non-blank ref/commit/content, invokes `git notes --ref <ref> add -f -F - <commit>` without shell interpolation, pipes Agent Trace JSON through stdin preserving content bytes, returns `GitNoteWriteOutcome`, and includes focused unit coverage for command construction, configured refs, blank input rejection, and command failure context. The helper is intentionally not wired into post-commit runtime until T04.
 
-- [ ] T04: `Wire git-note persistence into post-commit Agent Trace flow` (status:todo)
+- [x] T04: `Wire git-note persistence into post-commit Agent Trace flow` (status:done)
   - Task ID: T04
   - Goal: After Agent Trace JSON validation and DB insertion succeed, write the same full JSON to the configured git-notes ref for the committed SHA, while keeping note-write failures non-blocking.
   - Boundaries (in/out of scope): In - post-commit flow wiring, resolved config read, stable log event for note-write failure (for example `sce.hooks.post_commit.agent_trace_git_note_write_failed`), tests proving successful write is attempted after DB insert and failures do not change hook success. Out - backfill, notes push/fetch, non-git VCS note behavior, changing existing DB failure semantics.
   - Done when: default post-commit writes a note under `refs/notes/sce-agent-trace`; configured ref is honored; note write is skipped or treated as no-op for unsupported/non-git contexts if necessary; note write failure logs diagnostics but does not fail the hook after DB persistence succeeds.
   - Verification notes (commands or checks): targeted post-commit hook tests if permitted; manual local check with `git notes --ref refs/notes/sce-agent-trace show HEAD`; `nix flake check`.
+  - Status: done
+  - Completed: 2026-07-15
+  - Files changed: `cli/src/services/hooks/mod.rs`, `context/plans/agent-trace-git-notes.md`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` passed; targeted `cargo test post_commit_agent_trace_flow -- --nocapture` was blocked by SCE bash policy preferring `nix flake check`; first `nix flake check` caught a clippy `too_many_arguments` issue, fixed by grouping git-note persistence inputs; final `nix flake check` passed; `nix run .#pkl-check-generated` passed ("Generated outputs are up to date.").
+  - Notes: Post-commit now resolves `policies.agent_trace.git_notes_ref`, writes the validated serialized Agent Trace JSON to git notes after Agent Trace DB insertion succeeds, skips note writes for explicit non-git VCS values, and logs non-blocking note-write failures with `sce.hooks.post_commit.agent_trace_git_note_write_failed`.
 
 - [ ] T05: `Update Agent Trace context for git-notes persistence` (status:todo)
   - Task ID: T05
