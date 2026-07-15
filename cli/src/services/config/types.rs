@@ -18,6 +18,7 @@ pub(crate) const ENV_LOG_FORMAT: &str = "SCE_LOG_FORMAT";
 pub(crate) const ENV_LOG_FILE: &str = "SCE_LOG_FILE";
 pub(crate) const ENV_LOG_FILE_MODE: &str = "SCE_LOG_FILE_MODE";
 pub(crate) const ENV_ATTRIBUTION_HOOKS_DISABLED: &str = "SCE_ATTRIBUTION_HOOKS_DISABLED";
+pub(crate) const DEFAULT_AGENT_TRACE_GIT_NOTES_REF: &str = "refs/notes/sce-agent-trace";
 
 pub type ReportFormat = OutputFormat;
 
@@ -239,6 +240,8 @@ pub(crate) struct ResolvedObservabilityRuntimeConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResolvedHookRuntimeConfig {
     pub(crate) attribution_hooks_enabled: bool,
+    pub(crate) agent_trace_git_notes_ref: String,
+    pub(crate) agent_trace_push_notes_enabled: bool,
 }
 
 pub(crate) fn parse_bool_value_from(key: &str, raw: &str, source: &str) -> anyhow::Result<bool> {

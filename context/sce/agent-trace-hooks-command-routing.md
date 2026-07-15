@@ -59,7 +59,10 @@
   - The built Agent Trace payload is converted to JSON `Value` and validated via `agent_trace::validate_agent_trace_value(...)` before persistence.
   - Validation failures are returned through the same post-commit runtime failure path/class used for Agent Trace DB insertion failures (no silent fallback).
   - When validation passes, the payload is serialized and inserted into Agent Trace DB `agent_traces` using `commit_id` from flow-result commit metadata, `commit_time_ms` from flow-result post-commit timestamp metadata, a derived non-null `url` value formatted as `sce.crocoder.dev/trace/<agent_trace.id>`, and the validated runtime `--remote-url` value persisted to nullable `agent_traces.remote_url`.
-  - Post-commit Agent Trace success requires both schema validation and Agent Trace DB `agent_traces` persistence to succeed.
+  - After Agent Trace DB insertion succeeds, git post-commit contexts also write the same full serialized Agent Trace JSON to a git note on the committed SHA. The default ref is `refs/notes/sce-agent-trace`, resolved through `policies.agent_trace.git_notes_ref`; explicit non-git `--vcs` values skip the note write.
+  - Git-note writes use replace/upsert semantics (`git notes --ref <ref> add -f -F - <commit>`) and preserve multiline JSON by piping content through stdin.
+  - When the local git-note write succeeds and `policies.agent_trace.push_notes.enabled` resolves to its default `true`, the post-commit flow immediately attempts `git push <remote-url> <git_notes_ref>` using the validated `--remote-url` handoff value and the same configured notes ref. Explicit `enabled: false` skips this push.
+  - Post-commit Agent Trace success requires both schema validation and Agent Trace DB `agent_traces` persistence to succeed. Git-note write failures are best-effort: they are logged with `sce.hooks.post_commit.agent_trace_git_note_write_failed` and do not fail the hook after DB persistence succeeded. Git-notes push failures are silent fail-open: no user-facing warning or hook failure is emitted, and a later post-commit hook invocation can try the push again without a retry queue.
   - Current command-surface success output is: `post-commit hook processed intersection: commit=<oid>, intersection_files=<n>`.
 - `post-rewrite` is a deterministic no-op entrypoint.
 - `diff-trace` reads STDIN JSON and classifies the payload:
@@ -115,9 +118,9 @@
 ## Explicit non-goals in the current baseline
 
 - No checkpoint handoff file
-- No git-notes persistence
+- No git-notes fetch/backfill behavior; the only remote notes operation is the default-enabled, config-disableable, silent fail-open push after a successful local post-commit note write
 - No backfill/import of existing `context/tmp/*-diff-trace.json` artifacts into AgentTraceDb
-- No retry queue replay
+- No retry queue replay; failed git-notes pushes are retried only by later successful post-commit hook invocations
 - No rewrite remap ingestion
 - No `conversation-trace` retry/backfill path or `context/tmp` artifact persistence
 - No runtime Claude diff-trace persistence or AgentTraceDb writes from the capture route itself, and no direct artifact/DB writes from the Claude or OpenCode TypeScript runtimes
