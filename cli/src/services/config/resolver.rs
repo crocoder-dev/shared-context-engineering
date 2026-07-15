@@ -63,6 +63,7 @@ pub(super) struct RuntimeConfig {
     pub(super) timeout_ms: ResolvedValue<u64>,
     pub(super) attribution_hooks_enabled: ResolvedValue<bool>,
     pub(super) agent_trace_git_notes_ref: ResolvedValue<String>,
+    pub(super) agent_trace_push_notes_enabled: ResolvedValue<bool>,
     pub(super) workos_client_id: ResolvedOptionalValue<String>,
     pub(super) bash_policies: ResolvedOptionalValue<BashPolicyConfig>,
     pub(super) database_retry: ResolvedOptionalValue<DatabaseRetryConfig>,
@@ -228,6 +229,7 @@ where
     Ok(ResolvedHookRuntimeConfig {
         attribution_hooks_enabled: runtime.attribution_hooks_enabled.value,
         agent_trace_git_notes_ref: runtime.agent_trace_git_notes_ref.value,
+        agent_trace_push_notes_enabled: runtime.agent_trace_push_notes_enabled.value,
     })
 }
 
@@ -275,6 +277,7 @@ where
         timeout_ms: None,
         attribution_hooks_enabled: None,
         agent_trace_git_notes_ref: None,
+        agent_trace_push_notes_enabled: None,
         workos_client_id: None,
         bash_policy_presets: None,
         bash_policy_custom: None,
@@ -312,6 +315,9 @@ where
         }
         if let Some(agent_trace_git_notes_ref) = layer.agent_trace_git_notes_ref {
             file_config.agent_trace_git_notes_ref = Some(agent_trace_git_notes_ref);
+        }
+        if let Some(agent_trace_push_notes_enabled) = layer.agent_trace_push_notes_enabled {
+            file_config.agent_trace_push_notes_enabled = Some(agent_trace_push_notes_enabled);
         }
         if let Some(workos_client_id) = layer.workos_client_id {
             file_config.workos_client_id = Some(workos_client_id);
@@ -457,6 +463,8 @@ where
     }
     let resolved_agent_trace_git_notes_ref =
         resolve_agent_trace_git_notes_ref(file_config.agent_trace_git_notes_ref.as_ref());
+    let resolved_agent_trace_push_notes_enabled =
+        resolve_agent_trace_push_notes_enabled(file_config.agent_trace_push_notes_enabled.as_ref());
     let resolved_workos_client_id = resolve_optional_auth_config_value(
         WORKOS_CLIENT_ID_KEY,
         file_config.workos_client_id,
@@ -481,6 +489,7 @@ where
         timeout_ms: resolved_timeout_ms,
         attribution_hooks_enabled: resolved_attribution_hooks_enabled,
         agent_trace_git_notes_ref: resolved_agent_trace_git_notes_ref,
+        agent_trace_push_notes_enabled: resolved_agent_trace_push_notes_enabled,
         workos_client_id: resolved_workos_client_id,
         bash_policies: resolved_bash_policies,
         database_retry: resolved_database_retry,
@@ -501,6 +510,22 @@ fn resolve_agent_trace_git_notes_ref(
 
     ResolvedValue {
         value: DEFAULT_AGENT_TRACE_GIT_NOTES_REF.to_string(),
+        source: ValueSource::Default,
+    }
+}
+
+fn resolve_agent_trace_push_notes_enabled(
+    file_value: Option<&schema::FileConfigValue<bool>>,
+) -> ResolvedValue<bool> {
+    if let Some(value) = file_value {
+        return ResolvedValue {
+            value: value.value,
+            source: ValueSource::ConfigFile(value.source),
+        };
+    }
+
+    ResolvedValue {
+        value: true,
         source: ValueSource::Default,
     }
 }
@@ -708,6 +733,7 @@ mod tests {
         Ok(ResolvedHookRuntimeConfig {
             attribution_hooks_enabled: runtime.attribution_hooks_enabled.value,
             agent_trace_git_notes_ref: runtime.agent_trace_git_notes_ref.value,
+            agent_trace_push_notes_enabled: runtime.agent_trace_push_notes_enabled.value,
         })
     }
 
@@ -737,6 +763,33 @@ mod tests {
         .unwrap();
 
         assert_eq!(resolved.agent_trace_git_notes_ref, "refs/notes/custom-sce");
+    }
+
+    #[test]
+    fn agent_trace_push_notes_enabled_uses_default() {
+        let resolved = resolve_hooks_with_env_and_config(None, None).unwrap();
+
+        assert!(resolved.agent_trace_push_notes_enabled);
+    }
+
+    #[test]
+    fn agent_trace_push_notes_enabled_uses_explicit_config_false() {
+        let resolved = resolve_hooks_with_env_and_config(
+            None,
+            Some(r#"{"policies":{"agent_trace":{"push_notes":{"enabled":false}}}}"#),
+        )
+        .unwrap();
+
+        assert!(!resolved.agent_trace_push_notes_enabled);
+    }
+
+    #[test]
+    fn invalid_agent_trace_push_notes_shape_is_rejected() {
+        resolve_hooks_with_env_and_config(
+            None,
+            Some(r#"{"policies":{"agent_trace":{"push_notes":{"enabled":"no"}}}}"#),
+        )
+        .unwrap_err();
     }
 
     #[test]

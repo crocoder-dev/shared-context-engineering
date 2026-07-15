@@ -59,7 +59,7 @@
           "additionalProperties": false
         },
         "agent_trace": {
-          "description": "Agent Trace hook policy. Controls where post-commit Agent Trace JSON is mirrored as a git note.",
+          "description": "Agent Trace hook policy. Controls where post-commit Agent Trace JSON is mirrored as a git note and whether that notes ref is auto-pushed.",
           "type": "object",
           "properties": {
             "git_notes_ref": {
@@ -67,6 +67,18 @@
               "default": "refs/notes/sce-agent-trace",
               "type": "string",
               "minLength": 1
+            },
+            "push_notes": {
+              "description": "Agent Trace git-notes push policy. Notes auto-push is enabled by default.",
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "description": "Enable best-effort Agent Trace git-notes auto-push after local note persistence. Defaults to true when omitted; set false to disable.",
+                  "default": true,
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false

@@ -241,6 +241,7 @@ pub(crate) struct ResolvedObservabilityRuntimeConfig {
 pub(crate) struct ResolvedHookRuntimeConfig {
     pub(crate) attribution_hooks_enabled: bool,
     pub(crate) agent_trace_git_notes_ref: String,
+    pub(crate) agent_trace_push_notes_enabled: bool,
 }
 
 pub(crate) fn parse_bool_value_from(key: &str, raw: &str, source: &str) -> anyhow::Result<bool> {

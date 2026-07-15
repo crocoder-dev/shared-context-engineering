@@ -35,6 +35,7 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
                     &runtime.workos_client_id,
                 ),
                 format_bash_policies_text(&runtime.bash_policies),
+                format_agent_trace_policy_text(runtime),
                 format_database_retry_text(&runtime.database_retry),
                 format_validation_warnings_text(&warnings),
             ];
@@ -70,6 +71,7 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
                         "workos_client_id": format_optional_auth_resolved_value_json(WORKOS_CLIENT_ID_KEY, &runtime.workos_client_id),
                         "policies": {
                             "bash": format_bash_policies_json(&runtime.bash_policies),
+                            "agent_trace": format_agent_trace_policy_json(runtime),
                             "database_retry": format_database_retry_json(&runtime.database_retry),
                         }
                     },
@@ -367,6 +369,48 @@ fn abbreviate_text_value(value: &str) -> String {
         .rev()
         .collect();
     format!("{prefix}...{suffix}")
+}
+
+fn format_agent_trace_policy_text(runtime: &RuntimeConfig) -> String {
+    [
+        format!("  {}:", style::label("policies.agent_trace")),
+        format!(
+            "    {}",
+            format_resolved_value_text(
+                "git_notes_ref",
+                &runtime.agent_trace_git_notes_ref.value,
+                runtime.agent_trace_git_notes_ref.source,
+            )
+        ),
+        format!(
+            "    {}",
+            format_resolved_value_text(
+                "push_notes.enabled",
+                if runtime.agent_trace_push_notes_enabled.value {
+                    "true"
+                } else {
+                    "false"
+                },
+                runtime.agent_trace_push_notes_enabled.source,
+            )
+        ),
+    ]
+    .join("\n")
+}
+
+fn format_agent_trace_policy_json(runtime: &RuntimeConfig) -> Value {
+    json!({
+        "git_notes_ref": format_resolved_value_json(
+            &runtime.agent_trace_git_notes_ref.value,
+            runtime.agent_trace_git_notes_ref.source,
+        ),
+        "push_notes": {
+            "enabled": format_resolved_value_json(
+                runtime.agent_trace_push_notes_enabled.value,
+                runtime.agent_trace_push_notes_enabled.source,
+            ),
+        },
+    })
 }
 
 fn retry_policy_display(policy: &crate::services::resilience::RetryPolicy) -> String {
