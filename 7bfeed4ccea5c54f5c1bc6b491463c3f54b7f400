@@ -1,0 +1,815 @@
+{
+  "version": "0.1.0",
+  "id": "019f6521-5880-734b-8b20-648632134aa1",
+  "timestamp": "2026-07-15T09:35:12+00:00",
+  "vcs": {
+    "type": "git",
+    "revision": "7bfeed4ccea5c54f5c1bc6b491463c3f54b7f400"
+  },
+  "tool": {
+    "name": "pi"
+  },
+  "metadata": {
+    "sce": {
+      "version": "0.3.1"
+    }
+  },
+  "files": [
+    {
+      "path": "cli/assets/generated/config/schema/sce-config.schema.json",
+      "conversations": [
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 58,
+              "end_line": 88,
+              "content_hash": "murmur3:1ce3e08d"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "cli/src/services/config/render.rs",
+      "conversations": [
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 35,
+              "end_line": 41,
+              "content_hash": "murmur3:2a222875"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 71,
+              "end_line": 77,
+              "content_hash": "murmur3:035477dd"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 371,
+              "end_line": 418,
+              "content_hash": "murmur3:eacfddb1"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "cli/src/services/config/resolver.rs",
+      "conversations": [
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 63,
+              "end_line": 69,
+              "content_hash": "murmur3:a7bc9025"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 229,
+              "end_line": 235,
+              "content_hash": "murmur3:c55deeb5"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 277,
+              "end_line": 283,
+              "content_hash": "murmur3:be57c9c1"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 316,
+              "end_line": 324,
+              "content_hash": "murmur3:b153cd37"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 463,
+              "end_line": 470,
+              "content_hash": "murmur3:4a8ab9e8"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 489,
+              "end_line": 495,
+              "content_hash": "murmur3:424728d0"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 514,
+              "end_line": 535,
+              "content_hash": "murmur3:acc49046"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 733,
+              "end_line": 739,
+              "content_hash": "murmur3:69ef0abd"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 765,
+              "end_line": 797,
+              "content_hash": "murmur3:96068482"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6118-0c59-7e43-9b5b-c9cb38880ae9"
+            },
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "cli/src/services/config/schema.rs",
+      "conversations": [
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 91,
+              "end_line": 102,
+              "content_hash": "murmur3:40d0ad47"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 160,
+              "end_line": 166,
+              "content_hash": "murmur3:6b1a23be"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 173,
+              "end_line": 189,
+              "content_hash": "murmur3:7f50dd41"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 320,
+              "end_line": 326,
+              "content_hash": "murmur3:4a7ec16d"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 333,
+              "end_line": 339,
+              "content_hash": "murmur3:4a7ec16d"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 349,
+              "end_line": 355,
+              "content_hash": "murmur3:5961755e"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 376,
+              "end_line": 388,
+              "content_hash": "murmur3:0db2ad0d"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 395,
+              "end_line": 401,
+              "content_hash": "murmur3:4a7ec16d"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 435,
+              "end_line": 443,
+              "content_hash": "murmur3:71843c17"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 451,
+              "end_line": 461,
+              "content_hash": "murmur3:589b2309"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 471,
+              "end_line": 484,
+              "content_hash": "murmur3:d2ae6a7b"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6118-0c59-7e43-9b5b-c9cb38880ae9"
+            },
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "cli/src/services/config/types.rs",
+      "conversations": [
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 241,
+              "end_line": 247,
+              "content_hash": "murmur3:4afd30ec"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "config/pkl/base/sce-config-schema.pkl",
+      "conversations": [
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 103,
+              "end_line": 109,
+              "content_hash": "murmur3:4815dc4c"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 112,
+              "end_line": 129,
+              "content_hash": "murmur3:7237a248"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "config/schema/sce-config.schema.json",
+      "conversations": [
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 59,
+              "end_line": 65,
+              "content_hash": "murmur3:00a66b4c"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 67,
+              "end_line": 84,
+              "content_hash": "murmur3:24b95c5c"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "context/architecture.md",
+      "conversations": [
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 111,
+              "end_line": 117,
+              "content_hash": "murmur3:e4aab35b"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "context/cli/config-precedence-contract.md",
+      "conversations": [
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 25,
+              "end_line": 31,
+              "content_hash": "murmur3:49e59e6c"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 80,
+              "end_line": 87,
+              "content_hash": "murmur3:5edec536"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 102,
+              "end_line": 108,
+              "content_hash": "murmur3:099efbf1"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "context/context-map.md",
+      "conversations": [
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 16,
+              "end_line": 22,
+              "content_hash": "murmur3:ade7edb2"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "context/glossary.md",
+      "conversations": [
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 113,
+              "end_line": 119,
+              "content_hash": "murmur3:0da461a3"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "context/overview.md",
+      "conversations": [
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai-codex/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 27,
+              "end_line": 33,
+              "content_hash": "murmur3:55a15afd"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "context/plans/agent-trace-git-notes-auto-push.md",
+      "conversations": [
+        {
+          "url": "https://sce.crocoder.dev/conversations/019f6521-5880-734b-8b20-648632134aa1",
+          "contributor": {
+            "type": "ai",
+            "model_id": "openai/gpt-5.5"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 84,
+              "content_hash": "murmur3:6873b366"
+            }
+          ],
+          "related": [
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/oc_ses_09afc720fffeVdp91LUCqUzFRP"
+            },
+            {
+              "type": "session",
+              "url": "https://sce.crocoder.dev/sessions/pi_019f6512-6867-7fb5-9373-e2a119e7d18f"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
