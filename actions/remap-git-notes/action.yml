@@ -1,0 +1,58 @@
+name: Remap Git Notes
+description: >-
+  Best-effort remediation of Git notes after a pull request is merged with the
+  "Rebase and merge" strategy. Maps original PR commits to their rebased
+  counterparts using a conservative multi-signal confidence model and copies
+  notes only for high-confidence mappings.
+author: CroCoder
+
+inputs:
+  github-token:
+    description: Token used to call the GitHub REST API and push the notes ref.
+    required: true
+  notes-ref:
+    description: Fully qualified notes ref to remap.
+    required: false
+    default: refs/notes/commits
+  remote:
+    description: Git remote to fetch from and push to.
+    required: false
+    default: origin
+  target-branch:
+    description: Branch the PR was merged into. Defaults to the PR base branch.
+    required: false
+    default: ""
+  search-depth:
+    description: >-
+      Fallback number of commits to walk back from the target branch tip when
+      the merge commit SHA is missing or unreachable.
+    required: false
+    default: "50"
+  fail-on-unmapped:
+    description: Fail the action when a noted commit cannot be mapped.
+    required: false
+    default: "false"
+  dry-run:
+    description: Report the proposed mapping without writing or pushing notes.
+    required: false
+    default: "false"
+
+outputs:
+  mapped-count:
+    description: Number of PR commits mapped to rebased commits with copyable confidence.
+  copied-count:
+    description: Number of notes copied to rebased commits.
+  skipped-count:
+    description: Number of mappings skipped (identical note already present, low confidence, or no note).
+  unmapped-count:
+    description: Number of noted PR commits that could not be mapped reliably.
+  conflict-count:
+    description: Number of destination commits where a differing existing note was merged.
+  changed:
+    description: Whether the notes ref was modified and pushed ("true"/"false").
+  mapping-report:
+    description: Concise JSON report of every proposed mapping decision.
+
+runs:
+  using: node24
+  main: dist/index.js
