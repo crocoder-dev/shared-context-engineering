@@ -1,0 +1,24 @@
+{
+  "name": "remap-git-notes",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GitHub Action that remaps Git notes to rebased commits after a rebase merge",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "package": "ncc build src/main.ts -o dist --license licenses.txt"
+  },
+  "dependencies": {
+    "@actions/core": "3.0.1",
+    "@actions/exec": "3.0.0",
+    "@actions/github": "9.1.1",
+    "@actions/io": "3.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1",
+    "@vercel/ncc": "0.44.1",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  }
+}
