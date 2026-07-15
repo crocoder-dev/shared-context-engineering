@@ -96,19 +96,52 @@ The default notes ref is dedicated to SCE Agent Trace data and is configurable.
   - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` passed; targeted `cargo test post_commit_agent_trace_flow -- --nocapture` was blocked by SCE bash policy preferring `nix flake check`; first `nix flake check` caught a clippy `too_many_arguments` issue, fixed by grouping git-note persistence inputs; final `nix flake check` passed; `nix run .#pkl-check-generated` passed ("Generated outputs are up to date.").
   - Notes: Post-commit now resolves `policies.agent_trace.git_notes_ref`, writes the validated serialized Agent Trace JSON to git notes after Agent Trace DB insertion succeeds, skips note writes for explicit non-git VCS values, and logs non-blocking note-write failures with `sce.hooks.post_commit.agent_trace_git_note_write_failed`.
 
-- [ ] T05: `Update Agent Trace context for git-notes persistence` (status:todo)
+- [x] T05: `Update Agent Trace context for git-notes persistence` (status:done)
   - Task ID: T05
   - Goal: Document the new git-notes persistence contract in current-state context.
   - Boundaries (in/out of scope): In - update `context/sce/agent-trace-hooks-command-routing.md`, `context/sce/agent-trace-db.md`, `context/sce/setup-githooks-hook-asset-packaging.md` if hook behavior text needs adjustment, and `context/context-map.md` entries. Out - implementation code, broad docs rewrites unrelated to post-commit Agent Trace persistence.
   - Done when: context states the default notes ref, config override, full-JSON note content, and non-blocking failure behavior; stale `No git-notes persistence` text is removed or qualified.
   - Verification notes (commands or checks): `rg "git-notes|git notes|No git-notes" context/`; manual diff review.
+  - Status: done
+  - Completed: 2026-07-15
+  - Files changed: `context/cli/config-precedence-contract.md`, `context/sce/setup-githooks-hook-asset-packaging.md`, `context/plans/agent-trace-git-notes.md`
+  - Evidence: `rg "git-notes|git notes|No git-notes" context/` reviewed remaining current/historical matches; `git diff --check` passed.
+  - Notes: Removed stale config-contract wording that described git-note runtime wiring as future-only and clarified that setup-installed post-commit hooks hand off to Rust, where Agent Trace DB persistence remains required and git-note writes are best-effort under the configured notes ref.
 
-- [ ] T06: `Validate git-notes Agent Trace behavior and cleanup` (status:todo)
+- [x] T06: `Validate git-notes Agent Trace behavior and cleanup` (status:done)
   - Task ID: T06
   - Goal: Run final validation for the complete plan and clean up any planning or test scaffolding.
   - Boundaries (in/out of scope): In - full repo validation, generated-output parity, focused grep for stale docs/config strings, cleanup of temporary test repositories or notes refs created during manual checks. Out - new behavior beyond the completed task stack.
   - Done when: `nix flake check` passes or any failure is documented as pre-existing/unrelated; `nix run .#pkl-check-generated` passes; context sync is verified; no temporary scaffolding remains.
   - Verification notes (commands or checks): `nix flake check`; `nix run .#pkl-check-generated`; `git diff --check`; `rg "refs/notes/sce-agent-trace|agent_trace.*git.*note|No git-notes" cli/ config/ context/`.
+  - Status: done
+  - Completed: 2026-07-15
+  - Files changed: `context/plans/agent-trace-git-notes.md`
+  - Evidence: `git diff --check` passed; `rg "refs/notes/sce-agent-trace|agent_trace.*git.*note|No git-notes" cli/ config/ context/` reviewed current and historical matches; `nix run .#pkl-check-generated` passed ("Generated outputs are up to date."); `nix flake check` passed ("all checks passed").
+  - Notes: No temporary test repositories or notes refs were created during T06, so no cleanup was required.
+
+## Validation Report
+
+### Commands run
+- `git diff --check` -> exit 0 (no whitespace errors).
+- `rg "refs/notes/sce-agent-trace|agent_trace.*git.*note|No git-notes" cli/ config/ context/` -> exit 0; reviewed current Agent Trace git-notes references plus historical `No git-notes` references.
+- `nix run .#pkl-check-generated` -> exit 0 (`Generated outputs are up to date.`).
+- `nix flake check` -> exit 0 (`all checks passed!`).
+- `git status --short --untracked-files=all` -> reviewed staged/unstaged plan/context changes; no T06-created temporary scaffolding found.
+
+### Success-criteria verification
+- [x] Successful post-commit Agent Trace writes a default git note under `refs/notes/sce-agent-trace` after validation/DB persistence -> covered by completed T04 implementation evidence and final `nix flake check`.
+- [x] Note content is the same full Agent Trace JSON persisted to `agent_traces.trace_json` -> covered by completed T04 implementation/context evidence and final grep review.
+- [x] Configurable notes ref documented in generated schema/context -> confirmed by final grep review and `nix run .#pkl-check-generated`.
+- [x] Git-note write failures remain non-blocking and use stable logging -> confirmed by final grep review and `nix flake check`.
+- [x] Existing Agent Trace DB persistence remains the required source of trace rows -> confirmed by context review and final validation.
+- [x] Context describes current git-notes behavior and non-blocking posture -> confirmed by context sync review.
+
+### Failed checks and follow-ups
+- None.
+
+### Residual risks
+- No residual risks identified for the completed plan.
 
 ## Open questions
 

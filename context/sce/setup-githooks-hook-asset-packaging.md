@@ -19,6 +19,7 @@ Current `post-commit` template behavior is:
 - resolve `origin` with `git remote get-url origin`; if `sce` is not on `PATH`, print `sce CLI not found. Install it from https://sce.crocoder.dev/docs/getting-started#install-cli` to stderr and exit successfully so missing local CLI installation does not block the commit
 - if the remote lookup returns a non-empty URL, invoke `sce hooks post-commit --vcs git --remote-url "$remote_url" "$@"`
 - otherwise still invoke `sce hooks post-commit --vcs git "$@"`; Rust-side validation fails this missing-URL path without blocking git commit completion under the hook script policy.
+- the Rust `post-commit` runtime handles Agent Trace persistence after this handoff: DB insertion remains the required persistence path, and successful git contexts also write the validated full Agent Trace JSON best-effort to git notes under the configured Agent Trace notes ref (default `refs/notes/sce-agent-trace`).
 
 ## Setup-service accessor surface
 

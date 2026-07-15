@@ -25,7 +25,7 @@ Resolved runtime values follow this deterministic order:
 
 Repo-configured bash-tool policy values are config-file only in this task slice: they load from `policies.bash` in the selected config files, merge `global -> local` alongside the rest of the config object, and currently have no flag or environment override layer.
 
-Agent Trace hook policy currently includes `policies.agent_trace.git_notes_ref`, which resolves as config-file value over default `refs/notes/sce-agent-trace`. It has no flag or environment override layer in the current implementation slice. The resolved value is exposed through hook runtime config for later post-commit git-note persistence wiring; current post-commit runtime behavior is not yet changed by this config field.
+Agent Trace hook policy currently includes `policies.agent_trace.git_notes_ref`, which resolves as config-file value over default `refs/notes/sce-agent-trace`. It has no flag or environment override layer in the current implementation slice. The resolved value is consumed by the post-commit Agent Trace flow when writing the validated full Agent Trace JSON to git notes after Agent Trace DB persistence succeeds.
 
 Resolved observability values that currently have no CLI flag layer follow the same lower-precedence chain without a flag step:
 
