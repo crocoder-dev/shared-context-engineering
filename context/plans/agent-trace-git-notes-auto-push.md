@@ -71,20 +71,53 @@ The push is best-effort and silent on failure: if the push cannot complete, the 
   - Done when: default git post-commit flow attempts the push after local note write; explicit config disable skips the push; configured notes ref is used; push failure is swallowed from hook success/output and can be retried by a later hook invocation.
   - Verification notes (commands or checks): targeted post-commit hook tests if appropriate; manual local dry-run/review of command construction; `nix flake check`.
 
-- [ ] T04: `Document Agent Trace notes auto-push behavior` (status:todo)
+- [x] T04: `Document Agent Trace notes auto-push behavior` (status:done)
   - Task ID: T04
+  - Completed: 2026-07-15
+  - Files changed: `context/sce/agent-trace-hooks-command-routing.md`, `context/architecture.md`, `context/patterns.md`, `context/plans/agent-trace-git-notes-auto-push.md`
+  - Evidence: `rg "git-notes|git notes|push_notes|push notes|No git-notes" context/` reviewed current/historical matches; `git diff --check` passed; context sync verified root overview/architecture/glossary/patterns/context-map alignment.
   - Goal: Sync current-state context to describe default auto-push, disable config, and silent fail-open retry-on-next-commit behavior.
   - Boundaries (in/out of scope): In - focused updates to `context/sce/agent-trace-hooks-command-routing.md`, `context/cli/config-precedence-contract.md`, `context/sce/setup-githooks-hook-asset-packaging.md` if hook behavior text needs adjustment, `context/context-map.md`, and glossary entry if a new term is introduced. Out - broad narrative docs rewrites, completed-work summaries in durable context, implementation code.
   - Done when: context no longer states “No git-notes push/fetch/backfill behavior” as current behavior without qualification; documents that push is default-enabled, config-disableable, silent fail-open, and retried only by future post-commit invocations.
   - Verification notes (commands or checks): `rg "git-notes|git notes|push_notes|push notes|No git-notes" context/`; manual diff review; `git diff --check`.
 
-- [ ] T05: `Validate notes auto-push and cleanup` (status:todo)
+- [x] T05: `Validate notes auto-push and cleanup` (status:done)
   - Task ID: T05
+  - Completed: 2026-07-15
+  - Files changed: `context/plans/agent-trace-git-notes-auto-push.md`
+  - Evidence: `git diff --check` passed; `nix run .#pkl-check-generated` passed (generated outputs up to date); `rg "refs/notes/sce-agent-trace|push_notes|git notes.*push|No git-notes" cli/ config/ context/` reviewed current and historical matches; `nix flake check --print-build-logs` passed (150 Rust tests plus clippy/fmt/parity and other flake checks clean).
   - Goal: Run final validation for the complete plan and clean up temporary scaffolding.
   - Boundaries (in/out of scope): In - full repo validation, generated-output parity, formatting/lint/test checks, stale-string review, cleanup of temporary repos/remotes/notes refs used during testing, plan status/evidence updates. Out - new behavior beyond completed task stack.
   - Done when: `nix flake check` passes or any failure is documented as pre-existing/unrelated; `nix run .#pkl-check-generated` passes; context sync is verified; no temporary scaffolding remains.
   - Verification notes (commands or checks): `nix flake check`; `nix run .#pkl-check-generated`; `git diff --check`; `rg "refs/notes/sce-agent-trace|push_notes|git notes.*push|No git-notes" cli/ config/ context/`.
 
+## Validation Report
+
+### Commands run
+
+- `git diff --check` -> exit 0 (no whitespace errors).
+- `nix run .#pkl-check-generated` -> exit 0 (`Generated outputs are up to date.`).
+- `rg "refs/notes/sce-agent-trace|push_notes|git notes.*push|No git-notes" cli/ config/ context/` -> exit 0; reviewed current implementation/config/context references plus historical plan/reference matches.
+- `nix flake check --print-build-logs` -> exit 0 (`all checks passed`; 150 Rust tests passed; clippy/fmt/parity and other flake checks clean).
+- `find context/tmp -mindepth 1 -maxdepth 1 -type f -newermt '2026-07-15 00:00:00' -print` -> exit 0 with no output; no task-created temporary scaffolding remained.
+
+### Success-criteria verification
+
+- [x] Successful post-commit Agent Trace flow writes the local git note then attempts a push by default -> covered by hook tests in `nix flake check` (`post_commit_agent_trace_flow_writes_git_note_after_db_insert`, push helper tests, and default enabled config resolver test).
+- [x] Default notes ref remains `refs/notes/sce-agent-trace` unless overridden -> covered by config resolver and hook tests plus stale-string review.
+- [x] Notes auto-push is default-enabled and config-disableable -> covered by `agent_trace_push_notes_enabled_uses_default`, `agent_trace_push_notes_enabled_uses_explicit_config_false`, and `post_commit_agent_trace_flow_skips_push_when_config_disabled` in flake check.
+- [x] Push failures are silent/fail-open and retried only by later hook invocations -> covered by `post_commit_agent_trace_flow_swallows_git_notes_push_failure` and current-state context in `context/sce/agent-trace-hooks-command-routing.md`.
+- [x] Tests cover command construction and configured ref behavior -> covered by `git_notes_push_helper_builds_push_command`, `git_notes_push_helper_honors_configured_ref`, and `post_commit_agent_trace_flow_honors_configured_git_notes_ref`.
+- [x] Current-state context documents the default auto-push behavior, disable switch, and fail-open/no-retry-queue posture -> verified in `context/overview.md`, `context/architecture.md`, `context/patterns.md`, `context/context-map.md`, `context/glossary.md`, `context/cli/config-precedence-contract.md`, and `context/sce/agent-trace-hooks-command-routing.md`.
+
+### Failed checks and follow-ups
+
+None.
+
+### Residual risks
+
+None identified.
+
 ## Open questions
 
-None. Plan is ready for T01 execution.
+None. Plan task stack is complete.

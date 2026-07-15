@@ -118,9 +118,9 @@
 ## Explicit non-goals in the current baseline
 
 - No checkpoint handoff file
-- No git-notes fetch/backfill behavior
+- No git-notes fetch/backfill behavior; the only remote notes operation is the default-enabled, config-disableable, silent fail-open push after a successful local post-commit note write
 - No backfill/import of existing `context/tmp/*-diff-trace.json` artifacts into AgentTraceDb
-- No retry queue replay
+- No retry queue replay; failed git-notes pushes are retried only by later successful post-commit hook invocations
 - No rewrite remap ingestion
 - No `conversation-trace` retry/backfill path or `context/tmp` artifact persistence
 - No runtime Claude diff-trace persistence or AgentTraceDb writes from the capture route itself, and no direct artifact/DB writes from the Claude or OpenCode TypeScript runtimes
