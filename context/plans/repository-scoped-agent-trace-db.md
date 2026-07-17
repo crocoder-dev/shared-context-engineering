@@ -85,12 +85,16 @@ Initial code inspection found the current checkout-scoped behavior in these area
   - Evidence: `nix build .#checks.x86_64-linux.cli-tests` pass (153 tests, 12 new `repository_identity` module tests); `cli-clippy` + `cli-fmt` checks pass.
   - Notes: Pure module, no new dependencies (hand-rolled URL normalization; `sha2` reused). Canonical identity is scheme-neutral `host[:port]/path` so SSH/SCP/HTTPS equivalents converge; supported schemes `ssh`/`git+ssh`/`ssh+git`/`http`/`https`/`git` with default ports 22/80/443/9418 removed; IPv6 bracketed hosts supported. Explicit config identities are trimmed and used verbatim (opaque, not URL-parsed). `RepositoryIdentityError` variants carry no input fragments so credentials cannot leak via errors. Module is `#[allow(dead_code)]` until T03 wires the runtime resolver.
 
-- [ ] T03: `Resolve repository identity from config and Git remotes` (status:todo)
+- [x] T03: `Resolve repository identity from config and Git remotes` (status:done)
   - Task ID: T03
   - Goal: Add runtime resolution that applies precedence: explicit config identity, selected Git remote URL, default selected remote `origin`, otherwise actionable error.
   - Boundaries (in/out of scope): In - Git remote lookup helper, config-driven remote name, missing-identity error text, tests with temp Git repos/remotes. Out - DB creation, schema changes, trace CLI rendering.
   - Done when: Explicit identity overrides remotes; configured remote name is honored; missing explicit identity and missing usable remote errors with `.sce/config.json` guidance; local paths are not used implicitly.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo test repository_identity'` or exact resolver tests.
+  - Completed: 2026-07-17
+  - Files changed: `cli/src/services/repository_identity.rs` → `cli/src/services/repository_identity/mod.rs` (moved, doc header updated), `cli/src/services/repository_identity/resolve.rs` (new)
+  - Evidence: `nix build .#checks.x86_64-linux.cli-tests` pass (163 tests, 10 new `repository_identity::resolve` tests including temp-git-repo remote cases); `cli-clippy` + `cli-fmt` checks pass.
+  - Notes: `resolve::resolve_repository_identity(repo_root, explicit, remote_name)` shells out to `git config --get remote.<name>.url`; `resolve_repository_identity_with_lookup` is the injectable-lookup precedence core. `ResolvedRepositoryIdentity` carries a `RepositoryIdentitySource` (`ExplicitConfig` vs `RemoteUrl { remote_name }`) for T10 diagnostics. `RepositoryIdentityResolutionError` (`InvalidExplicitIdentity`, `InvalidRemoteUrl`, `MissingIdentity`) never echoes URLs, and all Display messages include `.sce/config.json` guidance. Local-path remotes fail as `InvalidRemoteUrl` (no implicit fallback); git-unavailable/non-repo lookups map to `MissingIdentity`. Still `#[allow(dead_code)]` at the module level until T04 consumes it.
 
 - [ ] T04: `Add repository-scoped Agent Trace storage resolver` (status:todo)
   - Task ID: T04

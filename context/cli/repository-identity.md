@@ -1,8 +1,8 @@
 # Repository identity canonicalization and hashing
 
-Pure module at `cli/src/services/repository_identity.rs` that turns an explicit configured identity or a Git remote URL into a scheme-neutral canonical identity, then derives a stable repository ID as `sha256("sce-repository-id-v1\0" + canonical_identity)` lowercase hex (64 chars). Implemented in T02 of the `repository-scoped-agent-trace-db` plan; the repository-scoped Agent Trace DB path `<state_root>/sce/repos/<repository-id>/agent-trace.db` will be selected by this ID in later tasks.
+Module at `cli/src/services/repository_identity/` that turns an explicit configured identity or a Git remote URL into a scheme-neutral canonical identity, then derives a stable repository ID as `sha256("sce-repository-id-v1\0" + canonical_identity)` lowercase hex (64 chars). Implemented in T02/T03 of the `repository-scoped-agent-trace-db` plan; the repository-scoped Agent Trace DB path `<state_root>/sce/repos/<repository-id>/agent-trace.db` will be selected by this ID in later tasks.
 
-The module performs no I/O: it never opens databases, reads Git config, or touches the filesystem. Runtime resolution (config precedence, Git remote lookup) is a separate later seam (T03).
+The root module (`mod.rs`) performs no I/O: it never opens databases, reads Git config, or touches the filesystem. Runtime precedence resolution and Git remote lookup live in the `resolve` submodule.
 
 ## Public API
 
@@ -26,13 +26,30 @@ Canonical form is scheme-neutral `host[:port]/path` so equivalent SSH/SCP/HTTPS 
 
 Example: `git@GitHub.com:Acme/Widgets.git`, `ssh://git@github.com:22/Acme/Widgets.git`, and `https://user:pass@github.com/Acme/Widgets.git?x#y` all canonicalize to `github.com/Acme/Widgets` and hash to the same repository ID.
 
+## Runtime resolution (`resolve` submodule)
+
+`repository_identity/resolve.rs` applies the repository identity precedence at runtime:
+
+1. Explicit `agent_trace.repository_id` config value (trim-only canonicalization; invalid explicit values error, they do not fall back to remotes).
+2. URL of the configured Git remote (`agent_trace.repository_remote`, default `origin`), read via `git config --get remote.<name>.url`.
+3. Otherwise an actionable error pointing at `.sce/config.json`.
+
+- `resolve_repository_identity(repository_root, explicit_identity, remote_name)` — process-spawning entrypoint.
+- `resolve_repository_identity_with_lookup(explicit, remote_name, lookup)` — precedence core with injectable remote lookup for tests/callers.
+- `lookup_remote_url(repository_root, remote_name) -> Option<String>` — returns `None` when git is unavailable, the directory is not a repository, or the remote has no URL.
+- `ResolvedRepositoryIdentity { identity, source }` with `RepositoryIdentitySource::{ExplicitConfig, RemoteUrl { remote_name }}` — source is retained for later diagnostics rendering (T10).
+- `RepositoryIdentityResolutionError::{InvalidExplicitIdentity, InvalidRemoteUrl, MissingIdentity}` — every `Display` message includes `.sce/config.json` guidance naming the `agent_trace.*` keys; variants carry only the configured remote name, never URLs or identity values.
+
+Local paths are never used implicitly: a local-path remote URL fails canonicalization and surfaces as `InvalidRemoteUrl` rather than falling back.
+
 ## Credential-safety contract
 
 - The returned canonical identity and repository ID never contain userinfo/credentials.
 - `RepositoryIdentityError` variants (`EmptyExplicitIdentity`, `EmptyRemoteUrl`, `UnsupportedRemoteUrl`, `MissingHost`, `MissingPath`, `InvalidPort`) are fieldless and their `Display` messages never echo the raw input, so credential-bearing URLs cannot leak through diagnostics.
+- `RepositoryIdentityResolutionError` follows the same rule: it never echoes remote URLs or explicit identity values; only operator-chosen remote names appear in messages.
 
 ## Status
 
-Registered in `cli/src/services/mod.rs` behind `#[allow(dead_code)]` until the T03 runtime resolver consumes it (same pattern as `bash_policy`). Covered by in-module unit tests (`cargo test repository_identity` filter; repo-preferred path is `nix flake check` / `nix build .#checks.<system>.cli-tests`).
+Registered in `cli/src/services/mod.rs` behind `#[allow(dead_code)]` until the T04 storage resolver consumes it (same pattern as `bash_policy`). Covered by in-module unit tests, including temp-Git-repo remote lookup tests (`cargo test repository_identity` filter; repo-preferred path is `nix flake check` / `nix build .#checks.<system>.cli-tests`).
 
 See also: [config-precedence-contract.md](config-precedence-contract.md) (owns the `agent_trace.repository_id` / `agent_trace.repository_remote` config keys), [checkout-identity.md](checkout-identity.md), [../sce/agent-trace-db.md](../sce/agent-trace-db.md).
