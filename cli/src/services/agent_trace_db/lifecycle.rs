@@ -5,7 +5,7 @@ use crate::app::HasRepoRoot;
 use crate::services::agent_trace_storage::{resolve_agent_trace_storage, AgentTraceStorageContext};
 use crate::services::config;
 use crate::services::db::{bootstrap_db_parent, collect_db_path_health, DbSpec};
-use crate::services::default_paths::{agent_trace_db_path, agent_trace_db_path_for_repository};
+use crate::services::default_paths::agent_trace_db_path_for_repository;
 use crate::services::lifecycle::{
     FixOutcome, FixResultRecord, HealthCategory, HealthFixability, HealthProblem,
     HealthProblemKind, HealthSeverity, LifecycleProviderId, ServiceLifecycle, SetupOutcome,
@@ -215,9 +215,11 @@ fn resolve_lifecycle_agent_trace_db_path(repo_root: Option<&Path>) -> Result<Pat
         return agent_trace_db_path_for_repository(&identity.identity.repository_id);
     }
 
-    // Outside repository-targeted lifecycle contexts there is no repository
-    // identity to select an active DB. Keep the historical global path as the
-    // operator-state parent sentinel only; repository setup/hooks never use it
-    // as an active write target.
-    agent_trace_db_path()
+    // Outside a Git repository there is no repository identity to select an
+    // active Agent Trace DB, and there is no global/checkout fallback path.
+    // Report an actionable diagnostic instead of probing a sentinel path.
+    anyhow::bail!(
+        "Agent Trace diagnostics require a Git repository; run 'sce doctor' inside a repository \
+         or configure agent_trace.repository_id in .sce/config.json"
+    )
 }

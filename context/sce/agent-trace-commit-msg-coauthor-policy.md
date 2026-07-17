@@ -39,7 +39,7 @@
   - `staged_diff_has_ai_overlap_with` is the injectable variant that accepts staged-patch/time/recent-trace dependencies and returns `StagedDiffAiOverlapResult`; available for future test coverage.
   - `staged_diff_has_ai_overlap` is the live wrapper that opens Agent Trace DB through the no-migration hook path, delegates to `_with`, and logs `sce.hooks.commit_msg.ai_overlap_error` on `Error` results.
 - Live helper path:
-  - opens Agent Trace DB through `AgentTraceDb::open_for_hooks_without_migrations()` and `ensure_schema_ready_for_hooks()`;
+  - opens Agent Trace DB through `RepositoryAgentTraceDb::open_for_hooks_without_migrations_at()` and `ensure_schema_ready_for_hooks()`;
   - captures the staged patch with `git diff --cached --patch --no-ext-diff`;
   - queries recent diff traces using the same bounded 7-day window as post-commit;
   - combines each recent patch and checks overlap through `agent_trace::patches_have_overlap`, which uses the existing patch intersection primitive;

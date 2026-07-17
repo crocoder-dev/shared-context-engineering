@@ -1,1 +1,0 @@
-ALTER TABLE diff_traces ADD COLUMN payload_type TEXT NOT NULL DEFAULT 'patch';
