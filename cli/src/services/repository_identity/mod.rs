@@ -4,9 +4,13 @@
 //! scheme-neutral canonical identity, then derives a stable repository ID as
 //! `sha256("sce-repository-id-v1\0" + canonical_identity)` hex.
 //!
-//! This module performs no I/O: it never opens databases, reads Git config,
-//! or touches the filesystem. Errors intentionally never echo the raw input
-//! so credential-bearing remote URLs cannot leak through diagnostics.
+//! This root module performs no I/O: it never opens databases, reads Git
+//! config, or touches the filesystem. Runtime precedence resolution and Git
+//! remote lookup live in [`resolve`]. Errors intentionally never echo the
+//! raw input so credential-bearing remote URLs cannot leak through
+//! diagnostics.
+
+pub mod resolve;
 
 use sha2::{Digest, Sha256};
 
