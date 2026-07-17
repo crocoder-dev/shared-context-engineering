@@ -74,12 +74,16 @@ Initial code inspection found the current checkout-scoped behavior in these area
   - Evidence: `nix build .#checks.x86_64-linux.cli-tests` pass; `cli-clippy` + `cli-fmt` checks pass; `nix run .#pkl-check-generated` reports "Generated outputs are up to date."
   - Notes: Top-level `agent_trace` object added to the config schema; resolver exposes `agent_trace_repository_id` (`ResolvedOptionalValue`) and `agent_trace_repository_remote` (`ResolvedValue`, default `origin` via `DEFAULT_AGENT_TRACE_REPOSITORY_REMOTE`); `sce config show` renders both keys in text and JSON. No env-var layer was added (config-file + default only, per plan). T03 will add the runtime accessor/consumer.
 
-- [ ] T02: `Implement repository identity canonicalization and hashing` (status:todo)
+- [x] T02: `Implement repository identity canonicalization and hashing` (status:done)
   - Task ID: T02
   - Goal: Add a pure repository identity module that canonicalizes explicit identities and Git remote URLs, then derives `sha256("sce-repository-id-v1\0" + canonical_identity)` hex IDs.
   - Boundaries (in/out of scope): In - canonicalization for SCP-style SSH, `ssh://`, HTTPS, hostname lowercasing, credential stripping, default port removal, query/fragment/trailing slash/trailing `.git` cleanup, safe diagnostics, tests. Out - opening databases or reading Git config from real repos.
   - Done when: Equivalent GitHub SSH/SCP/HTTPS URLs hash to the same ID; distinct identities hash differently; credential-bearing inputs do not leak credentials into returned canonical identity, ID, or errors.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo test repository_identity'` or the matching module test name.
+  - Completed: 2026-07-17
+  - Files changed: `cli/src/services/repository_identity.rs` (new), `cli/src/services/mod.rs`
+  - Evidence: `nix build .#checks.x86_64-linux.cli-tests` pass (153 tests, 12 new `repository_identity` module tests); `cli-clippy` + `cli-fmt` checks pass.
+  - Notes: Pure module, no new dependencies (hand-rolled URL normalization; `sha2` reused). Canonical identity is scheme-neutral `host[:port]/path` so SSH/SCP/HTTPS equivalents converge; supported schemes `ssh`/`git+ssh`/`ssh+git`/`http`/`https`/`git` with default ports 22/80/443/9418 removed; IPv6 bracketed hosts supported. Explicit config identities are trimmed and used verbatim (opaque, not URL-parsed). `RepositoryIdentityError` variants carry no input fragments so credentials cannot leak via errors. Module is `#[allow(dead_code)]` until T03 wires the runtime resolver.
 
 - [ ] T03: `Resolve repository identity from config and Git remotes` (status:todo)
   - Task ID: T03
