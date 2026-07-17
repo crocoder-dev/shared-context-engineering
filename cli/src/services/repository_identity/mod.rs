@@ -26,6 +26,15 @@ pub struct RepositoryIdentity {
     pub repository_id: String,
 }
 
+impl RepositoryIdentity {
+    /// Human-readable on-disk directory segment (`<slug>-<short>`) for this
+    /// identity. Convenience wrapper over [`repository_dir_segment`]; the
+    /// authoritative identity is still [`RepositoryIdentity::repository_id`].
+    pub fn dir_segment(&self) -> String {
+        repository_dir_segment(&self.canonical_identity)
+    }
+}
+
 /// Canonicalization failure. Variants carry no input fragments so
 /// credential-bearing URLs never leak into error output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +99,55 @@ pub fn derive_repository_id(canonical_identity: &str) -> String {
     hasher.update(REPOSITORY_ID_HASH_DOMAIN);
     hasher.update(canonical_identity.as_bytes());
     hex_encode(&hasher.finalize())
+}
+
+/// Length in hex chars of the disambiguating short hash in a directory segment.
+const DIR_SEGMENT_SHORT_HASH_LEN: usize = 4;
+
+/// Derives the human-readable on-disk directory segment for a canonical
+/// identity as `<slug>-<short>`, where `slug` is the lowercased canonical
+/// identity with every run of non-alphanumeric characters collapsed to a
+/// single `-` and leading/trailing `-` trimmed, and `short` is the first four
+/// hex chars of `SHA256(canonical_identity)` computed with **no** domain
+/// prefix. The short hash is deliberately distinct from [`derive_repository_id`],
+/// which keeps its `sce-repository-id-v1\0` domain separation. This is a pure
+/// display/layout helper: the authoritative identity remains the repository ID.
+pub fn repository_dir_segment(canonical_identity: &str) -> String {
+    let slug = slugify(canonical_identity);
+    let short = derive_short_hash(canonical_identity);
+    if slug.is_empty() {
+        short
+    } else {
+        format!("{slug}-{short}")
+    }
+}
+
+/// Lowercases and collapses every run of non-alphanumeric characters to a
+/// single `-`, trimming leading and trailing `-`.
+fn slugify(input: &str) -> String {
+    let mut slug = String::with_capacity(input.len());
+    let mut pending_dash = false;
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if pending_dash && !slug.is_empty() {
+                slug.push('-');
+            }
+            pending_dash = false;
+            slug.push(ch.to_ascii_lowercase());
+        } else {
+            pending_dash = true;
+        }
+    }
+    slug
+}
+
+/// First [`DIR_SEGMENT_SHORT_HASH_LEN`] hex chars of the un-prefixed
+/// `SHA256(canonical_identity)`.
+fn derive_short_hash(canonical_identity: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(canonical_identity.as_bytes());
+    let full = hex_encode(&hasher.finalize());
+    full[..DIR_SEGMENT_SHORT_HASH_LEN].to_string()
 }
 
 /// Canonicalizes a Git remote URL to the scheme-neutral form
@@ -423,6 +481,26 @@ mod tests {
             repository_identity_from_explicit("   "),
             Err(RepositoryIdentityError::EmptyExplicitIdentity)
         );
+    }
+
+    fn un_prefixed_sha256_prefix(input: &str, len: usize) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(input.as_bytes());
+        hex_encode(&hasher.finalize())[..len].to_string()
+    }
+
+    #[test]
+    fn dir_segment_matches_slug_and_un_prefixed_short_hash() {
+        // Slug: lowercased, non-alphanumeric runs (`.`,`/`) collapsed to `-`,
+        // trimmed. Short: first 4 hex of the un-prefixed SHA-256, deliberately
+        // distinct from the domain-prefixed repository ID.
+        let canonical = "github.com/crocoder-dev/shared-context-engineering";
+        let short = un_prefixed_sha256_prefix(canonical, 4);
+        assert_eq!(
+            repository_dir_segment(canonical),
+            format!("github-com-crocoder-dev-shared-context-engineering-{short}")
+        );
+        assert_ne!(short, derive_repository_id(canonical)[..4]);
     }
 
     #[test]
