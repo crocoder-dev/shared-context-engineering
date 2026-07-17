@@ -21,6 +21,7 @@ use super::types::{
 };
 
 const DEFAULT_TIMEOUT_MS: u64 = 30000;
+pub(crate) const DEFAULT_AGENT_TRACE_REPOSITORY_REMOTE: &str = "origin";
 pub(crate) const PRECEDENCE_DESCRIPTION: &str = "flags > env > config file > defaults";
 const WORKOS_CLIENT_ID_ENV: &str = "WORKOS_CLIENT_ID";
 const WORKOS_CLIENT_ID_BAKED_DEFAULT: &str = "client_sce_default";
@@ -63,6 +64,8 @@ pub(super) struct RuntimeConfig {
     pub(super) timeout_ms: ResolvedValue<u64>,
     pub(super) attribution_hooks_enabled: ResolvedValue<bool>,
     pub(super) workos_client_id: ResolvedOptionalValue<String>,
+    pub(super) agent_trace_repository_id: ResolvedOptionalValue<String>,
+    pub(super) agent_trace_repository_remote: ResolvedValue<String>,
     pub(super) bash_policies: ResolvedOptionalValue<BashPolicyConfig>,
     pub(super) database_retry: ResolvedOptionalValue<DatabaseRetryConfig>,
     pub(super) validation_errors: Vec<String>,
@@ -273,6 +276,8 @@ where
         timeout_ms: None,
         attribution_hooks_enabled: None,
         workos_client_id: None,
+        agent_trace_repository_id: None,
+        agent_trace_repository_remote: None,
         bash_policy_presets: None,
         bash_policy_custom: None,
         database_retry: None,
@@ -309,6 +314,12 @@ where
         }
         if let Some(workos_client_id) = layer.workos_client_id {
             file_config.workos_client_id = Some(workos_client_id);
+        }
+        if let Some(agent_trace_repository_id) = layer.agent_trace_repository_id {
+            file_config.agent_trace_repository_id = Some(agent_trace_repository_id);
+        }
+        if let Some(agent_trace_repository_remote) = layer.agent_trace_repository_remote {
+            file_config.agent_trace_repository_remote = Some(agent_trace_repository_remote);
         }
         if let Some(bash_policy_presets) = layer.bash_policy_presets {
             file_config.bash_policy_presets = Some(bash_policy_presets);
@@ -455,6 +466,28 @@ where
         &env_lookup,
     );
 
+    let resolved_agent_trace_repository_id = ResolvedOptionalValue {
+        value: file_config
+            .agent_trace_repository_id
+            .as_ref()
+            .map(|value| value.value.clone()),
+        source: file_config
+            .agent_trace_repository_id
+            .as_ref()
+            .map(|value| ValueSource::ConfigFile(value.source)),
+    };
+
+    let mut resolved_agent_trace_repository_remote = ResolvedValue {
+        value: DEFAULT_AGENT_TRACE_REPOSITORY_REMOTE.to_string(),
+        source: ValueSource::Default,
+    };
+    if let Some(value) = file_config.agent_trace_repository_remote {
+        resolved_agent_trace_repository_remote = ResolvedValue {
+            value: value.value,
+            source: ValueSource::ConfigFile(value.source),
+        };
+    }
+
     let resolved_bash_policies = resolve_bash_policy_config(
         file_config.bash_policy_presets.as_ref(),
         file_config.bash_policy_custom.as_ref(),
@@ -473,6 +506,8 @@ where
         timeout_ms: resolved_timeout_ms,
         attribution_hooks_enabled: resolved_attribution_hooks_enabled,
         workos_client_id: resolved_workos_client_id,
+        agent_trace_repository_id: resolved_agent_trace_repository_id,
+        agent_trace_repository_remote: resolved_agent_trace_repository_remote,
         bash_policies: resolved_bash_policies,
         database_retry: resolved_database_retry,
         validation_errors,
@@ -683,6 +718,86 @@ mod tests {
         Ok(ResolvedHookRuntimeConfig {
             attribution_hooks_enabled: runtime.attribution_hooks_enabled.value,
         })
+    }
+
+    fn resolve_runtime_with_config(config: Option<&'static str>) -> Result<RuntimeConfig> {
+        let request = if config.is_some() {
+            explicit_config_request()
+        } else {
+            empty_request()
+        };
+        let path_exists_fn = if config.is_some() {
+            path_exists
+        } else {
+            missing_path
+        };
+
+        resolve_runtime_config_with(
+            &request,
+            Path::new("/tmp/repo"),
+            |_| None,
+            |_| Ok(config.unwrap_or("{}").to_string()),
+            path_exists_fn,
+            || Ok(PathBuf::from("/tmp/missing-global-sce-config.json")),
+        )
+    }
+
+    #[test]
+    fn agent_trace_repository_id_is_unset_by_default() {
+        let runtime = resolve_runtime_with_config(None).unwrap();
+
+        assert_eq!(runtime.agent_trace_repository_id.value, None);
+        assert_eq!(runtime.agent_trace_repository_id.source, None);
+    }
+
+    #[test]
+    fn agent_trace_repository_remote_defaults_to_origin() {
+        let runtime = resolve_runtime_with_config(None).unwrap();
+
+        assert_eq!(
+            runtime.agent_trace_repository_remote.value,
+            DEFAULT_AGENT_TRACE_REPOSITORY_REMOTE
+        );
+        assert_eq!(
+            runtime.agent_trace_repository_remote.source,
+            ValueSource::Default
+        );
+    }
+
+    #[test]
+    fn agent_trace_explicit_repository_id_resolves_from_config_file() {
+        let runtime = resolve_runtime_with_config(Some(
+            r#"{"agent_trace":{"repository_id":"team-monorepo"}}"#,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            runtime.agent_trace_repository_id.value.as_deref(),
+            Some("team-monorepo")
+        );
+        assert_eq!(
+            runtime.agent_trace_repository_id.source,
+            Some(ValueSource::ConfigFile(ConfigPathSource::Flag))
+        );
+        assert_eq!(
+            runtime.agent_trace_repository_remote.value,
+            DEFAULT_AGENT_TRACE_REPOSITORY_REMOTE
+        );
+    }
+
+    #[test]
+    fn agent_trace_repository_remote_override_resolves_from_config_file() {
+        let runtime = resolve_runtime_with_config(Some(
+            r#"{"agent_trace":{"repository_remote":"upstream"}}"#,
+        ))
+        .unwrap();
+
+        assert_eq!(runtime.agent_trace_repository_remote.value, "upstream");
+        assert_eq!(
+            runtime.agent_trace_repository_remote.source,
+            ValueSource::ConfigFile(ConfigPathSource::Flag)
+        );
+        assert_eq!(runtime.agent_trace_repository_id.value, None);
     }
 
     #[test]

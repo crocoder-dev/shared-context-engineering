@@ -43,6 +43,24 @@
     "workos_client_id": {
       "type": "string"
     },
+    "agent_trace": {
+      "description": "Agent Trace repository identity configuration. Selects the repository-scoped Agent Trace database.",
+      "type": "object",
+      "properties": {
+        "repository_id": {
+          "description": "Explicit repository identity. When set, overrides Git remote based repository identity resolution.",
+          "type": "string",
+          "minLength": 1
+        },
+        "repository_remote": {
+          "description": "Git remote name used to derive repository identity. Defaults to origin when omitted.",
+          "default": "origin",
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
     "policies": {
       "type": "object",
       "properties": {

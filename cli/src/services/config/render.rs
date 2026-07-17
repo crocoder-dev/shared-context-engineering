@@ -34,6 +34,15 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
                     WORKOS_CLIENT_ID_KEY,
                     &runtime.workos_client_id,
                 ),
+                format_optional_resolved_value_text(
+                    "agent_trace.repository_id",
+                    &runtime.agent_trace_repository_id,
+                ),
+                format_resolved_value_text(
+                    "agent_trace.repository_remote",
+                    &runtime.agent_trace_repository_remote.value,
+                    runtime.agent_trace_repository_remote.source,
+                ),
                 format_bash_policies_text(&runtime.bash_policies),
                 format_database_retry_text(&runtime.database_retry),
                 format_validation_warnings_text(&warnings),
@@ -68,6 +77,13 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
                             "config_source": runtime.timeout_ms.source.config_source().map(ConfigPathSource::as_str),
                         },
                         "workos_client_id": format_optional_auth_resolved_value_json(WORKOS_CLIENT_ID_KEY, &runtime.workos_client_id),
+                        "agent_trace": {
+                            "repository_id": format_optional_resolved_value_json(&runtime.agent_trace_repository_id),
+                            "repository_remote": format_resolved_value_json(
+                                runtime.agent_trace_repository_remote.value.as_str(),
+                                runtime.agent_trace_repository_remote.source,
+                            ),
+                        },
                         "policies": {
                             "bash": format_bash_policies_json(&runtime.bash_policies),
                             "database_retry": format_database_retry_json(&runtime.database_retry),

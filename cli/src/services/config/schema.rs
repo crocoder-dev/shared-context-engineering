@@ -36,12 +36,13 @@ pub(crate) const TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "log_file_mode",
     "timeout_ms",
     super::resolver::WORKOS_CLIENT_ID_KEY.config_key,
+    "agent_trace",
     "policies",
     "integrations",
 ];
 
 pub(crate) const TOP_LEVEL_CONFIG_KEYS_DESCRIPTION: &str =
-    "$schema, log_level, log_format, log_file, log_file_mode, timeout_ms, workos_client_id, policies, integrations";
+    "$schema, log_level, log_format, log_file, log_file_mode, timeout_ms, workos_client_id, agent_trace, policies, integrations";
 
 static CONFIG_SCHEMA_VALIDATOR: OnceLock<Validator> = OnceLock::new();
 
@@ -71,8 +72,15 @@ pub(crate) struct ParsedFileConfigDocument {
     pub(crate) log_file_mode: Option<String>,
     pub(crate) timeout_ms: Option<u64>,
     pub(crate) workos_client_id: Option<String>,
+    pub(crate) agent_trace: Option<ParsedAgentTraceConfigDocument>,
     pub(crate) policies: Option<ParsedPoliciesConfigDocument>,
     pub(crate) integrations: Option<ParsedIntegrationsConfigDocument>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct ParsedAgentTraceConfigDocument {
+    pub(crate) repository_id: Option<String>,
+    pub(crate) repository_remote: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -148,6 +156,8 @@ pub(crate) struct FileConfig {
     pub(crate) timeout_ms: Option<FileConfigValue<u64>>,
     pub(crate) attribution_hooks_enabled: Option<FileConfigValue<bool>>,
     pub(crate) workos_client_id: Option<FileConfigValue<String>>,
+    pub(crate) agent_trace_repository_id: Option<FileConfigValue<String>>,
+    pub(crate) agent_trace_repository_remote: Option<FileConfigValue<String>>,
     pub(crate) bash_policy_presets: Option<FileConfigValue<Vec<String>>>,
     pub(crate) bash_policy_custom: Option<FileConfigValue<Vec<CustomBashPolicyEntry>>>,
     pub(crate) database_retry: Option<FileConfigValue<DatabaseRetryConfig>>,
@@ -294,6 +304,8 @@ pub(crate) fn parse_file_config(
     let workos_client_id = typed
         .workos_client_id
         .map(|value| FileConfigValue { value, source });
+    let (agent_trace_repository_id, agent_trace_repository_remote) =
+        map_agent_trace_config(typed.agent_trace.as_ref(), object, path, source)?;
     let (attribution_hooks_enabled, bash_policy_presets, bash_policy_custom, database_retry) =
         map_policies_config(typed.policies.as_ref(), object, path, source)?;
     let integrations = map_integrations_config(typed.integrations.as_ref(), object, path, source)?;
@@ -306,6 +318,8 @@ pub(crate) fn parse_file_config(
         timeout_ms,
         attribution_hooks_enabled,
         workos_client_id,
+        agent_trace_repository_id,
+        agent_trace_repository_remote,
         bash_policy_presets,
         bash_policy_custom,
         database_retry,
@@ -583,6 +597,46 @@ pub(crate) fn map_database_retry_config(
     }))
 }
 
+pub(crate) type ParsedAgentTraceConfig = (
+    Option<FileConfigValue<String>>,
+    Option<FileConfigValue<String>>,
+);
+
+fn map_agent_trace_config(
+    typed: Option<&ParsedAgentTraceConfigDocument>,
+    object: &serde_json::Map<String, Value>,
+    path: &Path,
+    source: ConfigPathSource,
+) -> Result<ParsedAgentTraceConfig> {
+    let Some(agent_trace_value) = object.get("agent_trace") else {
+        return Ok((None, None));
+    };
+
+    let agent_trace_object = agent_trace_value.as_object().with_context(|| {
+        format!(
+            "Config key 'agent_trace' in '{}' must be an object.",
+            path.display()
+        )
+    })?;
+
+    validate_object_keys(
+        agent_trace_object,
+        path,
+        Some("agent_trace"),
+        &["repository_id", "repository_remote"],
+        "repository_id, repository_remote",
+    )?;
+
+    let repository_id = typed
+        .and_then(|config| config.repository_id.clone())
+        .map(|value| FileConfigValue { value, source });
+    let repository_remote = typed
+        .and_then(|config| config.repository_remote.clone())
+        .map(|value| FileConfigValue { value, source });
+
+    Ok((repository_id, repository_remote))
+}
+
 fn map_integrations_config(
     typed: Option<&ParsedIntegrationsConfigDocument>,
     object: &serde_json::Map<String, Value>,
@@ -621,4 +675,86 @@ fn map_integrations_config(
         value: IntegrationsConfig { target: targets },
         source,
     }))
+}
+
+#[cfg(test)]
+mod agent_trace_config_tests {
+    use std::path::Path;
+
+    use super::{parse_file_config, ConfigPathSource};
+
+    fn parse(raw: &str) -> anyhow::Result<super::FileConfig> {
+        parse_file_config(
+            raw,
+            Path::new("/tmp/sce-config.json"),
+            ConfigPathSource::Flag,
+        )
+    }
+
+    #[test]
+    fn parses_agent_trace_repository_identity_keys() {
+        let config = parse(
+            r#"{"agent_trace":{"repository_id":"team-monorepo","repository_remote":"upstream"}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config
+                .agent_trace_repository_id
+                .as_ref()
+                .map(|value| value.value.as_str()),
+            Some("team-monorepo")
+        );
+        assert_eq!(
+            config
+                .agent_trace_repository_remote
+                .as_ref()
+                .map(|value| value.value.as_str()),
+            Some("upstream")
+        );
+    }
+
+    #[test]
+    fn omitted_agent_trace_block_parses_as_unset() {
+        let config = parse("{}").unwrap();
+
+        assert_eq!(config.agent_trace_repository_id, None);
+        assert_eq!(config.agent_trace_repository_remote, None);
+    }
+
+    #[test]
+    fn rejects_unknown_agent_trace_key() {
+        let error = parse(r#"{"agent_trace":{"repository_url":"x"}}"#)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("failed schema validation"), "{error}");
+    }
+
+    #[test]
+    fn rejects_non_object_agent_trace_value() {
+        let error = parse(r#"{"agent_trace":"origin"}"#)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("failed schema validation"), "{error}");
+    }
+
+    #[test]
+    fn rejects_empty_agent_trace_string_values() {
+        let error = parse(r#"{"agent_trace":{"repository_id":""}}"#)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("failed schema validation"), "{error}");
+    }
+
+    #[test]
+    fn rejects_non_string_repository_remote() {
+        let error = parse(r#"{"agent_trace":{"repository_remote":7}}"#)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("failed schema validation"), "{error}");
+    }
 }

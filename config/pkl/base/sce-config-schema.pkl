@@ -85,6 +85,24 @@ local sceConfigSchema = new JsonSchema {
     ["workos_client_id"] = new JsonSchema {
       type = "string"
     }
+    ["agent_trace"] = new JsonSchema {
+      type = "object"
+      description = "Agent Trace repository identity configuration. Selects the repository-scoped Agent Trace database."
+      additionalProperties = false
+      properties {
+        ["repository_id"] = new JsonSchema {
+          type = "string"
+          description = "Explicit repository identity. When set, overrides Git remote based repository identity resolution."
+          minLength = 1
+        }
+        ["repository_remote"] = new JsonSchema {
+          type = "string"
+          description = "Git remote name used to derive repository identity. Defaults to origin when omitted."
+          minLength = 1
+          default = "origin"
+        }
+      }
+    }
     ["policies"] = new JsonSchema {
       type = "object"
       additionalProperties = false
