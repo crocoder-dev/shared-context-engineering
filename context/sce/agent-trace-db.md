@@ -47,7 +47,7 @@ This adapter has no canonical `DbSpec::db_path()`; callers must resolve `<state_
 
 `RepositoryAgentTraceDb` exposes repository-level write helpers for the current row families by delegating to the same typed insert payloads and parameterized SQL used by the checkout-scoped adapter: `insert_diff_trace`, `insert_post_commit_patch_intersection`, `insert_agent_trace`, `insert_message`, `insert_messages`, `insert_part`, and `insert_parts`. It also exposes `recent_diff_trace_patches(cutoff_time_ms, end_time_ms)` by delegating to the shared recent diff-trace query/parser helper, so repository-scoped attribution reads use the same chronological inclusive window semantics without a checkout filter. These methods preserve the existing row shapes and do not add checkout provenance columns or checkout-scoped write/query APIs.
 
-The repository-scoped adapter is consumed by `agent_trace_storage`, active hook runtime opening, and Agent Trace setup/doctor lifecycle. Hook writers/readers now resolve the current repository storage context before using `RepositoryAgentTraceDb`, while legacy checkout-scoped adapter methods remain only for historical/legacy paths until explicit legacy trace inspection is wired.
+The repository-scoped adapter is consumed by `agent_trace_storage`, active hook runtime opening, Agent Trace setup/doctor lifecycle, and default `sce trace` status/shell flows. Hook writers/readers now resolve the current repository storage context before using `RepositoryAgentTraceDb`, while legacy checkout-scoped adapter methods remain only for historical paths and explicit `sce trace --legacy` inspection.
 
 ## Non-goals
 
@@ -179,7 +179,7 @@ Both triggers compare `OLD.*` vs `NEW.*` for all mutable columns (excluding `upd
 - `fix()` bootstraps the resolved repository DB parent directory for auto-fixable parent-readiness problems, with the same global parent fallback outside repository context.
 - `setup()` resolves repository storage through `agent_trace_storage`, creates/reuses the current checkout identity for diagnostics, opens/creates `<state_root>/sce/repos/<repository-id>/agent-trace.db` with the repository schema, validates `repository_metadata.repository_id`, and emits setup messaging with the repository ID, checkout ID, and initialized DB path. Hook runtime lazy initialization remains available for repositories where setup has not run or schema metadata is incomplete.
 - `sce doctor` surfaces checkout identity facts where available and lifecycle-owned repository Agent Trace DB health in the `Configuration` section, with `[PASS]`/`[FAIL]`/`[MISS]` status tokens. Outside repository context the lifecycle falls back to the legacy/global Agent Trace DB parent sentinel. JSON output includes `checkout_identity` when available plus the resolved `agent_trace_db` field.
-- `sce trace db list` discovers checkouts by scanning `<state_root>/sce/agent-trace-*.db` files on disk, reporting them in text or JSON sorted by mtime descending. See [context/cli/trace-command.md](../cli/trace-command.md).
+- `sce trace db list` discovers repository DBs under `<state_root>/sce/repos/<repository-id>/agent-trace.db` by default and scans legacy checkout DBs under `<state_root>/sce/agent-trace-*.db` only with `--legacy`, reporting text or JSON sorted by mtime descending. See [context/cli/trace-command.md](../cli/trace-command.md).
 
 ## Runtime writers
 

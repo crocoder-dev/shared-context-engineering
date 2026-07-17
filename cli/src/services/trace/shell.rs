@@ -17,7 +17,8 @@ const TABLES_SQL: &str = "SELECT name FROM sqlite_schema WHERE type = 'table' OR
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShellTarget {
     pub alias: String,
-    pub checkout_id: String,
+    pub scope: String,
+    pub identifier: String,
     pub path: PathBuf,
 }
 
@@ -52,7 +53,8 @@ pub fn run_agent_trace_db_shell_with_db(
 ) -> Result<ShellExit> {
     writeln!(output, "Agent Trace DB shell")?;
     writeln!(output, "alias: {}", target.alias)?;
-    writeln!(output, "checkout_id: {}", target.checkout_id)?;
+    writeln!(output, "scope: {}", target.scope)?;
+    writeln!(output, "identifier: {}", target.identifier)?;
     writeln!(output, "path: {}", target.path.display())?;
     writeln!(output, "Type .help for commands; .exit or .quit to exit.")?;
 
@@ -223,7 +225,8 @@ mod tests {
     fn shell_target(path: &Path) -> ShellTarget {
         ShellTarget {
             alias: String::from("agent_trace_0"),
-            checkout_id: String::from("018f2d7d-0000-7000-8000-000000000000"),
+            scope: String::from("legacy checkout"),
+            identifier: String::from("018f2d7d-0000-7000-8000-000000000000"),
             path: path.to_path_buf(),
         }
     }

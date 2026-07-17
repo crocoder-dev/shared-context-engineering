@@ -10,7 +10,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::services::default_paths::resolve_state_data_root;
-use crate::services::trace::discovery::{discover_agent_trace_dbs_in, Readiness};
+use crate::services::trace::discovery::{
+    discover_legacy_agent_trace_dbs_in, discover_repository_agent_trace_dbs_in,
+    DiscoveredAgentTraceDbKind, Readiness,
+};
 use crate::services::trace::stats::{collect_agent_trace_db_stats, AgentTraceDbStats};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -32,7 +35,7 @@ pub enum DatabaseRowStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DatabaseRow {
     pub alias: String,
-    pub checkout_id: String,
+    pub kind: DiscoveredAgentTraceDbKind,
     pub path: PathBuf,
     pub status: DatabaseRowStatus,
 }
@@ -45,15 +48,19 @@ pub struct StatusAllReport {
 }
 
 /// Aggregate `sce trace status --all` using the default state-data root.
-pub fn aggregate_current_status_all() -> Result<StatusAllReport> {
+pub fn aggregate_current_status_all(legacy: bool) -> Result<StatusAllReport> {
     let state_root = resolve_state_data_root().context("failed to resolve state data root")?;
     let sce_dir = state_root.join("sce");
-    aggregate_status_all_in(&sce_dir)
+    aggregate_status_all_in(&sce_dir, legacy)
 }
 
 /// Aggregate `sce trace status --all` against an explicit `sce` directory.
-pub fn aggregate_status_all_in(sce_dir: &Path) -> Result<StatusAllReport> {
-    let discovered = discover_agent_trace_dbs_in(sce_dir)?;
+pub fn aggregate_status_all_in(sce_dir: &Path, legacy: bool) -> Result<StatusAllReport> {
+    let discovered = if legacy {
+        discover_legacy_agent_trace_dbs_in(sce_dir)?
+    } else {
+        discover_repository_agent_trace_dbs_in(sce_dir)?
+    };
 
     let mut discovery = DiscoverySummary {
         discovered: discovered.len(),
@@ -79,7 +86,7 @@ pub fn aggregate_status_all_in(sce_dir: &Path) -> Result<StatusAllReport> {
                 }
                 databases.push(DatabaseRow {
                     alias: db.alias,
-                    checkout_id: db.checkout_id,
+                    kind: db.kind,
                     path: db.path,
                     status: DatabaseRowStatus::Ready { stats },
                 });
@@ -88,7 +95,7 @@ pub fn aggregate_status_all_in(sce_dir: &Path) -> Result<StatusAllReport> {
                 discovery.skipped += 1;
                 databases.push(DatabaseRow {
                     alias: db.alias,
-                    checkout_id: db.checkout_id,
+                    kind: db.kind,
                     path: db.path,
                     status: DatabaseRowStatus::Skipped { missing_table },
                 });
@@ -189,7 +196,7 @@ mod tests {
     #[test]
     fn empty_sce_dir_reports_zero_discovery_and_totals() {
         let dir = unique_temp_dir("empty");
-        let report = aggregate_status_all_in(&dir).expect("empty aggregation should succeed");
+        let report = aggregate_status_all_in(&dir, true).expect("empty aggregation should succeed");
         assert_eq!(report.discovery.discovered, 0);
         assert_eq!(report.discovery.ready, 0);
         assert_eq!(report.discovery.skipped, 0);
@@ -214,7 +221,7 @@ mod tests {
         touch_mtime(&ready_older, base - Duration::from_secs(10));
         touch_mtime(&skipped, base - Duration::from_secs(20));
 
-        let report = aggregate_status_all_in(&dir).expect("aggregation should succeed");
+        let report = aggregate_status_all_in(&dir, true).expect("aggregation should succeed");
 
         assert_eq!(report.discovery.discovered, 3);
         assert_eq!(report.discovery.ready, 2);
@@ -229,19 +236,19 @@ mod tests {
         assert_eq!(report.databases.len(), 3);
         // Discovery is mtime-desc, so newest ready first, then older ready, then skipped.
         assert_eq!(report.databases[0].alias, "agent_trace_0");
-        assert_eq!(report.databases[0].checkout_id, "aaaa");
+        assert_eq!(report.databases[0].kind.identifier(), "aaaa");
         match &report.databases[0].status {
             DatabaseRowStatus::Ready { stats } => assert_eq!(stats.diff_traces, 3),
             DatabaseRowStatus::Skipped { .. } => panic!("expected ready row"),
         }
         assert_eq!(report.databases[1].alias, "agent_trace_1");
-        assert_eq!(report.databases[1].checkout_id, "bbbb");
+        assert_eq!(report.databases[1].kind.identifier(), "bbbb");
         match &report.databases[1].status {
             DatabaseRowStatus::Ready { stats } => assert_eq!(stats.diff_traces, 1),
             DatabaseRowStatus::Skipped { .. } => panic!("expected ready row"),
         }
         assert_eq!(report.databases[2].alias, "agent_trace_2");
-        assert_eq!(report.databases[2].checkout_id, "cccc");
+        assert_eq!(report.databases[2].kind.identifier(), "cccc");
         match &report.databases[2].status {
             DatabaseRowStatus::Skipped { missing_table } => {
                 assert_eq!(missing_table, "post_commit_patch_intersections");

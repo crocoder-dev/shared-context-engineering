@@ -19,6 +19,9 @@ pub fn render(report: &StatusReport, format: OutputFormat) -> Result<String> {
 
 fn render_text(report: &StatusReport) -> String {
     let mut lines = vec![style::heading(HEADING)];
+    if let Some(repository_id) = &report.repository_id {
+        lines.push(format!("Repository: {repository_id}"));
+    }
     lines.push(format!("Checkout: {}", report.checkout_id));
     lines.push(format!("Database: {}", report.database_path.display()));
 
@@ -54,6 +57,7 @@ fn render_json(report: &StatusReport) -> Result<String> {
         "status": "ok",
         "command": NAME,
         "subcommand": "status",
+        "repository_id": report.repository_id,
         "checkout_id": report.checkout_id,
         "database_path": report.database_path.display().to_string(),
     });
@@ -107,6 +111,7 @@ mod tests {
         let last =
             DateTime::<Utc>::from_timestamp_millis(1_782_650_096_789).expect("timestamp parses");
         StatusReport {
+            repository_id: Some(String::from("repo123")),
             checkout_id: String::from("01900000-0000-7000-8000-000000000abc"),
             database_path: PathBuf::from("/tmp/agent-trace-abc.db"),
             db_status: DbStatus::Ready {
@@ -125,6 +130,7 @@ mod tests {
 
     fn skipped_report() -> StatusReport {
         StatusReport {
+            repository_id: None,
             checkout_id: String::from("01900000-0000-7000-8000-000000000def"),
             database_path: PathBuf::from("/tmp/agent-trace-def.db"),
             db_status: DbStatus::Skipped {

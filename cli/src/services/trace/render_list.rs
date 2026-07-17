@@ -15,6 +15,8 @@ const HEADING: &str = "SCE trace db list";
 const EMPTY_MESSAGE: &str = "no agent-trace databases discovered";
 
 const COL_ALIAS: &str = "Alias";
+const COL_SCOPE: &str = "Scope";
+const COL_ID: &str = "ID";
 const COL_STATUS: &str = "Status";
 const COL_UPDATED_AT: &str = "Updated at";
 const COL_PATH: &str = "Path";
@@ -34,11 +36,13 @@ fn render_text(databases: &[DiscoveredAgentTraceDb]) -> String {
         return lines.join("\n");
     }
 
-    let rows: Vec<(String, String, String, String)> = databases
+    let rows: Vec<(String, String, String, String, String, String)> = databases
         .iter()
         .map(|db| {
             (
                 db.alias.clone(),
+                db.kind.label().to_string(),
+                db.kind.identifier().to_string(),
                 status_label(&db.readiness),
                 mtime_to_human_readable(db.mtime),
                 db.path.display().to_string(),
@@ -46,17 +50,22 @@ fn render_text(databases: &[DiscoveredAgentTraceDb]) -> String {
         })
         .collect();
 
-    let alias_width = column_width(COL_ALIAS, rows.iter().map(|(a, _, _, _)| a.as_str()));
-    let status_width = column_width(COL_STATUS, rows.iter().map(|(_, s, _, _)| s.as_str()));
-    let updated_at_width = column_width(COL_UPDATED_AT, rows.iter().map(|(_, _, u, _)| u.as_str()));
+    let alias_width = column_width(COL_ALIAS, rows.iter().map(|(a, _, _, _, _, _)| a.as_str()));
+    let scope_width = column_width(COL_SCOPE, rows.iter().map(|(_, s, _, _, _, _)| s.as_str()));
+    let id_width = column_width(COL_ID, rows.iter().map(|(_, _, id, _, _, _)| id.as_str()));
+    let status_width = column_width(COL_STATUS, rows.iter().map(|(_, _, _, s, _, _)| s.as_str()));
+    let updated_at_width = column_width(
+        COL_UPDATED_AT,
+        rows.iter().map(|(_, _, _, _, u, _)| u.as_str()),
+    );
 
     lines.push(format!(
-        "{COL_ALIAS:<alias_width$}  {COL_STATUS:<status_width$}  {COL_UPDATED_AT:<updated_at_width$}  {COL_PATH}"
+        "{COL_ALIAS:<alias_width$}  {COL_SCOPE:<scope_width$}  {COL_ID:<id_width$}  {COL_STATUS:<status_width$}  {COL_UPDATED_AT:<updated_at_width$}  {COL_PATH}"
     ));
 
-    for (alias, status, updated_at, path) in &rows {
+    for (alias, scope, id, status, updated_at, path) in &rows {
         lines.push(format!(
-            "{alias:<alias_width$}  {status:<status_width$}  {updated_at:<updated_at_width$}  {path}"
+            "{alias:<alias_width$}  {scope:<scope_width$}  {id:<id_width$}  {status:<status_width$}  {updated_at:<updated_at_width$}  {path}"
         ));
     }
 
@@ -75,7 +84,8 @@ fn render_json(databases: &[DiscoveredAgentTraceDb]) -> Result<String> {
             };
             let mut entry = json!({
                 "alias": db.alias,
-                "checkout_id": db.checkout_id,
+                "scope": db.kind.label(),
+                "identifier": db.kind.identifier(),
                 "path": db.path.display().to_string(),
                 "status": status,
                 "updated_at": mtime_to_rfc3339(db.mtime),
@@ -132,7 +142,7 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     use crate::services::agent_trace_db::AgentTraceDb;
-    use crate::services::trace::discovery::discover_agent_trace_dbs_in;
+    use crate::services::trace::discovery::discover_legacy_agent_trace_dbs_in;
 
     fn unique_temp_dir(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -207,7 +217,7 @@ mod tests {
         touch_mtime(&ready_b, base - Duration::from_secs(5));
         touch_mtime(&skipped, base - Duration::from_secs(10));
 
-        let discovered = discover_agent_trace_dbs_in(&dir).expect("discovery");
+        let discovered = discover_legacy_agent_trace_dbs_in(&dir).expect("discovery");
         let rendered = render_text(&discovered);
 
         assert!(rendered.contains("Alias"));
@@ -236,7 +246,7 @@ mod tests {
         touch_mtime(&ready, base);
         touch_mtime(&skipped, base - Duration::from_secs(5));
 
-        let discovered = discover_agent_trace_dbs_in(&dir).expect("discovery");
+        let discovered = discover_legacy_agent_trace_dbs_in(&dir).expect("discovery");
         let payload = render_json(&discovered).expect("json render");
         let value: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
 
@@ -247,14 +257,14 @@ mod tests {
         assert_eq!(databases.len(), 2);
 
         assert_eq!(databases[0]["alias"], "agent_trace_0");
-        assert_eq!(databases[0]["checkout_id"], "aaaa");
+        assert_eq!(databases[0]["identifier"], "aaaa");
         assert_eq!(databases[0]["status"], "ready");
         assert!(databases[0].get("skip_reason").is_none());
         assert_eq!(databases[0]["path"], ready.display().to_string());
         assert!(databases[0]["updated_at"].is_string());
 
         assert_eq!(databases[1]["alias"], "agent_trace_1");
-        assert_eq!(databases[1]["checkout_id"], "bbbb");
+        assert_eq!(databases[1]["identifier"], "bbbb");
         assert_eq!(databases[1]["status"], "skipped");
         assert_eq!(
             databases[1]["skip_reason"],

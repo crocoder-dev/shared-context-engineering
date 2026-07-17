@@ -13,6 +13,8 @@ const TOTALS_HEADING: &str = "Totals";
 const BY_DATABASE_HEADING: &str = "By database";
 
 const COL_ALIAS: &str = "Alias";
+const COL_SCOPE: &str = "Scope";
+const COL_ID: &str = "ID";
 const COL_STATUS: &str = "Status";
 const COL_DIFFS: &str = "Diffs";
 const COL_MESSAGES: &str = "Messages";
@@ -59,6 +61,8 @@ fn render_text(report: &StatusAllReport) -> String {
 
         let headers = [
             COL_ALIAS,
+            COL_SCOPE,
+            COL_ID,
             COL_STATUS,
             COL_DIFFS,
             COL_MESSAGES,
@@ -66,7 +70,7 @@ fn render_text(report: &StatusAllReport) -> String {
             COL_TRACES,
             COL_INTERSECTIONS,
         ];
-        let rows: Vec<[String; 7]> = report.databases.iter().map(format_row).collect();
+        let rows: Vec<[String; 9]> = report.databases.iter().map(format_row).collect();
 
         let widths: Vec<usize> = (0..headers.len())
             .map(|col| {
@@ -87,7 +91,7 @@ fn render_text(report: &StatusAllReport) -> String {
     lines.join("\n")
 }
 
-fn join_row(cells: &[String; 7], widths: &[usize]) -> String {
+fn join_row<const N: usize>(cells: &[String; N], widths: &[usize]) -> String {
     cells
         .iter()
         .enumerate()
@@ -98,10 +102,15 @@ fn join_row(cells: &[String; 7], widths: &[usize]) -> String {
         .to_string()
 }
 
-fn format_row(row: &DatabaseRow) -> [String; 7] {
+fn format_row(row: &DatabaseRow) -> [String; 9] {
+    let scope = row.kind.label().to_string();
+    let id = row.kind.identifier().to_string();
+
     match &row.status {
         DatabaseRowStatus::Ready { stats } => [
             row.alias.clone(),
+            scope,
+            id,
             "ready".to_string(),
             stats.diff_traces.to_string(),
             stats.messages.to_string(),
@@ -111,6 +120,8 @@ fn format_row(row: &DatabaseRow) -> [String; 7] {
         ],
         DatabaseRowStatus::Skipped { missing_table } => [
             row.alias.clone(),
+            scope,
+            id,
             format!("skipped: missing '{missing_table}'"),
             SKIPPED_PLACEHOLDER.to_string(),
             SKIPPED_PLACEHOLDER.to_string(),
@@ -128,7 +139,8 @@ fn render_json(report: &StatusAllReport) -> Result<String> {
         .map(|row| match &row.status {
             DatabaseRowStatus::Ready { stats } => json!({
                 "alias": row.alias,
-                "checkout_id": row.checkout_id,
+                "scope": row.kind.label(),
+                "identifier": row.kind.identifier(),
                 "path": row.path.display().to_string(),
                 "status": "ready",
                 "diff_traces": stats.diff_traces,
@@ -142,7 +154,8 @@ fn render_json(report: &StatusAllReport) -> Result<String> {
             }),
             DatabaseRowStatus::Skipped { missing_table } => json!({
                 "alias": row.alias,
-                "checkout_id": row.checkout_id,
+                "scope": row.kind.label(),
+                "identifier": row.kind.identifier(),
                 "path": row.path.display().to_string(),
                 "status": "skipped",
                 "skip_reason": format!("missing table: {missing_table}"),
@@ -249,7 +262,7 @@ mod tests {
     #[test]
     fn empty_renders_text_with_zeroed_summary_and_totals() {
         let dir = unique_temp_dir("empty-text");
-        let report = aggregate_status_all_in(&dir).expect("aggregate");
+        let report = aggregate_status_all_in(&dir, true).expect("aggregate");
         let rendered = render_text(&report);
         assert!(rendered.contains("Databases: 0 discovered, 0 ready, 0 skipped"));
         assert!(rendered.contains("Diff traces: 0"));
@@ -260,7 +273,7 @@ mod tests {
     #[test]
     fn empty_renders_json_with_zeroed_shape() {
         let dir = unique_temp_dir("empty-json");
-        let report = aggregate_status_all_in(&dir).expect("aggregate");
+        let report = aggregate_status_all_in(&dir, true).expect("aggregate");
         let payload = render_json(&report).expect("json render");
         let value: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
         assert_eq!(value["status"], "ok");
@@ -290,7 +303,7 @@ mod tests {
         touch_mtime(&ready_older, base - Duration::from_secs(5));
         touch_mtime(&skipped, base - Duration::from_secs(10));
 
-        let report = aggregate_status_all_in(&dir).expect("aggregate");
+        let report = aggregate_status_all_in(&dir, true).expect("aggregate");
         let rendered = render_text(&report);
 
         assert!(rendered.contains("Databases: 3 discovered, 2 ready, 1 skipped"));
@@ -320,7 +333,7 @@ mod tests {
         touch_mtime(&ready_older, base - Duration::from_secs(5));
         touch_mtime(&skipped, base - Duration::from_secs(10));
 
-        let report = aggregate_status_all_in(&dir).expect("aggregate");
+        let report = aggregate_status_all_in(&dir, true).expect("aggregate");
         let payload = render_json(&report).expect("json render");
         let value: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
 

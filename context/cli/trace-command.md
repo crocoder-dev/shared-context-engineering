@@ -4,10 +4,10 @@ Top-level CLI command group exposing Agent Trace database visibility for operato
 
 Lives under `cli/src/services/trace/` with these subcommands:
 
-- `sce trace db list` — discover per-checkout Agent Trace DBs under `<state_root>/sce/agent-trace-*.db` and render an alias / status / path table.
-- `sce trace db shell <uuid-or-alias>` — resolve a discovered ready DB by positional alias or checkout ID and open an embedded in-process SQL shell.
-- `sce trace status` — render counts and last-activity for the cwd's checkout DB.
-- `sce trace status --all` — aggregate counts across every discovered DB.
+- `sce trace db list [--legacy]` — discover repository-scoped Agent Trace DBs under `<state_root>/sce/repos/<repository-id>/agent-trace.db` by default, or old checkout-scoped DBs with `--legacy`.
+- `sce trace db shell [repository-id-or-alias] [--legacy]` — open an embedded in-process SQL shell for the current repository DB by default, a discovered repository DB by alias/repository ID, or an explicit legacy checkout DB when `--legacy` is supplied.
+- `sce trace status [--legacy]` — render counts and last-activity for the current repository-scoped DB by default, or the current checkout's legacy DB with `--legacy`.
+- `sce trace status --all [--legacy]` — aggregate counts across every discovered repository DB by default, or legacy checkout DBs with `--legacy`.
 
 The list/status subcommands declare `--format text|json` via `services::output_format::OutputFormat`; `db shell` is interactive and uses standard input/output directly after successful resolution. Clap surface is defined in `cli/src/cli_schema.rs` (`Commands::Trace`, `TraceSubcommand`, `TraceDbSubcommand`) and dispatched through `services::command_registry` to `services::trace::command::TraceCommand`.
 
@@ -15,9 +15,11 @@ The list/status subcommands declare `--format text|json` via `services::output_f
 
 ### Discovery — `services::trace::discovery`
 
-`discover_agent_trace_dbs()` scans the resolved `<state_root>/sce/` directory for `agent-trace-{checkout_id}.db` files, sorts by file mtime descending (ties broken by `checkout_id` ascending), and assigns positional `agent_trace_{N}` aliases. Each entry carries an mtime-derived `SystemTime`, the parsed `checkout_id`, and a `Readiness` verdict (`Ready` or `Skipped { missing_table }`).
+`discover_agent_trace_dbs()` scans `<state_root>/sce/repos/*/agent-trace.db`, sorts by file mtime descending (ties broken by repository ID ascending), and assigns positional `agent_trace_{N}` aliases. Each entry carries an mtime-derived `SystemTime`, a `DiscoveredAgentTraceDbKind::Repository { repository_id }`, and a `Readiness` verdict (`Ready` or `Skipped { missing_table }`).
 
-Readiness is probed read-only via `AgentTraceDb::open_for_hooks_without_migrations_at` and a `sqlite_master` lookup for each required table in declared order:
+`discover_legacy_agent_trace_dbs()` is the explicit legacy scanner for `<state_root>/sce/agent-trace-{checkout_id}.db`; default trace commands do not use it unless `--legacy` is supplied.
+
+Readiness is probed read-only via the shared Agent Trace DB open-without-migrations path and a `sqlite_master` lookup for each required table in declared order:
 
 ```
 diff_traces
@@ -25,45 +27,23 @@ post_commit_patch_intersections
 agent_traces
 messages
 parts
-session_models
 ```
 
-The first missing table is reported as the skip reason. The discovery module returns an empty Vec when the `sce` directory does not exist; callers do not need to special-case that.
+The first missing table is reported as the skip reason. Discovery returns an empty Vec when the scanned directory does not exist.
 
-`resolve_agent_trace_db_identifier(databases, identifier)` is the pure resolver seam used by `sce trace db shell <uuid-or-alias>`. It accepts either an `agent_trace_N` alias or a full `checkout_id`, returns a cloned ready `DiscoveredAgentTraceDb`, rejects unknown identifiers with guidance to run `sce trace db list`, rejects ambiguous alias/checkout-ID collisions, and rejects skipped databases with the stored missing-table readiness reason.
+`resolve_agent_trace_db_identifier(databases, identifier)` accepts either an `agent_trace_N` alias or the discovered database kind identifier (repository ID by default; checkout ID in legacy mode), returns a cloned ready `DiscoveredAgentTraceDb`, rejects unknown/ambiguous identifiers with guidance to run `sce trace db list`, and rejects skipped databases with the stored missing-table readiness reason.
 
 ### Embedded shell core — `services::trace::shell`
 
-`run_agent_trace_db_shell(target, input, output)` opens the resolved Agent Trace DB path in-process with `AgentTraceDb::open_for_hooks_without_migrations_at`, verifies `ensure_schema_ready_for_hooks()`, prints the resolved alias, checkout ID, and database path, then runs a minimal SQL shell over caller-provided `BufRead`/`Write` streams. The core supports `.help`, `.tables`, `.exit`, and `.quit`, splits single-line input on semicolons, executes query statements through `TursoDb::query_values`, executes non-query statements through `execute`, and renders deterministic text rows as `column | column`, `--- | ---`, row values, and `(N rows)`. SQL errors are rendered as shell diagnostics and do not terminate the loop.
+`run_agent_trace_db_shell(target, input, output)` opens the resolved Agent Trace DB path in-process without running migrations, verifies schema readiness, prints alias, scope (`repository` or `legacy checkout`), identifier, and database path, then runs a minimal SQL shell over caller-provided `BufRead`/`Write` streams. The core supports `.help`, `.tables`, `.exit`, and `.quit`, splits single-line input on semicolons, executes query statements through `TursoDb::query_values`, executes non-query statements through `execute`, and renders deterministic text rows.
 
-`.tables` queries `sqlite_schema` for every visible table with `type = 'table'`, orders by table name, and prints one table name per line without counts or schema details. Internal SCE tables such as `__sce_migrations` are included when present.
-
-The shell command is embedded-only and does not invoke the external `turso` CLI. `TraceCommand` discovers DBs, resolves `<uuid-or-alias>` through `resolve_agent_trace_db_identifier`, maps resolver failures to validation-class CLI errors, then hands locked stdin/stdout to `run_agent_trace_db_shell`. The command returns an empty payload after shell exit so the normal app renderer does not duplicate shell output.
-
-Operator contract:
-
-- Run `sce trace db list` first to find the current positional alias (`agent_trace_N`) or copy the full checkout ID. Aliases follow discovery order and may change when DB mtimes change.
-- Start the shell with `sce trace db shell <uuid-or-alias>`, where the identifier must resolve to exactly one ready discovered DB. Unknown, ambiguous, or skipped/not-ready DB identifiers fail before the shell starts with validation-class guidance to inspect `sce trace db list`.
-- On startup, the shell prints the resolved alias, checkout ID, and database path before accepting SQL.
-- `.help` lists supported dot commands; `.tables` lists table names only in deterministic order; `.exit` and `.quit` terminate the shell.
-- Piped stdin is supported for deterministic automation, for example `SELECT COUNT(*) FROM diff_traces;` followed by `.exit`.
-- The implementation is an in-process Rust/Turso shell only; it never shells out to `turso`, `sqlite3`, or another external database CLI.
+Default `sce trace db shell` resolves the current repository-scoped DB through the same storage context used by hook runtime. `sce trace db shell <identifier>` resolves a discovered repository DB by alias or repository ID. `sce trace db shell --legacy <identifier>` is required for old checkout-scoped DBs. The shell is embedded-only and never shells out to `turso`, `sqlite3`, or another external database CLI.
 
 ### `sce trace db list` rendering — `services::trace::render_list`
 
-`render(databases, format)` dispatches to the text or JSON renderer.
+Text output is `services::style::heading("SCE trace db list")` followed by a padded table with `Alias`, `Scope`, `ID`, `Status`, `Updated at`, and `Path`. Empty-state output is the heading plus `no agent-trace databases discovered`.
 
-**Text** — `services::style::heading("SCE trace db list")` followed by a 4-column padded table:
-
-```
-Alias          Status                                              Updated at              Path
-agent_trace_0  ready                                               2026-06-27 12:34:56 UTC /path/to/agent-trace-aaaa.db
-agent_trace_1  skipped: missing table 'post_commit_patch_intersections'  2026-06-27 12:34:51 UTC /path/to/agent-trace-bbbb.db
-```
-
-Empty-state output is the heading plus `no agent-trace databases discovered`.
-
-**JSON** — stable shape:
+JSON output shape:
 
 ```json
 {
@@ -73,154 +53,36 @@ Empty-state output is the heading plus `no agent-trace databases discovered`.
   "databases": [
     {
       "alias": "agent_trace_0",
-      "checkout_id": "aaaa",
-      "path": "/path/to/agent-trace-aaaa.db",
+      "scope": "repository",
+      "identifier": "<repository-id>",
+      "path": "/.../repos/<repository-id>/agent-trace.db",
       "status": "ready",
       "updated_at": "2026-06-27T12:34:56+00:00"
-    },
-    {
-      "alias": "agent_trace_1",
-      "checkout_id": "bbbb",
-      "path": "/path/to/agent-trace-bbbb.db",
-      "status": "skipped",
-      "skip_reason": "missing table: post_commit_patch_intersections",
-      "updated_at": "2026-06-27T12:34:51+00:00"
     }
   ]
 }
 ```
 
-`skip_reason` is omitted when `status == "ready"`. Text `Updated at` is rendered as `YYYY-MM-DD HH:MM:SS UTC` from the discovery file mtime; JSON `updated_at` is RFC3339.
+`skip_reason` is omitted when `status == "ready"`. Text `Updated at` is rendered as `YYYY-MM-DD HH:MM:SS UTC`; JSON `updated_at` is RFC3339.
 
-### `sce trace status` resolution — `services::trace::status`
+### `sce trace status` resolution/rendering — `services::trace::status`, `render_status`
 
-`resolve_current_status(repo_root)` resolves the cwd's git directory via `services::checkout::resolve_git_dir`, reads the stored checkout id via `read_checkout_id`, computes the canonical `<state_root>/sce/agent-trace-{id}.db` path, and probes schema readiness (reusing the discovery-layer probe). When ready it also collects row counts and last-activity via `services::trace::stats::collect_agent_trace_db_stats`. Returns either a `StatusReport { checkout_id, database_path, db_status: DbStatus::{Ready { stats, last_activity }, Skipped { missing_table }} }` or a `StatusErrorOrRuntime`.
+`resolve_current_status(repo_root)` resolves config-backed Agent Trace storage (`agent_trace.repository_id` or configured remote, default `origin`) through `agent_trace_storage`, creating/reusing checkout identity for diagnostics and selecting `<state_root>/sce/repos/<repository-id>/agent-trace.db`. It probes schema readiness and, when ready, collects row counts and last-activity via `services::trace::stats::collect_agent_trace_db_stats`.
 
-Three user-actionable error variants (`StatusError::{NotInGitRepo, NoCheckoutId, DbMissing}`) are mapped at the command boundary to `ClassifiedError::validation` (exit code 3) with stable messages directing the user to cd into a git repo, run `sce setup`, or wait for traces to be recorded. Sqlite/IO failures stay runtime-class (exit 4).
+`resolve_current_legacy_status_in(repo_root, sce_dir)` keeps the old checkout-scoped behavior for `sce trace status --legacy`: it reads `<git-dir>/sce/checkout-id` and inspects `<state_root>/sce/agent-trace-{checkout_id}.db` without creating or selecting it as active storage.
 
-A `resolve_current_status_in(repo_root, sce_dir)` variant takes the `sce` directory explicitly for unit-test fixtures.
+Text output includes `Repository: <repository-id>` when repository-scoped, then checkout ID, database path, readiness, row counts, and last activity. JSON includes `repository_id` (null for legacy), `checkout_id`, `database_path`, `db_status`, `stats` for ready DBs, and `skip_reason` for skipped DBs.
 
-### `sce trace status` rendering — `services::trace::render_status`
+### `sce trace status --all` aggregation/rendering — `services::trace::status_all`, `render_status_all`
 
-**Text** — `services::style::heading("SCE trace status")` followed by:
+`aggregate_current_status_all(legacy)` resolves `<state_root>/sce/` and delegates to repository discovery by default or legacy discovery when `legacy == true`. It runs `collect_agent_trace_db_stats` on each ready DB and accumulates totals for `diff_traces`, `messages`, `parts`, `agent_traces`, `post_commit_patch_intersections`, and max `last_activity`. Skipped DBs are excluded from totals but included in discovery summary and breakdown rows.
 
-```
-Checkout: <uuid>
-Database: <absolute path>
-Status: ready
-Diff traces: N
-Messages: N
-Parts: N
-Session models: N
-Agent traces: N
-Post-commit intersections: N
-Last activity: 2026-06-27T22:39:03.926+00:00
-```
-
-When `last_activity` is `None` the value is rendered as `never`. When the DB exists but a required table is missing, the per-checkout block ends after `Status: skipped: missing table '<name>'` with no stats lines (exit 0).
-
-**JSON** — stable shape:
-
-```json
-{
-  "status": "ok",
-  "command": "trace",
-  "subcommand": "status",
-  "checkout_id": "01900000-...",
-  "database_path": "/.../agent-trace-{id}.db",
-  "db_status": "ready",
-  "stats": {
-    "diff_traces": N,
-    "messages": N,
-    "parts": N,
-    "session_models": N,
-    "agent_traces": N,
-    "post_commit_patch_intersections": N
-  },
-  "last_activity": "2026-06-27T22:39:03.926+00:00"
-}
-```
-
-For `db_status: "skipped"`, `stats` and `last_activity` are omitted and a `skip_reason: "missing table: <name>"` field is added.
-
-### `sce trace status --all` aggregation — `services::trace::status_all`
-
-`aggregate_current_status_all()` resolves `<state_root>/sce/` and delegates to `aggregate_status_all_in(sce_dir)`, which walks `discover_agent_trace_dbs_in`, runs `collect_agent_trace_db_stats` on each `Readiness::Ready` DB, and accumulates `Totals` (sum of the six row counts plus the max of per-DB `last_activity`). `Readiness::Skipped` DBs are excluded from totals but counted in the discovery summary and surfaced as breakdown rows with a `missing_table` reason. Returns `StatusAllReport { discovery: DiscoverySummary { discovered, ready, skipped }, totals: Totals, databases: Vec<DatabaseRow> }`.
-
-### `sce trace status --all` rendering — `services::trace::render_status_all`
-
-**Text** — heading `SCE trace status (all)` followed by three blocks: discovery summary line, `Totals` block (same six counts plus `Last activity`), and an optional `By database` block omitted when no databases are discovered:
-
-```
-SCE trace status (all)
-Databases: 3 discovered, 2 ready, 1 skipped
-
-Totals
-Diff traces: N
-Messages: N
-Parts: N
-Session models: N
-Agent traces: N
-Post-commit intersections: N
-Last activity: 2026-06-28T...
-
-By database
-Alias          Status                                              Diffs  Messages  Parts  Models  Traces  Intersections
-agent_trace_0  ready                                               3      2         4      0       0       0
-agent_trace_1  ready                                               1      1         1      0       0       0
-agent_trace_2  skipped: missing 'post_commit_patch_intersections'  -      -         -      -       -       -
-```
-
-`Last activity` renders `never` when no DB carries activity. Skipped rows fill count cells with `-`.
-
-**JSON** — stable shape:
-
-```json
-{
-  "status": "ok",
-  "command": "trace",
-  "subcommand": "status.all",
-  "discovery": { "discovered": N, "ready": N, "skipped": N },
-  "totals": {
-    "diff_traces": N,
-    "messages": N,
-    "parts": N,
-    "session_models": N,
-    "agent_traces": N,
-    "post_commit_patch_intersections": N,
-    "last_activity": "2026-06-28T..."
-  },
-  "databases": [
-    {
-      "alias": "agent_trace_0",
-      "checkout_id": "aaaa",
-      "path": "/.../agent-trace-aaaa.db",
-      "status": "ready",
-      "diff_traces": N,
-      "messages": N,
-      "parts": N,
-      "session_models": N,
-      "agent_traces": N,
-      "post_commit_patch_intersections": N,
-      "last_activity": "2026-06-28T..."
-    },
-    {
-      "alias": "agent_trace_2",
-      "checkout_id": "cccc",
-      "path": "/.../agent-trace-cccc.db",
-      "status": "skipped",
-      "skip_reason": "missing table: post_commit_patch_intersections"
-    }
-  ]
-}
-```
-
-`totals.last_activity` is `null` when no ready DB has activity. Skipped DB entries omit per-database counts and `last_activity` and add `skip_reason`.
+Text rendering shows discovery summary, totals, and a `By database` table with `Alias`, `Scope`, `ID`, `Status`, and count columns. JSON entries use `scope` and `identifier` for both repository and legacy rows.
 
 ## Related context
 
-- [cli-command-surface.md](cli-command-surface.md) — full CLI command surface and dispatch contract.
-- [checkout-identity.md](checkout-identity.md) — per-checkout Agent Trace DB path resolution and `sce trace db list` discovery surface.
-- [default-path-catalog.md](default-path-catalog.md) — `<state_root>/sce/agent-trace-*.db` path ownership.
-- [styling-service.md](styling-service.md) — heading helper used by the text renderer.
+- [agent-trace-storage.md](agent-trace-storage.md) — repository-scoped storage resolver and active DB path contract.
+- [checkout-identity.md](checkout-identity.md) — checkout identity diagnostics and legacy DB handling.
+- [default-path-catalog.md](default-path-catalog.md) — Agent Trace DB path ownership.
+- [styling-service.md](styling-service.md) — heading helper used by text renderers.
 - [../sce/agent-trace-db.md](../sce/agent-trace-db.md) — Agent Trace DB schema and migration ownership.
