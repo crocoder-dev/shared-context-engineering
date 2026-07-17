@@ -309,6 +309,43 @@ pub fn agent_trace_db_path_for_checkout(checkout_id: &str) -> anyhow::Result<Pat
         .join(format!("agent-trace-{checkout_id}.db")))
 }
 
+/// Returns the canonical repository-scoped Agent Trace Turso database file path.
+///
+/// The path is `<state_root>/sce/repos/<repository_id>/agent-trace.db`, where
+/// `state_root` comes from the shared default-path catalog (`XDG_STATE_HOME` or
+/// platform equivalent) and `repository_id` is the stable repository identity
+/// hash from `services::repository_identity`.
+pub fn agent_trace_db_path_for_repository(repository_id: &str) -> anyhow::Result<PathBuf> {
+    let state_root = resolve_sce_default_locations()?
+        .roots()
+        .state_root()
+        .to_path_buf();
+    agent_trace_db_path_for_repository_at(&state_root, repository_id)
+}
+
+/// Builds the repository-scoped Agent Trace database path under an explicit
+/// state root: `<state_root>/sce/repos/<repository_id>/agent-trace.db`.
+pub fn agent_trace_db_path_for_repository_at(
+    state_root: &std::path::Path,
+    repository_id: &str,
+) -> anyhow::Result<PathBuf> {
+    let repository_id = repository_id.trim();
+    if repository_id.is_empty() {
+        anyhow::bail!("repository ID must not be empty when resolving Agent Trace DB path");
+    }
+    // The repository ID becomes a single path segment; reject anything that
+    // could escape the `repos/` directory.
+    if repository_id.contains(['/', '\\']) || repository_id == "." || repository_id == ".." {
+        anyhow::bail!("repository ID '{repository_id}' is not a valid path segment");
+    }
+
+    Ok(state_root
+        .join("sce")
+        .join("repos")
+        .join(repository_id)
+        .join("agent-trace.db"))
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PersistedArtifactRootKind {

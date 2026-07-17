@@ -19,6 +19,7 @@
 - local DB: `<state_root>/sce/local.db`
 - legacy/global agent trace DB fallback: `<state_root>/sce/agent-trace.db`
 - per-checkout agent trace DB: `<state_root>/sce/agent-trace-{checkout_id}.db`
+- repository-scoped agent trace DB: `<state_root>/sce/repos/{repository_id}/agent-trace.db` via `agent_trace_db_path_for_repository(repository_id)` (plus `_at(state_root, repository_id)` for explicit roots); rejects empty or path-unsafe repository IDs
 
 ### Repo-relative paths
 

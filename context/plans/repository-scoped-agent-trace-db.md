@@ -96,12 +96,16 @@ Initial code inspection found the current checkout-scoped behavior in these area
   - Evidence: `nix build .#checks.x86_64-linux.cli-tests` pass (163 tests, 10 new `repository_identity::resolve` tests including temp-git-repo remote cases); `cli-clippy` + `cli-fmt` checks pass.
   - Notes: `resolve::resolve_repository_identity(repo_root, explicit, remote_name)` shells out to `git config --get remote.<name>.url`; `resolve_repository_identity_with_lookup` is the injectable-lookup precedence core. `ResolvedRepositoryIdentity` carries a `RepositoryIdentitySource` (`ExplicitConfig` vs `RemoteUrl { remote_name }`) for T10 diagnostics. `RepositoryIdentityResolutionError` (`InvalidExplicitIdentity`, `InvalidRemoteUrl`, `MissingIdentity`) never echoes URLs, and all Display messages include `.sce/config.json` guidance. Local-path remotes fail as `InvalidRemoteUrl` (no implicit fallback); git-unavailable/non-repo lookups map to `MissingIdentity`. Still `#[allow(dead_code)]` at the module level until T04 consumes it.
 
-- [ ] T04: `Add repository-scoped Agent Trace storage resolver` (status:todo)
+- [x] T04: `Add repository-scoped Agent Trace storage resolver` (status:done)
   - Task ID: T04
   - Goal: Replace checkout-path-oriented active DB resolution with `AgentTraceStorageContext` and `ResolvedAgentTraceStorage` that return repository ID, checkout ID, and `<state-root>/sce/repos/<repository-id>/agent-trace.db`.
   - Boundaries (in/out of scope): In - new path helper, directory creation, checkout ID reuse, DB open/create, safe concurrent/idempotent initialization path, tests for path separation and clone/worktree consolidation. Out - changing schema or hook query semantics.
   - Done when: Active resolver creates repository directories and opens repository-scoped DBs; different repository IDs produce different paths; equivalent clones/worktrees share the path while retaining distinct checkout IDs; no active global/checkout DB path is created.
   - Verification notes (commands or checks): targeted checkout/storage resolver tests; inspect that old `agent-trace-<checkout-id>.db` paths are not used by the active resolver.
+  - Completed: 2026-07-17
+  - Files changed: `cli/src/services/agent_trace_storage/mod.rs` (new), `cli/src/services/default_paths.rs`, `cli/src/services/mod.rs`
+  - Evidence: `nix build .#checks.x86_64-linux.cli-tests` pass (171 tests, 8 new `agent_trace_storage` tests covering repo separation, SSH/HTTPS clone consolidation, linked-worktree consolidation, explicit-ID override, idempotent re-resolution, missing-identity guidance, and path-segment validation); `cli-clippy` + `cli-fmt` checks pass.
+  - Notes: `resolve_agent_trace_storage(context)` is the production entrypoint; `resolve_agent_trace_storage_at_state_root(context, state_root)` is the injectable core used by tests. Context takes already-resolved config values (explicit ID + remote name); T08 wires config/hooks/lifecycle call sites. `default_paths::agent_trace_db_path_for_repository{,_at}` rejects empty/path-unsafe repository IDs. Directory creation rides on `TursoDb` parent-dir `create_dir_all` (idempotent, safe for concurrent first open); DB open reuses the fast-path-then-migrate pattern from the checkout resolver. Failed identity resolution creates no state directories. Module is `#[allow(dead_code)]` until T08 consumes it; the legacy checkout resolver remains untouched and active until then.
 
 - [ ] T05: `Define one-file repository-scoped Agent Trace schema` (status:todo)
   - Task ID: T05

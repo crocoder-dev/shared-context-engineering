@@ -1,5 +1,7 @@
 pub mod agent_trace;
 pub mod agent_trace_db;
+#[allow(dead_code)]
+pub mod agent_trace_storage;
 pub mod app_support;
 pub mod auth;
 pub mod auth_command;
