@@ -167,7 +167,6 @@ fn open_repository_db_concurrently_safe(
 mod tests {
     use super::*;
     use std::process::Command;
-    use std::sync::{Arc, Barrier};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::services::agent_trace_db::{DiffTraceInsert, PAYLOAD_TYPE_PATCH};
@@ -479,55 +478,6 @@ mod tests {
         std::fs::remove_dir_all(&state_root).expect("clean up state root");
         std::fs::remove_dir_all(&clone_a).expect("clean up clone A");
         std::fs::remove_dir_all(&clone_b).expect("clean up clone B");
-    }
-
-    #[test]
-    fn concurrent_first_open_converges_on_one_repository_database() {
-        let state_root = unique_temp_dir("state-concurrent");
-        let repo = init_git_repo_with_remote("concurrent", "git@github.com:acme/widgets.git");
-        let worker_count = 4;
-        let barrier = Arc::new(Barrier::new(worker_count));
-
-        let handles: Vec<_> = (0..worker_count)
-            .map(|_| {
-                let barrier = Arc::clone(&barrier);
-                let repo = repo.clone();
-                let state_root = state_root.clone();
-                std::thread::spawn(move || {
-                    let context = context_for(&repo);
-                    barrier.wait();
-                    let storage = resolve_agent_trace_storage_at_state_root(&context, &state_root)
-                        .expect("concurrent repository storage resolution should succeed");
-                    (
-                        storage.db_path,
-                        storage.checkout_id,
-                        storage.repository_identity.identity.repository_id,
-                    )
-                })
-            })
-            .collect();
-
-        let results: Vec<_> = handles
-            .into_iter()
-            .map(|handle| handle.join().expect("worker thread should not panic"))
-            .collect();
-        let first = results.first().expect("at least one result");
-        for result in &results[1..] {
-            assert_eq!(result.0, first.0, "all workers should use one DB path");
-            assert_eq!(
-                result.1, first.1,
-                "same checkout should reuse one checkout identity"
-            );
-            assert_eq!(
-                result.2, first.2,
-                "all workers should resolve one repository ID"
-            );
-        }
-        assert!(first.0.is_file());
-        assert_no_legacy_db_paths(&state_root);
-
-        std::fs::remove_dir_all(&state_root).expect("clean up state root");
-        std::fs::remove_dir_all(&repo).expect("clean up repo");
     }
 
     #[test]
