@@ -291,24 +291,6 @@ pub fn agent_trace_db_path() -> anyhow::Result<PathBuf> {
         .join("agent-trace.db"))
 }
 
-/// Returns the canonical per-checkout Agent Trace Turso database file path.
-///
-/// The path is `<state_root>/sce/agent-trace-{checkout_id}.db`, where
-/// `state_root` comes from the shared default-path catalog (`XDG_STATE_HOME` or
-/// platform equivalent).
-pub fn agent_trace_db_path_for_checkout(checkout_id: &str) -> anyhow::Result<PathBuf> {
-    let checkout_id = checkout_id.trim();
-    if checkout_id.is_empty() {
-        anyhow::bail!("checkout ID must not be empty when resolving Agent Trace DB path");
-    }
-
-    Ok(resolve_sce_default_locations()?
-        .roots()
-        .state_root()
-        .join("sce")
-        .join(format!("agent-trace-{checkout_id}.db")))
-}
-
 /// Returns the canonical repository-scoped Agent Trace Turso database file path.
 ///
 /// The path is `<state_root>/sce/repos/<repository_id>/agent-trace.db`, where

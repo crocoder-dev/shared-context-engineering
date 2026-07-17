@@ -14,10 +14,6 @@ use std::process::Command;
 use anyhow::{anyhow, Context, Result};
 use uuid::Uuid;
 
-use crate::services::{
-    agent_trace_db::AgentTraceDb, default_paths::agent_trace_db_path_for_checkout,
-};
-
 /// Subdirectory inside `<git-dir>/` where SCE checkout metadata lives.
 const SCE_CHECKOUT_DIR: &str = "sce";
 
@@ -135,43 +131,4 @@ pub fn get_or_create_checkout_id(git_dir: &Path) -> Result<String> {
     })?;
 
     Ok(checkout_id)
-}
-
-/// Resolves or creates the checkout identity for `repo_root` and opens its
-/// legacy per-checkout Agent Trace DB, lazily initializing schema when needed.
-///
-/// Active setup and hook runtime use repository-scoped storage instead.
-#[allow(dead_code)]
-pub fn resolve_or_create_agent_trace_db_for_checkout(
-    repo_root: &Path,
-) -> Result<(AgentTraceDb, String)> {
-    let git_dir = resolve_git_dir(repo_root).with_context(|| {
-        format!(
-            "failed to resolve git directory for Agent Trace checkout DB from '{}'",
-            repo_root.display()
-        )
-    })?;
-    let checkout_id = get_or_create_checkout_id(&git_dir).with_context(|| {
-        format!(
-            "failed to get or create checkout identity under '{}'",
-            git_dir.display()
-        )
-    })?;
-    let db_path = agent_trace_db_path_for_checkout(&checkout_id).with_context(|| {
-        format!("failed to resolve Agent Trace DB path for checkout ID {checkout_id}")
-    })?;
-
-    let fast_open = AgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
-        .and_then(|db| db.ensure_schema_ready_for_hooks().map(|()| db));
-    let db = match fast_open {
-        Ok(db) => db,
-        Err(fast_error) => AgentTraceDb::open_at(&db_path).with_context(|| {
-            format!(
-                "failed to initialize Agent Trace DB for checkout {checkout_id} at '{}' (fast-path attempt: {fast_error})",
-                db_path.display()
-            )
-        })?,
-    };
-
-    Ok((db, checkout_id))
 }
