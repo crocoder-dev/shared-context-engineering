@@ -59,7 +59,6 @@ impl DiscoveredAgentTraceDbKind {
 
 /// A discovered Agent Trace database with its readiness verdict.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct DiscoveredAgentTraceDb {
     pub alias: String,
     pub kind: DiscoveredAgentTraceDbKind,
@@ -70,7 +69,6 @@ pub struct DiscoveredAgentTraceDb {
 
 /// User-actionable failures while resolving an Agent Trace DB identifier.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub enum ResolveAgentTraceDbError {
     UnknownIdentifier {
         identifier: String,
@@ -118,7 +116,6 @@ impl std::fmt::Display for ResolveAgentTraceDbError {
 impl std::error::Error for ResolveAgentTraceDbError {}
 
 /// Resolve an alias or checkout ID to one ready discovered Agent Trace DB.
-#[allow(dead_code)]
 pub fn resolve_agent_trace_db_identifier(
     databases: &[DiscoveredAgentTraceDb],
     identifier: &str,
@@ -155,7 +152,6 @@ pub fn resolve_agent_trace_db_identifier(
 }
 
 /// Discover repository-scoped Agent Trace DBs under the resolved state-data root.
-#[allow(dead_code)]
 pub fn discover_agent_trace_dbs() -> Result<Vec<DiscoveredAgentTraceDb>> {
     let state_root = resolve_state_data_root().context("failed to resolve state data root")?;
     let sce_dir = state_root.join("sce");

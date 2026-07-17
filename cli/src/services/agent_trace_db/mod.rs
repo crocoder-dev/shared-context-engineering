@@ -18,9 +18,6 @@ use crate::{
 use serde_json::Value;
 
 pub mod lifecycle;
-// Consumed by the repository-scoped storage resolver; runtime call sites
-// arrive with T08.
-#[allow(dead_code)]
 pub mod repository;
 
 const AGENT_TRACE_SCHEMA_SETUP_GUIDANCE: &str = "Run 'sce setup'.";
@@ -61,14 +58,12 @@ pub const INSERT_AGENT_TRACE_SQL: &str =
 
 /// Parameterized SQL for inserting a message row. Duplicate
 /// `(session_id, message_id)` writes are ignored.
-#[allow(dead_code)]
 pub const INSERT_MESSAGE_SQL: &str =
     "INSERT INTO messages (session_id, message_id, role, generated_at_unix_ms)
 VALUES (?1, ?2, ?3, ?4)
 ON CONFLICT (session_id, message_id) DO NOTHING";
 
 /// Parameterized SQL for inserting a part row (append-only, no upsert).
-#[allow(dead_code)]
 pub const INSERT_PART_SQL: &str =
     "INSERT INTO parts (type, text, message_id, session_id, generated_at_unix_ms)
 VALUES (?1, ?2, ?3, ?4, ?5)";
@@ -200,7 +195,6 @@ pub struct AgentTraceInsert<'a> {
 
 /// Message role constraint for the `messages` table.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub enum MessageRole {
     User,
     Assistant,
@@ -217,7 +211,6 @@ impl std::fmt::Display for MessageRole {
 
 /// Message insert payload for the `messages` table.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub struct InsertMessageInsert {
     pub session_id: String,
     pub message_id: String,
@@ -227,7 +220,6 @@ pub struct InsertMessageInsert {
 
 /// Part type constraint for the `parts` table.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub enum PartType {
     Text,
     Reasoning,
@@ -248,7 +240,6 @@ impl std::fmt::Display for PartType {
 
 /// Part insert payload for the `parts` table (append-only, no upsert).
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
 pub struct InsertPartInsert {
     pub part_type: PartType,
     pub text: String,
@@ -259,17 +250,6 @@ pub struct InsertPartInsert {
 
 #[allow(dead_code)]
 impl AgentTraceDb {
-    /// Open the Agent Trace DB for high-frequency hook runtime paths without
-    /// running embedded migrations.
-    ///
-    /// Setup/lifecycle initialization must continue to use [`AgentTraceDb::new`]
-    /// so schema migrations remain explicitly owned by setup flows. Hook callers
-    /// must verify schema readiness before reading or writing through this DB.
-    #[allow(dead_code)]
-    pub fn open_for_hooks_without_migrations() -> Result<Self> {
-        TursoDb::<AgentTraceDbSpec>::open_without_migrations()
-    }
-
     /// Verify that the Agent Trace DB schema needed by hook runtime readers and
     /// writers already exists.
     ///

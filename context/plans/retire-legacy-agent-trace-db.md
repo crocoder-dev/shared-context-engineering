@@ -55,12 +55,17 @@ Initial code inspection found the legacy surface in:
   - Evidence: `rg` returns no matches for the two removed symbols; `nix build .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt .#checks.x86_64-linux.cli-tests` all pass (exit 0).
   - Notes: Pure dead-code removal; both `use` items became unused after deleting the function and were removed. Verify-only for context sync (no cross-cutting change).
 
-- [ ] T02: `Remove dead open_for_hooks_without_migrations and fix stale allow(dead_code) attributes` (status:todo)
+- [x] T02: `Remove dead open_for_hooks_without_migrations and fix stale allow(dead_code) attributes` (status:done)
   - Task ID: T02
   - Goal: Remove the genuinely-dead `AgentTraceDb::open_for_hooks_without_migrations` (no-`_at` variant) and drop stale `#[allow(dead_code)]` from items now actively used by `RepositoryAgentTraceDb` or trace command code.
   - Boundaries (in/out of scope): In - `cli/src/services/agent_trace_db/mod.rs` (remove `open_for_hooks_without_migrations` at ~line 268; drop stale `#[allow(dead_code)]` + outdated T08 comment on `pub mod repository` at ~lines 21-24; drop stale `#[allow(dead_code)]` on `INSERT_MESSAGE_SQL`, `INSERT_PART_SQL`, `MessageRole`, `InsertMessageInsert`, `PartType`, `InsertPartInsert`); `cli/src/services/trace/discovery.rs` (drop stale `#[allow(dead_code)]` on items actively called by `command.rs`: `DiscoveredAgentTraceDb`, `ResolveAgentTraceDbError`, `resolve_agent_trace_db_identifier`, `discover_agent_trace_dbs`). Out - the block-level `#[allow(dead_code)]` on `impl AgentTraceDb` blocks (kept until T06 removes the whole type); the test-only `insert_*` methods on `AgentTraceDb` (retired in T04/T06); `agent_trace_db_path()`; the `--legacy` surface.
   - Done when: removed function has no references; dropped `#[allow(dead_code)]` attributes do not produce new warnings (items are genuinely used); `nix flake check` passes.
   - Verification notes (commands or checks): `rg -n "open_for_hooks_without_migrations\b" cli/src` returns no matches (note: `open_for_hooks_without_migrations_at` must still exist); `nix build .#checks.x86_64-linux.cli-clippy` passes with no new dead-code warnings.
+  - Status: done
+  - Completed: 2026-07-17
+  - Files changed: `cli/src/services/agent_trace_db/mod.rs`, `cli/src/services/agent_trace_db/repository.rs`, `cli/src/services/trace/discovery.rs`
+  - Evidence: `rg -n "open_for_hooks_without_migrations\b" cli/src` returns no matches; `open_for_hooks_without_migrations_at` still exists (mod.rs + 8 trace call sites). `nix build .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt .#checks.x86_64-linux.cli-tests` all pass (exit 0).
+  - Notes: Removing the module-level `#[allow(dead_code)]` on `pub mod repository` (as specified) surfaced two genuinely-dead test-only methods it had been masking — `RepositoryAgentTraceDb::insert_message`/`insert_part`. Added per-method `#[allow(dead_code)]` to those two (mirroring the legacy `AgentTraceDb` singular-insert pattern) so the module-level allow could be dropped without a warning; `insert_messages`/`insert_parts` remain live via hooks. The `INSERT_MESSAGE_SQL`/`INSERT_PART_SQL` allow-removal risk noted at review did not materialize — clippy stayed clean. Verify-only for context sync (localized dead-code cleanup, no cross-cutting change).
 
 - [ ] T03: `Remove the --legacy trace CLI surface` (status:todo)
   - Task ID: T03
