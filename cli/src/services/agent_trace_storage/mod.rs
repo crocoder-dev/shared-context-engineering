@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::services::agent_trace_db::AgentTraceDb;
+use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::checkout::{get_or_create_checkout_id, resolve_git_dir};
 use crate::services::default_paths::{
     agent_trace_db_path_for_repository, agent_trace_db_path_for_repository_at,
@@ -48,7 +48,7 @@ pub struct ResolvedAgentTraceStorage {
     /// `<state-root>/sce/repos/<repository-id>/agent-trace.db`.
     pub db_path: PathBuf,
     /// Open repository-scoped Agent Trace database.
-    pub db: AgentTraceDb,
+    pub db: RepositoryAgentTraceDb,
 }
 
 /// Resolves the repository-scoped Agent Trace storage for a checkout using
@@ -105,17 +105,25 @@ fn open_storage(
     // Opening the database creates `repos/<repository-id>/` when missing;
     // both directory creation and schema initialization are idempotent, so
     // concurrent first-time resolution is safe.
-    let fast_open = AgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
-        .and_then(|db| db.ensure_schema_ready_for_hooks().map(|()| db));
+    let repository_id = &repository_identity.identity.repository_id;
+    let fast_open = RepositoryAgentTraceDb::open_without_migrations_at(&db_path).and_then(|db| {
+        db.ensure_schema_ready_for_hooks()?;
+        db.verify_or_initialize_repository_metadata(repository_id)?;
+        Ok(db)
+    });
     let db = match fast_open {
         Ok(db) => db,
-        Err(fast_error) => AgentTraceDb::open_at(&db_path).with_context(|| {
-            format!(
-                "failed to initialize repository-scoped Agent Trace DB for repository {} at '{}' (fast-path attempt: {fast_error})",
-                repository_identity.identity.repository_id,
-                db_path.display()
-            )
-        })?,
+        Err(fast_error) => {
+            let db = RepositoryAgentTraceDb::new_at(&db_path).with_context(|| {
+                format!(
+                    "failed to initialize repository-scoped Agent Trace DB for repository {} at '{}' (fast-path attempt: {fast_error})",
+                    repository_id,
+                    db_path.display()
+                )
+            })?;
+            db.verify_or_initialize_repository_metadata(repository_id)?;
+            db
+        }
     };
 
     Ok(ResolvedAgentTraceStorage {

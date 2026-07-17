@@ -237,7 +237,11 @@ fn apply_migration(
     sql: &str,
 ) -> Result<()> {
     runtime.block_on(async {
-        conn.execute(sql, ())
+        // Migration files may contain multiple statements (the repository
+        // Agent Trace baseline is one multi-statement schema file), so batch
+        // execution is required; `execute` would stop after the first
+        // statement.
+        conn.execute_batch(sql)
             .await
             .map_err(|e| anyhow::anyhow!("{db_name} migration {id} failed: {e}"))?;
         conn.execute(INSERT_MIGRATION_SQL, (id,))

@@ -107,12 +107,16 @@ Initial code inspection found the current checkout-scoped behavior in these area
   - Evidence: `nix build .#checks.x86_64-linux.cli-tests` pass (171 tests, 8 new `agent_trace_storage` tests covering repo separation, SSH/HTTPS clone consolidation, linked-worktree consolidation, explicit-ID override, idempotent re-resolution, missing-identity guidance, and path-segment validation); `cli-clippy` + `cli-fmt` checks pass.
   - Notes: `resolve_agent_trace_storage(context)` is the production entrypoint; `resolve_agent_trace_storage_at_state_root(context, state_root)` is the injectable core used by tests. Context takes already-resolved config values (explicit ID + remote name); T08 wires config/hooks/lifecycle call sites. `default_paths::agent_trace_db_path_for_repository{,_at}` rejects empty/path-unsafe repository IDs. Directory creation rides on `TursoDb` parent-dir `create_dir_all` (idempotent, safe for concurrent first open); DB open reuses the fast-path-then-migrate pattern from the checkout resolver. Failed identity resolution creates no state directories. Module is `#[allow(dead_code)]` until T08 consumes it; the legacy checkout resolver remains untouched and active until then.
 
-- [ ] T05: `Define one-file repository-scoped Agent Trace schema` (status:todo)
+- [x] T05: `Define one-file repository-scoped Agent Trace schema` (status:done)
   - Task ID: T05
   - Goal: Replace the checkout-scoped Agent Trace schema baseline with one repository-scoped schema SQL file that includes repository metadata and keeps trace tables repository-level.
   - Boundaries (in/out of scope): In - one fresh schema SQL file covering `repository_metadata`, existing Agent Trace tables, repository-level indexes/constraints, and metadata validation on open. Out - old database alteration/migration/import, `checkout_id` columns on trace tables, checkout-scoped attribution queries, and a new chain of incremental SQL files for the repository-scoped DB baseline.
   - Done when: New DBs are initialized from one fresh schema SQL file and have metadata matching the resolved repository ID; opening a DB with mismatched metadata errors; no `checkout_id` columns are added to Agent Trace row tables.
   - Verification notes (commands or checks): targeted AgentTraceDb schema tests; assert no code path opens legacy checkout DBs for migration.
+  - Completed: 2026-07-17
+  - Files changed: `cli/migrations/agent-trace-repository/001_repository_schema.sql`, `cli/src/generated_migrations.rs`, `cli/src/services/agent_trace_db/mod.rs`, `cli/src/services/agent_trace_db/repository.rs`, `cli/src/services/agent_trace_storage/mod.rs`, `cli/src/services/db/mod.rs`
+  - Evidence: `nix build .#checks.x86_64-linux.cli-tests` pass; `nix build .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt` pass; `nix run .#pkl-check-generated` reports "Generated outputs are up to date."
+  - Notes: Added the `agent-trace-repository` one-file fresh schema baseline with `repository_metadata`, existing repository-level Agent Trace tables/indexes/triggers, and no `checkout_id` trace columns. Added `RepositoryAgentTraceDb` over the shared Turso adapter, metadata seed/validation helpers, schema readiness tests, and storage resolver metadata validation. Shared migration execution now uses batch execution so the one-file multi-statement baseline runs as one recorded migration.
 
 - [ ] T06: `Keep Agent Trace writes repository-level` (status:todo)
   - Task ID: T06
