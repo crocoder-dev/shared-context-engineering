@@ -118,12 +118,16 @@ Initial code inspection found the current checkout-scoped behavior in these area
   - Evidence: `nix build .#checks.x86_64-linux.cli-tests` pass; `nix build .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt` pass; `nix run .#pkl-check-generated` reports "Generated outputs are up to date."
   - Notes: Added the `agent-trace-repository` one-file fresh schema baseline with `repository_metadata`, existing repository-level Agent Trace tables/indexes/triggers, and no `checkout_id` trace columns. Added `RepositoryAgentTraceDb` over the shared Turso adapter, metadata seed/validation helpers, schema readiness tests, and storage resolver metadata validation. Shared migration execution now uses batch execution so the one-file multi-statement baseline runs as one recorded migration.
 
-- [ ] T06: `Keep Agent Trace writes repository-level` (status:todo)
+- [x] T06: `Keep Agent Trace writes repository-level` (status:done)
   - Task ID: T06
   - Goal: Update Agent Trace write paths to use the repository-scoped database while preserving current row shapes without `checkout_id` fields.
   - Boundaries (in/out of scope): In - Rust insert structs/constants/SQL/tests updated only as needed for the fresh one-file schema and repository DB opening. Out - adding checkout provenance columns or checkout-scoped write APIs.
   - Done when: Diff traces, messages, parts, Agent Trace rows, and post-commit intersections write successfully into the repository-scoped DB using repository-level row schemas.
   - Verification notes (commands or checks): `nix develop -c sh -c 'cd cli && cargo test agent_trace_db'` or exact insert tests.
+  - Completed: 2026-07-17
+  - Files changed: `cli/src/services/agent_trace_db/repository.rs`
+  - Evidence: `nix build .#checks.x86_64-linux.cli-tests .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt` pass.
+  - Notes: `RepositoryAgentTraceDb` now exposes repository-level write methods for diff traces, post-commit patch intersections, Agent Trace rows, messages, and parts by delegating to the existing generic insert helpers and SQL. Added repository-scoped insert coverage for all row families against the fresh one-file schema, with no `checkout_id` columns or checkout-provenance write API added.
 
 - [ ] T07: `Use repository-level attribution queries` (status:todo)
   - Task ID: T07

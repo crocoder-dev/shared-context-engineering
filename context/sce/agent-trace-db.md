@@ -45,6 +45,8 @@ pub type RepositoryAgentTraceDb = TursoDb<RepositoryAgentTraceDbSpec>;
 
 This adapter has no canonical `DbSpec::db_path()`; callers must resolve `<state_root>/sce/repos/<repository-id>/agent-trace.db` first and use explicit-path `TursoDb` constructors. Its migration list is `generated_migrations::AGENT_TRACE_REPOSITORY_MIGRATIONS`, currently one fresh multi-statement SQL file at `cli/migrations/agent-trace-repository/001_repository_schema.sql`. The schema includes `repository_metadata` plus the existing repository-level Agent Trace tables, indexes, and triggers, and intentionally has no `checkout_id` columns on trace tables. `RepositoryAgentTraceDb::verify_or_initialize_repository_metadata(repository_id)` inserts the singleton metadata row on first initialization and errors if an existing DB stores a different repository ID.
 
+`RepositoryAgentTraceDb` exposes repository-level write helpers for the current row families by delegating to the same typed insert payloads and parameterized SQL used by the checkout-scoped adapter: `insert_diff_trace`, `insert_post_commit_patch_intersection`, `insert_agent_trace`, `insert_message`, `insert_messages`, `insert_part`, and `insert_parts`. These methods preserve the existing row shapes and do not add checkout provenance columns or checkout-scoped write APIs.
+
 The repository-scoped adapter is consumed by `agent_trace_storage` but broader hook/setup/doctor runtime call-site wiring remains pending until later tasks in the same plan.
 
 ## Non-goals

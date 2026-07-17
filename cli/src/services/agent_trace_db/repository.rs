@@ -16,6 +16,13 @@ use crate::{
     services::db::{DbSpec, TursoDb},
 };
 
+use super::{
+    insert_agent_trace_with, insert_diff_trace_with, insert_message_with, insert_messages_with,
+    insert_part_with, insert_parts_with, insert_post_commit_patch_intersection_with,
+    AgentTraceInsert, DiffTraceInsert, InsertMessageInsert, InsertPartInsert,
+    PostCommitPatchIntersectionInsert,
+};
+
 const REPOSITORY_AGENT_TRACE_SCHEMA_SETUP_GUIDANCE: &str = "Run 'sce setup'.";
 
 const SELECT_REPOSITORY_METADATA_SQL: &str =
@@ -86,6 +93,49 @@ impl RepositoryAgentTraceDb {
             ),
         }
     }
+
+    /// Insert a diff trace payload into the repository-scoped `diff_traces`
+    /// table. Rows remain repository-level; no checkout provenance is stored.
+    pub fn insert_diff_trace(&self, input: DiffTraceInsert<'_>) -> Result<u64> {
+        insert_diff_trace_with(self, input)
+    }
+
+    /// Insert a post-commit patch intersection into the repository-scoped
+    /// `post_commit_patch_intersections` table.
+    pub fn insert_post_commit_patch_intersection(
+        &self,
+        input: PostCommitPatchIntersectionInsert<'_>,
+    ) -> Result<u64> {
+        insert_post_commit_patch_intersection_with(self, input)
+    }
+
+    /// Insert a built Agent Trace payload into the repository-scoped
+    /// `agent_traces` table.
+    pub fn insert_agent_trace(&self, input: AgentTraceInsert<'_>) -> Result<u64> {
+        insert_agent_trace_with(self, input)
+    }
+
+    /// Insert a message row, ignoring duplicate `(session_id, message_id)`
+    /// rows.
+    pub fn insert_message(&self, input: InsertMessageInsert) -> Result<u64> {
+        insert_message_with(self, input)
+    }
+
+    /// Insert message rows with one multi-row statement, ignoring duplicate
+    /// `(session_id, message_id)` rows.
+    pub fn insert_messages(&self, inputs: Vec<InsertMessageInsert>) -> Result<u64> {
+        insert_messages_with(self, inputs)
+    }
+
+    /// Append a part row (no upsert; multiple rows per message allowed).
+    pub fn insert_part(&self, input: InsertPartInsert) -> Result<u64> {
+        insert_part_with(self, input)
+    }
+
+    /// Append part rows with one multi-row statement.
+    pub fn insert_parts(&self, inputs: Vec<InsertPartInsert>) -> Result<u64> {
+        insert_parts_with(self, inputs)
+    }
 }
 
 #[cfg(test)]
@@ -97,6 +147,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::services::agent_trace_db::{MessageRole, PartType, PAYLOAD_TYPE_PATCH};
 
     fn unique_test_db_path(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -260,6 +311,96 @@ mod tests {
         );
         assert!(message.contains(&stored_repository_id));
         assert!(message.contains(&other_repository_id));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn repository_scoped_write_methods_insert_all_agent_trace_rows() {
+        let db_path = unique_test_db_path("writes");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+
+        db.insert_diff_trace(DiffTraceInsert {
+            time_ms: 1_000,
+            session_id: "oc_session-1",
+            patch: "Index: notes.md\n===================================================================\n--- notes.md\n+++ notes.md\n@@ -0,0 +1,1 @@\n+hello\n",
+            model_id: Some("provider/model"),
+            tool_name: "opencode",
+            tool_version: Some("1.2.3"),
+            payload_type: PAYLOAD_TYPE_PATCH,
+        })
+        .expect("diff trace insert should succeed");
+
+        db.insert_post_commit_patch_intersection(PostCommitPatchIntersectionInsert {
+            commit_id: "abc123",
+            post_commit_time_ms: 2_000,
+            recent_window_cutoff_ms: 1_000,
+            recent_window_end_ms: 2_000,
+            loaded_diff_trace_count: 1,
+            skipped_diff_trace_count: 0,
+            intersection_patch: "Index: notes.md\n===================================================================\n--- notes.md\n+++ notes.md\n@@ -0,0 +1,1 @@\n+hello\n",
+        })
+        .expect("post-commit intersection insert should succeed");
+
+        db.insert_agent_trace(AgentTraceInsert {
+            commit_id: "abc123",
+            commit_time_ms: 2_000,
+            trace_json: r#"{"id":"trace-1"}"#,
+            agent_trace_id: "trace-1",
+            url: "https://sce.crocoder.dev/agent-trace/trace-1",
+            remote_url: "https://github.com/acme/widgets",
+        })
+        .expect("agent trace insert should succeed");
+
+        db.insert_message(InsertMessageInsert {
+            session_id: "oc_session-1".to_string(),
+            message_id: "message-1".to_string(),
+            role: MessageRole::Assistant,
+            generated_at_unix_ms: 1_000,
+        })
+        .expect("message insert should succeed");
+        db.insert_messages(vec![InsertMessageInsert {
+            session_id: "oc_session-1".to_string(),
+            message_id: "message-2".to_string(),
+            role: MessageRole::User,
+            generated_at_unix_ms: 1_001,
+        }])
+        .expect("batch message insert should succeed");
+
+        db.insert_part(InsertPartInsert {
+            part_type: PartType::Text,
+            text: "hello".to_string(),
+            session_id: "oc_session-1".to_string(),
+            message_id: "message-1".to_string(),
+            generated_at_unix_ms: 1_000,
+        })
+        .expect("part insert should succeed");
+        db.insert_parts(vec![InsertPartInsert {
+            part_type: PartType::Patch,
+            text: "patch text".to_string(),
+            session_id: "oc_session-1".to_string(),
+            message_id: "message-2".to_string(),
+            generated_at_unix_ms: 1_001,
+        }])
+        .expect("batch part insert should succeed");
+
+        for (table, expected_count) in [
+            ("diff_traces", 1_i64),
+            ("post_commit_patch_intersections", 1),
+            ("agent_traces", 1),
+            ("messages", 2),
+            ("parts", 2),
+        ] {
+            let count = db
+                .query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |row| {
+                    row.get::<i64>(0).map_err(Into::into)
+                })
+                .expect("count query should succeed")
+                .into_iter()
+                .next()
+                .expect("count row should exist");
+            assert_eq!(count, expected_count, "unexpected row count for {table}");
+        }
 
         remove_test_db(&db_path);
     }
