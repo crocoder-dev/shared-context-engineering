@@ -1,26 +1,18 @@
 //! Agent trace Turso database adapter.
 
-use std::path::PathBuf;
-
 use anyhow::{Context, Result};
 use turso::Value as TursoValue;
 
-use crate::{
-    generated_migrations,
-    services::{
-        db::{DbSpec, TursoDb},
-        default_paths::agent_trace_db_path,
-        patch::{parse_patch, ParseError, ParsedPatch},
-        structured_patch::{derive_claude_structured_patch, ClaudeStructuredPatchDerivationResult},
-    },
+use crate::services::{
+    db::{DbSpec, TursoDb},
+    patch::{parse_patch, ParseError, ParsedPatch},
+    structured_patch::{derive_claude_structured_patch, ClaudeStructuredPatchDerivationResult},
 };
 
 use serde_json::Value;
 
 pub mod lifecycle;
 pub mod repository;
-
-const AGENT_TRACE_SCHEMA_SETUP_GUIDANCE: &str = "Run 'sce setup'.";
 
 /// Payload type discriminator for diff trace source payloads.
 ///
@@ -67,45 +59,6 @@ ON CONFLICT (session_id, message_id) DO NOTHING";
 pub const INSERT_PART_SQL: &str =
     "INSERT INTO parts (type, text, message_id, session_id, generated_at_unix_ms)
 VALUES (?1, ?2, ?3, ?4, ?5)";
-
-/// Agent trace database configuration.
-pub struct AgentTraceDbSpec;
-
-impl DbSpec for AgentTraceDbSpec {
-    fn db_name() -> &'static str {
-        "agent trace DB"
-    }
-
-    fn db_path() -> Result<PathBuf> {
-        agent_trace_db_path()
-    }
-
-    fn migrations() -> &'static [(&'static str, &'static str)] {
-        generated_migrations::AGENT_TRACE_MIGRATIONS
-    }
-
-    fn db_config_key() -> &'static str {
-        "agent_trace_db"
-    }
-}
-
-/// Agent trace Turso database adapter.
-pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
-
-#[allow(dead_code)]
-impl AgentTraceDb {
-    /// Open or create an Agent Trace database at an explicit path and run all
-    /// embedded migrations.
-    pub fn open_at(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        TursoDb::<AgentTraceDbSpec>::new_at(path)
-    }
-
-    /// Open or create an Agent Trace database at an explicit path without
-    /// running migrations.
-    pub fn open_for_hooks_without_migrations_at(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        TursoDb::<AgentTraceDbSpec>::open_without_migrations_at(path)
-    }
-}
 
 /// Diff trace payload to persist in the agent trace database.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -246,70 +199,6 @@ pub struct InsertPartInsert {
     pub session_id: String,
     pub message_id: String,
     pub generated_at_unix_ms: i64,
-}
-
-#[allow(dead_code)]
-impl AgentTraceDb {
-    /// Verify that the Agent Trace DB schema needed by hook runtime readers and
-    /// writers already exists.
-    ///
-    /// This check is intentionally non-mutating. Missing or incomplete schema is
-    /// reported with setup guidance instead of running migrations from a
-    /// high-frequency hook path.
-    pub fn ensure_schema_ready_for_hooks(&self) -> Result<()> {
-        self.ensure_schema_ready(AGENT_TRACE_SCHEMA_SETUP_GUIDANCE)
-    }
-
-    /// Insert a diff trace payload into the `diff_traces` table.
-    pub fn insert_diff_trace(&self, input: DiffTraceInsert<'_>) -> Result<u64> {
-        insert_diff_trace_with(self, input)
-    }
-
-    /// Insert a post-commit patch intersection result into the
-    /// `post_commit_patch_intersections` table.
-    pub fn insert_post_commit_patch_intersection(
-        &self,
-        input: PostCommitPatchIntersectionInsert<'_>,
-    ) -> Result<u64> {
-        insert_post_commit_patch_intersection_with(self, input)
-    }
-
-    /// Insert a built agent trace payload into the `agent_traces` table.
-    pub fn insert_agent_trace(&self, input: AgentTraceInsert<'_>) -> Result<u64> {
-        insert_agent_trace_with(self, input)
-    }
-
-    /// Query and parse recent diff trace patches within the inclusive time window.
-    pub fn recent_diff_trace_patches(
-        &self,
-        cutoff_time_ms: i64,
-        end_time_ms: i64,
-    ) -> Result<RecentDiffTracePatches> {
-        recent_diff_trace_patches_with(self, cutoff_time_ms, end_time_ms)
-    }
-
-    /// Insert a message row, ignoring duplicate `(session_id, message_id)` rows.
-    #[allow(dead_code)]
-    pub fn insert_message(&self, input: InsertMessageInsert) -> Result<u64> {
-        insert_message_with(self, input)
-    }
-
-    /// Insert message rows with one multi-row statement, ignoring duplicate
-    /// `(session_id, message_id)` rows.
-    pub fn insert_messages(&self, inputs: Vec<InsertMessageInsert>) -> Result<u64> {
-        insert_messages_with(self, inputs)
-    }
-
-    /// Append a part row (no upsert; multiple rows per message allowed).
-    #[allow(dead_code)]
-    pub fn insert_part(&self, input: InsertPartInsert) -> Result<u64> {
-        insert_part_with(self, input)
-    }
-
-    /// Append part rows with one multi-row statement.
-    pub fn insert_parts(&self, inputs: Vec<InsertPartInsert>) -> Result<u64> {
-        insert_parts_with(self, inputs)
-    }
 }
 
 fn insert_diff_trace_with<M: DbSpec>(db: &TursoDb<M>, input: DiffTraceInsert<'_>) -> Result<u64> {
@@ -546,61 +435,11 @@ mod tests {
     use std::{
         fs,
         path::PathBuf,
-        sync::OnceLock,
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    use super::repository::RepositoryAgentTraceDb;
     use super::*;
-    use crate::services::agent_trace;
-
-    static TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
-    static BASELINE_TEST_DB_PATH: OnceLock<PathBuf> = OnceLock::new();
-
-    struct TestAgentTraceDbSpec;
-
-    impl DbSpec for TestAgentTraceDbSpec {
-        fn db_name() -> &'static str {
-            "test agent trace DB"
-        }
-
-        fn db_path() -> Result<PathBuf> {
-            TEST_DB_PATH
-                .get()
-                .cloned()
-                .context("test DB path should be initialized")
-        }
-
-        fn migrations() -> &'static [(&'static str, &'static str)] {
-            generated_migrations::AGENT_TRACE_MIGRATIONS
-        }
-
-        fn db_config_key() -> &'static str {
-            "agent_trace_db"
-        }
-    }
-
-    struct BaselineAgentTraceDbSpec;
-
-    impl DbSpec for BaselineAgentTraceDbSpec {
-        fn db_name() -> &'static str {
-            "baseline test agent trace DB"
-        }
-
-        fn db_path() -> Result<PathBuf> {
-            BASELINE_TEST_DB_PATH
-                .get()
-                .cloned()
-                .context("baseline test DB path should be initialized")
-        }
-
-        fn migrations() -> &'static [(&'static str, &'static str)] {
-            generated_migrations::AGENT_TRACE_MIGRATIONS
-        }
-
-        fn db_config_key() -> &'static str {
-            "agent_trace_db"
-        }
-    }
 
     fn unique_test_db_path() -> PathBuf {
         let nonce = SystemTime::now()
@@ -622,53 +461,27 @@ mod tests {
     }
 
     fn insert_test_diff_trace(
-        db: &TursoDb<TestAgentTraceDbSpec>,
+        db: &RepositoryAgentTraceDb,
         time_ms: i64,
         session_id: &str,
         patch: &str,
     ) {
-        insert_diff_trace_with(
-            db,
-            DiffTraceInsert {
-                time_ms,
-                session_id,
-                patch,
-                model_id: Some("test-provider/test-model"),
-                tool_name: "opencode",
-                tool_version: Some("1.2.3"),
-                payload_type: PAYLOAD_TYPE_PATCH,
-            },
-        )
+        db.insert_diff_trace(DiffTraceInsert {
+            time_ms,
+            session_id,
+            patch,
+            model_id: Some("test-provider/test-model"),
+            tool_name: "opencode",
+            tool_version: Some("1.2.3"),
+            payload_type: PAYLOAD_TYPE_PATCH,
+        })
         .expect("diff trace insert should succeed");
-    }
-
-    fn sqlite_object_exists<M: DbSpec>(db: &TursoDb<M>, object_type: &str, name: &str) -> bool {
-        let rows = db
-            .query_map(
-                "SELECT name FROM sqlite_master WHERE type = ?1 AND name = ?2",
-                (object_type, name),
-                |row| row.get::<String>(0).map_err(Into::into),
-            )
-            .expect("sqlite_master query should succeed");
-        !rows.is_empty()
-    }
-
-    fn applied_migration_ids<M: DbSpec>(db: &TursoDb<M>) -> Vec<String> {
-        db.query_map(
-            "SELECT id FROM __sce_migrations ORDER BY id ASC",
-            (),
-            |row| row.get::<String>(0).map_err(Into::into),
-        )
-        .expect("migration metadata query should succeed")
     }
 
     #[test]
     fn recent_diff_trace_patches_applies_bounded_window_ordering_and_parse_accounting() {
         let db_path = unique_test_db_path();
-        TEST_DB_PATH
-            .set(db_path.clone())
-            .expect("test DB path should only be initialized once");
-        let db = TursoDb::<TestAgentTraceDbSpec>::new().expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
 
         let before_cutoff_patch = valid_patch("notes/before.md", "before cutoff");
         let cutoff_patch = valid_patch("notes/cutoff.md", "at cutoff");
@@ -757,113 +570,6 @@ mod tests {
         );
 
         drop(db);
-        if let Some(parent) = db_path.parent() {
-            fs::remove_dir_all(parent).expect("test DB directory should be removed");
-        }
-    }
-
-    #[test]
-    fn new_applies_baseline_agent_trace_migration_and_indexes() {
-        let db_path = unique_test_db_path();
-        BASELINE_TEST_DB_PATH
-            .set(db_path.clone())
-            .expect("baseline test DB path should only be initialized once");
-
-        let db = TursoDb::<BaselineAgentTraceDbSpec>::new().expect("baseline test DB should open");
-
-        assert!(sqlite_object_exists(&db, "table", "diff_traces"));
-        assert!(sqlite_object_exists(
-            &db,
-            "table",
-            "post_commit_patch_intersections"
-        ));
-        assert!(sqlite_object_exists(&db, "table", "agent_traces"));
-        assert!(sqlite_object_exists(
-            &db,
-            "index",
-            "idx_diff_traces_time_ms_id"
-        ));
-        assert!(sqlite_object_exists(
-            &db,
-            "index",
-            "idx_agent_traces_agent_trace_id"
-        ));
-        assert!(sqlite_object_exists(
-            &db,
-            "index",
-            "idx_agent_traces_remote_url"
-        ));
-        assert!(sqlite_object_exists(&db, "table", "messages"));
-        assert!(sqlite_object_exists(&db, "table", "parts"));
-        assert!(!sqlite_object_exists(&db, "table", "session_models"));
-        assert!(sqlite_object_exists(
-            &db,
-            "index",
-            "idx_messages_session_message"
-        ));
-        assert!(sqlite_object_exists(
-            &db,
-            "index",
-            "idx_messages_session_order"
-        ));
-        assert!(sqlite_object_exists(
-            &db,
-            "index",
-            "idx_parts_session_message_order"
-        ));
-        assert!(sqlite_object_exists(
-            &db,
-            "trigger",
-            "trg_messages_updated_at"
-        ));
-        assert!(sqlite_object_exists(&db, "trigger", "trg_parts_updated_at"));
-        let applied_ids = applied_migration_ids(&db);
-        assert_eq!(
-            applied_ids.len(),
-            generated_migrations::AGENT_TRACE_MIGRATIONS.len(),
-            "applied migration count should match generated migration count"
-        );
-        assert!(
-            applied_ids.windows(2).all(|w| w[0] < w[1]),
-            "applied migration IDs should be sorted ascending: {applied_ids:?}"
-        );
-        for id in &applied_ids {
-            assert!(
-                id.len() > 4
-                    && id.chars().take(3).all(|c| c.is_ascii_digit())
-                    && id.chars().nth(3) == Some('_'),
-                "migration ID '{id}' should match NNN_... pattern"
-            );
-        }
-
-        let trace_url = agent_trace::agent_trace_persisted_url("trace-1");
-
-        let duplicate_insert = insert_agent_trace_with(
-            &db,
-            AgentTraceInsert {
-                commit_id: "abc123",
-                commit_time_ms: 123,
-                trace_json: r#"{"id":"trace-1"}"#,
-                agent_trace_id: "trace-1",
-                url: &trace_url,
-                remote_url: "https://github.com/test/repo",
-            },
-        );
-        assert!(duplicate_insert.is_ok());
-
-        let duplicate_insert = insert_agent_trace_with(
-            &db,
-            AgentTraceInsert {
-                commit_id: "abc124",
-                commit_time_ms: 124,
-                trace_json: r#"{"id":"trace-1"}"#,
-                agent_trace_id: "trace-1",
-                url: &trace_url,
-                remote_url: "https://github.com/test/repo",
-            },
-        );
-        assert!(duplicate_insert.is_err());
-
         if let Some(parent) = db_path.parent() {
             fs::remove_dir_all(parent).expect("test DB directory should be removed");
         }

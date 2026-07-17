@@ -278,19 +278,6 @@ pub fn auth_db_path() -> anyhow::Result<PathBuf> {
         .join("auth.db"))
 }
 
-/// Returns the canonical path to the agent trace Turso database file.
-///
-/// The path is `<state_root>/sce/agent-trace.db`, where `state_root` comes
-/// from the shared default-path catalog (`XDG_STATE_HOME` or platform
-/// equivalent).
-pub fn agent_trace_db_path() -> anyhow::Result<PathBuf> {
-    Ok(resolve_sce_default_locations()?
-        .roots()
-        .state_root()
-        .join("sce")
-        .join("agent-trace.db"))
-}
-
 /// Returns the canonical repository-scoped Agent Trace Turso database file path.
 ///
 /// The path is `<state_root>/sce/repos/<repository_id>/agent-trace.db`, where

@@ -2,25 +2,6 @@
 #![allow(dead_code)]
 
 #[rustfmt::skip]
-pub static AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
-    ("001_create_diff_traces", include_str!("../migrations/agent-trace/001_create_diff_traces.sql")),
-    ("002_create_post_commit_patch_intersections", include_str!("../migrations/agent-trace/002_create_post_commit_patch_intersections.sql")),
-    ("003_create_agent_traces", include_str!("../migrations/agent-trace/003_create_agent_traces.sql")),
-    ("004_create_diff_traces_time_ms_id_index", include_str!("../migrations/agent-trace/004_create_diff_traces_time_ms_id_index.sql")),
-    ("005_create_agent_traces_agent_trace_id_index", include_str!("../migrations/agent-trace/005_create_agent_traces_agent_trace_id_index.sql")),
-    ("006_add_agent_traces_vcs_remote_url", include_str!("../migrations/agent-trace/006_add_agent_traces_vcs_remote_url.sql")),
-    ("007_create_agent_traces_vcs_remote_url_index", include_str!("../migrations/agent-trace/007_create_agent_traces_vcs_remote_url_index.sql")),
-    ("008_create_messages", include_str!("../migrations/agent-trace/008_create_messages.sql")),
-    ("009_create_parts", include_str!("../migrations/agent-trace/009_create_parts.sql")),
-    ("010_create_messages_session_message_unique_index", include_str!("../migrations/agent-trace/010_create_messages_session_message_unique_index.sql")),
-    ("011_create_messages_session_order_index", include_str!("../migrations/agent-trace/011_create_messages_session_order_index.sql")),
-    ("012_create_parts_session_message_order_index", include_str!("../migrations/agent-trace/012_create_parts_session_message_order_index.sql")),
-    ("013_create_messages_updated_at_trigger", include_str!("../migrations/agent-trace/013_create_messages_updated_at_trigger.sql")),
-    ("014_create_parts_updated_at_trigger", include_str!("../migrations/agent-trace/014_create_parts_updated_at_trigger.sql")),
-    ("015_add_diff_traces_payload_type", include_str!("../migrations/agent-trace/015_add_diff_traces_payload_type.sql")),
-];
-
-#[rustfmt::skip]
 pub static AGENT_TRACE_REPOSITORY_MIGRATIONS: &[(&str, &str)] = &[
     ("001_repository_schema", include_str!("../migrations/agent-trace-repository/001_repository_schema.sql")),
 ];
