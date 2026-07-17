@@ -2,7 +2,7 @@
 
 The checkout identity service lives in `cli/src/services/checkout/`.
 
-It assigns a stable identity to a local Git checkout or linked Git worktree. Checkout identity remains per clone/worktree, but active Agent Trace persistence is now repository-scoped through `agent_trace_storage`: checkout ID is diagnostic metadata and is not stored on Agent Trace rows. Legacy per-checkout Agent Trace DB helpers remain in code for historical/legacy paths until explicit legacy trace inspection is wired.
+It assigns a stable identity to a local Git checkout or linked Git worktree. Checkout identity remains per clone/worktree, but active Agent Trace persistence is now repository-scoped through `agent_trace_storage`: checkout ID is diagnostic metadata and is not stored on Agent Trace rows. Legacy per-checkout Agent Trace DB helpers remain in code for historical paths and explicit `sce trace --legacy` inspection.
 
 ## Current code surface
 
@@ -23,7 +23,7 @@ During setup and hook runtime:
 - The active DB path is `<state_root>/sce/repos/<repository-id>/agent-trace.db`.
 - `RepositoryAgentTraceDb` opens through the repository fast-path-then-migrate flow and validates `repository_metadata.repository_id`.
 
-`sce doctor` still displays checkout identity where available. Existing `sce trace db list` legacy discovery scans `<state_root>/sce/agent-trace-*.db` files on disk; T09 of the repository-scoped plan will update trace list/status/shell UX for repository-scoped active DBs and explicit legacy inspection.
+`sce doctor` still displays checkout identity where available. Default `sce trace` list/status/status-all/shell UX now uses repository-scoped DBs, while explicit `--legacy` trace commands scan `<state_root>/sce/agent-trace-*.db` files on disk for old checkout-scoped databases.
 
 ## Testing boundary
 

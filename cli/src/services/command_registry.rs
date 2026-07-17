@@ -180,6 +180,7 @@ pub fn default_runtime_command(name: &str) -> Option<RuntimeCommand> {
                 request: services::trace::TraceRequest {
                     subcommand: services::trace::TraceSubcommandRequest::DbList {
                         format: services::output_format::OutputFormat::Text,
+                        legacy: false,
                     },
                 },
             },

@@ -237,10 +237,13 @@ pub enum TraceSubcommand {
         subcommand: TraceDbSubcommand,
     },
 
-    #[command(about = "Show Agent Trace activity for the current checkout (or all with --all)")]
+    #[command(about = "Show Agent Trace activity for the current repository (or all with --all)")]
     Status {
         #[arg(long)]
         all: bool,
+
+        #[arg(long)]
+        legacy: bool,
 
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
@@ -251,14 +254,20 @@ pub enum TraceSubcommand {
 pub enum TraceDbSubcommand {
     #[command(about = "List discovered Agent Trace databases with readiness")]
     List {
+        #[arg(long)]
+        legacy: bool,
+
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
 
-    #[command(about = "Open an embedded SQL shell for a discovered Agent Trace database")]
+    #[command(about = "Open an embedded SQL shell for an Agent Trace database")]
     Shell {
-        #[arg(value_name = "uuid-or-alias")]
-        identifier: String,
+        #[arg(long)]
+        legacy: bool,
+
+        #[arg(value_name = "repository-id-or-alias")]
+        identifier: Option<String>,
     },
 }
 

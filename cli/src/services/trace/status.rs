@@ -1,16 +1,19 @@
-//! Per-checkout `sce trace status` resolution.
+//! Repository-scoped `sce trace status` resolution.
 //!
-//! Resolves the cwd's checkout via `services::checkout`, locates its
-//! `agent-trace-{id}.db`, probes schema readiness, and (when ready) collects
-//! row counts plus the last-activity timestamp.
+//! Resolves the current repository's active Agent Trace storage, probes schema
+//! readiness, and (when ready) collects row counts plus the last-activity
+//! timestamp. Legacy checkout-scoped status remains available for `--legacy`.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 
+#[cfg(test)]
+use crate::services::agent_trace_storage::resolve_agent_trace_storage_at_state_root;
+use crate::services::agent_trace_storage::{resolve_agent_trace_storage, AgentTraceStorageContext};
 use crate::services::checkout::{read_checkout_id, resolve_git_dir};
-use crate::services::default_paths::resolve_state_data_root;
+use crate::services::config;
 use crate::services::trace::discovery::{probe_readiness, Readiness};
 use crate::services::trace::stats::{collect_agent_trace_db_stats, AgentTraceDbStats};
 
@@ -61,9 +64,10 @@ pub enum DbStatus {
     },
 }
 
-/// Resolved per-checkout status report ready for rendering.
+/// Resolved status report ready for rendering.
 #[derive(Clone, Debug)]
 pub struct StatusReport {
+    pub repository_id: Option<String>,
     pub checkout_id: String,
     pub database_path: PathBuf,
     pub db_status: DbStatus,
@@ -72,13 +76,46 @@ pub struct StatusReport {
 /// Resolve `sce trace status` for the current working repository using the
 /// default state-data root.
 pub fn resolve_current_status(repo_root: &Path) -> Result<StatusReport, StatusErrorOrRuntime> {
-    let state_root = resolve_state_data_root().map_err(StatusErrorOrRuntime::Runtime)?;
-    let sce_dir = state_root.join("sce");
-    resolve_current_status_in(repo_root, &sce_dir)
+    let storage_config = config::resolve_agent_trace_storage_runtime_config(repo_root)
+        .map_err(StatusErrorOrRuntime::Runtime)?;
+    let context = AgentTraceStorageContext {
+        repository_root: repo_root,
+        explicit_repository_id: storage_config.repository_id.as_deref(),
+        repository_remote: &storage_config.repository_remote,
+    };
+    let storage = resolve_agent_trace_storage(&context).map_err(StatusErrorOrRuntime::Runtime)?;
+    status_report_from_path(
+        Some(storage.repository_identity.identity.repository_id),
+        storage.checkout_id,
+        storage.db_path,
+    )
 }
 
-/// Testable variant taking the `sce` directory explicitly.
-pub fn resolve_current_status_in(
+/// Testable repository-scoped variant taking the state root explicitly.
+#[cfg(test)]
+#[allow(dead_code)]
+pub fn resolve_current_status_at_state_root(
+    repo_root: &Path,
+    state_root: &Path,
+    explicit_repository_id: Option<&str>,
+    repository_remote: &str,
+) -> Result<StatusReport, StatusErrorOrRuntime> {
+    let context = AgentTraceStorageContext {
+        repository_root: repo_root,
+        explicit_repository_id,
+        repository_remote,
+    };
+    let storage = resolve_agent_trace_storage_at_state_root(&context, state_root)
+        .map_err(StatusErrorOrRuntime::Runtime)?;
+    status_report_from_path(
+        Some(storage.repository_identity.identity.repository_id),
+        storage.checkout_id,
+        storage.db_path,
+    )
+}
+
+/// Legacy testable variant taking the `sce` directory explicitly.
+pub fn resolve_current_legacy_status_in(
     repo_root: &Path,
     sce_dir: &Path,
 ) -> Result<StatusReport, StatusErrorOrRuntime> {
@@ -104,6 +141,14 @@ pub fn resolve_current_status_in(
         }));
     }
 
+    status_report_from_path(None, checkout_id, database_path)
+}
+
+fn status_report_from_path(
+    repository_id: Option<String>,
+    checkout_id: String,
+    database_path: PathBuf,
+) -> Result<StatusReport, StatusErrorOrRuntime> {
     let readiness = probe_readiness(&database_path).map_err(StatusErrorOrRuntime::Runtime)?;
     let db_status = match readiness {
         Readiness::Ready => {
@@ -119,6 +164,7 @@ pub fn resolve_current_status_in(
     };
 
     Ok(StatusReport {
+        repository_id,
         checkout_id,
         database_path,
         db_status,
@@ -193,7 +239,7 @@ mod tests {
         let repo = unique_temp_dir("not-git");
         let sce_dir = unique_temp_dir("not-git-sce");
 
-        let err = resolve_current_status_in(&repo, &sce_dir).expect_err("should error");
+        let err = resolve_current_legacy_status_in(&repo, &sce_dir).expect_err("should error");
         match err {
             StatusErrorOrRuntime::Status(StatusError::NotInGitRepo { .. }) => {}
             other => panic!("expected NotInGitRepo, got {other:?}"),
@@ -206,7 +252,7 @@ mod tests {
         init_git_repo(&repo);
         let sce_dir = unique_temp_dir("no-id-sce");
 
-        let err = resolve_current_status_in(&repo, &sce_dir).expect_err("should error");
+        let err = resolve_current_legacy_status_in(&repo, &sce_dir).expect_err("should error");
         match err {
             StatusErrorOrRuntime::Status(StatusError::NoCheckoutId { .. }) => {}
             other => panic!("expected NoCheckoutId, got {other:?}"),
@@ -222,7 +268,7 @@ mod tests {
         let sce_dir = unique_temp_dir("no-db-sce");
         std::fs::create_dir_all(&sce_dir).expect("create sce dir");
 
-        let err = resolve_current_status_in(&repo, &sce_dir).expect_err("should error");
+        let err = resolve_current_legacy_status_in(&repo, &sce_dir).expect_err("should error");
         match err {
             StatusErrorOrRuntime::Status(StatusError::DbMissing { checkout_id, .. }) => {
                 assert_eq!(checkout_id, id);
@@ -243,7 +289,7 @@ mod tests {
         create_full_schema_db(&db_path);
 
         let report =
-            resolve_current_status_in(&repo, &sce_dir).expect("ready report should resolve");
+            resolve_current_legacy_status_in(&repo, &sce_dir).expect("ready report should resolve");
 
         assert_eq!(report.checkout_id, id);
         assert_eq!(report.database_path, db_path);
@@ -284,8 +330,8 @@ mod tests {
         .expect("create diff_traces");
         drop(db);
 
-        let report =
-            resolve_current_status_in(&repo, &sce_dir).expect("skipped report should resolve");
+        let report = resolve_current_legacy_status_in(&repo, &sce_dir)
+            .expect("skipped report should resolve");
 
         match report.db_status {
             DbStatus::Skipped { missing_table } => {
