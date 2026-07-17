@@ -9,7 +9,7 @@ use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 
-use crate::services::agent_trace_db::AgentTraceDb;
+use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::default_paths::resolve_state_data_root;
 
 const LIST_GUIDANCE: &str = "Run `sce trace db list` to see available Agent Trace databases.";
@@ -219,7 +219,7 @@ fn discovered_from_entries(
 /// for each required table in declared order. Returns `Skipped` with the first
 /// missing table reported; otherwise `Ready`.
 pub(super) fn probe_readiness(path: &Path) -> Result<Readiness> {
-    let db = AgentTraceDb::open_for_hooks_without_migrations_at(path)
+    let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(path)
         .with_context(|| format!("failed to open agent trace DB '{}'", path.display()))?;
 
     for table in REQUIRED_TABLES {
