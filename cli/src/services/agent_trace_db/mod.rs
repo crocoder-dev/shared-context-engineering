@@ -18,6 +18,10 @@ use crate::{
 use serde_json::Value;
 
 pub mod lifecycle;
+// Consumed by the repository-scoped storage resolver; runtime call sites
+// arrive with T08.
+#[allow(dead_code)]
+pub mod repository;
 
 const AGENT_TRACE_SCHEMA_SETUP_GUIDANCE: &str = "Run 'sce setup'.";
 

@@ -21,6 +21,11 @@ pub static AGENT_TRACE_MIGRATIONS: &[(&str, &str)] = &[
 ];
 
 #[rustfmt::skip]
+pub static AGENT_TRACE_REPOSITORY_MIGRATIONS: &[(&str, &str)] = &[
+    ("001_repository_schema", include_str!("../migrations/agent-trace-repository/001_repository_schema.sql")),
+];
+
+#[rustfmt::skip]
 pub static AUTH_MIGRATIONS: &[(&str, &str)] = &[
     ("001_create_auth_tokens", include_str!("../migrations/auth/001_create_auth_tokens.sql")),
     ("002_create_auth_credentials_updated_at_trigger", include_str!("../migrations/auth/002_create_auth_credentials_updated_at_trigger.sql")),

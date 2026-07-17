@@ -35,6 +35,18 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 - `insert_parts(inputs)`: typed batch helper that generates and executes one parameterized multi-row append-only `parts` insert for valid conversation-trace `message.part` batches.
 - `lifecycle.rs`: service lifecycle provider for setup/doctor integration.
 
+## Repository-scoped adapter seam
+
+`cli/src/services/agent_trace_db/repository.rs` defines the repository-scoped Agent Trace DB adapter introduced by the `repository-scoped-agent-trace-db` plan:
+
+```rust
+pub type RepositoryAgentTraceDb = TursoDb<RepositoryAgentTraceDbSpec>;
+```
+
+This adapter has no canonical `DbSpec::db_path()`; callers must resolve `<state_root>/sce/repos/<repository-id>/agent-trace.db` first and use explicit-path `TursoDb` constructors. Its migration list is `generated_migrations::AGENT_TRACE_REPOSITORY_MIGRATIONS`, currently one fresh multi-statement SQL file at `cli/migrations/agent-trace-repository/001_repository_schema.sql`. The schema includes `repository_metadata` plus the existing repository-level Agent Trace tables, indexes, and triggers, and intentionally has no `checkout_id` columns on trace tables. `RepositoryAgentTraceDb::verify_or_initialize_repository_metadata(repository_id)` inserts the singleton metadata row on first initialization and errors if an existing DB stores a different repository ID.
+
+The repository-scoped adapter is consumed by `agent_trace_storage` but broader hook/setup/doctor runtime call-site wiring remains pending until later tasks in the same plan.
+
 ## Non-goals
 
 - No read/query helper for loading messages with their joined parts exists in the current runtime; the typed write helpers (`insert_message`, `insert_messages`, `insert_part`, `insert_parts`) are the only exposed message/part API surface. Message/part query helpers are deferred to a future task.
@@ -78,7 +90,7 @@ Active hook runtime resolves per-checkout Agent Trace DB files:
 
 The former `015_create_session_models` migration was removed from the fresh schema when the `remove-session-models-direct-claude-model-id` plan cleaned up session-models support. The `retired_migration_ids()` compat mechanism and `RETIRED_AGENT_TRACE_MIGRATION_IDS` constant that previously accommodated upgraded databases with that migration ID were subsequently removed in the `remove-retired-migration-ids` plan, since all development databases have been recreated and no ongoing compatibility is needed. Current migration IDs go directly from `014_create_parts_updated_at_trigger` to `015_add_diff_traces_payload_type`.
 
-The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::open_at(path)` applies later Agent Trace migrations to an already-created per-checkout DB.
+The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::open_at(path)` applies later Agent Trace migrations to an already-created per-checkout DB. Migration SQL is executed with `execute_batch`, so a one-file baseline such as the repository-scoped schema can contain multiple statements while still recording one migration ID.
 
 Per-checkout hook DB resolution first tries `AgentTraceDb::open_for_hooks_without_migrations_at(path)` and `ensure_schema_ready_for_hooks()`. If setup has not initialized the DB, metadata is absent, or migrations are incomplete, the checkout resolver falls back to `AgentTraceDb::open_at(path)` so hook invocation lazily creates or upgrades the per-checkout DB before continuing. When the fallback also fails, the error context includes the fast-path failure reason (`(fast-path attempt: {fast_error})`) so both failure causes are visible in diagnostics. Readiness is based on exact migration metadata parity with `AGENT_TRACE_MIGRATIONS`, not table/index/column introspection.
 
