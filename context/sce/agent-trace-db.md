@@ -12,7 +12,7 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 - `AgentTraceDb`: type alias for `TursoDb<AgentTraceDbSpec>`, inheriting shared constructor and operation retry behavior.
 - `open_at(path)`: migration-running explicit-path constructor for per-checkout Agent Trace databases.
 - `open_for_hooks_without_migrations()`: Agent Trace-specific runtime-open API for high-frequency hook paths; opens/connects via `TursoDb::open_without_migrations()` and does not run embedded migrations.
-- `open_for_hooks_without_migrations_at(path)`: explicit-path no-migration runtime-open API used by per-checkout hook resolution.
+- `open_for_hooks_without_migrations_at(path)`: explicit-path no-migration runtime-open API retained for legacy checkout-scoped DB inspection paths.
 - `ensure_schema_ready_for_hooks()`: non-mutating hook-readiness check that delegates to the shared `TursoDb::ensure_schema_ready()` method with the Agent Trace–specific `AGENT_TRACE_SCHEMA_SETUP_GUIDANCE` constant (`"Run 'sce setup'."`); verifies the Agent Trace DB has the expected applied migration metadata in `__sce_migrations` for every ID in `AGENT_TRACE_MIGRATIONS`; missing/incomplete metadata fails with `Run 'sce setup'.` guidance instead of running migrations.
 - `DiffTraceInsert<'a>`: insert payload with `time_ms: i64`, `session_id: &'a str`, `patch: &'a str`, `model_id: Option<&'a str>`, `tool_name: &'a str`, nullable `tool_version: Option<&'a str>`, and `payload_type: &'a str` (using `PAYLOAD_TYPE_PATCH` or `PAYLOAD_TYPE_STRUCTURED` constants).
 - `PAYLOAD_TYPE_PATCH` / `PAYLOAD_TYPE_STRUCTURED`: string constants (`"patch"` / `"structured"`) for the `diff_traces.payload_type` discriminator column; `OpenCode` normalized diff-trace payloads use `patch`, `Claude` structured `PostToolUse` payloads use `structured`.
@@ -43,7 +43,7 @@ pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 pub type RepositoryAgentTraceDb = TursoDb<RepositoryAgentTraceDbSpec>;
 ```
 
-This adapter has no canonical `DbSpec::db_path()`; callers must resolve `<state_root>/sce/repos/<repository-id>/agent-trace.db` first and use explicit-path `TursoDb` constructors. Its migration list is `generated_migrations::AGENT_TRACE_REPOSITORY_MIGRATIONS`, currently one fresh multi-statement SQL file at `cli/migrations/agent-trace-repository/001_repository_schema.sql`. The schema includes `repository_metadata` plus the existing repository-level Agent Trace tables, indexes, and triggers, and intentionally has no `checkout_id` columns on trace tables. `RepositoryAgentTraceDb::verify_or_initialize_repository_metadata(repository_id)` inserts the singleton metadata row on first initialization and errors if an existing DB stores a different repository ID.
+This adapter has no canonical `DbSpec::db_path()`; callers must resolve `<state_root>/sce/repos/<repository-id>/agent-trace.db` first and use explicit-path `TursoDb` constructors. Its migration list is `generated_migrations::AGENT_TRACE_REPOSITORY_MIGRATIONS`, currently one fresh multi-statement SQL file at `cli/migrations/agent-trace-repository/001_repository_schema.sql`. The schema includes `repository_metadata` plus the existing repository-level Agent Trace tables, indexes, and triggers, and intentionally has no `checkout_id` columns on trace tables. `RepositoryAgentTraceDb::verify_or_initialize_repository_metadata(repository_id)` inserts the singleton metadata row on first initialization and errors if an existing DB stores a different repository ID. `RepositoryAgentTraceDb::repair_missing_repository_schema_migration_metadata()` is a narrow concurrent-first-open repair seam: it never creates trace tables, but if every required repository schema table already exists and only the one-file baseline migration record is missing, it records `001_repository_schema` and rechecks readiness.
 
 `RepositoryAgentTraceDb` exposes repository-level write helpers for the current row families by delegating to the same typed insert payloads and parameterized SQL used by the checkout-scoped adapter: `insert_diff_trace`, `insert_post_commit_patch_intersection`, `insert_agent_trace`, `insert_message`, `insert_messages`, `insert_part`, and `insert_parts`. It also exposes `recent_diff_trace_patches(cutoff_time_ms, end_time_ms)` by delegating to the shared recent diff-trace query/parser helper, so repository-scoped attribution reads use the same chronological inclusive window semantics without a checkout filter. These methods preserve the existing row shapes and do not add checkout provenance columns or checkout-scoped write/query APIs.
 
@@ -63,10 +63,23 @@ The active repository-scoped Agent Trace DB path is resolved from repository ide
 - Repository ID source: explicit `agent_trace.repository_id` config, otherwise canonicalized configured Git remote URL (`agent_trace.repository_remote`, default `origin`)
 - Checkout ID source: `<git-dir>/sce/checkout-id`, where `<git-dir>` comes from `git rev-parse --git-dir`; checkout ID is diagnostic metadata only and is not stored on Agent Trace rows.
 
-The legacy/global and checkout-scoped path helpers remain for legacy state and future explicit legacy inspection:
+Example state layout:
 
-- `agent_trace_db_path()` resolves `<state_root>/sce/agent-trace.db` and is only used as an outside-repository lifecycle parent sentinel, not as an active write target.
-- `agent_trace_db_path_for_checkout(checkout_id)` resolves `<state_root>/sce/agent-trace-{checkout_id}.db`; active hooks/setup no longer select this path for new writes.
+```text
+<state-root>/sce/
+├── repos/
+│   └── <repository-id>/
+│       └── agent-trace.db      # active DB shared by clones/worktrees of this logical repo
+├── agent-trace-<checkout-id>.db # legacy checkout-scoped DB, inspect with --legacy only
+└── agent-trace.db              # legacy/global sentinel path, not an active write target
+```
+
+SCE creates one Agent Trace DB per logical Git repository on demand through setup, hook, doctor, or trace commands. It does not run a daemon, background service, scheduler, watcher, external lock service, registry service, or data migration worker.
+
+The legacy/global and checkout-scoped path helpers remain for legacy state and explicit legacy inspection only:
+
+- `agent_trace_db_path()` resolves `<state-root>/sce/agent-trace.db` and is only used as an outside-repository lifecycle parent sentinel, not as an active write target.
+- `agent_trace_db_path_for_checkout(checkout_id)` resolves `<state-root>/sce/agent-trace-{checkout_id}.db`; active hooks/setup no longer select this path for new writes. Existing checkout-scoped DB files are left byte-for-byte untouched; SCE does not migrate, import, copy, rename, archive, delete, or backfill historical rows into repository-scoped DBs.
 
 ## Migrations
 
@@ -92,7 +105,7 @@ The former `015_create_session_models` migration was removed from the fresh sche
 
 The shared `TursoDb` runner records applied IDs in the database-local `__sce_migrations` table. Existing Agent Trace DB files without metadata are brought forward by re-applying the idempotent migration set and recording each ID, so rerunning `sce setup` / `AgentTraceDb::open_at(path)` applies later Agent Trace migrations to an already-created per-checkout DB. Migration SQL is executed with `execute_batch`, so a one-file baseline such as the repository-scoped schema can contain multiple statements while still recording one migration ID.
 
-Repository-scoped hook DB resolution first resolves `agent_trace.repository_id` / `agent_trace.repository_remote` through config, then uses `agent_trace_storage::resolve_agent_trace_storage(...)`. The storage resolver tries `RepositoryAgentTraceDb::open_without_migrations_at(path)` + `ensure_schema_ready_for_hooks()` + repository metadata validation first. If setup has not initialized the repository DB, metadata is absent, or migrations are incomplete, it falls back to migration-running `RepositoryAgentTraceDb::new_at(path)` and validates/seeds `repository_metadata.repository_id` before returning. When the fallback also fails, the error context includes the fast-path failure reason (`(fast-path attempt: {fast_error})`) so both failure causes are visible in diagnostics. Readiness is based on exact migration metadata parity with `AGENT_TRACE_REPOSITORY_MIGRATIONS`, not table/index/column introspection.
+Repository-scoped hook DB resolution first resolves `agent_trace.repository_id` / `agent_trace.repository_remote` through config, then uses `agent_trace_storage::resolve_agent_trace_storage(...)`. The storage resolver tries `RepositoryAgentTraceDb::open_without_migrations_at(path)` + `ensure_schema_ready_for_hooks()` + repository metadata validation first. If setup has not initialized the repository DB, metadata is absent, or migrations are incomplete, it falls back to migration-running `RepositoryAgentTraceDb::new_at(path)` and validates/seeds `repository_metadata.repository_id` before returning. The resolver retries the fast-path/migration sequence for a bounded window during concurrent first opens; if another opener completed the one-file schema but the baseline migration record is missing, the repository adapter records that metadata only after verifying all required repository schema tables already exist. When the fallback also fails, the error context includes the fast-path failure reason (`(fast-path attempt: {fast_error})`) so both failure causes are visible in diagnostics. Normal readiness is based on exact migration metadata parity with `AGENT_TRACE_REPOSITORY_MIGRATIONS`; table introspection is used only by the narrow concurrent-first-open metadata repair seam.
 
 The `diff_traces` baseline migration creates:
 
@@ -200,7 +213,7 @@ Post-commit intersection rows are written by the active `post-commit` hook flow 
 - `message` items validate and map payloads without message-level `text`, `agent`, or `summary_diffs` to `InsertMessageInsert`; valid rows are inserted through at most one multi-row `RepositoryAgentTraceDb::insert_messages(...)` call per invocation so repeated `(session_id, message_id)` events are ignored without failing.
 - `message.part` items validate and map payloads with required part `text` to `InsertPartInsert`; valid rows are inserted through at most one multi-row `RepositoryAgentTraceDb::insert_parts(...)` call per invocation so parts remain append-only and do not require a pre-existing message row.
 - Unsupported item types, missing/non-string item types, non-object items, and event-specific parser validation failures are retained as skipped-item diagnostics, logged, and counted as skipped while valid sibling items remain eligible for persistence.
-- The hook opens one repository-scoped `RepositoryAgentTraceDb` per invocation through lazy repository storage resolution before insertion; DB open/initialization failures are logged through `sce.hooks.conversation_trace.error` and returned as hook success because conversation-trace intake is fail-open to producers.
+- The hook opens one repository-scoped `RepositoryAgentTraceDb` per invocation through lazy repository storage resolution before insertion; all clones/worktrees of the same logical repository share the same repository-level message/part rows. DB open/initialization failures are logged through `sce.hooks.conversation_trace.error` and returned as hook success because conversation-trace intake is fail-open to producers.
 - Multi-row insert failures are logged once and count the whole valid-item batch as skipped without failing the command; the hook does not fall back to row-by-row insertion after a batch failure. Successful inserts contribute to deterministic success output counts (`attempted`, `persisted_messages`, `persisted_parts`, `skipped`). Duplicate parent message inserts preserve the existing `ON CONFLICT DO NOTHING` affected-row semantics.
 - No `context/tmp` artifact is written for conversation traces.
 - The generated OpenCode agent-trace plugin sends mixed-batch envelopes for conversation traces: regular `message` and `message.part` events each carry one per-item `type`, while diff-backed `message` events send one envelope containing the synthetic parent message item plus patch part items.

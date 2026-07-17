@@ -173,26 +173,61 @@ Initial code inspection found the current checkout-scoped behavior in these area
   - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` pass; `nix build .#checks.x86_64-linux.cli-tests .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt` pass; `nix run .#pkl-check-generated` reports "Generated outputs are up to date."; `git diff --check` pass; focused `rg` found remaining checkout-scoped wording only in explicit legacy/historical surfaces.
   - Notes: Setup lifecycle messages, doctor text/JSON output, and `sce trace status` text/JSON now expose repository ID, identity source, safe canonical identity, configured remote where applicable, checkout ID, and repository-scoped DB path without raw remote URLs. Added status coverage for credential-bearing remotes to assert safe canonical identity/path output. Shell skipped-DB diagnostics now label repository vs legacy checkout scope instead of assuming checkout IDs.
 
-- [ ] T11: `Add end-to-end repository storage behavior tests` (status:todo)
+- [x] T11: `Add end-to-end repository storage behavior tests` (status:done)
   - Task ID: T11
   - Goal: Add integration-style tests covering repository separation, clone/worktree consolidation, repository-level attribution behavior, existing-data non-migration, and concurrent initialization.
   - Boundaries (in/out of scope): In - temp Git repositories/clones/worktrees, multiple remotes, existing legacy DB byte-for-byte assertions, concurrent first-open test, empty new DB assertion. Out - production code changes except small testability seams discovered while writing tests.
   - Done when: Repository separation, clone/worktree consolidation, security, repository-level DB behavior, existing-data, and concurrency cases are covered by automated tests where practical.
   - Verification notes (commands or checks): targeted exact tests, then `nix develop -c sh -c 'cd cli && cargo test repository_scoped_agent_trace'` or matching module filters.
+  - Completed: 2026-07-17
+  - Files changed: `cli/src/services/agent_trace_storage/mod.rs`, `cli/src/services/agent_trace_db/repository.rs`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` pass; `nix build .#checks.x86_64-linux.cli-tests` pass; `nix build .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt` pass; `nix run .#pkl-check-generated` reports "Generated outputs are up to date."; `git diff --check` pass; `nix flake check` pass.
+  - Notes: Added storage-level integration tests for legacy checkout DB byte preservation/non-selection, fresh repository DB emptiness, repository-level diff-trace sharing across equivalent SSH/HTTPS clone checkouts, concurrent first open convergence, and credential-bearing remote URL canonicalization without secret leakage to IDs/paths. The concurrent first-open test exposed a narrow schema-metadata race; storage resolution now retries the fast-path/migrate sequence and repository DB opening can repair the case where all required schema tables exist but the one-file baseline migration record was not written after a concurrent first-open race.
 
-- [ ] T12: `Document repository-scoped Agent Trace storage` (status:todo)
+- [x] T12: `Document repository-scoped Agent Trace storage` (status:done)
   - Task ID: T12
   - Goal: Update repository docs and SCE context to explain repository-scoped Agent Trace DBs and legacy DB handling.
   - Boundaries (in/out of scope): In - `context/sce/agent-trace-db.md`, hook routing/status command docs, context map, README or CLI docs as relevant, example directory tree. Out - code behavior changes.
   - Done when: Docs state that SCE creates one Agent Trace DB per logical Git repository; clones/worktrees share it; checkout ID remains a checkout identity but is not stored on trace rows; commit attribution is repository-level within the shared repository DB; old checkout DBs remain untouched and historical data is not migrated; no daemon/background service exists.
   - Verification notes (commands or checks): docs review; `nix run .#pkl-check-generated` if generated docs/config are touched.
+  - Completed: 2026-07-17
+  - Files changed: `README.md`, `cli/README.md`, `context/architecture.md`, `context/glossary.md`, `context/sce/agent-trace-db.md`, `context/sce/agent-trace-hooks-command-routing.md`, `context/cli/trace-command.md`, `context/context-map.md`
+  - Evidence: `git diff --check` pass; `nix run .#pkl-check-generated` reports "Generated outputs are up to date."; focused `rg` found remaining per-checkout AgentTraceDb wording only in historical/completed plan files.
+  - Notes: Added repository-scoped storage documentation with an example state directory tree, clone/worktree sharing semantics, checkout-ID-as-diagnostic-only boundary, repository-level attribution wording, explicit no-touch/no-migration legacy DB policy, and no-daemon/background-service statement. Updated README/CLI README and hook/trace docs to remove stale active per-checkout wording, then synced root context references for completed default trace UX.
 
-- [ ] T13: `Final validation and cleanup` (status:todo)
+- [x] T13: `Final validation and cleanup` (status:done)
   - Task ID: T13
   - Goal: Run full validation, remove temporary scaffolding, and sync context after implementation.
   - Boundaries (in/out of scope): In - `nix flake check`, generated-output parity, focused searches for stale checkout-scoped active DB assumptions, context sync verification. Out - new feature behavior beyond fixes required by validation failures.
   - Done when: Full checks pass; generated config is up to date; no temporary files remain; context docs reflect final behavior; plan status/evidence is updated.
   - Verification notes (commands or checks): `nix flake check`; `nix run .#pkl-check-generated`; `git diff --check`; targeted `rg` for stale active `agent-trace-{checkout_id}.db` terminology excluding historical/legacy references.
+  - Completed: 2026-07-17
+  - Files changed: `cli/src/services/checkout/mod.rs`, `context/sce/agent-trace-hook-doctor.md`, `context/plans/repository-scoped-agent-trace-db.md`
+  - Evidence: `nix run .#pkl-check-generated` reports "Generated outputs are up to date."; `nix flake check` pass; `git diff --check` pass; focused stale-active-checkout wording search found only legacy/historical/explicit `--legacy` references after cleanup; `context/tmp/sce.log` removed.
+  - Notes: Final cleanup clarified the legacy-only checkout DB helper comment and refreshed the doctor contract's `AgentTraceDbLifecycle` description to repository-scoped storage. No feature behavior changes were needed.
+
+## Validation Report
+
+### Commands run
+
+- `nix run .#pkl-check-generated` -> exit 0; reported "Generated outputs are up to date."
+- `nix flake check` -> exit 0; reported "all checks passed!"
+- `git diff --check` -> exit 0; no whitespace errors reported.
+- `rg -n "validates checkout-scoped|active checkout-scoped|active .*checkout-scoped|selects? (the )?checkout-scoped|opens its\\s+per-checkout|setup/hooks .*checkout-scoped|hook runtime .*checkout-scoped" README.md cli/README.md context cli/src -g '!context/plans/**'` -> exit 0 with matches limited to legacy/historical/explicit `--legacy` references after cleanup.
+- `find context/tmp -maxdepth 2 -type f -print | sort` -> only `context/tmp/.gitignore` remains after removing `context/tmp/sce.log`.
+
+### Success-criteria verification
+
+- [x] Each logical Git repository resolves to repository-scoped storage through `agent_trace_storage`; covered by prior T04/T08/T11 implementation evidence and final context review.
+- [x] Active database path is documented and implemented as `<state-root>/sce/repos/<repository-id>/agent-trace.db`; verified in context/code docs and final stale-wording search.
+- [x] Legacy checkout-scoped DBs remain untouched and explicit-legacy-only; verified by T11 tests and final stale-wording search.
+- [x] Repository identity and credential-safe diagnostics are documented in root/domain context; verified during context-sync review.
+- [x] Full checks and generated-output parity pass; verified by commands above.
+- [x] Temporary scaffolding removed; `context/tmp/sce.log` deleted and only `.gitignore` remains.
+
+### Residual risks
+
+- None identified.
 
 ## Open questions
 

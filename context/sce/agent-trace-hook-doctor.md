@@ -212,7 +212,7 @@ Services implementing `ServiceLifecycle`:
 - `HooksLifecycle` in `cli/src/services/hooks/lifecycle.rs`: checks hook rollout integrity, required-hook presence/executability/content
 - `LocalDbLifecycle` in `cli/src/services/local_db/lifecycle.rs`: validates DB path/health, bootstraps DB parent directory
 - `AuthDbLifecycle` in `cli/src/services/auth_db/lifecycle.rs`: validates encrypted auth DB path/health, bootstraps DB parent directory
-- `AgentTraceDbLifecycle` in `cli/src/services/agent_trace_db/lifecycle.rs`: validates checkout-scoped Agent Trace DB path/health when a checkout ID exists, otherwise validates the global fallback path, and bootstraps the resolved DB parent directory
+- `AgentTraceDbLifecycle` in `cli/src/services/agent_trace_db/lifecycle.rs`: validates repository-scoped Agent Trace DB path/health from resolved repository identity, reports checkout identity as diagnostics when available, and bootstraps the resolved DB parent directory
 
 The `doctor` command aggregates `diagnose` and `fix` across all registered providers.
 The `setup` command aggregates `setup` across all registered providers in order (config → local_db → auth_db → agent_trace_db → hooks).

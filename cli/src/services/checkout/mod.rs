@@ -138,7 +138,9 @@ pub fn get_or_create_checkout_id(git_dir: &Path) -> Result<String> {
 }
 
 /// Resolves or creates the checkout identity for `repo_root` and opens its
-/// per-checkout Agent Trace DB, lazily initializing schema when needed.
+/// legacy per-checkout Agent Trace DB, lazily initializing schema when needed.
+///
+/// Active setup and hook runtime use repository-scoped storage instead.
 #[allow(dead_code)]
 pub fn resolve_or_create_agent_trace_db_for_checkout(
     repo_root: &Path,
