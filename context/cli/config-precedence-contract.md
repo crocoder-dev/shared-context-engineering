@@ -25,6 +25,11 @@ Resolved runtime values follow this deterministic order:
 
 Repo-configured bash-tool policy values are config-file only in this task slice: they load from `policies.bash` in the selected config files, merge `global -> local` alongside the rest of the config object, and currently have no flag or environment override layer.
 
+Agent Trace repository identity keys are also config-file only with per-key `global -> local` merge and no flag or environment layer:
+
+- `agent_trace.repository_id` — optional explicit repository identity; resolves as an optional value with no default.
+- `agent_trace.repository_remote` — Git remote name used to derive repository identity; defaults to `origin` (`DEFAULT_AGENT_TRACE_REPOSITORY_REMOTE` in `cli/src/services/config/resolver.rs`) when no config file sets it.
+
 Resolved observability values that currently have no CLI flag layer follow the same lower-precedence chain without a flag step:
 
 1. environment values (`SCE_LOG_FORMAT`, `SCE_LOG_FILE`, `SCE_LOG_FILE_MODE`)
@@ -61,7 +66,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - Startup/runtime config resolution now degrades gracefully only for default-discovered files: invalid discovered files are skipped and reported via collected `validation_errors`, while explicit `--config` / `SCE_CONFIG_FILE` targets still fail immediately on the same parse or validation errors.
 
 - Config file content must be valid JSON with a top-level object.
-- Allowed keys: `$schema`, `log_level`, `log_format`, `log_file`, `log_file_mode`, `timeout_ms`, `workos_client_id`, `policies`, `integrations`.
+- Allowed keys: `$schema`, `log_level`, `log_format`, `log_file`, `log_file_mode`, `timeout_ms`, `workos_client_id`, `agent_trace`, `policies`, `integrations`.
 - Unknown keys fail validation.
 - `log_level` must be one of `error|warn|info|debug`.
 - `log_format` must be `text` or `json` when present.
@@ -70,6 +75,10 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `log_file_mode` requires `log_file`.
 - `timeout_ms` must be an unsigned integer.
 - `workos_client_id` must be a string when present.
+
+- `agent_trace` must be an object when present and currently allows only `repository_id` and `repository_remote`.
+- `agent_trace.repository_id` must be a non-empty string when present.
+- `agent_trace.repository_remote` must be a non-empty string when present; the generated schema documents default `origin`.
 
 - `integrations` must be an object when present and currently allows only `target`.
 - `integrations.target` must be an array of unique canonical target IDs when present.
@@ -97,6 +106,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `show` includes resolved observability values directly in `result.resolved`, preserving flat logging keys (`log_level`, `log_format`, `log_file`, `log_file_mode`).
 - `validate` text output is limited to `SCE config validation`, `Validation issues`, and `Validation warnings` lines.
 - `validate` JSON output is limited to `result.command`, `result.valid`, `result.issues`, and `result.warnings`.
+- `show` includes resolved Agent Trace repository identity under `result.resolved.agent_trace` (JSON: `repository_id` optional-value shape, `repository_remote` resolved-value shape) and as `agent_trace.repository_id` / `agent_trace.repository_remote` per-key text lines, reporting `(unset)` for a missing `repository_id` and `source: default` for the `origin` remote fallback.
 - `show` includes resolved bash-tool policies under `result.resolved.policies.bash`.
 - Bash-policy output includes resolved preset IDs, expanded custom entries (`id`, `match.argv_prefix`, `message`), and config-file source metadata when present.
 - `show` text output renders `policies.bash` as a single deterministic line and reports `(unset)` when no policy config resolves.
