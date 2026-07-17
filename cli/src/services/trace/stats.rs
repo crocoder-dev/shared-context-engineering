@@ -10,7 +10,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use chrono::{DateTime, TimeZone, Utc};
 
-use crate::services::agent_trace_db::AgentTraceDb;
+use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 
 /// Aggregated Agent Trace DB row counts and last activity.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -32,7 +32,7 @@ pub struct AgentTraceDbStats {
 /// already verified schema readiness via `discover_agent_trace_dbs`.
 #[allow(dead_code)]
 pub fn collect_agent_trace_db_stats(path: &Path) -> Result<AgentTraceDbStats> {
-    let db = AgentTraceDb::open_for_hooks_without_migrations_at(path)
+    let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(path)
         .with_context(|| format!("failed to open agent trace DB '{}'", path.display()))?;
 
     let diff_traces = count_rows(&db, "diff_traces", path)?;
@@ -74,7 +74,7 @@ pub fn collect_agent_trace_db_stats(path: &Path) -> Result<AgentTraceDbStats> {
     })
 }
 
-fn count_rows(db: &AgentTraceDb, table: &str, path: &Path) -> Result<u64> {
+fn count_rows(db: &RepositoryAgentTraceDb, table: &str, path: &Path) -> Result<u64> {
     let sql = format!("SELECT COUNT(*) FROM {table}");
     let rows = db
         .query_map(sql.as_str(), (), |row| {
@@ -90,7 +90,7 @@ fn count_rows(db: &AgentTraceDb, table: &str, path: &Path) -> Result<u64> {
     Ok(u64::try_from(count).unwrap_or(0))
 }
 
-fn query_optional_i64(db: &AgentTraceDb, sql: &str, path: &Path) -> Result<Option<i64>> {
+fn query_optional_i64(db: &RepositoryAgentTraceDb, sql: &str, path: &Path) -> Result<Option<i64>> {
     let rows = db
         .query_map(sql, (), |row| row.get::<Option<i64>>(0).map_err(Into::into))
         .with_context(|| {
@@ -102,7 +102,11 @@ fn query_optional_i64(db: &AgentTraceDb, sql: &str, path: &Path) -> Result<Optio
     Ok(rows.into_iter().next().flatten())
 }
 
-fn query_optional_string(db: &AgentTraceDb, sql: &str, path: &Path) -> Result<Option<String>> {
+fn query_optional_string(
+    db: &RepositoryAgentTraceDb,
+    sql: &str,
+    path: &Path,
+) -> Result<Option<String>> {
     let rows = db
         .query_map(sql, (), |row| {
             row.get::<Option<String>>(0).map_err(Into::into)
