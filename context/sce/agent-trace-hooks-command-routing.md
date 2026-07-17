@@ -68,7 +68,7 @@
   - The `DiffTracePayload` struct carries a `payload_type: String` field consumed by `persist_diff_trace_payload_to_agent_trace_db_with` to pass the correct discriminator to `DiffTraceInsert`.
   - Before `DiffTraceInsert` construction, Rust prefixes the stored `diff_traces.session_id` by source tool: OpenCode normalized payloads store `oc_<sessionID>`, Claude structured payloads store `cc_<session_id/sessionID>`, Pi normalized payloads (`tool_name: "pi"`) store `pi_<sessionID>`, and already same-tool-prefixed values are left unchanged. Unknown `tool_name` values pass the raw session ID through unprefixed. Raw non-empty session-ID validation still happens before prefixing.
   - Missing `model_id` or `tool_version` stays nullable; Rust does not perform session-level fallback attribution. Direct payload values are persisted as-is after payload-specific validation/normalization, making `diff_traces.model_id` the only active model-attribution storage for diff traces.
-  - Persistence: resolves the current per-checkout AgentTraceDb lazily and inserts the parsed payload fields via `DiffTraceInsert` + `insert_diff_trace()` using tool-prefixed `session_id` plus nullable direct `model_id` and `tool_version`. No parsed-payload artifact is written under `context/tmp`.
+  - Persistence: resolves the current repository-scoped `RepositoryAgentTraceDb` lazily and inserts the parsed payload fields via `DiffTraceInsert` + `insert_diff_trace()` using tool-prefixed `session_id` plus nullable direct `model_id` and `tool_version`. No parsed-payload artifact is written under `context/tmp`.
   - Current producers are the OpenCode agent-trace plugin and the generated Claude `sce hooks` command hooks (no TypeScript intermediary).
   - OpenCode forwards user-message `message` diffs with `tool_name="opencode"`, always including `model_id`, and nullable OpenCode client-version metadata.
   - Claude generated settings no longer register `SessionStart`; supported `PostToolUse` `Write|Edit|MultiEdit|NotebookEdit` events are routed directly to `sce hooks diff-trace`. Runtime persistence currently derives structured diff traces for `Write` create and `Edit` structured-patch payloads; unsupported Claude payload shapes are no-ops.
@@ -120,4 +120,5 @@
 - No retry queue replay
 - No rewrite remap ingestion
 - No `conversation-trace` retry/backfill path or `context/tmp` artifact persistence
-- No runtime Claude diff-trace persistence or AgentTraceDb writes from the capture route itself, and no direct artifact/DB writes from the Claude or OpenCode TypeScript runtimes
+- No runtime Claude diff-trace persistence or AgentTraceDb writes from the removed capture route itself, and no direct artifact/DB writes from the Claude or OpenCode TypeScript runtimes
+- No checkout-scoped active DB writes, legacy checkout DB migration/import/backfill, or daemon/background Agent Trace service

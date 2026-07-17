@@ -17,7 +17,7 @@ The list/status subcommands declare `--format text|json` via `services::output_f
 
 `discover_agent_trace_dbs()` scans `<state_root>/sce/repos/*/agent-trace.db`, sorts by file mtime descending (ties broken by repository ID ascending), and assigns positional `agent_trace_{N}` aliases. Each entry carries an mtime-derived `SystemTime`, a `DiscoveredAgentTraceDbKind::Repository { repository_id }`, and a `Readiness` verdict (`Ready` or `Skipped { missing_table }`).
 
-`discover_legacy_agent_trace_dbs()` is the explicit legacy scanner for `<state_root>/sce/agent-trace-{checkout_id}.db`; default trace commands do not use it unless `--legacy` is supplied.
+`discover_legacy_agent_trace_dbs()` is the explicit legacy scanner for `<state_root>/sce/agent-trace-{checkout_id}.db`; default trace commands do not use it unless `--legacy` is supplied. Legacy inspection is read/open-only for operator visibility; SCE does not migrate, import, rename, delete, or backfill those checkout-scoped files into repository-scoped databases.
 
 Readiness is probed read-only via the shared Agent Trace DB open-without-migrations path and a `sqlite_master` lookup for each required table in declared order:
 

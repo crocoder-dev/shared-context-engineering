@@ -27,6 +27,18 @@ const REPOSITORY_AGENT_TRACE_SCHEMA_SETUP_GUIDANCE: &str = "Run 'sce setup'.";
 
 const SELECT_REPOSITORY_METADATA_SQL: &str =
     "SELECT repository_id FROM repository_metadata WHERE id = 1";
+const SELECT_SQLITE_OBJECT_SQL: &str =
+    "SELECT name FROM sqlite_master WHERE type = ?1 AND name = ?2 LIMIT 1";
+const RECORD_REPOSITORY_SCHEMA_MIGRATION_SQL: &str =
+    "INSERT OR IGNORE INTO __sce_migrations (id) VALUES ('001_repository_schema')";
+const REQUIRED_REPOSITORY_SCHEMA_TABLES: &[&str] = &[
+    "repository_metadata",
+    "diff_traces",
+    "post_commit_patch_intersections",
+    "agent_traces",
+    "messages",
+    "parts",
+];
 
 /// Seeds the single metadata row on first initialization; concurrent first
 /// opens race safely because the conflicting insert is ignored and the stored
@@ -66,6 +78,32 @@ impl RepositoryAgentTraceDb {
     /// Verify that the repository-scoped schema baseline already exists.
     pub fn ensure_schema_ready_for_hooks(&self) -> Result<()> {
         self.ensure_schema_ready(REPOSITORY_AGENT_TRACE_SCHEMA_SETUP_GUIDANCE)
+    }
+
+    /// Repair the narrow concurrent-initialization case where the one-file
+    /// schema batch completed but recording `__sce_migrations` raced with
+    /// another first opener. This never creates trace tables; it only records
+    /// the baseline migration after all required repository tables already
+    /// exist.
+    pub fn repair_missing_repository_schema_migration_metadata(&self) -> Result<()> {
+        for table in REQUIRED_REPOSITORY_SCHEMA_TABLES {
+            if !self.sqlite_object_exists("table", table)? {
+                anyhow::bail!(
+                    "repository Agent Trace DB schema is incomplete; missing table {table}. \
+                     {REPOSITORY_AGENT_TRACE_SCHEMA_SETUP_GUIDANCE}"
+                );
+            }
+        }
+
+        self.execute(RECORD_REPOSITORY_SCHEMA_MIGRATION_SQL, ())?;
+        self.ensure_schema_ready_for_hooks()
+    }
+
+    fn sqlite_object_exists(&self, object_type: &str, name: &str) -> Result<bool> {
+        let rows = self.query_map(SELECT_SQLITE_OBJECT_SQL, (object_type, name), |row| {
+            row.get::<String>(0).map_err(Into::into)
+        })?;
+        Ok(!rows.is_empty())
     }
 
     /// Seed repository metadata on first initialization and validate it on

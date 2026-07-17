@@ -9,6 +9,8 @@
 //! touched by this resolver.
 
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
@@ -20,6 +22,9 @@ use crate::services::default_paths::{
 use crate::services::repository_identity::resolve::{
     resolve_repository_identity, ResolvedRepositoryIdentity,
 };
+
+const REPOSITORY_DB_INITIALIZATION_ATTEMPTS: usize = 20;
+const REPOSITORY_DB_INITIALIZATION_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 /// Inputs needed to resolve the active repository-scoped Agent Trace storage.
 ///
@@ -103,28 +108,11 @@ fn open_storage(
     })?;
 
     // Opening the database creates `repos/<repository-id>/` when missing;
-    // both directory creation and schema initialization are idempotent, so
-    // concurrent first-time resolution is safe.
+    // directory creation is idempotent and first-time schema initialization may
+    // briefly race on SQLite metadata locks, so retry the fast-path/migrate
+    // sequence a small bounded number of times.
     let repository_id = &repository_identity.identity.repository_id;
-    let fast_open = RepositoryAgentTraceDb::open_without_migrations_at(&db_path).and_then(|db| {
-        db.ensure_schema_ready_for_hooks()?;
-        db.verify_or_initialize_repository_metadata(repository_id)?;
-        Ok(db)
-    });
-    let db = match fast_open {
-        Ok(db) => db,
-        Err(fast_error) => {
-            let db = RepositoryAgentTraceDb::new_at(&db_path).with_context(|| {
-                format!(
-                    "failed to initialize repository-scoped Agent Trace DB for repository {} at '{}' (fast-path attempt: {fast_error})",
-                    repository_id,
-                    db_path.display()
-                )
-            })?;
-            db.verify_or_initialize_repository_metadata(repository_id)?;
-            db
-        }
-    };
+    let db = open_repository_db_concurrently_safe(&db_path, repository_id)?;
 
     Ok(ResolvedAgentTraceStorage {
         repository_identity,
@@ -134,11 +122,55 @@ fn open_storage(
     })
 }
 
+fn open_repository_db_concurrently_safe(
+    db_path: &Path,
+    repository_id: &str,
+) -> Result<RepositoryAgentTraceDb> {
+    let mut last_error = None;
+
+    for attempt in 1..=REPOSITORY_DB_INITIALIZATION_ATTEMPTS {
+        let fast_open =
+            RepositoryAgentTraceDb::open_without_migrations_at(db_path).and_then(|db| {
+                if db.ensure_schema_ready_for_hooks().is_err() {
+                    db.repair_missing_repository_schema_migration_metadata()?;
+                }
+                db.verify_or_initialize_repository_metadata(repository_id)?;
+                Ok(db)
+            });
+
+        match fast_open {
+            Ok(db) => return Ok(db),
+            Err(fast_error) => match RepositoryAgentTraceDb::new_at(db_path) {
+                Ok(db) => {
+                    db.verify_or_initialize_repository_metadata(repository_id)?;
+                    return Ok(db);
+                }
+                Err(init_error) => {
+                    last_error = Some(anyhow::anyhow!(
+                        "failed to initialize repository-scoped Agent Trace DB for repository {} at '{}' (fast-path attempt: {fast_error})",
+                        repository_id,
+                        db_path.display()
+                    )
+                    .context(init_error));
+                    if attempt < REPOSITORY_DB_INITIALIZATION_ATTEMPTS {
+                        thread::sleep(REPOSITORY_DB_INITIALIZATION_RETRY_DELAY);
+                    }
+                }
+            },
+        }
+    }
+
+    Err(last_error.expect("repository DB initialization should record an error"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::process::Command;
+    use std::sync::{Arc, Barrier};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::services::agent_trace_db::{DiffTraceInsert, PAYLOAD_TYPE_PATCH};
 
     fn unique_temp_dir(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -366,6 +398,164 @@ mod tests {
         let error = agent_trace_db_path_for_repository_at(Path::new("/tmp/state"), "  ")
             .expect_err("empty repository ID should fail");
         assert!(error.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn legacy_checkout_database_files_are_not_selected_or_modified() {
+        let state_root = unique_temp_dir("state-legacy-untouched");
+        let repo = init_git_repo_with_remote("legacy-untouched", "git@github.com:acme/widgets.git");
+        let sce_dir = state_root.join("sce");
+        std::fs::create_dir_all(&sce_dir).expect("create legacy parent");
+        let legacy_db_path = sce_dir.join("agent-trace-legacy-checkout.db");
+        let legacy_bytes = b"legacy checkout database bytes must remain untouched";
+        std::fs::write(&legacy_db_path, legacy_bytes).expect("write legacy DB fixture");
+
+        let storage = resolve_agent_trace_storage_at_state_root(&context_for(&repo), &state_root)
+            .expect("repository storage should resolve");
+
+        assert_ne!(storage.db_path, legacy_db_path);
+        assert_eq!(
+            std::fs::read(&legacy_db_path).expect("legacy DB should still be readable"),
+            legacy_bytes,
+            "repository storage resolution must not migrate, rewrite, or delete legacy DB bytes"
+        );
+        assert!(storage.db_path.is_file());
+
+        std::fs::remove_dir_all(&state_root).expect("clean up state root");
+        std::fs::remove_dir_all(&repo).expect("clean up repo");
+    }
+
+    #[test]
+    fn new_repository_database_starts_empty_and_shares_repository_level_rows() {
+        let state_root = unique_temp_dir("state-repository-rows");
+        let clone_a = init_git_repo_with_remote("rows-clone-a", "git@github.com:acme/widgets.git");
+        let clone_b =
+            init_git_repo_with_remote("rows-clone-b", "https://github.com/acme/widgets.git");
+
+        let storage_a =
+            resolve_agent_trace_storage_at_state_root(&context_for(&clone_a), &state_root)
+                .expect("clone A storage should resolve");
+        assert!(
+            storage_a
+                .db
+                .recent_diff_trace_patches(0, 10_000)
+                .expect("empty repository DB should query")
+                .patches
+                .is_empty(),
+            "fresh repository DB should not import legacy or checkout data"
+        );
+
+        storage_a
+            .db
+            .insert_diff_trace(DiffTraceInsert {
+                time_ms: 1_234,
+                session_id: "checkout-a-session",
+                patch: "Index: src/lib.rs\n===================================================================\n--- src/lib.rs\n+++ src/lib.rs\n@@ -0,0 +1,1 @@\n+shared row\n",
+                model_id: Some("model-a"),
+                tool_name: "opencode",
+                tool_version: Some("1.0.0"),
+                payload_type: PAYLOAD_TYPE_PATCH,
+            })
+            .expect("diff trace insert should succeed");
+
+        let storage_b =
+            resolve_agent_trace_storage_at_state_root(&context_for(&clone_b), &state_root)
+                .expect("clone B storage should resolve");
+        assert_eq!(storage_a.db_path, storage_b.db_path);
+        assert_ne!(storage_a.checkout_id, storage_b.checkout_id);
+
+        let patches = storage_b
+            .db
+            .recent_diff_trace_patches(0, 10_000)
+            .expect("shared repository DB rows should query from clone B");
+        assert_eq!(patches.patches.len(), 1);
+        let parsed = &patches.patches[0];
+        assert_eq!(parsed.tool_name.as_deref(), Some("opencode"));
+        assert_eq!(
+            parsed.patch.files[0].hunks[0].model_id.as_deref(),
+            Some("model-a")
+        );
+
+        std::fs::remove_dir_all(&state_root).expect("clean up state root");
+        std::fs::remove_dir_all(&clone_a).expect("clean up clone A");
+        std::fs::remove_dir_all(&clone_b).expect("clean up clone B");
+    }
+
+    #[test]
+    fn concurrent_first_open_converges_on_one_repository_database() {
+        let state_root = unique_temp_dir("state-concurrent");
+        let repo = init_git_repo_with_remote("concurrent", "git@github.com:acme/widgets.git");
+        let worker_count = 4;
+        let barrier = Arc::new(Barrier::new(worker_count));
+
+        let handles: Vec<_> = (0..worker_count)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                let repo = repo.clone();
+                let state_root = state_root.clone();
+                std::thread::spawn(move || {
+                    let context = context_for(&repo);
+                    barrier.wait();
+                    let storage = resolve_agent_trace_storage_at_state_root(&context, &state_root)
+                        .expect("concurrent repository storage resolution should succeed");
+                    (
+                        storage.db_path,
+                        storage.checkout_id,
+                        storage.repository_identity.identity.repository_id,
+                    )
+                })
+            })
+            .collect();
+
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("worker thread should not panic"))
+            .collect();
+        let first = results.first().expect("at least one result");
+        for result in &results[1..] {
+            assert_eq!(result.0, first.0, "all workers should use one DB path");
+            assert_eq!(
+                result.1, first.1,
+                "same checkout should reuse one checkout identity"
+            );
+            assert_eq!(
+                result.2, first.2,
+                "all workers should resolve one repository ID"
+            );
+        }
+        assert!(first.0.is_file());
+        assert_no_legacy_db_paths(&state_root);
+
+        std::fs::remove_dir_all(&state_root).expect("clean up state root");
+        std::fs::remove_dir_all(&repo).expect("clean up repo");
+    }
+
+    #[test]
+    fn credential_bearing_remote_is_canonicalized_without_leaking_secrets_to_paths() {
+        let state_root = unique_temp_dir("state-credential-safe");
+        let repo = init_git_repo_with_remote(
+            "credential-safe",
+            "https://user:super-secret-token@github.com/acme/widgets.git",
+        );
+
+        let storage = resolve_agent_trace_storage_at_state_root(&context_for(&repo), &state_root)
+            .expect("credential-bearing remote should resolve safely");
+
+        assert_eq!(
+            storage.repository_identity.identity.canonical_identity,
+            "github.com/acme/widgets"
+        );
+        let rendered_path = storage.db_path.display().to_string();
+        assert!(!rendered_path.contains("user"));
+        assert!(!rendered_path.contains("super-secret-token"));
+        assert!(!storage
+            .repository_identity
+            .identity
+            .repository_id
+            .contains("super-secret-token"));
+
+        std::fs::remove_dir_all(&state_root).expect("clean up state root");
+        std::fs::remove_dir_all(&repo).expect("clean up repo");
     }
 
     #[test]
