@@ -19,8 +19,8 @@ use crate::{
 use super::{
     insert_agent_trace_with, insert_diff_trace_with, insert_message_with, insert_messages_with,
     insert_part_with, insert_parts_with, insert_post_commit_patch_intersection_with,
-    AgentTraceInsert, DiffTraceInsert, InsertMessageInsert, InsertPartInsert,
-    PostCommitPatchIntersectionInsert,
+    recent_diff_trace_patches_with, AgentTraceInsert, DiffTraceInsert, InsertMessageInsert,
+    InsertPartInsert, PostCommitPatchIntersectionInsert, RecentDiffTracePatches,
 };
 
 const REPOSITORY_AGENT_TRACE_SCHEMA_SETUP_GUIDANCE: &str = "Run 'sce setup'.";
@@ -115,6 +115,17 @@ impl RepositoryAgentTraceDb {
         insert_agent_trace_with(self, input)
     }
 
+    /// Query and parse recent diff trace patches within the inclusive time
+    /// window for this repository-scoped database. Rows remain repository-level;
+    /// no checkout filter or checkout provenance is applied.
+    pub fn recent_diff_trace_patches(
+        &self,
+        cutoff_time_ms: i64,
+        end_time_ms: i64,
+    ) -> Result<RecentDiffTracePatches> {
+        recent_diff_trace_patches_with(self, cutoff_time_ms, end_time_ms)
+    }
+
     /// Insert a message row, ignoring duplicate `(session_id, message_id)`
     /// rows.
     pub fn insert_message(&self, input: InsertMessageInsert) -> Result<u64> {
@@ -148,6 +159,12 @@ mod tests {
 
     use super::*;
     use crate::services::agent_trace_db::{MessageRole, PartType, PAYLOAD_TYPE_PATCH};
+
+    fn valid_patch(path: &str, content: &str) -> String {
+        format!(
+            "Index: {path}\n===================================================================\n--- {path}\n+++ {path}\n@@ -0,0 +1,1 @@\n+{content}\n"
+        )
+    }
 
     fn unique_test_db_path(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -403,6 +420,129 @@ mod tests {
         }
 
         remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn recent_diff_trace_reads_all_repository_rows_without_checkout_filter() {
+        let db_path = unique_test_db_path("recent-repository-level");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+
+        db.insert_diff_trace(DiffTraceInsert {
+            time_ms: 999,
+            session_id: "oc_before-cutoff",
+            patch: &valid_patch("notes/before.md", "before"),
+            model_id: Some("provider/model"),
+            tool_name: "opencode",
+            tool_version: Some("1.2.3"),
+            payload_type: PAYLOAD_TYPE_PATCH,
+        })
+        .expect("before-cutoff diff trace insert should succeed");
+        db.insert_diff_trace(DiffTraceInsert {
+            time_ms: 1_000,
+            session_id: "oc_checkout-a-session",
+            patch: &valid_patch("notes/a.md", "same repository checkout a"),
+            model_id: Some("provider/model-a"),
+            tool_name: "opencode",
+            tool_version: Some("1.2.3"),
+            payload_type: PAYLOAD_TYPE_PATCH,
+        })
+        .expect("checkout-a diff trace insert should succeed");
+        db.insert_diff_trace(DiffTraceInsert {
+            time_ms: 1_500,
+            session_id: "pi_checkout-b-session",
+            patch: &valid_patch("notes/b.md", "same repository checkout b"),
+            model_id: Some("provider/model-b"),
+            tool_name: "pi",
+            tool_version: None,
+            payload_type: PAYLOAD_TYPE_PATCH,
+        })
+        .expect("checkout-b diff trace insert should succeed");
+        db.insert_diff_trace(DiffTraceInsert {
+            time_ms: 2_001,
+            session_id: "oc_after-end",
+            patch: &valid_patch("notes/after.md", "after"),
+            model_id: Some("provider/model"),
+            tool_name: "opencode",
+            tool_version: Some("1.2.3"),
+            payload_type: PAYLOAD_TYPE_PATCH,
+        })
+        .expect("after-end diff trace insert should succeed");
+
+        let recent = db
+            .recent_diff_trace_patches(1_000, 2_000)
+            .expect("recent repository diff traces should load");
+
+        assert_eq!(recent.loaded_count(), 2);
+        assert_eq!(recent.skipped_count(), 0);
+        assert_eq!(
+            recent
+                .patches
+                .iter()
+                .map(|patch| (
+                    patch.time_ms,
+                    patch.session_id.as_str(),
+                    patch.tool_name.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (1_000, "oc_checkout-a-session", Some("opencode")),
+                (1_500, "pi_checkout-b-session", Some("pi")),
+            ]
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn recent_diff_trace_reads_are_isolated_by_repository_db_path() {
+        let first_db_path = unique_test_db_path("recent-repo-one");
+        let second_db_path = unique_test_db_path("recent-repo-two");
+        let first_db = RepositoryAgentTraceDb::new_at(&first_db_path)
+            .expect("first repository DB should open");
+        let second_db = RepositoryAgentTraceDb::new_at(&second_db_path)
+            .expect("second repository DB should open");
+
+        first_db
+            .insert_diff_trace(DiffTraceInsert {
+                time_ms: 1_000,
+                session_id: "oc_first-repo",
+                patch: &valid_patch("notes/first.md", "first repository"),
+                model_id: Some("provider/first"),
+                tool_name: "opencode",
+                tool_version: Some("1.2.3"),
+                payload_type: PAYLOAD_TYPE_PATCH,
+            })
+            .expect("first repository diff trace insert should succeed");
+        second_db
+            .insert_diff_trace(DiffTraceInsert {
+                time_ms: 1_000,
+                session_id: "oc_second-repo",
+                patch: &valid_patch("notes/second.md", "second repository"),
+                model_id: Some("provider/second"),
+                tool_name: "opencode",
+                tool_version: Some("1.2.3"),
+                payload_type: PAYLOAD_TYPE_PATCH,
+            })
+            .expect("second repository diff trace insert should succeed");
+
+        let first_recent = first_db
+            .recent_diff_trace_patches(0, 2_000)
+            .expect("first repository recent traces should load");
+        let second_recent = second_db
+            .recent_diff_trace_patches(0, 2_000)
+            .expect("second repository recent traces should load");
+
+        assert_eq!(first_recent.loaded_count(), 1);
+        assert_eq!(second_recent.loaded_count(), 1);
+        assert_eq!(first_recent.patches[0].session_id, "oc_first-repo");
+        assert_eq!(second_recent.patches[0].session_id, "oc_second-repo");
+        assert_ne!(
+            first_recent.patches[0].session_id,
+            second_recent.patches[0].session_id
+        );
+
+        remove_test_db(&first_db_path);
+        remove_test_db(&second_db_path);
     }
 
     #[test]

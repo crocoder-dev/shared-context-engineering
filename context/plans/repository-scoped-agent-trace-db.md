@@ -129,12 +129,16 @@ Initial code inspection found the current checkout-scoped behavior in these area
   - Evidence: `nix build .#checks.x86_64-linux.cli-tests .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt` pass.
   - Notes: `RepositoryAgentTraceDb` now exposes repository-level write methods for diff traces, post-commit patch intersections, Agent Trace rows, messages, and parts by delegating to the existing generic insert helpers and SQL. Added repository-scoped insert coverage for all row families against the fresh one-file schema, with no `checkout_id` columns or checkout-provenance write API added.
 
-- [ ] T07: `Use repository-level attribution queries` (status:todo)
+- [x] T07: `Use repository-level attribution queries` (status:done)
   - Task ID: T07
   - Goal: Ensure recent diff trace reads and commit attribution decisions operate against the current repository-scoped database without checkout filtering.
   - Boundaries (in/out of scope): In - preserve `recent_diff_trace_patches(cutoff, end)` repository-level semantics, post-commit intersection, tool/model selection, Agent Trace commit association, commit-msg staged-overlap preflight, tests for repository-level behavior. Out - adding `checkout_id` parameters or cross-checkout isolation guarantees.
   - Done when: Commit attribution consumes recent traces from the current repository DB; different repositories remain isolated by repository ID and database path.
   - Verification notes (commands or checks): targeted hooks/agent_trace_db tests covering same-repository shared DB behavior and different-repository DB separation.
+  - Completed: 2026-07-17
+  - Files changed: `cli/src/services/agent_trace_db/repository.rs`
+  - Evidence: `nix build .#checks.x86_64-linux.cli-tests .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt` pass.
+  - Notes: Added `RepositoryAgentTraceDb::recent_diff_trace_patches(cutoff, end)` delegating to the shared recent diff-trace parser/query helper, preserving repository-level semantics with no checkout filter. Added repository DB tests for same-repository row loading across checkout-like session IDs and separate repository DB path isolation. Active hook/lifecycle opening remains deferred to T08 by plan scope.
 
 - [ ] T08: `Wire hooks and lifecycle to repository storage context` (status:todo)
   - Task ID: T08
