@@ -225,7 +225,7 @@ mod tests {
     fn shell_target(path: &Path) -> ShellTarget {
         ShellTarget {
             alias: String::from("agent_trace_0"),
-            scope: String::from("legacy checkout"),
+            scope: String::from("repository"),
             identifier: String::from("018f2d7d-0000-7000-8000-000000000000"),
             path: path.to_path_buf(),
         }

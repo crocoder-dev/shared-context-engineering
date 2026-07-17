@@ -1,8 +1,6 @@
 use crate::app::ContextWithRepoRoot;
 use crate::services::error::ClassifiedError;
-use crate::services::trace::discovery::{
-    discover_agent_trace_dbs, discover_legacy_agent_trace_dbs,
-};
+use crate::services::trace::discovery::discover_agent_trace_dbs;
 use crate::services::trace::render_list;
 use crate::services::trace::render_status;
 use crate::services::trace::render_status_all;
@@ -32,9 +30,6 @@ where
 
 fn classify_status_error(err: StatusErrorOrRuntime) -> ClassifiedError {
     match err {
-        StatusErrorOrRuntime::Status(status_err) => {
-            ClassifiedError::validation(status_err.user_message())
-        }
         StatusErrorOrRuntime::Runtime(runtime_err) => {
             ClassifiedError::runtime(format!("{runtime_err:#}"))
         }
@@ -47,35 +42,14 @@ impl TraceCommand {
         C: ContextWithRepoRoot,
     {
         match &self.request.subcommand {
-            TraceSubcommandRequest::DbList { format, legacy } => {
-                let databases = if *legacy {
-                    discover_legacy_agent_trace_dbs()
-                } else {
-                    discover_agent_trace_dbs()
-                }
-                .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
+            TraceSubcommandRequest::DbList { format } => {
+                let databases = discover_agent_trace_dbs()
+                    .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
                 render_list::render(&databases, *format)
                     .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))
             }
-            TraceSubcommandRequest::DbShell { identifier, legacy } => {
-                let target = if *legacy {
-                    let Some(identifier) = identifier else {
-                        return Err(ClassifiedError::validation(
-                            "sce trace db shell --legacy requires a checkout ID or alias"
-                                .to_string(),
-                        ));
-                    };
-                    let databases = discover_legacy_agent_trace_dbs()
-                        .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
-                    let database = resolve_agent_trace_db_identifier(&databases, identifier)
-                        .map_err(|error| ClassifiedError::validation(error.user_message()))?;
-                    ShellTarget {
-                        alias: database.alias,
-                        scope: database.kind.label().to_string(),
-                        identifier: database.kind.identifier().to_string(),
-                        path: database.path,
-                    }
-                } else if let Some(identifier) = identifier {
+            TraceSubcommandRequest::DbShell { identifier } => {
+                let target = if let Some(identifier) = identifier {
                     let databases = discover_agent_trace_dbs()
                         .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
                     let database = resolve_agent_trace_db_identifier(&databases, identifier)
@@ -106,34 +80,16 @@ impl TraceCommand {
                     .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
                 Ok(String::new())
             }
-            TraceSubcommandRequest::Status {
-                all: true,
-                format,
-                legacy,
-            } => {
-                let report = aggregate_current_status_all(*legacy)
+            TraceSubcommandRequest::Status { all: true, format } => {
+                let report = aggregate_current_status_all()
                     .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
                 render_status_all::render(&report, *format)
                     .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))
             }
-            TraceSubcommandRequest::Status {
-                all: false,
-                format,
-                legacy,
-            } => {
+            TraceSubcommandRequest::Status { all: false, format } => {
                 let repo_root = current_repo_root(context)?;
 
-                let report = if *legacy {
-                    let state_root = crate::services::default_paths::resolve_state_data_root()
-                        .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
-                    crate::services::trace::status::resolve_current_legacy_status_in(
-                        &repo_root,
-                        &state_root.join("sce"),
-                    )
-                } else {
-                    resolve_current_status(&repo_root)
-                }
-                .map_err(classify_status_error)?;
+                let report = resolve_current_status(&repo_root).map_err(classify_status_error)?;
 
                 render_status::render(&report, *format)
                     .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))
