@@ -34,15 +34,15 @@
   - Reads the message file as UTF-8.
   - Applies exactly one canonical trailer: `Co-authored-by: SCE <sce@crocoder.dev>`.
   - Writes back only when the attribution gate is enabled, `SCE_DISABLED` is false, the staged-diff AI-overlap preflight confirms AI/editor evidence (`StagedDiffAiOverlapResult::Overlap`), and the transformed content differs.
-  - The staged-diff AI-overlap preflight is wired into `run_commit_msg_subcommand_in_repo`: it opens Agent Trace DB through the no-migration hook path, captures the staged diff via `git diff --cached`, queries recent diff traces from the past 7 days, and checks overlap through `agent_trace::patches_have_overlap` with short-circuit on first positive match.
+  - The staged-diff AI-overlap preflight is wired into `run_commit_msg_subcommand_in_repo`: it resolves repository-scoped Agent Trace storage, captures the staged diff via `git diff --cached`, queries recent repository-level diff traces from the past 7 days, and checks overlap through `agent_trace::patches_have_overlap` with short-circuit on first positive match.
   - When the preflight returns `NoOverlap` or `Error` (including DB open failure, schema not ready, query error, staged diff read failure, or zero overlap), the trailer is not appended; `Error` results are logged via `sce.hooks.commit_msg.ai_overlap_error`.
   - The preflight is invoked only when the attribution gate passes; when the gate does not pass, no DB read or staged-diff capture occurs.
 - `pre-commit` is a deterministic no-op entrypoint.
 - **`post-commit` is an active intersection entrypoint** (see [agent-trace-db.md](agent-trace-db.md)):
-  - Agent Trace DB access resolves the current checkout ID from `<git-dir>/sce/checkout-id`, creating it if missing, then opens `<state_root>/sce/agent-trace-{checkout_id}.db` through the checkout lazy DB resolver.
-  - The resolver tries a no-migration open/readiness check first and falls back to migration-running initialization when the per-checkout DB is absent or schema metadata is incomplete.
+  - Agent Trace DB access resolves repository-scoped storage from `agent_trace.repository_id` or the configured Git remote, creates/reuses checkout ID for diagnostics, then opens `<state_root>/sce/repos/<repository-id>/agent-trace.db` through the repository storage resolver.
+  - The resolver tries a no-migration open/readiness check plus repository metadata validation first and falls back to migration-running initialization when the repository DB is absent or schema metadata is incomplete.
   - Captures the current commit's patch from git using `capture_post_commit_patch_from_git()`.
-  - Queries recent `diff_traces` patches from the past 7 days via `AgentTraceDb::recent_diff_trace_patches()`.
+  - Queries recent `diff_traces` patches from the past 7 days via `RepositoryAgentTraceDb::recent_diff_trace_patches()`.
   - Recent-row parsing dispatches on `payload_type`: `patch` rows parse through existing `parse_patch`, while `structured` rows parse stored JSON through `structured_patch::derive_claude_structured_patch` at read time to produce `ParsedPatch`.
   - Parsed `PatchHunk` entries carry nullable row `model_id` for both paths, so combined/intersection patch inputs retain per-hunk model provenance for downstream Agent Trace attribution building.
   - Combines valid recent patches in chronological order via `patch::combine_patches`.

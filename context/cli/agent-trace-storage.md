@@ -4,7 +4,7 @@ Module at `cli/src/services/agent_trace_storage/` (T04 of the `repository-scoped
 
 ## Public API
 
-- `AgentTraceStorageContext { repository_root, explicit_repository_id, repository_remote }` — borrowed inputs mirroring the `agent_trace.repository_id` / `agent_trace.repository_remote` config keys; callers pass already-resolved configuration values (the module does not read config itself; T08 wires config/hooks/lifecycle call sites).
+- `AgentTraceStorageContext { repository_root, explicit_repository_id, repository_remote }` — borrowed inputs mirroring the `agent_trace.repository_id` / `agent_trace.repository_remote` config keys; callers pass already-resolved configuration values. Active hook runtime and Agent Trace lifecycle setup/health resolve these values through the config service before constructing the storage context.
 - `ResolvedAgentTraceStorage { repository_identity, checkout_id, db_path, db }` — resolved repository identity (`ResolvedRepositoryIdentity` including source provenance), the checkout ID for diagnostics (never persisted on Agent Trace rows), the repository-scoped DB path, and the open `RepositoryAgentTraceDb`.
 - `resolve_agent_trace_storage(context)` — production entrypoint using the canonical state root from the default-path catalog.
 - `resolve_agent_trace_storage_at_state_root(context, state_root)` — resolution core against an explicit state root; used by tests to exercise the full path without touching the real user state directory.
@@ -18,10 +18,10 @@ Module at `cli/src/services/agent_trace_storage/` (T04 of the `repository-scoped
 
 ## Legacy boundary
 
-The resolver never selects, creates, or touches legacy checkout-scoped `<state_root>/sce/agent-trace-<checkout-id>.db` files or the legacy global `<state_root>/sce/agent-trace.db`; tests assert neither appears after resolution. The existing checkout resolver `checkout::resolve_or_create_agent_trace_db_for_checkout` remains the active runtime path until T08 replaces its call sites.
+The resolver never selects, creates, or touches legacy checkout-scoped `<state_root>/sce/agent-trace-<checkout-id>.db` files or the legacy global `<state_root>/sce/agent-trace.db`; tests assert neither appears after resolution. Active hook/runtime and lifecycle setup call sites now use this resolver. The existing checkout resolver `checkout::resolve_or_create_agent_trace_db_for_checkout` remains only as a legacy/dead-code path until explicit legacy trace inspection is wired.
 
 ## Status
 
-Registered in `cli/src/services/mod.rs` behind `#[allow(dead_code)]` until T08 consumes it. T05 changes the resolved DB handle to the repository-scoped adapter and validates the stored `repository_metadata.repository_id` before returning storage. Covered by in-module tests: repository separation, SSH/HTTPS clone consolidation, linked-worktree consolidation, explicit-ID override, idempotent re-resolution, missing-identity guidance, and path-segment validation (`nix build .#checks.<system>.cli-tests`).
+Registered in `cli/src/services/mod.rs` and consumed by hook runtime plus Agent Trace lifecycle setup. T05 changed the resolved DB handle to the repository-scoped adapter and validates the stored `repository_metadata.repository_id` before returning storage; T08 wired hooks/lifecycle to pass resolved config values into this context. Covered by in-module tests: repository separation, SSH/HTTPS clone consolidation, linked-worktree consolidation, explicit-ID override, idempotent re-resolution, missing-identity guidance, and path-segment validation (`nix build .#checks.<system>.cli-tests`).
 
 See also: [repository-identity.md](repository-identity.md), [checkout-identity.md](checkout-identity.md), [default-path-catalog.md](default-path-catalog.md), [../sce/agent-trace-db.md](../sce/agent-trace-db.md)

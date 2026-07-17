@@ -14,10 +14,10 @@ use super::policy::{build_validation_warnings, resolve_bash_policy_config, BashP
 use super::schema;
 use super::types::{
     parse_bool_value_from, ConfigPathSource, ConfigRequest, DatabaseRetryConfig, LoadedConfigPath,
-    LogFileMode, LogFormat, LogLevel, ReportFormat, ResolvedAuthRuntimeConfig,
-    ResolvedHookRuntimeConfig, ResolvedObservabilityRuntimeConfig, ResolvedOptionalValue,
-    ResolvedValue, ValueSource, ENV_ATTRIBUTION_HOOKS_DISABLED, ENV_LOG_FILE, ENV_LOG_FILE_MODE,
-    ENV_LOG_FORMAT, ENV_LOG_LEVEL,
+    LogFileMode, LogFormat, LogLevel, ReportFormat, ResolvedAgentTraceStorageRuntimeConfig,
+    ResolvedAuthRuntimeConfig, ResolvedHookRuntimeConfig, ResolvedObservabilityRuntimeConfig,
+    ResolvedOptionalValue, ResolvedValue, ValueSource, ENV_ATTRIBUTION_HOOKS_DISABLED,
+    ENV_LOG_FILE, ENV_LOG_FILE_MODE, ENV_LOG_FORMAT, ENV_LOG_LEVEL,
 };
 
 const DEFAULT_TIMEOUT_MS: u64 = 30000;
@@ -111,6 +111,32 @@ pub(crate) fn resolve_hook_runtime_config(cwd: &Path) -> Result<ResolvedHookRunt
         Path::exists,
         resolve_default_global_config_path,
     )
+}
+
+pub(crate) fn resolve_agent_trace_storage_runtime_config(
+    cwd: &Path,
+) -> Result<ResolvedAgentTraceStorageRuntimeConfig> {
+    let runtime = resolve_runtime_config_with(
+        &ConfigRequest {
+            report_format: ReportFormat::Text,
+            config_path: None,
+            log_level: None,
+            timeout_ms: None,
+        },
+        cwd,
+        |key| std::env::var(key).ok(),
+        |path| {
+            std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to read config file '{}'.", path.display()))
+        },
+        Path::exists,
+        resolve_default_global_config_path,
+    )?;
+
+    Ok(ResolvedAgentTraceStorageRuntimeConfig {
+        repository_id: runtime.agent_trace_repository_id.value,
+        repository_remote: runtime.agent_trace_repository_remote.value,
+    })
 }
 
 pub(crate) fn resolve_bash_policy_runtime_config(cwd: &Path) -> Result<Option<BashPolicyConfig>> {
