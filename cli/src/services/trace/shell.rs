@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use turso::Value as TursoValue;
 
-use crate::services::agent_trace_db::AgentTraceDb;
+use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::db::QueryRows;
 
 const HELP_TEXT: &str = "Commands:\n  .help    Show this help\n  .tables  List tables\n  .exit    Exit the shell\n  .quit    Exit the shell\nSQL statements execute against the resolved Agent Trace DB.\n";
@@ -33,7 +33,7 @@ pub fn run_agent_trace_db_shell(
     input: impl BufRead,
     mut output: impl Write,
 ) -> Result<ShellExit> {
-    let db = AgentTraceDb::open_for_hooks_without_migrations_at(&target.path)
+    let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(&target.path)
         .with_context(|| format!("failed to open Agent Trace DB '{}'", target.path.display()))?;
     db.ensure_schema_ready_for_hooks().with_context(|| {
         format!(
@@ -46,7 +46,7 @@ pub fn run_agent_trace_db_shell(
 }
 
 pub fn run_agent_trace_db_shell_with_db(
-    db: &AgentTraceDb,
+    db: &RepositoryAgentTraceDb,
     target: &ShellTarget,
     input: impl BufRead,
     mut output: impl Write,
@@ -102,7 +102,11 @@ fn split_sql_line(line: &str) -> impl Iterator<Item = &str> {
     line.split(';').map(str::trim)
 }
 
-fn render_sql_result(db: &AgentTraceDb, sql: &str, output: &mut impl Write) -> Result<()> {
+fn render_sql_result(
+    db: &RepositoryAgentTraceDb,
+    sql: &str,
+    output: &mut impl Write,
+) -> Result<()> {
     match execute_sql(db, sql) {
         Ok(ShellSqlResult::Query(rows)) => render_query_rows(&rows, output),
         Ok(ShellSqlResult::Statement { rows_affected }) => {
@@ -112,7 +116,7 @@ fn render_sql_result(db: &AgentTraceDb, sql: &str, output: &mut impl Write) -> R
     }
 }
 
-fn render_tables(db: &AgentTraceDb, output: &mut impl Write) -> Result<()> {
+fn render_tables(db: &RepositoryAgentTraceDb, output: &mut impl Write) -> Result<()> {
     match db.query_values(TABLES_SQL, ()) {
         Ok(rows) => {
             for row in rows.rows {
@@ -134,7 +138,7 @@ enum ShellSqlResult {
     Statement { rows_affected: u64 },
 }
 
-fn execute_sql(db: &AgentTraceDb, sql: &str) -> Result<ShellSqlResult> {
+fn execute_sql(db: &RepositoryAgentTraceDb, sql: &str) -> Result<ShellSqlResult> {
     if is_query_sql(sql) {
         db.query_values(sql, ())
             .map(ShellSqlResult::Query)
@@ -233,7 +237,7 @@ mod tests {
 
     fn run_shell(input: &str) -> String {
         let path = unique_temp_db("core");
-        let db = AgentTraceDb::open_at(&path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&path).expect("test DB should open");
         let mut output = Vec::new();
         run_agent_trace_db_shell_with_db(&db, &shell_target(&path), input.as_bytes(), &mut output)
             .expect("shell should run");
@@ -316,7 +320,7 @@ mod tests {
     #[test]
     fn shell_opens_path_and_checks_schema_readiness() {
         let path = unique_temp_db("open-path");
-        let db = AgentTraceDb::open_at(&path).expect("test DB should open");
+        let db = RepositoryAgentTraceDb::new_at(&path).expect("test DB should open");
         drop(db);
 
         let mut output = Vec::new();

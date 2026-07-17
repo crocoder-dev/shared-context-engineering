@@ -75,6 +75,13 @@ impl DbSpec for RepositoryAgentTraceDbSpec {
 pub type RepositoryAgentTraceDb = TursoDb<RepositoryAgentTraceDbSpec>;
 
 impl RepositoryAgentTraceDb {
+    /// Open a repository-scoped Agent Trace database at an explicit path without
+    /// running migrations, for read-only hook/runtime paths that must not
+    /// migrate from a high-frequency caller.
+    pub fn open_for_hooks_without_migrations_at(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        TursoDb::<RepositoryAgentTraceDbSpec>::open_without_migrations_at(path)
+    }
+
     /// Verify that the repository-scoped schema baseline already exists.
     pub fn ensure_schema_ready_for_hooks(&self) -> Result<()> {
         self.ensure_schema_ready(REPOSITORY_AGENT_TRACE_SCHEMA_SETUP_GUIDANCE)

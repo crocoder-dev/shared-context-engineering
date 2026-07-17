@@ -134,9 +134,10 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
     use crate::services::agent_trace_db::{
-        AgentTraceDb, AgentTraceInsert, DiffTraceInsert, InsertMessageInsert, InsertPartInsert,
-        MessageRole, PartType, PostCommitPatchIntersectionInsert,
+        AgentTraceInsert, DiffTraceInsert, InsertMessageInsert, InsertPartInsert, MessageRole,
+        PartType, PostCommitPatchIntersectionInsert,
     };
 
     fn unique_temp_dir(label: &str) -> PathBuf {
@@ -153,7 +154,7 @@ mod tests {
     }
 
     fn seed_db(path: &Path) -> i64 {
-        let db = AgentTraceDb::open_at(path).expect("migrated DB should open");
+        let db = RepositoryAgentTraceDb::new_at(path).expect("repository DB should open");
 
         // 2 diff traces
         db.insert_diff_trace(DiffTraceInsert {
@@ -260,7 +261,7 @@ mod tests {
     fn collect_stats_on_empty_db_returns_zero_counts_and_no_activity() {
         let dir = unique_temp_dir("empty");
         let db_path = dir.join("agent-trace-bbbb.db");
-        drop(AgentTraceDb::open_at(&db_path).expect("migrated DB should open"));
+        drop(RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open"));
 
         let stats =
             collect_agent_trace_db_stats(&db_path).expect("stats collection should succeed");
