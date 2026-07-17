@@ -20,10 +20,22 @@ pub fn render(report: &StatusReport, format: OutputFormat) -> Result<String> {
 fn render_text(report: &StatusReport) -> String {
     let mut lines = vec![style::heading(HEADING)];
     if let Some(repository_id) = &report.repository_id {
-        lines.push(format!("Repository: {repository_id}"));
+        lines.push(format!("Repository ID: {repository_id}"));
     }
-    lines.push(format!("Checkout: {}", report.checkout_id));
-    lines.push(format!("Database: {}", report.database_path.display()));
+    if let Some(source) = &report.repository_identity_source {
+        lines.push(format!("Repository identity source: {source}"));
+    }
+    if let Some(canonical_identity) = &report.canonical_identity {
+        lines.push(format!("Canonical identity: {canonical_identity}"));
+    }
+    if let Some(remote) = &report.configured_remote {
+        lines.push(format!("Configured remote: {remote}"));
+    }
+    lines.push(format!("Checkout ID: {}", report.checkout_id));
+    lines.push(format!(
+        "Repository-scoped database: {}",
+        report.database_path.display()
+    ));
 
     match &report.db_status {
         DbStatus::Ready {
@@ -58,7 +70,11 @@ fn render_json(report: &StatusReport) -> Result<String> {
         "command": NAME,
         "subcommand": "status",
         "repository_id": report.repository_id,
+        "repository_identity_source": report.repository_identity_source,
+        "canonical_identity": report.canonical_identity,
+        "configured_remote": report.configured_remote,
         "checkout_id": report.checkout_id,
+        "database_scope": if report.repository_id.is_some() { "repository" } else { "legacy_checkout" },
         "database_path": report.database_path.display().to_string(),
     });
 
@@ -112,8 +128,11 @@ mod tests {
             DateTime::<Utc>::from_timestamp_millis(1_782_650_096_789).expect("timestamp parses");
         StatusReport {
             repository_id: Some(String::from("repo123")),
+            repository_identity_source: Some(String::from("remote_url")),
+            canonical_identity: Some(String::from("github.com/acme/widgets")),
+            configured_remote: Some(String::from("origin")),
             checkout_id: String::from("01900000-0000-7000-8000-000000000abc"),
-            database_path: PathBuf::from("/tmp/agent-trace-abc.db"),
+            database_path: PathBuf::from("/tmp/sce/repos/repo123/agent-trace.db"),
             db_status: DbStatus::Ready {
                 stats: AgentTraceDbStats {
                     diff_traces: 7,
@@ -131,6 +150,9 @@ mod tests {
     fn skipped_report() -> StatusReport {
         StatusReport {
             repository_id: None,
+            repository_identity_source: None,
+            canonical_identity: None,
+            configured_remote: None,
             checkout_id: String::from("01900000-0000-7000-8000-000000000def"),
             database_path: PathBuf::from("/tmp/agent-trace-def.db"),
             db_status: DbStatus::Skipped {
@@ -143,8 +165,14 @@ mod tests {
     fn ready_text_renders_all_counts_and_last_activity() {
         let rendered = render_text(&ready_report());
         assert!(rendered.contains("SCE trace status"));
-        assert!(rendered.contains("Checkout: 01900000-0000-7000-8000-000000000abc"));
-        assert!(rendered.contains("Database: /tmp/agent-trace-abc.db"));
+        assert!(rendered.contains("Repository ID: repo123"));
+        assert!(rendered.contains("Repository identity source: remote_url"));
+        assert!(rendered.contains("Canonical identity: github.com/acme/widgets"));
+        assert!(rendered.contains("Configured remote: origin"));
+        assert!(rendered.contains("Checkout ID: 01900000-0000-7000-8000-000000000abc"));
+        assert!(
+            rendered.contains("Repository-scoped database: /tmp/sce/repos/repo123/agent-trace.db")
+        );
         assert!(rendered.contains("Status: ready"));
         assert!(rendered.contains("Diff traces: 7"));
         assert!(rendered.contains("Messages: 4"));
@@ -184,6 +212,10 @@ mod tests {
         assert_eq!(value["command"], "trace");
         assert_eq!(value["subcommand"], "status");
         assert_eq!(value["db_status"], "ready");
+        assert_eq!(value["database_scope"], "repository");
+        assert_eq!(value["repository_identity_source"], "remote_url");
+        assert_eq!(value["canonical_identity"], "github.com/acme/widgets");
+        assert_eq!(value["configured_remote"], "origin");
         assert!(value.get("skip_reason").is_none());
         assert_eq!(value["stats"]["diff_traces"], 7);
         assert_eq!(value["stats"]["messages"], 4);
@@ -198,6 +230,7 @@ mod tests {
         let payload = render_json(&skipped_report()).expect("json render");
         let value: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
         assert_eq!(value["db_status"], "skipped");
+        assert_eq!(value["database_scope"], "legacy_checkout");
         assert_eq!(value["skip_reason"], "missing table: agent_traces");
         assert!(value.get("stats").is_none());
         assert!(value.get("last_activity").is_none());

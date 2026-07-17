@@ -162,12 +162,16 @@ Initial code inspection found the current checkout-scoped behavior in these area
   - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` pass; `nix build .#checks.x86_64-linux.cli-tests .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt` pass.
   - Notes: Trace discovery now defaults to repository-scoped DBs under `<state_root>/sce/repos/<repository-id>/agent-trace.db`; old checkout-scoped `agent-trace-<checkout-id>.db` discovery is explicit via `--legacy`. `sce trace status` resolves active repository storage and reports repository ID + checkout ID diagnostics; `sce trace db shell` opens the current repository DB by default or resolves repository aliases/IDs, while `--legacy` requires an explicit legacy alias/checkout ID. List/status-all render scope + identifier fields for repository and legacy rows.
 
-- [ ] T10: `Harden diagnostics and credential-safe output` (status:todo)
+- [x] T10: `Harden diagnostics and credential-safe output` (status:done)
   - Task ID: T10
   - Goal: Update setup, doctor, trace status/list/shell, and related JSON/text renderers to use repository-scoped terminology and safe identity metadata.
   - Boundaries (in/out of scope): In - render repository identity source, repository ID, safe canonical identity, configured remote, checkout ID, repository-scoped path, schema status; redact/avoid raw URLs. Out - new storage/query behavior.
   - Done when: User-facing diagnostics never display credentials; active database is described as repository-scoped; actionable missing-identity guidance is visible.
   - Verification notes (commands or checks): targeted render tests with credential-bearing remotes; `rg` for old active checkout-scoped wording in non-historical docs/code.
+  - Completed: 2026-07-17
+  - Files changed: `cli/src/services/agent_trace_db/lifecycle.rs`, `cli/src/services/doctor/{inspect.rs,render.rs,types.rs}`, `cli/src/services/trace/{discovery.rs,render_status.rs,status.rs,stats.rs}`, `context/{architecture.md,context-map.md,glossary.md}`, `context/cli/cli-command-surface.md`, `context/sce/{agent-trace-hook-doctor.md,agent-trace-hooks-command-routing.md,shared-turso-db.md}`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` pass; `nix build .#checks.x86_64-linux.cli-tests .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt` pass; `nix run .#pkl-check-generated` reports "Generated outputs are up to date."; `git diff --check` pass; focused `rg` found remaining checkout-scoped wording only in explicit legacy/historical surfaces.
+  - Notes: Setup lifecycle messages, doctor text/JSON output, and `sce trace status` text/JSON now expose repository ID, identity source, safe canonical identity, configured remote where applicable, checkout ID, and repository-scoped DB path without raw remote URLs. Added status coverage for credential-bearing remotes to assert safe canonical identity/path output. Shell skipped-DB diagnostics now label repository vs legacy checkout scope instead of assuming checkout IDs.
 
 - [ ] T11: `Add end-to-end repository storage behavior tests` (status:todo)
   - Task ID: T11

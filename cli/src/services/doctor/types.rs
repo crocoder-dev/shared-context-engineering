@@ -61,7 +61,7 @@ pub(super) struct HookDoctorReport {
     pub(super) readiness: Readiness,
     pub(super) state_root: Option<FileLocationHealth>,
     pub(super) checkout_identity: Option<CheckoutIdentityHealth>,
-    pub(super) agent_trace_db: Option<FileLocationHealth>,
+    pub(super) agent_trace_db: Option<AgentTraceDbHealth>,
     pub(super) repository_root: Option<PathBuf>,
     pub(super) hook_path_source: HookPathSource,
     pub(super) hooks_directory: Option<PathBuf>,
@@ -75,8 +75,17 @@ pub(super) struct HookDoctorReport {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct CheckoutIdentityHealth {
     pub(super) checkout_id: String,
-    pub(super) database_path: PathBuf,
-    pub(super) database_state: &'static str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct AgentTraceDbHealth {
+    pub(super) label: &'static str,
+    pub(super) path: PathBuf,
+    pub(super) state: &'static str,
+    pub(super) repository_id: String,
+    pub(super) canonical_identity: String,
+    pub(super) identity_source: String,
+    pub(super) configured_remote: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
