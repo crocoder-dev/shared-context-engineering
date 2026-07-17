@@ -166,6 +166,7 @@ impl RepositoryAgentTraceDb {
 
     /// Insert a message row, ignoring duplicate `(session_id, message_id)`
     /// rows.
+    #[allow(dead_code)]
     pub fn insert_message(&self, input: InsertMessageInsert) -> Result<u64> {
         insert_message_with(self, input)
     }
@@ -177,6 +178,7 @@ impl RepositoryAgentTraceDb {
     }
 
     /// Append a part row (no upsert; multiple rows per message allowed).
+    #[allow(dead_code)]
     pub fn insert_part(&self, input: InsertPartInsert) -> Result<u64> {
         insert_part_with(self, input)
     }
