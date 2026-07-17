@@ -1,6 +1,6 @@
 # Repository identity canonicalization and hashing
 
-Module at `cli/src/services/repository_identity/` that turns an explicit configured identity or a Git remote URL into a scheme-neutral canonical identity, then derives a stable repository ID as `sha256("sce-repository-id-v1\0" + canonical_identity)` lowercase hex (64 chars). Implemented in T02/T03 of the `repository-scoped-agent-trace-db` plan; the repository-scoped Agent Trace DB path `<state_root>/sce/repos/<repository-id>/agent-trace.db` will be selected by this ID in later tasks.
+Module at `cli/src/services/repository_identity/` that turns an explicit configured identity or a Git remote URL into a scheme-neutral canonical identity, then derives a stable repository ID as `sha256("sce-repository-id-v1\0" + canonical_identity)` lowercase hex (64 chars). Implemented in T02/T03 of the `repository-scoped-agent-trace-db` plan; the T04 storage resolver in `cli/src/services/agent_trace_storage/` selects the repository-scoped Agent Trace DB path `<state_root>/sce/repos/<repository-id>/agent-trace.db` by this ID (see [agent-trace-storage.md](agent-trace-storage.md)).
 
 The root module (`mod.rs`) performs no I/O: it never opens databases, reads Git config, or touches the filesystem. Runtime precedence resolution and Git remote lookup live in the `resolve` submodule.
 
@@ -50,6 +50,6 @@ Local paths are never used implicitly: a local-path remote URL fails canonicaliz
 
 ## Status
 
-Registered in `cli/src/services/mod.rs` behind `#[allow(dead_code)]` until the T04 storage resolver consumes it (same pattern as `bash_policy`). Covered by in-module unit tests, including temp-Git-repo remote lookup tests (`cargo test repository_identity` filter; repo-preferred path is `nix flake check` / `nix build .#checks.<system>.cli-tests`).
+Registered in `cli/src/services/mod.rs` behind `#[allow(dead_code)]`; consumed by the T04 `agent_trace_storage` resolver, which is itself dead-code-allowed until T08 wires runtime call sites. Covered by in-module unit tests, including temp-Git-repo remote lookup tests (`cargo test repository_identity` filter; repo-preferred path is `nix flake check` / `nix build .#checks.<system>.cli-tests`).
 
 See also: [config-precedence-contract.md](config-precedence-contract.md) (owns the `agent_trace.repository_id` / `agent_trace.repository_remote` config keys), [checkout-identity.md](checkout-identity.md), [../sce/agent-trace-db.md](../sce/agent-trace-db.md).
