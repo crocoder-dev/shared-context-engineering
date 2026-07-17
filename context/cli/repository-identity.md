@@ -12,6 +12,8 @@ The root module (`mod.rs`) performs no I/O: it never opens databases, reads Git 
 - `canonicalize_remote_url(raw) -> Result<String, RepositoryIdentityError>` — canonicalization without hashing.
 - `derive_repository_id(canonical_identity) -> String` — domain-separated SHA-256 hex.
 - `REPOSITORY_ID_HASH_DOMAIN` — the `b"sce-repository-id-v1\0"` prefix constant.
+- `repository_dir_segment(canonical_identity) -> String` — pure human-readable on-disk directory segment `<slug>-<short>`, where `slug` is the lowercased canonical identity with non-alphanumeric runs collapsed to a single `-` and leading/trailing `-` trimmed, and `short` is the first 4 hex chars of `SHA256(canonical_identity)` with **no** domain prefix (deliberately distinct from `repository_id`, which keeps its `sce-repository-id-v1\0` prefix). All-non-alphanumeric input slugs to empty and the segment falls back to just `short`. Display/layout helper only — the authoritative identity stays `repository_id`. Not yet wired into path construction (T02 of `human-readable-repo-db-directory`).
+- `RepositoryIdentity::dir_segment(&self) -> String` — convenience wrapper over `repository_dir_segment` for `self.canonical_identity`.
 
 ## Canonicalization rules (remote URLs)
 
