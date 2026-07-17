@@ -14,27 +14,17 @@ pub const NAME: &str = "trace";
 
 #[allow(unused_imports)]
 pub use discovery::{
-    discover_agent_trace_dbs, discover_legacy_agent_trace_dbs, resolve_agent_trace_db_identifier,
-    DiscoveredAgentTraceDb, Readiness, ResolveAgentTraceDbError,
+    discover_agent_trace_dbs, resolve_agent_trace_db_identifier, DiscoveredAgentTraceDb, Readiness,
+    ResolveAgentTraceDbError,
 };
 
 use crate::services::output_format::OutputFormat;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TraceSubcommandRequest {
-    DbList {
-        format: OutputFormat,
-        legacy: bool,
-    },
-    DbShell {
-        identifier: Option<String>,
-        legacy: bool,
-    },
-    Status {
-        all: bool,
-        format: OutputFormat,
-        legacy: bool,
-    },
+    DbList { format: OutputFormat },
+    DbShell { identifier: Option<String> },
+    Status { all: bool, format: OutputFormat },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

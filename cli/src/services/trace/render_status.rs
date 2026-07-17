@@ -74,7 +74,7 @@ fn render_json(report: &StatusReport) -> Result<String> {
         "canonical_identity": report.canonical_identity,
         "configured_remote": report.configured_remote,
         "checkout_id": report.checkout_id,
-        "database_scope": if report.repository_id.is_some() { "repository" } else { "legacy_checkout" },
+        "database_scope": "repository",
         "database_path": report.database_path.display().to_string(),
     });
 
@@ -149,12 +149,12 @@ mod tests {
 
     fn skipped_report() -> StatusReport {
         StatusReport {
-            repository_id: None,
-            repository_identity_source: None,
-            canonical_identity: None,
-            configured_remote: None,
+            repository_id: Some(String::from("repo456")),
+            repository_identity_source: Some(String::from("remote_url")),
+            canonical_identity: Some(String::from("github.com/acme/gadgets")),
+            configured_remote: Some(String::from("origin")),
             checkout_id: String::from("01900000-0000-7000-8000-000000000def"),
-            database_path: PathBuf::from("/tmp/agent-trace-def.db"),
+            database_path: PathBuf::from("/tmp/sce/repos/repo456/agent-trace.db"),
             db_status: DbStatus::Skipped {
                 missing_table: String::from("agent_traces"),
             },
@@ -230,7 +230,7 @@ mod tests {
         let payload = render_json(&skipped_report()).expect("json render");
         let value: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
         assert_eq!(value["db_status"], "skipped");
-        assert_eq!(value["database_scope"], "legacy_checkout");
+        assert_eq!(value["database_scope"], "repository");
         assert_eq!(value["skip_reason"], "missing table: agent_traces");
         assert!(value.get("stats").is_none());
         assert!(value.get("last_activity").is_none());

@@ -11,8 +11,7 @@ use anyhow::{Context, Result};
 
 use crate::services::default_paths::resolve_state_data_root;
 use crate::services::trace::discovery::{
-    discover_legacy_agent_trace_dbs_in, discover_repository_agent_trace_dbs_in,
-    DiscoveredAgentTraceDbKind, Readiness,
+    discover_repository_agent_trace_dbs_in, DiscoveredAgentTraceDbKind, Readiness,
 };
 use crate::services::trace::stats::{collect_agent_trace_db_stats, AgentTraceDbStats};
 
@@ -48,19 +47,15 @@ pub struct StatusAllReport {
 }
 
 /// Aggregate `sce trace status --all` using the default state-data root.
-pub fn aggregate_current_status_all(legacy: bool) -> Result<StatusAllReport> {
+pub fn aggregate_current_status_all() -> Result<StatusAllReport> {
     let state_root = resolve_state_data_root().context("failed to resolve state data root")?;
     let sce_dir = state_root.join("sce");
-    aggregate_status_all_in(&sce_dir, legacy)
+    aggregate_status_all_in(&sce_dir)
 }
 
 /// Aggregate `sce trace status --all` against an explicit `sce` directory.
-pub fn aggregate_status_all_in(sce_dir: &Path, legacy: bool) -> Result<StatusAllReport> {
-    let discovered = if legacy {
-        discover_legacy_agent_trace_dbs_in(sce_dir)?
-    } else {
-        discover_repository_agent_trace_dbs_in(sce_dir)?
-    };
+pub fn aggregate_status_all_in(sce_dir: &Path) -> Result<StatusAllReport> {
+    let discovered = discover_repository_agent_trace_dbs_in(sce_dir)?;
 
     let mut discovery = DiscoverySummary {
         discovered: discovered.len(),
@@ -114,13 +109,8 @@ pub fn aggregate_status_all_in(sce_dir: &Path, legacy: bool) -> Result<StatusAll
 mod tests {
     use super::*;
 
-    use std::fs::OpenOptions;
     use std::path::PathBuf;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-    use crate::services::agent_trace_db::{
-        AgentTraceDb, DiffTraceInsert, InsertMessageInsert, InsertPartInsert, MessageRole, PartType,
-    };
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_temp_dir(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -135,125 +125,14 @@ mod tests {
         dir
     }
 
-    fn touch_mtime(path: &Path, mtime: SystemTime) {
-        let file = OpenOptions::new()
-            .write(true)
-            .open(path)
-            .expect("open db file for mtime update");
-        file.set_modified(mtime).expect("set mtime");
-    }
-
-    fn seed_ready_db(path: &Path, diff_count: u64, message_count: u64, parts_per_message: u64) {
-        let db = AgentTraceDb::open_at(path).expect("migrated DB should open");
-        for i in 0..diff_count {
-            db.insert_diff_trace(DiffTraceInsert {
-                time_ms: 1_000 + i64::try_from(i).expect("diff index fits in i64"),
-                session_id: "s1",
-                patch: "diff",
-                model_id: Some("m1"),
-                tool_name: "claude",
-                tool_version: Some("1"),
-                payload_type: "patch",
-            })
-            .expect("diff trace");
-        }
-        for i in 0..message_count {
-            let mid = format!("m{i}");
-            db.insert_message(InsertMessageInsert {
-                session_id: "s1".into(),
-                message_id: mid.clone(),
-                role: MessageRole::User,
-                generated_at_unix_ms: 1_000 + i64::try_from(i).expect("msg index fits in i64"),
-            })
-            .expect("message");
-            let parts = (0..parts_per_message)
-                .map(|j| InsertPartInsert {
-                    part_type: PartType::Text,
-                    text: format!("p{i}{j}"),
-                    session_id: "s1".into(),
-                    message_id: mid.clone(),
-                    generated_at_unix_ms: 1_000
-                        + i64::try_from(i * parts_per_message + j).expect("part index fits in i64"),
-                })
-                .collect();
-            db.insert_parts(parts).expect("parts");
-        }
-    }
-
-    fn seed_partial_db(path: &Path) {
-        let db = AgentTraceDb::open_for_hooks_without_migrations_at(path)
-            .expect("open without migrations");
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS diff_traces (id INTEGER PRIMARY KEY)",
-            (),
-        )
-        .expect("create diff_traces");
-        // Intentionally missing post_commit_patch_intersections so readiness
-        // probe reports skipped with the first missing table.
-        drop(db);
-    }
-
     #[test]
     fn empty_sce_dir_reports_zero_discovery_and_totals() {
         let dir = unique_temp_dir("empty");
-        let report = aggregate_status_all_in(&dir, true).expect("empty aggregation should succeed");
+        let report = aggregate_status_all_in(&dir).expect("empty aggregation should succeed");
         assert_eq!(report.discovery.discovered, 0);
         assert_eq!(report.discovery.ready, 0);
         assert_eq!(report.discovery.skipped, 0);
         assert_eq!(report.totals, Totals::default());
         assert!(report.databases.is_empty());
-    }
-
-    #[test]
-    fn mixed_fixture_aggregates_ready_and_lists_skipped() {
-        let dir = unique_temp_dir("mixed");
-
-        let ready_newest = dir.join("agent-trace-aaaa.db");
-        let ready_older = dir.join("agent-trace-bbbb.db");
-        let skipped = dir.join("agent-trace-cccc.db");
-
-        seed_ready_db(&ready_newest, 3, 2, 2); // diffs=3, msgs=2, parts=4
-        seed_ready_db(&ready_older, 1, 1, 1); // diffs=1, msgs=1, parts=1
-        seed_partial_db(&skipped);
-
-        let base = SystemTime::now();
-        touch_mtime(&ready_newest, base);
-        touch_mtime(&ready_older, base - Duration::from_secs(10));
-        touch_mtime(&skipped, base - Duration::from_secs(20));
-
-        let report = aggregate_status_all_in(&dir, true).expect("aggregation should succeed");
-
-        assert_eq!(report.discovery.discovered, 3);
-        assert_eq!(report.discovery.ready, 2);
-        assert_eq!(report.discovery.skipped, 1);
-
-        assert_eq!(report.totals.diff_traces, 4);
-        assert_eq!(report.totals.messages, 3);
-        assert_eq!(report.totals.parts, 5);
-        assert_eq!(report.totals.agent_traces, 0);
-        assert_eq!(report.totals.post_commit_patch_intersections, 0);
-
-        assert_eq!(report.databases.len(), 3);
-        // Discovery is mtime-desc, so newest ready first, then older ready, then skipped.
-        assert_eq!(report.databases[0].alias, "agent_trace_0");
-        assert_eq!(report.databases[0].kind.identifier(), "aaaa");
-        match &report.databases[0].status {
-            DatabaseRowStatus::Ready { stats } => assert_eq!(stats.diff_traces, 3),
-            DatabaseRowStatus::Skipped { .. } => panic!("expected ready row"),
-        }
-        assert_eq!(report.databases[1].alias, "agent_trace_1");
-        assert_eq!(report.databases[1].kind.identifier(), "bbbb");
-        match &report.databases[1].status {
-            DatabaseRowStatus::Ready { stats } => assert_eq!(stats.diff_traces, 1),
-            DatabaseRowStatus::Skipped { .. } => panic!("expected ready row"),
-        }
-        assert_eq!(report.databases[2].alias, "agent_trace_2");
-        assert_eq!(report.databases[2].kind.identifier(), "cccc");
-        match &report.databases[2].status {
-            DatabaseRowStatus::Skipped { missing_table } => {
-                assert_eq!(missing_table, "post_commit_patch_intersections");
-            }
-            DatabaseRowStatus::Ready { .. } => panic!("expected skipped row"),
-        }
     }
 }

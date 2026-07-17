@@ -195,11 +195,8 @@ mod tests {
     use super::*;
 
     use std::path::PathBuf;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    use crate::services::agent_trace_db::{
-        AgentTraceDb, DiffTraceInsert, InsertMessageInsert, MessageRole,
-    };
     use crate::services::trace::status_all::aggregate_status_all_in;
 
     fn unique_temp_dir(label: &str) -> PathBuf {
@@ -215,54 +212,10 @@ mod tests {
         dir
     }
 
-    fn touch_mtime(path: &std::path::Path, mtime: SystemTime) {
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(path)
-            .expect("open db file for mtime update");
-        file.set_modified(mtime).expect("set mtime");
-    }
-
-    fn seed_ready_db(path: &std::path::Path, diffs: u64, msgs: u64) {
-        let db = AgentTraceDb::open_at(path).expect("migrated DB should open");
-        for i in 0..diffs {
-            db.insert_diff_trace(DiffTraceInsert {
-                time_ms: 1_000 + i64::try_from(i).expect("idx fits"),
-                session_id: "s1",
-                patch: "p",
-                model_id: Some("m1"),
-                tool_name: "claude",
-                tool_version: Some("1"),
-                payload_type: "patch",
-            })
-            .expect("diff");
-        }
-        for i in 0..msgs {
-            db.insert_message(InsertMessageInsert {
-                session_id: "s1".into(),
-                message_id: format!("m{i}"),
-                role: MessageRole::User,
-                generated_at_unix_ms: 1_000 + i64::try_from(i).expect("idx fits"),
-            })
-            .expect("msg");
-        }
-    }
-
-    fn seed_partial_db(path: &std::path::Path) {
-        let db = AgentTraceDb::open_for_hooks_without_migrations_at(path)
-            .expect("open without migrations");
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS diff_traces (id INTEGER PRIMARY KEY)",
-            (),
-        )
-        .expect("create diff_traces");
-        drop(db);
-    }
-
     #[test]
     fn empty_renders_text_with_zeroed_summary_and_totals() {
         let dir = unique_temp_dir("empty-text");
-        let report = aggregate_status_all_in(&dir, true).expect("aggregate");
+        let report = aggregate_status_all_in(&dir).expect("aggregate");
         let rendered = render_text(&report);
         assert!(rendered.contains("Databases: 0 discovered, 0 ready, 0 skipped"));
         assert!(rendered.contains("Diff traces: 0"));
@@ -273,7 +226,7 @@ mod tests {
     #[test]
     fn empty_renders_json_with_zeroed_shape() {
         let dir = unique_temp_dir("empty-json");
-        let report = aggregate_status_all_in(&dir, true).expect("aggregate");
+        let report = aggregate_status_all_in(&dir).expect("aggregate");
         let payload = render_json(&report).expect("json render");
         let value: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
         assert_eq!(value["status"], "ok");
@@ -285,77 +238,5 @@ mod tests {
         assert_eq!(value["totals"]["diff_traces"], 0);
         assert!(value["totals"]["last_activity"].is_null());
         assert_eq!(value["databases"].as_array().unwrap().len(), 0);
-    }
-
-    #[test]
-    fn mixed_fixture_renders_text_blocks_with_per_database_rows() {
-        let dir = unique_temp_dir("mixed-text");
-        let ready_newest = dir.join("agent-trace-aaaa.db");
-        let ready_older = dir.join("agent-trace-bbbb.db");
-        let skipped = dir.join("agent-trace-cccc.db");
-
-        seed_ready_db(&ready_newest, 3, 2);
-        seed_ready_db(&ready_older, 1, 1);
-        seed_partial_db(&skipped);
-
-        let base = SystemTime::now();
-        touch_mtime(&ready_newest, base);
-        touch_mtime(&ready_older, base - Duration::from_secs(5));
-        touch_mtime(&skipped, base - Duration::from_secs(10));
-
-        let report = aggregate_status_all_in(&dir, true).expect("aggregate");
-        let rendered = render_text(&report);
-
-        assert!(rendered.contains("Databases: 3 discovered, 2 ready, 1 skipped"));
-        assert!(rendered.contains("Diff traces: 4"));
-        assert!(rendered.contains("Messages: 3"));
-        assert!(rendered.contains(BY_DATABASE_HEADING));
-        assert!(rendered.contains("agent_trace_0"));
-        assert!(rendered.contains("agent_trace_1"));
-        assert!(rendered.contains("agent_trace_2"));
-        assert!(rendered.contains("ready"));
-        assert!(rendered.contains("skipped: missing 'post_commit_patch_intersections'"));
-    }
-
-    #[test]
-    fn mixed_fixture_renders_json_aggregate_and_breakdown() {
-        let dir = unique_temp_dir("mixed-json");
-        let ready_newest = dir.join("agent-trace-aaaa.db");
-        let ready_older = dir.join("agent-trace-bbbb.db");
-        let skipped = dir.join("agent-trace-cccc.db");
-
-        seed_ready_db(&ready_newest, 2, 1);
-        seed_ready_db(&ready_older, 1, 0);
-        seed_partial_db(&skipped);
-
-        let base = SystemTime::now();
-        touch_mtime(&ready_newest, base);
-        touch_mtime(&ready_older, base - Duration::from_secs(5));
-        touch_mtime(&skipped, base - Duration::from_secs(10));
-
-        let report = aggregate_status_all_in(&dir, true).expect("aggregate");
-        let payload = render_json(&report).expect("json render");
-        let value: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
-
-        assert_eq!(value["discovery"]["discovered"], 3);
-        assert_eq!(value["discovery"]["ready"], 2);
-        assert_eq!(value["discovery"]["skipped"], 1);
-        assert_eq!(value["totals"]["diff_traces"], 3);
-        assert_eq!(value["totals"]["messages"], 1);
-
-        let databases = value["databases"].as_array().expect("databases array");
-        assert_eq!(databases.len(), 3);
-        assert_eq!(databases[0]["alias"], "agent_trace_0");
-        assert_eq!(databases[0]["status"], "ready");
-        assert_eq!(databases[0]["diff_traces"], 2);
-        assert_eq!(databases[1]["alias"], "agent_trace_1");
-        assert_eq!(databases[1]["status"], "ready");
-        assert_eq!(databases[1]["diff_traces"], 1);
-        assert_eq!(databases[2]["alias"], "agent_trace_2");
-        assert_eq!(databases[2]["status"], "skipped");
-        assert_eq!(
-            databases[2]["skip_reason"],
-            "missing table: post_commit_patch_intersections"
-        );
     }
 }

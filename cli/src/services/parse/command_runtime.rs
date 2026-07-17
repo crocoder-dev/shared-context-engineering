@@ -246,30 +246,15 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
 fn convert_trace_subcommand(subcommand: cli_schema::TraceSubcommand) -> RuntimeCommand {
     let request = match subcommand {
         cli_schema::TraceSubcommand::Db { subcommand } => match subcommand {
-            cli_schema::TraceDbSubcommand::List { format, legacy } => {
-                services::trace::TraceRequest {
-                    subcommand: services::trace::TraceSubcommandRequest::DbList { format, legacy },
-                }
-            }
-            cli_schema::TraceDbSubcommand::Shell { identifier, legacy } => {
-                services::trace::TraceRequest {
-                    subcommand: services::trace::TraceSubcommandRequest::DbShell {
-                        identifier,
-                        legacy,
-                    },
-                }
-            }
-        },
-        cli_schema::TraceSubcommand::Status {
-            all,
-            format,
-            legacy,
-        } => services::trace::TraceRequest {
-            subcommand: services::trace::TraceSubcommandRequest::Status {
-                all,
-                format,
-                legacy,
+            cli_schema::TraceDbSubcommand::List { format } => services::trace::TraceRequest {
+                subcommand: services::trace::TraceSubcommandRequest::DbList { format },
             },
+            cli_schema::TraceDbSubcommand::Shell { identifier } => services::trace::TraceRequest {
+                subcommand: services::trace::TraceSubcommandRequest::DbShell { identifier },
+            },
+        },
+        cli_schema::TraceSubcommand::Status { all, format } => services::trace::TraceRequest {
+            subcommand: services::trace::TraceSubcommandRequest::Status { all, format },
         },
     };
 
@@ -528,7 +513,6 @@ mod tests {
             command.request.subcommand,
             services::trace::TraceSubcommandRequest::DbShell {
                 identifier: Some(String::from("agent_trace_0")),
-                legacy: false,
             }
         );
     }

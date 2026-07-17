@@ -138,57 +138,10 @@ fn column_width<'a, I: Iterator<Item = &'a str>>(header: &str, values: I) -> usi
 mod tests {
     use super::*;
 
-    use std::path::PathBuf;
-    use std::time::{Duration, UNIX_EPOCH};
-
-    use crate::services::agent_trace_db::AgentTraceDb;
-    use crate::services::trace::discovery::discover_legacy_agent_trace_dbs_in;
-
-    fn unique_temp_dir(label: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time should be after Unix epoch")
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "sce-trace-render-list-{label}-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        dir
-    }
-
-    fn create_full_schema_db(path: &std::path::Path) {
-        let db = AgentTraceDb::open_at(path).expect("agent trace DB should open with migrations");
-        drop(db);
-    }
-
-    fn create_partial_schema_db(path: &std::path::Path) {
-        let db = AgentTraceDb::open_for_hooks_without_migrations_at(path)
-            .expect("agent trace DB should open without migrations");
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS diff_traces (id INTEGER PRIMARY KEY)",
-            (),
-        )
-        .expect("create diff_traces");
-        // Intentionally missing post_commit_patch_intersections.
-        drop(db);
-    }
-
-    fn touch_mtime(path: &std::path::Path, mtime: SystemTime) {
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(path)
-            .expect("open db file for mtime update");
-        file.set_modified(mtime).expect("set mtime");
-    }
-
     #[test]
     fn empty_discovery_renders_empty_message_text() {
-        let dir = unique_temp_dir("empty-text");
         let rendered = render_text(&[]);
         assert!(rendered.contains(EMPTY_MESSAGE));
-        // Avoid unused dir warning.
-        let _ = dir;
     }
 
     #[test]
@@ -199,76 +152,5 @@ mod tests {
         assert_eq!(value["command"], "trace");
         assert_eq!(value["subcommand"], "db.list");
         assert_eq!(value["databases"].as_array().unwrap().len(), 0);
-    }
-
-    #[test]
-    fn mixed_fixture_renders_text_table_with_ready_and_skipped_rows() {
-        let dir = unique_temp_dir("text-table");
-        let ready_a = dir.join("agent-trace-aaaa.db");
-        let ready_b = dir.join("agent-trace-bbbb.db");
-        let skipped = dir.join("agent-trace-cccc.db");
-
-        create_full_schema_db(&ready_a);
-        create_full_schema_db(&ready_b);
-        create_partial_schema_db(&skipped);
-
-        let base = SystemTime::now();
-        touch_mtime(&ready_a, base);
-        touch_mtime(&ready_b, base - Duration::from_secs(5));
-        touch_mtime(&skipped, base - Duration::from_secs(10));
-
-        let discovered = discover_legacy_agent_trace_dbs_in(&dir).expect("discovery");
-        let rendered = render_text(&discovered);
-
-        assert!(rendered.contains("Alias"));
-        assert!(rendered.contains("Status"));
-        assert!(rendered.contains("Path"));
-        assert!(rendered.contains("Updated at"));
-        assert!(rendered.contains("agent_trace_0"));
-        assert!(rendered.contains("agent_trace_1"));
-        assert!(rendered.contains("agent_trace_2"));
-        assert!(rendered.contains("ready"));
-        assert!(rendered.contains("skipped: missing table 'post_commit_patch_intersections'"));
-        assert!(rendered.contains(&ready_a.display().to_string()));
-        assert!(rendered.contains(&skipped.display().to_string()));
-    }
-
-    #[test]
-    fn mixed_fixture_renders_json_shape() {
-        let dir = unique_temp_dir("json-shape");
-        let ready = dir.join("agent-trace-aaaa.db");
-        let skipped = dir.join("agent-trace-bbbb.db");
-
-        create_full_schema_db(&ready);
-        create_partial_schema_db(&skipped);
-
-        let base = SystemTime::now();
-        touch_mtime(&ready, base);
-        touch_mtime(&skipped, base - Duration::from_secs(5));
-
-        let discovered = discover_legacy_agent_trace_dbs_in(&dir).expect("discovery");
-        let payload = render_json(&discovered).expect("json render");
-        let value: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
-
-        assert_eq!(value["status"], "ok");
-        assert_eq!(value["command"], "trace");
-        assert_eq!(value["subcommand"], "db.list");
-        let databases = value["databases"].as_array().expect("databases array");
-        assert_eq!(databases.len(), 2);
-
-        assert_eq!(databases[0]["alias"], "agent_trace_0");
-        assert_eq!(databases[0]["identifier"], "aaaa");
-        assert_eq!(databases[0]["status"], "ready");
-        assert!(databases[0].get("skip_reason").is_none());
-        assert_eq!(databases[0]["path"], ready.display().to_string());
-        assert!(databases[0]["updated_at"].is_string());
-
-        assert_eq!(databases[1]["alias"], "agent_trace_1");
-        assert_eq!(databases[1]["identifier"], "bbbb");
-        assert_eq!(databases[1]["status"], "skipped");
-        assert_eq!(
-            databases[1]["skip_reason"],
-            "missing table: post_commit_patch_intersections"
-        );
     }
 }

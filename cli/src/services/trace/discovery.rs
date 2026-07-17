@@ -1,9 +1,7 @@
 //! Deterministic discovery of Agent Trace databases.
 //!
-//! Default discovery scans repository-scoped databases at
-//! `<state_root>/sce/repos/<repository_id>/agent-trace.db`. Legacy discovery
-//! scans old checkout-scoped `<state_root>/sce/agent-trace-{checkout_id}.db`
-//! files only when explicitly requested.
+//! Discovery scans repository-scoped databases at
+//! `<state_root>/sce/repos/<repository_id>/agent-trace.db`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -38,21 +36,18 @@ pub enum Readiness {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DiscoveredAgentTraceDbKind {
     Repository { repository_id: String },
-    LegacyCheckout { checkout_id: String },
 }
 
 impl DiscoveredAgentTraceDbKind {
     pub fn identifier(&self) -> &str {
         match self {
             Self::Repository { repository_id } => repository_id,
-            Self::LegacyCheckout { checkout_id } => checkout_id,
         }
     }
 
     pub fn label(&self) -> &'static str {
         match self {
             Self::Repository { .. } => "repository",
-            Self::LegacyCheckout { .. } => "legacy checkout",
         }
     }
 }
@@ -158,14 +153,6 @@ pub fn discover_agent_trace_dbs() -> Result<Vec<DiscoveredAgentTraceDb>> {
     discover_repository_agent_trace_dbs_in(&sce_dir)
 }
 
-/// Discover legacy checkout-scoped Agent Trace DBs under the resolved state-data root.
-#[allow(dead_code)]
-pub fn discover_legacy_agent_trace_dbs() -> Result<Vec<DiscoveredAgentTraceDb>> {
-    let state_root = resolve_state_data_root().context("failed to resolve state data root")?;
-    let sce_dir = state_root.join("sce");
-    discover_legacy_agent_trace_dbs_in(&sce_dir)
-}
-
 /// Discover repository-scoped Agent Trace DBs in an explicit `sce` directory.
 pub fn discover_repository_agent_trace_dbs_in(
     sce_dir: &Path,
@@ -204,53 +191,6 @@ pub fn discover_repository_agent_trace_dbs_in(
     entries.sort_by(|left, right| right.2.cmp(&left.2).then_with(|| left.0.cmp(&right.0)));
     discovered_from_entries(entries, |repository_id| {
         DiscoveredAgentTraceDbKind::Repository { repository_id }
-    })
-}
-
-/// Discover legacy checkout-scoped Agent Trace DBs in an explicit `sce` directory.
-pub fn discover_legacy_agent_trace_dbs_in(sce_dir: &Path) -> Result<Vec<DiscoveredAgentTraceDb>> {
-    if !sce_dir.is_dir() {
-        return Ok(Vec::new());
-    }
-
-    let mut entries: Vec<(String, PathBuf, SystemTime)> = Vec::new();
-
-    for entry in fs::read_dir(sce_dir)
-        .with_context(|| format!("failed to read sce directory '{}'", sce_dir.display()))?
-    {
-        let entry = entry.with_context(|| {
-            format!("failed to read directory entry in '{}'", sce_dir.display())
-        })?;
-
-        let file_name = entry.file_name();
-        let file_name_str = file_name.to_string_lossy();
-
-        let Some(stripped) = file_name_str.strip_prefix("agent-trace-") else {
-            continue;
-        };
-        let Some(checkout_id) = stripped.strip_suffix(".db") else {
-            continue;
-        };
-        if checkout_id.is_empty() {
-            continue;
-        }
-
-        let metadata = entry
-            .metadata()
-            .with_context(|| format!("failed to read metadata for '{}'", entry.path().display()))?;
-        if !metadata.is_file() {
-            continue;
-        }
-        let mtime = metadata
-            .modified()
-            .with_context(|| format!("failed to read mtime for '{}'", entry.path().display()))?;
-
-        entries.push((checkout_id.to_string(), entry.path(), mtime));
-    }
-
-    entries.sort_by(|left, right| right.2.cmp(&left.2).then_with(|| left.0.cmp(&right.0)));
-    discovered_from_entries(entries, |checkout_id| {
-        DiscoveredAgentTraceDbKind::LegacyCheckout { checkout_id }
     })
 }
 
@@ -305,8 +245,7 @@ pub(super) fn probe_readiness(path: &Path) -> Result<Readiness> {
 mod tests {
     use super::*;
 
-    use std::fs::OpenOptions;
-    use std::time::{Duration, UNIX_EPOCH};
+    use std::time::UNIX_EPOCH;
 
     use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 
@@ -323,24 +262,11 @@ mod tests {
         dir
     }
 
-    fn create_full_schema_db(path: &Path) {
-        let db = AgentTraceDb::open_at(path).expect("agent trace DB should open with migrations");
-        drop(db);
-    }
-
     fn create_repository_schema_db(path: &Path, repository_id: &str) {
         let db = RepositoryAgentTraceDb::new_at(path).expect("repository DB should open");
         db.verify_or_initialize_repository_metadata(repository_id)
             .expect("repository metadata");
         drop(db);
-    }
-
-    fn touch_mtime(path: &Path, mtime: SystemTime) {
-        let file = OpenOptions::new()
-            .write(true)
-            .open(path)
-            .expect("open db file for mtime update");
-        file.set_modified(mtime).expect("set mtime");
     }
 
     #[test]
@@ -358,103 +284,5 @@ mod tests {
         assert_eq!(discovered[0].alias, "agent_trace_0");
         assert_eq!(discovered[0].readiness, Readiness::Ready);
         assert_eq!(discovered[0].path, db_path);
-    }
-
-    #[test]
-    fn full_schema_db_reports_ready() {
-        let dir = unique_temp_dir("ready");
-        let db_path = dir.join("agent-trace-aaaa.db");
-        create_full_schema_db(&db_path);
-
-        let discovered =
-            discover_legacy_agent_trace_dbs_in(&dir).expect("discovery should succeed");
-
-        assert_eq!(discovered.len(), 1);
-        assert_eq!(discovered[0].kind.identifier(), "aaaa");
-        assert_eq!(discovered[0].alias, "agent_trace_0");
-        assert_eq!(discovered[0].readiness, Readiness::Ready);
-        assert_eq!(discovered[0].path, db_path);
-    }
-
-    #[test]
-    fn missing_required_table_reports_skipped_with_first_missing() {
-        let dir = unique_temp_dir("skipped");
-        let db_path = dir.join("agent-trace-bbbb.db");
-
-        let db = AgentTraceDb::open_for_hooks_without_migrations_at(&db_path)
-            .expect("agent trace DB should open without migrations");
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS diff_traces (id INTEGER PRIMARY KEY)",
-            (),
-        )
-        .expect("create diff_traces");
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS post_commit_patch_intersections (id INTEGER PRIMARY KEY)",
-            (),
-        )
-        .expect("create post_commit_patch_intersections");
-        // Intentionally skip `agent_traces` to exercise the first-missing-table report.
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY)",
-            (),
-        )
-        .expect("create messages");
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS parts (id INTEGER PRIMARY KEY)",
-            (),
-        )
-        .expect("create parts");
-        drop(db);
-
-        let discovered =
-            discover_legacy_agent_trace_dbs_in(&dir).expect("discovery should succeed");
-
-        assert_eq!(discovered.len(), 1);
-        assert_eq!(
-            discovered[0].readiness,
-            Readiness::Skipped {
-                missing_table: String::from("agent_traces"),
-            }
-        );
-    }
-
-    #[test]
-    fn aliases_assigned_in_mtime_desc_order_with_checkout_id_tiebreak() {
-        let dir = unique_temp_dir("ordering");
-
-        let old_path = dir.join("agent-trace-old.db");
-        let mid_path = dir.join("agent-trace-mid.db");
-        let new_path = dir.join("agent-trace-new.db");
-        let tie_a_path = dir.join("agent-trace-tie-a.db");
-        let tie_b_path = dir.join("agent-trace-tie-b.db");
-
-        create_full_schema_db(&old_path);
-        create_full_schema_db(&mid_path);
-        create_full_schema_db(&new_path);
-        create_full_schema_db(&tie_a_path);
-        create_full_schema_db(&tie_b_path);
-
-        let base = SystemTime::now();
-        touch_mtime(&old_path, base - Duration::from_secs(7));
-        touch_mtime(&mid_path, base - Duration::from_secs(3));
-        touch_mtime(&new_path, base);
-        let tie_time = base - Duration::from_secs(5);
-        touch_mtime(&tie_a_path, tie_time);
-        touch_mtime(&tie_b_path, tie_time);
-
-        let discovered =
-            discover_legacy_agent_trace_dbs_in(&dir).expect("discovery should succeed");
-
-        assert_eq!(discovered.len(), 5);
-        assert_eq!(discovered[0].alias, "agent_trace_0");
-        assert_eq!(discovered[0].kind.identifier(), "new");
-        assert_eq!(discovered[1].alias, "agent_trace_1");
-        assert_eq!(discovered[1].kind.identifier(), "mid");
-        assert_eq!(discovered[2].alias, "agent_trace_2");
-        assert_eq!(discovered[2].kind.identifier(), "tie-a");
-        assert_eq!(discovered[3].alias, "agent_trace_3");
-        assert_eq!(discovered[3].kind.identifier(), "tie-b");
-        assert_eq!(discovered[4].alias, "agent_trace_4");
-        assert_eq!(discovered[4].kind.identifier(), "old");
     }
 }
