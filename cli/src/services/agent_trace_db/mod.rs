@@ -97,6 +97,7 @@ impl DbSpec for AgentTraceDbSpec {
 /// Agent trace Turso database adapter.
 pub type AgentTraceDb = TursoDb<AgentTraceDbSpec>;
 
+#[allow(dead_code)]
 impl AgentTraceDb {
     /// Open or create an Agent Trace database at an explicit path and run all
     /// embedded migrations.
@@ -256,6 +257,7 @@ pub struct InsertPartInsert {
     pub generated_at_unix_ms: i64,
 }
 
+#[allow(dead_code)]
 impl AgentTraceDb {
     /// Open the Agent Trace DB for high-frequency hook runtime paths without
     /// running embedded migrations.

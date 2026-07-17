@@ -17,9 +17,9 @@
 - global config: `<config_root>/sce/config.json`
 - auth DB: `<state_root>/sce/auth.db`
 - local DB: `<state_root>/sce/local.db`
+- active repository-scoped agent trace DB: `<state_root>/sce/repos/{repository_id}/agent-trace.db` via `agent_trace_db_path_for_repository(repository_id)` (plus `_at(state_root, repository_id)` for explicit roots); rejects empty or path-unsafe repository IDs
 - legacy/global agent trace DB fallback: `<state_root>/sce/agent-trace.db`
-- per-checkout agent trace DB: `<state_root>/sce/agent-trace-{checkout_id}.db`
-- repository-scoped agent trace DB: `<state_root>/sce/repos/{repository_id}/agent-trace.db` via `agent_trace_db_path_for_repository(repository_id)` (plus `_at(state_root, repository_id)` for explicit roots); rejects empty or path-unsafe repository IDs
+- legacy per-checkout agent trace DB: `<state_root>/sce/agent-trace-{checkout_id}.db`
 
 ### Repo-relative paths
 
@@ -46,6 +46,7 @@
 - `cli/src/services/setup/mod.rs` now resolves setup target directory names and required hook identifiers through `default_paths.rs` constants/accessors instead of owning those path literals locally.
 - `cli/src/services/default_paths.rs` includes a regression test that scans non-test Rust source under `cli/src/` and fails when new centralized production path literals appear outside the default-path service.
 - Active hook runtime no longer resolves or writes collision-safe JSON artifacts under `context/tmp/`; `context/tmp/` remains a repo-relative scratch/session path owned by the default path catalog.
-- `cli/src/services/agent_trace_db/lifecycle.rs` and `cli/src/services/checkout/mod.rs` resolve per-checkout Agent Trace DB files through `agent_trace_db_path_for_checkout(checkout_id)` after setup-time DB initialization or hook-runtime lazy initialization.
+- Active hook runtime and `cli/src/services/agent_trace_db/lifecycle.rs` resolve repository-scoped Agent Trace DB files through `agent_trace_storage` and `agent_trace_db_path_for_repository(repository_id)`.
+- `cli/src/services/checkout/mod.rs` retains `agent_trace_db_path_for_checkout(checkout_id)` only for legacy per-checkout DB helper code; active setup/hooks no longer select checkout-scoped paths for new writes.
 
 See also: [cli-command-surface.md](./cli-command-surface.md), [../architecture.md](../architecture.md), [../context-map.md](../context-map.md)

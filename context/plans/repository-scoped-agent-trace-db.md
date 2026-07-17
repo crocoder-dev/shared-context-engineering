@@ -140,12 +140,16 @@ Initial code inspection found the current checkout-scoped behavior in these area
   - Evidence: `nix build .#checks.x86_64-linux.cli-tests .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt` pass.
   - Notes: Added `RepositoryAgentTraceDb::recent_diff_trace_patches(cutoff, end)` delegating to the shared recent diff-trace parser/query helper, preserving repository-level semantics with no checkout filter. Added repository DB tests for same-repository row loading across checkout-like session IDs and separate repository DB path isolation. Active hook/lifecycle opening remains deferred to T08 by plan scope.
 
-- [ ] T08: `Wire hooks and lifecycle to repository storage context` (status:todo)
+- [x] T08: `Wire hooks and lifecycle to repository storage context` (status:done)
   - Task ID: T08
   - Goal: Update setup, doctor/lifecycle, and hook runtime opening to use repository-scoped storage context while keeping Agent Trace writes and queries repository-level.
   - Boundaries (in/out of scope): In - `open_agent_trace_db_for_hook_runtime`, setup messages, lifecycle health, hook diagnostics, no-migration fast-path behavior against repository DBs. Out - trace list/status/shell UX changes beyond compilation needs.
   - Done when: Setup initializes the repository-scoped database; hooks lazily resolve repository storage; errors mention repository identity guidance where relevant; checkout-scoped active DB opening is removed from runtime write paths.
   - Verification notes (commands or checks): targeted setup/hooks/lifecycle tests; inspect `resolve_or_create_agent_trace_db_for_checkout` removal or legacy-only status.
+  - Completed: 2026-07-17
+  - Files changed: `cli/src/services/hooks/mod.rs`, `cli/src/services/agent_trace_db/lifecycle.rs`, `cli/src/services/config/{mod.rs,resolver.rs,types.rs}`, `cli/src/services/agent_trace_db/mod.rs`, `cli/src/services/checkout/mod.rs`, `context/{overview.md,architecture.md,glossary.md,context-map.md}`, `context/cli/{agent-trace-storage.md,checkout-identity.md,cli-command-surface.md,default-path-catalog.md,repository-identity.md,service-lifecycle.md}`, `context/sce/{agent-trace-db.md,agent-trace-hooks-command-routing.md}`
+  - Evidence: `nix develop -c sh -c 'cd cli && cargo fmt'` pass; `nix build .#checks.x86_64-linux.cli-tests .#checks.x86_64-linux.cli-clippy .#checks.x86_64-linux.cli-fmt` pass; `nix run .#pkl-check-generated` pass; `git diff --check` pass; `nix flake check` pass. Direct targeted `cargo test` was blocked by repo bash policy, so the Crane-backed CLI test derivation was used instead.
+  - Notes: Hook runtime now resolves `agent_trace.repository_id` / `agent_trace.repository_remote` config and opens `RepositoryAgentTraceDb` through `resolve_agent_trace_storage(...)`, so diff-trace, conversation-trace, post-commit, and commit-msg attribution read/write repository-level rows. Agent Trace lifecycle setup initializes repository-scoped storage and reports repository + checkout identity in setup messages; lifecycle health resolves the repository DB path from repository identity and uses no-migration schema checks against `RepositoryAgentTraceDb`. Legacy checkout DB opening remains present but `#[allow(dead_code)]` and no longer participates in active hook/lifecycle write paths; trace UX migration is deferred to T09.
 
 - [ ] T09: `Update trace status/list/shell discovery with --legacy` (status:todo)
   - Task ID: T09

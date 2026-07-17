@@ -241,6 +241,12 @@ pub(crate) struct ResolvedHookRuntimeConfig {
     pub(crate) attribution_hooks_enabled: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedAgentTraceStorageRuntimeConfig {
+    pub(crate) repository_id: Option<String>,
+    pub(crate) repository_remote: String,
+}
+
 pub(crate) fn parse_bool_value_from(key: &str, raw: &str, source: &str) -> anyhow::Result<bool> {
     match raw {
         "1" | "true" => Ok(true),

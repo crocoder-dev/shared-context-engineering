@@ -2,15 +2,17 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use crate::app::HasRepoRoot;
-use crate::services::checkout;
+use crate::services::agent_trace_storage::{resolve_agent_trace_storage, AgentTraceStorageContext};
+use crate::services::config;
 use crate::services::db::{bootstrap_db_parent, collect_db_path_health, DbSpec};
-use crate::services::default_paths::{agent_trace_db_path, agent_trace_db_path_for_checkout};
+use crate::services::default_paths::{agent_trace_db_path, agent_trace_db_path_for_repository};
 use crate::services::lifecycle::{
     FixOutcome, FixResultRecord, HealthCategory, HealthFixability, HealthProblem,
     HealthProblemKind, HealthSeverity, LifecycleProviderId, ServiceLifecycle, SetupOutcome,
 };
+use crate::services::repository_identity::resolve::resolve_repository_identity;
 
-use super::{AgentTraceDb, AgentTraceDbSpec};
+use super::repository::{RepositoryAgentTraceDb, RepositoryAgentTraceDbSpec};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AgentTraceDbLifecycle;
@@ -53,22 +55,17 @@ impl ServiceLifecycle for AgentTraceDbLifecycle {
     }
 
     fn setup<C: HasRepoRoot>(&self, ctx: &C) -> Result<SetupOutcome> {
-        let checkout_setup = match ctx.repo_root() {
-            Some(repo_root) => {
-                let checkout_id = setup_checkout_identity(repo_root).context(
-                    "Agent trace DB lifecycle setup failed while resolving checkout identity",
-                )?;
-                Some(initialize_checkout_agent_trace_db(&checkout_id).context(
-                    "Agent trace DB lifecycle setup failed while initializing checkout database",
-                )?)
-            }
+        let repository_setup = match ctx.repo_root() {
+            Some(repo_root) => Some(initialize_repository_agent_trace_db(repo_root).context(
+                "Agent trace DB lifecycle setup failed while initializing repository database",
+            )?),
             None => None,
         };
 
         Ok(SetupOutcome {
-            messages: checkout_setup
+            messages: repository_setup
                 .iter()
-                .map(format_checkout_identity_setup_message)
+                .map(format_repository_storage_setup_message)
                 .collect(),
             ..SetupOutcome::default()
         })
@@ -76,50 +73,33 @@ impl ServiceLifecycle for AgentTraceDbLifecycle {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CheckoutDatabaseSetup {
+struct RepositoryDatabaseSetup {
+    repository_id: String,
     checkout_id: String,
     database_path: PathBuf,
 }
 
-fn setup_checkout_identity(repo_root: &std::path::Path) -> Result<String> {
-    let git_dir = checkout::resolve_git_dir(repo_root).with_context(|| {
-        format!(
-            "failed to resolve git directory for checkout identity from '{}'",
-            repo_root.display()
-        )
-    })?;
-    let checkout_id = checkout::get_or_create_checkout_id(&git_dir).with_context(|| {
-        format!(
-            "failed to get or create checkout identity under '{}'",
-            git_dir.display()
-        )
-    })?;
+fn initialize_repository_agent_trace_db(repo_root: &Path) -> Result<RepositoryDatabaseSetup> {
+    let storage_config = config::resolve_agent_trace_storage_runtime_config(repo_root)
+        .context("failed to resolve Agent Trace repository storage config")?;
+    let storage_context = AgentTraceStorageContext {
+        repository_root: repo_root,
+        explicit_repository_id: storage_config.repository_id.as_deref(),
+        repository_remote: &storage_config.repository_remote,
+    };
+    let storage = resolve_agent_trace_storage(&storage_context)?;
 
-    Ok(checkout_id)
-}
-
-fn initialize_checkout_agent_trace_db(checkout_id: &str) -> Result<CheckoutDatabaseSetup> {
-    let db_path = agent_trace_db_path_for_checkout(checkout_id).with_context(|| {
-        format!("failed to resolve Agent Trace DB path for checkout ID {checkout_id}")
-    })?;
-
-    AgentTraceDb::open_at(&db_path).with_context(|| {
-        format!(
-            "failed to initialize Agent Trace DB for checkout {} at '{}'",
-            checkout_id,
-            db_path.display()
-        )
-    })?;
-
-    Ok(CheckoutDatabaseSetup {
-        checkout_id: checkout_id.to_string(),
-        database_path: db_path,
+    Ok(RepositoryDatabaseSetup {
+        repository_id: storage.repository_identity.identity.repository_id,
+        checkout_id: storage.checkout_id,
+        database_path: storage.db_path,
     })
 }
 
-fn format_checkout_identity_setup_message(setup: &CheckoutDatabaseSetup) -> String {
+fn format_repository_storage_setup_message(setup: &RepositoryDatabaseSetup) -> String {
     format!(
-        "Agent Trace checkout identity: {}\nAgent Trace database initialized at '{}'.",
+        "Agent Trace repository identity: {}\nAgent Trace checkout identity: {}\nAgent Trace repository database initialized at '{}'.",
+        setup.repository_id,
         setup.checkout_id,
         setup.database_path.display()
     )
@@ -137,7 +117,7 @@ pub fn diagnose_agent_trace_db_health(repo_root: Option<&Path>) -> Vec<HealthPro
                 severity: HealthSeverity::Error,
                 fixability: HealthFixability::ManualOnly,
                 summary: format!("Unable to resolve expected agent trace DB path: {error}"),
-                remediation: String::from("Verify that the current platform exposes a writable SCE state directory before rerunning 'sce doctor'."),
+                remediation: String::from("Configure agent_trace.repository_id in .sce/config.json or ensure the configured Git remote exists, then rerun 'sce doctor'."),
                 next_action: "manual_steps",
             });
             return problems;
@@ -145,13 +125,13 @@ pub fn diagnose_agent_trace_db_health(repo_root: Option<&Path>) -> Vec<HealthPro
     };
 
     collect_db_path_health(
-        <AgentTraceDbSpec as DbSpec>::db_name(),
+        <RepositoryAgentTraceDbSpec as DbSpec>::db_name(),
         &db_path,
         &mut problems,
     );
 
     if db_path.exists() && db_path.is_file() {
-        match AgentTraceDb::open_for_hooks_without_migrations_at(&db_path) {
+        match RepositoryAgentTraceDb::open_without_migrations_at(&db_path) {
             Ok(db) => {
                 if let Err(error) = db.ensure_schema_ready_for_hooks() {
                     problems.push(HealthProblem {
@@ -160,11 +140,11 @@ pub fn diagnose_agent_trace_db_health(repo_root: Option<&Path>) -> Vec<HealthPro
                         severity: HealthSeverity::Error,
                         fixability: HealthFixability::ManualOnly,
                         summary: format!(
-                            "Agent Trace database schema at '{}' is not ready: {error}",
+                            "Repository Agent Trace database schema at '{}' is not ready: {error}",
                             db_path.display()
                         ),
                         remediation: String::from(
-                            "Re-run 'sce setup' to apply missing migrations, or inspect the database file for corruption.",
+                            "Re-run 'sce setup' to initialize the repository-scoped database, or inspect the database file for corruption.",
                         ),
                         next_action: "manual_steps",
                     });
@@ -177,7 +157,7 @@ pub fn diagnose_agent_trace_db_health(repo_root: Option<&Path>) -> Vec<HealthPro
                     severity: HealthSeverity::Error,
                     fixability: HealthFixability::ManualOnly,
                     summary: format!(
-                        "Unable to open checkout Agent Trace database at '{}': {error}",
+                        "Unable to open repository Agent Trace database at '{}': {error}",
                         db_path.display()
                     ),
                     remediation: String::from(
@@ -195,21 +175,26 @@ pub fn diagnose_agent_trace_db_health(repo_root: Option<&Path>) -> Vec<HealthPro
 fn bootstrap_agent_trace_db_parent(repo_root: Option<&Path>) -> Result<PathBuf> {
     let db_path = resolve_lifecycle_agent_trace_db_path(repo_root)
         .context("failed to resolve agent trace DB path")?;
-    bootstrap_db_parent(<AgentTraceDbSpec as DbSpec>::db_name(), &db_path)
+    bootstrap_db_parent(<RepositoryAgentTraceDbSpec as DbSpec>::db_name(), &db_path)
 }
 
 fn resolve_lifecycle_agent_trace_db_path(repo_root: Option<&Path>) -> Result<PathBuf> {
     if let Some(repo_root) = repo_root {
-        let git_dir = checkout::resolve_git_dir(repo_root).with_context(|| {
-            format!(
-                "failed to resolve git directory for agent trace DB health from '{}'",
-                repo_root.display()
-            )
-        })?;
-        if let Some(checkout_id) = checkout::read_checkout_id(&git_dir)? {
-            return agent_trace_db_path_for_checkout(&checkout_id);
-        }
+        let storage_config = config::resolve_agent_trace_storage_runtime_config(repo_root)
+            .context("failed to resolve Agent Trace repository storage config")?;
+        let identity = resolve_repository_identity(
+            repo_root,
+            storage_config.repository_id.as_deref(),
+            &storage_config.repository_remote,
+        )
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+
+        return agent_trace_db_path_for_repository(&identity.identity.repository_id);
     }
 
+    // Outside repository-targeted lifecycle contexts there is no repository
+    // identity to select an active DB. Keep the historical global path as the
+    // operator-state parent sentinel only; repository setup/hooks never use it
+    // as an active write target.
     agent_trace_db_path()
 }

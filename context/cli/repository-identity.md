@@ -50,6 +50,6 @@ Local paths are never used implicitly: a local-path remote URL fails canonicaliz
 
 ## Status
 
-Registered in `cli/src/services/mod.rs` behind `#[allow(dead_code)]`; consumed by the T04 `agent_trace_storage` resolver, which is itself dead-code-allowed until T08 wires runtime call sites. Covered by in-module unit tests, including temp-Git-repo remote lookup tests (`cargo test repository_identity` filter; repo-preferred path is `nix flake check` / `nix build .#checks.<system>.cli-tests`).
+Registered in `cli/src/services/mod.rs`; consumed by the `agent_trace_storage` resolver, which is now used by active hook runtime and Agent Trace lifecycle setup/health. Covered by in-module unit tests, including temp-Git-repo remote lookup tests (repo-preferred path is `nix flake check` / `nix build .#checks.<system>.cli-tests`).
 
 See also: [config-precedence-contract.md](config-precedence-contract.md) (owns the `agent_trace.repository_id` / `agent_trace.repository_remote` config keys), [checkout-identity.md](checkout-identity.md), [../sce/agent-trace-db.md](../sce/agent-trace-db.md).
