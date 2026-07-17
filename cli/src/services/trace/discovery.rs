@@ -81,7 +81,8 @@ pub enum ResolveAgentTraceDbError {
     SkippedDatabase {
         identifier: String,
         alias: String,
-        checkout_id: String,
+        scope: String,
+        database_id: String,
         missing_table: String,
     },
 }
@@ -98,10 +99,11 @@ impl ResolveAgentTraceDbError {
             Self::SkippedDatabase {
                 identifier,
                 alias,
-                checkout_id,
+                scope,
+                database_id,
                 missing_table,
             } => format!(
-                "sce trace db shell: database '{identifier}' ({alias}, checkout {checkout_id}) is not schema-ready: missing table '{missing_table}'. Run `sce setup` or inspect `sce trace db list` before opening a shell."
+                "sce trace db shell: database '{identifier}' ({alias}, {scope} {database_id}) is not schema-ready: missing table '{missing_table}'. Run `sce setup` or inspect `sce trace db list` before opening a shell."
             ),
         }
     }
@@ -145,7 +147,8 @@ pub fn resolve_agent_trace_db_identifier(
         Readiness::Skipped { missing_table } => Err(ResolveAgentTraceDbError::SkippedDatabase {
             identifier: identifier.to_string(),
             alias: db.alias.clone(),
-            checkout_id: db.kind.identifier().to_string(),
+            scope: db.kind.label().to_string(),
+            database_id: db.kind.identifier().to_string(),
             missing_table: missing_table.clone(),
         }),
     }

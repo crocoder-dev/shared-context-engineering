@@ -124,11 +124,11 @@ The broadened contract for `sce doctor` must cover the following problem invento
 - expected global config path cannot be resolved
 - global config file exists but is unreadable, invalid JSON, or fails schema validation
 - invalid default-discovered config must not prevent `sce doctor` from starting; doctor still reports invalid global or repo-local config as a problem once command dispatch begins
-- local DB or checkout/global Agent Trace DB path cannot be resolved
-- local DB and checkout/global Agent Trace DB parent directories are missing or not writable
-- local DB and checkout/global Agent Trace DB bootstrap or health is broken
+- local DB or repository-scoped Agent Trace DB path cannot be resolved
+- local DB and repository-scoped Agent Trace DB parent directories are missing or not writable
+- local DB and repository-scoped Agent Trace DB bootstrap or health is broken
 - Agent Trace DB file exists but cannot be opened (connection failure) or has incomplete schema (missing/unapplied migrations) — reported as `AgentTraceDbConnectionFailed` / `AgentTraceDbSchemaNotReady` with manual-only remediation directing to `sce setup`
-- Agent Trace checkout ID plus per-checkout DB path/health are reported in `Configuration` section output when a checkout ID exists, with global Agent Trace DB reporting retained as the no-checkout fallback
+- Agent Trace checkout ID plus repository-scoped DB path/health are reported in `Configuration` section output when available; repository DB rows include repository ID, identity source, safe canonical identity, configured remote name, and never raw remote URLs
 
 ### Repository targeting and git readiness
 

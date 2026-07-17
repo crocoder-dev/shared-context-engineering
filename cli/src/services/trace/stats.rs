@@ -1,4 +1,4 @@
-//! Per-checkout Agent Trace DB row-count and last-activity stats.
+//! Agent Trace DB row-count and last-activity stats.
 //!
 //! Issues read-only `COUNT(*)` and `MAX(...)` queries against a single
 //! Agent Trace DB and returns the aggregated counts plus the most recent
@@ -12,7 +12,7 @@ use chrono::{DateTime, TimeZone, Utc};
 
 use crate::services::agent_trace_db::AgentTraceDb;
 
-/// Aggregated per-checkout Agent Trace DB row counts and last activity.
+/// Aggregated Agent Trace DB row counts and last activity.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 #[allow(dead_code)]
 pub struct AgentTraceDbStats {

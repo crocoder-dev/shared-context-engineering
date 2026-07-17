@@ -169,19 +169,41 @@ fn push_configuration_section_rows(
             "Checkout identity",
             identity.checkout_id.clone(),
         ));
-        lines.push(format_human_text_row(
-            color_enabled,
-            agent_trace_db_status(report),
-            "Agent Trace checkout DB",
-            identity.database_path.display().to_string(),
-        ));
-    } else if let Some(agent_trace_db) = &report.agent_trace_db {
+    }
+
+    if let Some(agent_trace_db) = &report.agent_trace_db {
         lines.push(format_human_text_row(
             color_enabled,
             agent_trace_db_status(report),
             agent_trace_db.label,
             agent_trace_db.path.display().to_string(),
         ));
+        lines.push(format_human_text_row(
+            color_enabled,
+            HumanTextStatus::Pass,
+            "Agent Trace repository ID",
+            agent_trace_db.repository_id.clone(),
+        ));
+        lines.push(format_human_text_row(
+            color_enabled,
+            HumanTextStatus::Pass,
+            "Agent Trace identity source",
+            agent_trace_db.identity_source.clone(),
+        ));
+        lines.push(format_human_text_row(
+            color_enabled,
+            HumanTextStatus::Pass,
+            "Agent Trace canonical identity",
+            agent_trace_db.canonical_identity.clone(),
+        ));
+        if let Some(remote) = &agent_trace_db.configured_remote {
+            lines.push(format_human_text_row(
+                color_enabled,
+                HumanTextStatus::Pass,
+                "Agent Trace configured remote",
+                remote.clone(),
+            ));
+        }
     }
 }
 
@@ -492,13 +514,16 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
         })),
         "agent_trace_db": report.agent_trace_db.as_ref().map(|location| json!({
             "label": location.label,
+            "scope": "repository",
             "path": location.path.display().to_string(),
             "state": location.state,
+            "repository_id": location.repository_id,
+            "repository_identity_source": location.identity_source,
+            "canonical_identity": location.canonical_identity,
+            "configured_remote": location.configured_remote,
         })),
         "checkout_identity": report.checkout_identity.as_ref().map(|identity| json!({
             "checkout_id": identity.checkout_id,
-            "database_path": identity.database_path.display().to_string(),
-            "database_state": identity.database_state,
         })),
         "hook_path_source": match report.hook_path_source {
             HookPathSource::Default => "default",

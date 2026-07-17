@@ -10,7 +10,9 @@ use crate::services::lifecycle::{
     FixOutcome, FixResultRecord, HealthCategory, HealthFixability, HealthProblem,
     HealthProblemKind, HealthSeverity, LifecycleProviderId, ServiceLifecycle, SetupOutcome,
 };
-use crate::services::repository_identity::resolve::resolve_repository_identity;
+use crate::services::repository_identity::resolve::{
+    resolve_repository_identity, RepositoryIdentitySource,
+};
 
 use super::repository::{RepositoryAgentTraceDb, RepositoryAgentTraceDbSpec};
 
@@ -75,6 +77,9 @@ impl ServiceLifecycle for AgentTraceDbLifecycle {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RepositoryDatabaseSetup {
     repository_id: String,
+    canonical_identity: String,
+    identity_source: String,
+    configured_remote: Option<String>,
     checkout_id: String,
     database_path: PathBuf,
 }
@@ -89,17 +94,35 @@ fn initialize_repository_agent_trace_db(repo_root: &Path) -> Result<RepositoryDa
     };
     let storage = resolve_agent_trace_storage(&storage_context)?;
 
+    let (identity_source, configured_remote) = match storage.repository_identity.source {
+        RepositoryIdentitySource::ExplicitConfig => (String::from("explicit_config"), None),
+        RepositoryIdentitySource::RemoteUrl { remote_name } => {
+            (String::from("remote_url"), Some(remote_name))
+        }
+    };
+
     Ok(RepositoryDatabaseSetup {
         repository_id: storage.repository_identity.identity.repository_id,
+        canonical_identity: storage.repository_identity.identity.canonical_identity,
+        identity_source,
+        configured_remote,
         checkout_id: storage.checkout_id,
         database_path: storage.db_path,
     })
 }
 
 fn format_repository_storage_setup_message(setup: &RepositoryDatabaseSetup) -> String {
+    let remote_line = setup
+        .configured_remote
+        .as_ref()
+        .map(|remote| format!("\nAgent Trace configured remote: {remote}"))
+        .unwrap_or_default();
     format!(
-        "Agent Trace repository identity: {}\nAgent Trace checkout identity: {}\nAgent Trace repository database initialized at '{}'.",
+        "Agent Trace repository ID: {}\nAgent Trace identity source: {}\nAgent Trace canonical identity: {}{}\nAgent Trace checkout identity: {}\nAgent Trace repository-scoped database initialized at '{}'.",
         setup.repository_id,
+        setup.identity_source,
+        setup.canonical_identity,
+        remote_line,
         setup.checkout_id,
         setup.database_path.display()
     )
