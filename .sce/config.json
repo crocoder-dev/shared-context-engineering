@@ -7,8 +7,7 @@
       "pi"
     ]
   },
-  "log_file": "context/tmp/sce.log",
-  "log_file_mode": "append",
+  "log_dir": "context/tmp",
   "log_level": "error",
   "policies": {
     "attribution_hooks": {

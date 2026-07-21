@@ -14,10 +14,10 @@ use super::policy::{build_validation_warnings, resolve_bash_policy_config, BashP
 use super::schema;
 use super::types::{
     parse_bool_value_from, ConfigPathSource, ConfigRequest, DatabaseRetryConfig, LoadedConfigPath,
-    LogFileMode, LogFormat, LogLevel, ReportFormat, ResolvedAgentTraceStorageRuntimeConfig,
+    LogFormat, LogLevel, ReportFormat, ResolvedAgentTraceStorageRuntimeConfig,
     ResolvedAuthRuntimeConfig, ResolvedHookRuntimeConfig, ResolvedObservabilityRuntimeConfig,
-    ResolvedOptionalValue, ResolvedValue, ValueSource, ENV_ATTRIBUTION_HOOKS_DISABLED,
-    ENV_LOG_FILE, ENV_LOG_FILE_MODE, ENV_LOG_FORMAT, ENV_LOG_LEVEL,
+    ResolvedOptionalValue, ResolvedValue, ValueSource, ENV_ATTRIBUTION_HOOKS_DISABLED, ENV_LOG_DIR,
+    ENV_LOG_FORMAT, ENV_LOG_LEVEL,
 };
 
 const DEFAULT_TIMEOUT_MS: u64 = 30000;
@@ -59,8 +59,7 @@ pub(super) struct RuntimeConfig {
     pub(super) loaded_config_paths: Vec<LoadedConfigPath>,
     pub(super) log_level: ResolvedValue<LogLevel>,
     pub(super) log_format: ResolvedValue<LogFormat>,
-    pub(super) log_file: ResolvedOptionalValue<String>,
-    pub(super) log_file_mode: ResolvedValue<LogFileMode>,
+    pub(super) log_dir: ResolvedOptionalValue<String>,
     pub(super) timeout_ms: ResolvedValue<u64>,
     pub(super) attribution_hooks_enabled: ResolvedValue<bool>,
     pub(super) workos_client_id: ResolvedOptionalValue<String>,
@@ -220,8 +219,7 @@ where
     Ok(ResolvedObservabilityRuntimeConfig {
         log_level: runtime.log_level.value,
         log_format: runtime.log_format.value,
-        log_file: runtime.log_file.value,
-        log_file_mode: runtime.log_file_mode.value,
+        log_dir: runtime.log_dir.value,
         loaded_config_paths: runtime.loaded_config_paths,
         validation_errors: runtime.validation_errors,
     })
@@ -297,8 +295,7 @@ where
     let mut file_config = schema::FileConfig {
         log_level: None,
         log_format: None,
-        log_file: None,
-        log_file_mode: None,
+        log_dir: None,
         timeout_ms: None,
         attribution_hooks_enabled: None,
         workos_client_id: None,
@@ -326,11 +323,8 @@ where
         if let Some(log_format) = layer.log_format {
             file_config.log_format = Some(log_format);
         }
-        if let Some(log_file) = layer.log_file {
-            file_config.log_file = Some(log_file);
-        }
-        if let Some(log_file_mode) = layer.log_file_mode {
-            file_config.log_file_mode = Some(log_file_mode);
+        if let Some(log_dir) = layer.log_dir {
+            file_config.log_dir = Some(log_dir);
         }
         if let Some(timeout_ms) = layer.timeout_ms {
             file_config.timeout_ms = Some(timeout_ms);
@@ -401,43 +395,21 @@ where
         };
     }
 
-    let mut resolved_log_file = ResolvedOptionalValue {
+    let mut resolved_log_dir = ResolvedOptionalValue {
         value: file_config
-            .log_file
+            .log_dir
             .as_ref()
             .map(|value| value.value.clone()),
         source: file_config
-            .log_file
+            .log_dir
             .as_ref()
             .map(|value| ValueSource::ConfigFile(value.source)),
     };
-    if let Some(raw) = env_lookup(ENV_LOG_FILE) {
-        resolved_log_file = ResolvedOptionalValue {
+    if let Some(raw) = env_lookup(ENV_LOG_DIR) {
+        resolved_log_dir = ResolvedOptionalValue {
             value: Some(raw),
             source: Some(ValueSource::Env),
         };
-    }
-
-    let mut resolved_log_file_mode = ResolvedValue {
-        value: LogFileMode::Truncate,
-        source: ValueSource::Default,
-    };
-    if let Some(value) = file_config.log_file_mode {
-        resolved_log_file_mode = ResolvedValue {
-            value: value.value,
-            source: ValueSource::ConfigFile(value.source),
-        };
-    }
-    if let Some(raw) = env_lookup(ENV_LOG_FILE_MODE) {
-        resolved_log_file_mode = ResolvedValue {
-            value: LogFileMode::parse(&raw, ENV_LOG_FILE_MODE)?,
-            source: ValueSource::Env,
-        };
-    }
-    if resolved_log_file.value.is_none() && resolved_log_file_mode.source != ValueSource::Default {
-        bail!(
-            "{ENV_LOG_FILE_MODE} requires {ENV_LOG_FILE}. Try: set {ENV_LOG_FILE} to a file path or unset {ENV_LOG_FILE_MODE}."
-        );
     }
 
     let mut resolved_timeout_ms = ResolvedValue {
@@ -527,8 +499,7 @@ where
         loaded_config_paths,
         log_level: resolved_log_level,
         log_format: resolved_log_format,
-        log_file: resolved_log_file,
-        log_file_mode: resolved_log_file_mode,
+        log_dir: resolved_log_dir,
         timeout_ms: resolved_timeout_ms,
         attribution_hooks_enabled: resolved_attribution_hooks_enabled,
         workos_client_id: resolved_workos_client_id,

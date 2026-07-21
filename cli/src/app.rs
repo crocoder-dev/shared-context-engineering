@@ -356,6 +356,7 @@ where
             "sce.app.start",
             "Starting command dispatch",
             &[("component", services::observability::NAME)],
+            None,
         );
         let Some(command_args) = args.take() else {
             return Err(ClassifiedError::runtime(REPEATED_COMMAND_DISPATCH_ERROR));
@@ -380,6 +381,7 @@ where
         "sce.command.parsed",
         "Command parsed",
         &[("command", command.name().as_ref())],
+        None,
     );
     Ok(command)
 }

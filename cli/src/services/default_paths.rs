@@ -349,7 +349,6 @@ pub(crate) mod repo_dir {
 #[allow(dead_code)]
 pub(crate) mod repo_file {
     pub const SCE_CONFIG: &str = "config.json";
-    pub const SCE_LOG: &str = "sce.log";
     pub const OPENCODE_MANIFEST: &str = "opencode.json";
     pub const GIT_COMMIT_EDITMSG: &str = "COMMIT_EDITMSG";
 }
@@ -439,10 +438,6 @@ impl RepoPaths {
 
     pub(crate) fn sce_config_file(&self) -> PathBuf {
         self.sce_dir().join(repo_file::SCE_CONFIG)
-    }
-
-    pub(crate) fn sce_log_file(&self) -> PathBuf {
-        self.sce_dir().join(repo_file::SCE_LOG)
     }
 
     pub(crate) fn opencode_dir(&self) -> PathBuf {
