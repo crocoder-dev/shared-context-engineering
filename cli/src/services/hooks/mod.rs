@@ -236,6 +236,7 @@ fn log_conversation_trace_fail_open(error: &anyhow::Error, logger: Option<&dyn L
             "sce.hooks.conversation_trace.error",
             &error.to_string(),
             &[],
+            None,
         );
     }
 
@@ -410,6 +411,7 @@ fn log_skipped_conversation_trace_payloads(
                 ("event_type", event_type),
                 ("payload_index", index.as_str()),
             ],
+            None,
         );
     }
 }
@@ -426,6 +428,7 @@ fn log_conversation_trace_batch_insert_failure(
             "sce.hooks.conversation_trace.agent_trace_db_batch_failed",
             &error.to_string(),
             &[("event_type", event_type), ("valid_count", count.as_str())],
+            None,
         );
     }
 }
@@ -714,7 +717,7 @@ fn run_diff_trace_subcommand_from_payload(
 
 fn log_diff_trace_fail_open(error: &anyhow::Error, logger: Option<&dyn Logger>) -> String {
     if let Some(log) = logger {
-        log.error("sce.hooks.diff_trace.error", &error.to_string(), &[]);
+        log.error("sce.hooks.diff_trace.error", &error.to_string(), &[], None);
     }
 
     String::from("diff-trace hook intake failed open; error logged.")
@@ -731,6 +734,7 @@ fn run_diff_trace_subcommand_from_payload_with(
                 "sce.hooks.diff_trace.agent_trace_db_time_invalid",
                 &error.to_string(),
                 &[],
+                None,
             );
         }
     }
@@ -748,6 +752,7 @@ fn run_diff_trace_subcommand_from_payload_with(
                     "sce.hooks.diff_trace.agent_trace_db_write_failed",
                     &error.to_string(),
                     &[],
+                    None,
                 );
             }
             false
@@ -1419,6 +1424,7 @@ fn staged_diff_has_ai_overlap(
                     "sce.hooks.commit_msg.ai_overlap_error",
                     &format!("Staged AI-overlap evidence check failed: {error}."),
                     &[],
+                    None,
                 );
             }
             return StagedDiffAiOverlapResult::Error;
@@ -1438,6 +1444,7 @@ fn staged_diff_has_ai_overlap(
                 "sce.hooks.commit_msg.ai_overlap_error",
                 "Staged AI-overlap evidence check failed: error during staged-diff or trace query.",
                 &[],
+                None,
             );
         }
     }

@@ -23,6 +23,7 @@ where
             "sce.command.raw_args",
             "Parsing command arguments",
             &[("args_summary", &args_summary)],
+            None,
         );
     }
 
