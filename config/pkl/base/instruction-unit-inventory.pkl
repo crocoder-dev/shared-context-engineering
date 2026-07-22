@@ -194,6 +194,53 @@ automatedUnits: Mapping<String, InventoryUnit> = new {
   }
 }
 
+/// Per-kind slug-keyed views over the inventory. Renderer metadata iterates these so its keys are
+/// driven by the single authoritative inventory instead of hand-maintained parallel lists. Iteration
+/// order follows the underlying `manualUnits` / `automatedUnits` insertion order (agents, then
+/// commands, then skills), which matches the authored `shared-content` order.
+manualAgents: Mapping<String, InventoryUnit> = new {
+  for (_, unit in manualUnits) {
+    when (unit.kind == "agent") {
+      [unit.slug] = unit
+    }
+  }
+}
+manualCommands: Mapping<String, InventoryUnit> = new {
+  for (_, unit in manualUnits) {
+    when (unit.kind == "command") {
+      [unit.slug] = unit
+    }
+  }
+}
+manualSkills: Mapping<String, InventoryUnit> = new {
+  for (_, unit in manualUnits) {
+    when (unit.kind == "skill") {
+      [unit.slug] = unit
+    }
+  }
+}
+automatedAgents: Mapping<String, InventoryUnit> = new {
+  for (_, unit in automatedUnits) {
+    when (unit.kind == "agent") {
+      [unit.slug] = unit
+    }
+  }
+}
+automatedCommands: Mapping<String, InventoryUnit> = new {
+  for (_, unit in automatedUnits) {
+    when (unit.kind == "command") {
+      [unit.slug] = unit
+    }
+  }
+}
+automatedSkills: Mapping<String, InventoryUnit> = new {
+  for (_, unit in automatedUnits) {
+    when (unit.kind == "skill") {
+      [unit.slug] = unit
+    }
+  }
+}
+
 /// Logical unit counts per profile for quick inspection and later count audits.
 counts = new {
   manual = new {
@@ -220,32 +267,13 @@ class StaleEntry {
   reason: String
 }
 
-staleEntries: Listing<StaleEntry> = new {
-  new {
-    location = "config/pkl/renderers/common.pkl (commandDescriptions); config/pkl/renderers/opencode-content.pkl (commandSkillMetadataBlocks)"
-    entry = "drift-detect"
-    profile = "none"
-    reason = "No matching entry exists in shared.commands, so no command is generated; references the removed sce-drift-analyzer skill."
-  }
-  new {
-    location = "config/pkl/renderers/common.pkl (commandDescriptions); config/pkl/renderers/opencode-content.pkl (commandSkillMetadataBlocks)"
-    entry = "fix-drift"
-    profile = "none"
-    reason = "No matching entry exists in shared.commands, so no command is generated; references the removed sce-drift-fixer skill."
-  }
-  new {
-    location = "config/pkl/renderers/common.pkl (commandDescriptions)"
-    entry = "change-to-plan-interactive"
-    profile = "manual"
-    reason = "Interactive planning command is active only in the automated profile; the manual/shared description surface carries it although shared.commands has no such manual command."
-  }
-  new {
-    location = "config/pkl/renderers/common.pkl (skillDescriptions); config/pkl/renderers/opencode-metadata.pkl (skillDescriptions)"
-    entry = "sce-plan-authoring-interactive"
-    profile = "manual"
-    reason = "Interactive planning skill is active only in the automated profile; manual/shared metadata carries it although shared.skills has no such manual skill."
-  }
-}
+// Resolved by T03. `drift-detect` / `fix-drift` were truly orphaned (no active unit in either profile,
+// referencing removed skills) and were removed from `common.pkl` and `opencode-content.pkl`. The
+// interactive planning command/skill are NOT stale: the shared `common.pkl` description maps are
+// consumed by the automated profile where those units are active, so they are keyed off the automated
+// (superset) inventory and retained; only the manual-only `opencode-metadata.pkl` skill surface,
+// which never consumed `sce-plan-authoring-interactive`, dropped it. No stale metadata entry remains.
+staleEntries: Listing<StaleEntry> = new {}
 
 /// Reference that an active body points at but does not resolve. Recorded, not fixed, in this task.
 class BrokenReference {

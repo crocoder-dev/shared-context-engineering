@@ -10,7 +10,7 @@ permission:
   glob: allow
   grep: allow
   list: allow
-  bash: allow
+  bash: ask
   task: allow
   external_directory: ask
   todowrite: allow

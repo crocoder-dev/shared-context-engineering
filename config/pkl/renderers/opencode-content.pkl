@@ -32,16 +32,6 @@ entry-skill: "sce-plan-authoring"
 skills:
   - "sce-plan-authoring"
 """
-  ["drift-detect"] = """
-entry-skill: "sce-drift-analyzer"
-skills:
-  - "sce-drift-analyzer"
-"""
-  ["fix-drift"] = """
-entry-skill: "sce-drift-fixer"
-skills:
-  - "sce-drift-fixer"
-"""
   ["handover"] = """
 entry-skill: "sce-handover-writer"
 skills:
