@@ -1,0 +1,266 @@
+// Canonical cross-harness inventory and standard section contract for SCE instruction units.
+//
+// This is the single inspectable source for the standardization effort. It is DERIVED from the
+// canonical authored content in `shared-content.pkl` (manual profile) and
+// `shared-content-automated.pkl` (automated profile), so renderer and validation code can consume
+// one authoritative inventory instead of maintaining parallel hand-kept lists.
+//
+// Scope note: this module records the contract, the per-harness destinations, profile status, and
+// known stale / broken-reference findings. It does not remove stale entries, fix broken references,
+// or change any generated output; those are handled by later tasks in
+// `context/plans/instruction-unit-standardization-all-harnesses.md`.
+
+import "shared-content.pkl" as manual
+import "shared-content-automated.pkl" as automated
+
+/// Ordered required body sections. Every active instruction body must contain each of these level-two
+/// headings exactly once and in this order.
+requiredSections: List<String> = List(
+  "Purpose",
+  "Inputs",
+  "Preconditions",
+  "Workflow",
+  "Guardrails",
+  "Outputs",
+  "Completion criteria",
+  "Failure handling",
+  "Related units"
+)
+
+/// Optional sections permitted only after the full required set, in this order.
+optionalSections: List<String> = List("Reference", "Examples")
+
+/// Recognized instruction unit kinds.
+unitKinds: List<String> = List("agent", "command", "skill")
+
+/// Target harnesses that each profile renders to.
+manualTargets: List<String> = List("opencode", "claude", "pi")
+automatedTargets: List<String> = List("opencode")
+
+// Count locals reference the imports unambiguously (avoids the `counts.manual` self-reference trap).
+local manualAgentCount = manual.agents.length
+local manualCommandCount = manual.commands.length
+local manualSkillCount = manual.skills.length
+local automatedAgentCount = automated.agents.length
+local automatedCommandCount = automated.commands.length
+local automatedSkillCount = automated.skills.length
+
+/// Generated + tracked root-mirror destinations for one unit.
+class UnitDestinations {
+  /// Primary generated OpenCode destination (config-owned).
+  opencode: String
+  /// Generated Claude destination, or null when the profile does not render Claude.
+  claude: String?
+  /// Generated Pi destination, or null when the profile does not render Pi.
+  pi: String?
+  /// Tracked repository-root mirror paths of the generated outputs (empty when no mirror exists).
+  rootMirror: List<String>
+}
+
+/// One logical instruction unit and where it renders.
+class InventoryUnit {
+  /// Stable id, e.g. `agent.shared-context-plan`.
+  id: String
+  kind: String
+  slug: String
+  title: String
+  /// "manual" or "automated".
+  profile: String
+  /// "active" for units that are intentionally emitted in their profile.
+  status: String
+  targets: List<String>
+  destinations: UnitDestinations
+}
+
+/// Manual-profile inventory keyed by unit id (2 agents, 5 commands, 8 skills).
+manualUnits: Mapping<String, InventoryUnit> = new {
+  for (_, unit in manual.agents) {
+    [unit.id] = new InventoryUnit {
+      id = unit.id
+      kind = "agent"
+      slug = unit.slug
+      title = unit.title
+      profile = "manual"
+      status = "active"
+      targets = manualTargets
+      destinations = new UnitDestinations {
+        opencode = "config/.opencode/agent/\(unit.title).md"
+        claude = "config/.claude/agents/\(unit.slug).md"
+        pi = "config/.pi/prompts/agent-\(unit.slug).md"
+        rootMirror = List(
+          ".opencode/agent/\(unit.title).md",
+          ".claude/agents/\(unit.slug).md",
+          ".pi/prompts/agent-\(unit.slug).md"
+        )
+      }
+    }
+  }
+  for (_, unit in manual.commands) {
+    [unit.id] = new InventoryUnit {
+      id = unit.id
+      kind = "command"
+      slug = unit.slug
+      title = unit.title
+      profile = "manual"
+      status = "active"
+      targets = manualTargets
+      destinations = new UnitDestinations {
+        opencode = "config/.opencode/command/\(unit.slug).md"
+        claude = "config/.claude/commands/\(unit.slug).md"
+        pi = "config/.pi/prompts/\(unit.slug).md"
+        rootMirror = List(
+          ".opencode/command/\(unit.slug).md",
+          ".claude/commands/\(unit.slug).md",
+          ".pi/prompts/\(unit.slug).md"
+        )
+      }
+    }
+  }
+  for (_, unit in manual.skills) {
+    [unit.id] = new InventoryUnit {
+      id = unit.id
+      kind = "skill"
+      slug = unit.slug
+      title = unit.title
+      profile = "manual"
+      status = "active"
+      targets = manualTargets
+      destinations = new UnitDestinations {
+        opencode = "config/.opencode/skills/\(unit.slug)/SKILL.md"
+        claude = "config/.claude/skills/\(unit.slug)/SKILL.md"
+        pi = "config/.pi/skills/\(unit.slug)/SKILL.md"
+        rootMirror = List(
+          ".opencode/skills/\(unit.slug)/SKILL.md",
+          ".claude/skills/\(unit.slug)/SKILL.md",
+          ".pi/skills/\(unit.slug)/SKILL.md"
+        )
+      }
+    }
+  }
+}
+
+/// Automated-profile inventory keyed by unit id (2 agents, 6 commands, 9 skills; OpenCode only).
+automatedUnits: Mapping<String, InventoryUnit> = new {
+  for (_, unit in automated.agents) {
+    [unit.id] = new InventoryUnit {
+      id = unit.id
+      kind = "agent"
+      slug = unit.slug
+      title = unit.title
+      profile = "automated"
+      status = "active"
+      targets = automatedTargets
+      destinations = new UnitDestinations {
+        opencode = "config/automated/.opencode/agent/\(unit.title).md"
+        claude = null
+        pi = null
+        rootMirror = List()
+      }
+    }
+  }
+  for (_, unit in automated.commands) {
+    [unit.id] = new InventoryUnit {
+      id = unit.id
+      kind = "command"
+      slug = unit.slug
+      title = unit.title
+      profile = "automated"
+      status = "active"
+      targets = automatedTargets
+      destinations = new UnitDestinations {
+        opencode = "config/automated/.opencode/command/\(unit.slug).md"
+        claude = null
+        pi = null
+        rootMirror = List()
+      }
+    }
+  }
+  for (_, unit in automated.skills) {
+    [unit.id] = new InventoryUnit {
+      id = unit.id
+      kind = "skill"
+      slug = unit.slug
+      title = unit.title
+      profile = "automated"
+      status = "active"
+      targets = automatedTargets
+      destinations = new UnitDestinations {
+        opencode = "config/automated/.opencode/skills/\(unit.slug)/SKILL.md"
+        claude = null
+        pi = null
+        rootMirror = List()
+      }
+    }
+  }
+}
+
+/// Logical unit counts per profile for quick inspection and later count audits.
+counts = new {
+  manual = new {
+    agents = manualAgentCount
+    commands = manualCommandCount
+    skills = manualSkillCount
+  }
+  automated = new {
+    agents = automatedAgentCount
+    commands = automatedCommandCount
+    skills = automatedSkillCount
+  }
+}
+
+/// Metadata entry that no active generated unit consumes. Recorded, not removed, in this task.
+class StaleEntry {
+  /// Renderer/metadata source(s) that still carry the orphaned entry.
+  location: String
+  /// The orphaned key or slug.
+  entry: String
+  /// Profile the entry is stale in ("manual" or "none" when it references a removed unit entirely).
+  profile: String
+  /// Why the entry is stale.
+  reason: String
+}
+
+staleEntries: Listing<StaleEntry> = new {
+  new {
+    location = "config/pkl/renderers/common.pkl (commandDescriptions); config/pkl/renderers/opencode-content.pkl (commandSkillMetadataBlocks)"
+    entry = "drift-detect"
+    profile = "none"
+    reason = "No matching entry exists in shared.commands, so no command is generated; references the removed sce-drift-analyzer skill."
+  }
+  new {
+    location = "config/pkl/renderers/common.pkl (commandDescriptions); config/pkl/renderers/opencode-content.pkl (commandSkillMetadataBlocks)"
+    entry = "fix-drift"
+    profile = "none"
+    reason = "No matching entry exists in shared.commands, so no command is generated; references the removed sce-drift-fixer skill."
+  }
+  new {
+    location = "config/pkl/renderers/common.pkl (commandDescriptions)"
+    entry = "change-to-plan-interactive"
+    profile = "manual"
+    reason = "Interactive planning command is active only in the automated profile; the manual/shared description surface carries it although shared.commands has no such manual command."
+  }
+  new {
+    location = "config/pkl/renderers/common.pkl (skillDescriptions); config/pkl/renderers/opencode-metadata.pkl (skillDescriptions)"
+    entry = "sce-plan-authoring-interactive"
+    profile = "manual"
+    reason = "Interactive planning skill is active only in the automated profile; manual/shared metadata carries it although shared.skills has no such manual skill."
+  }
+}
+
+/// Reference that an active body points at but does not resolve. Recorded, not fixed, in this task.
+class BrokenReference {
+  /// Source that emits the reference.
+  location: String
+  /// The unresolved reference target.
+  reference: String
+  /// Why it is broken and the intended resolution owner.
+  reason: String
+}
+
+brokenReferences: Listing<BrokenReference> = new {
+  new {
+    location = "config/pkl/base/shared-content-plan.pkl (sce-plan-authoring skill body)"
+    reference = "context/plans/n.md"
+    reason = "Referenced annotated example plan file does not exist (formerly context/plans/PLAN_EXAMPLE.md); to be replaced or embedded during the manual-skill rewrite task."
+  }
+}

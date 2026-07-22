@@ -1,0 +1,134 @@
+# Standardize instruction units across OpenCode, Claude Code, and Pi
+
+## Change summary
+
+Standardize every active SCE agent, command, and skill from the canonical Pkl authoring layer so all rendered OpenCode, Claude Code, and Pi instruction units use one body contract. Every body will contain exactly these required level-two sections in order: `Purpose`, `Inputs`, `Preconditions`, `Workflow`, `Guardrails`, `Outputs`, `Completion criteria`, `Failure handling`, and `Related units`; optional `Reference` and final `Examples` sections may follow.
+
+The implementation will preserve the ownership split between agent orchestration, thin command routing, and detailed skill procedures; retain intentional manual-versus-automated behavior; normalize target-supported frontmatter and permissions; remove stale inventory metadata or document intentional inactivity; resolve broken references; provide canonical templates; and add deterministic structural/reference validation integrated with generated-output parity and flake checks.
+
+The initial inventory maps the logical manual profile (2 agents, 5 commands, 8 skills) through the canonical Pkl bodies into manual OpenCode, Claude Code, and Pi outputs. The automated profile currently exists only for OpenCode and contains 2 agents, 6 commands, and 9 skills, including the active interactive planning command/skill. Tracked repository-root `.opencode/`, `.claude/`, and `.pi/` instruction trees mirror the corresponding manual config outputs but are not currently emitted or parity-checked by `config/pkl/generate.pkl`; they are in scope for deterministic synchronization. The untracked `sce-opencode-standardization/` bundle is a read-only migration reference and must not be overwritten, committed, or treated as canonical source.
+
+## Success criteria
+
+- [ ] SC1: Every active manual and automated agent, command, and skill has all nine required sections exactly once and in the required order, with only optional `Reference` and final `Examples` sections after them.
+- [ ] SC2: No active instruction body contains an unknown level-two heading or body-level `When to use`; useful content from legacy headings is retained under the correct standard section.
+- [ ] SC3: Agents own role boundaries, startup/approval posture, skill orchestration, completion, and escalation without duplicating skill procedures; commands remain thin; skills own reusable procedures, validation, contracts, schemas, deterministic failure handling, references, and examples.
+- [ ] SC4: Inputs, outputs, completion criteria, failure handling, and related units are explicit in every unit; command inputs document `$ARGUMENTS` or the harness-equivalent argument placeholder.
+- [ ] SC5: OpenCode agent, command, and skill frontmatter uses supported normalized fields; Claude Code and Pi use equivalent target-supported frontmatter while preserving canonical identity, descriptions, and body structure.
+- [ ] SC6: Agent permissions/tools agree with body guardrails and use the least privilege that supports each role; manual approval gates and automated deterministic stop/failure semantics remain intentionally distinct.
+- [ ] SC7: Canonical reusable agent, command, and skill templates exist under the canonical configuration source tree and generate synchronized contributor-facing copies at repository-root `templates/{agent,command,skill}.md`; they demonstrate frontmatter, section order, optional sections, and unit responsibility boundaries.
+- [ ] SC8: Active inventories and renderer metadata have one authoritative source where practical; stale `drift-detect`, `fix-drift`, inactive manual interactive-planning metadata, and any other orphaned entries are removed or explicitly documented without activating inactive behavior.
+- [ ] SC9: Broken references, including the missing `context/plans/PLAN_EXAMPLE.md`, are replaced, embedded under `Reference`, or backed by a canonical generated/existing file; all active command/skill/permission references resolve.
+- [ ] SC10: A small deterministic validator covers all config-generated and tracked root-mirror instruction trees and reports file, unit type, violated rule, and expected structure for frontmatter, heading shape/order/uniqueness, final `Examples`, forbidden `When to use`, skill directory/name parity, and cross-unit references.
+- [ ] SC11: Focused deterministic fixtures cover valid agent, command, skill, manual-profile, and automated-profile cases plus all ten requested invalid cases.
+- [ ] SC12: Structural validation is integrated into the existing Nix/flake validation surface and generated-output parity detects drift for every generation-owned instruction tree, including synchronized root harness mirrors.
+- [ ] SC13: A concise contributor guide documents canonical ownership, templates, adding each unit type, profile differences, regeneration, structural validation, and parity commands, and is linked from the relevant existing config documentation.
+- [ ] SC14: Canonical Pkl sources and all generated OpenCode, Claude Code, Pi, automated-profile, root-mirror, and embedded/install-consumed outputs are synchronized after regeneration.
+- [ ] SC15: `nix run .#pkl-check-generated` and `nix flake check` complete successfully after the final regeneration.
+
+## Constraints and non-goals
+
+- Pkl files under `config/pkl/` are authoritative; generated Markdown must not be the primary editing surface. The requested root `templates/` files are published/generated copies of canonical Pkl-owned templates, not a second authoring source.
+- Preserve useful behavior while reorganizing content; do not mechanically rename headings or discard instructions.
+- Preserve supported harness differences. OpenCode-specific fields such as `permission`, `agent`, `entry-skill`, and `skills` must not be invented for Claude Code or Pi when unsupported; target renderers must express equivalent supported metadata and validation.
+- Preserve the current profile topology: manual bodies render to OpenCode, Claude Code, and Pi; automated bodies render to automated OpenCode only. Creating new automated Claude Code or Pi profiles is out of scope.
+- Do not silently activate inactive units. The automated interactive planning unit remains active unless inventory evidence proves otherwise.
+- Do not make unrelated Rust CLI, release, plugin-runtime, or hook behavior changes.
+- Use Nix for reproducible commands and Bun for repository-owned validator/test tooling if a script is needed; keep TypeScript strict-mode friendly and avoid a large validation framework.
+- Keep output and diagnostics deterministic; sort discovered files and references before validation.
+- Preserve unrelated worktree state. In particular, leave the untracked `sce-opencode-standardization/` directory untouched.
+- Each task below is one atomic commit unit. Canonical changes and the generated outputs they affect must land together whenever separating them would leave parity broken.
+
+## Task stack
+
+- [x] T01: `Record the canonical cross-harness inventory and standard contract` (status:done)
+  - Task ID: T01
+  - Goal: Add a canonical Pkl/config-owned schema vocabulary and inventory mapping for unit kinds, required/optional section order, active manual/automated units, target renderers, and generated/root-mirror destinations.
+  - Boundaries (in/out of scope): In — `config/pkl/` schema/inventory helpers and a compact inventory artifact or documentation close to them; explicit stale/broken-reference findings. Out — rewriting unit bodies, enabling validation in flake checks, changing active behavior.
+  - Done when: One inspectable source identifies all 2/5/8 manual and 2/6/9 automated logical units, their OpenCode/Claude/Pi destinations, required section contract, profile status, and known stale entries; renderer code can consume the inventory rather than parallel hand-maintained lists where practical.
+  - Verification notes (commands or checks): `nix develop -c pkl eval config/pkl/renderers/metadata-coverage-check.pkl`; inspect deterministic inventory ordering; `git status --short` confirms `sce-opencode-standardization/` is untouched.
+  - Completed: 2026-07-22
+  - Files changed: `config/pkl/base/instruction-unit-inventory.pkl` (new); `config/pkl/renderers/metadata-coverage-check.pkl` (consumes inventory via `inventoryCoverage`)
+  - Evidence: `nix develop -c pkl eval config/pkl/base/instruction-unit-inventory.pkl` and `...metadata-coverage-check.pkl` evaluate deterministically; counts confirmed manual 2/5/8 and automated 2/6/9; stale entries recorded (`drift-detect`, `fix-drift`, manual `change-to-plan-interactive`, manual `sce-plan-authoring-interactive`); broken reference recorded (`context/plans/n.md`); `nix run .#pkl-check-generated` = "Generated outputs are up to date"; `nix flake check` = all 21 checks passed; `git status --short` shows `sce-opencode-standardization/` still untracked/untouched.
+  - Notes: Inventory is derived from `shared-content.pkl` / `shared-content-automated.pkl` (single authoritative source, no parallel hand list). Stale/broken findings are recorded as data only — removal/fixes deferred to T03 (stale cleanup) and T06 (broken reference). Change is localized/additive (no generated-output, behavior, architecture, or terminology change): context sync expected verify-only.
+
+- [ ] T02: `Add canonical templates and shared rendering helpers` (status:todo)
+  - Task ID: T02
+  - Goal: Standardize the reference bundle's agent, command, and skill templates into reusable canonical Pkl-owned templates, then publish synchronized copies at root `templates/agent.md`, `templates/command.md`, and `templates/skill.md`.
+  - Boundaries (in/out of scope): In — template definitions under the canonical config source tree, shared section constants/helpers, root `templates/` outputs, concise inline guidance, optional `Reference`/`Examples`, and responsibility-boundary examples. The untracked bundle is read-only input. Out — verbatim copying that creates a second authority, rewriting active units, changing profile behavior, or editing `sce-opencode-standardization/`.
+  - Done when: Contributors can copy or instantiate each root template without inventing headings; each root file is deterministically derived from its canonical Pkl owner, validates with exact section order, demonstrates valid frontmatter for supported targets, and keeps `Examples` final.
+  - Verification notes (commands or checks): Evaluate affected Pkl modules through `nix develop`; run metadata coverage; compare the standardized templates with the useful guidance in `sce-opencode-standardization/templates/`; inspect all three root templates against the standard order and canonical output.
+
+- [ ] T03: `Normalize renderer metadata and clean stale inventory entries` (status:todo)
+  - Task ID: T03
+  - Goal: Derive renderer metadata from active inventories where possible, normalize supported frontmatter, remove/document stale entries, and align agent permissions/tool declarations with role needs.
+  - Boundaries (in/out of scope): In — OpenCode manual/automated, Claude Code, and Pi renderer/metadata modules; stale `drift-detect`/`fix-drift` and inactive manual interactive metadata cleanup; command skill-chain metadata; least-privilege planning permissions. Out — canonical body rewrites and activation of new units.
+  - Done when: Every active inventory item has complete target metadata; no unexplained metadata-only item remains; command and agent skill references resolve; planning roles no longer receive shell access contrary to their guardrails; manual and automated permission differences remain explicit.
+  - Verification notes (commands or checks): `nix develop -c pkl eval config/pkl/renderers/metadata-coverage-check.pkl`; `rg -n 'drift-detect|fix-drift|sce-plan-authoring-interactive' config/pkl/renderers`; inspect generated frontmatter preview for each target/profile.
+
+- [ ] T04: `Rewrite manual-profile agent bodies across all harnesses` (status:todo)
+  - Task ID: T04
+  - Goal: Reorganize the two manual canonical agent bodies into the common structure while preserving role startup, approval, orchestration, completion, and escalation behavior without skill-procedure duplication.
+  - Boundaries (in/out of scope): In — manual agent canonical Pkl bodies and their regenerated config/root OpenCode, Claude Code, and Pi agent outputs. Out — commands, skills, automated bodies, validator integration.
+  - Done when: Both logical manual agents and all six config/root target renderings conform; Pi's role-prompt wrapper no longer inserts body prose before `Purpose`; permissions/tools agree with guardrails.
+  - Verification notes (commands or checks): Regenerate with the existing Pkl command; inspect headings/frontmatter in `config/.opencode/agent`, `config/.claude/agents`, `config/.pi/prompts/agent-*` and root mirrors; run focused structural validation when available or an equivalent heading audit.
+
+- [ ] T05: `Rewrite manual-profile command bodies across all harnesses` (status:todo)
+  - Task ID: T05
+  - Goal: Rewrite the five manual commands as thin argument-normalizing and skill-routing adapters using the standard structure.
+  - Boundaries (in/out of scope): In — canonical manual command bodies and regenerated OpenCode, Claude Code, and Pi config/root command outputs. Out — detailed skill procedures, automated commands, agent/skill behavior.
+  - Done when: Each command explicitly documents `$ARGUMENTS` or target equivalent, mode selection, delegated skill chain, command-owned side effects, final handoff, failure propagation, and related units without duplicating skill workflows.
+  - Verification notes (commands or checks): Regenerate; inspect all 15 config target command/prompt renderings and root mirrors; verify command frontmatter skill references resolve and Pi argument hints remain accurate.
+
+- [ ] T06: `Rewrite manual-profile skill bodies and resolve references` (status:todo)
+  - Task ID: T06
+  - Goal: Rewrite all eight manual canonical skills into the common structure while preserving detailed procedures, schemas, output contracts, deterministic failure behavior, references, and examples.
+  - Boundaries (in/out of scope): In — manual skill canonical Pkl bodies, generated OpenCode/Claude/Pi config/root skills, removal or replacement/embedding of the missing `PLAN_EXAMPLE.md` reference, and deduplication against agents/commands. Out — automated skill bodies and unrelated context documents.
+  - Done when: All eight logical skills and 24 config target renderings plus root mirrors conform; skill names match directories; trigger conditions live only in descriptions; all examples are final; no active reference is broken.
+  - Verification notes (commands or checks): Regenerate; `rg -n '^## |PLAN_EXAMPLE|When to use'` across generated skill trees; verify referenced paths exist; run focused structural validation when available.
+
+- [ ] T07: `Rewrite automated-profile agent and command bodies` (status:todo)
+  - Task ID: T07
+  - Goal: Rewrite the two automated agents and six automated commands into the standard structure while preserving non-interactive deterministic routing and safe-stop behavior.
+  - Boundaries (in/out of scope): In — automated canonical agent/command bodies and regenerated `config/automated/.opencode/{agent,command}` outputs, including active interactive-planning routing semantics. Out — automated skills, manual targets, creation of automated Claude/Pi outputs.
+  - Done when: All eight units conform; automated commands return actionable deterministic blockers instead of guessing; command bodies remain thin; automated role permissions match body guardrails.
+  - Verification notes (commands or checks): Regenerate; inspect headings/frontmatter and compare manual-versus-automated gates; verify the interactive planning command references the active automated skill only.
+
+- [ ] T08: `Rewrite automated-profile skill bodies` (status:todo)
+  - Task ID: T08
+  - Goal: Rewrite all nine automated skills into the common structure while retaining deterministic automation-specific procedures and failure semantics.
+  - Boundaries (in/out of scope): In — automated canonical skill bodies and regenerated automated OpenCode skills, including the active interactive plan-authoring skill. Out — manual skills and profile topology changes.
+  - Done when: All nine skills conform; no body-level trigger heading remains; missing prerequisites and ambiguity produce structured safe stops; reusable details are not copied into agents or commands.
+  - Verification notes (commands or checks): Regenerate; audit headings, skill-directory names, references, and manual/automated semantic differences; run focused structural validation when available.
+
+- [ ] T09: `Add deterministic structural and reference validator fixtures` (status:todo)
+  - Task ID: T09
+  - Goal: Implement a small repository-owned validator and focused tests/fixtures for structural, frontmatter, identity, and cross-reference rules.
+  - Boundaries (in/out of scope): In — strict-friendly Bun/TypeScript tooling or Pkl validation plus a small script where Markdown parsing requires it; sorted discovery; valid agent/command/skill and manual/automated fixtures; all ten requested invalid fixtures. Out — changing unit behavior or adding a framework-heavy dependency.
+  - Done when: Tests prove failures for missing `Purpose`, wrong order, duplicate section, unknown heading, non-final `Examples`, body `When to use`, missing frontmatter field, skill-name/directory mismatch, invalid command skill reference, and invalid agent skill-permission reference; diagnostics include path, kind, rule, and expected shape.
+  - Verification notes (commands or checks): Run the narrow Bun test/script through `nix develop`; execute validator against fixtures in deterministic order and confirm expected non-zero exits/messages for invalid sets.
+
+- [ ] T10: `Validate and parity-check every generated harness tree` (status:todo)
+  - Task ID: T10
+  - Goal: Wire structural/reference validation and root-harness synchronization into the existing Pkl generation, parity, and flake-check surfaces.
+  - Boundaries (in/out of scope): In — `generate.pkl`, `check-generated.sh`, relevant flake filesets/check derivations/apps, deterministic config-to-root instruction mirror generation or parity ownership, and generated root `templates/` copies. Out — dependency/runtime artifacts such as `node_modules`, local settings, package locks, and unrelated release behavior.
+  - Done when: One supported generation command updates all generation-owned config and tracked root instruction outputs plus root templates; parity catches canonical drift in every active profile/harness and template; `nix flake check` invokes structural validation; local-only `.claude/settings.local.json` and dependency artifacts remain untouched.
+  - Verification notes (commands or checks): Run the narrow validator against all generated trees; intentionally perturb a temporary fixture/tree to prove drift failure; regenerate; run `nix run .#pkl-check-generated`.
+
+- [ ] T11: `Document contributor workflow and synchronize durable context` (status:todo)
+  - Task ID: T11
+  - Goal: Add a concise contributor guide for instruction units, link it from `config/pkl/README.md` or the most relevant existing contributor documentation, and update durable SCE context to the implemented generation/validation contract.
+  - Boundaries (in/out of scope): In — contributor guide, relevant Pkl README link/workflow updates, and current-state context files/map. Out — expanding the root README into an implementation manual or documenting unimplemented profiles.
+  - Done when: Documentation explains canonical template ownership and the generated root `templates/` copies, canonical unit locations, generated paths, adding each unit type, section order, ownership boundaries, manual/automated differences, regeneration, structural validation, and parity; context accurately describes root mirror ownership and validation integration.
+  - Verification notes (commands or checks): Follow documented commands from repository root; check all links/paths; run context reference grep and generated parity.
+
+- [ ] T12: `Run final validation and cleanup` (status:todo)
+  - Task ID: T12
+  - Goal: Regenerate all outputs, run full validation, audit every acceptance criterion, clean temporary artifacts, and verify context sync without changing unrelated work.
+  - Boundaries (in/out of scope): In — final regeneration, narrow validator/tests, metadata coverage, parity, full flake checks, inventory/count/reference/permission audits, and plan evidence updates. Out — new behavior, unrelated cleanup, or modifying `sce-opencode-standardization/`.
+  - Done when: Counts are confirmed for manual OpenCode/Claude/Pi and automated OpenCode; no forbidden/unknown headings or unresolved references remain; generated and canonical trees are synchronized; all success criteria have evidence; temporary outputs are removed; context sync is verified.
+  - Verification notes (commands or checks): `nix develop -c pkl eval config/pkl/renderers/metadata-coverage-check.pkl`; repository-owned narrow validator/test command; `nix develop -c pkl eval -m . config/pkl/generate.pkl`; `nix run .#pkl-check-generated`; `nix flake check`; `git status --short`; deterministic inventory/reference/heading audits. Record failures honestly and do not claim success unless commands exit zero.
+
+## Open questions
+
+None. The repository's existing profile topology and target renderers resolve the harness scope: standardize current Claude Code and Pi manual outputs, but do not invent automated variants or unsupported cross-harness frontmatter fields.

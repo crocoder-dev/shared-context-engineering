@@ -24,6 +24,7 @@ Current scaffold location for canonical shared content primitives:
 - `config/pkl/base/shared-content-automated-commit.pkl`
 - `config/pkl/base/opencode.pkl`
 - `config/pkl/base/sce-config-schema.pkl`
+- `config/pkl/base/instruction-unit-inventory.pkl` (canonical cross-harness instruction-unit inventory + section contract, derived from the shared-content aggregation surfaces; records unit kinds, required/optional section order, per-profile OpenCode/Claude/Pi and root-mirror destinations, profile status, and known stale/broken-reference findings; consumed by `metadata-coverage-check.pkl`)
 
 Current target renderer helper modules:
 
