@@ -26,14 +26,10 @@ argument-hint: "\(metadata.agentArgumentHints[unitSlug])"
 
 local agentPromptBodyBySlug = new Mapping {
   for (unitSlug, unit in shared.agents) {
-    [unitSlug] = """
-Act as the \(unit.title) agent for the rest of this session. Load and follow the `\(metadata.agentSkillReferences[unitSlug])` skill when its workflow applies. Stay within this role's rules below until the task completes.
-
-Input:
-`$ARGUMENTS`
-
-\(unit.canonicalBody)
-"""
+    // Role activation and argument intent live in the Pi frontmatter (`description` /
+    // `argument-hint`); the prompt body is the standardized canonical body so it begins at
+    // `## Purpose` with no prose inserted before the first required section.
+    [unitSlug] = unit.canonicalBody
   }
 }
 
