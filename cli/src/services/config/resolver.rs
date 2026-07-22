@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use crate::services::default_paths::{resolve_sce_default_locations, RepoPaths};
+use crate::services::default_paths::{
+    observability_log_dir, resolve_sce_default_locations, RepoPaths,
+};
 
 use super::policy::{build_validation_warnings, resolve_bash_policy_config, BashPolicyConfig};
 use super::schema;
@@ -395,22 +397,19 @@ where
         };
     }
 
-    let mut resolved_log_dir = ResolvedOptionalValue {
-        value: file_config
-            .log_dir
-            .as_ref()
-            .map(|value| value.value.clone()),
-        source: file_config
-            .log_dir
-            .as_ref()
-            .map(|value| ValueSource::ConfigFile(value.source)),
-    };
-    if let Some(raw) = env_lookup(ENV_LOG_DIR) {
-        resolved_log_dir = ResolvedOptionalValue {
+    let resolved_log_dir = if let Some(raw) = env_lookup(ENV_LOG_DIR) {
+        ResolvedOptionalValue {
             value: Some(raw),
             source: Some(ValueSource::Env),
-        };
-    }
+        }
+    } else if let Some(value) = file_config.log_dir.as_ref() {
+        ResolvedOptionalValue {
+            value: Some(value.value.clone()),
+            source: Some(ValueSource::ConfigFile(value.source)),
+        }
+    } else {
+        default_observability_log_dir()?
+    };
 
     let mut resolved_timeout_ms = ResolvedValue {
         value: DEFAULT_TIMEOUT_MS,
@@ -545,6 +544,19 @@ where
         value: None,
         source: None,
     }
+}
+
+fn default_observability_log_dir() -> Result<ResolvedOptionalValue<String>> {
+    let path = observability_log_dir().with_context(|| {
+        format!(
+            "Failed to resolve default observability log directory for {ENV_LOG_DIR}; set {ENV_LOG_DIR} or config log_dir explicitly."
+        )
+    })?;
+
+    Ok(ResolvedOptionalValue {
+        value: Some(path.to_string_lossy().into_owned()),
+        source: Some(ValueSource::Default),
+    })
 }
 
 fn resolve_config_paths<FEnv, FGlobalPath>(
