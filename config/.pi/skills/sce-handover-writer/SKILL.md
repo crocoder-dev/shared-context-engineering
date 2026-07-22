@@ -3,44 +3,60 @@ name: sce-handover-writer
 description: Use when user wants to create a structured SCE handover for the current task.
 ---
 
-## What I do
-- Create a new handover file in `context/handovers/`.
-- Capture:
-  - current task state
-  - decisions made and rationale
-  - open questions or blockers
-  - next recommended step
+## Purpose
+- Preserve enough current-state task information for another human or AI session to continue safely.
 
-## How to run this
+## Inputs
+- Current plan name/path and task ID when available.
+- Repository status, recent changes, verification evidence, decisions, blockers, and next-step context.
 
-1. **Gather context** - review the current task, recent changes, and repo state.
-2. **Create the file** - use task-aligned naming: `context/handovers/{plan_name}-{task_id}.md`.
-3. **Fill each section** - follow the template below, labelling any inferred details as assumptions.
-4. **Verify completeness** - confirm all four sections are populated before finishing.
+## Preconditions
+1. Inspect the current plan, task, relevant changes, and repository state.
+2. Separate observed facts from assumptions.
 
-If key details are missing, infer from repo state and clearly label assumptions.
+## Workflow
+1. Resolve task-aligned naming: `context/handovers/{plan_name}-{task_id}-{timestamp}.md` when identifiers are available; otherwise use a descriptive fallback.
+2. Record current task state and degree of completion.
+3. Record decisions and the rationale for each material choice.
+4. Record open questions, blockers, dependencies, and failed checks.
+5. Record one concrete next recommended step.
+6. Label inferred details as assumptions.
+7. Verify all required sections are populated and return the exact path.
 
-## Handover document template
+## Guardrails
+- Describe current state, not a narrative changelog.
+- Do not invent decisions, evidence, owners, or completion status.
+- Do not make implementation changes while writing the handover.
 
+## Outputs
+- One handover file under `context/handovers/` and its exact path.
+
+## Completion criteria
+- The file contains `Current Task State`, `Decisions Made`, `Open Questions / Blockers`, and `Next Recommended Step`.
+- Every assumption is explicitly labelled.
+
+## Failure handling
+- When the current task cannot be identified reliably, request or report the missing plan/task information instead of fabricating context.
+- Report write failures directly.
+
+## Related units
+- `/handover` — thin command entrypoint.
+- `sce-plan-review` — source of plan/task readiness information.
+- `sce-task-execution` — source of implementation and evidence state.
+
+## Reference
 ```markdown
 # Handover: {plan_name} - {task_id}
 
 ## Current Task State
-- What was being worked on and how far along it is.
-- e.g. "Implementing OAuth login flow; token generation complete, redirect handling in progress."
+...
 
 ## Decisions Made
-- Key choices and their rationale.
-- e.g. "Chose JWT over session cookies for statelessness. Rejected library X due to licence constraints."
+...
 
 ## Open Questions / Blockers
-- Unresolved issues or outstanding dependencies.
-- e.g. "Awaiting confirmation on token expiry policy from product team."
+...
 
 ## Next Recommended Step
-- The single most important action for whoever picks this up.
-- e.g. "Complete the redirect handler in `src/auth/callback.ts`, then run the auth integration tests."
+...
 ```
-
-## Expected output
-- A complete handover document in `context/handovers/` using task-aligned naming when possible.

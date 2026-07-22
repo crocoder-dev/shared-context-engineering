@@ -3,87 +3,66 @@ name: sce-plan-review
 description: Use when user wants to review an existing plan and prepare the next task safely.
 ---
 
-## What I do
-- Continue execution from an existing plan in `context/plans/`.
-- Read the selected plan and identify the next task from the first unchecked checkbox.
-- Ask focused questions for anything not clear enough to execute safely.
+## Purpose
+- Review an active SCE plan, identify the next task, and issue an explicit implementation-readiness verdict.
 
-## How to run this
-- Use this skill when the user asks to continue a plan or pick the next task.
-- If `context/` is missing, ask once: "`context/` is missing. Bootstrap SCE baseline now?"
-  - If yes, create baseline with `sce-bootstrap-context` and continue.
-  - If no, stop and explain SCE workflows require `context/`.
-- Read `context/context-map.md`, `context/overview.md`, and `context/glossary.md` before broad exploration.
-- Resolve plan target:
-  - If plan path argument exists, use it.
-  - If multiple plans exist and no explicit path is provided, ask user to choose.
-- Collect:
-  - completed tasks
-  - next task
-  - blockers, ambiguity, and missing acceptance criteria
-- Prompt user to resolve unclear points before implementation.
-- Confirm scope explicitly for this session: one task by default unless user requests multi-task execution.
+## Inputs
+- Plan name/path and optional task ID.
+- Current plan checkboxes, task details, relevant context, and code truth.
 
-## Plan file format
-SCE plans are Markdown files stored in `context/plans/`. Tasks are tracked as checkboxes:
+## Preconditions
+1. Ensure `context/` exists; when missing, ask once whether to run `sce-bootstrap-context`, then stop if declined.
+2. Read `context/context-map.md`, `context/overview.md`, and `context/glossary.md` before broad exploration.
+3. Use an explicit plan path when provided; when multiple plans exist without one, ask the user to choose.
 
-```markdown
-# Plan: Add user authentication
+## Workflow
+1. Open the selected plan and count completed and remaining tasks.
+2. Select the explicit task ID when provided; otherwise select the first unchecked task.
+3. Extract goal, boundaries, done checks, verification notes, dependencies, and relevant decisions.
+4. Compare plan assumptions with current code and context.
+5. Classify issues as blockers, ambiguity, or missing acceptance criteria.
+6. Return `ready_for_implementation: yes|no` and the decisions required to proceed.
+7. When unresolved issues remain, request explicit user resolution and keep implementation blocked.
 
-## Tasks
-- [x] Scaffold auth module
-- [x] Add password hashing utility
-- [ ] Implement login endpoint        <- next task (first unchecked)
-- [ ] Write integration tests
-- [ ] Update context/current-state.md
+## Guardrails
+- Do not mark tasks complete during review.
+- Do not reorder or rewrite plan structure without approval.
+- Confirm one-task scope by default.
+- Treat completed plans as disposable, not durable history.
+- Prefer code truth when the plan or context is stale and flag the required repair.
+
+## Outputs
+- A structured readiness summary with completed count, selected task, acceptance criteria, issue categories, and verdict.
+
+## Completion criteria
+- The selected task is unambiguous, bounded, and has observable acceptance and verification.
+- The verdict is explicit and no unresolved issue is hidden.
+
+## Failure handling
+- Stop and ask for a plan choice when multiple candidates exist.
+- Return `ready_for_implementation: no` and focused questions when any blocker, ambiguity, or missing criterion remains.
+- Stop when no unchecked task exists and report that the plan is ready for final validation or closure.
+
+## Related units
+- `sce-bootstrap-context` — create missing baseline context after approval.
+- `sce-task-execution` — runs only after readiness authorization.
+- `/next-task` — orchestrates review, execution, and context sync.
+
+## Reference
+Return readiness in this stable shape:
+
+```yaml
+plan: context/plans/{plan_name}.md
+completed_tasks: 2/5
+next_task:
+  id: T03
+  title: Implement login endpoint
+acceptance_criteria:
+  - POST /auth/login returns a token for valid credentials
+  - Invalid credentials return 401
+issues:
+  blockers: []
+  ambiguity: []
+  missing_acceptance_criteria: []
+ready_for_implementation: yes
 ```
-
-The first unchecked `- [ ]` item is the next task to review and prepare.
-
-## Rules
-- Do not auto-mark tasks complete during review.
-- Keep continuation state in the plan markdown itself.
-- Treat `context/plans/` as active execution artifacts; completed plans are disposable and not a durable context source.
-- If durable history is needed, record it in current-state context files and/or `context/decisions/` instead of completed plan files.
-- Keep implementation blocked until decision alignment on unclear points.
-- If plan context is stale or partial, continue with code truth and flag context updates.
-
-## Expected output
-
-Produce a structured readiness summary after review:
-
-```
-## Plan Review - [plan filename]
-
-**Completed tasks:** 2 of 5
-**Next task:** Implement login endpoint
-
-**Acceptance criteria:**
-- POST /auth/login returns JWT on success
-- Returns 401 on invalid credentials
-
-**Issues found:**
-- Blocker: JWT secret source not specified (env var? config file?)
-- Ambiguity: Should failed attempts be rate-limited in this task or a later one?
-
-**ready_for_implementation: no**
-
-**Required decisions before proceeding:**
-1. Confirm JWT secret source
-2. Confirm rate-limiting scope
-```
-
-When all issues are resolved:
-
-```
-**ready_for_implementation: yes**
-Proceeding with: Implement login endpoint
-```
-
-- Explicit readiness verdict: `ready_for_implementation: yes|no`.
-- If not ready, explicit issue categories: blockers, ambiguity, missing acceptance criteria.
-- Explicit user-aligned decisions needed to proceed to implementation.
-- Explicit user confirmation request that the task is ready for implementation when unresolved issues remain.
-
-## Related skills
-- `sce-bootstrap-context` - creates the `context/` baseline required by this skill

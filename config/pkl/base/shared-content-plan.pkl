@@ -165,12 +165,52 @@ skills = new Mapping {
   ["sce-bootstrap-context"] = new UnitSpec {
     title = "SCE Bootstrap Context"
     canonicalBody = """
-## When to use
-- Use only when `context/` is missing.
-- Ask for human approval before creating files.
+## Purpose
+- Create the baseline SCE `context/` directory and files when they are absent.
 
-## Required baseline
-Create these paths:
+## Inputs
+- Repository root.
+- Explicit human approval to bootstrap.
+- Whether the repository currently contains application code.
+
+## Preconditions
+1. Confirm that `context/` is missing.
+2. Obtain explicit human approval before creating any path.
+
+## Workflow
+1. Create `context/plans/`, `context/handovers/`, `context/decisions/`, and `context/tmp/`.
+2. Create `context/overview.md`, `context/architecture.md`, `context/patterns.md`, `context/glossary.md`, and `context/context-map.md`.
+3. Write `context/tmp/.gitignore` with `*` followed by `!.gitignore`.
+4. When the repository has no application code, keep root context files empty or placeholder-only.
+5. Add baseline discoverability links to `context/context-map.md`.
+6. Verify every required path exists.
+7. Tell the user that `context/` should be committed as shared project memory.
+
+## Guardrails
+- Do not overwrite an existing `context/` tree.
+- Do not invent architecture, behavior, patterns, or terminology for a no-code repository.
+- Limit writes to the approved baseline paths.
+
+## Outputs
+- A verified baseline `context/` tree.
+- A concise report listing created paths and any placeholders used.
+
+## Completion criteria
+- Every required file and directory exists.
+- `context/tmp/.gitignore` preserves only itself.
+- `context/context-map.md` exposes the baseline files.
+
+## Failure handling
+- Stop when approval is not granted.
+- Report any path that could not be created or verified; do not continue into planning with a partial baseline.
+
+## Related units
+- `Shared Context Plan` — invokes this skill when planning starts without `context/`.
+- `sce-plan-authoring` — begins only after a valid baseline exists.
+
+## Reference
+Required paths:
+
 - `context/overview.md`
 - `context/architecture.md`
 - `context/patterns.md`
@@ -181,262 +221,225 @@ Create these paths:
 - `context/decisions/`
 - `context/tmp/`
 - `context/tmp/.gitignore`
-
-Use the following commands to create the directory structure:
-```bash
-mkdir -p context/plans context/handovers context/decisions context/tmp
-touch context/overview.md context/architecture.md context/patterns.md context/glossary.md context/context-map.md
-```
-
-`context/tmp/.gitignore` content:
-```
-*
-!.gitignore
-```
-
-## Validation
-After running the commands, verify all expected paths exist before proceeding:
-```bash
-ls context/overview.md context/architecture.md context/patterns.md context/glossary.md context/context-map.md context/plans context/handovers context/decisions context/tmp context/tmp/.gitignore
-```
-If any path is missing, re-create it before moving on.
-
-## No-code bootstrap rule
-- If the repository has no application code, keep `overview.md`, `architecture.md`, `patterns.md`, and `glossary.md` empty or placeholder-only.
-- Do not invent implementation details.
-
-Example placeholder content for empty files in a no-code repo:
-```markdown
-# Overview
-
-> This section has not been populated yet. Add a high-level description of the project here.
-```
-
-## After bootstrapping
-- Add baseline links in `context/context-map.md`.
-- Tell the user that `context/` should be committed as shared memory.
 """
   }
   ["sce-handover-writer"] = new UnitSpec {
     title = "SCE Handover Writer"
     canonicalBody = """
-## What I do
-- Create a new handover file in `context/handovers/`.
-- Capture:
-  - current task state
-  - decisions made and rationale
-  - open questions or blockers
-  - next recommended step
+## Purpose
+- Preserve enough current-state task information for another human or AI session to continue safely.
 
-## How to run this
+## Inputs
+- Current plan name/path and task ID when available.
+- Repository status, recent changes, verification evidence, decisions, blockers, and next-step context.
 
-1. **Gather context** - review the current task, recent changes, and repo state.
-2. **Create the file** - use task-aligned naming: `context/handovers/{plan_name}-{task_id}.md`.
-3. **Fill each section** - follow the template below, labelling any inferred details as assumptions.
-4. **Verify completeness** - confirm all four sections are populated before finishing.
+## Preconditions
+1. Inspect the current plan, task, relevant changes, and repository state.
+2. Separate observed facts from assumptions.
 
-If key details are missing, infer from repo state and clearly label assumptions.
+## Workflow
+1. Resolve task-aligned naming: `context/handovers/{plan_name}-{task_id}-{timestamp}.md` when identifiers are available; otherwise use a descriptive fallback.
+2. Record current task state and degree of completion.
+3. Record decisions and the rationale for each material choice.
+4. Record open questions, blockers, dependencies, and failed checks.
+5. Record one concrete next recommended step.
+6. Label inferred details as assumptions.
+7. Verify all required sections are populated and return the exact path.
 
-## Handover document template
+## Guardrails
+- Describe current state, not a narrative changelog.
+- Do not invent decisions, evidence, owners, or completion status.
+- Do not make implementation changes while writing the handover.
 
+## Outputs
+- One handover file under `context/handovers/` and its exact path.
+
+## Completion criteria
+- The file contains `Current Task State`, `Decisions Made`, `Open Questions / Blockers`, and `Next Recommended Step`.
+- Every assumption is explicitly labelled.
+
+## Failure handling
+- When the current task cannot be identified reliably, request or report the missing plan/task information instead of fabricating context.
+- Report write failures directly.
+
+## Related units
+- `/handover` — thin command entrypoint.
+- `sce-plan-review` — source of plan/task readiness information.
+- `sce-task-execution` — source of implementation and evidence state.
+
+## Reference
 ```markdown
 # Handover: {plan_name} - {task_id}
 
 ## Current Task State
-- What was being worked on and how far along it is.
-- e.g. "Implementing OAuth login flow; token generation complete, redirect handling in progress."
+...
 
 ## Decisions Made
-- Key choices and their rationale.
-- e.g. "Chose JWT over session cookies for statelessness. Rejected library X due to licence constraints."
+...
 
 ## Open Questions / Blockers
-- Unresolved issues or outstanding dependencies.
-- e.g. "Awaiting confirmation on token expiry policy from product team."
+...
 
 ## Next Recommended Step
-- The single most important action for whoever picks this up.
-- e.g. "Complete the redirect handler in `src/auth/callback.ts`, then run the auth integration tests."
+...
 ```
-
-## Expected output
-- A complete handover document in `context/handovers/` using task-aligned naming when possible.
 """
   }
   ["sce-plan-authoring"] = new UnitSpec {
     title = "SCE Plan Authoring"
     canonicalBody = """
-## Goal
-Turn a human change request into `context/plans/{plan_name}.md`.
+## Purpose
+- Convert a change request into a reviewable implementation plan at `context/plans/{plan_name}.md`.
+- Slice executable work into atomic, commit-sized tasks with explicit acceptance and verification.
 
-## Intake trigger
-- If a request includes both a change description and success criteria, planning is mandatory before implementation.
-- Planning does not imply execution approval.
+## Inputs
+- Change description, success criteria, constraints, non-goals, dependencies, risks, and requested plan target.
+- Relevant code and context needed to establish current truth.
+- User answers to blocking clarification questions.
 
-## Clarification gate (blocking)
-- Before writing or updating any plan, run an ambiguity check.
-- If any critical detail is unclear, ask 1-3 targeted questions and stop.
-- Do not write or update `context/plans/{plan_name}.md` until the user answers.
-- Critical details that must be resolved before planning include:
-  - scope boundaries and out-of-scope items
-  - success criteria and acceptance signals
-  - constraints and non-goals
-  - dependency choices (new libs/services, versions, and integration approach)
-  - domain ambiguity (unclear business rules, terminology, or ownership)
-  - architecture concerns (patterns, interfaces, data flow, migration strategy, and risk tradeoffs)
-  - task ordering assumptions and prerequisite sequencing
-- Do not silently invent missing requirements.
-- If the user explicitly allows assumptions, record them in an `Assumptions` section.
-- Incorporate user answers into the plan before handoff.
+## Preconditions
+1. Treat planning as mandatory when a request contains both a change description and success criteria.
+2. Run an ambiguity check before writing or updating the plan.
+3. Resolve scope boundaries, acceptance signals, constraints, dependency choices, domain rules, architecture concerns, migration strategy, and sequencing assumptions.
+4. Ask 1-3 targeted questions and stop when any critical detail remains unresolved.
 
-Example clarification questions (use this style - specific, blocking, targeted):
-> 1. Should the new endpoint authenticate via the existing JWT middleware, or is a separate auth flow in scope?
-> 2. Is database migration rollback a hard requirement, or is forward-only acceptable for this change?
-> 3. Which service owns the `UserProfile` type - should this task modify that definition or only consume it?
+## Workflow
+1. Resolve whether to create a new plan or update an existing plan and choose a stable kebab-case `plan_name`.
+2. Inspect relevant context first, then only the code needed to ground the plan.
+3. Run the clarification gate and incorporate user answers.
+4. Record assumptions only when the user explicitly authorizes assumptions.
+5. Write `Change summary`, `Success criteria`, `Constraints and non-goals`, optional `Assumptions`, `Task stack`, and `Open questions`.
+6. Give each task a stable ID, one goal, explicit in/out boundaries, observable done checks, and targeted verification notes.
+7. Split any task that would require multiple independent commits or unrelated outcomes.
+8. Make the final task validation and cleanup with full checks and context-sync verification.
+9. Save the plan, return the exact path and full ordered task list, and provide `/next-task {plan_name} T01`.
 
-## Plan format
-1) Change summary
-2) Success criteria
-3) Constraints and non-goals
-4) Task stack (`T01..T0N`)
-5) Open questions (if any)
+## Guardrails
+- Do not implement the plan.
+- Do not silently invent requirements or dependency choices.
+- Do not use vague executable tasks such as `polish`, `misc updates`, or `finalize` without concrete outcomes.
+- Treat planning as a proposal, not execution approval.
+- Keep one task aligned to one coherent atomic commit by default.
 
-## Task format (required)
-For each task include:
-- Task ID
-- Goal
-- Boundaries (in/out of scope)
-- Done when
-- Verification notes (commands or checks)
+## Outputs
+- A complete plan file under `context/plans/`.
+- Exact path, ordered task list, and canonical first-task command.
+- Focused questions instead of a partial plan when blocked.
 
-## Atomic task slicing contract (required)
-- Author each executable task as one atomic commit unit by default.
-- Every task must be scoped so one contributor can complete it and land it as one coherent commit without bundling unrelated changes.
-- If a candidate task would require multiple independent commits (for example: refactor + behavior change + docs), split it into separate sequential tasks before finalizing the plan.
-- Keep broad wrappers (`polish`, `finalize`, `misc updates`) out of executable tasks; convert them into specific outcomes with concrete acceptance checks.
+## Completion criteria
+- All critical ambiguity is resolved or explicitly recorded as an approved assumption.
+- Every task is executable, bounded, verifiable, and atomic by default.
+- The final validation/cleanup task is present.
 
-Example compliant skeleton:
-- [ ] T0X: `[single intent title]` (status:todo)
-  - Task ID: T0X
-  - Goal: `[one outcome]`
-  - Boundaries (in/out of scope): `[tight scope]`
-  - Done when: `[clear acceptance for one coherent change]`
-  - Verification notes (commands or checks): `[targeted checks for this change]`
+## Failure handling
+- Stop before writing when critical information is unresolved.
+- Ask specific questions that name the decision category and why it blocks safe planning.
+- Report a write failure without claiming the plan exists.
 
-Example filled-in task entry:
-- [ ] T02: `Add /auth/refresh endpoint` (status:todo)
-  - Task ID: T02
-  - Goal: Implement a POST `/auth/refresh` endpoint that exchanges a valid refresh token for a new access token.
-  - Boundaries (in/out of scope): In - route handler, token validation logic, response schema. Out - refresh token rotation policy (covered in T03), client-side storage changes.
-  - Done when: `POST /auth/refresh` returns a signed JWT on valid input and 401 on expired/invalid token; unit tests pass; OpenAPI spec updated.
-  - Verification notes (commands or checks): `pnpm test src/auth/refresh.test.ts`; `curl -X POST localhost:3000/auth/refresh -d '{"token":"..."}' -w "%{http_code}"`.
+## Related units
+- `/change-to-plan` — thin command entrypoint.
+- `Shared Context Plan` — orchestrates this skill.
+- `sce-plan-review` — consumes the completed plan before implementation.
 
-Use checkbox lines for machine-friendly progress tracking:
-- `- [ ] T01: ... (status:todo)`
+## Reference
+Use this plan shape:
 
-## Complete plan example
+```markdown
+# Plan: {plan_name}
 
-See `context/plans/PLAN_EXAMPLE.md` for a full annotated reference plan (JWT auth walkthrough covering all required sections and four task entries).
+## Change summary
+...
 
-## Required final task
-- Final task is always validation and cleanup.
-- It must include full checks and context sync verification.
+## Success criteria
+- ...
 
-## Output contract
-- Save plan under `context/plans/`.
-- Confirm plan creation with `plan_name` and exact file path.
-- Present the full ordered task list in chat.
-- Prompt the user to start a new session with Shared Context Code agent to implement `T01`.
-- Provide one canonical next command: `/next-task {plan_name} T01`.
+## Constraints and non-goals
+- ...
+
+## Assumptions
+- ...  <!-- include only when explicitly allowed -->
+
+## Task stack
+- [ ] T01: `{single intent title}` (status:todo)
+  - Task ID: T01
+  - Goal: `{one outcome}`
+  - Boundaries (in/out of scope): `{tight scope}`
+  - Done when: `{observable acceptance checks}`
+  - Verification notes (commands or checks): `{targeted evidence}`
+
+## Open questions
+- ...
+```
+
+Accept each executable task only when it has one primary intent, a narrow related touch area, and one coherent verification surface. Make the final task validation and cleanup, including full checks and context-sync verification.
 """
   }
   ["sce-plan-review"] = new UnitSpec {
     title = "SCE Plan Review"
     canonicalBody = """
-## What I do
-- Continue execution from an existing plan in `context/plans/`.
-- Read the selected plan and identify the next task from the first unchecked checkbox.
-- Ask focused questions for anything not clear enough to execute safely.
+## Purpose
+- Review an active SCE plan, identify the next task, and issue an explicit implementation-readiness verdict.
 
-## How to run this
-- Use this skill when the user asks to continue a plan or pick the next task.
-- If `context/` is missing, ask once: "`context/` is missing. Bootstrap SCE baseline now?"
-  - If yes, create baseline with `sce-bootstrap-context` and continue.
-  - If no, stop and explain SCE workflows require `context/`.
-- Read `context/context-map.md`, `context/overview.md`, and `context/glossary.md` before broad exploration.
-- Resolve plan target:
-  - If plan path argument exists, use it.
-  - If multiple plans exist and no explicit path is provided, ask user to choose.
-- Collect:
-  - completed tasks
-  - next task
-  - blockers, ambiguity, and missing acceptance criteria
-- Prompt user to resolve unclear points before implementation.
-- Confirm scope explicitly for this session: one task by default unless user requests multi-task execution.
+## Inputs
+- Plan name/path and optional task ID.
+- Current plan checkboxes, task details, relevant context, and code truth.
 
-## Plan file format
-SCE plans are Markdown files stored in `context/plans/`. Tasks are tracked as checkboxes:
+## Preconditions
+1. Ensure `context/` exists; when missing, ask once whether to run `sce-bootstrap-context`, then stop if declined.
+2. Read `context/context-map.md`, `context/overview.md`, and `context/glossary.md` before broad exploration.
+3. Use an explicit plan path when provided; when multiple plans exist without one, ask the user to choose.
 
-```markdown
-# Plan: Add user authentication
+## Workflow
+1. Open the selected plan and count completed and remaining tasks.
+2. Select the explicit task ID when provided; otherwise select the first unchecked task.
+3. Extract goal, boundaries, done checks, verification notes, dependencies, and relevant decisions.
+4. Compare plan assumptions with current code and context.
+5. Classify issues as blockers, ambiguity, or missing acceptance criteria.
+6. Return `ready_for_implementation: yes|no` and the decisions required to proceed.
+7. When unresolved issues remain, request explicit user resolution and keep implementation blocked.
 
-## Tasks
-- [x] Scaffold auth module
-- [x] Add password hashing utility
-- [ ] Implement login endpoint        <- next task (first unchecked)
-- [ ] Write integration tests
-- [ ] Update context/current-state.md
+## Guardrails
+- Do not mark tasks complete during review.
+- Do not reorder or rewrite plan structure without approval.
+- Confirm one-task scope by default.
+- Treat completed plans as disposable, not durable history.
+- Prefer code truth when the plan or context is stale and flag the required repair.
+
+## Outputs
+- A structured readiness summary with completed count, selected task, acceptance criteria, issue categories, and verdict.
+
+## Completion criteria
+- The selected task is unambiguous, bounded, and has observable acceptance and verification.
+- The verdict is explicit and no unresolved issue is hidden.
+
+## Failure handling
+- Stop and ask for a plan choice when multiple candidates exist.
+- Return `ready_for_implementation: no` and focused questions when any blocker, ambiguity, or missing criterion remains.
+- Stop when no unchecked task exists and report that the plan is ready for final validation or closure.
+
+## Related units
+- `sce-bootstrap-context` — create missing baseline context after approval.
+- `sce-task-execution` — runs only after readiness authorization.
+- `/next-task` — orchestrates review, execution, and context sync.
+
+## Reference
+Return readiness in this stable shape:
+
+```yaml
+plan: context/plans/{plan_name}.md
+completed_tasks: 2/5
+next_task:
+  id: T03
+  title: Implement login endpoint
+acceptance_criteria:
+  - POST /auth/login returns a token for valid credentials
+  - Invalid credentials return 401
+issues:
+  blockers: []
+  ambiguity: []
+  missing_acceptance_criteria: []
+ready_for_implementation: yes
 ```
-
-The first unchecked `- [ ]` item is the next task to review and prepare.
-
-## Rules
-- Do not auto-mark tasks complete during review.
-- Keep continuation state in the plan markdown itself.
-- Treat `context/plans/` as active execution artifacts; completed plans are disposable and not a durable context source.
-- If durable history is needed, record it in current-state context files and/or `context/decisions/` instead of completed plan files.
-- Keep implementation blocked until decision alignment on unclear points.
-- If plan context is stale or partial, continue with code truth and flag context updates.
-
-## Expected output
-
-Produce a structured readiness summary after review:
-
-```
-## Plan Review - [plan filename]
-
-**Completed tasks:** 2 of 5
-**Next task:** Implement login endpoint
-
-**Acceptance criteria:**
-- POST /auth/login returns JWT on success
-- Returns 401 on invalid credentials
-
-**Issues found:**
-- Blocker: JWT secret source not specified (env var? config file?)
-- Ambiguity: Should failed attempts be rate-limited in this task or a later one?
-
-**ready_for_implementation: no**
-
-**Required decisions before proceeding:**
-1. Confirm JWT secret source
-2. Confirm rate-limiting scope
-```
-
-When all issues are resolved:
-
-```
-**ready_for_implementation: yes**
-Proceeding with: Implement login endpoint
-```
-
-- Explicit readiness verdict: `ready_for_implementation: yes|no`.
-- If not ready, explicit issue categories: blockers, ambiguity, missing acceptance criteria.
-- Explicit user-aligned decisions needed to proceed to implementation.
-- Explicit user confirmation request that the task is ready for implementation when unresolved issues remain.
-
-## Related skills
-- `sce-bootstrap-context` - creates the `context/` baseline required by this skill
 """
   }
 }

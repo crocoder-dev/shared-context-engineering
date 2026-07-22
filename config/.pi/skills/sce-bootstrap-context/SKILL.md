@@ -3,12 +3,52 @@ name: sce-bootstrap-context
 description: Use when user wants to Bootstrap SCE baseline context directory when missing.
 ---
 
-## When to use
-- Use only when `context/` is missing.
-- Ask for human approval before creating files.
+## Purpose
+- Create the baseline SCE `context/` directory and files when they are absent.
 
-## Required baseline
-Create these paths:
+## Inputs
+- Repository root.
+- Explicit human approval to bootstrap.
+- Whether the repository currently contains application code.
+
+## Preconditions
+1. Confirm that `context/` is missing.
+2. Obtain explicit human approval before creating any path.
+
+## Workflow
+1. Create `context/plans/`, `context/handovers/`, `context/decisions/`, and `context/tmp/`.
+2. Create `context/overview.md`, `context/architecture.md`, `context/patterns.md`, `context/glossary.md`, and `context/context-map.md`.
+3. Write `context/tmp/.gitignore` with `*` followed by `!.gitignore`.
+4. When the repository has no application code, keep root context files empty or placeholder-only.
+5. Add baseline discoverability links to `context/context-map.md`.
+6. Verify every required path exists.
+7. Tell the user that `context/` should be committed as shared project memory.
+
+## Guardrails
+- Do not overwrite an existing `context/` tree.
+- Do not invent architecture, behavior, patterns, or terminology for a no-code repository.
+- Limit writes to the approved baseline paths.
+
+## Outputs
+- A verified baseline `context/` tree.
+- A concise report listing created paths and any placeholders used.
+
+## Completion criteria
+- Every required file and directory exists.
+- `context/tmp/.gitignore` preserves only itself.
+- `context/context-map.md` exposes the baseline files.
+
+## Failure handling
+- Stop when approval is not granted.
+- Report any path that could not be created or verified; do not continue into planning with a partial baseline.
+
+## Related units
+- `Shared Context Plan` — invokes this skill when planning starts without `context/`.
+- `sce-plan-authoring` — begins only after a valid baseline exists.
+
+## Reference
+Required paths:
+
 - `context/overview.md`
 - `context/architecture.md`
 - `context/patterns.md`
@@ -19,37 +59,3 @@ Create these paths:
 - `context/decisions/`
 - `context/tmp/`
 - `context/tmp/.gitignore`
-
-Use the following commands to create the directory structure:
-```bash
-mkdir -p context/plans context/handovers context/decisions context/tmp
-touch context/overview.md context/architecture.md context/patterns.md context/glossary.md context/context-map.md
-```
-
-`context/tmp/.gitignore` content:
-```
-*
-!.gitignore
-```
-
-## Validation
-After running the commands, verify all expected paths exist before proceeding:
-```bash
-ls context/overview.md context/architecture.md context/patterns.md context/glossary.md context/context-map.md context/plans context/handovers context/decisions context/tmp context/tmp/.gitignore
-```
-If any path is missing, re-create it before moving on.
-
-## No-code bootstrap rule
-- If the repository has no application code, keep `overview.md`, `architecture.md`, `patterns.md`, and `glossary.md` empty or placeholder-only.
-- Do not invent implementation details.
-
-Example placeholder content for empty files in a no-code repo:
-```markdown
-# Overview
-
-> This section has not been populated yet. Add a high-level description of the project here.
-```
-
-## After bootstrapping
-- Add baseline links in `context/context-map.md`.
-- Tell the user that `context/` should be committed as shared memory.

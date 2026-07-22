@@ -275,7 +275,7 @@ class StaleEntry {
 // which never consumed `sce-plan-authoring-interactive`, dropped it. No stale metadata entry remains.
 staleEntries: Listing<StaleEntry> = new {}
 
-/// Reference that an active body points at but does not resolve. Recorded, not fixed, in this task.
+/// Reference that an active body points at but does not resolve. Recorded and resolved as they are fixed.
 class BrokenReference {
   /// Source that emits the reference.
   location: String
@@ -285,10 +285,7 @@ class BrokenReference {
   reason: String
 }
 
-brokenReferences: Listing<BrokenReference> = new {
-  new {
-    location = "config/pkl/base/shared-content-plan.pkl (sce-plan-authoring skill body)"
-    reference = "context/plans/n.md"
-    reason = "Referenced annotated example plan file does not exist (formerly context/plans/PLAN_EXAMPLE.md); to be replaced or embedded during the manual-skill rewrite task."
-  }
-}
+// Resolved during the manual-skill rewrite (T06): the `sce-plan-authoring` body no longer points at the
+// nonexistent `context/plans/PLAN_EXAMPLE.md`; the annotated plan shape is now embedded inline under its
+// `## Reference` section. No unresolved broken reference remains.
+brokenReferences: Listing<BrokenReference> = new {}
