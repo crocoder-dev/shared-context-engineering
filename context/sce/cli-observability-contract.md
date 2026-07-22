@@ -3,7 +3,7 @@
 ## Scope
 
 This document defines the implemented structured observability baseline for `sce` runtime execution.
-It covers deterministic stderr logger controls, optional append-only log-directory routing, the current logger and telemetry trait boundaries, config-backed runtime resolution, startup degradation behavior for invalid discovered config, and event emission boundaries in `cli/src/services/observability.rs`, `cli/src/services/config/mod.rs`, and `cli/src/app.rs`.
+It covers deterministic stderr logger controls, optional log-directory routing with bounded retention, the current logger and telemetry trait boundaries, config-backed runtime resolution, startup degradation behavior for invalid discovered config, and event emission boundaries in `cli/src/services/observability.rs`, `cli/src/services/config/mod.rs`, and `cli/src/app.rs`.
 
 Runtime observability now consumes the shared resolved observability config from `cli/src/services/config/mod.rs`: env values still win, config-file values act as fallback, and defaults apply when both are absent. When default-discovered config files are invalid JSON, fail schema validation, or are not top-level JSON objects, observability resolution now skips those files, collects the failure text in `validation_errors`, and continues with defaults; explicit `--config` / `SCE_CONFIG_FILE` selections remain fatal. Startup therefore keeps running with degraded observability defaults instead of turning discovered invalid config into a startup failure. Those resolved values are surfaced to operators through `sce config show`; `sce config validate` uses the same validation path but now reports only validation status plus any errors or warnings.
 
@@ -26,11 +26,13 @@ Runtime observability now consumes the shared resolved observability config from
 ## Emission contract
 
 - Log output is always emitted to `stderr`; command result payloads remain on `stdout`.
-- When `log_dir` is configured, each enabled or forced log operation also appends the redacted rendered record to a file selected at emit time from the machine-local date and optional caller-provided session ID.
+- When `log_dir` is configured, each enabled or forced log operation appends the redacted rendered record to a file selected at emit time from the machine-local date and optional caller-provided session ID.
 - Sessionless file logs route to `<log_dir>/sce-<dd_mm_yyyy>.log`; session-aware file logs route to `<log_dir>/sce-<dd_mm_yyyy>-<sanitized_session_id>.log`.
 - Session filename sanitization preserves ASCII letters, digits, `-`, and `_`; percent-encodes every other UTF-8 byte as uppercase `%HH`; and represents an explicitly empty `Some("")` session ID with the reserved `%EMPTY` token.
 - `sce hooks diff-trace` and `conversation-trace` pass producer-native session context into this existing routing argument when available. Diff-trace logging never uses the AgentTraceDb-only `oc_`/`cc_`/`pi_` prefix; skipped conversation items use their own session; batch-wide conversation insert failures use the first valid insert's session. Agent Trace DB open failures use hook-specific error events (`sce.hooks.diff_trace.agent_trace_db_open_failed` and `sce.hooks.conversation_trace.agent_trace_db_open_failed`) and do not also emit their broader write/intake events for the same failure. Session IDs remain absent from rendered record fields unless separately supplied as fields.
-- File routing is append-only, creates the configured directory when needed, uses owner-only create permissions on Unix, serializes writes per path, and fails open by keeping stderr logging active when file creation/write/flush fails.
+- File routing creates the configured directory when needed, uses owner-only create permissions on Unix, serializes writes per path, and fails open by keeping stderr logging active when file creation/write/flush fails.
+- After a successful write to a newly created sessionless or session-aware SCE log file, the logger runs one best-effort retention pass over direct regular `*.log` children of `log_dir`. Existing-file appends do not scan or delete files. Retention keeps at most 10 `.log` files, ordered newest-first by filesystem modification time with path/name ordering as the deterministic tie-break, and removes older `.log` files regardless of whether their names are SCE-owned.
+- Retention is non-recursive and ignores non-regular entries plus non-`.log` files such as directories, symlinks, database files, and extensionless artifacts. Directory scan, metadata, or deletion failures do not fail the completed write; cleanup emits a redacted direct-stderr diagnostic without re-entering `Logger::log` and leaves entries it cannot safely process intact.
 - Each emitted record includes a stable `event_id`.
 - Current app-level event identifiers:
   - `sce.app.start`
@@ -55,7 +57,7 @@ Runtime observability now consumes the shared resolved observability config from
 - Timestamps are UTC ISO8601 with millisecond precision (e.g., `2026-03-20T14:30:00.123Z`) generated via `chrono::Utc::now()`.
 - Logger threshold behavior is deterministic and severity-based (`error < warn < info < debug`).
 - Startup invalid-config diagnostics use an explicit warn-emission path so the warning is still rendered even when degraded defaults resolve to `log_level=error`.
-- Rendered records remain deterministic line-based strings on `stderr`; optional log-directory files contain the same redacted rendered lines and do not add session IDs to the record schema automatically.
+- Rendered records remain deterministic line-based strings on `stderr`; optional log-directory files contain the same redacted rendered lines, do not add session IDs to the record schema automatically, and are bounded by creation-triggered `*.log` retention.
 
 ## Observability trait boundaries
 
@@ -72,11 +74,11 @@ Runtime observability now consumes the shared resolved observability config from
 
 - `log_dir` config-file values are schema-validated as non-empty strings.
 - `SCE_LOG_DIR` env values are resolved with env-over-config precedence and rejected when explicitly empty.
-- Logger construction validates configured `log_dir` as non-empty without opening files; directory creation, per-operation local-date file selection, append-only writes, and Unix owner-only create permissions happen at log emission time.
+- Logger construction validates configured `log_dir` as non-empty without opening files; directory creation, per-operation local-date file selection, append writes, Unix owner-only create permissions, and creation-triggered retention happen at log emission time.
 
 ## Ownership and verification
 
 - `cli/src/services/config/mod.rs` owns shared observability value resolution, config-file discovery/merge, and env-over-config precedence for runtime inputs.
-- `cli/src/services/observability.rs` owns runtime logger construction from resolved values, `log_dir` non-empty validation, level filtering, tracing-event enablement checks, record rendering, local-date/session file-name selection, session filename sanitization, and append-only file writes; `cli/src/services/observability/traits.rs` owns the logger and telemetry trait boundaries plus the no-op logger implementation.
+- `cli/src/services/observability.rs` owns runtime logger construction from resolved values, `log_dir` non-empty validation, level filtering, tracing-event enablement checks, record rendering, local-date/session file-name selection, session filename sanitization, append file writes, and best-effort `.log` retention; `cli/src/services/observability/traits.rs` owns the logger and telemetry trait boundaries plus the no-op logger implementation.
 - `cli/src/app.rs` owns lifecycle event emission around parse/dispatch success and failure paths, resolves observability config before command dispatch, emits startup invalid-config warning events for skipped discovered config files, wraps dispatch inside the observability subscriber context, and guards the single-use command-dispatch action against repeated telemetry invocation with a runtime-classified error. `cli/src/services/app_support.rs` owns final stdout/stderr rendering and generic logger-backed classified-error logging.
 - Contract behavior is exercised by app command tests and the root flake check suite.
