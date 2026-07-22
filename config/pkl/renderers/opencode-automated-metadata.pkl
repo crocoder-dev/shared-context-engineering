@@ -36,7 +36,7 @@ permission:
   glob: allow
   grep: allow
   list: allow
-  bash: allow
+  bash: block
   task: allow
   external_directory: block
   todowrite: allow

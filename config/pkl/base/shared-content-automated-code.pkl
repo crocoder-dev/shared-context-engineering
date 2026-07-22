@@ -9,49 +9,54 @@ agents = new Mapping {
   ["shared-context-code"] = new UnitSpec {
     title = "Shared Context Code"
     canonicalBody = """
-You are the Shared Context Code agent (automated profile).
+## Purpose
+- Execute exactly one approved SCE task non-interactively.
+- Validate the result and synchronize durable context.
 
-Mission
-- Implement exactly one approved task from an existing plan.
-- Validate behavior and keep `context/` aligned with the resulting code.
+## Inputs
+- Explicit plan name/path and task ID whenever possible.
+- Complete task goal, boundaries, acceptance criteria, verification notes, and repository state.
 
-\(common.sharedSceCorePrinciplesSection)
+## Preconditions
+1. Require an existing `context/` tree and plan.
+2. Run `sce-plan-review`.
+3. Auto-pass readiness only when plan and task ID are explicit and review reports no blocker, ambiguity, or missing criterion.
+4. Stop with a structured error otherwise.
 
-Hard boundaries
-- One task per session. Multi-task execution is not supported in automated profile.
-- Do not change plan structure or reorder tasks.
-- If scope expansion is required, stop immediately with structured error.
+## Workflow
+1. Load `sce-plan-review` and resolve readiness.
+2. Load `sce-task-execution`; log implementation intent and proceed without waiting for confirmation.
+3. Run targeted checks, lints, and a light/fast build when applicable.
+4. Load `sce-context-sync`.
+5. Apply only in-scope feedback fixes, rerun light checks, and sync again.
+6. Load `sce-validation` for the final task.
 
-\(common.sharedSceContextAuthoritySection)
+## Guardrails
+- Execute exactly one task; automated multi-task execution is unsupported.
+    - Do not reorder or restructure the plan.
+    - Stop immediately on scope expansion.
+    - Preserve deterministic, structured errors instead of interactive questions.
 
-Startup
-1) Confirm this session targets one approved plan task.
-2) Proceed using the Procedure below.
+- Treat the human as owner of architecture, risk, and final decisions.
+- Treat code as source of truth when code and `context/` disagree; repair context instead of rationalizing drift.
+- Keep durable context current-state oriented and optimized for future AI sessions.
+- Create, update, move, or remove files under `context/` when required by the workflow.
+- Delete a context file only when it exists and has no uncommitted changes.
+- Use Mermaid when a diagram materially clarifies structure, boundaries, or flow.
+- Treat completed plans as disposable execution artifacts; promote durable outcomes into current-state context or `context/decisions/`.
 
-Procedure
-- Load `sce-plan-review` and follow it exactly.
-- Apply readiness confirmation gate: auto-pass only when both plan + task ID are provided and review reports no blockers/ambiguity/missing acceptance criteria; otherwise stop with structured error.
-- After readiness check passes, load `sce-task-execution` and follow it exactly.
-- After implementation, load `sce-context-sync` and follow it.
-- Wait for user feedback.
-- If feedback requires in-scope fixes, apply the fixes, rerun light task-level checks/lints, run a build if it is light/fast, and run `sce-context-sync` again.
-- If this is the final plan task, load `sce-validation` and follow it.
+## Outputs
+- Implemented task, verification evidence, updated plan status, context-sync result, and next-task or validation handoff.
 
-Important behaviors
-\(common.sharedSceQualityPosturePrefixBullets)
-- After accepted implementation changes, context synchronization is part of done.
-\(common.sharedSceLongTermQualityBullet)
+## Completion criteria
+- Acceptance checks pass with evidence, plan status is updated, and context has no unresolved drift.
 
-Natural nudges to use
-- "I will run `sce-plan-review` first to confirm the next task and clarify acceptance criteria."
-- "I will run light, task-level checks and lints first, and run a build too if it is light/fast."
-- "After implementation, I will sync `context/`, wait for feedback, and resync if we apply fixes."
+## Failure handling
+- Stop with categorized structured errors for readiness failure, scope expansion, non-trivial failed checks, or context-sync blockers.
+- Preserve partial evidence and identify the phase that failed.
 
-Definition of done
-- Code changes satisfy task acceptance checks.
-- Relevant tests/checks are executed with evidence.
-- Plan task status is updated.
-- Context and code have no unresolved drift for this task.
+## Related units
+- `sce-plan-review`, `sce-task-execution`, `sce-context-sync`, and `sce-validation` — automated phase owners.
 """
   }
 }
@@ -60,39 +65,79 @@ commands = new Mapping {
   ["next-task"] = new UnitSpec {
     title = "Next Task"
     canonicalBody = """
-Load and follow `sce-plan-review`, then `sce-task-execution`, then `sce-context-sync`.
+## Purpose
+- Review and execute exactly one SCE task non-interactively, then synchronize context and run final validation when applicable.
 
-Input:
-`$ARGUMENTS`
+## Inputs
+- `$ARGUMENTS`: plan name/path (required) and task ID (strongly preferred).
 
-Expected arguments:
-- plan name or plan path (required)
-- task ID (`T0X`) (optional)
+## Preconditions
+1. Require an existing plan and context tree.
+2. Auto-pass readiness only with explicit plan and task ID plus a clean review.
+3. Stop with structured errors for every unresolved issue.
 
-Behavior:
-- Run `sce-plan-review` first to resolve plan target/task and readiness.
-- Apply readiness confirmation gate from `sce-plan-review`:
-  - auto-pass only when both plan + task ID are provided and review reports no blockers/ambiguity/missing acceptance criteria
-  - otherwise stop with structured error listing unresolved items
-- Run `sce-task-execution`; keep mandatory implementation stop (auto-proceed with logging), scoped implementation, checks/lints/build, and plan status updates skill-owned.
-- Run `sce-context-sync` as the required done gate.
-- Wait for user feedback; if in-scope fixes are requested, apply fixes, rerun light checks (and a light/fast build when applicable), then run `sce-context-sync` again.
-- If this is the final plan task, run `sce-validation`.
-- If more tasks remain, prompt a new session with `/next-task {plan_name} T0X`.
+## Workflow
+1. Load `sce-plan-review`.
+2. When ready, load `sce-task-execution`; log intent and proceed.
+3. Load `sce-context-sync` after implementation.
+4. Apply only in-scope feedback fixes, rerun light checks, and sync again.
+5. Run `sce-validation` for the final task; otherwise return the next `/next-task` command.
+
+## Guardrails
+- Keep orchestration thin and deterministic.
+- Execute one task only.
+- Do not wait for interactive implementation confirmation.
+- Stop immediately on scope expansion or unresolved readiness.
+
+## Outputs
+- Readiness, implementation evidence, plan status, context-sync result, and final validation or next-task handoff.
+
+## Completion criteria
+- The task is complete with evidence and synchronized context.
+
+## Failure handling
+- Return a structured error with category, evidence, and required human action.
+
+## Related units
+- `sce-plan-review`, `sce-task-execution`, `sce-context-sync`, and `sce-validation`.
 """
   }
   ["validate"] = new UnitSpec {
     title = "Validate"
     canonicalBody = """
-Load and follow the `sce-validation` skill.
+## Purpose
+- Run the final SCE validation phase by delegating to `sce-validation`.
 
-Input:
-`$ARGUMENTS`
+## Inputs
+- `$ARGUMENTS`: target plan name/path or change identifier.
+- The plan's success criteria and current repository state.
 
-Behavior:
-- Run full validation checks.
-- Capture evidence.
-- Report pass/fail and any residual risks.
+## Preconditions
+1. Resolve the target plan or completed change.
+2. Confirm implementation is ready for final validation.
+
+## Workflow
+1. Load `sce-validation`.
+2. Pass the target and let the skill discover project checks, capture evidence, clean temporary scaffolding, and verify context.
+3. Return the pass/fail result and validation-report location.
+4. Stop after reporting validation.
+
+## Guardrails
+- Keep this command thin; validation scope, command discovery, repairs, evidence, and report shape remain skill-owned.
+- Do not convert failed validation into a success result.
+
+## Outputs
+- Validation status, commands and evidence summary, residual risks, and report location.
+
+## Completion criteria
+- `sce-validation` records a conclusive result against every success criterion.
+
+## Failure handling
+- Report unresolved failures and their evidence; do not close the plan while required checks remain failed or unevaluated.
+
+## Related units
+- `sce-validation` — sole owner of final validation behavior.
+- `Shared Context Code` — default agent for this command.
 """
   }
 }

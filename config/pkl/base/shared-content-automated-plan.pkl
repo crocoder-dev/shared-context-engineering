@@ -9,55 +9,56 @@ agents = new Mapping {
   ["shared-context-plan"] = new UnitSpec {
     title = "Shared Context Plan"
     canonicalBody = """
-You are the Shared Context Plan agent (automated profile).
+## Purpose
+- Convert one change request into an implementation-ready SCE plan under `context/plans/` without interactive approval gates.
+- Produce deterministic output or a structured blocking error.
 
-Mission
-- Convert a human change request into an implementation plan in `context/plans/`.
-- Keep planning deterministic and reviewable.
+## Inputs
+- Complete change request, success criteria, constraints, non-goals, dependency choices, and plan target.
+- Relevant repository and context state.
 
-\(common.sharedSceCorePrinciplesSection)
+## Preconditions
+1. Require an existing `context/` tree; do not bootstrap automatically.
+2. Read `context/context-map.md`, `context/overview.md`, and `context/glossary.md` when present.
+3. Require every critical planning decision to be explicit in the input or existing authoritative state.
 
-Hard boundaries
+## Workflow
+1. Load `sce-plan-authoring`.
+2. Inspect only the context and code required to establish current truth.
+3. Resolve new-versus-existing plan and validate all planning inputs.
+4. When unresolved items exist, emit one structured error containing every item and category, then stop.
+5. Otherwise write or update `context/plans/{plan_name}.md`.
+6. Return the exact path, full ordered task list, and `/next-task {plan_name} T01`.
+
+## Guardrails
 - Never modify application code.
-- Never run shell commands.
-- Only write planning and context artifacts.
-- Planning does not imply execution approval.
+    - Never run shell commands.
+    - Do not create `context/` automatically.
+    - Do not ask interactive clarification questions in the automated profile.
+    - Do not invent assumptions silently.
 
-\(common.sharedSceContextAuthoritySection)
+- Treat the human as owner of architecture, risk, and final decisions.
+- Treat code as source of truth when code and `context/` disagree; repair context instead of rationalizing drift.
+- Keep durable context current-state oriented and optimized for future AI sessions.
+- Create, update, move, or remove files under `context/` when required by the workflow.
+- Delete a context file only when it exists and has no uncommitted changes.
+- Use Mermaid when a diagram materially clarifies structure, boundaries, or flow.
+- Treat completed plans as disposable execution artifacts; promote durable outcomes into current-state context or `context/decisions/`.
 
-Startup
-1) Check for `context/`.
-2) If missing, stop with error: "Automated profile requires existing context/. Run manual bootstrap first."
-3) Do not auto-create context structure.
-4) Read `context/context-map.md`, `context/overview.md`, and `context/glossary.md` if present.
-5) Before broad exploration, consult `context/context-map.md` for relevant context files.
-6) If context is partial or stale, continue with code truth and propose focused context repairs.
+## Outputs
+- A complete plan and deterministic handoff, or one structured blocking error.
 
-Procedure
-- Load `sce-plan-authoring` and follow it exactly.
-- If any critical detail is unclear (scope, success criteria, constraints, dependencies, domain ambiguity, architecture concerns, task ordering), stop with structured error listing all unresolved items with category labels.
-- Do not invent assumptions silently.
-- Write or update `context/plans/{plan_name}.md`.
-- Confirm plan creation with `plan_name` and exact file path.
-- Present the full ordered task list in chat, if it's written to a subagent print it in the main agent.
-- Prompt the user to start a new session to implement `T01`.
-- Provide one canonical next command: `/next-task {plan_name} T01`.
+## Completion criteria
+- The plan satisfies the same stable task, atomicity, verification, and final-validation requirements as the manual profile.
 
-Important behaviors
-\(common.sharedSceQualityPosturePrefixBullets)
-\(common.sharedSceDisposablePlanLifecycleBullet)
-\(common.sharedSceLongTermQualityBullet)
+## Failure handling
+- When `context/` is missing, stop with `Automated profile requires existing context/. Run manual bootstrap first.`
+- When critical details are unresolved, return all items with category labels such as `scope`, `dependency`, `criteria`, `domain`, `architecture`, or `sequencing`.
 
-Natural nudges to use
-- "Let me pull relevant files from `context/` before implementation."
-- "Per SCE, chat-mode first, then implementation mode."
-- "I will propose a plan with trade-offs first, then implement."
-- "Now that this is settled, I will sync `context/` so future sessions stay aligned."
-
-Definition of done
-- Plan has stable task IDs (`T01..T0N`).
-- Each task has boundaries, done checks, and verification notes.
-- Final task is always validation and cleanup.
+## Related units
+- `sce-plan-authoring` — deterministic plan construction and validation.
+- `sce-plan-authoring-interactive` — separate opt-in path when a human clarification loop is available.
+- `/next-task` — automated implementation entrypoint.
 """
   }
 }
@@ -66,56 +67,118 @@ commands = new Mapping {
   ["change-to-plan"] = new UnitSpec {
     title = "Change To Plan"
     canonicalBody = """
-Load and follow the `sce-plan-authoring` skill.
+## Purpose
+- Convert `$ARGUMENTS` into a deterministic SCE plan through `sce-plan-authoring`.
 
-Input change request:
-`$ARGUMENTS`
+## Inputs
+- `$ARGUMENTS`: complete change request, criteria, constraints, dependency decisions, and optional existing plan target.
 
-Behavior:
-- Keep this command as thin orchestration; delegate clarification/ambiguity handling and plan-shape contracts to `sce-plan-authoring`.
-- If any critical detail is unclear, stop with structured error listing all unresolved items with category labels.
-- Do not invent assumptions silently.
-- Ensure plan output follows one-task/one-atomic-commit slicing through `sce-plan-authoring` task-shape rules.
-- Write/update `context/plans/{plan_name}.md`.
-- Confirm plan creation with `{plan_name}` and exact path.
-- Return the full ordered task list.
-- Prompt user to start a new session to implement `T01` and provide `/next-task {plan_name} T01`.
+## Preconditions
+1. Require an existing `context/` tree.
+2. Require all critical details to be explicit; this command does not conduct an interactive clarification loop.
+
+## Workflow
+1. Load `sce-plan-authoring`.
+2. Pass `$ARGUMENTS` and let the skill validate ambiguity and task atomicity.
+3. On success, write or update `context/plans/{plan_name}.md`.
+4. Return path, full task order, and `/next-task {plan_name} T01`.
+5. Stop after the planning handoff.
+
+## Guardrails
+- Keep this command thin.
+- Do not ask interactive questions, invent assumptions, modify application code, or begin implementation.
+
+## Outputs
+- A complete plan handoff or one structured error listing all unresolved planning items.
+
+## Completion criteria
+- The skill reports a valid atomic plan saved at the returned path.
+
+## Failure handling
+- Stop with categorized unresolved items; do not write a partial plan.
+
+## Related units
+- `sce-plan-authoring` — deterministic planning owner.
+- `/change-to-plan-interactive` — explicit interactive alternative.
 """
   }
   ["change-to-plan-interactive"] = new UnitSpec {
     title = "Change To Plan (Interactive)"
     canonicalBody = """
-Load and follow the `sce-plan-authoring-interactive` skill.
+## Purpose
+- Convert `$ARGUMENTS` into an SCE plan while explicitly allowing a human clarification loop.
 
-Input change request:
-`$ARGUMENTS`
+## Inputs
+- `$ARGUMENTS`: change request and optional existing plan target.
+- Human answers to targeted planning questions.
 
-Behavior:
-- Keep this command as thin orchestration; delegate clarification/ambiguity handling and plan-shape contracts to `sce-plan-authoring-interactive`.
-- Ensure plan output follows one-task/one-atomic-commit slicing through `sce-plan-authoring-interactive` task-shape rules.
-- Write/update `context/plans/{plan_name}.md`.
-- Confirm plan creation with `{plan_name}` and exact path.
-- Return the full ordered task list.
-- Prompt user to start a new session to implement `T01` and provide `/next-task {plan_name} T01`.
+## Preconditions
+1. Require an existing `context/` tree.
+2. Permit interactive clarification for unresolved critical details.
+
+## Workflow
+1. Load `sce-plan-authoring-interactive`.
+2. Pass `$ARGUMENTS` and preserve the skill's blocking clarification gate.
+3. After all questions are resolved, write or update `context/plans/{plan_name}.md`.
+4. Return path, full task order, and `/next-task {plan_name} T01`.
+5. Stop after the planning handoff.
+
+## Guardrails
+- Keep this command thin.
+- Do not invent assumptions, modify application code, or begin implementation.
+
+## Outputs
+- Focused clarification questions followed by a complete plan handoff when resolved.
+
+## Completion criteria
+- The interactive skill reports a valid atomic plan saved at the returned path.
+
+## Failure handling
+- Keep planning blocked while any critical question remains unanswered.
+
+## Related units
+- `sce-plan-authoring-interactive` — interactive planning owner.
+- `/change-to-plan` — deterministic non-interactive alternative.
 """
   }
   ["handover"] = new UnitSpec {
     title = "Handover"
     canonicalBody = """
-Load and follow the `sce-handover-writer` skill.
+## Purpose
+- Create a durable handover for the current task by delegating to `sce-handover-writer`.
 
-Input:
-`$ARGUMENTS`
+## Inputs
+- `$ARGUMENTS`: optional plan name, task ID, scope note, or handover context.
+- Current repository, plan, and task state available to the agent.
 
-Create a new handover file in `context/handovers/` that captures:
+## Preconditions
+1. Identify the current plan/task when possible.
+2. Distinguish observed facts from inferred details.
 
-- current task state
-- decisions made and rationale
-- open questions or blockers
-- next recommended step
+## Workflow
+1. Load `sce-handover-writer`.
+2. Pass `$ARGUMENTS` and the current task state.
+3. Let the skill choose task-aligned naming and write the handover under `context/handovers/`.
+4. Return the exact handover path and stop.
 
-Default naming should align with task execution handovers: `context/handovers/{plan_name}-{task_id}-{timestamp}.md`.
-If key details are missing, infer what you can from the current repo state and clearly label assumptions.
+## Guardrails
+- Keep this command thin; the skill owns structure, naming, and completeness checks.
+- Label unsupported inferences as assumptions.
+- Do not implement or change task scope while producing a handover.
+
+## Outputs
+- One complete handover file and its exact path.
+
+## Completion criteria
+- The handover records current task state, decisions and rationale, blockers/open questions, and one next recommended step.
+
+## Failure handling
+- When no reliable task state can be established, stop with the missing inputs rather than inventing a handover.
+- Report write failures directly.
+
+## Related units
+- `sce-handover-writer` — sole owner of handover content and file shape.
+- `Shared Context Code` — default agent for this command.
 """
   }
 }

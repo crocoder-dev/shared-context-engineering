@@ -3,18 +3,38 @@ description: "Use `sce-atomic-commit` to propose atomic commit message(s) from s
 agent: "Shared Context Code"
 ---
 
-Load and follow the `sce-atomic-commit` skill.
+## Purpose
+- Produce one repository-style commit message from staged changes and execute exactly one commit.
 
-Input:
-`$ARGUMENTS`
+## Inputs
+- `$ARGUMENTS`: optional commit context.
+- Non-empty staged diff.
 
-Behavior:
-- If arguments are empty, treat input as unstated and infer commit intent from staged changes only.
-- If arguments are provided, treat them as optional commit context to refine the one commit message.
-- Skip staging confirmation prompt.
-- Validate staged content exists; if empty, stop with error: "No staged changes. Stage changes before commit."
-- Classify staged diff scope (`context/`-only vs mixed `context/` + non-`context/`) and apply the context-guidance gate from `sce-atomic-commit`.
-- Run `sce-atomic-commit` to produce exactly one commit message for the staged diff.
-- Do not branch into multi-commit or split guidance.
-- Use the resulting message to run `git commit` against the staged changes.
-- If `git commit` fails, stop and report the failure without inventing fallback commits.
+## Preconditions
+1. Skip staging confirmation.
+2. Require `git diff --cached` to be non-empty.
+
+## Workflow
+1. Load `sce-atomic-commit`.
+2. Classify staged scope and apply the skill's context-guidance rules.
+3. Produce exactly one message for the staged diff; do not branch into split guidance.
+4. Run `git commit -m "<message>"` once.
+5. Report the commit hash or exact failure and stop.
+
+## Guardrails
+- Use only staged changes.
+- Do not invent change intent or plan/task citations.
+- Do not retry, amend, or create fallback commits after failure.
+
+## Outputs
+- One commit message and either a successful commit hash or exact commit failure.
+
+## Completion criteria
+- Exactly one commit attempt is reported.
+
+## Failure handling
+- Stop with `No staged changes. Stage changes before commit.` when empty.
+- Stop for ambiguous required plan citations rather than guessing.
+
+## Related units
+- `sce-atomic-commit` — one-message construction owner.
