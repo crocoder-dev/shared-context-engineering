@@ -5,74 +5,61 @@ description: |
 compatibility: opencode
 ---
 
-## What I do
-- Continue execution from an existing plan in `context/plans/`.
-- Read the selected plan and identify the next task from the first unchecked checkbox.
-- Stop with structured error for anything not clear enough to execute safely.
+## Purpose
+- Select the next task from an active plan and produce a deterministic readiness verdict.
 
-## How to run this
-- Use this skill when the user asks to continue a plan or pick the next task.
-- If `context/` is missing, stop with error: "Automated profile requires existing context/. Run manual bootstrap first."
-- Read `context/context-map.md`, `context/overview.md`, and `context/glossary.md` before broad exploration.
-- Resolve plan target:
-  - If plan path argument exists, use it.
-  - If no plan path specified and multiple plans exist, stop with error listing available plans and requiring explicit plan path.
-  - If no plan path specified and single plan exists, auto-select the single plan.
-- Collect:
-  - completed tasks
-  - next task
-  - blockers, ambiguity, and missing acceptance criteria
-- If any blockers, ambiguity, or missing acceptance criteria exist, stop with structured error listing all unresolved items with category labels.
-- Confirm scope explicitly for this session: one task only (multi-task execution not supported in automated profile).
+## Inputs
+- Plan name/path and optional task ID, current plan state, relevant context, and code truth.
 
-## Rules
-- Do not auto-mark tasks complete during review.
-- Keep continuation state in the plan markdown itself.
-- Treat `context/plans/` as active execution artifacts; completed plans are disposable and not a durable context source.
-- If durable history is needed, record it in current-state context files and/or `context/decisions/` instead of completed plan files.
-- Keep implementation blocked until all issues are resolved.
-- If plan context is stale or partial, continue with code truth and flag context updates.
+## Preconditions
+1. Require an existing `context/` tree.
+2. Use an explicit plan path when supplied.
+3. Auto-select only when exactly one plan exists; stop with an available-plan list when multiple plans exist without an explicit target.
 
-## Expected output
-Emit a readiness verdict using this structure:
+## Workflow
+1. Read context map, overview, and glossary before broad exploration.
+2. Open the plan and select the explicit task or first unchecked task.
+3. Extract task goal, boundaries, acceptance, verification, and dependencies.
+4. Compare with current code/context truth.
+5. Categorize every blocker, ambiguity, and missing criterion.
+6. Emit the stable readiness shape.
+7. Auto-proceed only when the verdict is `yes`; otherwise stop with a structured error.
 
-```
-next_task: "Task title or description from plan"
+## Guardrails
+- Do not mark tasks complete during review.
+- Execute one task only.
+- Do not ask interactive questions in the automated profile.
+- Prefer code truth and flag stale context.
+
+## Outputs
+- Structured readiness verdict or categorized blocking error.
+
+## Completion criteria
+- A unique task is selected and all acceptance and verification details are executable.
+
+## Failure handling
+- List available plans when target selection is ambiguous.
+- List all unresolved items with categories and required human action.
+
+## Related units
+- `sce-task-execution` — auto-starts only on a clean verdict.
+- `/next-task` — automated orchestrator.
+
+## Reference
+Return readiness in this stable shape:
+
+```yaml
+plan: context/plans/{plan_name}.md
+completed_tasks: 2/5
+next_task:
+  id: T03
+  title: Implement login endpoint
 acceptance_criteria:
-  - Criterion A
-  - Criterion B
-ready_for_implementation: yes | no
-```
-
-If `ready_for_implementation: no`, include an issues block:
-
-```
+  - POST /auth/login returns a token for valid credentials
+  - Invalid credentials return 401
 issues:
-  blockers:
-    - "Dependency on X is unresolved"
-  ambiguity:
-    - "It is unclear whether Y should be replaced or extended"
-  missing_acceptance_criteria:
-    - "No definition of done for the migration step"
-```
-
-- Auto-proceed to implementation when `ready_for_implementation: yes`.
-
-## Structured error examples
-
-**Multiple plans found (no path specified):**
-```
-ERROR: Multiple plans found. Specify an explicit plan path.
-Available plans:
-  - context/plans/migrate-auth.md
-  - context/plans/refactor-api.md
-```
-
-**Blockers or ambiguity detected:**
-```
-ERROR: Next task cannot proceed. Unresolved items:
-  [blocker] Auth service interface not yet defined - task depends on it.
-  [ambiguity] "Update schema" - unclear whether additive or destructive migration.
-  [missing_acceptance_criteria] No rollback criteria specified for the deployment step.
-Resolve all items above before re-running plan review.
+  blockers: []
+  ambiguity: []
+  missing_acceptance_criteria: []
+ready_for_implementation: yes
 ```

@@ -5,33 +5,37 @@ description: |
 compatibility: opencode
 ---
 
-## When to use
-- Use only when `context/` is missing.
-- Automated profile does not support auto-bootstrap; stop with error requiring manual bootstrap.
+## Purpose
+- Enforce the automated-profile rule that baseline context must be created manually before automation runs.
 
-## Required baseline
-Create these paths:
-- `context/overview.md`
-- `context/architecture.md`
-- `context/patterns.md`
-- `context/glossary.md`
-- `context/context-map.md`
-- `context/plans/`
-- `context/handovers/`
-- `context/decisions/`
-- `context/tmp/`
-- `context/tmp/.gitignore`
+## Inputs
+- Repository root and `context/` existence state.
 
-`context/tmp/.gitignore` content:
-```
-*
-!.gitignore
-```
+## Preconditions
+1. Invoke only when `context/` is missing or baseline integrity is being checked.
 
-## No-code bootstrap rule
-- If the repository has no application code, keep `overview.md`, `architecture.md`, `patterns.md`, and `glossary.md` empty or placeholder-only.
-- Do not invent implementation details.
+## Workflow
+1. Inspect whether the required baseline exists.
+2. When it is missing, emit `Automated profile requires existing context/. Run manual bootstrap first.`
+3. List the required baseline paths for the manual bootstrap session.
+4. Stop without creating or modifying files.
 
-## After bootstrapping
-- Add baseline links in `context/context-map.md`.
-- Tell the user that `context/` should be committed as shared memory.
+## Guardrails
+- Do not auto-bootstrap.
+- Do not create placeholders or infer project context.
+
+## Outputs
+- A deterministic blocking error and required-path list.
+
+## Completion criteria
+- Automation stops before planning or implementation when baseline context is absent.
+
+## Failure handling
+- Treat a partial baseline as missing and report every absent path.
+
+## Related units
+- Manual `sce-bootstrap-context` — creates the baseline after human approval.
+- `Shared Context Plan` — consumes the baseline in automated planning.
+
+## Reference
+Required paths are the same as the manual profile: root overview, architecture, patterns, glossary, context map, and the plans, handovers, decisions, and tmp directories with `context/tmp/.gitignore`.
