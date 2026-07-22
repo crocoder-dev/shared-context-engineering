@@ -5,6 +5,7 @@ import "renderers/pi-content.pkl" as pi
 import "renderers/common.pkl" as common
 import "base/sce-config-schema.pkl" as sce_config_schema
 import "base/bash-policy-presets.pkl" as bash_policy_presets
+import "base/instruction-unit-templates.pkl" as templates
 
 local bashPolicyPresetCatalogSource = bash_policy_presets.output.text
 local opencodeBashPolicyPluginSource = read("../lib/bash-policy-plugin/opencode-bash-policy-plugin.ts").text
@@ -109,6 +110,15 @@ output {
     }
     ["config/schema/sce-config.schema.json"] {
       text = sce_config_schema.rendered
+    }
+    ["templates/agent.md"] {
+      text = templates.agent.rendered
+    }
+    ["templates/command.md"] {
+      text = templates.command.rendered
+    }
+    ["templates/skill.md"] {
+      text = templates.skill.rendered
     }
   }
 }

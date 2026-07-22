@@ -1,0 +1,134 @@
+// Canonical reusable templates for SCE instruction units (agent, command, skill).
+//
+// This is the single authoring source for the contributor-facing templates published at repository
+// root `templates/{agent,command,skill}.md`. Section headings and their order are derived from the
+// canonical section contract in `instruction-unit-inventory.pkl` (`requiredSections` +
+// `optionalSections`), so a template can never drift from the standard order by hand: the scaffold is
+// computed, only the per-section guidance is authored here.
+//
+// The guidance text is standardized from the read-only reference bundle
+// `sce-opencode-standardization/templates/`. That bundle is input only; it is never the authority.
+//
+// Frontmatter demonstrates supported-target fields (OpenCode-flavored, matching the reference bundle);
+// per-target frontmatter differences are called out inline where they matter.
+
+import "instruction-unit-inventory.pkl" as inventory
+
+/// One instruction-unit template: frontmatter plus body guidance keyed by section name.
+class UnitTemplate {
+  /// Rendered YAML frontmatter block including the enclosing `---` delimiters.
+  frontmatter: String
+  /// Guidance body for each required and optional section, keyed by exact section heading.
+  guidance: Mapping<String, String>
+
+  /// Required sections rendered in canonical order.
+  local requiredBody: String = inventory.requiredSections
+    .map((section) -> "## \(section)\n\(guidance[section])")
+    .join("\n\n")
+
+  /// Optional sections rendered in canonical order, after the full required set.
+  local optionalBody: String = inventory.optionalSections
+    .map((section) -> "## \(section)\n\(guidance[section])")
+    .join("\n\n")
+
+  /// Full template file text: frontmatter, blank line, body, trailing newline.
+  rendered: String = "\(frontmatter)\n\n\(requiredBody)\n\n\(optionalBody)\n"
+}
+
+agent: UnitTemplate = new {
+  frontmatter = """
+    ---
+    name: "<Human-readable agent name>"
+    description: <What role this agent owns and when it should be selected.>
+    temperature: 0.1
+    color: "#000000"
+    permission:
+      default: ask
+      read: allow
+      edit: ask
+      bash: ask
+      skill:
+        "*": ask
+        "<allowed-skill>": allow
+    ---
+    """
+  guidance = new {
+    ["Purpose"] = "- State the role-owned outcome and what this agent orchestrates."
+    ["Inputs"] = "- List required user input, repository state, context, and decisions."
+    ["Preconditions"] = "1. List startup checks and blocking gates in execution order."
+    ["Workflow"] = """
+      1. Orchestrate skills and tools in execution order.
+      2. Keep detailed reusable behavior in skills, not here.
+      """
+    ["Guardrails"] = "- State role boundaries, authority, approval rules, and stop conditions."
+    ["Outputs"] = "- State artifacts, evidence, and user-visible handoffs."
+    ["Completion criteria"] = "- State observable conditions required before the role is done."
+    ["Failure handling"] = "- State when to stop, ask, escalate, or return a structured error."
+    ["Related units"] = "- `<skill-or-command>` — explain the relationship and ownership boundary."
+    ["Reference"] = "<!-- Optional. Put schemas, tables, and detailed formats here or in a linked reference file. -->"
+    ["Examples"] = "<!-- Optional. Keep examples non-normative and place them last. -->"
+  }
+}
+
+command: UnitTemplate = new {
+  frontmatter = """
+    ---
+    description: "<Action-oriented outcome>"
+    agent: "<Agent display name>"
+    entry-skill: "<primary-skill>"
+    skills:
+      - "<primary-skill>"
+    ---
+    """
+  guidance = new {
+    ["Purpose"] = "- State the user-facing action and delegated skill chain."
+    ["Inputs"] = "- `$ARGUMENTS`: define required and optional positional or free-form input."
+    ["Preconditions"] = "1. State argument, repository-state, and approval gates."
+    ["Workflow"] = """
+      1. Load the primary skill.
+      2. Pass normalized inputs.
+      3. Preserve skill-owned gates.
+      4. Return the result and stop.
+      """
+    ["Guardrails"] = """
+      - Keep the command thin; never duplicate detailed skill behavior.
+      - State mode switches and command-owned side effects only.
+      """
+    ["Outputs"] = "- State the exact response or artifact shape."
+    ["Completion criteria"] = "- State how the command knows the delegated workflow completed."
+    ["Failure handling"] = "- State argument errors, delegated blockers, and side-effect failures."
+    ["Related units"] = """
+      - `<skill>` — sole owner of detailed behavior.
+      - `<agent>` — default execution role.
+      """
+    ["Reference"] = "<!-- Optional. Document argument syntax or modes. -->"
+    ["Examples"] = "<!-- Optional. Keep examples last. -->"
+  }
+}
+
+skill: UnitTemplate = new {
+  frontmatter = """
+    ---
+    name: lowercase-kebab-name
+    description: |
+      Explain what the skill does and concrete trigger contexts. Put discovery conditions here, not in a body section named "When to use".
+    compatibility: opencode
+    ---
+    """
+  guidance = new {
+    ["Purpose"] = "- State the reusable behavior this skill owns."
+    ["Inputs"] = "- List accepted inputs, authoritative sources, and optional context."
+    ["Preconditions"] = "1. State required state and blocking gates."
+    ["Workflow"] = """
+      1. Give a deterministic ordered procedure.
+      2. Keep fragile or repeated operations in scripts when appropriate.
+      """
+    ["Guardrails"] = "- State invariants, scope boundaries, approval requirements, and forbidden behavior."
+    ["Outputs"] = "- State artifacts, structured response fields, and evidence."
+    ["Completion criteria"] = "- State observable validation and done conditions."
+    ["Failure handling"] = "- State recoverable versus blocking failures and required escalation."
+    ["Related units"] = "- `<command-or-agent>` — explain who invokes or consumes the skill."
+    ["Reference"] = "<!-- Optional. Keep schemas, tables, and detailed formats here or in a directly linked reference file. -->"
+    ["Examples"] = "<!-- Optional. Keep examples non-normative and last. -->"
+  }
+}
