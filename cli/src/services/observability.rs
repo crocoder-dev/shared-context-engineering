@@ -1,10 +1,12 @@
 use std::{
+    cmp::Ordering,
     collections::BTreeMap,
     fmt::Write as FmtWrite,
     fs::{self, OpenOptions},
-    io::{self, Write},
+    io::{self, ErrorKind, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
+    time::SystemTime,
 };
 
 use anyhow::{bail, Context, Result};
@@ -24,6 +26,7 @@ pub const NAME: &str = "observability";
 const LOG_FILE_PREFIX: &str = "sce";
 const LOG_FILE_EXTENSION: &str = "log";
 const EMPTY_SESSION_ID_TOKEN: &str = "%EMPTY";
+const LOG_FILE_RETENTION_LIMIT: usize = 10;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ObservabilityConfig {
@@ -292,6 +295,13 @@ fn sanitize_session_id_for_filename(session_id: &str) -> String {
 }
 
 fn append_log_line(path: &Path, redacted_line: &str) -> Result<()> {
+    append_log_line_with_cleanup(path, redacted_line, enforce_log_retention)
+}
+
+fn append_log_line_with_cleanup<F>(path: &Path, redacted_line: &str, cleanup: F) -> Result<()>
+where
+    F: FnOnce(&Path) -> Result<()>,
+{
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create log directory '{}'", parent.display()))?;
@@ -302,16 +312,163 @@ fn append_log_line(path: &Path, redacted_line: &str) -> Result<()> {
         anyhow::anyhow!("failed to lock log file '{}': {error}", path.display())
     })?;
 
-    let mut options = OpenOptions::new();
-    options.create(true).append(true);
-    configure_owner_only_file_permissions(&mut options);
-    let mut file = options
-        .open(path)
-        .with_context(|| format!("failed to open log file '{}' for append", path.display()))?;
+    let (mut file, write_target) = open_log_file_for_append(path)?;
     writeln!(file, "{redacted_line}")
         .with_context(|| format!("failed to append log line to '{}'", path.display()))?;
     file.flush()
-        .with_context(|| format!("failed to flush log file '{}'", path.display()))
+        .with_context(|| format!("failed to flush log file '{}'", path.display()))?;
+
+    if write_target == LogWriteTarget::Created {
+        if let Some(parent) = path.parent() {
+            if let Err(error) = cleanup(parent) {
+                let diagnostic = redact_sensitive_text(&format!(
+                    "Failed to clean up SCE log files: {error}. Logging continues on stderr."
+                ));
+                emit_stderr_line(&diagnostic);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LogWriteTarget {
+    Created,
+    Existing,
+}
+
+fn open_log_file_for_append(path: &Path) -> Result<(fs::File, LogWriteTarget)> {
+    loop {
+        let mut create_options = OpenOptions::new();
+        create_options.create_new(true).append(true);
+        configure_owner_only_file_permissions(&mut create_options);
+
+        match create_options.open(path) {
+            Ok(file) => return Ok((file, LogWriteTarget::Created)),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                let mut append_options = OpenOptions::new();
+                append_options.append(true);
+                match append_options.open(path) {
+                    Ok(file) => return Ok((file, LogWriteTarget::Existing)),
+                    Err(error) if error.kind() == ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!("failed to open log file '{}' for append", path.display())
+                        });
+                    }
+                }
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to open log file '{}' for append", path.display())
+                });
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ManagedLogFile {
+    path: PathBuf,
+    modified: SystemTime,
+}
+
+fn enforce_log_retention(log_dir: &Path) -> Result<()> {
+    enforce_log_retention_with(log_dir, |path| fs::remove_file(path))
+}
+
+fn enforce_log_retention_with<F>(log_dir: &Path, mut remove_file: F) -> Result<()>
+where
+    F: FnMut(&Path) -> io::Result<()>,
+{
+    let (mut managed_files, mut errors) = collect_managed_log_files(log_dir)?;
+
+    managed_files.sort_by(|left, right| match right.modified.cmp(&left.modified) {
+        Ordering::Equal => left.path.cmp(&right.path),
+        ordering => ordering,
+    });
+
+    for managed_file in managed_files.into_iter().skip(LOG_FILE_RETENTION_LIMIT) {
+        if let Err(error) = remove_file(&managed_file.path) {
+            errors.push(format!(
+                "failed to remove old log file '{}': {error}",
+                managed_file.path.display()
+            ));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!("log retention cleanup incomplete: {}", errors.join("; "));
+    }
+}
+
+fn collect_managed_log_files(log_dir: &Path) -> Result<(Vec<ManagedLogFile>, Vec<String>)> {
+    let entries = fs::read_dir(log_dir)
+        .with_context(|| format!("failed to scan log directory '{}'", log_dir.display()))?;
+    let mut managed_files = Vec::new();
+    let mut errors = Vec::new();
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                errors.push(format!(
+                    "failed to inspect log directory entry in '{}': {error}",
+                    log_dir.display()
+                ));
+                continue;
+            }
+        };
+        let path = entry.path();
+        if path
+            .extension()
+            .is_none_or(|extension| extension != LOG_FILE_EXTENSION)
+        {
+            continue;
+        }
+
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) => {
+                errors.push(format!(
+                    "failed to inspect log file type '{}': {error}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                errors.push(format!(
+                    "failed to inspect log file metadata '{}': {error}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        let modified = match metadata.modified() {
+            Ok(modified) => modified,
+            Err(error) => {
+                errors.push(format!(
+                    "failed to inspect log file modified time '{}': {error}",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+
+        managed_files.push(ManagedLogFile { path, modified });
+    }
+
+    Ok((managed_files, errors))
 }
 
 fn file_log_lock(path: &Path) -> Arc<Mutex<()>> {
