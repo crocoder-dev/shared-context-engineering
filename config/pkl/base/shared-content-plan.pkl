@@ -75,33 +75,88 @@ commands = new Mapping {
   ["change-to-plan"] = new UnitSpec {
     title = "Change To Plan"
     canonicalBody = """
-Load and follow the `sce-plan-authoring` skill.
+## Purpose
+- Turn `$ARGUMENTS` into a scoped SCE implementation plan by delegating to `sce-plan-authoring`.
+- Provide a planning handoff without beginning implementation.
 
-Input change request:
-`$ARGUMENTS`
+## Inputs
+- `$ARGUMENTS`: a change request and optional existing plan identifier.
+- Any success criteria, constraints, non-goals, dependency choices, and acceptance signals included by the user.
 
-Behavior:
-- Keep this command as thin orchestration; detailed clarification handling, plan-shape rules, and task-writing behavior stay owned by `sce-plan-authoring`.
-- Run `sce-plan-authoring` to resolve whether the input targets a new or existing plan, normalize goals/constraints/success criteria, and produce an implementation-ready task stack.
-- Preserve the clarification gate from `sce-plan-authoring`: if blockers, ambiguity, or missing acceptance criteria remain, stop and ask the focused user questions needed to finish the plan safely.
-- Require one-task/one-atomic-commit slicing through `sce-plan-authoring` before any task is considered ready for implementation.
-- When the plan is ready, write or update `context/plans/{plan_name}.md`, confirm the resolved `{plan_name}` and exact path, and return the ordered task list.
-- Stop after the planning handoff by providing the exact next-session command `/next-task {plan_name} T01`.
+## Preconditions
+1. Treat missing critical planning details as blocking.
+2. Preserve the approval and clarification behavior owned by `sce-plan-authoring`.
+
+## Workflow
+1. Load `sce-plan-authoring`.
+2. Pass `$ARGUMENTS` without inventing requirements.
+3. Let the skill resolve new-versus-existing plan, clarification needs, plan shape, and atomic task slicing.
+4. When ready, write or update `context/plans/{plan_name}.md`.
+5. Return the exact path, ordered task list, and `/next-task {plan_name} T01`.
+6. Stop after the planning handoff.
+
+## Guardrails
+- Keep this command thin; do not duplicate the skill's planning rules.
+- Do not modify application code or imply implementation approval.
+- Do not bypass the clarification gate.
+
+## Outputs
+- A plan path and complete ordered task list when planning succeeds.
+- Focused clarification questions when planning is blocked.
+- One canonical next command for a new implementation session.
+
+## Completion criteria
+- `sce-plan-authoring` reports a valid plan and the plan file exists at the reported path.
+- The response includes the full task order and stops before implementation.
+
+## Failure handling
+- Stop and surface the skill's focused questions when critical information is missing.
+- Report path or write failures directly; do not claim a plan was saved when it was not.
+
+## Related units
+- `sce-plan-authoring` — sole owner of detailed planning behavior.
+- `Shared Context Plan` — default agent for this command.
+- `/next-task` — canonical next entrypoint after plan approval.
 """
   }
   ["handover"] = new UnitSpec {
     title = "Handover"
     canonicalBody = """
-Load and follow the `sce-handover-writer` skill.
+## Purpose
+- Create a durable handover for the current task by delegating to `sce-handover-writer`.
 
-Input:
-`$ARGUMENTS`
+## Inputs
+- `$ARGUMENTS`: optional plan name, task ID, scope note, or handover context.
+- Current repository, plan, and task state available to the agent.
 
-Behavior:
-- Keep this command as thin orchestration; handover structure, naming, and content decisions stay owned by `sce-handover-writer`.
-- Run `sce-handover-writer` to gather current task state, decisions made and rationale, open questions or blockers, and the next recommended step.
-- Let `sce-handover-writer` create the handover in `context/handovers/`, using task-aligned naming such as `context/handovers/{plan_name}-{task_id}-{timestamp}.md` when the inputs support it.
-- If required details are missing, infer only from current repo state, label assumptions clearly, then stop after reporting the exact handover path.
+## Preconditions
+1. Identify the current plan/task when possible.
+2. Distinguish observed facts from inferred details.
+
+## Workflow
+1. Load `sce-handover-writer`.
+2. Pass `$ARGUMENTS` and the current task state.
+3. Let the skill choose task-aligned naming and write the handover under `context/handovers/`.
+4. Return the exact handover path and stop.
+
+## Guardrails
+- Keep this command thin; the skill owns structure, naming, and completeness checks.
+- Label unsupported inferences as assumptions.
+- Do not implement or change task scope while producing a handover.
+
+## Outputs
+- One complete handover file and its exact path.
+
+## Completion criteria
+- The handover records current task state, decisions and rationale, blockers/open questions, and one next recommended step.
+
+## Failure handling
+- When no reliable task state can be established, stop with the missing inputs rather than inventing a handover.
+- Report write failures directly.
+
+## Related units
+- `sce-handover-writer` — sole owner of handover content and file shape.
+- `Shared Context Code` — default agent for this command.
 """
   }
 }
