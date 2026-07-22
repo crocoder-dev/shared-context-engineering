@@ -17,6 +17,7 @@
 - global config: `<config_root>/sce/config.json`
 - auth DB: `<state_root>/sce/auth.db`
 - local DB: `<state_root>/sce/local.db`
+- default observability log directory accessor: `<state_root>/sce/logs` (Linux: `$XDG_STATE_HOME/sce/logs`, or `~/.local/state/sce/logs` when `XDG_STATE_HOME` is unset)
 - agent trace DB (only helper): `<state_root>/sce/repos/{repository_id}/agent-trace.db` via `agent_trace_db_path_for_repository(repository_id)` (plus `_at(state_root, repository_id)` for explicit roots); rejects empty or path-unsafe repository IDs. The former global-sentinel `agent_trace_db_path()` and per-checkout `agent_trace_db_path_for_checkout(checkout_id)` helpers were removed by the `retire-legacy-agent-trace-db` plan.
 
 ### Repo-relative paths
@@ -45,5 +46,6 @@
 - `cli/src/services/default_paths.rs` includes a regression test that scans non-test Rust source under `cli/src/` and fails when new centralized production path literals appear outside the default-path service.
 - Active hook runtime no longer resolves or writes collision-safe JSON artifacts under `context/tmp/`; `context/tmp/` remains a repo-relative scratch/session path owned by the default path catalog.
 - Active hook runtime and `cli/src/services/agent_trace_db/lifecycle.rs` resolve repository-scoped Agent Trace DB files through `agent_trace_storage` and `agent_trace_db_path_for_repository(repository_id)`. Outside a Git repository, lifecycle code returns an actionable "requires a Git repository" diagnostic instead of resolving any sentinel path.
+- `cli/src/services/config/resolver.rs` consumes `observability_log_dir()` as the default `log_dir` when neither `SCE_LOG_DIR` nor config-file `log_dir` is present.
 
 See also: [cli-command-surface.md](./cli-command-surface.md), [../architecture.md](../architecture.md), [../context-map.md](../context-map.md)

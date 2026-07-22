@@ -34,7 +34,7 @@ Resolved observability values that currently have no CLI flag layer follow the s
 
 1. environment values (`SCE_LOG_FORMAT`, `SCE_LOG_DIR`)
 2. config file values (`log_format`, `log_dir`)
-3. defaults where defined (`log_format=text`); `log_dir` remains unset when no env/config value is present
+3. defaults (`log_format=text`; `log_dir=<state_root>/sce/logs` through `default_paths::observability_log_dir()`, resolving on Linux to `$XDG_STATE_HOME/sce/logs` or `~/.local/state/sce/logs` when `XDG_STATE_HOME` is unset)
 
 Supported auth-adjacent runtime keys can participate in one shared key-declared precedence path without defining CLI flags. Each key declares its config-file name, environment variable name, and whether a baked default is allowed. The shared resolver supports keys that allow a baked default and keys that intentionally omit one. The first implemented migrated key is `workos_client_id`, which resolves as:
 
@@ -108,7 +108,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `show` includes resolved bash-tool policies under `result.resolved.policies.bash`.
 - Bash-policy output includes resolved preset IDs, expanded custom entries (`id`, `match.argv_prefix`, `message`), and config-file source metadata when present.
 - `show` text output renders `policies.bash` as a single deterministic line and reports `(unset)` when no policy config resolves.
-- `show` text output renders observability values as deterministic per-key lines, reporting `(unset)` for `log_dir` when no value resolves.
+- `show` text output renders observability values as deterministic per-key lines, reporting the default `log_dir` with `source: default` when no env/config value resolves.
 - `show` and `validate` both include `warnings`; this list is empty for normal valid config and carries deterministic redundancy messaging for valid-but-overlapping preset combinations such as `forbid-git-all` plus `forbid-git-commit`.
 - `validate` reports skipped invalid discovered config files through `result.valid = false` plus `result.issues`, using the collected `validation_errors` verbatim in both text and JSON output rather than hard-failing before render.
 - `validate` reaches its normal renderer for invalid discovered config; invalid discovered config is reported as a validation result rather than causing a pre-render startup failure.
