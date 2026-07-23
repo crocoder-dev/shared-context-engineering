@@ -74,6 +74,11 @@ local sceConfigSchema = new JsonSchema {
       type = "string"
       minLength = 1
     }
+    ["log_file_retention_limit"] = new JsonSchema {
+      type = "integer"
+      minimum = 1
+      default = 10
+    }
     ["timeout_ms"] = new JsonSchema {
       type = "integer"
       minimum = 0

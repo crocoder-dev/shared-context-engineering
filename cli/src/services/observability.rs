@@ -26,7 +26,6 @@ pub const NAME: &str = "observability";
 const LOG_FILE_PREFIX: &str = "sce";
 const LOG_FILE_EXTENSION: &str = "log";
 const EMPTY_SESSION_ID_TOKEN: &str = "%EMPTY";
-const LOG_FILE_RETENTION_LIMIT: usize = 10;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ObservabilityConfig {
@@ -47,6 +46,7 @@ impl Default for ObservabilityConfig {
 pub struct Logger {
     config: ObservabilityConfig,
     log_dir: Option<PathBuf>,
+    log_file_retention_limit: usize,
 }
 
 impl Logger {
@@ -63,6 +63,7 @@ impl Logger {
                 format: config.log_format,
             },
             log_dir: config.log_dir.as_deref().map(PathBuf::from),
+            log_file_retention_limit: config.log_file_retention_limit,
         })
     }
 
@@ -87,7 +88,11 @@ impl Logger {
             log_dir = Some(PathBuf::from(raw));
         }
 
-        Ok(Self { config, log_dir })
+        Ok(Self {
+            config,
+            log_dir,
+            log_file_retention_limit: config::DEFAULT_LOG_FILE_RETENTION_LIMIT,
+        })
     }
 
     pub fn info(
@@ -188,7 +193,7 @@ impl Logger {
         };
 
         let path = current_log_path(log_dir, session_id);
-        append_log_line(&path, redacted_line)
+        append_log_line(&path, redacted_line, self.log_file_retention_limit)
     }
 
     fn enabled(&self, level: LogLevel) -> bool {
@@ -294,8 +299,10 @@ fn sanitize_session_id_for_filename(session_id: &str) -> String {
     sanitized
 }
 
-fn append_log_line(path: &Path, redacted_line: &str) -> Result<()> {
-    append_log_line_with_cleanup(path, redacted_line, enforce_log_retention)
+fn append_log_line(path: &Path, redacted_line: &str, retention_limit: usize) -> Result<()> {
+    append_log_line_with_cleanup(path, redacted_line, |log_dir| {
+        enforce_log_retention(log_dir, retention_limit)
+    })
 }
 
 fn append_log_line_with_cleanup<F>(path: &Path, redacted_line: &str, cleanup: F) -> Result<()>
@@ -440,11 +447,15 @@ struct ManagedLogFile {
     modified: SystemTime,
 }
 
-fn enforce_log_retention(log_dir: &Path) -> Result<()> {
-    enforce_log_retention_with(log_dir, |path| fs::remove_file(path))
+fn enforce_log_retention(log_dir: &Path, retention_limit: usize) -> Result<()> {
+    enforce_log_retention_with(log_dir, retention_limit, |path| fs::remove_file(path))
 }
 
-fn enforce_log_retention_with<F>(log_dir: &Path, mut remove_file: F) -> Result<()>
+fn enforce_log_retention_with<F>(
+    log_dir: &Path,
+    retention_limit: usize,
+    mut remove_file: F,
+) -> Result<()>
 where
     F: FnMut(&Path) -> io::Result<()>,
 {
@@ -455,7 +466,7 @@ where
         ordering => ordering,
     });
 
-    for managed_file in managed_files.into_iter().skip(LOG_FILE_RETENTION_LIMIT) {
+    for managed_file in managed_files.into_iter().skip(retention_limit) {
         if let Err(error) = remove_file(&managed_file.path) {
             errors.push(format!(
                 "failed to remove old log file '{}': {error}",

@@ -29,6 +29,11 @@
       "type": "string",
       "minLength": 1
     },
+    "log_file_retention_limit": {
+      "default": 10,
+      "type": "integer",
+      "minimum": 1
+    },
     "timeout_ms": {
       "type": "integer",
       "minimum": 0
