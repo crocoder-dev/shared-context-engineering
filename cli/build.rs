@@ -5,7 +5,6 @@ use std::{
     fs,
     io::{self, Write as IoWrite},
     path::{Path, PathBuf},
-    process::Command,
 };
 
 const TARGETS: &[TargetSpec] = &[
@@ -97,53 +96,19 @@ fn generate_migration_manifest() -> io::Result<()> {
 }
 
 fn emit_git_commit() {
+    // Commit embedding is release-only: the flake sets SCE_GIT_COMMIT solely on
+    // the release package derivation. Ordinary native builds, `cargo test`,
+    // Clippy, fmt, and other checks leave it unset so they stay cache-reusable
+    // across commits. When absent, the app falls back to "unknown" via
+    // `option_env!`. Deliberately no `git rev-parse` fallback and no
+    // `.git/HEAD` / `.git/packed-refs` rerun watches.
     println!("cargo:rerun-if-env-changed=SCE_GIT_COMMIT");
 
     if let Ok(commit) = env::var("SCE_GIT_COMMIT") {
         let commit = commit.trim();
         if !commit.is_empty() {
             println!("cargo:rustc-env=SCE_GIT_COMMIT={commit}");
-            return;
         }
-    }
-
-    let manifest_dir = match env::var("CARGO_MANIFEST_DIR") {
-        Ok(value) => PathBuf::from(value),
-        Err(_) => return,
-    };
-
-    let repository_root = match manifest_dir.parent() {
-        Some(path) => path.to_path_buf(),
-        None => return,
-    };
-
-    let git_dir = repository_root.join(".git");
-    println!("cargo:rerun-if-changed={}", git_dir.join("HEAD").display());
-    println!(
-        "cargo:rerun-if-changed={}",
-        git_dir.join("packed-refs").display()
-    );
-
-    let output = Command::new("git")
-        .args(["rev-parse", "--short=12", "HEAD"])
-        .current_dir(&repository_root)
-        .output();
-
-    let Ok(output) = output else {
-        return;
-    };
-
-    if !output.status.success() {
-        return;
-    }
-
-    let Ok(commit) = String::from_utf8(output.stdout) else {
-        return;
-    };
-
-    let commit = commit.trim();
-    if !commit.is_empty() {
-        println!("cargo:rustc-env=SCE_GIT_COMMIT={commit}");
     }
 }
 
