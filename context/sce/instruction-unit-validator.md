@@ -4,7 +4,7 @@
 
 The repository-owned instruction-unit validator is implemented entirely in Pkl:
 
-- `config/pkl/renderers/instruction-unit-validator.pkl` owns validation logic and the deterministic 62-unit production input set.
+- `config/pkl/renderers/instruction-unit-validator.pkl` owns validation logic, the deterministic 62-unit rendered-model input set, and direct loading of 107 committed generated instruction files.
 - `config/pkl/renderers/instruction-unit-validator-check.pkl` owns valid and invalid fixture checks plus the evaluation gate.
 
 Run the focused validation with:
@@ -15,13 +15,13 @@ nix develop -c pkl eval \
   -x summary
 ```
 
-A passing result reports `productionUnitCount = 62`, zero production diagnostics, five valid fixtures, ten invalid fixtures, zero fixture failures, and `status = "VALIDATION_OK"`.
+A passing result reports `productionUnitCount = 62`, `generatedFileUnitCount = 107`, zero rendered-model and generated-file diagnostics, five valid fixtures, ten invalid fixtures, zero fixture failures, and `status = "VALIDATION_OK"`.
 
 ## Input ownership
 
 Production validation consumes the rendered document objects from the manual OpenCode, Claude, and Pi renderers and the automated OpenCode renderer. Unit paths, kinds, profiles, targets, and slugs come from `instruction-unit-inventory.pkl`; the resulting unit list is sorted by destination path before validation.
 
-This keeps validation on the Pkl-authored/rendered model rather than rediscovering the same units through a parallel filesystem inventory. Root-mirror file validation remains deferred to T10.
+The same inventory drives direct validation of all 62 committed config instruction outputs and all 45 tracked manual root mirrors. Generated-file inputs are path-sorted and parsed into frontmatter/body before applying the same rules, while generated-output parity separately proves byte equality with the renderer model.
 
 ## Validation contract
 
@@ -62,4 +62,4 @@ The check module constrains production diagnostics and fixture-failure listings 
 
 ## Integration boundary
 
-T09 provides the standalone Pkl validator and focused check module. Flake/parity invocation and validation of generated root mirrors are not implemented yet; those belong to T10 of `context/plans/instruction-unit-standardization-all-harnesses.md`.
+`config/pkl/generate.pkl` emits both config instruction outputs and the tracked manual root mirrors under `.opencode/`, `.claude/`, and `.pi/`, plus the root `templates/` copies. `config/pkl/check-generated.sh` checks all generation-owned config outputs, root instruction mirrors, and templates. The root flake's `pkl-parity` check evaluates this validator before regenerating into a temporary tree and comparing every owned path, so `nix flake check` enforces both structure and parity. Local-only settings, dependency artifacts, and package locks remain outside generation/parity ownership.

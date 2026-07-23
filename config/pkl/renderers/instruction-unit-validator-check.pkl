@@ -214,8 +214,9 @@ fixtureResults = new {
   }
 }
 
-/// Evaluation fails if production output is invalid or any focused fixture does not prove its rule.
+/// Evaluation fails if rendered/generated output is invalid or any focused fixture does not prove its rule.
 productionDiagnostics: Listing<validator.Diagnostic>(isEmpty) = validator.productionDiagnostics
+generatedFileDiagnostics: Listing<validator.Diagnostic>(isEmpty) = validator.generatedFileDiagnostics
 validFixtureFailures: Listing<String>(isEmpty) = new {
   for (name, result in fixtureResults.valid) {
     when (!result.passed) { name }
@@ -230,6 +231,8 @@ invalidFixtureFailures: Listing<String>(isEmpty) = new {
 summary = new {
   productionUnitCount = validator.productionUnits.length
   productionDiagnosticCount = productionDiagnostics.length
+  generatedFileUnitCount = validator.generatedFileUnits.length
+  generatedFileDiagnosticCount = generatedFileDiagnostics.length
   validFixtureCount = validFixtures.length
   invalidFixtureCount = invalidFixtures.length
   validFixtureFailureCount = validFixtureFailures.length

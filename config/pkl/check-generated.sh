@@ -46,10 +46,21 @@ paths=(
   "config/.claude/agents"
   "config/.claude/commands"
   "config/.claude/skills"
+  "config/.claude/hooks/run-sce-or-show-install-guidance.sh"
+  "config/.claude/settings.json"
   "config/.pi/prompts"
   "config/.pi/skills"
   "config/.pi/extensions"
   "config/schema/sce-config.schema.json"
+  ".opencode/agent"
+  ".opencode/command"
+  ".opencode/skills"
+  ".claude/agents"
+  ".claude/commands"
+  ".claude/skills"
+  ".pi/prompts"
+  ".pi/skills"
+  "templates"
 )
 
 stale=0

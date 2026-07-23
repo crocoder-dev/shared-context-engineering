@@ -28,6 +28,16 @@ output {
         text = document.rendered
       }
     }
+    for (slug, document in opencode.agents) {
+      [".opencode/agent/\(document.title).md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in claude.agents) {
+      [".claude/agents/\(slug).md"] {
+        text = document.rendered
+      }
+    }
 
     for (slug, document in opencode.commands) {
       ["config/.opencode/command/\(slug).md"] {
@@ -41,6 +51,16 @@ output {
     }
     for (slug, document in claude.commands) {
       ["config/.claude/commands/\(slug).md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in opencode.commands) {
+      [".opencode/command/\(slug).md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in claude.commands) {
+      [".claude/commands/\(slug).md"] {
         text = document.rendered
       }
     }
@@ -66,6 +86,16 @@ output {
         text = document.rendered
       }
     }
+    for (slug, document in opencode.skills) {
+      [".opencode/skills/\(slug)/SKILL.md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in claude.skills) {
+      [".claude/skills/\(slug)/SKILL.md"] {
+        text = document.rendered
+      }
+    }
     for (slug, document in pi.commands) {
       ["config/.pi/prompts/\(slug).md"] {
         text = document.rendered
@@ -78,6 +108,21 @@ output {
     }
     for (slug, document in pi.skills) {
       ["config/.pi/skills/\(slug)/SKILL.md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in pi.commands) {
+      [".pi/prompts/\(slug).md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in pi.agentPrompts) {
+      [".pi/prompts/agent-\(slug).md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in pi.skills) {
+      [".pi/skills/\(slug)/SKILL.md"] {
         text = document.rendered
       }
     }

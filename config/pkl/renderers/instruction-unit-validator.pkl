@@ -160,6 +160,30 @@ local function manualTargetPath(unit: inventory.InventoryUnit, target: String): 
   else if (target == "claude") unit.destinations.claude
   else unit.destinations.pi
 
+local function manualRootMirrorPath(unit: inventory.InventoryUnit, target: String): String =
+  if (target == "opencode") unit.destinations.rootMirror[0]
+  else if (target == "claude") unit.destinations.rootMirror[1]
+  else unit.destinations.rootMirror[2]
+
+local function unitFromFile(
+  filePath: String,
+  profileName: String,
+  targetName: String,
+  unitKind: String,
+  unitSlug: String
+): UnitInput =
+  let (rendered = read("../../../\(filePath)").text)
+  let (parts = rendered.split("\n---\n\n"))
+  new UnitInput {
+    path = filePath
+    profile = if (profileName == "manual") "manual" else "automated"
+    target = if (targetName == "opencode") "opencode" else if (targetName == "claude") "claude" else "pi"
+    kind = if (unitKind == "agent") "agent" else if (unitKind == "command") "command" else "skill"
+    slug = unitSlug
+    frontmatter = "\(parts.first)\n---"
+    body = parts.drop(1).join("\n---\n\n")
+  }
+
 /// All 45 manual target documents plus 17 automated OpenCode documents discovered from the inventory.
 local discoveredProductionUnits: Listing<UnitInput> = new {
   for (_, unit in inventory.manualUnits) {
@@ -195,9 +219,49 @@ local discoveredProductionUnits: Listing<UnitInput> = new {
 /// Production validation order is path-sorted independently of renderer/inventory insertion details.
 productionUnits: List<UnitInput> = discoveredProductionUnits.toList().sortBy((unit) -> unit.path)
 
-/// Deterministic production diagnostics. The check module constrains this listing to be empty.
+/// Deterministic rendered-model diagnostics. The check module constrains this listing to be empty.
 productionDiagnostics: Listing<Diagnostic> = new {
   for (unit in productionUnits) {
+    for (diagnostic in validate(unit)) { diagnostic }
+  }
+}
+
+/// All 62 config-generated instruction files plus the 45 tracked root mirrors, path-sorted.
+/// File loading makes structural validation independent of parity's byte-for-byte comparison.
+local discoveredGeneratedFileUnits: Listing<UnitInput> = new {
+  for (_, unit in inventory.manualUnits) {
+    for (targetName in unit.targets) {
+      unitFromFile(
+        manualTargetPath(unit, targetName),
+        "manual",
+        targetName,
+        unit.kind,
+        unit.slug
+      )
+      unitFromFile(
+        manualRootMirrorPath(unit, targetName),
+        "manual",
+        targetName,
+        unit.kind,
+        unit.slug
+      )
+    }
+  }
+  for (_, unit in inventory.automatedUnits) {
+    unitFromFile(
+      unit.destinations.opencode,
+      "automated",
+      "opencode",
+      unit.kind,
+      unit.slug
+    )
+  }
+}
+
+generatedFileUnits: List<UnitInput> = discoveredGeneratedFileUnits.toList().sortBy((unit) -> unit.path)
+
+generatedFileDiagnostics: Listing<Diagnostic> = new {
+  for (unit in generatedFileUnits) {
     for (diagnostic in validate(unit)) { diagnostic }
   }
 }
