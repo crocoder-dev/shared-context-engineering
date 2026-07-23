@@ -202,8 +202,37 @@ documented in `context/`.
     `readlink result*`; Linux portability audit on release binary; grep flake
     for lingering `sceReleasePackage` mis-wirings; `nix flake show`.
 
-- [ ] T03: `Make Git-commit embedding release-only` (status:todo)
+- [x] T03: `Make Git-commit embedding release-only` (status:done)
   - Task ID: T03
+  - Status: done
+  - Completed: 2026-07-23
+  - Files changed: cli/build.rs, flake.nix
+  - Evidence: `emit_git_commit` reduced to `rerun-if-env-changed=SCE_GIT_COMMIT`
+    plus emit-only-when-set (dropped `git rev-parse` fallback, `.git/HEAD` +
+    `.git/packed-refs` watches, and the now-unused `std::process::Command`
+    import). `flake.nix` removed `SCE_GIT_COMMIT` from `commonCargoArgs` and
+    introduced `releaseCommitArgs` applied only to `scePackageMusl` (Linux
+    release) and a new `sceReleasePackageNative` (Darwin release). Verified:
+    `nix flake check --print-build-logs` all checks passed (171 cli-tests, clippy,
+    fmt) — checks no longer receive the commit. Native `.#sce` commit-independent:
+    identical store path `wsmaa4qgsygmxx98p8hzd8r7lzfpf2fc-sce-0.3.2` across HEAD
+    change bcfd574→22da3ce (empty commit) with edits held in the working tree;
+    native `sce version` reports `unknown`. `.#sce-release` →
+    `633i78xj8ny6ykajbbjdwqb91zva9gzm-sce-0.3.2` (distinct from native) and
+    `sce version` reports the real commit `bcfd574aade4` (== `git rev-parse HEAD`
+    short-12). `nix run .#pkl-check-generated` up to date.
+  - Notes: On Linux native vs release are distinct paths (musl vs native). On
+    Darwin `.#sce-release` is now `sceReleasePackageNative` (native toolchain +
+    commit), intentionally diverging from the T02 "release == native" state so
+    release carries the commit while native `.#sce` stays commit-independent;
+    consistent with the plan's success criteria (distinct-path guarantee only
+    asserted on Linux). Darwin lane wiring-verified only (built on x86_64-linux).
+    `sce version` already used `option_env!("SCE_GIT_COMMIT")`→`"unknown"`, so no
+    app-side code change was needed. Cache-reuse proof used `git commit
+    --allow-empty` + `git reset --soft` with edits kept dirty (never stashed) to
+    avoid disturbing working-tree changes. Context-sync classification: important
+    (build-input contract change — native/checks commit-independence and
+    release-only commit embedding; architecture.md/overview.md describe this).
   - Goal: Only the release package receives the real commit via `SCE_GIT_COMMIT`;
     native builds, `cargo test`, Clippy, fmt, and other checks become
     commit-independent (cache-reusable across commits).

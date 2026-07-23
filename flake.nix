@@ -270,10 +270,17 @@
           nativeBuildInputs = [ rustToolchain ];
         };
 
+        # Commit embedding is release-only: SCE_GIT_COMMIT is applied via
+        # releaseCommitArgs to the release derivations only. Keeping it out of
+        # commonCargoArgs means the native package, cargo tests, Clippy, and fmt
+        # stay commit-independent (cache-reusable across commits).
+        releaseCommitArgs = {
+          SCE_GIT_COMMIT = shortGitCommit;
+        };
+
         commonCargoArgs = cargoBaseArgs // {
           pname = "sce";
           src = workspaceSrc;
-          SCE_GIT_COMMIT = shortGitCommit;
 
           postUnpack = ''
             mkdir -p "$sourceRoot/cli/assets/generated/config"
@@ -328,7 +335,7 @@
         cargoArtifactsMusl = craneLibMusl.buildDepsOnly cargoDepsArgsMusl;
 
         scePackageMusl = craneLibMusl.buildPackage (
-          (commonCargoArgs // muslEnvVars)
+          (commonCargoArgs // muslEnvVars // releaseCommitArgs)
           // {
             inherit cargoArtifactsMusl;
             nativeBuildInputs = [
@@ -361,9 +368,27 @@
           }
         );
 
-        # Release package selection: musl on Linux (fully static, no /nix/store
-        # runtime references), gnu on macOS (unchanged).
-        sceReleasePackage = if pkgs.stdenv.isLinux then scePackageMusl else scePackage;
+        # Native-toolchain release build for Darwin. Identical to scePackage
+        # except it embeds the real Git commit (SCE_GIT_COMMIT), so on macOS the
+        # release output reports the commit while native `.#sce` stays
+        # commit-independent. cargoArtifacts is deps-only and unaffected by
+        # SCE_GIT_COMMIT (only the cli crate's build.rs reads it), so it is
+        # shared with scePackage at no extra rebuild cost.
+        sceReleasePackageNative = craneLib.buildPackage (
+          commonCargoArgs
+          // releaseCommitArgs
+          // {
+            inherit cargoArtifacts;
+            meta = {
+              mainProgram = "sce";
+              description = "Shared Context Engineering CLI (release)";
+            };
+          }
+        );
+
+        # Release package selection: static musl on Linux (fully static, no
+        # /nix/store runtime references), native-with-commit on macOS.
+        sceReleasePackage = if pkgs.stdenv.isLinux then scePackageMusl else sceReleasePackageNative;
 
         tursoCargoArgs = {
           pname = "turso";
