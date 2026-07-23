@@ -166,11 +166,14 @@ fn generate_embedded_asset_manifest() -> io::Result<()> {
             println!("cargo:rerun-if-changed={}", file.absolute_path.display());
             let bytes = fs::read(&file.absolute_path)?;
             let sha256 = compute_sha256(&bytes);
+            let include_path = format!("{}/{}", target.relative_root, file.relative_path);
             writeln!(
                 output,
-                "    EmbeddedAsset {{ relative_path: \"{}\", bytes: {}, sha256: {} }},",
+                "    EmbeddedAsset {{ relative_path: \"{}\", \
+                 bytes: include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/{}\")), \
+                 sha256: {} }},",
                 escape_for_rust_string(&file.relative_path),
-                format_byte_literal("&[", &bytes),
+                escape_for_rust_string(&include_path),
                 format_byte_literal("[", &sha256),
             )
             .expect("writing to String buffer should never fail");

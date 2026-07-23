@@ -290,8 +290,29 @@ documented in `context/`.
     `--print-build-logs` shows no sce/turso compile; `nix develop .#database -c
     true`; `nix flake show` lists both shells; `nix flake check --no-build`.
 
-- [ ] T05: `Generate include_bytes! asset literals in build.rs` (status:todo)
+- [x] T05: `Generate include_bytes! asset literals in build.rs` (status:done)
   - Task ID: T05
+  - Status: done
+  - Completed: 2026-07-23
+  - Files changed: cli/build.rs, context/tmp/flake-speedup-benchmarks.md
+  - Evidence: `generate_embedded_asset_manifest` now emits
+    `bytes: include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/<relative_root>/<relative_path>"))`
+    per asset (path built as `{target.relative_root}/{file.relative_path}`,
+    escaped via `escape_for_rust_string`), while still `fs::read`-ing each file to
+    compute the embedded SHA-256 byte literal and still emitting per-file
+    `cargo:rerun-if-changed`; ordering and relative paths unchanged. `include_bytes!`'s
+    `&[u8; N]` coerces to the `EmbeddedAsset.bytes: &'static [u8]` field at the
+    struct-literal site, so no consumer change in `setup/mod.rs` was needed.
+    Generated `setup_embedded_assets.rs` shrank 925,983 B → 21,785 B (−97.6%);
+    incremental build after touching `build.rs` ~3 s. `nix flake check
+    --print-build-logs` all checks passed (171 cli-tests + clippy + fmt in ~24 s),
+    confirming assets remain byte-for-byte identical via the embedded-asset SHA-256
+    tests. Before/after size + build-time recorded in the benchmark doc.
+  - Notes: `format_byte_literal` retained (still used for the SHA-256 array; the
+    `&[`-prefixed byte-array use for `bytes` is gone). Migrations manifest already
+    used `include_str!` and was untouched. Context-sync classification: verify-only
+    (internal build-script refactor; no runtime behavior, public contract,
+    architecture, or terminology change; assets byte-for-byte identical).
   - Goal: Replace generated `bytes: &[0x.., ..]` arrays with generated
     `include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/generated/..."))`
     expressions, preserving all embedded-asset behavior.
