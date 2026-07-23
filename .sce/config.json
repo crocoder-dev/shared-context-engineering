@@ -46,6 +46,96 @@
             ]
           },
           "message": "This repository prefers `nix flake check` over direct `cargo check`. Run `nix flake check` instead."
+        },
+        {
+          "id": "use-nix-for-ripgrep",
+          "match": {
+            "argv_prefix": [
+              "rg"
+            ]
+          },
+          "message": "Use `nix shell nixpkgs#ripgrep` before running `rg`."
+        },
+        {
+          "id": "use-nix-for-jq",
+          "match": {
+            "argv_prefix": [
+              "jq"
+            ]
+          },
+          "message": "Use `nix shell nixpkgs#jq` before running `jq`."
+        },
+        {
+          "id": "use-nix-for-python3",
+          "match": {
+            "argv_prefix": [
+              "python3"
+            ]
+          },
+          "message": "Use `nix shell nixpkgs#python3` before running `python3`."
+        },
+        {
+          "id": "use-nix-for-node",
+          "match": {
+            "argv_prefix": [
+              "node"
+            ]
+          },
+          "message": "Use `nix shell nixpkgs#nodejs` before running `node`."
+        },
+        {
+          "id": "use-nix-for-bun",
+          "match": {
+            "argv_prefix": [
+              "bun"
+            ]
+          },
+          "message": "Use `nix shell nixpkgs#bun` before running `bun`."
+        },
+        {
+          "id": "use-nix-for-fd",
+          "match": {
+            "argv_prefix": [
+              "fd"
+            ]
+          },
+          "message": "Use `nix shell nixpkgs#fd` before running `fd`."
+        },
+        {
+          "id": "use-nix-for-shellcheck",
+          "match": {
+            "argv_prefix": [
+              "shellcheck"
+            ]
+          },
+          "message": "Use `nix shell nixpkgs#shellcheck` before running `shellcheck`."
+        },
+        {
+          "id": "use-nix-for-actionlint",
+          "match": {
+            "argv_prefix": [
+              "actionlint"
+            ]
+          },
+          "message": "Use `nix shell nixpkgs#actionlint` before running `actionlint`."
+        },
+        {
+          "id": "use-nix-for-yq",
+          "match": {
+            "argv_prefix": [
+              "yq"
+            ]
+          },
+          "message": "Use `nix shell nixpkgs#yq-go` before running `yq`."
+        },
+        {
+          "id": "use-nix-for-hyperfine",
+          "match": {
+            "argv_prefix": [
+              "hyperfine"
+            ]
+          },
+          "message": "Use `nix shell nixpkgs#hyperfine` before running `hyperfine`."
         }
       ],
       "presets": []
