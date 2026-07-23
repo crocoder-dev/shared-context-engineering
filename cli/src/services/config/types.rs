@@ -17,6 +17,7 @@ pub(crate) const ENV_LOG_LEVEL: &str = "SCE_LOG_LEVEL";
 pub(crate) const ENV_LOG_FORMAT: &str = "SCE_LOG_FORMAT";
 pub(crate) const ENV_LOG_DIR: &str = "SCE_LOG_DIR";
 pub(crate) const ENV_ATTRIBUTION_HOOKS_DISABLED: &str = "SCE_ATTRIBUTION_HOOKS_DISABLED";
+pub(crate) const DEFAULT_LOG_FILE_RETENTION_LIMIT: usize = 10;
 
 pub type ReportFormat = OutputFormat;
 
@@ -197,6 +198,7 @@ pub(crate) struct ResolvedObservabilityRuntimeConfig {
     pub(crate) log_level: LogLevel,
     pub(crate) log_format: LogFormat,
     pub(crate) log_dir: Option<String>,
+    pub(crate) log_file_retention_limit: usize,
     pub(crate) loaded_config_paths: Vec<LoadedConfigPath>,
     pub(crate) validation_errors: Vec<String>,
 }
