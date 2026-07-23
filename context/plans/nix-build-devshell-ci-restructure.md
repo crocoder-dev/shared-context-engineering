@@ -252,8 +252,28 @@ documented in `context/`.
     (cache hit); `nix build .#sce-release && ./result/bin/sce version` shows the
     commit; `nix flake check --print-build-logs`.
 
-- [ ] T04: `Slim default devShell; add opt-in database shell` (status:todo)
+- [x] T04: `Slim default devShell; add opt-in database shell` (status:done)
   - Task ID: T04
+  - Status: done
+  - Completed: 2026-07-23
+  - Files changed: flake.nix
+  - Evidence: `nix flake check --no-build` all checks passed; `nix flake show`
+    lists both `devShells.<system>.default` and `devShells.<system>.database`.
+    `nix develop -c true --print-build-logs` produced no `scePackage`/`turso_cli`
+    compile. `nix develop .#database -c turso --version` → `Turso 0.7.0`. `nix
+    build .#turso` still builds (`k9balz…-turso-0.7.0`). Default shell still
+    provides `rustc`/`pkl`/JS tooling. (Note: `sce`/`turso` visible on PATH inside
+    `nix develop` are inherited from the invoking parent shell — identical store
+    paths `za1ki…-sce-0.3.2` / `k9balz…-turso-0.7.0` are already on the outer
+    PATH — not contributed by the slimmed default shell.)
+  - Notes: Factored the shared package list + shellHook into `let` bindings
+    `defaultDevShellPackages` / `defaultDevShellHook` so `devShells.database`
+    reuses them and layers `tursoPackage` + a `turso` version echo without drift.
+    Removed `scePackage`/`tursoPackage` and the `sce`/`turso` echo lines from the
+    default shell. Darwin lane wiring-verified only (built on x86_64-linux).
+    Context-sync classification: important (public devShell-output contract change —
+    new `devShells.database`, slimmed default shell; architecture/overview may
+    reference default-shell contents).
   - Goal: `nix develop` no longer builds `scePackage` or `turso_cli`; Turso stays
     available as `packages.<system>.turso` and via a new
     `devShells.<system>.database` shell.

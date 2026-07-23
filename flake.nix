@@ -426,6 +426,55 @@
           };
         };
 
+        # Shared development tooling for the default shell. Excludes `scePackage`
+        # and `tursoPackage` so `nix develop` does not compile the package or the
+        # Turso CLI; `devShells.database` layers Turso back on when needed.
+        defaultDevShellPackages =
+          (with pkgs; [
+            biome
+            bunPackage
+            jq
+            pkl
+            pkl-lsp
+            typescript
+            typescript-language-server
+            vscode-json-languageserver
+            rust-analyzer
+          ])
+          ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            pkgs.appstream
+            pkgs.flatpak
+            pkgs.flatpak-builder
+          ]
+          ++ [ rustToolchain ];
+
+        defaultDevShellHook = ''
+          version_of() {
+            "$1" --version 2>/dev/null | awk 'match($0, /[0-9]+(\.[0-9]+)+/) { print substr($0, RSTART, RLENGTH); exit }'
+          }
+          echo "- bun: $(version_of bun)"
+          echo "- biome: $(version_of biome)"
+          echo "- pkl: $(version_of pkl)"
+          echo "- pkl-lsp: $(version_of pkl-lsp)"
+          echo "- tsc: $(version_of tsc)"
+          echo "- tsserver-lsp: $(version_of typescript-language-server)"
+          echo "- rust: $(version_of rustc)"
+          echo "- pkl-generate: nix run .#pkl-generate"
+          echo "- pkl-check-generated: nix run .#pkl-check-generated"
+          echo "- release-artifacts: nix run .#release-artifacts -- --help"
+          echo "- native-portability-audit: nix run .#native-portability-audit -- --help"
+          echo "- release-manifest: nix run .#release-manifest -- --help"
+          echo "- release-npm-package: nix run .#release-npm-package -- --help"
+          ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+            echo "- flatpak: $(version_of flatpak)"
+            echo "- flatpak-builder: $(version_of flatpak-builder)"
+            echo "- appstreamcli: $(version_of appstreamcli)"
+            echo "- sce-flatpak: nix run .#sce-flatpak -- --help"
+            echo "- release-flatpak-package: nix run .#release-flatpak-package -- --help"
+            echo "- release-flatpak-bundle: nix run .#release-flatpak-bundle -- --help"
+          ''}
+        '';
+
         pklCheckGeneratedApp = pkgs.writeShellApplication {
           name = "pkl-check-generated";
           runtimeInputs = [
@@ -1551,55 +1600,20 @@
           };
 
         devShells.default = pkgs.mkShell {
-          packages =
-            with pkgs;
-            [
-              biome
-              bunPackage
-              jq
-              pkl
-              pkl-lsp
-              typescript
-              typescript-language-server
-              vscode-json-languageserver
-              rust-analyzer
-              scePackage
-              tursoPackage
-            ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
-              appstream
-              flatpak
-              flatpak-builder
-            ]
-            ++ [ rustToolchain ];
+          packages = defaultDevShellPackages;
+
+          shellHook = defaultDevShellHook;
+        };
+
+        # Opt-in shell layering the Turso CLI on top of the default tools, so
+        # `nix develop` stays fast (no `scePackage`/`turso_cli` compile) while
+        # database work can pull Turso in explicitly via `nix develop .#database`.
+        devShells.database = pkgs.mkShell {
+          packages = defaultDevShellPackages ++ [ tursoPackage ];
 
           shellHook = ''
-            version_of() {
-              "$1" --version 2>/dev/null | awk 'match($0, /[0-9]+(\.[0-9]+)+/) { print substr($0, RSTART, RLENGTH); exit }'
-            }
-            echo "- bun: $(version_of bun)"
-            echo "- biome: $(version_of biome)"
-            echo "- pkl: $(version_of pkl)"
-            echo "- pkl-lsp: $(version_of pkl-lsp)"
-            echo "- tsc: $(version_of tsc)"
-            echo "- tsserver-lsp: $(version_of typescript-language-server)"
-            echo "- rust: $(version_of rustc)"
-            echo "- sce: $(version_of sce)"
+            ${defaultDevShellHook}
             echo "- turso: $(version_of turso)"
-            echo "- pkl-generate: nix run .#pkl-generate"
-            echo "- pkl-check-generated: nix run .#pkl-check-generated"
-            echo "- release-artifacts: nix run .#release-artifacts -- --help"
-            echo "- native-portability-audit: nix run .#native-portability-audit -- --help"
-            echo "- release-manifest: nix run .#release-manifest -- --help"
-            echo "- release-npm-package: nix run .#release-npm-package -- --help"
-            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-              echo "- flatpak: $(version_of flatpak)"
-              echo "- flatpak-builder: $(version_of flatpak-builder)"
-              echo "- appstreamcli: $(version_of appstreamcli)"
-              echo "- sce-flatpak: nix run .#sce-flatpak -- --help"
-              echo "- release-flatpak-package: nix run .#release-flatpak-package -- --help"
-              echo "- release-flatpak-bundle: nix run .#release-flatpak-bundle -- --help"
-            ''}
           '';
         };
       }
