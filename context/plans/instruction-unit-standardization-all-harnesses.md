@@ -10,21 +10,21 @@ The initial inventory maps the logical manual profile (2 agents, 5 commands, 8 s
 
 ## Success criteria
 
-- [ ] SC1: Every active manual and automated agent, command, and skill has all nine required sections exactly once and in the required order, with only optional `Reference` and final `Examples` sections after them.
-- [ ] SC2: No active instruction body contains an unknown level-two heading or body-level `When to use`; useful content from legacy headings is retained under the correct standard section.
-- [ ] SC3: Agents own role boundaries, startup/approval posture, skill orchestration, completion, and escalation without duplicating skill procedures; commands remain thin; skills own reusable procedures, validation, contracts, schemas, deterministic failure handling, references, and examples.
-- [ ] SC4: Inputs, outputs, completion criteria, failure handling, and related units are explicit in every unit; command inputs document `$ARGUMENTS` or the harness-equivalent argument placeholder.
-- [ ] SC5: OpenCode agent, command, and skill frontmatter uses supported normalized fields; Claude Code and Pi use equivalent target-supported frontmatter while preserving canonical identity, descriptions, and body structure.
-- [ ] SC6: Agent permissions/tools agree with body guardrails and use the least privilege that supports each role; manual approval gates and automated deterministic stop/failure semantics remain intentionally distinct.
-- [ ] SC7: Canonical reusable agent, command, and skill templates exist under the canonical configuration source tree and generate synchronized contributor-facing copies at repository-root `templates/{agent,command,skill}.md`; they demonstrate frontmatter, section order, optional sections, and unit responsibility boundaries.
-- [ ] SC8: Active inventories and renderer metadata have one authoritative source where practical; stale `drift-detect`, `fix-drift`, inactive manual interactive-planning metadata, and any other orphaned entries are removed or explicitly documented without activating inactive behavior.
-- [ ] SC9: Broken references, including the missing `context/plans/PLAN_EXAMPLE.md`, are replaced, embedded under `Reference`, or backed by a canonical generated/existing file; all active command/skill/permission references resolve.
-- [ ] SC10: A small deterministic validator covers all config-generated and tracked root-mirror instruction trees and reports file, unit type, violated rule, and expected structure for frontmatter, heading shape/order/uniqueness, final `Examples`, forbidden `When to use`, skill directory/name parity, and cross-unit references.
-- [ ] SC11: Focused deterministic fixtures cover valid agent, command, skill, manual-profile, and automated-profile cases plus all ten requested invalid cases.
-- [ ] SC12: Structural validation is integrated into the existing Nix/flake validation surface and generated-output parity detects drift for every generation-owned instruction tree, including synchronized root harness mirrors.
-- [ ] SC13: A concise contributor guide documents canonical ownership, templates, adding each unit type, profile differences, regeneration, structural validation, and parity commands, and is linked from the relevant existing config documentation.
-- [ ] SC14: Canonical Pkl sources and all generated OpenCode, Claude Code, Pi, automated-profile, root-mirror, and embedded/install-consumed outputs are synchronized after regeneration.
-- [ ] SC15: `nix run .#pkl-check-generated` and `nix flake check` complete successfully after the final regeneration.
+- [x] SC1: Every active manual and automated agent, command, and skill has all nine required sections exactly once and in the required order, with only optional `Reference` and final `Examples` sections after them.
+- [x] SC2: No active instruction body contains an unknown level-two heading or body-level `When to use`; useful content from legacy headings is retained under the correct standard section.
+- [x] SC3: Agents own role boundaries, startup/approval posture, skill orchestration, completion, and escalation without duplicating skill procedures; commands remain thin; skills own reusable procedures, validation, contracts, schemas, deterministic failure handling, references, and examples.
+- [x] SC4: Inputs, outputs, completion criteria, failure handling, and related units are explicit in every unit; command inputs document `$ARGUMENTS` or the harness-equivalent argument placeholder.
+- [x] SC5: OpenCode agent, command, and skill frontmatter uses supported normalized fields; Claude Code and Pi use equivalent target-supported frontmatter while preserving canonical identity, descriptions, and body structure.
+- [x] SC6: Agent permissions/tools agree with body guardrails and use the least privilege that supports each role; manual approval gates and automated deterministic stop/failure semantics remain intentionally distinct.
+- [x] SC7: Canonical reusable agent, command, and skill templates exist under the canonical configuration source tree and generate synchronized contributor-facing copies at repository-root `templates/{agent,command,skill}.md`; they demonstrate frontmatter, section order, optional sections, and unit responsibility boundaries.
+- [x] SC8: Active inventories and renderer metadata have one authoritative source where practical; stale `drift-detect`, `fix-drift`, inactive manual interactive-planning metadata, and any other orphaned entries are removed or explicitly documented without activating inactive behavior.
+- [x] SC9: Broken references, including the missing `context/plans/PLAN_EXAMPLE.md`, are replaced, embedded under `Reference`, or backed by a canonical generated/existing file; all active command/skill/permission references resolve.
+- [x] SC10: A small deterministic validator covers all config-generated and tracked root-mirror instruction trees and reports file, unit type, violated rule, and expected structure for frontmatter, heading shape/order/uniqueness, final `Examples`, forbidden `When to use`, skill directory/name parity, and cross-unit references.
+- [x] SC11: Focused deterministic fixtures cover valid agent, command, skill, manual-profile, and automated-profile cases plus all ten requested invalid cases.
+- [x] SC12: Structural validation is integrated into the existing Nix/flake validation surface and generated-output parity detects drift for every generation-owned instruction tree, including synchronized root harness mirrors.
+- [ ] SC13: A concise contributor guide documents canonical ownership, templates, adding each unit type, profile differences, regeneration, structural validation, and parity commands, and is linked from the relevant existing config documentation. (Deferred to a human contributor by user decision on 2026-07-23.)
+- [x] SC14: Canonical Pkl sources and all generated OpenCode, Claude Code, Pi, automated-profile, root-mirror, and embedded/install-consumed outputs are synchronized after regeneration.
+- [x] SC15: `nix run .#pkl-check-generated` and `nix flake check` complete successfully after the final regeneration.
 
 ## Constraints and non-goals
 
@@ -151,20 +151,73 @@ The initial inventory maps the logical manual profile (2 agents, 5 commands, 8 s
   - Evidence: `nix develop -c pkl eval config/pkl/renderers/instruction-unit-validator-check.pkl -x summary` reports 62 rendered-model units, 107 generated config/root files, zero diagnostics, five valid fixtures, ten invalid fixtures, zero fixture failures, and `VALIDATION_OK`; `nix develop -c pkl eval -m . config/pkl/generate.pkl` succeeds and leaves generated outputs synchronized; an intentional temporary edit to `templates/agent.md` makes `nix run .#pkl-check-generated` fail with `Generated output drift detected at templates` and exit 1, after which the file was restored; final `nix run .#pkl-check-generated` reports generated outputs up to date; `nix flake check --print-build-logs` reports all checks passed and the `pkl-parity` derivation runs structural validation before parity; `git diff --check` passes; `.claude/settings.local.json`, `.opencode/node_modules/`, `.opencode/package-lock.json`, and `sce-opencode-standardization/` remain ignored/untracked and untouched.
   - Notes: Root OpenCode, Claude, and Pi instruction files are now generated from the same manual renderer documents as their `config/` counterparts. Automated OpenCode remains config-only by design. Structural validation reads both committed config outputs and tracked root mirrors directly; byte parity separately proves they match the rendered model. Context impact is root-edit required because generation ownership and the flake validation boundary changed.
 
-- [ ] T11: `Document contributor workflow and synchronize durable context` (status:todo)
+- [x] T11: `Document contributor workflow and synchronize durable context` (status:deferred-to-human)
   - Task ID: T11
   - Goal: Add a concise contributor guide for instruction units, link it from `config/pkl/README.md` or the most relevant existing contributor documentation, and update durable SCE context to the implemented generation/validation contract.
   - Boundaries (in/out of scope): In — contributor guide, relevant Pkl README link/workflow updates, and current-state context files/map. Out — expanding the root README into an implementation manual or documenting unimplemented profiles.
   - Done when: Documentation explains canonical template ownership and the generated root `templates/` copies, canonical unit locations, generated paths, adding each unit type, section order, ownership boundaries, manual/automated differences, regeneration, structural validation, and parity; context accurately describes root mirror ownership and validation integration.
   - Verification notes (commands or checks): Follow documented commands from repository root; check all links/paths; run context reference grep and generated parity.
+  - Disposition: Deferred to a human contributor by explicit user decision on 2026-07-23.
+  - Files changed: `config/pkl/README.md` (deleted by user direction); `context/patterns.md` (retains the canonical instruction-unit authoring pattern without linking a contributor runbook); this plan task record.
+  - Evidence: The initially drafted `config/pkl/INSTRUCTION_UNITS.md` was removed and its context links were reverted; `config/pkl/README.md` was deleted as explicitly requested. Core current-state context continues to describe grouped canonical ownership, generated root mirrors/templates, structural validation, and parity. The contributor runbook acceptance criterion is intentionally left unchecked for human follow-up.
+  - Notes: This is an accepted deferral, not evidence that SC13 is complete. No generated files, profile topology, validator behavior, or runtime behavior changed.
 
-- [ ] T12: `Run final validation and cleanup` (status:todo)
+- [x] T12: `Run final validation and cleanup` (status:done)
   - Task ID: T12
   - Goal: Regenerate all outputs, run full validation, audit every acceptance criterion, clean temporary artifacts, and verify context sync without changing unrelated work.
   - Boundaries (in/out of scope): In — final regeneration, narrow validator/tests, metadata coverage, parity, full flake checks, inventory/count/reference/permission audits, and plan evidence updates. Out — new behavior, unrelated cleanup, or modifying `sce-opencode-standardization/`.
   - Done when: Counts are confirmed for manual OpenCode/Claude/Pi and automated OpenCode; no forbidden/unknown headings or unresolved references remain; generated and canonical trees are synchronized; all success criteria have evidence; temporary outputs are removed; context sync is verified.
   - Verification notes (commands or checks): `nix develop -c pkl eval config/pkl/renderers/metadata-coverage-check.pkl`; repository-owned narrow validator/test command; `nix develop -c pkl eval -m . config/pkl/generate.pkl`; `nix run .#pkl-check-generated`; `nix flake check`; `git status --short`; deterministic inventory/reference/heading audits. Record failures honestly and do not claim success unless commands exit zero.
+  - Completed: 2026-07-23
+  - Files changed: `context/plans/instruction-unit-standardization-all-harnesses.md` (final task status, success-criterion audit, and evidence only); regeneration produced no tracked drift.
+  - Evidence: `metadata-coverage-check.pkl` confirms manual 2 agents / 5 commands / 8 skills and automated 2 / 6 / 9, with zero stale entries and zero broken references; its permission output confirms manual OpenCode plan `bash: ask`, automated plan `bash: block`, and code roles `bash: allow`. `instruction-unit-validator-check.pkl -x summary` reports 62 rendered-model units, 107 generated config/root files, zero production/generated diagnostics, five valid fixtures, ten invalid fixtures, zero fixture failures, and `VALIDATION_OK`, covering heading order/uniqueness, forbidden headings, frontmatter, skill identity, and cross-references. Full regeneration succeeded and left no tracked changes; `nix run .#pkl-check-generated` reports `Generated outputs are up to date.`; `nix flake check --print-build-logs` reports `all checks passed!` with 131 Rust tests passing; `git diff --check` passes. Final status contains only this plan update plus the pre-existing untracked `sce-opencode-standardization/` reference bundle, which remains untouched.
+  - Notes: Context impact is verify-only. `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/context-map.md`, and `context/sce/instruction-unit-validator.md` were checked against current code and remain accurate; all are within the 250-line context quality limit. SC13 remains intentionally unchecked because its contributor guide was explicitly deferred to a human on 2026-07-23; all other success criteria are complete.
 
 ## Open questions
 
 None. The repository's existing profile topology and target renderers resolve the harness scope: standardize current Claude Code and Pi manual outputs, but do not invent automated variants or unsupported cross-harness frontmatter fields.
+
+## Validation Report
+
+### Overall result
+
+PASS for the approved implementation scope, with SC13 retained as an explicit user-accepted human follow-up rather than reported as complete.
+
+### Commands run
+
+- `nix develop -c pkl eval config/pkl/renderers/metadata-coverage-check.pkl` -> exit 0; manual 2/5/8 and automated 2/6/9 inventories, zero stale entries, zero broken references, and expected permission postures.
+- `nix develop -c pkl eval config/pkl/renderers/instruction-unit-validator-check.pkl -x summary` -> exit 0; 62 rendered units and 107 generated-file units with zero diagnostics, five valid fixtures, ten invalid fixtures, zero fixture failures, `VALIDATION_OK`.
+- `nix develop -c pkl eval -m . config/pkl/generate.pkl` -> exit 0; all owned outputs regenerated with no tracked drift.
+- `nix run .#pkl-check-generated` -> exit 0; generated outputs are up to date.
+- `nix flake check --print-build-logs` -> exit 0; all checks passed, including 131/131 Rust tests, clippy, and Pkl structural/parity validation.
+- `git diff --check` -> exit 0.
+- `git status --short` -> only the plan evidence update and pre-existing untracked `sce-opencode-standardization/`; no task-owned temporary artifact exists.
+
+### Failed checks and follow-ups
+
+- No failed checks.
+- SC13 remains unchecked by explicit user decision and is deferred to a human contributor; it was not silently treated as implemented.
+
+### Success-criteria verification
+
+- [x] SC1-SC2: Validator reports zero diagnostics across the complete 62-unit model and 107 committed generated files, enforcing required order, uniqueness, optional-section placement, unknown-heading rejection, and forbidden `When to use` rejection.
+- [x] SC3-SC4: Standardized canonical bodies and validator coverage preserve agent/command/skill ownership boundaries and require every standard section; prior task evidence confirms argument placeholders and thin command routing.
+- [x] SC5-SC6: Target-aware frontmatter validation passes; metadata coverage confirms complete target mappings and manual-plan `bash: ask`, automated-plan `bash: block`, and code-role `bash: allow` postures.
+- [x] SC7: Canonical Pkl-owned templates regenerate to `templates/{agent,command,skill}.md` and parity passes.
+- [x] SC8-SC9: Inventory reports zero stale entries and zero broken references; validator reports no invalid command or agent skill references.
+- [x] SC10-SC11: Pkl validator checks both rendered and committed units; all five valid and ten requested invalid fixtures pass with deterministic diagnostics.
+- [x] SC12: Root `pkl-parity` invokes structural validation and parity successfully through `nix flake check`.
+- [ ] SC13: Contributor guide intentionally deferred to a human by user decision on 2026-07-23.
+- [x] SC14: Full regeneration followed by parity produced no tracked generated drift.
+- [x] SC15: Final parity and full flake checks both exited zero.
+
+### Context and cleanup
+
+- Context-sync classification: verify-only; final validation introduces no new behavior, architecture boundary, policy, or terminology.
+- Verified current truth in `context/overview.md`, `context/architecture.md`, `context/glossary.md`, `context/context-map.md`, and `context/sce/instruction-unit-validator.md`; no edits required and every checked context file remains within 250 lines.
+- No temporary scaffolding, debug code, or task-owned intermediate artifacts were found. The read-only untracked `sce-opencode-standardization/` bundle remains untouched.
+
+### Residual risks
+
+- The contributor workflow requested by SC13 remains absent until the accepted human follow-up is completed.
+- `nix flake check` validated the current `x86_64-linux` system and reported other flake systems as incompatible/omitted, consistent with normal host-scoped execution.
