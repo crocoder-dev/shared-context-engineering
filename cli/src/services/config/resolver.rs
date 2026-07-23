@@ -18,8 +18,8 @@ use super::types::{
     parse_bool_value_from, ConfigPathSource, ConfigRequest, DatabaseRetryConfig, LoadedConfigPath,
     LogFormat, LogLevel, ReportFormat, ResolvedAgentTraceStorageRuntimeConfig,
     ResolvedAuthRuntimeConfig, ResolvedHookRuntimeConfig, ResolvedObservabilityRuntimeConfig,
-    ResolvedOptionalValue, ResolvedValue, ValueSource, ENV_ATTRIBUTION_HOOKS_DISABLED, ENV_LOG_DIR,
-    ENV_LOG_FORMAT, ENV_LOG_LEVEL,
+    ResolvedOptionalValue, ResolvedValue, ValueSource, DEFAULT_LOG_FILE_RETENTION_LIMIT,
+    ENV_ATTRIBUTION_HOOKS_DISABLED, ENV_LOG_DIR, ENV_LOG_FORMAT, ENV_LOG_LEVEL,
 };
 
 const DEFAULT_TIMEOUT_MS: u64 = 30000;
@@ -62,6 +62,7 @@ pub(super) struct RuntimeConfig {
     pub(super) log_level: ResolvedValue<LogLevel>,
     pub(super) log_format: ResolvedValue<LogFormat>,
     pub(super) log_dir: ResolvedOptionalValue<String>,
+    pub(super) log_file_retention_limit: ResolvedValue<usize>,
     pub(super) timeout_ms: ResolvedValue<u64>,
     pub(super) attribution_hooks_enabled: ResolvedValue<bool>,
     pub(super) workos_client_id: ResolvedOptionalValue<String>,
@@ -222,6 +223,7 @@ where
         log_level: runtime.log_level.value,
         log_format: runtime.log_format.value,
         log_dir: runtime.log_dir.value,
+        log_file_retention_limit: runtime.log_file_retention_limit.value,
         loaded_config_paths: runtime.loaded_config_paths,
         validation_errors: runtime.validation_errors,
     })
@@ -298,6 +300,7 @@ where
         log_level: None,
         log_format: None,
         log_dir: None,
+        log_file_retention_limit: None,
         timeout_ms: None,
         attribution_hooks_enabled: None,
         workos_client_id: None,
@@ -327,6 +330,9 @@ where
         }
         if let Some(log_dir) = layer.log_dir {
             file_config.log_dir = Some(log_dir);
+        }
+        if let Some(log_file_retention_limit) = layer.log_file_retention_limit {
+            file_config.log_file_retention_limit = Some(log_file_retention_limit);
         }
         if let Some(timeout_ms) = layer.timeout_ms {
             file_config.timeout_ms = Some(timeout_ms);
@@ -409,6 +415,17 @@ where
         }
     } else {
         default_observability_log_dir()?
+    };
+
+    let resolved_log_file_retention_limit = match file_config.log_file_retention_limit {
+        Some(value) => ResolvedValue {
+            value: value.value,
+            source: ValueSource::ConfigFile(value.source),
+        },
+        None => ResolvedValue {
+            value: DEFAULT_LOG_FILE_RETENTION_LIMIT,
+            source: ValueSource::Default,
+        },
     };
 
     let mut resolved_timeout_ms = ResolvedValue {
@@ -499,6 +516,7 @@ where
         log_level: resolved_log_level,
         log_format: resolved_log_format,
         log_dir: resolved_log_dir,
+        log_file_retention_limit: resolved_log_file_retention_limit,
         timeout_ms: resolved_timeout_ms,
         attribution_hooks_enabled: resolved_attribution_hooks_enabled,
         workos_client_id: resolved_workos_client_id,
