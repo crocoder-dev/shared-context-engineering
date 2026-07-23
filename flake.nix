@@ -632,7 +632,7 @@
 
             mkdir -p "$out_dir"
 
-            nix build .#default --out-link result
+            nix build .#sce-release --out-link result
 
             binary_path="result/bin/sce"
             if [[ ! -x "$binary_path" ]]; then
@@ -1326,18 +1326,27 @@
 
         sceApp = {
           type = "app";
+          program = "${scePackage}/bin/sce";
+          meta = {
+            description = "Run the packaged sce CLI (native)";
+          };
+        };
+
+        sceReleaseApp = {
+          type = "app";
           program = "${sceReleasePackage}/bin/sce";
           meta = {
-            description = "Run the packaged sce CLI";
+            description = "Run the packaged sce release CLI (static musl on Linux, native on Darwin)";
           };
         };
       in
       {
         packages = {
-          sce = sceReleasePackage;
+          sce = scePackage;
+          sce-release = sceReleasePackage;
           bun = bunPackage;
           turso = tursoPackage;
-          default = sceReleasePackage;
+          default = scePackage;
         };
 
         checks =
@@ -1391,6 +1400,7 @@
           {
             sce = sceApp;
             default = sceApp;
+            sce-release = sceReleaseApp;
 
             pkl-check-generated = {
               type = "app";
