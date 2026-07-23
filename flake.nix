@@ -1398,6 +1398,46 @@
               mkdir -p "$out"
             '';
 
+        # Linux-only: audit the real static-musl release binary for forbidden
+        # /nix/store runtime references. Unlike nativePortabilityAuditCheck
+        # (a fixture-based unit test of the audit script), this inspects the
+        # actual sceReleasePackage binary.
+        releasePortabilityAuditCheck =
+          pkgs.runCommand "sce-release-portability-audit"
+            {
+              nativeBuildInputs = [
+                pkgs.binutils
+                pkgs.coreutils
+              ];
+            }
+            ''
+              set -euo pipefail
+
+              bash ${./nix/release/native-portability-audit.sh} \
+                --platform linux \
+                --binary ${sceReleasePackage}/bin/sce
+
+              mkdir -p "$out"
+            '';
+
+        # Explicit long-running validation tier. Its primary member is the
+        # static-musl release build; on Linux it also forces the release
+        # portability audit over the real binary. Building this aggregate
+        # (nix build .#ci-checks) is the expensive command, keeping
+        # nix flake check fast (it never builds .#sce-release).
+        ciChecks =
+          pkgs.runCommand "sce-ci-checks"
+            { }
+            ''
+              set -euo pipefail
+
+              mkdir -p "$out"
+              ln -s ${sceReleasePackage} "$out/sce-release"
+              ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+                ln -s ${releasePortabilityAuditCheck} "$out/release-portability-audit"
+              ''}
+            '';
+
         sceApp = {
           type = "app";
           program = "${scePackage}/bin/sce";
@@ -1418,6 +1458,7 @@
         packages = {
           sce = scePackage;
           sce-release = sceReleasePackage;
+          ci-checks = ciChecks;
           bun = bunPackage;
           turso = tursoPackage;
           default = scePackage;
