@@ -22,22 +22,22 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 - `cli/src/app.rs` now owns an explicit startup lifecycle (`perform_dependency_check` -> `build_startup_context` -> `initialize_runtime` -> `run_command_lifecycle` -> `render_run_outcome`) so dependency bootstrap, config-backed runtime initialization, command parsing/execution, and final stream rendering are no longer coordinated inside one monolithic startup function.
 - `cli/src/app.rs` also routes clap output through an internal static `RuntimeCommand` enum defined in `cli/src/services/command_registry.rs`, so parse-time conversion and run-time command execution stay separated while avoiding boxed command trait objects.
 - Command-local help is available for implemented commands including bare `sce auth`, `sce auth --help`, `sce auth login --help`, `sce setup --help`, `sce doctor --help`, and `sce completion --help`; when stdout color is enabled those help payloads now reuse the shared heading/command/placeholder styling pass while non-TTY and `NO_COLOR` flows stay plain text. Human-readable stderr diagnostics and interactive setup prompt text now follow the same shared styling policy on their respective terminal streams.
-- Current repository verification guidance for this CLI slice prefers the root Nix entrypoints: `nix flake check` for routine validation, `nix build .#default` / `nix run .#sce -- --help` for packaged installability, and targeted `nix develop -c sh -c 'cd cli && <cargo command>'` only when a narrower Rust-only check is explicitly needed.
+- Current repository verification guidance for this CLI slice prefers the root Nix entrypoints: `nix flake check` for routine validation, `nix build .#sce` / `nix run .#sce -- --help` for native packaged installability, and targeted `nix develop -c sh -c 'cd cli && <cargo command>'` only when a narrower Rust-only check is explicitly needed.
 
-## Nix release installability surface
+## Nix installability surface
 
-- Root `flake.nix` exposes `packages.sce` and `packages.default = packages.sce` for packaged release builds.
-- Root `flake.nix` exposes `apps.sce` pointing to `${packages.sce}/bin/sce` for runnable packaged CLI execution.
+- Root `flake.nix` exposes `packages.sce` and `packages.default = packages.sce` for the **native** development package; the static-musl release binary is the distinct `packages.sce-release` (`apps.sce-release`) output.
+- Root `flake.nix` exposes `apps.sce` pointing to `${packages.sce}/bin/sce` for runnable native CLI execution.
 - Root `flake.nix` is the single repository-level Nix entrypoint for CLI checks and packaging.
 - Current installability checks for this surface are:
-  - `nix build .#default`
+  - `nix build .#sce`
   - `nix run .#sce -- --help`
 
 ## Cargo release and future crates.io posture
 
 - `cli/Cargo.toml` includes crates.io-facing package metadata (`description`, `license`, `repository`, `homepage`, `documentation`, `readme`, `keywords`, `categories`) and is aligned to the current crates.io publication posture described by the root release/publish workflows.
 - Current local install contract is `cargo install --path cli --locked`.
-- Current release build/installability checks run through the root flake (`nix build .#default`, `nix run .#sce -- --help`) so the packaged binary and embedded generated assets stay aligned with the canonical Nix-owned release path.
+- Current build/installability checks run through the root flake against the native package (`nix build .#sce`, `nix run .#sce -- --help`) so the packaged binary and embedded generated assets stay aligned with the canonical Nix-owned build path; the static-musl release archive is built from `.#sce-release` (see `context/sce/cli-release-artifact-contract.md`).
 - Crates.io publication is now a dedicated downstream publish stage (`.github/workflows/publish-crates.yml`) that validates `.version`/tag/Cargo parity before publishing the checked-in crate version.
 
 ## Command surface contract
