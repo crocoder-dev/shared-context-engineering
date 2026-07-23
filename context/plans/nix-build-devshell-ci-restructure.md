@@ -330,8 +330,34 @@ documented in `context/`.
     record clean vs incremental Rust build time and generated-source size before
     vs after in the benchmark doc.
 
-- [ ] T06: `Add explicit ci-checks aggregate output` (status:todo)
+- [x] T06: `Add explicit ci-checks aggregate output` (status:done)
   - Task ID: T06
+  - Status: done
+  - Completed: 2026-07-23
+  - Files changed: flake.nix
+  - Evidence: Added `packages.<system>.ci-checks` (`ciChecks`) — a `runCommand`
+    aggregate that symlinks `sceReleasePackage` into `$out/sce-release` (forcing
+    the static-musl release build) and, on Linux, `releasePortabilityAuditCheck`
+    into `$out/release-portability-audit`. The new Linux-only
+    `releasePortabilityAuditCheck` runs `nix/release/native-portability-audit.sh
+    --platform linux --binary ${sceReleasePackage}/bin/sce` (binutils+coreutils
+    on PATH), auditing the real release binary — distinct from the fixture-based
+    `nativePortabilityAuditCheck` in `checks`. Verified: `nix build .#ci-checks
+    --print-build-logs` built the musl release (`l80z8…-sce-0.3.2`) and the audit
+    derivation printed "Native binary portability audit passed: … has no forbidden
+    /nix/store/ runtime references for linux"; `result/` holds both symlinks.
+    `nix flake check --no-build` → all checks passed without forcing `.#sce-release`
+    (ci-checks lives in `packages`, not `checks`). `nix flake show` lists
+    `packages.<system>.ci-checks` on all four systems. `nix run
+    .#pkl-check-generated` up to date.
+  - Notes: Aggregate placed in the shared `let` scope after
+    `nativePortabilityAuditCheck`. On Darwin `ci-checks` builds only the release
+    package (native-on-Darwin); the real-binary audit is Linux-guarded via
+    `pkgs.lib.optionalString pkgs.stdenv.isLinux`, matching the plan's Linux-only
+    portability guarantee. Darwin lane wiring-verified only (built on x86_64-linux).
+    Context-sync classification: important (public flake-output contract change —
+    new `packages.ci-checks` aggregate; architecture/overview describe the CI
+    validation tiers). CI wiring to this output is deferred to T07.
   - Goal: Expose `packages.<system>.ci-checks` as the explicit long-running
     validation tier whose primary member is the static-musl release build (plus
     the Linux release portability audit), so `nix build .#ci-checks` is the
