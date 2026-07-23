@@ -427,8 +427,8 @@
         };
 
         # Shared development tooling for the default shell. Excludes `scePackage`
-        # and `tursoPackage` so `nix develop` does not compile the package or the
-        # Turso CLI; `devShells.database` layers Turso back on when needed.
+        # and `tursoPackage` so `nix develop` does not compile either CLI;
+        # opt-in shells layer them back on when needed.
         defaultDevShellPackages =
           (with pkgs; [
             biome
@@ -1646,8 +1646,18 @@
           shellHook = defaultDevShellHook;
         };
 
+        # Opt-in shell exposing the repository-built CLI as `sce` while keeping
+        # the default development shell fast.
+        devShells.sce = pkgs.mkShell {
+          packages = defaultDevShellPackages ++ [ scePackage ];
+
+          shellHook = ''
+            ${defaultDevShellHook}
+            echo "- sce: $(sce version)"
+          '';
+        };
+
         # Opt-in shell layering the Turso CLI on top of the default tools, so
-        # `nix develop` stays fast (no `scePackage`/`turso_cli` compile) while
         # database work can pull Turso in explicitly via `nix develop .#database`.
         devShells.database = pkgs.mkShell {
           packages = defaultDevShellPackages ++ [ tursoPackage ];

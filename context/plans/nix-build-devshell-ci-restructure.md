@@ -373,8 +373,30 @@ documented in `context/`.
     --print-build-logs`; confirm `nix flake check --no-build` does not force the
     musl release; `nix flake show`.
 
-- [ ] T07: `Restructure CI: native flake check + separate release job` (status:todo)
+- [x] T07: `Restructure CI: native flake check + separate release job` (status:done)
   - Task ID: T07
+  - Status: done
+  - Completed: 2026-07-23
+  - Files changed: .github/workflows/pr-ci.yml
+  - Evidence: `nix-ci` matrix smoke step now builds native `.#sce` (was
+    `.#default`) and runs `sce --help` / `sce version`; both-OS `nix flake check`
+    preserved. Added a distinct `release-validation` job (`[ubuntu-latest,
+    macos-latest]` matrix, same harden-runner/checkout/Nix-install/magic-cache
+    setup, `timeout-minutes: 90`) that runs `nix build .#ci-checks` on every
+    commit — pulling in `.#sce-release` and, on Linux, the real-binary portability
+    audit guarded inside `ciChecks`. `workflow-actionlint` flake check passed
+    (1.8 s). Flake attrs resolve: `.#sce` → `155gfv…-sce-0.3.2.drv` (native),
+    `.#ci-checks` → `qsl669…-sce-ci-checks.drv`. No `.#default` reference remains
+    in `pr-ci.yml`; the PR smoke job no longer builds the musl release. Release
+    publish workflows (`release-sce*.yml`) already build via `.#release-artifacts`
+    → `.#sce-release` (T02), so no publish-workflow rewiring was needed.
+  - Notes: Release validation runs on both OSes in the matrix, so macOS also
+    builds the native-on-Darwin release package every commit — the always-on
+    release coverage the Decisions section chose over path filters (intentional
+    CI-minute cost). Darwin lane wiring-verified only (evaluated on x86_64-linux).
+    Context-sync classification: important (CI job topology is a documented
+    contract in overview.md's `pr-ci.yml` description — native smoke vs separate
+    release job).
   - Goal: PR/`main`/tag CI runs `nix flake check` + native `.#sce` smoke test on
     Linux and macOS; a distinct release-validation job builds `.#sce-release`
     (via `.#ci-checks`) on every commit and audits Linux release portability;
@@ -394,8 +416,35 @@ documented in `context/`.
     release workflows; confirm no PR job builds the musl artifact except the
     dedicated release job.
 
-- [ ] T08: `Investigate Turso default-features (benchmark-gated)` (status:todo)
+- [x] T08: `Investigate Turso default-features (benchmark-gated)` (status:done)
   - Task ID: T08
+  - Status: done (deliberate no-op — change rejected/deferred, no code change)
+  - Completed: 2026-07-23
+  - Files changed: context/tmp/flake-speedup-benchmarks.md
+  - Evidence: Recorded an explicit **reject (no `cli/Cargo.toml`/`Cargo.lock`
+    change)** decision in the benchmark doc's "T08" section. `turso` 0.7.0
+    default features are `["mimalloc", "fts"]`; `default-features = false` would
+    drop `mimalloc`/`libmimalloc-sys` and the `fts`→`tantivy` full-text-search
+    stack (`sync` is already off — not a default). Cheap crate-graph signal
+    captured: baseline compiled graph is **395 crates** on both
+    `x86_64-unknown-linux-gnu` and `-musl`, including `tantivy v0.26.1` (+ ~10
+    `tantivy-*` crates) and `mimalloc v0.1.52` (+ `libmimalloc-sys v0.1.49`).
+    Correctness pre-check done: no FTS5/`VIRTUAL TABLE` in `cli/migrations/**`,
+    no `mimalloc` reference in `cli/`, encryption uses unconditional
+    `turso_core` `aegis256` — so the change is *plausibly* safe but unverified.
+    The full benchmark matrix (cold native + musl dep compiles, release builds,
+    binary/closure size, DB + encryption tests, each ×2 feature sets = 20+ min
+    of cold builds) was **not** run and was deferred as disproportionately
+    expensive for this session; the plan's Open-questions note permits this
+    deliberate no-op. Working tree left pristine (no `Cargo.toml`/`Cargo.lock`
+    edit remains).
+  - Notes: Change looks promising on the crate-graph signal but is not justified
+    under this task's evidence bar without the deferred full build + test-suite
+    measurement. Follow-up if cold-build/closure cost becomes a priority: flip
+    the flag, `cargo update`, re-count graph, native + musl `nix build`, compare
+    size, run DB + encryption tests via `nix flake check`. Context-sync
+    classification: verify-only (no code/behavior/public-contract/architecture/
+    terminology change; benchmark scratch doc under context/tmp/ only).
   - Goal: Decide, with recorded evidence, whether to set `turso` to
     `default-features = false`; change it only if it meaningfully improves builds
     and the full suite (incl. database + encryption tests) still passes.
@@ -412,8 +461,42 @@ documented in `context/`.
     `nix flake check --print-build-logs`; database + encryption test names pass;
     `du`/`nix path-info -S` for size/closure comparison.
 
-- [ ] T09: `Investigate optional root flake inputs (benchmark-gated)` (status:todo)
+- [x] T09: `Investigate optional root flake inputs (benchmark-gated)` (status:done)
   - Task ID: T09
+  - Status: done (deliberate no-op — change rejected, no `flake.nix`/`flake.lock` edit)
+  - Completed: 2026-07-23
+  - Files changed: context/tmp/flake-speedup-benchmarks.md
+  - Evidence: Recorded an explicit **reject (no `flake.nix`/`flake.lock` change)**
+    decision in the benchmark doc's "T09" section. Per-input read-only
+    measurements (x86_64-linux, warm shared store, commit e196703): `turso`
+    source-tree **51 MB disk / 45,231,832 B closure** (flake input, but its four
+    transitive inputs `nixpkgs`/`flake-utils`/`crane`/`rust-overlay` all `follows`
+    the root, so it adds **no** extra large closures to `flake.lock`), consumed by
+    `tursoToolchain` (`${turso}/rust-toolchain.toml`, flake.nix:76) and
+    `src = turso` for `packages.turso` (flake.nix:393–425);
+    `flatpak-builder-tools` **2.6 MB disk / 2,096,560 B closure**, `flake = false`
+    (no flake eval), consumed only by `nix/flatpak/cargo-sources.nix` for
+    `cargo-sources-parity`. Warm eval `hyperfine --warmup 2 -r 5 'nix flake check
+    --no-build'` = **5.318 s ± 0.073 s** — statistically unchanged from the T01
+    baseline (5.494 s ± 0.294 s), confirming these inputs are not a material eval
+    cost (eval is dominated by `nixpkgs` 472 MB + `rust-overlay` 19 MB + crane
+    pipelines). No `flake.nix` edit made, so `packages.turso`,
+    `cargo-sources-parity`, `flatpak-manifest-parity`, and
+    `flatpak-static-validation` inputs are untouched and still pass.
+  - Notes: Rejected because isolating either input yields no measurable
+    cold-fetch or warm-eval win: `flatpak-builder-tools` is 2.6 MB and
+    `flake = false`; `turso`'s transitive inputs are already `follows`-deduped, so
+    its only real cost is a one-time ~51 MB source fetch that would be identical
+    under a `fetchFromGitHub` pin, while isolation risks the public
+    `packages.turso` contract and toolchain wiring. A full "without input" A/B was
+    not run (disruptive: removing `turso` breaks the toolchain + `packages.turso`;
+    removing `flatpak-builder-tools` breaks `cargo-sources-parity`); the
+    closure-size + `follows`-dedup + unchanged-warm-eval signal answers the
+    question, and the plan's Open-questions note permits this deliberate no-op.
+    Follow-up trigger: only if cold-lock fetch time (not warm eval) becomes a
+    priority, pin `turso` via `fetchFromGitHub` to drop its `flake.lock` node.
+    Context-sync classification: verify-only (no code/behavior/public-contract/
+    architecture/terminology change; benchmark scratch doc under context/tmp/ only).
   - Goal: Measure whether the `turso` repo input and `flatpak-builder-tools`
     input materially affect cold input fetching or warm evaluation; isolate only
     with evidence, preserving the public `packages.<system>.turso` output and all
@@ -432,8 +515,41 @@ documented in `context/`.
     --no-build'` and `NIX_SHOW_STATS=1` with/without inputs where measurable;
     `nix build .#turso`; `nix flake check` Flatpak checks; results in benchmark doc.
 
-- [ ] T10: `Document build/devShell/CI architecture and benchmarks` (status:todo)
+- [x] T10: `Document build/devShell/CI architecture and benchmarks` (status:done)
   - Task ID: T10
+  - Status: done
+  - Completed: 2026-07-23
+  - Files changed: context/architecture.md, context/patterns.md,
+    context/cli/cli-command-surface.md, context/sce/cli-release-artifact-contract.md
+  - Evidence: Added a new "Build / devShell / CI performance (flake-speedup)"
+    subsection to `architecture.md` that links `context/tmp/flake-speedup-benchmarks.md`,
+    records the baseline bottlenecks with cache conditions (cold native deps
+    ~8 min/991 crates + musl ~4 min/494 crates dominant; warm eval ~5.5 s /
+    ~3.65 s CPU / ~465 MiB heap; warm `nix flake check` ~6.3 s; final crate musl
+    ~12 s cargo / ~15 s wall, turso ~3.5 s), explains why the split helps
+    (native `.#sce` default for PR smoke + devShell, musl release behind
+    `ci-checks`/`release-validation`, slimmed devShell T04, commit-independent
+    checks T03), and notes T08/T09 deliberate no-ops + T11 finalization. Removed
+    stale "release build" claims: `architecture.md:147` (`packages.sce`/`.default`
+    reframed as native dev package, release binary pointed at `.#sce-release`),
+    `architecture.md:97` (`release-artifacts` source corrected `packages.default`
+    → `.#sce-release`, verified against flake.nix:709 `nix build .#sce-release`),
+    `cli-command-surface.md` (§heading `Nix release installability` → `Nix
+    installability`, `.#default` build/installability checks → `.#sce`, added
+    `.#sce-release` release-output pointer at lines 25/29/40), `patterns.md:152`
+    ("release surfaces" → native package + distinct `packages.sce-release` note),
+    `cli-release-artifact-contract.md:61` (`nix build .#default` → `.#sce-release`).
+    The native/release split, release-only commit embedding, default vs
+    `.#database` shells, and native-vs-release CI topology were already synced
+    into `overview.md`/`architecture.md`/`patterns.md`/`glossary.md` by prior
+    tasks; this task added the missing benchmark section + link and reconciled
+    the remaining stale package-output claims. Final `grep` for
+    `.#default`/`packages.sce` release phrasing shows only accurate split
+    descriptions remaining. Benchmark doc present and linked. Docs-only change;
+    no code/build/test surface (context/*.md are not flake-check or generation
+    inputs). Context-sync classification: important (durable architecture/pattern
+    docs now describe the flake-speedup build/devShell/CI contract + benchmarks;
+    stale public-output claims corrected).
   - Goal: Update repository context/architecture docs to explain the new
     structure and record benchmark outcomes.
   - Boundaries (in/out of scope): In — update `context/architecture.md` (and
@@ -446,8 +562,37 @@ documented in `context/`.
   - Verification notes (commands or checks): re-read updated docs; cross-check
     against final `nix flake show`; ensure benchmark figures match T01/T11.
 
-- [ ] T11: `Final validation and context sync` (status:todo)
+- [x] T11: `Final validation and context sync` (status:done)
   - Task ID: T11
+  - Status: done
+  - Completed: 2026-07-23
+  - Files changed: context/tmp/flake-speedup-benchmarks.md,
+    context/sce/flake-build-performance.md, context/context-map.md,
+    context/architecture.md, context/plans/nix-build-devshell-ci-restructure.md
+  - Evidence: `nix flake check --print-build-logs` passed all current-system
+    checks in 7.00 s warm (0 rebuilt); native `.#sce` built/smoked successfully
+    (18.41 s cold final crate, Cargo 12.83 s) and reports commit `unknown`;
+    `.#sce-release` built successfully (266.00 s with missing deps, deps 4 m 02 s,
+    final Cargo 14.73 s), reports `e1967032cd14`, is a distinct static-pie Linux
+    output, and passed both the direct native-portability audit and
+    `nix build .#ci-checks` real-binary audit. Dedicated workflow-actionlint and
+    `nix run .#pkl-check-generated` passed. Default `nix develop -c true` entered
+    without building SCE/Turso; `.#database` reported Turso 0.7.0. Temporary
+    empty-commit probe preserved the exact native drv/output paths across the
+    commit change, then restored HEAD; derivation inspection found no current
+    commit in native/check derivations and found it in the release derivation.
+    `nix flake show --json` retained the public outputs. Detailed after
+    benchmarks remain in the session record
+    `context/tmp/flake-speedup-benchmarks.md`; durable results, remaining
+    bottlenecks, and T08/T09 rejected/deferred changes are summarized in
+    `context/sce/flake-build-performance.md` and linked from the context map.
+  - Notes: x86_64-linux behavior was built and executed; Darwin and aarch64
+    outputs were evaluation/wiring-verified only. Embedded asset byte correctness
+    remains covered by the passing CLI test derivation's SHA-256 assertions and
+    generated source uses `include_bytes!`. T11 context-sync classification:
+    important final-plan sync — the plan's public build/devShell/CI contracts
+    were verified in root context, the ignored session benchmark was summarized
+    in a durable domain file, and architecture/context-map links were refreshed.
   - Goal: Run all applicable validation, capture after-change benchmarks, and
     sync context.
   - Boundaries (in/out of scope): In — full validation suite, after-benchmark
@@ -466,3 +611,72 @@ documented in `context/`.
   - Verification notes (commands or checks): the exact commands above; empty-commit
     cache-reuse check for `.#sce`; `nix flake show` output diff for public
     outputs; benchmark doc updated with final numbers and remaining bottlenecks.
+
+## Validation Report
+
+### Commands run
+
+- `nix flake check --print-build-logs` → exit 0; all x86_64-linux checks passed
+  (warm, 7.00 s, no rebuilds).
+- `nix build .#sce --out-link result --print-build-logs`; `sce --help`; `sce
+  version` → build/smokes passed; native version commit `unknown`.
+- `nix build .#sce-release --out-link result-release --print-build-logs` → exit
+  0; static-musl release built and reported commit `e1967032cd14`.
+- `nix run .#native-portability-audit -- --platform linux --binary
+  result-release/bin/sce` → exit 0; no forbidden `/nix/store/` references.
+- `nix build .#ci-checks --out-link result-ci-checks --print-build-logs` → exit
+  0; real release-binary audit passed.
+- `nix build .#checks.x86_64-linux.workflow-actionlint --no-link` → exit 0; all
+  workflow files passed actionlint.
+- `nix develop -c true --print-build-logs`; `nix develop .#database -c turso
+  --version` → exit 0; default shell required no SCE/Turso build, database shell
+  provided Turso 0.7.0.
+- `nix run .#pkl-check-generated` → exit 0; generated outputs are current.
+- `hyperfine --warmup 2 -r 5 'nix flake check --no-build'` → 5.533 s ± 0.132 s.
+- Temporary empty-commit build probe → native drv/output paths unchanged; HEAD
+  restored afterward.
+- `nix derivation show` inspection → no current commit in native/test/clippy/fmt
+  derivations; release derivation contains the short commit.
+- `nix flake show --json` → public package/app/devShell outputs evaluated.
+- `git diff --check` → exit 0; updated durable root/domain context files are
+  within the 250-line sync limit (the disposable execution plan is longer).
+
+### Cleanup
+
+- Removed temporary `result`, `result-release`, and `result-ci-checks` out-links
+  after evidence capture; no debug code or generated scaffolding remains.
+- Detailed raw benchmark notes remain session-only under `context/tmp/`; durable
+  results are in `context/sce/flake-build-performance.md`.
+
+### Success-criteria verification
+
+- [x] Native `.#sce`/`.#default` and release `.#sce-release` outputs are split;
+  Linux paths are distinct and release is static/portable.
+- [x] Native/check derivations are commit-independent; release reports the real
+  commit.
+- [x] Default devShell omits SCE/Turso builds; `packages.turso` and the database
+  shell remain available.
+- [x] Embedded assets use `include_bytes!`; passing CLI SHA-256 tests preserve
+  byte correctness.
+- [x] `nix flake check` remains the primary validation entrypoint and retains the
+  prior named check inventory without forcing `.#sce-release`.
+- [x] PR CI uses native smoke tests on Linux/macOS and separate always-on release
+  validation with Linux portability auditing; actionlint passes.
+- [x] Release helpers target `.#sce-release`; release artifact shape/portability
+  contracts remain unchanged.
+- [x] Non-intentionally changed public flake outputs remain available.
+- [x] Before/after benchmarks distinguish evaluation/build/cache and
+  native/musl; rejected/deferred investigations are recorded.
+
+### Failed checks and follow-ups
+
+- The host shell lacked `file` during the first native smoke command; binary
+  inspection was rerun successfully with `nix shell nixpkgs#file -c file`.
+  No product validation failed.
+
+### Residual risks
+
+- Darwin and aarch64 outputs were evaluation/wiring-verified only from the
+  x86_64-linux host; CI provides native Linux/macOS execution.
+- Always-on `release-validation` intentionally retains the release-build cost on
+  every PR/push; path filtering remains deferred.

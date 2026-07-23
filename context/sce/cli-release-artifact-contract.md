@@ -58,7 +58,7 @@ This file captures the current shared release artifact foundation plus the appro
 
 ## Determinism rules
 
-- Release archives are built from the root flake package output (`nix build .#default`).
+- Release archives are built from the static-musl release output (`nix build .#sce-release`; `nix run .#release-artifacts` builds via `.#sce-release`), not the native `.#default`/`.#sce` package.
 - Tarball creation uses stable file ordering plus fixed ownership and mtime metadata.
 - Gzip output is emitted with deterministic headers.
 - Checksum files use SHA-256 and the standard `<hash><two spaces><filename>` line format.

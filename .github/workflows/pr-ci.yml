@@ -44,8 +44,38 @@ jobs:
         run: |
           time nix flake check --print-build-logs
 
-      - name: Build and smoke-test CLI
+      - name: Build and smoke-test native CLI
         run: |
-          time nix build .#default --out-link result --print-build-logs
+          time nix build .#sce --out-link result --print-build-logs
           ./result/bin/sce --help
           ./result/bin/sce version
+
+  release-validation:
+    name: Release validation (${{ matrix.os }})
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Enable Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Build release package and audit portability
+        run: |
+          time nix build .#ci-checks --out-link result-ci-checks --print-build-logs
