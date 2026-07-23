@@ -1,0 +1,203 @@
+import "../base/instruction-unit-inventory.pkl" as inventory
+import "opencode-content.pkl" as opencode
+import "opencode-automated-content.pkl" as opencodeAutomated
+import "claude-content.pkl" as claude
+import "pi-content.pkl" as pi
+
+/// One rendered instruction unit presented to the validator.
+class UnitInput {
+  path: String
+  profile: "manual"|"automated"
+  target: "opencode"|"claude"|"pi"
+  kind: "agent"|"command"|"skill"
+  slug: String
+  frontmatter: String
+  body: String
+}
+
+/// Stable diagnostic payload. Text rendering follows `<path> [<kind>] <rule>: ...; expected: ...`.
+class Diagnostic {
+  path: String
+  kind: String
+  rule: String
+  message: String
+  expected: String
+  rendered: String = "\(path) [\(kind)] \(rule): \(message); expected: \(expected)"
+}
+
+local expectedSections = (inventory.requiredSections + inventory.optionalSections).join(" -> ")
+local allowedSections = new Mapping {
+  for (section in inventory.requiredSections) { [section] = true }
+  for (section in inventory.optionalSections) { [section] = true }
+}
+local availableSkills = new Mapping {
+  // The automated skill inventory is the active superset of the manual skill inventory.
+  for (slug, _ in inventory.automatedSkills) { [slug] = true }
+}
+
+local requiredFrontmatter = new Mapping {
+  ["opencode:agent"] = List("name", "description", "permission")
+  ["opencode:command"] = List("description", "agent")
+  ["opencode:skill"] = List("name", "description", "compatibility")
+  ["claude:agent"] = List("name", "description", "tools")
+  ["claude:command"] = List("description", "allowed-tools")
+  ["claude:skill"] = List("name", "description", "compatibility")
+  ["pi:agent"] = List("description", "argument-hint")
+  ["pi:command"] = List("description", "argument-hint")
+  ["pi:skill"] = List("name", "description")
+}
+
+local fencedCode = Regex(#"(?s)```.*?```|~~~.*?~~~"#)
+local levelTwoHeading = Regex(#"(?m)^##\s+(.+?)\s*$"#)
+local skillReference = Regex(#"sce-[a-z0-9-]+"#)
+local agentSkillPermissionReference = Regex(#"(?m)^\s+[\"']?(sce-[a-z0-9-]+)[\"']?:\s*"#)
+
+local function headings(body: String): List<String> =
+  levelTwoHeading.findMatchesIn(body.replaceAll(fencedCode, ""))
+    .map((match) -> match.groups[1].value)
+
+local function hasFrontmatterField(frontmatter: String, field: String): Boolean =
+  !Regex("(?m)^" + field + ":(?:\\s|$)").findMatchesIn(frontmatter).isEmpty
+
+local function skillDirectory(path: String): String =
+  let (parts = path.split("/")) parts[parts.length - 2]
+
+local function fieldValue(frontmatter: String, field: String): String? =
+  let (matches = Regex("(?m)^" + field + ":\\s*[\\\"']?([^\\\"'\\n]+)[\\\"']?\\s*$").findMatchesIn(frontmatter))
+    if (matches.isEmpty) null else matches.first.groups[1].value
+
+local function newDiagnostic(unit: UnitInput, ruleName: String, messageText: String, expectedShape: String): Diagnostic =
+  new Diagnostic {
+    path = unit.path
+    kind = unit.kind
+    rule = ruleName
+    message = messageText
+    expected = expectedShape
+  }
+
+/// Validate one rendered unit. Discovery/path ordering remains inventory-owned.
+function validate(unit: UnitInput): Listing<Diagnostic> =
+  let (bodyHeadings = headings(unit.body))
+  let (recognizedHeadings = bodyHeadings.filter((heading) -> allowedSections.getOrNull(heading) == true))
+  let (presentOptional = inventory.optionalSections.filter((section) -> recognizedHeadings.contains(section)))
+  let (expectedPresentHeadings = inventory.requiredSections + presentOptional)
+  new Listing {
+    for (field in requiredFrontmatter["\(unit.target):\(unit.kind)"]) {
+      when (!hasFrontmatterField(unit.frontmatter, field)) {
+        newDiagnostic(unit, "frontmatter.required_field", "missing frontmatter field \(field)", "\(field): <value>")
+      }
+    }
+
+    when (!unit.body.startsWith("## Purpose\n")) {
+      newDiagnostic(unit, "body.starts_with_purpose", "body does not begin with ## Purpose", "first body line is ## Purpose")
+    }
+
+    for (section in inventory.requiredSections) {
+      when (bodyHeadings.filter((heading) -> heading == section).length == 0) {
+        newDiagnostic(unit, "body.required_section", "missing required section \(section)", "exactly one ## \(section)")
+      }
+      when (bodyHeadings.filter((heading) -> heading == section).length > 1) {
+        newDiagnostic(unit, "body.section_unique", "section \(section) appears \(bodyHeadings.filter((heading) -> heading == section).length) times", "exactly one ## \(section)")
+      }
+    }
+
+    for (heading in bodyHeadings) {
+      when (allowedSections.getOrNull(heading) != true) {
+        newDiagnostic(unit, "body.known_sections", "unknown level-two heading \(heading)", expectedSections)
+      }
+      when (heading.toLowerCase() == "when to use") {
+        newDiagnostic(unit, "body.when_to_use", "body contains a When to use section", "trigger conditions appear only in frontmatter description")
+      }
+    }
+
+    when (recognizedHeadings != expectedPresentHeadings) {
+      newDiagnostic(unit, "body.section_order", "section order is \(recognizedHeadings.join(" -> "))", expectedPresentHeadings.join(" -> "))
+    }
+
+    when (bodyHeadings.contains("Examples") && bodyHeadings.last != "Examples") {
+      newDiagnostic(unit, "body.examples_final", "Examples is not the final level-two section", "## Examples is final")
+    }
+
+    when (unit.kind == "skill") {
+      when (fieldValue(unit.frontmatter, "name") != null && fieldValue(unit.frontmatter, "name") != skillDirectory(unit.path)) {
+        newDiagnostic(unit, "skill.name_directory", "skill name \(fieldValue(unit.frontmatter, "name")) does not match directory \(skillDirectory(unit.path))", skillDirectory(unit.path))
+      }
+    }
+
+    when (unit.target == "opencode" && unit.kind == "command") {
+      for (match in skillReference.findMatchesIn(unit.frontmatter)) {
+        when (availableSkills.getOrNull(match.value) != true) {
+          newDiagnostic(unit, "command.skill_reference", "command references missing skill \(match.value)", "an available skill name")
+        }
+      }
+    }
+
+    when (unit.target == "opencode" && unit.kind == "agent") {
+      for (match in agentSkillPermissionReference.findMatchesIn(unit.frontmatter)) {
+        when (availableSkills.getOrNull(match.groups[1].value) != true) {
+          newDiagnostic(unit, "agent.skill_permission_reference", "agent permission references missing skill \(match.groups[1].value)", "an available skill name or *")
+        }
+      }
+    }
+  }
+
+local function manualDocument(target: String, kind: String, slug: String) =
+  if (target == "opencode")
+    if (kind == "agent") opencode.agents[slug]
+    else if (kind == "command") opencode.commands[slug]
+    else opencode.skills[slug]
+  else if (target == "claude")
+    if (kind == "agent") claude.agents[slug]
+    else if (kind == "command") claude.commands[slug]
+    else claude.skills[slug]
+  else
+    if (kind == "agent") pi.agentPrompts[slug]
+    else if (kind == "command") pi.commands[slug]
+    else pi.skills[slug]
+
+local function manualTargetPath(unit: inventory.InventoryUnit, target: String): String =
+  if (target == "opencode") unit.destinations.opencode
+  else if (target == "claude") unit.destinations.claude
+  else unit.destinations.pi
+
+/// All 45 manual target documents plus 17 automated OpenCode documents discovered from the inventory.
+local discoveredProductionUnits: Listing<UnitInput> = new {
+  for (_, unit in inventory.manualUnits) {
+    for (targetName in unit.targets) {
+      new UnitInput {
+        path = manualTargetPath(unit, targetName)
+        profile = "manual"
+        target = targetName
+        kind = unit.kind
+        slug = unit.slug
+        frontmatter = manualDocument(targetName, unit.kind, unit.slug).frontmatter
+        body = manualDocument(targetName, unit.kind, unit.slug).body
+      }
+    }
+  }
+  for (_, unit in inventory.automatedUnits) {
+    new UnitInput {
+      path = unit.destinations.opencode
+      profile = "automated"
+      target = "opencode"
+      kind = unit.kind
+      slug = unit.slug
+      frontmatter = if (unit.kind == "agent") opencodeAutomated.agents[unit.slug].frontmatter
+        else if (unit.kind == "command") opencodeAutomated.commands[unit.slug].frontmatter
+        else opencodeAutomated.skills[unit.slug].frontmatter
+      body = if (unit.kind == "agent") opencodeAutomated.agents[unit.slug].body
+        else if (unit.kind == "command") opencodeAutomated.commands[unit.slug].body
+        else opencodeAutomated.skills[unit.slug].body
+    }
+  }
+}
+
+/// Production validation order is path-sorted independently of renderer/inventory insertion details.
+productionUnits: List<UnitInput> = discoveredProductionUnits.toList().sortBy((unit) -> unit.path)
+
+/// Deterministic production diagnostics. The check module constrains this listing to be empty.
+productionDiagnostics: Listing<Diagnostic> = new {
+  for (unit in productionUnits) {
+    for (diagnostic in validate(unit)) { diagnostic }
+  }
+}

@@ -1,0 +1,238 @@
+import "../base/instruction-unit-inventory.pkl" as inventory
+import "instruction-unit-validator.pkl" as validator
+
+local function body(sections: List<String>): String =
+  sections.map((section) -> "## \(section)\n- Fixture content.").join("\n\n") + "\n"
+
+local validAgentFrontmatter = """
+---
+name: "Planner"
+description: Valid fixture agent.
+permission:
+  default: ask
+  skill:
+    "*": ask
+    "sce-plan-review": allow
+---
+"""
+
+local validCommandFrontmatter = """
+---
+description: Valid fixture command.
+agent: "Shared Context Code"
+entry-skill: "sce-plan-review"
+skills:
+  - "sce-plan-review"
+---
+"""
+
+local validSkillFrontmatter = """
+---
+name: sce-plan-review
+description: Valid fixture skill.
+compatibility: opencode
+---
+"""
+
+local function agentFixture(fixtureName: String, profileName: String, sections: List<String>): validator.UnitInput =
+  new validator.UnitInput {
+    path = "fixtures/\(fixtureName)/.opencode/agent/Planner.md"
+    profile = profileName
+    target = "opencode"
+    kind = "agent"
+    slug = "planner"
+    frontmatter = validAgentFrontmatter
+    body = body(sections)
+  }
+
+local function commandFixture(fixtureName: String, frontmatterText: String): validator.UnitInput =
+  new validator.UnitInput {
+    path = "fixtures/\(fixtureName)/.opencode/command/run.md"
+    profile = "manual"
+    target = "opencode"
+    kind = "command"
+    slug = "run"
+    frontmatter = frontmatterText
+    body = body(inventory.requiredSections)
+  }
+
+local function skillFixture(fixtureName: String, directoryName: String, skillNameValue: String): validator.UnitInput =
+  new validator.UnitInput {
+    path = "fixtures/\(fixtureName)/.opencode/skills/\(directoryName)/SKILL.md"
+    profile = "manual"
+    target = "opencode"
+    kind = "skill"
+    slug = directoryName
+    frontmatter = """
+---
+name: \(skillNameValue)
+description: Fixture skill.
+compatibility: opencode
+---
+"""
+    body = body(inventory.requiredSections)
+  }
+
+class FixtureCase {
+  name: String
+  unit: validator.UnitInput
+  expectedRule: String?
+}
+
+validFixtures: Listing<FixtureCase> = new {
+  new FixtureCase {
+    name = "valid-agent"
+    unit = agentFixture("valid-agent", "manual", inventory.requiredSections)
+    expectedRule = null
+  }
+  new FixtureCase {
+    name = "valid-command"
+    unit = commandFixture("valid-command", validCommandFrontmatter)
+    expectedRule = null
+  }
+  new FixtureCase {
+    name = "valid-skill"
+    unit = skillFixture("valid-skill", "sce-plan-review", "sce-plan-review")
+    expectedRule = null
+  }
+  new FixtureCase {
+    name = "valid-manual-profile"
+    unit = agentFixture("valid-manual-profile", "manual", inventory.requiredSections)
+    expectedRule = null
+  }
+  new FixtureCase {
+    name = "valid-automated-profile"
+    unit = agentFixture("valid-automated-profile", "automated", inventory.requiredSections)
+    expectedRule = null
+  }
+}
+
+invalidFixtures: Listing<FixtureCase> = new {
+  new FixtureCase {
+    name = "missing-purpose"
+    unit = agentFixture("missing-purpose", "manual", inventory.requiredSections.drop(1))
+    expectedRule = "body.required_section"
+  }
+  new FixtureCase {
+    name = "wrong-order"
+    unit = agentFixture("wrong-order", "manual", List(
+      "Purpose", "Preconditions", "Inputs", "Workflow", "Guardrails", "Outputs",
+      "Completion criteria", "Failure handling", "Related units"
+    ))
+    expectedRule = "body.section_order"
+  }
+  new FixtureCase {
+    name = "duplicate-section"
+    unit = agentFixture("duplicate-section", "manual", List(
+      "Purpose", "Inputs", "Inputs", "Preconditions", "Workflow", "Guardrails", "Outputs",
+      "Completion criteria", "Failure handling", "Related units"
+    ))
+    expectedRule = "body.section_unique"
+  }
+  new FixtureCase {
+    name = "unknown-heading"
+    unit = agentFixture("unknown-heading", "manual", inventory.requiredSections.add("Notes"))
+    expectedRule = "body.known_sections"
+  }
+  new FixtureCase {
+    name = "non-final-examples"
+    unit = agentFixture("non-final-examples", "manual", inventory.requiredSections.add("Examples").add("Reference"))
+    expectedRule = "body.examples_final"
+  }
+  new FixtureCase {
+    name = "body-when-to-use"
+    unit = agentFixture("body-when-to-use", "manual", inventory.requiredSections.add("When to use"))
+    expectedRule = "body.when_to_use"
+  }
+  new FixtureCase {
+    name = "missing-frontmatter-field"
+    unit = commandFixture("missing-frontmatter-field", """
+---
+description: Missing agent field.
+---
+""")
+    expectedRule = "frontmatter.required_field"
+  }
+  new FixtureCase {
+    name = "skill-name-directory-mismatch"
+    unit = skillFixture("skill-name-directory-mismatch", "sce-directory", "sce-other")
+    expectedRule = "skill.name_directory"
+  }
+  new FixtureCase {
+    name = "invalid-command-skill-reference"
+    unit = commandFixture("invalid-command-skill-reference", """
+---
+description: Missing skill fixture.
+agent: "Shared Context Code"
+entry-skill: "sce-missing"
+skills:
+  - "sce-missing"
+---
+""")
+    expectedRule = "command.skill_reference"
+  }
+  new FixtureCase {
+    name = "invalid-agent-skill-permission-reference"
+    unit = new validator.UnitInput {
+      path = "fixtures/invalid-agent-skill-permission-reference/.opencode/agent/Planner.md"
+      profile = "manual"
+      target = "opencode"
+      kind = "agent"
+      slug = "planner"
+      frontmatter = """
+---
+name: "Planner"
+description: Invalid permission fixture.
+permission:
+  default: ask
+  skill:
+    "sce-missing": allow
+---
+"""
+      body = body(inventory.requiredSections)
+    }
+    expectedRule = "agent.skill_permission_reference"
+  }
+}
+
+fixtureResults = new {
+  valid {
+    for (fixture in validFixtures) {
+      [fixture.name] = new {
+        diagnosticCount = validator.validate(fixture.unit).length
+        passed = diagnosticCount == 0
+      }
+    }
+  }
+  invalid {
+    for (fixture in invalidFixtures) {
+      [fixture.name] = new {
+        rules = validator.validate(fixture.unit).toList().map((diagnostic) -> diagnostic.rule)
+        passed = rules.contains(fixture.expectedRule)
+      }
+    }
+  }
+}
+
+/// Evaluation fails if production output is invalid or any focused fixture does not prove its rule.
+productionDiagnostics: Listing<validator.Diagnostic>(isEmpty) = validator.productionDiagnostics
+validFixtureFailures: Listing<String>(isEmpty) = new {
+  for (name, result in fixtureResults.valid) {
+    when (!result.passed) { name }
+  }
+}
+invalidFixtureFailures: Listing<String>(isEmpty) = new {
+  for (name, result in fixtureResults.invalid) {
+    when (!result.passed) { name }
+  }
+}
+
+summary = new {
+  productionUnitCount = validator.productionUnits.length
+  productionDiagnosticCount = productionDiagnostics.length
+  validFixtureCount = validFixtures.length
+  invalidFixtureCount = invalidFixtures.length
+  validFixtureFailureCount = validFixtureFailures.length
+  invalidFixtureFailureCount = invalidFixtureFailures.length
+  status = "VALIDATION_OK"
+}
