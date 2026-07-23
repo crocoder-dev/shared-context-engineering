@@ -312,12 +312,73 @@ where
         anyhow::anyhow!("failed to lock log file '{}': {error}", path.display())
     })?;
 
+    match persist_log_line(path, redacted_line) {
+        Ok(write_target) => {
+            run_log_retention_after_creation(path, write_target, cleanup);
+            Ok(())
+        }
+        Err(primary_error) => attempt_v2_log_fallback(
+            path,
+            redacted_line,
+            &primary_error,
+            |fallback_path, line| append_log_line_once_with_cleanup(fallback_path, line, cleanup),
+        ),
+    }
+}
+
+fn attempt_v2_log_fallback<F>(
+    primary_path: &Path,
+    redacted_line: &str,
+    primary_error: &anyhow::Error,
+    persist_fallback: F,
+) -> Result<()>
+where
+    F: FnOnce(&Path, &str) -> Result<()>,
+{
+    let fallback_path = v2_log_path(primary_path);
+    persist_fallback(&fallback_path, redacted_line).map_err(|fallback_error| {
+        anyhow::anyhow!(
+            "primary log file persistence failed for '{}': {primary_error:#}; v2 fallback log file persistence failed for '{}': {fallback_error:#}",
+            primary_path.display(),
+            fallback_path.display(),
+        )
+    })
+}
+
+fn append_log_line_once_with_cleanup<F>(path: &Path, redacted_line: &str, cleanup: F) -> Result<()>
+where
+    F: FnOnce(&Path) -> Result<()>,
+{
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create log directory '{}'", parent.display()))?;
+    }
+
+    let lock = file_log_lock(path);
+    let _guard = lock.lock().map_err(|error| {
+        anyhow::anyhow!("failed to lock log file '{}': {error}", path.display())
+    })?;
+
+    let write_target = persist_log_line(path, redacted_line)?;
+    run_log_retention_after_creation(path, write_target, cleanup);
+
+    Ok(())
+}
+
+fn persist_log_line(path: &Path, redacted_line: &str) -> Result<LogWriteTarget> {
     let (mut file, write_target) = open_log_file_for_append(path)?;
     writeln!(file, "{redacted_line}")
         .with_context(|| format!("failed to append log line to '{}'", path.display()))?;
     file.flush()
         .with_context(|| format!("failed to flush log file '{}'", path.display()))?;
 
+    Ok(write_target)
+}
+
+fn run_log_retention_after_creation<F>(path: &Path, write_target: LogWriteTarget, cleanup: F)
+where
+    F: FnOnce(&Path) -> Result<()>,
+{
     if write_target == LogWriteTarget::Created {
         if let Some(parent) = path.parent() {
             if let Err(error) = cleanup(parent) {
@@ -328,8 +389,13 @@ where
             }
         }
     }
+}
 
-    Ok(())
+fn v2_log_path(path: &Path) -> PathBuf {
+    let mut file_name = path.file_stem().unwrap_or(path.as_os_str()).to_os_string();
+    file_name.push("-v2.");
+    file_name.push(LOG_FILE_EXTENSION);
+    path.with_file_name(file_name)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
