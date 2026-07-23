@@ -32,6 +32,12 @@ Out of scope for this contract task:
 
 No additional hook types are installed by this workflow.
 
+## Installed hook bootstrap behavior
+
+Every canonical installed hook is a POSIX `sh` script using `set -eu`. Each hook checks `command -v sce` before invocation; when `sce` is unavailable, it prints branded, multiline installation guidance to stderr and exits successfully so the Git operation is not blocked solely by a missing CLI. ANSI styling is emitted only when stderr is a terminal, leaving redirected output unstyled.
+
+When `sce` is available, hook arguments are forwarded unchanged and failures propagate through `exec`. Remote metadata lookup and `--remote-url` forwarding are exclusive to `post-commit`; `pre-commit` and `commit-msg` invoke only their matching `sce hooks` subcommands. The canonical script details and validation posture live in [setup-githooks-hook-asset-packaging.md](setup-githooks-hook-asset-packaging.md).
+
 ## Target path resolution
 
 For a selected target repository, setup resolves effective hook destination using git truth:

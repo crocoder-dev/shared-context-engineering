@@ -42,6 +42,8 @@ The flow iterates canonical embedded required hooks (`pre-commit`, `commit-msg`,
 - `Updated`: hook existed but content and/or executable bit did not match canonical state.
 - `Skipped`: hook already matched canonical bytes and executable state.
 
+The installed bytes include the shared non-blocking missing-CLI bootstrap: all three hooks warn to stderr and exit successfully when `sce` is unavailable, while an available `sce` receives unchanged hook arguments and its failures propagate. Only `post-commit` performs origin lookup and remote metadata forwarding; see [setup-githooks-hook-asset-packaging.md](setup-githooks-hook-asset-packaging.md) for the canonical payload contract.
+
 ## Staged write and remove-and-replace behavior
 
 When replacing an existing hook, setup always writes canonical bytes to a unique staging file in the hooks directory, enforces executable permissions on the staged payload, removes the existing hook directly, and swaps the staged content into the final hook path.

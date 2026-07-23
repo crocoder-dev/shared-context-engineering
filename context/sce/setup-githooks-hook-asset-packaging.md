@@ -14,11 +14,13 @@ Task `sce-setup-githooks-any-repo` `T02` defines how required git-hook templates
 
 These templates are emitted into `OUT_DIR/setup_embedded_assets.rs` as `HOOK_EMBEDDED_ASSETS` with deterministic sorted relative paths.
 
-Current `post-commit` template behavior is:
+All three templates are POSIX `sh` scripts with `set -eu`. Before invoking `sce`, each checks `command -v sce`; when the CLI is unavailable, it prints branded, multiline installation guidance to stderr and exits successfully so Git operations are not blocked solely by a missing local CLI installation. ANSI styling is emitted only when stderr is a terminal; redirected output remains plain text. Failures from an available `sce` command continue to propagate through `exec`.
 
-- resolve `origin` with `git remote get-url origin`; if `sce` is not on `PATH`, print `sce CLI not found. Install it from https://sce.crocoder.dev/docs/getting-started#install-cli` to stderr and exit successfully so missing local CLI installation does not block the commit
-- if the remote lookup returns a non-empty URL, invoke `sce hooks post-commit --vcs git --remote-url "$remote_url" "$@"`
-- otherwise still invoke `sce hooks post-commit --vcs git "$@"`; Rust-side validation fails this missing-URL path without blocking git commit completion under the hook script policy.
+Available-CLI behavior remains hook-specific:
+
+- `pre-commit` invokes `sce hooks pre-commit "$@"`.
+- `commit-msg` invokes `sce hooks commit-msg "$@"`.
+- `post-commit` resolves `origin` with `git remote get-url origin`; when the lookup returns a non-empty URL, it invokes `sce hooks post-commit --vcs git --remote-url "$remote_url" "$@"`, otherwise it invokes `sce hooks post-commit --vcs git "$@"`. Remote metadata forwarding is exclusive to `post-commit`.
 
 ## Setup-service accessor surface
 
@@ -35,9 +37,4 @@ Current `post-commit` template behavior is:
 
 ## Determinism and validation
 
-Packaging determinism is enforced by setup tests in `cli/src/services/setup/mod.rs`:
-
-- `embedded_hook_manifest_is_complete_sorted_and_normalized`
-- `required_hook_lookup_resolves_each_canonical_hook`
-
-These tests verify manifest completeness (exactly three required hooks), normalized relative paths, sorted ordering, and stable hook lookup semantics.
+Generated-output parity and repository validation verify that the embedded asset manifest remains buildable and synchronized with its canonical source inputs. The hook scripts can also be checked directly with POSIX `sh -n`; behavioral test coverage for these shell assets is not currently retained in the Rust test suite.
