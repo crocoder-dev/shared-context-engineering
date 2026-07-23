@@ -1,4 +1,28 @@
 #!/bin/sh
 set -eu
 
+if ! command -v sce >/dev/null 2>&1; then
+  # sce brand colors — only emit ANSI when stderr is a real terminal
+  if [ -t 2 ]; then
+    RED="$(printf '\033[38;2;220;38;38m')"  # red #dc2626
+    G="$(printf '\033[38;2;5;150;105m')"    # brand green #059669
+    BOLD="$(printf '\033[1m')"
+    R="$(printf '\033[0m')"
+  else
+    RED='' G='' BOLD='' R=''
+  fi
+
+  url="https://sce.crocoder.dev/docs/getting-started#install-cli"
+
+  {
+    printf '\n'
+    printf '  %s%s✗%s  %ssce CLI not found%s\n' "$BOLD" "$RED" "$R" "$BOLD" "$R"
+    printf '  %s→%s  Install it from:\n' "$G" "$R"
+    printf '     %s%s%s%s\n' "$BOLD" "$RED" "$url" "$R"
+    printf '\n'
+  } >&2
+
+  exit 0
+fi
+
 exec sce hooks pre-commit "$@"
