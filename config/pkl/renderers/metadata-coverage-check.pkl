@@ -135,10 +135,14 @@ claudeSkillCoverage {
 }
 
 piCommandCoverage {
-  for (unitSlug, _ in shared.workflows) {
+  for (unitSlug, unit in shared.workflows) {
     [unitSlug] = new {
       description = common.commandDescriptions[unitSlug]
       argumentHint = pi.commandArgumentHints[unitSlug]
+      executionProfile = unit.executionProfile
+      composedMarker = sharedCommon.profileCompositionMarker(unit.executionProfile)
+      entrySkill = unit.entrySkill
+      entrySkillPath = ".pi/skills/\(unit.entrySkill)/SKILL.md"
     }
   }
 }
@@ -192,4 +196,56 @@ opencodeAutomatedSkillCoverage {
       compatibility = opencodeAutomated.skillCompatibility
     }
   }
+}
+
+/// Evaluation gate proving metadata covers every logical kind, projection classification, and
+/// canonical capability translation without re-owning policy intent.
+metadataCoverageProblems: Listing<String>(isEmpty) = new {
+  when (inventoryCoverage.counts.renderedInstructionFiles != 60) {
+    "metadata coverage expected 60 rendered instruction projections"
+  }
+  when (inventoryCoverage.counts.committedInstructionFiles != 103) {
+    "metadata coverage expected 103 committed instruction files"
+  }
+  when (projectionCoverage.toMap().length != inventoryCoverage.counts.renderedInstructionFiles) {
+    "projection metadata coverage does not match the inventory"
+  }
+  when (opencodeCapabilityTranslationCoverage.toMap().length != sharedCommon.capabilityIds.length) {
+    "OpenCode capability translation coverage is incomplete"
+  }
+  when (claudeCapabilityTranslationCoverage.toMap().length != sharedCommon.capabilityIds.length) {
+    "Claude capability translation coverage is incomplete"
+  }
+  when (opencodeAgentCoverage.toMap().length != shared.executionProfiles.length
+    || opencodeCommandCoverage.toMap().length != shared.workflows.length
+    || opencodeSkillCoverage.toMap().length != shared.skills.length) {
+    "manual OpenCode logical-kind coverage is incomplete"
+  }
+  when (claudeAgentCoverage.toMap().length != shared.executionProfiles.length
+    || claudeCommandCoverage.toMap().length != shared.workflows.length
+    || claudeSkillCoverage.toMap().length != shared.skills.length) {
+    "Claude logical-kind coverage is incomplete"
+  }
+  when (piCommandCoverage.toMap().length != shared.workflows.length
+    || piSkillCoverage.toMap().length != shared.skills.length) {
+    "Pi workflow/skill coverage is incomplete"
+  }
+  when (opencodeAutomatedAgentCoverage.toMap().length != sharedAutomated.executionProfiles.length
+    || opencodeAutomatedCommandCoverage.toMap().length != sharedAutomated.workflows.length
+    || opencodeAutomatedSkillCoverage.toMap().length != sharedAutomated.skills.length) {
+    "automated OpenCode logical-kind coverage is incomplete"
+  }
+}
+
+summary = new {
+  manualLogicalUnits = inventoryCoverage.manualUnitCount
+  automatedLogicalUnits = inventoryCoverage.automatedUnitCount
+  projections = projectionCoverage.toMap().length
+  renderedInstructionFiles = inventoryCoverage.counts.renderedInstructionFiles
+  committedInstructionFiles = inventoryCoverage.counts.committedInstructionFiles
+  capabilityTranslations = new {
+    opencode = opencodeCapabilityTranslationCoverage.toMap().length
+    claude = claudeCapabilityTranslationCoverage.toMap().length
+  }
+  status = "METADATA_COVERAGE_OK"
 }

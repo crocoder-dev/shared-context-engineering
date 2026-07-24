@@ -1,3 +1,4 @@
+import "../base/shared-content-common.pkl" as sharedCommon
 import "../base/shared-content.pkl" as shared
 import "common.pkl" as common
 import "pi-metadata.pkl" as metadata
@@ -13,25 +14,30 @@ argument-hint: "\(metadata.commandArgumentHints[unitSlug])"
   }
 }
 
-local agentPromptFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.executionProfiles) {
-    [unitSlug] = """
----
-description: "\(metadata.agentDescriptions[unitSlug])"
-argument-hint: "\(metadata.agentArgumentHints[unitSlug])"
----
-"""
-  }
-}
+local function entrySkillReadInstruction(entrySkill: String): String =
+  "- Before acting, read `.pi/skills/\(entrySkill)/SKILL.md` completely and follow it as the entry procedure."
 
-local agentPromptBodyBySlug = new Mapping {
-  for (unitSlug, unit in shared.executionProfiles) {
-    // Role activation and argument intent live in the Pi frontmatter (`description` /
-    // `argument-hint`); the prompt body is the standardized canonical body so it begins at
-    // `## Purpose` with no prose inserted before the first required section.
-    [unitSlug] = common.renderBody(common.nativeAgentBody(unit))
+local function piComposedBody(workflowUnit: sharedCommon.WorkflowUnit): sharedCommon.InstructionBody =
+  let (composed = common.composeProfile(
+    shared.executionProfiles[workflowUnit.executionProfile],
+    workflowUnit
+  ))
+  new sharedCommon.InstructionBody {
+    purpose = composed.purpose
+    inputs = composed.inputs
+    preconditions = """
+\(entrySkillReadInstruction(workflowUnit.entrySkill))
+\(composed.preconditions)
+"""
+    workflow = composed.workflow
+    guardrails = composed.guardrails
+    outputs = composed.outputs
+    completionCriteria = composed.completionCriteria
+    failureHandling = composed.failureHandling
+    relatedUnits = composed.relatedUnits
+    reference = composed.reference
+    examples = composed.examples
   }
-}
 
 local skillFrontmatterBySlug = new Mapping {
   for (unitSlug, _ in shared.skills) {
@@ -44,24 +50,13 @@ description: \(common.skillDescriptions[unitSlug])
   }
 }
 
-agentPrompts {
-  for (unitSlug, unit in shared.executionProfiles) {
-    [unitSlug] = new common.RenderedTargetDocument {
-      slug = unitSlug
-      title = unit.title
-      frontmatter = agentPromptFrontmatterBySlug[unitSlug]
-      body = agentPromptBodyBySlug[unitSlug]
-    }
-  }
-}
-
 commands {
   for (unitSlug, unit in shared.workflows) {
     [unitSlug] = new common.RenderedTargetDocument {
       slug = unitSlug
       title = unit.title
       frontmatter = commandFrontmatterBySlug[unitSlug]
-      body = common.renderBody(unit.body)
+      body = common.renderBody(piComposedBody(unit))
     }
   }
 }

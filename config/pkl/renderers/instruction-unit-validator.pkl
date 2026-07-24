@@ -1,7 +1,12 @@
 import "../base/instruction-unit-inventory.pkl" as inventory
+import "../base/shared-content-common.pkl" as common
+import "../base/shared-content.pkl" as manual
+import "../base/shared-content-automated.pkl" as automated
 import "opencode-content.pkl" as opencode
 import "opencode-automated-content.pkl" as opencodeAutomated
+import "opencode-metadata.pkl" as opencodeMetadata
 import "claude-content.pkl" as claude
+import "claude-metadata.pkl" as claudeMetadata
 import "pi-content.pkl" as pi
 
 /// One rendered instruction unit presented to the validator.
@@ -75,6 +80,25 @@ local function newDiagnostic(unit: UnitInput, ruleName: String, messageText: Str
     expected = expectedShape
   }
 
+local function workflowFor(unit: UnitInput): common.WorkflowUnit =
+  if (unit.profile == "manual") manual.workflows[unit.slug] else automated.workflows[unit.slug]
+
+local function profileFor(unit: UnitInput): common.ExecutionProfile =
+  let (workflow = workflowFor(unit))
+    if (unit.profile == "manual") manual.executionProfiles[workflow.executionProfile]
+    else automated.executionProfiles[workflow.executionProfile]
+
+local function effectivePolicyFor(unit: UnitInput): common.ToolPolicy =
+  if (unit.profile == "manual") manual.effectiveWorkflowPolicies[unit.slug]
+  else automated.effectiveWorkflowPolicies[unit.slug]
+
+local function isKnownWorkflow(unit: UnitInput): Boolean =
+  unit.kind == "command" && if (unit.profile == "manual") manual.workflows.keys.contains(unit.slug)
+    else automated.workflows.keys.contains(unit.slug)
+
+local function piEntrySkillRead(entrySkill: String): String =
+  "- Before acting, read `.pi/skills/\(entrySkill)/SKILL.md` completely and follow it as the entry procedure."
+
 /// Validate one rendered unit. Discovery/path ordering remains inventory-owned.
 function validate(unit: UnitInput): Listing<Diagnostic> =
   let (bodyHeadings = headings(unit.body))
@@ -137,6 +161,62 @@ function validate(unit: UnitInput): Listing<Diagnostic> =
         when (availableSkills.getOrNull(match.groups[1].value) != true) {
           newDiagnostic(unit, "agent.skill_permission_reference", "agent permission references missing skill \(match.groups[1].value)", "an available skill name or *")
         }
+      }
+      when (!unit.frontmatter.contains("mode: primary")) {
+        newDiagnostic(unit, "opencode.primary_mode", "execution profile is not a primary agent", "mode: primary")
+      }
+    }
+
+    when (unit.target == "opencode" && isKnownWorkflow(unit)) {
+      when (!unit.frontmatter.contains("agent: \"\(profileFor(unit).title)\"")) {
+        newDiagnostic(unit, "opencode.agent_binding", "workflow does not bind its canonical execution profile", "agent: \"\(profileFor(unit).title)\"")
+      }
+      when (!unit.frontmatter.contains("subtask: false")) {
+        newDiagnostic(unit, "opencode.subtask", "workflow may fork from the primary conversation", "subtask: false")
+      }
+      when (!unit.frontmatter.contains("entry-skill: \"\(workflowFor(unit).entrySkill)\"")) {
+        newDiagnostic(unit, "workflow.entry_skill", "workflow does not declare its canonical entry skill", "entry-skill: \"\(workflowFor(unit).entrySkill)\"")
+      }
+      for (skillSlug in workflowFor(unit).requiredSkills) {
+        when (!unit.frontmatter.contains("  - \"\(skillSlug)\"")) {
+          newDiagnostic(unit, "workflow.required_skill", "workflow omits required skill \(skillSlug)", "skills contains \(skillSlug)")
+        }
+      }
+      when (!unit.frontmatter.contains(opencodeMetadata.renderPermissionBlock(
+        effectivePolicyFor(unit),
+        workflowFor(unit).requiredSkills,
+        if (unit.profile == "manual") "ask" else "block"
+      ))) {
+        newDiagnostic(unit, "target.tool_ceiling", "OpenCode permissions differ from effective capabilities", "capability-translated effective permission block")
+      }
+    }
+
+    when (unit.target == "claude" && unit.profile == "manual" && isKnownWorkflow(unit)) {
+      when (!unit.body.contains(common.profileCompositionMarker(profileFor(unit).slug))) {
+        newDiagnostic(unit, "composition.marker", "workflow has a missing or wrong execution-profile marker", common.profileCompositionMarker(profileFor(unit).slug))
+      }
+      when (!unit.body.contains(profileFor(unit).policy.body.guardrails)) {
+        newDiagnostic(unit, "composition.guardrail", "workflow omits composed profile guardrails", "canonical profile guardrails")
+      }
+      when (!unit.frontmatter.contains("allowed-tools: \(claudeMetadata.renderCommandAllowedTools(effectivePolicyFor(unit)))")) {
+        newDiagnostic(unit, "target.tool_ceiling", "Claude tools differ from effective capabilities", "capability-translated effective allowed-tools")
+      }
+    }
+
+    when (unit.target == "pi" && unit.profile == "manual" && isKnownWorkflow(unit)) {
+      when (!unit.body.contains(common.profileCompositionMarker(profileFor(unit).slug))) {
+        newDiagnostic(unit, "composition.marker", "workflow has a missing or wrong execution-profile marker", common.profileCompositionMarker(profileFor(unit).slug))
+      }
+      when (!unit.body.contains(profileFor(unit).policy.body.guardrails)) {
+        newDiagnostic(unit, "composition.guardrail", "workflow omits composed profile guardrails", "canonical profile guardrails")
+      }
+      when (!unit.body.contains(piEntrySkillRead(workflowFor(unit).entrySkill))) {
+        newDiagnostic(unit, "pi.skill_read", "workflow does not require a full project-local entry-skill read", piEntrySkillRead(workflowFor(unit).entrySkill))
+      }
+      when (inventory.manualSkills[workflowFor(unit).entrySkill].projections
+        .filter((projection) -> projection.target == "pi")
+        .first.destination != "config/.pi/skills/\(workflowFor(unit).entrySkill)/SKILL.md") {
+        newDiagnostic(unit, "pi.skill_path", "entry skill does not resolve to its generated Pi path", "config/.pi/skills/\(workflowFor(unit).entrySkill)/SKILL.md")
       }
     }
   }

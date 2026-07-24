@@ -1,9 +1,9 @@
-// Canonical reusable templates for SCE instruction units (agent, command, skill).
+// Canonical reusable templates for SCE instruction units (execution profile, workflow, skill).
 //
 // This is the single authoring source for the contributor-facing templates published at repository
-// root `templates/{agent,command,skill}.md`. Template guidance uses the same typed `InstructionBody`
-// model and `renderBody` boundary as active units, so section headings and order cannot drift through
-// a parallel serializer.
+// root `templates/{execution-profile,workflow,skill}.md`. Template guidance uses the same typed
+// `InstructionBody` model and `renderBody` boundary as active units, so section headings and order
+// cannot drift through a parallel serializer.
 //
 // The guidance text is standardized from the read-only reference bundle
 // `sce-opencode-standardization/templates/`. That bundle is input only; it is never the authority.
@@ -24,13 +24,12 @@ class UnitTemplate {
   rendered: String = "\(frontmatter)\n\n\(common.renderBody(body))\n"
 }
 
-agent: UnitTemplate = new {
+executionProfile: UnitTemplate = new {
   frontmatter = """
     ---
-    name: "<Human-readable agent name>"
-    description: <What role this agent owns and when it should be selected.>
-    temperature: 0.1
-    color: "#000000"
+    name: "<Human-readable execution-profile name>"
+    description: <What invocation-wide role this profile owns and when it should be selected.>
+    mode: primary
     permission:
       default: ask
       read: allow
@@ -42,55 +41,69 @@ agent: UnitTemplate = new {
     ---
     """
   body = new common.InstructionBody {
-    purpose = "- State the role-owned outcome and what this agent orchestrates."
-    inputs = "- List required user input, repository state, context, and decisions."
-    preconditions = "1. List startup checks and blocking gates in execution order."
+    purpose = "- State the broad invocation-wide role outcome without duplicating a workflow."
+    inputs = "- List required user intent, repository state, context, and human decisions."
+    preconditions = "1. List profile-wide startup checks and blocking gates."
     workflow = """
-      1. Orchestrate skills and tools in execution order.
-      2. Keep detailed reusable behavior in skills, not here.
+      1. State the broad operating posture for workflows bound to this profile.
+      2. Keep user-invoked sequencing in workflows and reusable procedures in skills.
       """
     guardrails = "- State role boundaries, authority, approval rules, and stop conditions."
-    outputs = "- State artifacts, evidence, and user-visible handoffs."
-    completionCriteria = "- State observable conditions required before the role is done."
-    failureHandling = "- State when to stop, ask, escalate, or return a structured error."
-    relatedUnits = "- `<skill-or-command>` — explain the relationship and ownership boundary."
-    reference = "<!-- Optional. Put schemas, tables, and detailed formats here or in a linked reference file. -->"
+    outputs = "- State profile-wide evidence and user-visible handoff expectations."
+    completionCriteria = "- State observable conditions shared by invocations of this profile."
+    failureHandling = "- State when profile-bound work must stop, ask, escalate, or return an error."
+    relatedUnits = "- `<allowed-skill>` — explain why the profile permits this reusable procedure."
+    reference = """
+      <!--
+      Required canonical declaration fields: slug, title, and policy. ProfilePolicy must contain
+      body, allowedSkills, and toolPolicy. ToolPolicy contains harness-neutral allowedCapabilities
+      and approvalRequiredCapabilities; target renderers translate those capabilities to native tools.
+      -->
+      """
     examples = "<!-- Optional. Keep examples non-normative and place them last. -->"
   }
 }
 
-command: UnitTemplate = new {
+workflow: UnitTemplate = new {
   frontmatter = """
     ---
     description: "<Action-oriented outcome>"
-    agent: "<Agent display name>"
+    agent: "<Projected execution-profile carrier name>"
     entry-skill: "<primary-skill>"
     skills:
       - "<primary-skill>"
+    subtask: false
     ---
     """
   body = new common.InstructionBody {
-    purpose = "- State the user-facing action and delegated skill chain."
+    purpose = "- State the user-invoked action and delegated skill chain."
     inputs = "- `$ARGUMENTS`: define required and optional positional or free-form input."
     preconditions = "1. State argument, repository-state, and approval gates."
     workflow = """
-      1. Load the primary skill.
+      1. Load the entry skill.
       2. Pass normalized inputs.
       3. Preserve skill-owned gates.
       4. Return the result and stop.
       """
     guardrails = """
-      - Keep the command thin; never duplicate detailed skill behavior.
-      - State mode switches and command-owned side effects only.
+      - Keep the workflow thin; never duplicate execution-profile policy or detailed skill behavior.
+      - A workflow capability allow-set may only narrow its execution-profile ceiling.
+      - State mode switches and workflow-owned side effects only.
       """
     outputs = "- State the exact response or artifact shape."
-    completionCriteria = "- State how the command knows the delegated workflow completed."
+    completionCriteria = "- State how the workflow knows the delegated procedure completed."
     failureHandling = "- State argument errors, delegated blockers, and side-effect failures."
     relatedUnits = """
-      - `<skill>` — sole owner of detailed behavior.
-      - `<agent>` — default execution role.
+      - `<entry-skill>` — sole owner of the primary detailed procedure.
+      - `<execution-profile>` — invocation-wide role policy bound by this workflow.
       """
-    reference = "<!-- Optional. Document argument syntax or modes. -->"
+    reference = """
+      <!--
+      Required canonical declaration fields: slug, title, description, body, executionProfile,
+      entrySkill, requiredSkills, and toolPolicy. entrySkill must occur in requiredSkills, all skills
+      must resolve through the bound profile, and workflow capabilities must be a profile subset.
+      -->
+      """
     examples = "<!-- Optional. Keep examples last. -->"
   }
 }

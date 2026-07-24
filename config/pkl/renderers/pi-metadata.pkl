@@ -1,22 +1,7 @@
 import "../base/instruction-unit-inventory.pkl" as inventory
 
-// Hand-authored per-unit metadata, looked up by slug. The exposed mappings are keyed by iterating the
-// canonical inventory so only active manual units render and stale entries cannot leak.
-
-local agentDescriptionText = new Mapping {
-  ["shared-context-plan"] = "Act in the shared-context-plan role to create or update an SCE plan before implementation."
-  ["shared-context-code"] = "Act in the shared-context-code role to execute one approved SCE task and sync context."
-}
-
-local agentArgumentHintText = new Mapping {
-  ["shared-context-plan"] = "<change request>"
-  ["shared-context-code"] = "<plan-name> [T0X]"
-}
-
-local agentSkillReferenceText = new Mapping {
-  ["shared-context-plan"] = "sce-plan-authoring"
-  ["shared-context-code"] = "sce-task-execution"
-}
+// Hand-authored workflow presentation metadata, looked up by slug. The exposed mapping is keyed by
+// the canonical inventory so only active manual workflows render and stale entries cannot leak.
 
 local commandArgumentHintText = new Mapping {
   ["next-task"] = "<plan-name> [T0X]"
@@ -24,24 +9,6 @@ local commandArgumentHintText = new Mapping {
   ["handover"] = "[task context]"
   ["commit"] = "[oneshot|skip]"
   ["validate"] = "<plan-name>"
-}
-
-agentDescriptions = new Mapping {
-  for (slug, _ in inventory.manualAgents) {
-    [slug] = agentDescriptionText[slug]
-  }
-}
-
-agentArgumentHints = new Mapping {
-  for (slug, _ in inventory.manualAgents) {
-    [slug] = agentArgumentHintText[slug]
-  }
-}
-
-agentSkillReferences = new Mapping {
-  for (slug, _ in inventory.manualAgents) {
-    [slug] = agentSkillReferenceText[slug]
-  }
 }
 
 commandArgumentHints = new Mapping {

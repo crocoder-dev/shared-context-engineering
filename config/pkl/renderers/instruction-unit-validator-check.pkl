@@ -1,5 +1,10 @@
 import "../base/instruction-unit-inventory.pkl" as inventory
+import "../base/shared-content-common.pkl" as common
+import "../base/shared-content.pkl" as manual
 import "instruction-unit-validator.pkl" as validator
+import "opencode-content.pkl" as opencode
+import "claude-content.pkl" as claude
+import "pi-content.pkl" as pi
 
 local function body(sections: List<String>): String =
   sections.map((section) -> "## \(section)\n- Fixture content.").join("\n\n") + "\n"
@@ -8,6 +13,7 @@ local validAgentFrontmatter = """
 ---
 name: "Planner"
 description: Valid fixture agent.
+mode: primary
 permission:
   default: ask
   skill:
@@ -54,6 +60,23 @@ local function commandFixture(fixtureName: String, frontmatterText: String): val
     slug = "run"
     frontmatter = frontmatterText
     body = body(inventory.requiredSections)
+  }
+
+local function renderedFixture(
+  fixtureName: String,
+  targetName: "opencode"|"claude"|"pi",
+  slugName: String,
+  frontmatterText: String,
+  bodyText: String
+): validator.UnitInput =
+  new validator.UnitInput {
+    path = "fixtures/\(fixtureName)/\(slugName).md"
+    profile = "manual"
+    target = targetName
+    kind = "command"
+    slug = slugName
+    frontmatter = frontmatterText
+    body = bodyText
   }
 
 local function skillFixture(fixtureName: String, directoryName: String, skillNameValue: String): validator.UnitInput =
@@ -103,6 +126,21 @@ validFixtures: Listing<FixtureCase> = new {
   new FixtureCase {
     name = "valid-automated-profile"
     unit = agentFixture("valid-automated-profile", "automated", inventory.requiredSections)
+    expectedRule = null
+  }
+  new FixtureCase {
+    name = "valid-opencode-native-binding"
+    unit = renderedFixture("valid-opencode-native-binding", "opencode", "next-task", opencode.commands["next-task"].frontmatter, opencode.commands["next-task"].body)
+    expectedRule = null
+  }
+  new FixtureCase {
+    name = "valid-claude-composed-binding"
+    unit = renderedFixture("valid-claude-composed-binding", "claude", "next-task", claude.commands["next-task"].frontmatter, claude.commands["next-task"].body)
+    expectedRule = null
+  }
+  new FixtureCase {
+    name = "valid-pi-composed-binding"
+    unit = renderedFixture("valid-pi-composed-binding", "pi", "next-task", pi.commands["next-task"].frontmatter, pi.commands["next-task"].body)
     expectedRule = null
   }
 }
@@ -170,6 +208,89 @@ skills:
 ---
 """)
     expectedRule = "command.skill_reference"
+  }
+  new FixtureCase {
+    name = "missing-opencode-primary-mode"
+    unit = new validator.UnitInput {
+      path = "fixtures/missing-opencode-primary-mode/.opencode/agent/Shared Context Code.md"
+      profile = "manual"
+      target = "opencode"
+      kind = "agent"
+      slug = "shared-context-code"
+      frontmatter = """
+---
+name: "Shared Context Code"
+description: Missing primary mode.
+permission:
+  default: ask
+---
+"""
+      body = body(inventory.requiredSections)
+    }
+    expectedRule = "opencode.primary_mode"
+  }
+  new FixtureCase {
+    name = "mismatched-opencode-agent"
+    unit = renderedFixture("mismatched-opencode-agent", "opencode", "next-task", """
+---
+description: Wrong agent binding.
+agent: "Shared Context Plan"
+entry-skill: "sce-plan-review"
+skills:
+  - "sce-plan-review"
+  - "sce-task-execution"
+  - "sce-context-sync"
+  - "sce-validation"
+subtask: false
+---
+""", opencode.commands["next-task"].body)
+    expectedRule = "opencode.agent_binding"
+  }
+  new FixtureCase {
+    name = "missing-opencode-subtask-false"
+    unit = renderedFixture("missing-opencode-subtask-false", "opencode", "next-task", """
+---
+description: Missing subtask contract.
+agent: "Shared Context Code"
+entry-skill: "sce-plan-review"
+skills:
+  - "sce-plan-review"
+  - "sce-task-execution"
+  - "sce-context-sync"
+  - "sce-validation"
+---
+""", opencode.commands["next-task"].body)
+    expectedRule = "opencode.subtask"
+  }
+  new FixtureCase {
+    name = "missing-composed-marker"
+    unit = renderedFixture("missing-composed-marker", "claude", "next-task", claude.commands["next-task"].frontmatter, common.renderBody(manual.workflows["next-task"].body))
+    expectedRule = "composition.marker"
+  }
+  new FixtureCase {
+    name = "wrong-composed-marker"
+    unit = renderedFixture("wrong-composed-marker", "claude", "next-task", claude.commands["next-task"].frontmatter, common.renderBody(common.composeProfile(manual.executionProfiles["shared-context-plan"], manual.workflows["next-task"])))
+    expectedRule = "composition.marker"
+  }
+  new FixtureCase {
+    name = "missing-composed-guardrail"
+    unit = renderedFixture("missing-composed-guardrail", "claude", "next-task", claude.commands["next-task"].frontmatter, "\(common.profileCompositionMarker("shared-context-code"))\n\(common.renderBody(manual.workflows["next-task"].body))")
+    expectedRule = "composition.guardrail"
+  }
+  new FixtureCase {
+    name = "excessive-claude-tools"
+    unit = renderedFixture("excessive-claude-tools", "claude", "next-task", """
+---
+description: Excessive tool fixture.
+allowed-tools: Bash, Read, TotallyExcessive
+---
+""", claude.commands["next-task"].body)
+    expectedRule = "target.tool_ceiling"
+  }
+  new FixtureCase {
+    name = "missing-pi-skill-read"
+    unit = renderedFixture("missing-pi-skill-read", "pi", "next-task", pi.commands["next-task"].frontmatter, claude.commands["next-task"].body)
+    expectedRule = "pi.skill_read"
   }
   new FixtureCase {
     name = "invalid-agent-skill-permission-reference"

@@ -344,8 +344,7 @@ class StaleEntry {
   reason: String
 }
 
-// No stale metadata entry remains. Pi profile prompt files are transitional generated outputs, not
-// approved projections; their renderer/generator removal is owned by T08.
+// No stale metadata entry remains. Pi profile prompt projections and generated outputs are removed.
 staleEntries: Listing<StaleEntry> = new {}
 
 /// Reference that an active body points at but does not resolve.

@@ -8,6 +8,7 @@ import "opencode-content.pkl" as manualOpenCode
 import "opencode-automated-content.pkl" as automatedOpenCode
 import "claude-metadata.pkl" as claudeMetadata
 import "claude-content.pkl" as manualClaude
+import "pi-content.pkl" as manualPi
 
 /// Focused gate for the manual and automated portable execution-profile models.
 profileReferenceProblems: Listing<String>(isEmpty) = manual.profileReferenceProblems
@@ -71,6 +72,26 @@ automatedTopologyProblems: Listing<String>(isEmpty) = new {
 
 duplicateProjectionProblems: Listing<String>(isEmpty) = inventory.duplicateProjectionProblems
 
+local function expectedManualDestination(unit: inventory.InventoryUnit, projection: inventory.Projection): String =
+  if (unit.kind == "execution-profile")
+    if (projection.target == "opencode") "config/.opencode/agent/\(unit.title).md"
+    else "config/.claude/agents/\(unit.slug).md"
+  else if (unit.kind == "workflow")
+    if (projection.target == "opencode") "config/.opencode/command/\(unit.slug).md"
+    else if (projection.target == "claude") "config/.claude/commands/\(unit.slug).md"
+    else "config/.pi/prompts/\(unit.slug).md"
+  else
+    if (projection.target == "opencode") "config/.opencode/skills/\(unit.slug)/SKILL.md"
+    else if (projection.target == "claude") "config/.claude/skills/\(unit.slug)/SKILL.md"
+    else "config/.pi/skills/\(unit.slug)/SKILL.md"
+
+local function expectedManualRootMirror(destination: String): String = destination.drop("config/".length)
+
+local function expectedAutomatedDestination(unit: inventory.InventoryUnit): String =
+  if (unit.kind == "execution-profile") "config/automated/.opencode/agent/\(unit.title).md"
+  else if (unit.kind == "workflow") "config/automated/.opencode/command/\(unit.slug).md"
+  else "config/automated/.opencode/skills/\(unit.slug)/SKILL.md"
+
 projectionInventoryProblems: Listing<String>(isEmpty) = new {
   for (_, unit in inventory.manualUnits) {
     when (unit.kind == "execution-profile") {
@@ -96,6 +117,22 @@ projectionInventoryProblems: Listing<String>(isEmpty) = new {
     for (projection in unit.projections) {
       when (projection.semanticControl != "prompt") {
         "manual unit \(unit.id) claims non-prompt semantic control"
+      }
+      when (projection.destination != expectedManualDestination(unit, projection)) {
+        "manual unit \(unit.id) has mismatched \(projection.target) destination"
+      }
+      when (projection.rootMirror != expectedManualRootMirror(expectedManualDestination(unit, projection))) {
+        "manual unit \(unit.id) has mismatched \(projection.target) root mirror"
+      }
+    }
+  }
+  for (_, unit in inventory.automatedUnits) {
+    for (projection in unit.projections) {
+      when (projection.destination != expectedAutomatedDestination(unit)) {
+        "automated unit \(unit.id) has a mismatched destination"
+      }
+      when (projection.rootMirror != null) {
+        "automated unit \(unit.id) unexpectedly has a root mirror"
       }
     }
   }
@@ -339,6 +376,60 @@ claudeCompositionProblems: Listing<String>(isEmpty) = new {
   }
 }
 
+local function piEntrySkillPath(entrySkill: String): String =
+  ".pi/skills/\(entrySkill)/SKILL.md"
+
+local function piEntrySkillReadInstruction(entrySkill: String): String =
+  "- Before acting, read `\(piEntrySkillPath(entrySkill))` completely and follow it as the entry procedure."
+
+local function piProfile(workflowUnit: common.WorkflowUnit): common.ExecutionProfile =
+  manual.executionProfiles[workflowUnit.executionProfile]
+
+local function piSkillProjection(entrySkill: String): inventory.Projection =
+  inventory.manualSkills[entrySkill].projections
+    .filter((projection) -> projection.target == "pi")
+    .first
+
+piCompositionProblems: Listing<String>(isEmpty) = new {
+  when (manualPi.commands.length != manual.workflows.length) {
+    "Pi workflow prompt count differs from the canonical workflow count"
+  }
+  for (workflowSlug, workflowUnit in manual.workflows) {
+    when (!manualPi.commands[workflowSlug].body.contains(
+      common.profileCompositionMarker(piProfile(workflowUnit).slug)
+    )) {
+      "Pi workflow \(workflowSlug) is missing its composed profile marker"
+    }
+    when (!manualPi.commands[workflowSlug].body.contains(piProfile(workflowUnit).policy.body.preconditions)
+      || !manualPi.commands[workflowSlug].body.contains(piProfile(workflowUnit).policy.body.guardrails)
+      || !manualPi.commands[workflowSlug].body.contains(piProfile(workflowUnit).policy.body.failureHandling)) {
+      "Pi workflow \(workflowSlug) is missing composed profile policy"
+    }
+    when (!manualPi.commands[workflowSlug].body.contains(piEntrySkillReadInstruction(workflowUnit.entrySkill))) {
+      "Pi workflow \(workflowSlug) does not require a full entry-skill read"
+    }
+    when (manual.skills.getOrNull(workflowUnit.entrySkill) == null
+      || manualPi.skills.getOrNull(workflowUnit.entrySkill) == null) {
+      "Pi workflow \(workflowSlug) entry skill does not resolve"
+    }
+    when (piSkillProjection(workflowUnit.entrySkill).destination != "config/\(piEntrySkillPath(workflowUnit.entrySkill))"
+      || piSkillProjection(workflowUnit.entrySkill).rootMirror != piEntrySkillPath(workflowUnit.entrySkill)) {
+      "Pi workflow \(workflowSlug) entry-skill projection paths do not resolve"
+    }
+    for (diagnostic in validator.validate(new validator.UnitInput {
+      path = "fixtures/portable-profile/pi-\(workflowSlug).md"
+      profile = "manual"
+      target = "pi"
+      kind = "command"
+      slug = workflowSlug
+      frontmatter = manualPi.commands[workflowSlug].frontmatter
+      body = manualPi.commands[workflowSlug].body
+    })) {
+      "Pi workflow \(workflowSlug) failed structural validation: \(diagnostic.rule)"
+    }
+  }
+}
+
 local manualCodeProfile = manual.executionProfiles["shared-context-code"]
 local automatedCodeProfile = automated.executionProfiles["shared-context-code"]
 local manualNextTask = manual.workflows["next-task"]
@@ -424,6 +515,217 @@ helperCompositionProblems: Listing<String>(isEmpty) = new {
   }
 }
 
+class RelationshipFixtureInput {
+  profile: String?
+  entrySkill: String?
+  requiredSkills: List<String>
+  profileCapabilities: List<String>
+  workflowCapabilities: List<String>
+}
+
+local function relationshipFixtureRules(input: RelationshipFixtureInput): List<String> = new Listing {
+  when (input.profile == null) { "logical.profile_reference" }
+  when (input.entrySkill == null) { "logical.entry_skill_reference" }
+  when (input.entrySkill != null && !input.requiredSkills.contains(input.entrySkill)) {
+    "logical.entry_skill_required"
+  }
+  when (input.workflowCapabilities.any((capability) -> !input.profileCapabilities.contains(capability))) {
+    "capability.ceiling"
+  }
+}.toList()
+
+class ProjectionFixtureInput {
+  logicalKind: inventory.LogicalKind
+  target: inventory.ProjectionTarget
+  duplicateTargetCarrier: Boolean
+  toolControl: String?
+  semanticControl: String?
+  destination: String
+  expectedDestination: String
+}
+
+local function projectionFixtureRules(input: ProjectionFixtureInput): List<String> = new Listing {
+  when (input.logicalKind == "execution-profile" && input.target == "pi") {
+    "projection.pi_profile"
+  }
+  when (input.duplicateTargetCarrier) { "projection.duplicate" }
+  when (input.toolControl == null || input.semanticControl == null) {
+    "projection.enforcement_classification"
+  }
+  when (input.destination != input.expectedDestination) { "projection.destination" }
+}.toList()
+
+local function piPathFixtureRules(skillExists: Boolean, destination: String): List<String> = new Listing {
+  when (!skillExists || destination != "config/.pi/skills/sce-plan-review/SKILL.md") {
+    "pi.skill_path"
+  }
+}.toList()
+
+local function generatedPathFixtureRules(paths: List<String>): List<String> = new Listing {
+  when (paths.any((path) -> path.contains("/.pi/prompts/agent-") || path.startsWith(".pi/prompts/agent-")
+    || path.startsWith("config/.pi/prompts/agent-"))) {
+    "generated.stale_pi_agent_prompt"
+  }
+}.toList()
+
+class PortableFixtureCase {
+  name: String
+  observedRules: List<String>
+  expectedRule: String?
+}
+
+portableValidFixtures: Listing<PortableFixtureCase> = new {
+  new PortableFixtureCase {
+    name = "valid-logical-binding"
+    observedRules = relationshipFixtureRules(new RelationshipFixtureInput {
+      profile = "shared-context-code"
+      entrySkill = "sce-plan-review"
+      requiredSkills = List("sce-plan-review", "sce-task-execution")
+      profileCapabilities = common.capabilityIds
+      workflowCapabilities = List("repository.read", "repository.write")
+    })
+    expectedRule = null
+  }
+  new PortableFixtureCase {
+    name = "valid-projection"
+    observedRules = projectionFixtureRules(new ProjectionFixtureInput {
+      logicalKind = "workflow"
+      target = "pi"
+      duplicateTargetCarrier = false
+      toolControl = "none"
+      semanticControl = "prompt"
+      destination = "config/.pi/prompts/next-task.md"
+      expectedDestination = "config/.pi/prompts/next-task.md"
+    })
+    expectedRule = null
+  }
+  new PortableFixtureCase {
+    name = "valid-generated-paths"
+    observedRules = generatedPathFixtureRules(inventory.committedInstructionPaths)
+    expectedRule = null
+  }
+}
+
+portableInvalidFixtures: Listing<PortableFixtureCase> = new {
+  new PortableFixtureCase {
+    name = "missing-profile"
+    observedRules = relationshipFixtureRules(new RelationshipFixtureInput {
+      profile = null
+      entrySkill = "sce-plan-review"
+      requiredSkills = List("sce-plan-review")
+      profileCapabilities = common.capabilityIds
+      workflowCapabilities = List("repository.read")
+    })
+    expectedRule = "logical.profile_reference"
+  }
+  new PortableFixtureCase {
+    name = "missing-entry-skill"
+    observedRules = relationshipFixtureRules(new RelationshipFixtureInput {
+      profile = "shared-context-code"
+      entrySkill = null
+      requiredSkills = List()
+      profileCapabilities = common.capabilityIds
+      workflowCapabilities = List("repository.read")
+    })
+    expectedRule = "logical.entry_skill_reference"
+  }
+  new PortableFixtureCase {
+    name = "entry-skill-absent-from-required"
+    observedRules = relationshipFixtureRules(new RelationshipFixtureInput {
+      profile = "shared-context-code"
+      entrySkill = "sce-plan-review"
+      requiredSkills = List("sce-task-execution")
+      profileCapabilities = common.capabilityIds
+      workflowCapabilities = List("repository.read")
+    })
+    expectedRule = "logical.entry_skill_required"
+  }
+  new PortableFixtureCase {
+    name = "capability-ceiling-violation"
+    observedRules = relationshipFixtureRules(new RelationshipFixtureInput {
+      profile = "shared-context-plan"
+      entrySkill = "sce-plan-authoring"
+      requiredSkills = List("sce-plan-authoring")
+      profileCapabilities = List("repository.read")
+      workflowCapabilities = List("repository.read", "vcs.commit")
+    })
+    expectedRule = "capability.ceiling"
+  }
+  new PortableFixtureCase {
+    name = "unexpected-pi-profile-projection"
+    observedRules = projectionFixtureRules(new ProjectionFixtureInput {
+      logicalKind = "execution-profile"
+      target = "pi"
+      duplicateTargetCarrier = false
+      toolControl = "none"
+      semanticControl = "prompt"
+      destination = "config/.pi/prompts/agent-shared-context-code.md"
+      expectedDestination = "config/.pi/prompts/agent-shared-context-code.md"
+    })
+    expectedRule = "projection.pi_profile"
+  }
+  new PortableFixtureCase {
+    name = "duplicate-projection"
+    observedRules = projectionFixtureRules(new ProjectionFixtureInput {
+      logicalKind = "workflow"
+      target = "opencode"
+      duplicateTargetCarrier = true
+      toolControl = "native"
+      semanticControl = "prompt"
+      destination = "config/.opencode/command/next-task.md"
+      expectedDestination = "config/.opencode/command/next-task.md"
+    })
+    expectedRule = "projection.duplicate"
+  }
+  new PortableFixtureCase {
+    name = "omitted-enforcement-classification"
+    observedRules = projectionFixtureRules(new ProjectionFixtureInput {
+      logicalKind = "workflow"
+      target = "claude"
+      duplicateTargetCarrier = false
+      toolControl = null
+      semanticControl = null
+      destination = "config/.claude/commands/next-task.md"
+      expectedDestination = "config/.claude/commands/next-task.md"
+    })
+    expectedRule = "projection.enforcement_classification"
+  }
+  new PortableFixtureCase {
+    name = "destination-mismatch"
+    observedRules = projectionFixtureRules(new ProjectionFixtureInput {
+      logicalKind = "workflow"
+      target = "pi"
+      duplicateTargetCarrier = false
+      toolControl = "none"
+      semanticControl = "prompt"
+      destination = "config/.pi/prompts/wrong.md"
+      expectedDestination = "config/.pi/prompts/next-task.md"
+    })
+    expectedRule = "projection.destination"
+  }
+  new PortableFixtureCase {
+    name = "unresolved-pi-skill-path"
+    observedRules = piPathFixtureRules(false, "config/.pi/skills/sce-missing/SKILL.md")
+    expectedRule = "pi.skill_path"
+  }
+  new PortableFixtureCase {
+    name = "stale-pi-agent-prompt"
+    observedRules = generatedPathFixtureRules(List("config/.pi/prompts/agent-shared-context-code.md"))
+    expectedRule = "generated.stale_pi_agent_prompt"
+  }
+}
+
+portableFixtureFailures: Listing<String>(isEmpty) = new {
+  for (fixture in portableValidFixtures) {
+    when (!fixture.observedRules.isEmpty) { "valid fixture \(fixture.name) produced \(fixture.observedRules)" }
+  }
+  for (fixture in portableInvalidFixtures) {
+    when (!fixture.observedRules.contains(fixture.expectedRule)) {
+      "invalid fixture \(fixture.name) did not produce \(fixture.expectedRule)"
+    }
+  }
+}
+
 summary = new {
   manualProfile = new {
     executionProfileCount = manual.executionProfiles.length
@@ -440,5 +742,7 @@ summary = new {
     targets = inventory.automatedTargets
   }
   capabilityCount = common.capabilityIds.length
+  validPortableFixtureCount = portableValidFixtures.length
+  invalidPortableFixtureCount = portableInvalidFixtures.length
   status = "PORTABLE_EXECUTION_PROFILE_MODEL_OK"
 }

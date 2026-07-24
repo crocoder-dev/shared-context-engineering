@@ -101,11 +101,6 @@ output {
         text = document.rendered
       }
     }
-    for (slug, document in pi.agentPrompts) {
-      ["config/.pi/prompts/agent-\(slug).md"] {
-        text = document.rendered
-      }
-    }
     for (slug, document in pi.skills) {
       ["config/.pi/skills/\(slug)/SKILL.md"] {
         text = document.rendered
@@ -113,11 +108,6 @@ output {
     }
     for (slug, document in pi.commands) {
       [".pi/prompts/\(slug).md"] {
-        text = document.rendered
-      }
-    }
-    for (slug, document in pi.agentPrompts) {
-      [".pi/prompts/agent-\(slug).md"] {
         text = document.rendered
       }
     }
@@ -156,11 +146,11 @@ output {
     ["config/schema/sce-config.schema.json"] {
       text = sce_config_schema.rendered
     }
-    ["templates/agent.md"] {
-      text = templates.agent.rendered
+    ["templates/execution-profile.md"] {
+      text = templates.executionProfile.rendered
     }
-    ["templates/command.md"] {
-      text = templates.command.rendered
+    ["templates/workflow.md"] {
+      text = templates.workflow.rendered
     }
     ["templates/skill.md"] {
       text = templates.skill.rendered
