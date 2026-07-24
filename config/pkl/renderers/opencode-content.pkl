@@ -77,7 +77,7 @@ commands {
       slug = unitSlug
       title = unit.title
       frontmatter = commandFrontmatterBySlug[unitSlug]
-      body = common.renderBody(unit.body)
+      body = common.renderBody(common.nativeWorkflowBody(unit))
     }
   }
 }

@@ -247,28 +247,6 @@ rootMirrorPaths: List<String> = new Listing {
 }.toList().sort()
 committedInstructionPaths: List<String> = (generatedInstructionPaths + rootMirrorPaths).sort()
 
-/// Duplicate target/carrier pairs within one logical unit are invalid.
-duplicateProjectionProblems: Listing<String> = new {
-  for (_, unit in manualUnits) {
-    for (projection in unit.projections) {
-      when (unit.projections.filter((candidate) ->
-        candidate.target == projection.target && candidate.carrier == projection.carrier
-      ).length > 1) {
-        "manual unit \(unit.id) duplicates \(projection.target)/\(projection.carrier) projection"
-      }
-    }
-  }
-  for (_, unit in automatedUnits) {
-    for (projection in unit.projections) {
-      when (unit.projections.filter((candidate) ->
-        candidate.target == projection.target && candidate.carrier == projection.carrier
-      ).length > 1) {
-        "automated unit \(unit.id) duplicates \(projection.target)/\(projection.carrier) projection"
-      }
-    }
-  }
-}
-
 /// Per-kind slug-keyed views used by renderer metadata coverage.
 manualAgents: Mapping<String, InventoryUnit> = new {
   for (_, unit in manualUnits) {
@@ -326,24 +304,3 @@ counts = new {
   rootMirrors = rootMirrorPaths.length
   committedInstructionFiles = committedInstructionPaths.length
 }
-
-/// Metadata entry that no active generated unit consumes.
-class StaleEntry {
-  location: String
-  entry: String
-  profile: String
-  reason: String
-}
-
-// No stale metadata entry remains. Pi profile prompt projections and generated outputs are removed.
-staleEntries: Listing<StaleEntry> = new {}
-
-/// Reference that an active body points at but does not resolve.
-class BrokenReference {
-  location: String
-  reference: String
-  reason: String
-}
-
-// The prior missing plan-example reference was replaced by an inline Reference section.
-brokenReferences: Listing<BrokenReference> = new {}

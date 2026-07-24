@@ -71,16 +71,14 @@ commands = new Mapping {
 - Any success criteria, constraints, non-goals, dependency choices, and acceptance signals included by the user.
 """
       preconditions = """
-1. Treat missing critical planning details as blocking.
-2. Preserve the approval and clarification behavior owned by `sce-plan-authoring`.
+1. `$ARGUMENTS` supplies a change request that `sce-plan-authoring` can resolve into a plan.
 """
       workflow = """
 1. Load `sce-plan-authoring`.
-2. Pass `$ARGUMENTS` without inventing requirements.
-3. Let the skill resolve new-versus-existing plan, clarification needs, plan shape, and atomic task slicing.
+2. Pass `$ARGUMENTS` without inventing requirements; when critical requirements are missing, surface the skill's focused clarification questions and stop before writing.
+3. Let the skill resolve new-versus-existing plan, plan shape, and atomic task slicing.
 4. When ready, write or update `context/plans/{plan_name}.md`.
-5. Return the exact path, ordered task list, and `/next-task {plan_name} T01`.
-6. Stop after the planning handoff.
+5. Return the planning handoff and stop.
 """
       guardrails = """
 - Keep this command thin; do not duplicate the skill's planning rules.
@@ -88,21 +86,17 @@ commands = new Mapping {
 - Do not bypass the clarification gate.
 """
       outputs = """
-- A plan path and complete ordered task list when planning succeeds.
-- Focused clarification questions when planning is blocked.
-- One canonical next command for a new implementation session.
+- The plan path and complete ordered task list when planning succeeds.
+- One canonical `/next-task {plan_name} T01` command for a new implementation session.
+- Focused clarification questions instead of a plan when planning is blocked.
 """
       completionCriteria = """
 - `sce-plan-authoring` reports a valid plan and the plan file exists at the reported path.
-- The response includes the full task order and stops before implementation.
 """
       failureHandling = """
-- Stop and surface the skill's focused questions when critical information is missing.
-- Report path or write failures directly; do not claim a plan was saved when it was not.
+- Report plan-write or validation failures directly; do not claim a plan was saved when it was not.
 """
       relatedUnits = """
-- `sce-plan-authoring` — sole owner of detailed planning behavior.
-- `Shared Context Plan` — default agent for this command.
 - `/next-task` — canonical next entrypoint after plan approval.
 """
     }
@@ -118,8 +112,7 @@ commands = new Mapping {
 - Current repository, plan, and task state available to the agent.
 """
       preconditions = """
-1. Identify the current plan/task when possible.
-2. Distinguish observed facts from inferred details.
+1. The current plan and task can be identified when available.
 """
       workflow = """
 1. Load `sce-handover-writer`.
@@ -129,11 +122,11 @@ commands = new Mapping {
 """
       guardrails = """
 - Keep this command thin; the skill owns structure, naming, and completeness checks.
-- Label unsupported inferences as assumptions.
+- Distinguish observed facts from inferences, and label assumptions and unresolved questions as such.
 - Do not implement or change task scope while producing a handover.
 """
       outputs = """
-- One complete handover file and its exact path.
+- One complete handover file and its exact path under `context/handovers/`.
 """
       completionCriteria = """
 - The handover records current task state, decisions and rationale, blockers/open questions, and one next recommended step.
@@ -142,10 +135,7 @@ commands = new Mapping {
 - When no reliable task state can be established, stop with the missing inputs rather than inventing a handover.
 - Report write failures directly.
 """
-      relatedUnits = """
-- `sce-handover-writer` — sole owner of handover content and file shape.
-- `Shared Context Code` — default agent for this command.
-"""
+      relatedUnits = ""
     }
   }
 }

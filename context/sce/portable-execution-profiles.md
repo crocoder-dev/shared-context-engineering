@@ -21,10 +21,11 @@ Manual `next-task` uses one cross-harness workflow-control contract. Not-ready a
 `shared-content-common.pkl` provides typed, section-aware construction helpers:
 
 - `nativeAgentBody(profile)` copies the canonical `ProfilePolicy.body` and deterministically appends its allowed-skill relationships;
-- `composeProfile(profile, workflow)` combines profile and workflow fields before Markdown rendering and generates profile/required-skill relationships without emitting identity markers or other HTML comments;
+- `nativeWorkflowBody(workflow)` renders a workflow body natively (OpenCode) with metadata-derived Related Units;
+- `composeProfile(profile, workflow)` amends the workflow body and overrides only its Preconditions, Guardrails, and Failure handling with the profile fragment; it emits no identity markers or other HTML comments;
 - `renderBody(...)` remains the only heading serializer, so composition never searches or replaces Markdown headings.
 
-Composition carries profile policy through purpose, inputs, preconditions, workflow posture, guardrails, outputs, completion criteria, and failure handling while retaining workflow-owned optional `Reference`/`Examples`. The OpenCode renderers adopt `nativeAgentBody` for profile carriers. OpenCode keeps workflow bodies thin because its commands bind the native profile directly. Claude commands render `composeProfile(...)` so normal slash-command use receives the same policy without a fork. Pi prompts also render `composeProfile(...)` and prepend a target-specific precondition requiring the full project-local `.pi/skills/{entrySkill}/SKILL.md` read before action.
+Composition is selective: the execution profile contributes only the three policy-bearing sections (Preconditions, Guardrails, Failure handling), and every other section — Purpose, Inputs, Workflow, Outputs, Completion criteria, and optional `Reference`/`Examples` — stays exactly as authored in the workflow. Related Units are always metadata-derived: the bound execution profile, the entry skill, then the remaining required skills, each rendered once in that deterministic order, followed by any authored relationship that cannot be derived from `executionProfile`, `entrySkill`, or `requiredSkills`. Authored `body.relatedUnits` therefore holds only non-derived extras (for example, `/next-task` on `change-to-plan`). The OpenCode renderers adopt `nativeAgentBody` for profile carriers and `nativeWorkflowBody` for workflow commands, keeping bodies thin because commands bind the native profile directly. Claude commands render `composeProfile(...)` so normal slash-command use receives the profile policy without a fork. Pi prompts also render `composeProfile(...)` and prepend a target-specific precondition requiring the full project-local `.pi/skills/{entrySkill}/SKILL.md` read before action.
 
 ## Projection inventory
 
@@ -40,7 +41,7 @@ Approved manual projections are:
 
 Automated profiles, workflows, and skills each have one OpenCode projection and no root mirror. Semantic control is `prompt` for every projection. Tool control is `native` for current OpenCode profile/workflow carriers and Claude workflow commands, and `none` for Pi prompts and skill carriers.
 
-Projection-derived collections are path-sorted and currently contain 58 generated instruction destinations plus 41 manual root mirrors, for 99 committed projected instruction files. Duplicate target/carrier pairs within a unit are rejected. Pi has no generated or mirrored `agent-*` prompt compatibility files; only its five approved workflow prompts and eight skill projections are emitted.
+Projection-derived collections are path-sorted and currently contain 58 generated instruction destinations plus 41 manual root mirrors, for 99 committed projected instruction files. Pi has no generated or mirrored `agent-*` prompt compatibility files; only its five approved workflow prompts and eight skill projections are emitted.
 
 ## Capability policy
 
@@ -78,14 +79,14 @@ Claude has no native Shared Context profile files. All five normal commands comp
 
 ## Relationship contract
 
-For every manual and automated workflow:
+For every manual and automated workflow, by authored construction:
 
 - `executionProfile` resolves to an existing profile;
 - `entrySkill` resolves and appears in `requiredSkills`;
 - each required skill resolves and belongs to the selected profile's allowlist;
 - each workflow capability belongs to the profile capability ceiling.
 
-Each canonical aggregation exposes deterministic problem listings and effective workflow policies. `config/pkl/renderers/portable-execution-profile-check.pkl` constrains those problem listings to be empty, verifies profile bindings plus effective approval behavior, enforces the manual Code/Plan opposite Bash postures and workflow-specific commit approval, checks every manual command's explicit permission/skill metadata, preserves the automated planning profile's no-process-execution ceiling, proves automated units remain OpenCode-only, rejects duplicate projections, checks exact destinations/root mirrors and the 58/41/99 count contract, checks broad profile boundaries and marker-free composition fragments, verifies each Pi prompt's canonical profile policy and full entry-skill read plus projected skill paths, and runs the structural validator against native/composed target output. Three valid and 12 invalid portable fixtures cover malformed logical references, capability narrowing, disallowed Claude/Pi profile projections, duplicate/partially classified/misdirected projections, unresolved Pi skill paths, and stale Claude/Pi profile outputs.
+These relationships, the effective-approval math, and target bindings are no longer machine-validated: the former `portable-execution-profile-check.pkl` gate and the canonical `*Problems` listings it consumed were removed (see Validation). `effectiveWorkflowPolicies` is still computed in each aggregation because the OpenCode/Claude renderers consume it, but the relationship and narrowing invariants now hold only by authored construction and are guarded indirectly through deterministic regeneration and byte parity.
 
 ## Contributor templates and migration
 
@@ -100,12 +101,10 @@ The replacement prompts compose the appropriate profile policy and must load the
 
 ## Validation
 
-Run the focused model gate with:
+The former focused Pkl gates — `portable-execution-profile-check.pkl`, `metadata-coverage-check.pkl`, and the structural `instruction-unit-validator.pkl`/`instruction-unit-validator-check.pkl` — were removed. The only remaining Pkl gate is that `config/pkl/generate.pkl` evaluates successfully and every committed generated instruction file matches a fresh regeneration byte-for-byte:
 
 ```bash
-nix develop -c pkl eval \
-  config/pkl/renderers/portable-execution-profile-check.pkl \
-  -x summary
+nix run .#pkl-check-generated
 ```
 
-A passing result reports the manual 2/5/8 and automated 2/6/9 profile/workflow/skill counts, seven capabilities, five manual plus six automated effective policies, the OpenCode-only automated target, 14 valid plus 12 invalid portable fixtures, and `PORTABLE_EXECUTION_PROFILE_MODEL_OK`. The valid fixtures include every manual readiness and continuation branch, dependency-aware non-sequential plan-order selection, structured next-task fields, and terminal response ordering. This gate, metadata coverage, and structural validation run before parity in both `pkl-check-generated` and the root flake's `pkl-parity` check.
+`config/pkl/check-generated.sh` and the root flake's `pkl-parity` check regenerate into a temporary tree and compare all generation-owned config outputs, root mirrors, and templates. This catches any hand-edited or stale generated file but no longer enforces structural, composition, relationship, capability, or file-count contracts; those hold by canonical construction only.

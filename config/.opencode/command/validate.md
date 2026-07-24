@@ -36,11 +36,9 @@ permission:
 1. Load `sce-validation`.
 2. Pass the target and let the skill discover project checks, capture evidence, clean temporary scaffolding, and verify context.
 3. Return the pass/fail result and validation-report location.
-4. Stop after reporting validation.
 
 ## Guardrails
 - Keep this command thin; validation scope, command discovery, repairs, evidence, and report shape remain skill-owned.
-- Do not convert failed validation into a success result.
 
 ## Outputs
 - Validation status, commands and evidence summary, residual risks, and report location.
@@ -49,8 +47,8 @@ permission:
 - `sce-validation` records a conclusive result against every success criterion.
 
 ## Failure handling
-- Report unresolved failures and their evidence; do not close the plan while required checks remain failed or unevaluated.
+- Report unresolved failures and their evidence; do not close the plan or convert a failed result into success while required checks remain failed or unevaluated.
 
 ## Related units
-- `sce-validation` — sole owner of final validation behavior.
-- `Shared Context Code` — default agent for this command.
+- `shared-context-code` — execution profile bound to this workflow.
+- `sce-validation` — entry skill for this workflow.

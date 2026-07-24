@@ -4,14 +4,10 @@ allowed-tools: Task, Read, Glob, Grep, Edit, Write, AskUserQuestion, Skill
 ---
 
 ## Purpose
-- Establish planning policy for repository changes while keeping architecture, risk, and approval decisions human-owned.
-- Produce implementation-ready context artifacts without crossing into implementation.
 - Turn `$ARGUMENTS` into a scoped SCE implementation plan by delegating to `sce-plan-authoring`.
 - Provide a planning handoff without beginning implementation.
 
 ## Inputs
-- Change intent, repository and context truth, constraints, risks, and human decisions.
-- The planning workflow and skills selected for the invocation.
 - `$ARGUMENTS`: a change request and optional existing plan identifier.
 - Any success criteria, constraints, non-goals, dependency choices, and acceptance signals included by the user.
 
@@ -19,20 +15,14 @@ allowed-tools: Task, Read, Glob, Grep, Edit, Write, AskUserQuestion, Skill
 1. Establish whether baseline SCE context exists before planning writes begin.
 2. Read the context map and relevant current-state context before broad exploration.
 3. Keep planning blocked while critical scope, dependency, architecture, or acceptance decisions are unresolved.
-1. Treat missing critical planning details as blocking.
-2. Preserve the approval and clarification behavior owned by `sce-plan-authoring`.
+1. `$ARGUMENTS` supplies a change request that `sce-plan-authoring` can resolve into a plan.
 
 ## Workflow
-1. Establish current truth from the minimum relevant code and context.
-2. Use the invoked workflow and its entry skill to perform the requested planning action.
-3. Preserve an explicit boundary between planning artifacts and implementation authorization.
-4. End with a reviewable planning result or focused unresolved decisions.
 1. Load `sce-plan-authoring`.
-2. Pass `$ARGUMENTS` without inventing requirements.
-3. Let the skill resolve new-versus-existing plan, clarification needs, plan shape, and atomic task slicing.
+2. Pass `$ARGUMENTS` without inventing requirements; when critical requirements are missing, surface the skill's focused clarification questions and stop before writing.
+3. Let the skill resolve new-versus-existing plan, plan shape, and atomic task slicing.
 4. When ready, write or update `context/plans/{plan_name}.md`.
-5. Return the exact path, ordered task list, and `/next-task {plan_name} T01`.
-6. Stop after the planning handoff.
+5. Return the planning handoff and stop.
 
 ## Guardrails
 - Do not modify application code or treat a planning result as approval to implement.
@@ -47,28 +37,20 @@ allowed-tools: Task, Read, Glob, Grep, Edit, Write, AskUserQuestion, Skill
 - Do not bypass the clarification gate.
 
 ## Outputs
-- Planning or context artifacts requested by the active workflow.
-- A bounded handoff that distinguishes completed planning from decisions still required.
-- A plan path and complete ordered task list when planning succeeds.
-- Focused clarification questions when planning is blocked.
-- One canonical next command for a new implementation session.
+- The plan path and complete ordered task list when planning succeeds.
+- One canonical `/next-task {plan_name} T01` command for a new implementation session.
+- Focused clarification questions instead of a plan when planning is blocked.
 
 ## Completion criteria
-- The active planning workflow's observable criteria are satisfied.
-- Resulting artifacts are bounded, reviewable, and do not imply implementation approval.
 - `sce-plan-authoring` reports a valid plan and the plan file exists at the reported path.
-- The response includes the full task order and stops before implementation.
 
 ## Failure handling
 - Stop when required context bootstrap authorization or a critical human decision is absent.
 - Surface focused unresolved decisions instead of inventing requirements or writing partial authoritative plans.
 - When context is stale, proceed from code truth only within the active planning scope and identify the repair.
-- Stop and surface the skill's focused questions when critical information is missing.
-- Report path or write failures directly; do not claim a plan was saved when it was not.
+- Report plan-write or validation failures directly; do not claim a plan was saved when it was not.
 
 ## Related units
-- `shared-context-plan` — execution profile composed into this workflow.
-- `sce-plan-authoring` — skill required by this workflow.
-- `sce-plan-authoring` — sole owner of detailed planning behavior.
-- `Shared Context Plan` — default agent for this command.
+- `shared-context-plan` — execution profile bound to this workflow.
+- `sce-plan-authoring` — entry skill for this workflow.
 - `/next-task` — canonical next entrypoint after plan approval.

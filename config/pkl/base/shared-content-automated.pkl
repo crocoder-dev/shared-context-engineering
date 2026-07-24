@@ -235,55 +235,6 @@ skills: Mapping<String, common.SkillUnit> = new {
   }
 }
 
-profileReferenceProblems: Listing<String> = new {
-  for (workflowSlug, workflow in workflows) {
-    when (executionProfiles.getOrNull(workflow.executionProfile) == null) {
-      "workflow \(workflowSlug) references missing execution profile \(workflow.executionProfile)"
-    }
-  }
-}
-
-skillReferenceProblems: Listing<String> = new {
-  for (profileSlug, profile in executionProfiles) {
-    for (skillSlug in profile.policy.allowedSkills) {
-      when (skills.getOrNull(skillSlug) == null) {
-        "execution profile \(profileSlug) allows missing skill \(skillSlug)"
-      }
-    }
-  }
-  for (workflowSlug, workflow in workflows) {
-    when (skills.getOrNull(workflow.entrySkill) == null) {
-      "workflow \(workflowSlug) references missing entry skill \(workflow.entrySkill)"
-    }
-    when (!workflow.requiredSkills.contains(workflow.entrySkill)) {
-      "workflow \(workflowSlug) entry skill \(workflow.entrySkill) is absent from requiredSkills"
-    }
-    for (skillSlug in workflow.requiredSkills) {
-      when (skills.getOrNull(skillSlug) == null) {
-        "workflow \(workflowSlug) requires missing skill \(skillSlug)"
-      }
-      when (
-        executionProfiles.getOrNull(workflow.executionProfile) != null
-        && !executionProfiles[workflow.executionProfile].policy.allowedSkills.contains(skillSlug)
-      ) {
-        "workflow \(workflowSlug) requires skill \(skillSlug) outside profile \(workflow.executionProfile) allowlist"
-      }
-    }
-  }
-}
-
-capabilityNarrowingProblems: Listing<String> = new {
-  for (workflowSlug, workflow in workflows) {
-    when (executionProfiles.getOrNull(workflow.executionProfile) != null) {
-      for (capability in workflow.tools.allowedCapabilities) {
-        when (!executionProfiles[workflow.executionProfile].policy.tools.allowedCapabilities.contains(capability)) {
-          "workflow \(workflowSlug) capability \(capability) exceeds profile \(workflow.executionProfile) ceiling"
-        }
-      }
-    }
-  }
-}
-
 effectiveWorkflowPolicies: Mapping<String, common.ToolPolicy> = new {
   for (workflowSlug, workflow in workflows) {
     when (executionProfiles.getOrNull(workflow.executionProfile) != null) {

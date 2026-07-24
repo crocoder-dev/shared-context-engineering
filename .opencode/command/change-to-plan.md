@@ -30,16 +30,14 @@ permission:
 - Any success criteria, constraints, non-goals, dependency choices, and acceptance signals included by the user.
 
 ## Preconditions
-1. Treat missing critical planning details as blocking.
-2. Preserve the approval and clarification behavior owned by `sce-plan-authoring`.
+1. `$ARGUMENTS` supplies a change request that `sce-plan-authoring` can resolve into a plan.
 
 ## Workflow
 1. Load `sce-plan-authoring`.
-2. Pass `$ARGUMENTS` without inventing requirements.
-3. Let the skill resolve new-versus-existing plan, clarification needs, plan shape, and atomic task slicing.
+2. Pass `$ARGUMENTS` without inventing requirements; when critical requirements are missing, surface the skill's focused clarification questions and stop before writing.
+3. Let the skill resolve new-versus-existing plan, plan shape, and atomic task slicing.
 4. When ready, write or update `context/plans/{plan_name}.md`.
-5. Return the exact path, ordered task list, and `/next-task {plan_name} T01`.
-6. Stop after the planning handoff.
+5. Return the planning handoff and stop.
 
 ## Guardrails
 - Keep this command thin; do not duplicate the skill's planning rules.
@@ -47,19 +45,17 @@ permission:
 - Do not bypass the clarification gate.
 
 ## Outputs
-- A plan path and complete ordered task list when planning succeeds.
-- Focused clarification questions when planning is blocked.
-- One canonical next command for a new implementation session.
+- The plan path and complete ordered task list when planning succeeds.
+- One canonical `/next-task {plan_name} T01` command for a new implementation session.
+- Focused clarification questions instead of a plan when planning is blocked.
 
 ## Completion criteria
 - `sce-plan-authoring` reports a valid plan and the plan file exists at the reported path.
-- The response includes the full task order and stops before implementation.
 
 ## Failure handling
-- Stop and surface the skill's focused questions when critical information is missing.
-- Report path or write failures directly; do not claim a plan was saved when it was not.
+- Report plan-write or validation failures directly; do not claim a plan was saved when it was not.
 
 ## Related units
-- `sce-plan-authoring` — sole owner of detailed planning behavior.
-- `Shared Context Plan` — default agent for this command.
+- `shared-context-plan` — execution profile bound to this workflow.
+- `sce-plan-authoring` — entry skill for this workflow.
 - `/next-task` — canonical next entrypoint after plan approval.

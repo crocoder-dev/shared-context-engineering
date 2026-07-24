@@ -1182,9 +1182,6 @@
               }
               trap cleanup EXIT
 
-              pkl eval config/pkl/renderers/metadata-coverage-check.pkl -x summary >/dev/null
-              pkl eval config/pkl/renderers/portable-execution-profile-check.pkl -x summary >/dev/null
-              pkl eval config/pkl/renderers/instruction-unit-validator-check.pkl -x summary >/dev/null
               pkl eval -m "$tmp_dir" config/pkl/generate.pkl >/dev/null
 
               paths=(

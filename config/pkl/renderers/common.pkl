@@ -25,6 +25,9 @@ function composeProfile(
   workflow: content.WorkflowUnit
 ): content.InstructionBody = content.composeProfile(profile, workflow)
 
+function nativeWorkflowBody(workflow: content.WorkflowUnit): content.InstructionBody =
+  content.nativeWorkflowBody(workflow)
+
 sceGeneratedOpenCodePlugins = List(
   opencode.sce_bash_policy_plugin,
   opencode.sce_agent_trace_plugin

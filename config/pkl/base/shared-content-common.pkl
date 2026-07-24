@@ -107,10 +107,31 @@ local function allowedSkillRelations(profile: ExecutionProfile): String =
     .map((skillSlug) -> "- `\(skillSlug)` — skill allowed by this execution profile.")
     .join("\n")
 
-local function requiredSkillRelations(workflow: WorkflowUnit): String =
-  workflow.requiredSkills
-    .map((skillSlug) -> "- `\(skillSlug)` — skill required by this workflow.")
-    .join("\n")
+/// Relationships derived from typed workflow metadata: the bound execution profile, the entry skill,
+/// then the remaining required skills. Rendered once each in this deterministic order.
+local function derivedWorkflowRelations(workflowUnit: WorkflowUnit): String =
+  new Listing {
+    "- `\(workflowUnit.executionProfile)` — execution profile bound to this workflow."
+    "- `\(workflowUnit.entrySkill)` — entry skill for this workflow."
+    for (skillSlug in workflowUnit.requiredSkills) {
+      when (skillSlug != workflowUnit.entrySkill) {
+        "- `\(skillSlug)` — required skill for this workflow."
+      }
+    }
+  }.join("\n")
+
+/// Full Related Units for a workflow projection: metadata-derived relationships followed by any authored
+/// relationship that cannot be derived from `executionProfile`, `entrySkill`, or `requiredSkills`.
+function workflowRelatedUnits(workflowUnit: WorkflowUnit): String =
+  let (authored = workflowUnit.body.relatedUnits.trim())
+    if (authored == "") derivedWorkflowRelations(workflowUnit)
+    else "\(derivedWorkflowRelations(workflowUnit))\n\(authored)"
+
+/// Workflow body projected natively (OpenCode): authored sections with metadata-derived Related Units.
+function nativeWorkflowBody(workflowUnit: WorkflowUnit): InstructionBody =
+  (workflowUnit.body) {
+    relatedUnits = workflowRelatedUnits(workflowUnit)
+  }
 
 /// Construct a native profile-agent body directly from its canonical profile policy.
 function nativeAgentBody(profile: ExecutionProfile): InstructionBody =
@@ -131,75 +152,22 @@ function nativeAgentBody(profile: ExecutionProfile): InstructionBody =
     examples = profile.policy.body.examples
   }
 
-/// Compose profile policy and workflow procedure section-by-section before Markdown rendering.
+/// Compose only the policy-bearing profile sections into a workflow body. The workflow owns its Purpose,
+/// Inputs, Workflow, Outputs, Completion criteria, References, and Examples; the execution profile
+/// contributes only Preconditions, Guardrails, and Failure handling. Related Units are metadata-derived.
 function composeProfile(profile: ExecutionProfile, workflowUnit: WorkflowUnit): InstructionBody =
-  new InstructionBody {
-    purpose = """
-\(profile.policy.body.purpose)
-\(workflowUnit.body.purpose)
-"""
-    inputs = """
-\(profile.policy.body.inputs)
-\(workflowUnit.body.inputs)
-"""
+  (workflowUnit.body) {
     preconditions = """
 \(profile.policy.body.preconditions)
 \(workflowUnit.body.preconditions)
-"""
-    workflow = """
-\(profile.policy.body.workflow)
-\(workflowUnit.body.workflow)
 """
     guardrails = """
 \(profile.policy.body.guardrails)
 \(workflowUnit.body.guardrails)
 """
-    outputs = """
-\(profile.policy.body.outputs)
-\(workflowUnit.body.outputs)
-"""
-    completionCriteria = """
-\(profile.policy.body.completionCriteria)
-\(workflowUnit.body.completionCriteria)
-"""
     failureHandling = """
 \(profile.policy.body.failureHandling)
 \(workflowUnit.body.failureHandling)
 """
-    relatedUnits = """
-- `\(profile.slug)` — execution profile composed into this workflow.
-\(requiredSkillRelations(workflowUnit))
-\(workflowUnit.body.relatedUnits)
-"""
-    reference = workflowUnit.body.reference
-    examples = workflowUnit.body.examples
+    relatedUnits = workflowRelatedUnits(workflowUnit)
   }
-
-sharedSceCorePrinciplesSection = """
-Core principles
-- The human owns architecture, risk, and final decisions.
-- `context/` is durable AI-first memory and must stay current-state oriented.
-- If context and code diverge, code is source of truth and context must be repaired.
-"""
-
-sharedSceContextAuthoritySection = """
-Authority inside `context/`
-- You may create, update, rename, move, or delete files under `context/` as needed.
-- You may create new top-level folders under `context/` when needed.
-- Delete a file only if it exists and has no uncommitted changes.
-- Use Mermaid when a diagram is needed.
-"""
-
-sharedSceQualityPosturePrefixBullets = """
-- Keep context optimized for future AI sessions, not prose-heavy narration.
-- Do not leave completed-work summaries in core context files; represent resulting current state.
-"""
-
-sharedSceLongTermQualityBullet = """
-- Long-term quality is measured by code quality and context accuracy.
-"""
-
-sharedSceDisposablePlanLifecycleBullet = """
-- Treat `context/plans/` as active execution artifacts; completed plans are disposable and not durable history.
-- Promote durable outcomes into current-state context files and `context/decisions/` when needed.
-"""

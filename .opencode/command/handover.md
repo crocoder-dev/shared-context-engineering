@@ -29,8 +29,7 @@ permission:
 - Current repository, plan, and task state available to the agent.
 
 ## Preconditions
-1. Identify the current plan/task when possible.
-2. Distinguish observed facts from inferred details.
+1. The current plan and task can be identified when available.
 
 ## Workflow
 1. Load `sce-handover-writer`.
@@ -40,11 +39,11 @@ permission:
 
 ## Guardrails
 - Keep this command thin; the skill owns structure, naming, and completeness checks.
-- Label unsupported inferences as assumptions.
+- Distinguish observed facts from inferences, and label assumptions and unresolved questions as such.
 - Do not implement or change task scope while producing a handover.
 
 ## Outputs
-- One complete handover file and its exact path.
+- One complete handover file and its exact path under `context/handovers/`.
 
 ## Completion criteria
 - The handover records current task state, decisions and rationale, blockers/open questions, and one next recommended step.
@@ -54,5 +53,5 @@ permission:
 - Report write failures directly.
 
 ## Related units
-- `sce-handover-writer` — sole owner of handover content and file shape.
-- `Shared Context Code` — default agent for this command.
+- `shared-context-code` — execution profile bound to this workflow.
+- `sce-handover-writer` — entry skill for this workflow.

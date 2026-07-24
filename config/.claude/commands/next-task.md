@@ -4,43 +4,33 @@ allowed-tools: Task, Read, Glob, Grep, Edit, Write, AskUserQuestion, Skill, Bash
 ---
 
 ## Purpose
-- Perform controlled repository and operational work from explicit user intent or an approved SCE workflow.
-- Keep implementation evidence and durable context aligned with code truth.
 - Review, authorize, execute, verify, and context-sync one SCE plan task.
-- Route final tasks through full validation and non-final tasks to a clean next-session handoff.
 
 ## Inputs
-- The active workflow, requested scope, repository state, applicable acceptance criteria, and human decisions.
-- Relevant code, configuration, context, and verification commands.
 - `$ARGUMENTS`: plan name or path (required) and task ID `T0X` (optional).
-- User decisions or confirmation when the readiness gate cannot auto-pass.
+- User decisions at readiness, authorization, and implementation gates.
 
 ## Preconditions
 1. Establish the active workflow's authority, boundaries, and observable completion criteria before writes.
 2. Resolve blockers or ambiguity required by that workflow before irreversible or scope-expanding action.
 3. Inspect existing worktree state and preserve unrelated changes.
-1. Resolve an existing plan and task through `sce-plan-review`.
-2. Require no blockers, ambiguity, or missing acceptance criteria.
-3. Auto-pass readiness only when both plan and task ID are explicit and review is clean; otherwise obtain explicit user confirmation.
-4. Treat authorization as permission to present the implementation gate, never as permission to implement before that gate is confirmed.
+1. An existing plan and task can be resolved through `sce-plan-review`.
 
 ## Workflow
-1. Establish current truth from relevant repository and context sources.
-2. Follow the invoked workflow and its required skills for implementation, handover, commit, or validation work.
-3. Make the smallest coherent in-scope change and collect proportionate evidence.
-4. Reconcile durable context when behavior, policy, architecture, or canonical terminology changes.
-5. Return the workflow-specific result and remaining risks or handoff.
-1. Load `sce-plan-review` and return its structured readiness verdict.
-2. When `ready_for_implementation: no`, report the issues and focused questions, then stop.
-3. When readiness requires authorization and authorization is absent, report the verdict, request authorization, then stop.
-4. When readiness is auto-authorized or explicitly authorized, immediately load `sce-task-execution`, present its scope, approach, trade-offs, and risks, and end the same response with `Continue with implementation now? (yes/no)`.
-5. When implementation confirmation is absent or negative, modify no files and return the structured outcome `current_task_incomplete`.
-6. When implementation is confirmed, execute one task, run its checks, update its plan status, and load `sce-context-sync` as a done gate.
-7. Wait for feedback; apply only in-scope fixes, rerun light checks, and synchronize context again.
-8. After successful execution and context synchronization, re-read the updated plan from disk.
-9. Resolve exactly one continuation outcome: `current_task_incomplete` when the selected task remains incomplete; otherwise `next_task` for the first plan-ordered incomplete task whose dependencies are satisfied; otherwise `blocked` when incomplete tasks remain but none are executable; otherwise a provisional `plan_complete`.
-10. Before returning `plan_complete`, load `sce-validation` and return completion only after final validation passes; report a failed final validation as `blocked` with its exact evidence.
-11. For `next_task`, render a final `### Next task: {task_id} — {task_title}` section containing the actual plan path, task ID, title, and exact `/next-task {plan_path} {task_id}` invocation, with nothing after the command.
+1. Load `sce-plan-review`, resolve the selected task, and produce its structured readiness verdict.
+2. If `ready_for_implementation: no`, report the issues and focused questions, then stop.
+3. If readiness requires authorization and authorization is absent, report the verdict, request authorization, then stop.
+4. If readiness is auto-authorized or explicitly authorized, immediately load `sce-task-execution`; present the task goal, boundaries, done checks, expected changes, approach, trade-offs, and risks; then ask `Continue with implementation now? (yes/no)` and wait.
+5. If implementation is not confirmed, modify no files and return `current_task_incomplete`.
+6. If implementation is confirmed, execute only the selected task, run its required checks, record evidence, update its plan status, and load `sce-context-sync` as the done gate.
+7. Apply only in-scope feedback, rerun affected lightweight checks, and synchronize context again before continuing.
+8. After successful execution and context synchronization, re-read the updated plan and resolve exactly one continuation:
+   - `current_task_incomplete` if the selected task remains incomplete;
+   - `next_task` for the first plan-ordered incomplete task whose dependencies are satisfied;
+   - `blocked` if incomplete tasks remain but none are executable;
+   - provisional `plan_complete` if no incomplete tasks remain.
+9. Before returning `plan_complete`, load `sce-validation`; if final validation fails, return `blocked` with the evidence.
+10. Render the state-appropriate output. For `next_task`, make the exact `/next-task {plan_path} {task_id}` command the final response content.
 
 ## Guardrails
 - Do not expand scope, change dependencies, or overwrite unrelated work without explicit approval.
@@ -50,44 +40,33 @@ allowed-tools: Task, Read, Glob, Grep, Edit, Write, AskUserQuestion, Skill, Bash
 - Treat code as source of truth when code and `context/` disagree; repair context instead of rationalizing drift.
 - Keep temporary session material under `context/tmp/` and durable context current-state oriented.
 - Delete a context file only when it exists and has no uncommitted changes.
-- Keep this command as orchestration; detailed review, implementation, sync, and validation rules remain skill-owned.
-- Execute one task by default and never execute the resolved next task automatically.
-- Do not write code before readiness authorization and the exact task-execution confirmation gate passes.
-- Select continuation by plan order and satisfied dependencies, never by task-ID arithmetic.
-- Emit exactly one structured continuation outcome: `next_task`, `plan_complete`, `blocked`, or `current_task_incomplete`.
-- Do not append a generic review tail or invent a next-task command for complete, blocked, or incomplete outcomes.
-- Stop before scope expansion.
+- Execute only the confirmed current task; never execute the resolved next task.
+- Modify no files before the implementation confirmation gate passes.
+- Stop before expanding beyond the accepted task scope.
 
 ## Outputs
-- The repository, context, evidence, or handoff artifacts required by the active workflow.
-- A concise account of verification and any unresolved risk.
-- A readiness verdict and, only when authorized, the task-execution confirmation gate.
-- Implemented changes with verification evidence, updated task status, and context-sync results after confirmation.
-- Exactly one structured continuation outcome with `outcome` and `plan`; `next_task` additionally includes the actual `task_id`, `title`, and `command`, while blocked or incomplete results include the exact blocker or remaining work.
+- `not_ready`: readiness verdict, blockers or ambiguities, and focused questions.
+- `authorization_required`: readiness verdict and an explicit authorization request.
+- `implementation_gate`: authorized readiness verdict, task-execution gate, and `Continue with implementation now? (yes/no)` as the final line.
+- After confirmed execution: changes, verification evidence, updated task status, context-sync result, and exactly one continuation:
+  - `next_task`: a final `### Next task: {task_id} — {task_title}` section with the plan path and exact `/next-task {plan_path} {task_id}` command as the last content;
+  - `plan_complete`: final-validation evidence and no next-task command;
+  - `blocked`: exact blocker and no invented command;
+  - `current_task_incomplete`: remaining work and no next-task command.
 
 ## Completion criteria
-- The active workflow's acceptance and evidence requirements are satisfied.
-- Repository and context state are consistent, and no unapproved scope expansion remains.
-- The selected task is complete with evidence and synchronized context, or is explicitly reported as `current_task_incomplete` without premature writes.
-- The updated plan has been re-read and exactly one deterministic continuation outcome has been returned.
-- A `next_task` command is the final response content; all other outcomes contain no invented command or generic tail.
+- The invocation ends at the correct workflow boundary with exactly one state-appropriate result.
 
 ## Failure handling
 - Stop for a human decision before scope expansion, destructive action, or unresolved architecture and risk choices.
 - Report failed checks with their command and relevant evidence; never claim success without proof.
 - Preserve partial in-scope evidence and identify the workflow phase that failed.
-- Stop on `ready_for_implementation: no` with issues and focused questions.
-- Stop when readiness authorization is required but absent, or when implementation confirmation is absent or negative; preserve the selected task as `current_task_incomplete` and modify no files.
-- Stop on scope expansion, failed checks that cannot be fixed in scope, or context-sync blockers.
-- Preserve partial evidence, report the exact phase that failed, and do not emit a next-task command while the current task remains incomplete.
+- If execution or context synchronization cannot complete within the accepted scope, return `current_task_incomplete` and do not resolve a next task.
+- If final validation fails, return `blocked`.
 
 ## Related units
-- `shared-context-code` — execution profile composed into this workflow.
-- `sce-plan-review` — skill required by this workflow.
-- `sce-task-execution` — skill required by this workflow.
-- `sce-context-sync` — skill required by this workflow.
-- `sce-validation` — skill required by this workflow.
-- `sce-plan-review` — task selection and readiness.
-- `sce-task-execution` — implementation and task-level evidence.
-- `sce-context-sync` — durable context reconciliation.
-- `sce-validation` — final full validation and cleanup.
+- `shared-context-code` — execution profile bound to this workflow.
+- `sce-plan-review` — entry skill for this workflow.
+- `sce-task-execution` — required skill for this workflow.
+- `sce-context-sync` — required skill for this workflow.
+- `sce-validation` — required skill for this workflow.
