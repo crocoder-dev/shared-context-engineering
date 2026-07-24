@@ -298,26 +298,28 @@ local claudeValidComposedBody = common.renderBody(common.composeProfile(claudeCo
 local claudeMissingMarkerBody = common.renderBody(claudeNextTask.body)
 local claudeWrongMarkerBody = common.renderBody(common.composeProfile(claudePlanProfile, claudeNextTask))
 local claudeMissingPolicyBody = "\(common.profileCompositionMarker(claudeCodeProfile.slug))\n\(common.renderBody(claudeNextTask.body))"
+local claudeAgents = manualClaude.agents.toMap()
+local claudeCommands = manualClaude.commands.toMap()
 
 claudeCompositionProblems: Listing<String>(isEmpty) = new {
-  when (manualClaude.agents.length != manual.executionProfiles.length) {
+  when (claudeAgents.length != manual.executionProfiles.length) {
     "Claude native profile projection count differs from the canonical profile count"
   }
   for (profileSlug, profile in manual.executionProfiles) {
-    when (manualClaude.agents.getOrNull(profileSlug) == null) {
+    when (claudeAgents.getOrNull(profileSlug) == null) {
       "Claude native profile \(profileSlug) is missing"
     }
-    when (manualClaude.agents[profileSlug].body != common.renderBody(common.nativeAgentBody(profile))) {
+    when (claudeAgents[profileSlug].body != common.renderBody(common.nativeAgentBody(profile))) {
       "Claude native profile \(profileSlug) does not render canonical native policy"
     }
-    when (!manualClaude.agents[profileSlug].frontmatter.contains(
+    when (!claudeAgents[profileSlug].frontmatter.contains(
       "tools: \(claudeMetadata.renderAgentTools(profile.policy.tools))"
     )) {
       "Claude native profile \(profileSlug) tools do not derive from its capability ceiling"
     }
   }
   for (workflowSlug, workflowUnit in manual.workflows) {
-    when (manualClaude.commands[workflowSlug].body != common.renderBody(common.composeProfile(
+    when (claudeCommands[workflowSlug].body != common.renderBody(common.composeProfile(
       manual.executionProfiles[workflowUnit.executionProfile],
       workflowUnit
     ))) {
@@ -325,17 +327,17 @@ claudeCompositionProblems: Listing<String>(isEmpty) = new {
     }
     for (finding in claudeCompositionFindings(
       manual.executionProfiles[workflowUnit.executionProfile],
-      manualClaude.commands[workflowSlug].body
+      claudeCommands[workflowSlug].body
     )) {
       "Claude workflow \(workflowSlug): \(finding)"
     }
-    when (!manualClaude.commands[workflowSlug].frontmatter.contains(
+    when (!claudeCommands[workflowSlug].frontmatter.contains(
       "allowed-tools: \(claudeMetadata.renderCommandAllowedTools(manual.effectiveWorkflowPolicies[workflowSlug]))"
     )) {
       "Claude workflow \(workflowSlug) allowed tools do not equal translated effective capabilities"
     }
-    when (manualClaude.commands[workflowSlug].frontmatter.contains("context: fork")
-      || manualClaude.commands[workflowSlug].body.contains("context: fork")) {
+    when (claudeCommands[workflowSlug].frontmatter.contains("context: fork")
+      || claudeCommands[workflowSlug].body.contains("context: fork")) {
       "Claude workflow \(workflowSlug) forks from the main conversation"
     }
     for (diagnostic in validator.validate(new validator.UnitInput {
@@ -344,8 +346,8 @@ claudeCompositionProblems: Listing<String>(isEmpty) = new {
       target = "claude"
       kind = "command"
       slug = workflowSlug
-      frontmatter = manualClaude.commands[workflowSlug].frontmatter
-      body = manualClaude.commands[workflowSlug].body
+      frontmatter = claudeCommands[workflowSlug].frontmatter
+      body = claudeCommands[workflowSlug].body
     })) {
       "Claude workflow \(workflowSlug) failed structural validation: \(diagnostic.rule)"
     }
@@ -390,26 +392,29 @@ local function piSkillProjection(entrySkill: String): inventory.Projection =
     .filter((projection) -> projection.target == "pi")
     .first
 
+local piCommands = manualPi.commands.toMap()
+local piSkills = manualPi.skills.toMap()
+
 piCompositionProblems: Listing<String>(isEmpty) = new {
-  when (manualPi.commands.length != manual.workflows.length) {
+  when (piCommands.length != manual.workflows.length) {
     "Pi workflow prompt count differs from the canonical workflow count"
   }
   for (workflowSlug, workflowUnit in manual.workflows) {
-    when (!manualPi.commands[workflowSlug].body.contains(
+    when (!piCommands[workflowSlug].body.contains(
       common.profileCompositionMarker(piProfile(workflowUnit).slug)
     )) {
       "Pi workflow \(workflowSlug) is missing its composed profile marker"
     }
-    when (!manualPi.commands[workflowSlug].body.contains(piProfile(workflowUnit).policy.body.preconditions)
-      || !manualPi.commands[workflowSlug].body.contains(piProfile(workflowUnit).policy.body.guardrails)
-      || !manualPi.commands[workflowSlug].body.contains(piProfile(workflowUnit).policy.body.failureHandling)) {
+    when (!piCommands[workflowSlug].body.contains(piProfile(workflowUnit).policy.body.preconditions)
+      || !piCommands[workflowSlug].body.contains(piProfile(workflowUnit).policy.body.guardrails)
+      || !piCommands[workflowSlug].body.contains(piProfile(workflowUnit).policy.body.failureHandling)) {
       "Pi workflow \(workflowSlug) is missing composed profile policy"
     }
-    when (!manualPi.commands[workflowSlug].body.contains(piEntrySkillReadInstruction(workflowUnit.entrySkill))) {
+    when (!piCommands[workflowSlug].body.contains(piEntrySkillReadInstruction(workflowUnit.entrySkill))) {
       "Pi workflow \(workflowSlug) does not require a full entry-skill read"
     }
     when (manual.skills.getOrNull(workflowUnit.entrySkill) == null
-      || manualPi.skills.getOrNull(workflowUnit.entrySkill) == null) {
+      || piSkills.getOrNull(workflowUnit.entrySkill) == null) {
       "Pi workflow \(workflowSlug) entry skill does not resolve"
     }
     when (piSkillProjection(workflowUnit.entrySkill).destination != "config/\(piEntrySkillPath(workflowUnit.entrySkill))"
@@ -422,8 +427,8 @@ piCompositionProblems: Listing<String>(isEmpty) = new {
       target = "pi"
       kind = "command"
       slug = workflowSlug
-      frontmatter = manualPi.commands[workflowSlug].frontmatter
-      body = manualPi.commands[workflowSlug].body
+      frontmatter = piCommands[workflowSlug].frontmatter
+      body = piCommands[workflowSlug].body
     })) {
       "Pi workflow \(workflowSlug) failed structural validation: \(diagnostic.rule)"
     }
@@ -452,6 +457,7 @@ local function helperUnit(pathName: String, profileName: String, unitKind: Strin
 ---
 name: "Portable Profile"
 description: Portable profile helper fixture.
+mode: primary
 permission:
   default: ask
 ---

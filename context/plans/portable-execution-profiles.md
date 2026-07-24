@@ -12,22 +12,22 @@ Canonical policy uses capability IDs (`repository.read`, `repository.search`, `r
 
 ## Success criteria
 
-- [ ] SC1: Canonical logical units are modeled and named as execution profiles, workflows, and skills in both manual and automated variants.
-- [ ] SC2: Instruction bodies are structured as typed sections, and one `renderBody` boundary preserves the required nine-section order plus optional `Reference` and `Examples`.
-- [ ] SC3: Every workflow references one existing execution profile and entry skill; the entry skill is in `requiredSkills`; every profile-allowed skill resolves in the same profile inventory.
-- [ ] SC4: Execution profiles and workflows carry typed harness-neutral `ToolPolicy`; workflow capabilities are subsets of their profile ceiling, and effective approval requirements follow the approved union/intersection rule.
-- [ ] SC5: Target metadata contains capability-to-native-tool translation rather than canonical policy intent, and projections report enforcement strength independently.
-- [ ] SC6: Manual OpenCode profiles render as `mode: primary` agents; workflows derive `agent`, `entry-skill`, and ordered `skills` from canonical workflow data and set `subtask: false`.
-- [ ] SC7: Automated OpenCode uses the same execution-profile/workflow vocabulary and native-binding model without adding Claude or Pi automated outputs.
-- [ ] SC8: Claude profile agents remain available for explicit whole-session activation, while every normal workflow command contains the expected composed profile marker/policy and stays in the main conversation without `context: fork`.
-- [ ] SC9: Pi emits no `agent-*.md` profile prompt; every workflow prompt contains the expected composed profile policy and explicitly loads its generated project-local entry skill before acting.
-- [ ] SC10: Profile native-agent bodies and composed workflows are generated from one canonical `ProfilePolicy`; no target manually duplicates profile policy.
-- [ ] SC11: The projection inventory deterministically exposes target, carrier, profile binding, tool control, semantic control, destination, and root mirror; generation and parity paths derive from it.
-- [ ] SC12: Validation rejects all unresolved logical references, invalid capability narrowing, duplicate/invalid projections, target binding errors, policy composition errors, capability translation violations, Pi skill-loading errors, stale Pi agent prompts, and existing structural-body violations.
-- [ ] SC13: The focused fixtures cover every valid/invalid binding case listed in this plan, and metadata coverage reports profile/workflow/skill plus projection/enforcement/capability coverage.
-- [ ] SC14: Contributor templates are renamed to `execution-profile.md` and `workflow.md`; architecture, glossary, overview, validator documentation, and migration guidance describe portable policy rather than cross-harness agent parity.
-- [ ] SC15: Generated inventory totals are projection-derived and regress at 60 rendered instruction files plus 43 manual root mirrors (103 committed instruction files total).
-- [ ] SC16: Regeneration, focused Pkl checks, generated parity, `nix flake check`, and `git diff --check` pass with all generated and embedded/install-consumed outputs synchronized.
+- [x] SC1: Canonical logical units are modeled and named as execution profiles, workflows, and skills in both manual and automated variants.
+- [x] SC2: Instruction bodies are structured as typed sections, and one `renderBody` boundary preserves the required nine-section order plus optional `Reference` and `Examples`.
+- [x] SC3: Every workflow references one existing execution profile and entry skill; the entry skill is in `requiredSkills`; every profile-allowed skill resolves in the same profile inventory.
+- [x] SC4: Execution profiles and workflows carry typed harness-neutral `ToolPolicy`; workflow capabilities are subsets of their profile ceiling, and effective approval requirements follow the approved union/intersection rule.
+- [x] SC5: Target metadata contains capability-to-native-tool translation rather than canonical policy intent, and projections report enforcement strength independently.
+- [x] SC6: Manual OpenCode profiles render as `mode: primary` agents; workflows derive `agent`, `entry-skill`, and ordered `skills` from canonical workflow data and set `subtask: false`.
+- [x] SC7: Automated OpenCode uses the same execution-profile/workflow vocabulary and native-binding model without adding Claude or Pi automated outputs.
+- [x] SC8: Claude profile agents remain available for explicit whole-session activation, while every normal workflow command contains the expected composed profile marker/policy and stays in the main conversation without `context: fork`.
+- [x] SC9: Pi emits no `agent-*.md` profile prompt; every workflow prompt contains the expected composed profile policy and explicitly loads its generated project-local entry skill before acting.
+- [x] SC10: Profile native-agent bodies and composed workflows are generated from one canonical `ProfilePolicy`; no target manually duplicates profile policy.
+- [x] SC11: The projection inventory deterministically exposes target, carrier, profile binding, tool control, semantic control, destination, and root mirror; generation and parity paths derive from it.
+- [x] SC12: Validation rejects all unresolved logical references, invalid capability narrowing, duplicate/invalid projections, target binding errors, policy composition errors, capability translation violations, Pi skill-loading errors, stale Pi agent prompts, and existing structural-body violations.
+- [x] SC13: The focused fixtures cover every valid/invalid binding case listed in this plan, and metadata coverage reports profile/workflow/skill plus projection/enforcement/capability coverage.
+- [x] SC14: Contributor templates are renamed to `execution-profile.md` and `workflow.md`; architecture, glossary, overview, validator documentation, and migration guidance describe portable policy rather than cross-harness agent parity.
+- [x] SC15: Generated inventory totals are projection-derived and regress at 60 rendered instruction files plus 43 manual root mirrors (103 committed instruction files total).
+- [x] SC16: Regeneration, focused Pkl checks, generated parity, `nix flake check`, and `git diff --check` pass with all generated and embedded/install-consumed outputs synchronized.
 
 ## Constraints and non-goals
 
@@ -159,12 +159,52 @@ Canonical policy uses capability IDs (`repository.read`, `repository.search`, `r
   - Evidence: Regeneration emitted only `templates/execution-profile.md`, `templates/workflow.md`, and retained `templates/skill.md`; metadata coverage reported `METADATA_COVERAGE_OK` for 60 projections and 103 committed instruction files; the portable model gate reported `PORTABLE_EXECUTION_PROFILE_MODEL_OK`; structural validation reported `VALIDATION_OK` with 60 production units, 103 committed files, eight valid fixtures, and 18 invalid fixtures; `nix run .#pkl-check-generated` reported generated outputs up to date; targeted path/reference audits proved old current-state template claims and Pi agent prompts absent while both migration mappings resolve to generated workflow prompts; `nix flake check --print-build-logs` passed after the two new generated template paths were marked intent-to-add so Git-backed flake evaluation included them; `git diff --check` passed.
   - Notes: The profile and workflow templates distinguish canonical harness-neutral capability intent from target-native frontmatter projection examples and require the canonical relationship/policy fields. Durable context now states that target metadata translates capabilities while projection metadata classifies enforcement, and maps Pi `agent-shared-context-plan` to `change-to-plan` plus `agent-shared-context-code` to `next-task` without compatibility wrappers. Context impact was root-edit required because contributor vocabulary and repository-wide policy documentation changed.
 
-- [ ] T11: `Regenerate, validate, and clean the complete projection model` (status:todo)
+- [x] T11: `Regenerate, validate, and clean the complete projection model` (status:done)
   - Task ID: T11
   - Goal: Run final plan validation and cleanup with complete evidence, synchronized generated outputs, and no unrelated changes.
   - Boundaries (in/out of scope): In — full regeneration, focused Pkl checks, projection/count/path audits, generated parity, full flake checks (including Rust tests), diff hygiene, context-sync verification, plan status/evidence, and release-note handoff text. Out — new behavior or compatibility files.
   - Done when: All success criteria have evidence; 60 config-generated instruction files and 43 root mirrors are derived and present; fake Pi agent prompts and old templates are absent; no temporary artifacts remain; context describes current truth.
   - Verification notes (commands or checks): `nix develop -c pkl eval config/pkl/renderers/metadata-coverage-check.pkl`; `nix develop -c pkl eval config/pkl/renderers/instruction-unit-validator-check.pkl -x summary`; `nix develop -c pkl eval -m . config/pkl/generate.pkl`; `nix run .#pkl-check-generated`; `nix flake check --print-build-logs`; targeted deterministic path/reference/capability audits; `git diff --check`; `git status --short`.
+  - Completed: 2026-07-24
+  - Files changed: `config/pkl/renderers/portable-execution-profile-check.pkl` and `context/plans/portable-execution-profiles.md`.
+  - Evidence: Full regeneration exited 0. Metadata coverage reported 15 manual logical units, 17 automated logical units, 60 projections, 60 generated instruction files, 43 root mirrors, 103 committed instruction files, seven OpenCode and seven Claude capability translations, and `METADATA_COVERAGE_OK`. Structural validation reported 60 production units, 103 generated-file units, zero diagnostics, eight valid fixtures, 18 invalid fixtures, and `VALIDATION_OK`. The portable model gate reported manual 2/5/8 and automated 2/6/9 counts, three valid and ten invalid fixtures, seven capabilities, and `PORTABLE_EXECUTION_PROFILE_MODEL_OK`. Targeted audits found zero Pi `agent-*.md` prompts, zero old templates, five composed Pi workflows in each config/root tree, all ten profile-marker and entry-skill-read copies, and both migration mappings. `nix run .#pkl-check-generated`, `nix flake check --print-build-logs` including 131 Rust tests, and staged plus unstaged `git diff --check` all exited 0.
+  - Notes: Initial direct evaluation of the portable model gate exposed stale Dynamic collection access and a helper agent fixture missing the now-required OpenCode `mode: primary`; both were corrected in scope and the focused gate, parity, and full flake suite passed afterward. Context impact was verify-only: root and focused context already describe the validated current behavior. No `context/tmp` changes or untracked temporary artifacts remain.
+
+## Validation Report
+
+### Commands run
+
+- `nix develop -c pkl eval -m . config/pkl/generate.pkl` -> exit 0 (all generated targets regenerated).
+- `nix develop -c pkl eval config/pkl/renderers/metadata-coverage-check.pkl` -> exit 0 (`METADATA_COVERAGE_OK`; 60/43/103 path totals).
+- `nix develop -c pkl eval config/pkl/renderers/instruction-unit-validator-check.pkl -x summary` -> exit 0 (`VALIDATION_OK`; zero production/generated diagnostics and zero fixture failures).
+- `nix develop -c pkl eval config/pkl/renderers/portable-execution-profile-check.pkl` -> exit 0 after the in-scope gate fix (`PORTABLE_EXECUTION_PROFILE_MODEL_OK`).
+- `nix run .#pkl-check-generated` -> exit 0 (`Generated outputs are up to date`).
+- `nix flake check --print-build-logs` -> exit 0 (`all checks passed`; 131 Rust tests passed).
+- Targeted Pi/template/migration audit -> exit 0 (no Pi agent prompts or old templates; ten composed prompt copies; mappings present).
+- `git diff --check && git diff --cached --check` -> exit 0.
+- `git status --short -- context/tmp` plus untracked-file audit -> exit 0 (no task temporary artifacts).
+
+### Failed checks and follow-ups
+
+- The first portable-model evaluation failed on stale Dynamic collection APIs, then exposed a helper fixture missing `mode: primary`. Both failures were fixed within the focused validation gate and all affected/full checks passed on rerun. No follow-up remains.
+
+### Success-criteria verification
+
+- [x] SC1-SC4: Focused portable-model checks prove manual/automated logical kinds, references, typed policies, narrowing, and effective approvals.
+- [x] SC5-SC8: Metadata coverage and structural validation prove translation-only target metadata, OpenCode primary/native binding, automated OpenCode-only topology, and Claude native/composed behavior.
+- [x] SC9-SC10: Pi audits and composition checks prove no fake profile prompts, full entry-skill loading, and canonical profile-policy composition.
+- [x] SC11-SC13: Inventory/validator outputs prove explicit projection fields, deterministic paths, all required invalid cases, and complete fixture/coverage totals.
+- [x] SC14: Template/path and durable-context audits prove the renamed contributor templates and migration guidance.
+- [x] SC15: Metadata coverage and structural validation prove 60 generated destinations plus 43 root mirrors, totaling 103 committed instruction files.
+- [x] SC16: Regeneration, focused checks, parity, full flake checks, and diff hygiene all pass.
+
+### Residual risks
+
+- `nix flake check` validated the current `x86_64-linux` system and reported incompatible systems as omitted; no plan-specific residual risk was identified.
+
+### Release-note handoff text
+
+> SCE instruction units now use portable execution profiles, workflows, and profile-free skills with canonical harness-neutral capability policy. OpenCode uses primary profile agents and native-bound workflows, Claude composes profile policy into normal commands while retaining explicit agents, and Pi uses composed workflow prompts only. Pi users should replace `agent-shared-context-plan` with `change-to-plan` and `agent-shared-context-code` with `next-task`.
 
 ## Open questions
 
