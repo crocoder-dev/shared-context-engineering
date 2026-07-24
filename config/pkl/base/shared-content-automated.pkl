@@ -131,4 +131,11 @@ skills = new Mapping {
     title = code.skills["sce-validation"].title
     canonicalBody = code.skills["sce-validation"].canonicalBody
   }
+  ["sce-project-overview-html"] = new common.ContentUnit {
+    id = "skill.sce-project-overview-html"
+    kind = "skill"
+    slug = "sce-project-overview-html"
+    title = code.skills["sce-project-overview-html"].title
+    canonicalBody = code.skills["sce-project-overview-html"].canonicalBody
+  }
 }
