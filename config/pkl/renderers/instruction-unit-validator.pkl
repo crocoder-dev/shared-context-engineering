@@ -141,29 +141,23 @@ function validate(unit: UnitInput): Listing<Diagnostic> =
     }
   }
 
-local function manualDocument(target: String, kind: String, slug: String) =
+local function manualDocument(target: String, logicalKind: String, slug: String) =
   if (target == "opencode")
-    if (kind == "agent") opencode.agents[slug]
-    else if (kind == "command") opencode.commands[slug]
+    if (logicalKind == "execution-profile") opencode.agents[slug]
+    else if (logicalKind == "workflow") opencode.commands[slug]
     else opencode.skills[slug]
   else if (target == "claude")
-    if (kind == "agent") claude.agents[slug]
-    else if (kind == "command") claude.commands[slug]
+    if (logicalKind == "execution-profile") claude.agents[slug]
+    else if (logicalKind == "workflow") claude.commands[slug]
     else claude.skills[slug]
   else
-    if (kind == "agent") pi.agentPrompts[slug]
-    else if (kind == "command") pi.commands[slug]
+    if (logicalKind == "workflow") pi.commands[slug]
     else pi.skills[slug]
 
-local function manualTargetPath(unit: inventory.InventoryUnit, target: String): String =
-  if (target == "opencode") unit.destinations.opencode
-  else if (target == "claude") unit.destinations.claude
-  else unit.destinations.pi
-
-local function manualRootMirrorPath(unit: inventory.InventoryUnit, target: String): String =
-  if (target == "opencode") unit.destinations.rootMirror[0]
-  else if (target == "claude") unit.destinations.rootMirror[1]
-  else unit.destinations.rootMirror[2]
+local function automatedDocument(logicalKind: String, slug: String) =
+  if (logicalKind == "execution-profile") opencodeAutomated.agents[slug]
+  else if (logicalKind == "workflow") opencodeAutomated.commands[slug]
+  else opencodeAutomated.skills[slug]
 
 local function unitFromFile(
   filePath: String,
@@ -178,40 +172,38 @@ local function unitFromFile(
     path = filePath
     profile = if (profileName == "manual") "manual" else "automated"
     target = if (targetName == "opencode") "opencode" else if (targetName == "claude") "claude" else "pi"
-    kind = if (unitKind == "agent") "agent" else if (unitKind == "command") "command" else "skill"
+    kind = if (unitKind == "execution-profile") "agent" else if (unitKind == "workflow") "command" else "skill"
     slug = unitSlug
     frontmatter = "\(parts.first)\n---"
     body = parts.drop(1).join("\n---\n\n")
   }
 
-/// All 45 manual target documents plus 17 automated OpenCode documents discovered from the inventory.
+/// All 60 approved target projections discovered from the inventory.
 local discoveredProductionUnits: Listing<UnitInput> = new {
   for (_, unit in inventory.manualUnits) {
-    for (targetName in unit.targets) {
+    for (projection in unit.projections) {
       new UnitInput {
-        path = manualTargetPath(unit, targetName)
+        path = projection.destination
         profile = "manual"
-        target = targetName
-        kind = unit.kind
+        target = projection.target
+        kind = if (unit.kind == "execution-profile") "agent" else if (unit.kind == "workflow") "command" else "skill"
         slug = unit.slug
-        frontmatter = manualDocument(targetName, unit.kind, unit.slug).frontmatter
-        body = manualDocument(targetName, unit.kind, unit.slug).body
+        frontmatter = manualDocument(projection.target, unit.kind, unit.slug).frontmatter
+        body = manualDocument(projection.target, unit.kind, unit.slug).body
       }
     }
   }
   for (_, unit in inventory.automatedUnits) {
-    new UnitInput {
-      path = unit.destinations.opencode
-      profile = "automated"
-      target = "opencode"
-      kind = unit.kind
-      slug = unit.slug
-      frontmatter = if (unit.kind == "agent") opencodeAutomated.agents[unit.slug].frontmatter
-        else if (unit.kind == "command") opencodeAutomated.commands[unit.slug].frontmatter
-        else opencodeAutomated.skills[unit.slug].frontmatter
-      body = if (unit.kind == "agent") opencodeAutomated.agents[unit.slug].body
-        else if (unit.kind == "command") opencodeAutomated.commands[unit.slug].body
-        else opencodeAutomated.skills[unit.slug].body
+    for (projection in unit.projections) {
+      new UnitInput {
+        path = projection.destination
+        profile = "automated"
+        target = projection.target
+        kind = if (unit.kind == "execution-profile") "agent" else if (unit.kind == "workflow") "command" else "skill"
+        slug = unit.slug
+        frontmatter = automatedDocument(unit.kind, unit.slug).frontmatter
+        body = automatedDocument(unit.kind, unit.slug).body
+      }
     }
   }
 }
@@ -226,35 +218,39 @@ productionDiagnostics: Listing<Diagnostic> = new {
   }
 }
 
-/// All 62 config-generated instruction files plus the 45 tracked root mirrors, path-sorted.
+/// All 60 projected config files plus 43 tracked root mirrors, path-sorted.
 /// File loading makes structural validation independent of parity's byte-for-byte comparison.
 local discoveredGeneratedFileUnits: Listing<UnitInput> = new {
   for (_, unit in inventory.manualUnits) {
-    for (targetName in unit.targets) {
+    for (projection in unit.projections) {
       unitFromFile(
-        manualTargetPath(unit, targetName),
+        projection.destination,
         "manual",
-        targetName,
+        projection.target,
         unit.kind,
         unit.slug
       )
+      when (projection.rootMirror != null) {
+        unitFromFile(
+          projection.rootMirror,
+          "manual",
+          projection.target,
+          unit.kind,
+          unit.slug
+        )
+      }
+    }
+  }
+  for (_, unit in inventory.automatedUnits) {
+    for (projection in unit.projections) {
       unitFromFile(
-        manualRootMirrorPath(unit, targetName),
-        "manual",
-        targetName,
+        projection.destination,
+        "automated",
+        projection.target,
         unit.kind,
         unit.slug
       )
     }
-  }
-  for (_, unit in inventory.automatedUnits) {
-    unitFromFile(
-      unit.destinations.opencode,
-      "automated",
-      "opencode",
-      unit.kind,
-      unit.slug
-    )
   }
 }
 

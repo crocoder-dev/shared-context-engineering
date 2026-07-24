@@ -4,7 +4,7 @@
 
 The repository-owned instruction-unit validator is implemented entirely in Pkl:
 
-- `config/pkl/renderers/instruction-unit-validator.pkl` owns validation logic, the deterministic 62-unit rendered-model input set, and direct loading of 107 committed generated instruction files.
+- `config/pkl/renderers/instruction-unit-validator.pkl` owns validation logic, the deterministic 60-projection rendered-model input set, and direct loading of 103 committed projected instruction files.
 - `config/pkl/renderers/instruction-unit-validator-check.pkl` owns valid and invalid fixture checks plus the evaluation gate.
 
 Run the focused validation with:
@@ -15,13 +15,13 @@ nix develop -c pkl eval \
   -x summary
 ```
 
-A passing result reports `productionUnitCount = 62`, `generatedFileUnitCount = 107`, zero rendered-model and generated-file diagnostics, five valid fixtures, ten invalid fixtures, zero fixture failures, and `status = "VALIDATION_OK"`.
+A passing result reports `productionUnitCount = 60`, `generatedFileUnitCount = 103`, zero rendered-model and generated-file diagnostics, five valid fixtures, ten invalid fixtures, zero fixture failures, and `status = "VALIDATION_OK"`.
 
 ## Input ownership
 
 Canonical manual and automated bodies are authored as typed `InstructionBody` sections and serialized by the shared `renderBody` boundary before target rendering. Production validation consumes the resulting document objects from the manual OpenCode, Claude, and Pi renderers and the automated OpenCode renderer. Unit paths, kinds, profiles, targets, and slugs come from `instruction-unit-inventory.pkl`; the resulting unit list is sorted by destination path before validation.
 
-The same inventory drives direct validation of all 62 committed config instruction outputs and all 45 tracked manual root mirrors. Generated-file inputs are path-sorted and parsed into frontmatter/body before applying the same rules, while generated-output parity separately proves byte equality with the renderer model.
+The same explicit projection inventory drives direct validation of 60 approved config instruction destinations and 43 tracked manual root mirrors. Generated-file inputs are projection-path-sorted and parsed into frontmatter/body before applying the same rules, while generated-output parity separately proves byte equality for all generation-owned files. Transitional Pi profile prompts remain parity-owned but are not approved projections; T08 removes them.
 
 ## Validation contract
 

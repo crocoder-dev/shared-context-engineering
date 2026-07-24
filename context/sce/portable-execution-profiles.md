@@ -10,7 +10,7 @@ The canonical manual and automated SCE aggregations in `config/pkl/base/shared-c
 
 The manual inventory contains two execution profiles (`shared-context-plan`, `shared-context-code`), five workflows (`next-task`, `change-to-plan`, `handover`, `commit`, `validate`), and eight skills. The automated inventory uses the same vocabulary with two profiles, six workflows, and nine skills; its additional interactive planning workflow and skill remain active alongside the deterministic automated planning path.
 
-Manual and automated target renderers consume `executionProfiles` and `workflows` but continue to expose target carrier collections named `agents` and `commands`. Automated topology remains OpenCode-only. Generated paths and target-native frontmatter are unchanged at this stage. Native profile-agent bodies now render broad invocation policy rather than workflow sequencing; explicit target projections and final native workflow binding remain later boundaries.
+Manual and automated target renderers consume `executionProfiles` and `workflows` but continue to expose target carrier collections named `agents` and `commands`. Automated topology remains OpenCode-only. Native profile-agent bodies render broad invocation policy rather than workflow sequencing; final native workflow binding remains a later boundary.
 
 The plan profile owns planning/context and no-implementation boundaries without duplicating `/change-to-plan` ordering. The code profile owns controlled repository operations, evidence, and context alignment without imposing one-task execution on every invocation. One-task behavior remains workflow/skill-owned by `next-task` and `sce-task-execution`.
 
@@ -23,6 +23,22 @@ The plan profile owns planning/context and no-implementation boundaries without 
 - `renderBody(...)` remains the only heading serializer, so composition never searches or replaces Markdown headings.
 
 Composition carries profile policy through purpose, inputs, preconditions, workflow posture, guardrails, outputs, completion criteria, and failure handling while retaining workflow-owned optional `Reference`/`Examples`. Target renderers currently adopt `nativeAgentBody`; Claude/Pi workflow composition and final OpenCode native binding remain deferred to their projection tasks.
+
+## Projection inventory
+
+`config/pkl/base/instruction-unit-inventory.pkl` models each canonical unit with logical kind `execution-profile`, `workflow`, or `skill` and a list of explicit `Projection` records. Every projection carries target, carrier, profile binding, tool-control strength, semantic-control strength, generated destination, and nullable root mirror. Policy intent remains canonical; projection control fields only classify enforcement strength.
+
+Approved manual projections are:
+
+| Logical kind | OpenCode | Claude | Pi |
+| --- | --- | --- | --- |
+| execution profile | native agent | native agent | none |
+| workflow | native-bound command | composed command | composed prompt |
+| skill | skill | skill | skill |
+
+Automated profiles, workflows, and skills each have one OpenCode projection and no root mirror. Semantic control is `prompt` for every projection. Tool control is `native` for current OpenCode/Claude profile/workflow carriers and `none` for Pi prompts and skill carriers.
+
+Projection-derived collections are path-sorted and currently contain 60 generated instruction destinations plus 43 manual root mirrors, for 103 committed projected instruction files. Duplicate target/carrier pairs within a unit are rejected. The two still-generated Pi `agent-*` prompts are transitional outputs with no approved projection; renderer/generator deletion remains T08-owned.
 
 ## Capability policy
 
@@ -55,7 +71,7 @@ For every manual and automated workflow:
 - each required skill resolves and belongs to the selected profile's allowlist;
 - each workflow capability belongs to the profile capability ceiling.
 
-Each canonical aggregation exposes deterministic problem listings and effective workflow policies. `config/pkl/renderers/portable-execution-profile-check.pkl` constrains those problem listings to be empty, verifies profile bindings plus effective approval behavior, preserves the automated planning profile's no-process-execution ceiling, proves automated units remain OpenCode-only, checks broad profile boundaries and stable composition fragments, and runs the structural validator against native/composed helper output.
+Each canonical aggregation exposes deterministic problem listings and effective workflow policies. `config/pkl/renderers/portable-execution-profile-check.pkl` constrains those problem listings to be empty, verifies profile bindings plus effective approval behavior, preserves the automated planning profile's no-process-execution ceiling, proves automated units remain OpenCode-only, rejects duplicate projections, checks the 60/43/103 path-count contract, checks broad profile boundaries and stable composition fragments, and runs the structural validator against native/composed helper output.
 
 ## Validation
 

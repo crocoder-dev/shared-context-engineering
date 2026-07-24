@@ -53,12 +53,61 @@ automatedWorkflowBindingProblems: Listing<String>(isEmpty) = new {
 
 automatedTopologyProblems: Listing<String>(isEmpty) = new {
   for (_, unit in inventory.automatedUnits) {
-    when (unit.targets != List("opencode")) {
-      "automated unit \(unit.id) projects to targets other than OpenCode"
+    for (projection in unit.projections) {
+      when (projection.target != "opencode") {
+        "automated unit \(unit.id) projects to target \(projection.target)"
+      }
+      when (projection.rootMirror != null) {
+        "automated unit \(unit.id) unexpectedly has a root mirror"
+      }
     }
-    when (unit.destinations.claude != null || unit.destinations.pi != null) {
-      "automated unit \(unit.id) has a Claude or Pi destination"
+  }
+}
+
+duplicateProjectionProblems: Listing<String>(isEmpty) = inventory.duplicateProjectionProblems
+
+projectionInventoryProblems: Listing<String>(isEmpty) = new {
+  for (_, unit in inventory.manualUnits) {
+    when (unit.kind == "execution-profile") {
+      when (unit.projections.map((projection) -> projection.target) != List("opencode", "claude")) {
+        "manual profile \(unit.id) does not project exactly to OpenCode and Claude"
+      }
+      for (projection in unit.projections) {
+        when (projection.carrier != "agent" || projection.profileBinding != "native") {
+          "manual profile \(unit.id) has invalid native-agent projection classification"
+        }
+      }
     }
+    when (unit.kind == "workflow") {
+      when (unit.projections.map((projection) -> projection.target) != List("opencode", "claude", "pi")) {
+        "manual workflow \(unit.id) does not project to all approved targets"
+      }
+    }
+    when (unit.kind == "skill") {
+      when (unit.projections.map((projection) -> projection.target) != List("opencode", "claude", "pi")) {
+        "manual skill \(unit.id) does not project to all approved targets"
+      }
+    }
+    for (projection in unit.projections) {
+      when (projection.semanticControl != "prompt") {
+        "manual unit \(unit.id) claims non-prompt semantic control"
+      }
+    }
+  }
+  when (inventory.counts.renderedInstructionFiles != 60) {
+    "projection-derived rendered instruction count is not 60"
+  }
+  when (inventory.counts.rootMirrors != 43) {
+    "projection-derived root-mirror count is not 43"
+  }
+  when (inventory.counts.committedInstructionFiles != 103) {
+    "projection-derived committed instruction count is not 103"
+  }
+  when (inventory.generatedInstructionPaths != inventory.generatedInstructionPaths.sort()) {
+    "generated projection paths are not deterministic"
+  }
+  when (inventory.rootMirrorPaths != inventory.rootMirrorPaths.sort()) {
+    "root-mirror projection paths are not deterministic"
   }
 }
 

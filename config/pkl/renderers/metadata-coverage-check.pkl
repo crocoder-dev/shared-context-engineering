@@ -15,8 +15,38 @@ inventoryCoverage = new {
   manualUnitCount = inventory.manualUnits.length
   automatedUnitCount = inventory.automatedUnits.length
   counts = inventory.counts
+  generatedInstructionPaths = inventory.generatedInstructionPaths
+  rootMirrorPaths = inventory.rootMirrorPaths
+  duplicateProjectionProblemCount = inventory.duplicateProjectionProblems.length
   staleEntryCount = inventory.staleEntries.length
   brokenReferenceCount = inventory.brokenReferences.length
+}
+
+projectionCoverage {
+  for (_, unit in inventory.manualUnits) {
+    for (projection in unit.projections) {
+      ["manual:\(unit.id):\(projection.target):\(projection.carrier)"] = new {
+        logicalKind = unit.kind
+        profileBinding = projection.profileBinding
+        toolControl = projection.toolControl
+        semanticControl = projection.semanticControl
+        destination = projection.destination
+        rootMirror = projection.rootMirror
+      }
+    }
+  }
+  for (_, unit in inventory.automatedUnits) {
+    for (projection in unit.projections) {
+      ["automated:\(unit.id):\(projection.target):\(projection.carrier)"] = new {
+        logicalKind = unit.kind
+        profileBinding = projection.profileBinding
+        toolControl = projection.toolControl
+        semanticControl = projection.semanticControl
+        destination = projection.destination
+        rootMirror = projection.rootMirror
+      }
+    }
+  }
 }
 
 opencodeAgentCoverage {
@@ -72,16 +102,6 @@ claudeSkillCoverage {
     [unitSlug] = new {
       description = common.skillDescriptions[unitSlug]
       compatibility = claude.skillCompatibility
-    }
-  }
-}
-
-piAgentPromptCoverage {
-  for (unitSlug, _ in shared.executionProfiles) {
-    [unitSlug] = new {
-      description = pi.agentDescriptions[unitSlug]
-      argumentHint = pi.agentArgumentHints[unitSlug]
-      skillReference = pi.agentSkillReferences[unitSlug]
     }
   }
 }
