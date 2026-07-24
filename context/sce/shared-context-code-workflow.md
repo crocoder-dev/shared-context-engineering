@@ -26,17 +26,18 @@ Examples:
 `/next-task` keeps orchestration/gating responsibilities, while detailed per-phase contracts are owned by the three phase skills.
 
 1. Run `sce-plan-review` to resolve plan target, task selection, and readiness.
-2. Apply the plan-review confirmation gate.
-   - Auto-pass only when both plan and task ID are provided and review reports no blockers, ambiguity, or missing acceptance criteria.
-   - Otherwise, resolve open points and require explicit user confirmation.
-3. Run `sce-task-execution`.
-   - Mandatory implementation stop is enforced by the skill before edits.
-   - Scoped implementation, light checks/build-if-fast, and plan status updates are skill-owned.
-4. Run `sce-context-sync` as a mandatory done gate.
-   - Context significance classification and root verify-vs-edit behavior are skill-owned.
-5. Wait for feedback; if in-scope fixes are needed, apply fixes, rerun light checks/build-if-fast, and sync context again.
-6. If this is the final plan task, run `sce-validation`.
-7. If more tasks remain, prompt the next-session command for the next task.
+2. Apply the readiness transition.
+   - `ready_for_implementation: no` reports issues and focused questions, then stops.
+   - Authorization-required readiness reports its verdict and requests authorization, then stops while authorization is absent.
+   - Auto-authorized or explicitly authorized readiness immediately loads `sce-task-execution` and presents its scope/approach/risk gate in the same response.
+3. Preserve the exact `Continue with implementation now? (yes/no)` stop.
+   - Absent or negative confirmation modifies no files and returns `current_task_incomplete`.
+   - Positive confirmation permits exactly one scoped task execution.
+4. Run task checks, update the plan, and run `sce-context-sync` as a mandatory done gate.
+5. Apply only in-scope feedback fixes, rerun light checks, and synchronize context again.
+6. Re-read the updated plan from disk and resolve one continuation outcome by plan order and dependency state: `current_task_incomplete`, `next_task`, `blocked`, or provisional `plan_complete`.
+7. Run `sce-validation` before returning `plan_complete`.
+8. Render `next_task` as the final response section with the actual plan path, task ID, title, and exact invocation; emit no command or generic tail for other outcomes.
 
 ## Mermaid diagram
 
@@ -45,32 +46,25 @@ flowchart TD
     A["/next-task {plan} {task?}"] --> B["sce-plan-review"]
     B --> C{"Ready without issues?"}
 
-    C -- "No" --> D["Resolve blockers/ambiguity/missing acceptance criteria"]
-    D --> E["Ask user: task ready?"]
-    E --> F{"Confirmed?"}
-    F -- "No" --> Z["Stop and wait"]
-    F -- "Yes" --> G["Mandatory implementation stop"]
+    C -- "No" --> D["Report issues/questions; stop"]
+    C -- "Authorization required" --> E["Report verdict; request authorization; stop"]
+    C -- "Auto/explicitly authorized" --> G["Load sce-task-execution"]
 
-    C -- "Yes (plan+task and clean review)" --> G
+    G --> H["Present scope, approach, trade-offs, risks"]
+    H --> I["Ask exact implementation question"]
+    I --> J{"Explicit yes?"}
+    J -- "No/absent" --> Z["No writes; current_task_incomplete"]
+    J -- "Yes" --> K["Execute one scoped task"]
 
-    G --> H["Explain scope, done checks, expected touch scope, approach/trade-offs/risks"]
-    H --> I["Ask: Continue with implementation now?"]
-    I --> J{"User says yes?"}
-    J -- "No" --> Z
-    J -- "Yes" --> K["sce-task-execution (minimal in-scope changes)"]
-
-    K --> L["Light checks/lints and build if light/fast"]
-    L --> M["Update plan task status"]
-    M --> N["sce-context-sync (required)"]
-
-    N --> O{"Feedback needs in-scope fixes?"}
-    O -- "Yes" --> P["Apply fixes + rerun light checks/build-if-fast"]
-    P --> N
-    O -- "No" --> Q{"Final plan task?"}
-    Q -- "Yes" --> R["sce-validation"]
-    Q -- "No" --> S["Prompt next session with /next-task ..."]
-    R --> T["Done"]
-    S --> T
+    K --> L["Checks and plan update"]
+    L --> N["sce-context-sync"]
+    N --> O["Re-read updated plan"]
+    O --> Q{"Continuation state"}
+    Q -- "Current incomplete" --> Z
+    Q -- "Executable remainder" --> S["next_task final section"]
+    Q -- "Blocked remainder" --> B1["blocked with exact blocker"]
+    Q -- "No remainder" --> R["sce-validation"]
+    R --> T["plan_complete after pass"]
 ```
 
 ## Guardrails
@@ -79,3 +73,5 @@ flowchart TD
 - Do not expand scope without explicit approval.
 - Code is the source of truth when context and code disagree.
 - Context sync is required before the task is considered done.
+- Continuation selection uses plan order and satisfied dependencies, never task-ID arithmetic.
+- The task-execution skill reports current-task completion only; `/next-task` owns plan re-read and next-task selection.

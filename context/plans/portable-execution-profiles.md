@@ -10,6 +10,8 @@ Project those units honestly: OpenCode uses primary agents plus native workflow 
 
 Canonical policy uses capability IDs (`repository.read`, `repository.search`, `repository.write`, `process.execute`, `interaction.ask`, `skill.invoke`, and `vcs.commit`). Target metadata translates capabilities to native tool names only. Projection metadata separately reports carrier, profile binding, tool-control strength, semantic-control strength, destination, and optional root mirror.
 
+Extend this plan with a separate workflow-contract bug fix for two related `/next-task` terminal boundaries. An authorized readiness verdict must transition immediately to the `sce-task-execution` pre-implementation confirmation gate, without implementation starting. After confirmed implementation, validation, plan update, and context synchronization, the workflow must re-read the updated plan and emit exactly one deterministic continuation outcome: `next_task`, `plan_complete`, `blocked`, or `current_task_incomplete`.
+
 ## Success criteria
 
 - [x] SC1: Canonical logical units are modeled and named as execution profiles, workflows, and skills in both manual and automated variants.
@@ -28,6 +30,12 @@ Canonical policy uses capability IDs (`repository.read`, `repository.search`, `r
 - [x] SC14: Contributor templates are renamed to `execution-profile.md` and `workflow.md`; architecture, glossary, overview, validator documentation, and migration guidance describe portable policy rather than cross-harness agent parity.
 - [x] SC15: Generated inventory totals are projection-derived and regress at 60 rendered instruction files plus 43 manual root mirrors (103 committed instruction files total).
 - [x] SC16: Regeneration, focused Pkl checks, generated parity, `nix flake check`, and `git diff --check` pass with all generated and embedded/install-consumed outputs synchronized.
+- [x] SC17: Manual `/next-task` treats `ready_for_implementation: no` and authorization-required reviews as stopping outcomes, but treats auto-authorized or explicitly authorized `ready_for_implementation: yes` as non-terminal and presents the `sce-task-execution` scope/approach/risk gate in the same response.
+- [x] SC18: The mandatory `Continue with implementation now? (yes/no)` stop remains intact, and no files are modified or task work executed before explicit confirmation.
+- [x] SC19: After confirmed execution and context synchronization, `/next-task` re-reads the updated plan, resolves the first executable incomplete task by plan order and satisfied dependencies rather than task-ID arithmetic, and returns exactly one structured continuation outcome: `next_task`, `plan_complete`, `blocked`, or `current_task_incomplete`.
+- [x] SC20: A `next_task` result renders the actual plan path, task ID, and title plus exact `/next-task` invocation as the final response section with nothing after the command; complete, blocked, and incomplete outcomes emit no invented command or generic review tail.
+- [x] SC21: Focused Pkl fixtures cover every readiness and continuation branch plus final ordering, and OpenCode, Claude, and Pi projections preserve identical workflow semantics while generated-source parity and relevant repository checks pass without unrelated generated-byte drift.
+- [x] SC22: The terminal-boundary fix is tracked only by T12/T13; completed T01 remains closed and is not credited with any part of this behavior change.
 
 ## Constraints and non-goals
 
@@ -46,6 +54,12 @@ Canonical policy uses capability IDs (`repository.read`, `repository.search`, `r
 - Keep automated content OpenCode-only while using the same logical schema and vocabulary as manual content.
 - The repository has no checked-in changelog/release-notes surface. Record the two Pi replacement mappings in durable migration documentation and provide exact release-note copy in the final PR handoff rather than inventing a new release framework.
 - Keep each task aligned to one coherent atomic commit and leave unrelated worktree state untouched.
+- T01 remains complete and unchanged; do not reopen it, edit its status/evidence, or claim it implemented either terminal-boundary fix.
+- Treat both terminal-boundary failures as one workflow-control bug owned by T12, not as separate feature tasks.
+- For T12-T13 only, the earlier constraint to preserve existing task-execution procedures is superseded narrowly for `/next-task` readiness transition, the Shared Context Code profile invariant, and the `sce-task-execution` completion/handoff contract. Readiness evaluation rules, auto-authorization criteria, the mandatory pre-implementation confirmation, capability policy, profile projection semantics, and unrelated workflow behavior remain unchanged.
+- Select continuation from the updated plan using existing plan order and dependency semantics. Do not introduce numeric task-ID incrementing, change general plan/task selection rules, or execute the resolved next task automatically.
+- Author behavior only in canonical Pkl sources and regenerate OpenCode, Claude, Pi, and root mirrors through `config/pkl/generate.pkl`; never hand-edit generated instruction files.
+- Use the existing portable-profile gate, instruction-unit validator fixtures, generated parity pipeline, and root flake checks rather than introducing a second validation system.
 
 ## Task stack
 
@@ -170,42 +184,60 @@ Canonical policy uses capability IDs (`repository.read`, `repository.search`, `r
   - Evidence: Full regeneration exited 0. Metadata coverage reported 15 manual logical units, 17 automated logical units, 60 projections, 60 generated instruction files, 43 root mirrors, 103 committed instruction files, seven OpenCode and seven Claude capability translations, and `METADATA_COVERAGE_OK`. Structural validation reported 60 production units, 103 generated-file units, zero diagnostics, eight valid fixtures, 18 invalid fixtures, and `VALIDATION_OK`. The portable model gate reported manual 2/5/8 and automated 2/6/9 counts, three valid and ten invalid fixtures, seven capabilities, and `PORTABLE_EXECUTION_PROFILE_MODEL_OK`. Targeted audits found zero Pi `agent-*.md` prompts, zero old templates, five composed Pi workflows in each config/root tree, all ten profile-marker and entry-skill-read copies, and both migration mappings. `nix run .#pkl-check-generated`, `nix flake check --print-build-logs` including 131 Rust tests, and staged plus unstaged `git diff --check` all exited 0.
   - Notes: Initial direct evaluation of the portable model gate exposed stale Dynamic collection access and a helper agent fixture missing the now-required OpenCode `mode: primary`; both were corrected in scope and the focused gate, parity, and full flake suite passed afterward. Context impact was verify-only: root and focused context already describe the validated current behavior. No `context/tmp` changes or untracked temporary artifacts remain.
 
+- [x] T12: `Fix /next-task readiness and completion terminal boundaries` (status:done)
+  - Task ID: T12
+  - Goal: Implement one canonical workflow-control contract in which authorized readiness always reaches the mandatory task-execution confirmation gate and successful execution always ends in a deterministic continuation outcome.
+  - Boundaries (in/out of scope): In — canonical manual `next-task` and `sce-task-execution` bodies in `config/pkl/base/shared-content-code.pkl`; semantic validation in `config/pkl/renderers/instruction-unit-validator.pkl`; focused production/fixture assertions in `config/pkl/renderers/{instruction-unit-validator-check,portable-execution-profile-check}.pkl`; regeneration of only the affected OpenCode, Claude, Pi, and root mirrors; focused durable context synchronization. Out — the shared `Shared Context Code` profile body, automated-profile non-interactive semantics, readiness scoring or auto-authorization changes, removal of the confirmation gate, general plan/task selection redesign, capability/projection policy changes, T01 history, unrelated generated content, and automatic execution of a resolved next task.
+  - Done when: The workflow explicitly branches `ready_for_implementation: no` to issues/questions/stop, authorization-required readiness to verdict/request/stop, and authorized or auto-authorized readiness to immediate `sce-task-execution` loading plus scope/approach/risks and the exact `Continue with implementation now? (yes/no)` stop in the same response; absent/negative confirmation changes no files and yields `current_task_incomplete`; confirmed execution validates, updates the plan, synchronizes context, re-reads the plan from disk, and resolves exactly one structured `next_task|plan_complete|blocked|current_task_incomplete` result; `next_task` uses the first plan-ordered dependency-satisfied incomplete task and renders the actual title/path/ID/command in a final `### Next task ...` section with nothing after it; the other outcomes report completion, exact blocker, or remaining current-task work without an invented command or generic review text.
+  - Verification notes (commands or checks): Add deterministic assertions/fixtures for not-ready stop, authorization-required stop, auto-authorized transition, explicitly authorized transition, unconfirmed no-write stop, non-sequential dependency-aware next selection, completed/blocked/incomplete exclusion, all-complete, blocked remainder, current-task incomplete, structured fields, and final response ordering/no generic tail. Evaluate `config/pkl/renderers/portable-execution-profile-check.pkl -x summary` and `config/pkl/renderers/instruction-unit-validator-check.pkl -x summary`; evaluate OpenCode/Claude/Pi content renderers; regenerate with `nix develop -c pkl eval -m . config/pkl/generate.pkl`; inspect the affected projection diff; run `nix run .#pkl-check-generated` and `git diff --check`.
+  - Expected generated files: `config/.opencode/{command/next-task.md,skills/sce-task-execution/SKILL.md}`, `config/.claude/{commands/next-task.md,skills/sce-task-execution/SKILL.md}`, `config/.pi/{prompts/next-task.md,skills/sce-task-execution/SKILL.md}`, and the six corresponding root mirrors under `.opencode/`, `.claude/`, and `.pi/` (12 files total).
+  - Context sync target: Update `context/sce/shared-context-code-workflow.md` and the focused portable-profile/validator contracts as required; because this changes cross-harness workflow policy, reconcile `context/{overview,architecture,patterns,context-map}.md` against implemented truth without unrelated churn.
+  - Dependencies: T01-T11 remain completed prerequisites; no completed task is reopened.
+  - Completed: 2026-07-24
+  - Files changed: `config/pkl/base/shared-content-code.pkl`; `config/pkl/renderers/{instruction-unit-validator,instruction-unit-validator-check,portable-execution-profile-check}.pkl`; the 12 generated/mirrored `next-task` and `sce-task-execution` projections under `config/{.opencode,.claude,.pi}` and root harness trees; `context/{overview,architecture,patterns,glossary,context-map}.md`; `context/sce/{shared-context-code-workflow,portable-execution-profiles,instruction-unit-validator}.md`; and this plan.
+  - Evidence: Focused metadata coverage reported `METADATA_COVERAGE_OK` for 58 projections and 99 committed files. The portable gate reported 14 valid fixtures, 12 invalid fixtures, and `PORTABLE_EXECUTION_PROFILE_MODEL_OK`, including not-ready, authorization-required, auto-authorized, explicitly authorized, unconfirmed, non-sequential dependency-aware selection, completed/blocked exclusion, complete, blocked, current-incomplete, structured-field, and final-order cases. Structural validation reported 58 production units, 99 generated files, zero diagnostics, eight valid fixtures, 24 invalid fixtures, and `VALIDATION_OK`. Manual OpenCode, Claude, and Pi renderers evaluated successfully; regeneration and `nix run .#pkl-check-generated` exited 0; the generated-diff audit found exactly the approved 12 files and no profile/handover/commit/validate drift; `git diff --check` and context line-limit checks passed.
+  - Notes: The pre-implementation review discovered that the original 16-file expectation named a nonexistent Claude profile projection and that changing the shared Code profile would propagate into unrelated workflows. The human chose the narrow resolution: preserve the Shared Context Code profile and implement the terminal-boundary contract only in `next-task` plus `sce-task-execution`. T01 remains unchanged. Context impact was root-edit required because readiness and continuation policy changed across all three manual harness projections.
+
+- [x] T13: `Validate and clean the terminal-boundary workflow contract` (status:done)
+  - Task ID: T13
+  - Goal: Prove the complete readiness-to-gate and completion-to-continuation state machine across every manual harness projection, then leave plan/context/generated state synchronized.
+  - Boundaries (in/out of scope): In — full focused Pkl gates, regeneration/parity, relevant `sce`/flake checks, cross-harness semantic and byte-diff audits, final-order/no-generic-tail assertions, context-sync verification, plan evidence/status updates, and temporary-artifact cleanup. Out — new workflow behavior, automated-profile changes, unrelated generated rewrites, and T01 history changes.
+  - Done when: Every SC17-SC22 branch has concrete evidence; all affected OpenCode, Claude, and Pi projections contain equivalent state transitions and continuation outcomes; no files outside the canonical/test/context sources and the 12 expected generated projections have unexplained byte changes; generated parity, relevant full checks, and diff hygiene pass; temporary files are absent; the plan records the final result and then resolves its own continuation from the updated plan.
+  - Verification notes (commands or checks): Run focused metadata/portable/structural Pkl evaluations, full regeneration, `nix run .#pkl-check-generated`, relevant `sce check` validations if exposed by the current CLI, `nix flake check --print-build-logs`, targeted cross-harness content/path/diff audits, `git diff --check`, and `git status --short`; append exact commands, exit codes, evidence, failed follow-ups, criterion mapping, and residual risks.
+  - Dependencies: T12.
+  - Completed: 2026-07-24
+  - Files changed: `context/plans/portable-execution-profiles.md` only; the validated T12 implementation remains in its recorded canonical, fixture, generated, and durable-context files.
+  - Evidence: Focused metadata coverage exited 0 with `METADATA_COVERAGE_OK` for 58 projections and 99 committed instruction files. The portable execution-profile gate exited 0 with 14 valid fixtures, 12 invalid fixtures, and `PORTABLE_EXECUTION_PROFILE_MODEL_OK`. Structural validation exited 0 with zero production/generated diagnostics, eight valid fixtures, 24 invalid fixtures, and `VALIDATION_OK`. Full regeneration exited 0 and `nix run .#pkl-check-generated` reported generated outputs up to date. Cross-harness audits proved six config/root pairs byte-identical and all three workflow plus three task-execution projections contain the required readiness, confirmation, plan-order, plan-re-read, no-write, and terminal-output semantics. The changed-path audit confirmed exactly the approved 12 generated projections with no unexplained generated-byte drift. `nix flake check --print-build-logs` exited 0 with all checks passed, including 171 Rust tests. Staged and unstaged `git diff --check`, `context/tmp`, and untracked-file audits passed.
+  - Notes: Review identified T13's stale 16-projection wording; the human explicitly approved correcting it to the T12-approved 12-projection scope. No behavior, generated output, test fixture, or durable current-state context changed during T13. Context impact is verify-only because T12 already synchronized the cross-harness workflow contract. The only platform caveat is the standard flake report that incompatible non-`x86_64-linux` systems were omitted.
 ## Validation Report
 
 ### Commands run
-
-- `nix develop -c pkl eval -m . config/pkl/generate.pkl` -> exit 0 (all generated targets regenerated).
-- `nix develop -c pkl eval config/pkl/renderers/metadata-coverage-check.pkl` -> exit 0 (`METADATA_COVERAGE_OK`; 60/43/103 path totals).
-- `nix develop -c pkl eval config/pkl/renderers/instruction-unit-validator-check.pkl -x summary` -> exit 0 (`VALIDATION_OK`; zero production/generated diagnostics and zero fixture failures).
-- `nix develop -c pkl eval config/pkl/renderers/portable-execution-profile-check.pkl` -> exit 0 after the in-scope gate fix (`PORTABLE_EXECUTION_PROFILE_MODEL_OK`).
-- `nix run .#pkl-check-generated` -> exit 0 (`Generated outputs are up to date`).
-- `nix flake check --print-build-logs` -> exit 0 (`all checks passed`; 131 Rust tests passed).
-- Targeted Pi/template/migration audit -> exit 0 (no Pi agent prompts or old templates; ten composed prompt copies; mappings present).
-- `git diff --check && git diff --cached --check` -> exit 0.
-- `git status --short -- context/tmp` plus untracked-file audit -> exit 0 (no task temporary artifacts).
+- `nix develop -c pkl eval config/pkl/renderers/metadata-coverage-check.pkl -x summary` -> exit 0 (`METADATA_COVERAGE_OK`; 58 projections and 99 committed files).
+- `nix develop -c pkl eval config/pkl/renderers/portable-execution-profile-check.pkl -x summary` -> exit 0 (`PORTABLE_EXECUTION_PROFILE_MODEL_OK`; 14 valid and 12 invalid fixtures).
+- `nix develop -c pkl eval config/pkl/renderers/instruction-unit-validator-check.pkl -x summary` -> exit 0 (`VALIDATION_OK`; zero diagnostics or fixture failures).
+- `nix develop -c pkl eval -m . config/pkl/generate.pkl` and `nix run .#pkl-check-generated` -> exit 0 (regeneration completed; outputs up to date).
+- Cross-harness `cmp`/`grep` audit over the six config/root projection pairs -> exit 0 (byte-identical mirrors and required terminal semantics).
+- `nix flake check --print-build-logs` -> exit 0 (`all checks passed`; 171 Rust tests passed).
+- `git diff --check`, `git diff --cached --check`, `git status --short -- context/tmp`, and untracked-file audit -> exit 0 (clean diff hygiene; no temporary artifacts).
 
 ### Failed checks and follow-ups
-
-- The first portable-model evaluation failed on stale Dynamic collection APIs, then exposed a helper fixture missing `mode: primary`. Both failures were fixed within the focused validation gate and all affected/full checks passed on rerun. No follow-up remains.
+- T13 review found a stale 16-projection expectation; the human approved the T12-consistent 12-projection correction before implementation. No failed validation or follow-up remains.
 
 ### Success-criteria verification
-
-- [x] SC1-SC4: Focused portable-model checks prove manual/automated logical kinds, references, typed policies, narrowing, and effective approvals.
-- [x] SC5-SC8: Metadata coverage and structural validation prove translation-only target metadata, OpenCode primary/native binding, automated OpenCode-only topology, and Claude native/composed behavior.
-- [x] SC9-SC10: Pi audits and composition checks prove no fake profile prompts, full entry-skill loading, and canonical profile-policy composition.
-- [x] SC11-SC13: Inventory/validator outputs prove explicit projection fields, deterministic paths, all required invalid cases, and complete fixture/coverage totals.
-- [x] SC14: Template/path and durable-context audits prove the renamed contributor templates and migration guidance.
-- [x] SC15: Metadata coverage and structural validation prove 60 generated destinations plus 43 root mirrors, totaling 103 committed instruction files.
-- [x] SC16: Regeneration, focused checks, parity, full flake checks, and diff hygiene all pass.
+- [x] SC1-SC4: Portable-model checks prove logical units, references, typed policies, narrowing, and effective approvals.
+- [x] SC5-SC8: Metadata and structural gates prove translation-only target metadata, OpenCode binding, automated topology, and Claude composition.
+- [x] SC9-SC10: Pi and composition audits prove profile-free Pi prompts, entry-skill loading, and canonical policy composition.
+- [x] SC11-SC13: Inventory and validator outputs prove projection fields, deterministic paths, invalid cases, and coverage totals.
+- [x] SC14-SC16: Historical T10-T11 evidence proves template migration, the then-approved 60/43/103 projection baseline, regeneration, parity, and full checks.
+- [x] SC17-SC18: Production validation and fixtures prove readiness stops, authorized gate transition, exact confirmation, and no-write refusal.
+- [x] SC19-SC20: Fixtures prove post-sync plan re-read, dependency-aware plan-order selection, four outcomes, and final-command ordering.
+- [x] SC21-SC22: Cross-harness byte/semantic audits and changed-path review prove equivalent projections and T12/T13-only ownership while T01 remains closed.
 
 ### Residual risks
-
-- `nix flake check` validated the current `x86_64-linux` system and reported incompatible systems as omitted; no plan-specific residual risk was identified.
+- Validation covered `x86_64-linux`; `nix flake check` reported incompatible systems as omitted. No plan-specific residual risk remains.
 
 ### Release-note handoff text
-
 > SCE instruction units now use portable execution profiles, workflows, and profile-free skills with canonical harness-neutral capability policy. OpenCode uses primary profile agents and native-bound workflows, Claude composes profile policy into normal commands while retaining explicit agents, and Pi uses composed workflow prompts only. Pi users should replace `agent-shared-context-plan` with `change-to-plan` and `agent-shared-context-code` with `next-task`.
-
 ## Open questions
 
-None. The approved decisions are: use this new follow-up plan in the same PR, remove Pi fake agent prompts without wrappers, and keep typed capability intent canonical while target metadata translates tool names and projections classify enforcement.
+None. The approved decisions are: use this follow-up plan in the same PR; remove Pi fake agent prompts without wrappers; keep typed capability intent canonical while target metadata translates tool names and projections classify enforcement; keep T01 closed; and implement both `/next-task` terminal-boundary failures together in T12, followed by T13 validation.

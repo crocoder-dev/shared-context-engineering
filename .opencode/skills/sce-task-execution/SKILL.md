@@ -36,20 +36,23 @@ compatibility: opencode
 - Prefer targeted checks over a full suite during task execution unless the task requires full validation.
 
 ## Outputs
-- Minimal task implementation.
+- Minimal task implementation after explicit confirmation.
 - Task-level verification evidence.
 - Context-impact classification.
 - Updated plan task status.
+- A completion result that tells the invoking workflow whether the current task is complete; next-task selection remains orchestration-owned.
 
 ## Completion criteria
 - The task's done checks pass with evidence.
 - The implementation stays within approved boundaries.
 - The plan records status, files changed, evidence, and relevant notes.
+- The invoking workflow can distinguish completed work from `current_task_incomplete` without inferring a next task.
 
 ## Failure handling
-- Stop when confirmation is denied or absent.
+- When confirmation is denied or absent, modify no files and return `current_task_incomplete`.
 - Stop with the exact out-of-scope requirement when scope expansion is needed.
-- Report failed checks and preserve the task as incomplete unless the failure is resolved and reverified.
+- Report failed checks and return `current_task_incomplete` unless the failure is resolved and reverified.
+- Do not select a next task or construct a next-task command; the invoking workflow must re-read the updated plan after context synchronization.
 
 ## Related units
 - `sce-plan-review` — supplies the ready task.

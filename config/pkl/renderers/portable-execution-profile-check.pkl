@@ -590,6 +590,116 @@ local function generatedPathFixtureRules(paths: List<String>): List<String> = ne
   }
 }.toList()
 
+local function readinessTransition(
+  ready: Boolean,
+  authorizationRequired: Boolean,
+  authorized: Boolean
+): String =
+  if (!ready) "not_ready_stop"
+  else if (authorizationRequired && !authorized) "authorization_required_stop"
+  else "implementation_gate"
+
+local function implementationGateOutcome(confirmed: Boolean): String =
+  if (confirmed) "execute" else "current_task_incomplete"
+
+class ContinuationTaskFixture {
+  id: String
+  title: String
+  completed: Boolean
+  dependencies: List<String> = List()
+}
+
+class ContinuationResultFixture {
+  outcome: "next_task"|"plan_complete"|"blocked"|"current_task_incomplete"
+  plan: String
+  taskId: String? = null
+  title: String? = null
+  command: String? = null
+  detail: String? = null
+}
+
+local function continuationResult(
+  planPath: String,
+  currentTaskId: String,
+  tasks: List<ContinuationTaskFixture>
+): ContinuationResultFixture =
+  let (currentTask = tasks.filter((task) -> task.id == currentTaskId).first)
+  let (completedIds = tasks.filter((task) -> task.completed).map((task) -> task.id))
+  let (incompleteTasks = tasks.filter((task) -> !task.completed))
+  let (executableTasks = incompleteTasks.filter((task) ->
+    task.dependencies.every((dependency) -> completedIds.contains(dependency))
+  ))
+  if (!currentTask.completed)
+    new ContinuationResultFixture {
+      outcome = "current_task_incomplete"
+      plan = planPath
+      taskId = currentTask.id
+      title = currentTask.title
+      detail = "current task remains incomplete"
+    }
+  else if (incompleteTasks.isEmpty)
+    new ContinuationResultFixture {
+      outcome = "plan_complete"
+      plan = planPath
+      detail = "no incomplete tasks remain"
+    }
+  else if (executableTasks.isEmpty)
+    new ContinuationResultFixture {
+      outcome = "blocked"
+      plan = planPath
+      detail = "incomplete tasks remain but none have satisfied dependencies"
+    }
+  else
+    let (nextTask = executableTasks.first)
+    new ContinuationResultFixture {
+      outcome = "next_task"
+      plan = planPath
+      taskId = nextTask.id
+      title = nextTask.title
+      command = "/next-task \(planPath) \(nextTask.id)"
+    }
+
+local function renderNextTaskResult(result: ContinuationResultFixture): String =
+  """
+outcome: next_task
+plan: \(result.plan)
+task_id: \(result.taskId)
+title: \(result.title)
+command: \(result.command)
+
+### Next task: \(result.taskId) — \(result.title)
+- Plan: `\(result.plan)`
+- Task: `\(result.taskId)`
+- Title: \(result.title)
+
+`\(result.command)`
+"""
+
+local fixturePlanPath = "context/plans/portable-execution-profiles.md"
+local nonSequentialNextResult = continuationResult(fixturePlanPath, "T12", List(
+  new ContinuationTaskFixture { id = "T12"; title = "Current"; completed = true },
+  new ContinuationTaskFixture { id = "T40"; title = "First executable"; completed = false; dependencies = List("T12") },
+  new ContinuationTaskFixture { id = "T13"; title = "Later by plan order"; completed = false; dependencies = List("T12") }
+))
+local completedBlockedExcludedResult = continuationResult(fixturePlanPath, "T12", List(
+  new ContinuationTaskFixture { id = "T12"; title = "Current"; completed = true },
+  new ContinuationTaskFixture { id = "T20"; title = "Completed"; completed = true },
+  new ContinuationTaskFixture { id = "T30"; title = "Blocked"; completed = false; dependencies = List("T99") },
+  new ContinuationTaskFixture { id = "T40"; title = "Executable"; completed = false; dependencies = List("T12") }
+))
+local completeResult = continuationResult(fixturePlanPath, "T12", List(
+  new ContinuationTaskFixture { id = "T12"; title = "Current"; completed = true }
+))
+local blockedResult = continuationResult(fixturePlanPath, "T12", List(
+  new ContinuationTaskFixture { id = "T12"; title = "Current"; completed = true },
+  new ContinuationTaskFixture { id = "T30"; title = "Blocked"; completed = false; dependencies = List("T99") }
+))
+local incompleteResult = continuationResult(fixturePlanPath, "T12", List(
+  new ContinuationTaskFixture { id = "T12"; title = "Current"; completed = false },
+  new ContinuationTaskFixture { id = "T13"; title = "Next"; completed = false; dependencies = List("T12") }
+))
+local renderedNextTaskResult = renderNextTaskResult(nonSequentialNextResult)
+
 class PortableFixtureCase {
   name: String
   observedRules: List<String>
@@ -624,6 +734,67 @@ portableValidFixtures: Listing<PortableFixtureCase> = new {
   new PortableFixtureCase {
     name = "valid-generated-paths"
     observedRules = generatedPathFixtureRules(inventory.committedInstructionPaths)
+    expectedRule = null
+  }
+  new PortableFixtureCase {
+    name = "not-ready-stops"
+    observedRules = if (readinessTransition(false, false, false) == "not_ready_stop") List() else List("next_task.readiness_not_ready")
+    expectedRule = null
+  }
+  new PortableFixtureCase {
+    name = "authorization-required-stops"
+    observedRules = if (readinessTransition(true, true, false) == "authorization_required_stop") List() else List("next_task.readiness_authorization")
+    expectedRule = null
+  }
+  new PortableFixtureCase {
+    name = "auto-authorized-transitions-to-gate"
+    observedRules = if (readinessTransition(true, false, false) == "implementation_gate") List() else List("next_task.readiness_auto_authorized")
+    expectedRule = null
+  }
+  new PortableFixtureCase {
+    name = "explicitly-authorized-transitions-to-gate"
+    observedRules = if (readinessTransition(true, true, true) == "implementation_gate") List() else List("next_task.readiness_explicitly_authorized")
+    expectedRule = null
+  }
+  new PortableFixtureCase {
+    name = "unconfirmed-gate-is-current-task-incomplete"
+    observedRules = if (implementationGateOutcome(false) == "current_task_incomplete") List() else List("next_task.confirmation_no_write")
+    expectedRule = null
+  }
+  new PortableFixtureCase {
+    name = "non-sequential-plan-order-selection"
+    observedRules = if (nonSequentialNextResult.outcome == "next_task" && nonSequentialNextResult.taskId == "T40") List() else List("next_task.plan_order")
+    expectedRule = null
+  }
+  new PortableFixtureCase {
+    name = "completed-blocked-incomplete-exclusion"
+    observedRules = if (completedBlockedExcludedResult.outcome == "next_task" && completedBlockedExcludedResult.taskId == "T40") List() else List("next_task.executable_selection")
+    expectedRule = null
+  }
+  new PortableFixtureCase {
+    name = "all-complete-outcome"
+    observedRules = if (completeResult.outcome == "plan_complete" && completeResult.command == null) List() else List("next_task.plan_complete")
+    expectedRule = null
+  }
+  new PortableFixtureCase {
+    name = "blocked-remainder-outcome"
+    observedRules = if (blockedResult.outcome == "blocked" && blockedResult.command == null && blockedResult.detail != null) List() else List("next_task.blocked")
+    expectedRule = null
+  }
+  new PortableFixtureCase {
+    name = "current-task-incomplete-outcome"
+    observedRules = if (incompleteResult.outcome == "current_task_incomplete" && incompleteResult.command == null && incompleteResult.taskId == "T12") List() else List("next_task.current_task_incomplete")
+    expectedRule = null
+  }
+  new PortableFixtureCase {
+    name = "structured-next-task-terminal-section"
+    observedRules = if (
+      nonSequentialNextResult.plan == fixturePlanPath
+      && nonSequentialNextResult.title == "First executable"
+      && nonSequentialNextResult.command == "/next-task \(fixturePlanPath) T40"
+      && renderedNextTaskResult.contains("### Next task: T40 — First executable")
+      && renderedNextTaskResult.endsWith("`/next-task \(fixturePlanPath) T40`\n")
+    ) List() else List("next_task.final_order")
     expectedRule = null
   }
 }

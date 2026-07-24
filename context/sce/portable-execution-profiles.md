@@ -14,6 +14,8 @@ Manual and automated target renderers consume `executionProfiles` and `workflows
 
 The plan profile owns planning/context and no-implementation boundaries without duplicating `/change-to-plan` ordering; its manual capability ceiling excludes `process.execute`. The code profile owns controlled repository operations, evidence, and context alignment without imposing one-task execution on every invocation; it allows process execution without making `vcs.commit` approval profile-wide. One-task behavior remains workflow/skill-owned by `next-task` and `sce-task-execution`, while commit approval remains owned by the `commit` workflow.
 
+Manual `next-task` uses one cross-harness workflow-control contract. Not-ready and authorization-required reviews stop; auto-authorized or explicitly authorized reviews transition immediately to the exact task-execution confirmation gate without writes. After confirmed execution, plan update, and context synchronization, the workflow re-reads the plan and emits exactly one `next_task`, `plan_complete`, `blocked`, or `current_task_incomplete` result. Next-task selection follows plan order and satisfied dependencies. Only `next_task` emits a command, as the final response content. The reusable task-execution skill owns the no-write confirmation stop and current-task completion result but never selects the next task.
+
 ## Policy composition
 
 `shared-content-common.pkl` provides typed, section-aware construction helpers:
@@ -106,4 +108,4 @@ nix develop -c pkl eval \
   -x summary
 ```
 
-A passing result reports the manual 2/5/8 and automated 2/6/9 profile/workflow/skill counts, seven capabilities, five manual plus six automated effective policies, the OpenCode-only automated target, three valid plus 12 invalid portable fixtures, and `PORTABLE_EXECUTION_PROFILE_MODEL_OK`. This gate, metadata coverage, and structural validation run before parity in both `pkl-check-generated` and the root flake's `pkl-parity` check.
+A passing result reports the manual 2/5/8 and automated 2/6/9 profile/workflow/skill counts, seven capabilities, five manual plus six automated effective policies, the OpenCode-only automated target, 14 valid plus 12 invalid portable fixtures, and `PORTABLE_EXECUTION_PROFILE_MODEL_OK`. The valid fixtures include every manual readiness and continuation branch, dependency-aware non-sequential plan-order selection, structured next-task fields, and terminal response ordering. This gate, metadata coverage, and structural validation run before parity in both `pkl-check-generated` and the root flake's `pkl-parity` check.

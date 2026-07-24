@@ -65,7 +65,9 @@
 ## Thin command orchestration
 
 - Keep SCE command bodies thin when phase skills already define detailed contracts.
-- For `/next-task`, retain only sequencing and confirmation gates in the command body and delegate phase details to `sce-plan-review`, `sce-task-execution`, and `sce-context-sync`.
+- For `/next-task`, retain readiness branch selection, the exact no-write implementation confirmation, post-sync plan re-read, and deterministic continuation rendering in the command body; delegate phase details to `sce-plan-review`, `sce-task-execution`, and `sce-context-sync`.
+- Treat authorized readiness as permission to present the task-execution gate, not permission to implement. After synchronization, select the first plan-ordered dependency-satisfied incomplete task without task-ID arithmetic and emit exactly one `next_task`, `plan_complete`, `blocked`, or `current_task_incomplete` outcome.
+- Render a `next_task` handoff as the final response section ending with its exact invocation. Complete, blocked, and current-task-incomplete outcomes must not invent a command or append a generic review tail.
 - For `/change-to-plan`, retain wrapper-level plan output/handoff obligations in the command body and delegate clarification and plan-shape contracts (including one-task/one-atomic-commit task slicing) to `sce-plan-authoring`.
 - For `/commit`, keep the command body thin and profile-aware: manual generated commands retain staging-confirmation and proposal-only gates, while the automated OpenCode command skips staging confirmation, generates exactly one staged commit message, and executes one staged `git commit`; delegate commit-message grammar, the single-message contract, and the staged-plan rule (cite affected plan slug(s) and updated task ID(s) when `context/plans/*.md` is staged, otherwise stop for clarification) to `sce-atomic-commit`.
 - Preserve mandatory gates (readiness confirmation, implementation stop, final-task validation trigger) while removing duplicated procedural prose from command text.

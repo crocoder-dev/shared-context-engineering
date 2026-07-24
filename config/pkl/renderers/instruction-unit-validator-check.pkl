@@ -319,6 +319,66 @@ permission:
     }
     expectedRule = "agent.skill_permission_reference"
   }
+  new FixtureCase {
+    name = "next-task-missing-not-ready-stop"
+    unit = renderedFixture(
+      "next-task-missing-not-ready-stop",
+      "opencode",
+      "next-task",
+      opencode.commands["next-task"].frontmatter,
+      opencode.commands["next-task"].body.replaceAll("`ready_for_implementation: no`", "not ready")
+    )
+    expectedRule = "next_task.readiness_transition"
+  }
+  new FixtureCase {
+    name = "next-task-missing-authorized-transition"
+    unit = renderedFixture(
+      "next-task-missing-authorized-transition",
+      "claude",
+      "next-task",
+      claude.commands["next-task"].frontmatter,
+      claude.commands["next-task"].body.replaceAll("readiness is auto-authorized or explicitly authorized", "readiness is accepted")
+    )
+    expectedRule = "next_task.readiness_transition"
+  }
+  new FixtureCase {
+    name = "next-task-missing-plan-reread"
+    unit = renderedFixture(
+      "next-task-missing-plan-reread",
+      "pi",
+      "next-task",
+      pi.commands["next-task"].frontmatter,
+      pi.commands["next-task"].body.replaceAll("re-read the updated plan from disk", "continue from remembered plan state")
+    )
+    expectedRule = "next_task.continuation"
+  }
+  new FixtureCase {
+    name = "next-task-missing-terminal-ordering"
+    unit = renderedFixture(
+      "next-task-missing-terminal-ordering",
+      "opencode",
+      "next-task",
+      opencode.commands["next-task"].frontmatter,
+      opencode.commands["next-task"].body.replaceAll("with nothing after the command", "then add a review summary")
+    )
+    expectedRule = "next_task.continuation"
+  }
+  new FixtureCase {
+    name = "task-execution-missing-no-write-stop"
+    unit = new validator.UnitInput {
+      path = "fixtures/task-execution-missing-no-write-stop/.opencode/skills/sce-task-execution/SKILL.md"
+      profile = "manual"
+      target = "opencode"
+      kind = "skill"
+      slug = "sce-task-execution"
+      frontmatter = opencode.skills["sce-task-execution"].frontmatter
+      body = opencode.skills["sce-task-execution"].body.replaceAll(
+        "modify no files and return `current_task_incomplete`",
+        "stop without a structured result"
+      )
+    }
+    expectedRule = "task_execution.confirmation_gate"
+  }
 }
 
 fixtureResults = new {

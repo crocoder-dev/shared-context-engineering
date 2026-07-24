@@ -98,6 +98,28 @@ local function isKnownWorkflow(unit: UnitInput): Boolean =
 local function piEntrySkillRead(entrySkill: String): String =
   "- Before acting, read `.pi/skills/\(entrySkill)/SKILL.md` completely and follow it as the entry procedure."
 
+local nextTaskReadinessFragments = List(
+  "`ready_for_implementation: no`",
+  "readiness requires authorization and authorization is absent",
+  "readiness is auto-authorized or explicitly authorized",
+  "Continue with implementation now? (yes/no)"
+)
+local nextTaskContinuationFragments = List(
+  "re-read the updated plan from disk",
+  "`current_task_incomplete`",
+  "`next_task`",
+  "`blocked`",
+  "`plan_complete`",
+  "first plan-ordered incomplete task whose dependencies are satisfied",
+  "### Next task: {task_id} — {task_title}",
+  "with nothing after the command"
+)
+local taskExecutionGateFragments = List(
+  "Continue with implementation now? (yes/no)",
+  "modify no files and return `current_task_incomplete`",
+  "Do not select a next task or construct a next-task command"
+)
+
 /// Validate one rendered unit. Discovery/path ordering remains inventory-owned.
 function validate(unit: UnitInput): Listing<Diagnostic> =
   let (bodyHeadings = headings(unit.body))
@@ -226,6 +248,21 @@ function validate(unit: UnitInput): Listing<Diagnostic> =
         .filter((projection) -> projection.target == "pi")
         .first.destination != "config/.pi/skills/\(workflowFor(unit).entrySkill)/SKILL.md") {
         newDiagnostic(unit, "pi.skill_path", "entry skill does not resolve to its generated Pi path", "config/.pi/skills/\(workflowFor(unit).entrySkill)/SKILL.md")
+      }
+    }
+
+    when (unit.profile == "manual" && unit.kind == "command" && unit.slug == "next-task") {
+      when (nextTaskReadinessFragments.any((fragment) -> !unit.body.contains(fragment))) {
+        newDiagnostic(unit, "next_task.readiness_transition", "workflow omits a readiness stop or authorized gate transition", "all canonical readiness branches and the exact implementation question")
+      }
+      when (nextTaskContinuationFragments.any((fragment) -> !unit.body.contains(fragment))) {
+        newDiagnostic(unit, "next_task.continuation", "workflow omits deterministic post-sync continuation semantics", "plan re-read plus all four outcomes, dependency-aware order, and terminal next-task section")
+      }
+    }
+
+    when (unit.profile == "manual" && unit.kind == "skill" && unit.slug == "sce-task-execution") {
+      when (taskExecutionGateFragments.any((fragment) -> !unit.body.contains(fragment))) {
+        newDiagnostic(unit, "task_execution.confirmation_gate", "task execution omits its no-write confirmation or handoff boundary", "exact confirmation, current-task-incomplete no-write result, and orchestration-owned next selection")
       }
     }
   }
