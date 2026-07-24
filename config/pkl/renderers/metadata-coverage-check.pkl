@@ -104,16 +104,6 @@ claudeCapabilityTranslationCoverage {
   }
 }
 
-claudeAgentCoverage {
-  for (unitSlug, unit in shared.executionProfiles) {
-    [unitSlug] = new {
-      description = claude.agentDescriptions[unitSlug]
-      color = claude.agentColors[unitSlug]
-      tools = claude.renderAgentTools(unit.policy.tools)
-    }
-  }
-}
-
 claudeCommandCoverage {
   for (unitSlug, unit in shared.workflows) {
     [unitSlug] = new {
@@ -201,11 +191,11 @@ opencodeAutomatedSkillCoverage {
 /// Evaluation gate proving metadata covers every logical kind, projection classification, and
 /// canonical capability translation without re-owning policy intent.
 metadataCoverageProblems: Listing<String>(isEmpty) = new {
-  when (inventoryCoverage.counts.renderedInstructionFiles != 60) {
-    "metadata coverage expected 60 rendered instruction projections"
+  when (inventoryCoverage.counts.renderedInstructionFiles != 58) {
+    "metadata coverage expected 58 rendered instruction projections"
   }
-  when (inventoryCoverage.counts.committedInstructionFiles != 103) {
-    "metadata coverage expected 103 committed instruction files"
+  when (inventoryCoverage.counts.committedInstructionFiles != 99) {
+    "metadata coverage expected 99 committed instruction files"
   }
   when (projectionCoverage.toMap().length != inventoryCoverage.counts.renderedInstructionFiles) {
     "projection metadata coverage does not match the inventory"
@@ -221,10 +211,9 @@ metadataCoverageProblems: Listing<String>(isEmpty) = new {
     || opencodeSkillCoverage.toMap().length != shared.skills.length) {
     "manual OpenCode logical-kind coverage is incomplete"
   }
-  when (claudeAgentCoverage.toMap().length != shared.executionProfiles.length
-    || claudeCommandCoverage.toMap().length != shared.workflows.length
+  when (claudeCommandCoverage.toMap().length != shared.workflows.length
     || claudeSkillCoverage.toMap().length != shared.skills.length) {
-    "Claude logical-kind coverage is incomplete"
+    "Claude workflow/skill coverage is incomplete"
   }
   when (piCommandCoverage.toMap().length != shared.workflows.length
     || piSkillCoverage.toMap().length != shared.skills.length) {

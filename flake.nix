@@ -213,6 +213,7 @@
             (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/lib/bash-policy-presets.json)
             (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/plugins)
             (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/opencode.json)
+            # Forbidden legacy paths stay in the parity source so stale files fail the gate.
             (pkgs.lib.fileset.maybeMissing ./config/.claude/agents)
             (pkgs.lib.fileset.maybeMissing ./config/.claude/commands)
             (pkgs.lib.fileset.maybeMissing ./config/.claude/skills)
@@ -1199,7 +1200,6 @@
                 "config/automated/.opencode/lib"
                 "config/automated/.opencode/plugins"
                 "config/automated/.opencode/opencode.json"
-                "config/.claude/agents"
                 "config/.claude/commands"
                 "config/.claude/skills"
                 "config/.claude/hooks/run-sce-or-show-install-guidance.sh"
@@ -1211,7 +1211,6 @@
                 ".opencode/agent"
                 ".opencode/command"
                 ".opencode/skills"
-                ".claude/agents"
                 ".claude/commands"
                 ".claude/skills"
                 ".pi/prompts"
@@ -1220,6 +1219,12 @@
               )
 
               stale=0
+              for forbidden_path in "config/.claude/agents" ".claude/agents"; do
+                if [[ -e "$forbidden_path" ]]; then
+                  stale=1
+                  printf 'Stale generated Claude agent path detected at %s\n' "$forbidden_path"
+                fi
+              done
               for path in "''${paths[@]}"; do
                 if [ -e "$tmp_dir/$path" ] || [ -e "$path" ]; then
                   if ! git diff --no-index --exit-code -- "$tmp_dir/$path" "$path" >/dev/null 2>&1; then

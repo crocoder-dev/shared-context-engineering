@@ -73,9 +73,7 @@ automatedTopologyProblems: Listing<String>(isEmpty) = new {
 duplicateProjectionProblems: Listing<String>(isEmpty) = inventory.duplicateProjectionProblems
 
 local function expectedManualDestination(unit: inventory.InventoryUnit, projection: inventory.Projection): String =
-  if (unit.kind == "execution-profile")
-    if (projection.target == "opencode") "config/.opencode/agent/\(unit.title).md"
-    else "config/.claude/agents/\(unit.slug).md"
+  if (unit.kind == "execution-profile") "config/.opencode/agent/\(unit.title).md"
   else if (unit.kind == "workflow")
     if (projection.target == "opencode") "config/.opencode/command/\(unit.slug).md"
     else if (projection.target == "claude") "config/.claude/commands/\(unit.slug).md"
@@ -95,8 +93,8 @@ local function expectedAutomatedDestination(unit: inventory.InventoryUnit): Stri
 projectionInventoryProblems: Listing<String>(isEmpty) = new {
   for (_, unit in inventory.manualUnits) {
     when (unit.kind == "execution-profile") {
-      when (unit.projections.map((projection) -> projection.target) != List("opencode", "claude")) {
-        "manual profile \(unit.id) does not project exactly to OpenCode and Claude"
+      when (unit.projections.map((projection) -> projection.target) != List("opencode")) {
+        "manual profile \(unit.id) does not project exactly to OpenCode"
       }
       for (projection in unit.projections) {
         when (projection.carrier != "agent" || projection.profileBinding != "native") {
@@ -136,14 +134,14 @@ projectionInventoryProblems: Listing<String>(isEmpty) = new {
       }
     }
   }
-  when (inventory.counts.renderedInstructionFiles != 60) {
-    "projection-derived rendered instruction count is not 60"
+  when (inventory.counts.renderedInstructionFiles != 58) {
+    "projection-derived rendered instruction count is not 58"
   }
-  when (inventory.counts.rootMirrors != 43) {
-    "projection-derived root-mirror count is not 43"
+  when (inventory.counts.rootMirrors != 41) {
+    "projection-derived root-mirror count is not 41"
   }
-  when (inventory.counts.committedInstructionFiles != 103) {
-    "projection-derived committed instruction count is not 103"
+  when (inventory.counts.committedInstructionFiles != 99) {
+    "projection-derived committed instruction count is not 99"
   }
   when (inventory.generatedInstructionPaths != inventory.generatedInstructionPaths.sort()) {
     "generated projection paths are not deterministic"
@@ -298,26 +296,9 @@ local claudeValidComposedBody = common.renderBody(common.composeProfile(claudeCo
 local claudeMissingMarkerBody = common.renderBody(claudeNextTask.body)
 local claudeWrongMarkerBody = common.renderBody(common.composeProfile(claudePlanProfile, claudeNextTask))
 local claudeMissingPolicyBody = "\(common.profileCompositionMarker(claudeCodeProfile.slug))\n\(common.renderBody(claudeNextTask.body))"
-local claudeAgents = manualClaude.agents.toMap()
 local claudeCommands = manualClaude.commands.toMap()
 
 claudeCompositionProblems: Listing<String>(isEmpty) = new {
-  when (claudeAgents.length != manual.executionProfiles.length) {
-    "Claude native profile projection count differs from the canonical profile count"
-  }
-  for (profileSlug, profile in manual.executionProfiles) {
-    when (claudeAgents.getOrNull(profileSlug) == null) {
-      "Claude native profile \(profileSlug) is missing"
-    }
-    when (claudeAgents[profileSlug].body != common.renderBody(common.nativeAgentBody(profile))) {
-      "Claude native profile \(profileSlug) does not render canonical native policy"
-    }
-    when (!claudeAgents[profileSlug].frontmatter.contains(
-      "tools: \(claudeMetadata.renderAgentTools(profile.policy.tools))"
-    )) {
-      "Claude native profile \(profileSlug) tools do not derive from its capability ceiling"
-    }
-  }
   for (workflowSlug, workflowUnit in manual.workflows) {
     when (claudeCommands[workflowSlug].body != common.renderBody(common.composeProfile(
       manual.executionProfiles[workflowUnit.executionProfile],
@@ -551,6 +532,9 @@ class ProjectionFixtureInput {
 }
 
 local function projectionFixtureRules(input: ProjectionFixtureInput): List<String> = new Listing {
+  when (input.logicalKind == "execution-profile" && input.target == "claude") {
+    "projection.claude_profile"
+  }
   when (input.logicalKind == "execution-profile" && input.target == "pi") {
     "projection.pi_profile"
   }
@@ -568,6 +552,9 @@ local function piPathFixtureRules(skillExists: Boolean, destination: String): Li
 }.toList()
 
 local function generatedPathFixtureRules(paths: List<String>): List<String> = new Listing {
+  when (paths.any((path) -> path.startsWith("config/.claude/agents/") || path.startsWith(".claude/agents/"))) {
+    "generated.stale_claude_agent"
+  }
   when (paths.any((path) -> path.contains("/.pi/prompts/agent-") || path.startsWith(".pi/prompts/agent-")
     || path.startsWith("config/.pi/prompts/agent-"))) {
     "generated.stale_pi_agent_prompt"
@@ -658,6 +645,19 @@ portableInvalidFixtures: Listing<PortableFixtureCase> = new {
     expectedRule = "capability.ceiling"
   }
   new PortableFixtureCase {
+    name = "unexpected-claude-profile-projection"
+    observedRules = projectionFixtureRules(new ProjectionFixtureInput {
+      logicalKind = "execution-profile"
+      target = "claude"
+      duplicateTargetCarrier = false
+      toolControl = "native"
+      semanticControl = "prompt"
+      destination = "config/.claude/agents/shared-context-code.md"
+      expectedDestination = "config/.claude/agents/shared-context-code.md"
+    })
+    expectedRule = "projection.claude_profile"
+  }
+  new PortableFixtureCase {
     name = "unexpected-pi-profile-projection"
     observedRules = projectionFixtureRules(new ProjectionFixtureInput {
       logicalKind = "execution-profile"
@@ -713,6 +713,11 @@ portableInvalidFixtures: Listing<PortableFixtureCase> = new {
     name = "unresolved-pi-skill-path"
     observedRules = piPathFixtureRules(false, "config/.pi/skills/sce-missing/SKILL.md")
     expectedRule = "pi.skill_path"
+  }
+  new PortableFixtureCase {
+    name = "stale-claude-agent"
+    observedRules = generatedPathFixtureRules(List("config/.claude/agents/shared-context-code.md"))
+    expectedRule = "generated.stale_claude_agent"
   }
   new PortableFixtureCase {
     name = "stale-pi-agent-prompt"

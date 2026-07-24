@@ -4,7 +4,7 @@
 
 The repository-owned instruction-unit validator is implemented entirely in Pkl:
 
-- `config/pkl/renderers/instruction-unit-validator.pkl` owns validation logic, the deterministic 60-projection rendered-model input set, and direct loading of 103 committed projected instruction files.
+- `config/pkl/renderers/instruction-unit-validator.pkl` owns validation logic, the deterministic 58-projection rendered-model input set, and direct loading of 99 committed projected instruction files.
 - `config/pkl/renderers/instruction-unit-validator-check.pkl` owns valid and invalid fixture checks plus the evaluation gate.
 
 Run the focused validation with:
@@ -15,13 +15,13 @@ nix develop -c pkl eval \
   -x summary
 ```
 
-A passing result reports `productionUnitCount = 60`, `generatedFileUnitCount = 103`, zero rendered-model and generated-file diagnostics, eight valid fixtures, 18 invalid fixtures, zero fixture failures, and `status = "VALIDATION_OK"`.
+A passing result reports `productionUnitCount = 58`, `generatedFileUnitCount = 99`, zero rendered-model and generated-file diagnostics, eight valid fixtures, 18 invalid fixtures, zero fixture failures, and `status = "VALIDATION_OK"`.
 
 ## Input ownership
 
 Canonical manual and automated bodies are authored as typed `InstructionBody` sections and serialized by the shared `renderBody` boundary before target rendering. Production validation consumes the resulting document objects from the manual OpenCode, Claude, and Pi renderers and the automated OpenCode renderer. Unit paths, kinds, profiles, targets, and slugs come from `instruction-unit-inventory.pkl`; the resulting unit list is sorted by destination path before validation.
 
-The same explicit projection inventory drives direct validation of 60 approved config instruction destinations and 43 tracked manual root mirrors. Generated-file inputs are projection-path-sorted and parsed into frontmatter/body before applying the same rules, while generated-output parity separately proves byte equality for all generation-owned files. Pi profile prompts have no approved projection or generated compatibility output; any stale `agent-*` prompt in a parity-owned Pi prompt directory is detected as generated drift.
+The same explicit projection inventory drives direct validation of 58 approved config instruction destinations and 41 tracked manual root mirrors. Claude profile agents have no approved projection; stale files under either Claude agent directory are rejected by generated-output parity. Generated-file inputs are projection-path-sorted and parsed into frontmatter/body before applying the same rules, while generated-output parity separately proves byte equality for all generation-owned files. Pi profile prompts have no approved projection or generated compatibility output; any stale `agent-*` prompt in a parity-owned Pi prompt directory is detected as generated drift.
 
 ## Validation contract
 

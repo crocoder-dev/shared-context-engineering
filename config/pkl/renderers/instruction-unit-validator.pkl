@@ -44,7 +44,6 @@ local requiredFrontmatter = new Mapping {
   ["opencode:agent"] = List("name", "description", "permission")
   ["opencode:command"] = List("description", "agent")
   ["opencode:skill"] = List("name", "description", "compatibility")
-  ["claude:agent"] = List("name", "description", "tools")
   ["claude:command"] = List("description", "allowed-tools")
   ["claude:skill"] = List("name", "description", "compatibility")
   ["pi:agent"] = List("description", "argument-hint")
@@ -227,8 +226,7 @@ local function manualDocument(target: String, logicalKind: String, slug: String)
     else if (logicalKind == "workflow") opencode.commands[slug]
     else opencode.skills[slug]
   else if (target == "claude")
-    if (logicalKind == "execution-profile") claude.agents[slug]
-    else if (logicalKind == "workflow") claude.commands[slug]
+    if (logicalKind == "workflow") claude.commands[slug]
     else claude.skills[slug]
   else
     if (logicalKind == "workflow") pi.commands[slug]
@@ -258,7 +256,7 @@ local function unitFromFile(
     body = parts.drop(1).join("\n---\n\n")
   }
 
-/// All 60 approved target projections discovered from the inventory.
+/// All 58 approved target projections discovered from the inventory.
 local discoveredProductionUnits: Listing<UnitInput> = new {
   for (_, unit in inventory.manualUnits) {
     for (projection in unit.projections) {
@@ -298,7 +296,7 @@ productionDiagnostics: Listing<Diagnostic> = new {
   }
 }
 
-/// All 60 projected config files plus 43 tracked root mirrors, path-sorted.
+/// All 58 projected config files plus 41 tracked root mirrors, path-sorted.
 /// File loading makes structural validation independent of parity's byte-for-byte comparison.
 local discoveredGeneratedFileUnits: Listing<UnitInput> = new {
   for (_, unit in inventory.manualUnits) {

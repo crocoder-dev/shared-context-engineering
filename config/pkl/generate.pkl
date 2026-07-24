@@ -23,22 +23,11 @@ output {
         text = document.rendered
       }
     }
-    for (slug, document in claude.agents) {
-      ["config/.claude/agents/\(slug).md"] {
-        text = document.rendered
-      }
-    }
     for (slug, document in opencode.agents) {
       [".opencode/agent/\(document.title).md"] {
         text = document.rendered
       }
     }
-    for (slug, document in claude.agents) {
-      [".claude/agents/\(slug).md"] {
-        text = document.rendered
-      }
-    }
-
     for (slug, document in opencode.commands) {
       ["config/.opencode/command/\(slug).md"] {
         text = document.rendered
