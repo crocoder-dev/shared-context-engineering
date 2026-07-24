@@ -6,7 +6,7 @@ entry-skill: "sce-validation"
 skills:
   - "sce-validation"
 permission:
-  default: block
+  default: deny
   read: allow
   edit: allow
   glob: allow
@@ -17,7 +17,7 @@ permission:
   codesearch: allow
   lsp: allow
   skill:
-    "*": block
+    "*": deny
     "sce-validation": allow
 ---
 

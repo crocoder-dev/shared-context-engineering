@@ -17,7 +17,7 @@ mode: primary
 \(capabilities.renderPermissionBlock(
   shared.executionProfiles[unitSlug].policy.tools,
   shared.executionProfiles[unitSlug].policy.allowedSkills,
-  "block"
+  "deny"
 ))
 ---
 """
@@ -41,7 +41,7 @@ subtask: false
 \(capabilities.renderPermissionBlock(
   shared.effectiveWorkflowPolicies[unitSlug],
   unit.requiredSkills,
-  "block"
+  "deny"
 ))
 ---
 """

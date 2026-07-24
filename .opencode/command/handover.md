@@ -12,7 +12,7 @@ permission:
   glob: allow
   grep: allow
   list: allow
-  bash: block
+  bash: deny
   question: allow
   codesearch: allow
   lsp: allow

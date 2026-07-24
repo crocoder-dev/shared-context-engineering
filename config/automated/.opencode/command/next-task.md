@@ -9,7 +9,7 @@ skills:
   - "sce-context-sync"
   - "sce-validation"
 permission:
-  default: block
+  default: deny
   read: allow
   edit: allow
   glob: allow
@@ -20,7 +20,7 @@ permission:
   codesearch: allow
   lsp: allow
   skill:
-    "*": block
+    "*": deny
     "sce-plan-review": allow
     "sce-task-execution": allow
     "sce-context-sync": allow

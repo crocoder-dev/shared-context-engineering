@@ -5,7 +5,7 @@ temperature: 0.1
 color: "#059669"
 mode: primary
 permission:
-  default: block
+  default: deny
   read: allow
   edit: allow
   glob: allow
@@ -16,7 +16,7 @@ permission:
   codesearch: allow
   lsp: allow
   skill:
-    "*": block
+    "*": deny
     "sce-context-sync": allow
     "sce-handover-writer": allow
     "sce-plan-review": allow

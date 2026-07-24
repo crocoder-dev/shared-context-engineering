@@ -154,7 +154,7 @@ opencodeAutomatedAgentCoverage {
       permissionBlock = opencode.renderPermissionBlock(
         sharedAutomated.executionProfiles[unitSlug].policy.tools,
         sharedAutomated.executionProfiles[unitSlug].policy.allowedSkills,
-        "block"
+        "deny"
       )
     }
   }
@@ -171,7 +171,7 @@ opencodeAutomatedCommandCoverage {
       permissionBlock = opencode.renderPermissionBlock(
         sharedAutomated.effectiveWorkflowPolicies[unitSlug],
         sharedAutomated.workflows[unitSlug].requiredSkills,
-        "block"
+        "deny"
       )
     }
   }

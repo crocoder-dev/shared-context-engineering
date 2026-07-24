@@ -39,7 +39,7 @@ local function actionForTool(
   )) "ask"
   else if (capabilitiesForTool(tool).any((capability) -> policy.allowedCapabilities.contains(capability))) "allow"
   // Bash is the process/commit capability boundary, so an excluded Bash capability is a hard deny.
-  else if (tool == "bash") "block"
+  else if (tool == "bash") "deny"
   else deniedAction
 
 local function skillLines(

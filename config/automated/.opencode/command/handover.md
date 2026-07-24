@@ -6,18 +6,18 @@ entry-skill: "sce-handover-writer"
 skills:
   - "sce-handover-writer"
 permission:
-  default: block
+  default: deny
   read: allow
   edit: allow
   glob: allow
   grep: allow
   list: allow
-  bash: block
+  bash: deny
   question: allow
   codesearch: allow
   lsp: allow
   skill:
-    "*": block
+    "*": deny
     "sce-handover-writer": allow
 ---
 

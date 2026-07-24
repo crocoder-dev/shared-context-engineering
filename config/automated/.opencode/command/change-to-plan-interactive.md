@@ -6,18 +6,18 @@ entry-skill: "sce-plan-authoring-interactive"
 skills:
   - "sce-plan-authoring-interactive"
 permission:
-  default: block
+  default: deny
   read: allow
   edit: allow
   glob: allow
   grep: allow
   list: allow
-  bash: block
+  bash: deny
   question: allow
   codesearch: allow
   lsp: allow
   skill:
-    "*": block
+    "*": deny
     "sce-plan-authoring-interactive": allow
 ---
 

@@ -243,7 +243,7 @@ openCodeNativeBindingProblems: Listing<String>(isEmpty) = new {
       "automated OpenCode profile \(profileSlug) is not primary"
     }
     when (!automatedOpenCode.agents[profileSlug].frontmatter.contains(
-      opencodeMetadata.renderPermissionBlock(profile.policy.tools, profile.policy.allowedSkills, "block")
+      opencodeMetadata.renderPermissionBlock(profile.policy.tools, profile.policy.allowedSkills, "deny")
     )) {
       "automated OpenCode profile \(profileSlug) does not derive permissions from canonical policy"
     }
@@ -261,7 +261,7 @@ openCodeNativeBindingProblems: Listing<String>(isEmpty) = new {
     when (!automatedOpenCode.commands[workflowSlug].frontmatter.contains(opencodeMetadata.renderPermissionBlock(
       automated.effectiveWorkflowPolicies[workflowSlug],
       workflowUnit.requiredSkills,
-      "block"
+      "deny"
     ))) {
       "automated OpenCode workflow \(workflowSlug) does not derive effective permissions"
     }

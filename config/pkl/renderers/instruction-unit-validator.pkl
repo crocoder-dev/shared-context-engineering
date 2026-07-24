@@ -210,7 +210,7 @@ function validate(unit: UnitInput): Listing<Diagnostic> =
       when (!unit.frontmatter.contains(opencodeMetadata.renderPermissionBlock(
         effectivePolicyFor(unit),
         workflowFor(unit).requiredSkills,
-        if (unit.profile == "manual") "ask" else "block"
+        if (unit.profile == "manual") "ask" else "deny"
       ))) {
         newDiagnostic(unit, "target.tool_ceiling", "OpenCode permissions differ from effective capabilities", "capability-translated effective permission block")
       }

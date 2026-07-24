@@ -5,18 +5,18 @@ temperature: 0.1
 color: "#2563eb"
 mode: primary
 permission:
-  default: block
+  default: deny
   read: allow
   edit: allow
   glob: allow
   grep: allow
   list: allow
-  bash: block
+  bash: deny
   question: allow
   codesearch: allow
   lsp: allow
   skill:
-    "*": block
+    "*": deny
     "sce-bootstrap-context": allow
     "sce-plan-authoring": allow
     "sce-plan-authoring-interactive": allow
