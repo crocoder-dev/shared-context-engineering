@@ -66,10 +66,10 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
                             runtime.log_format.value.as_str(),
                             runtime.log_format.source,
                         ),
-                        "log_file": format_optional_resolved_value_json(&runtime.log_file),
-                        "log_file_mode": format_resolved_value_json(
-                            runtime.log_file_mode.value.as_str(),
-                            runtime.log_file_mode.source,
+                        "log_dir": format_optional_resolved_value_json(&runtime.log_dir),
+                        "log_file_retention_limit": format_resolved_value_json(
+                            runtime.log_file_retention_limit.value,
+                            runtime.log_file_retention_limit.source,
                         ),
                         "timeout_ms": {
                             "value": runtime.timeout_ms.value,
@@ -220,11 +220,11 @@ fn format_observability_text_lines(runtime: &RuntimeConfig) -> Vec<String> {
             runtime.log_format.value.as_str(),
             runtime.log_format.source,
         ),
-        format_optional_resolved_value_text("log_file", &runtime.log_file),
+        format_optional_resolved_value_text("log_dir", &runtime.log_dir),
         format_resolved_value_text(
-            "log_file_mode",
-            runtime.log_file_mode.value.as_str(),
-            runtime.log_file_mode.source,
+            "log_file_retention_limit",
+            &runtime.log_file_retention_limit.value.to_string(),
+            runtime.log_file_retention_limit.source,
         ),
     ]
 }

@@ -25,16 +25,14 @@
         "json"
       ]
     },
-    "log_file": {
+    "log_dir": {
       "type": "string",
       "minLength": 1
     },
-    "log_file_mode": {
-      "type": "string",
-      "enum": [
-        "truncate",
-        "append"
-      ]
+    "log_file_retention_limit": {
+      "default": 10,
+      "type": "integer",
+      "minimum": 1
     },
     "timeout_ms": {
       "type": "integer",
@@ -376,10 +374,5 @@
       "additionalProperties": false
     }
   },
-  "additionalProperties": false,
-  "dependentRequired": {
-    "log_file_mode": [
-      "log_file"
-    ]
-  }
+  "additionalProperties": false
 }

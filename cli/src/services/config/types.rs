@@ -15,9 +15,9 @@ pub const NAME: &str = "config";
 
 pub(crate) const ENV_LOG_LEVEL: &str = "SCE_LOG_LEVEL";
 pub(crate) const ENV_LOG_FORMAT: &str = "SCE_LOG_FORMAT";
-pub(crate) const ENV_LOG_FILE: &str = "SCE_LOG_FILE";
-pub(crate) const ENV_LOG_FILE_MODE: &str = "SCE_LOG_FILE_MODE";
+pub(crate) const ENV_LOG_DIR: &str = "SCE_LOG_DIR";
 pub(crate) const ENV_ATTRIBUTION_HOOKS_DISABLED: &str = "SCE_ATTRIBUTION_HOOKS_DISABLED";
+pub(crate) const DEFAULT_LOG_FILE_RETENTION_LIMIT: usize = 10;
 
 pub type ReportFormat = OutputFormat;
 
@@ -100,39 +100,6 @@ impl LogFormat {
         match self {
             Self::Text => "text",
             Self::Json => "json",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LogFileMode {
-    Truncate,
-    Append,
-}
-
-impl LogFileMode {
-    pub(crate) fn parse(raw: &str, source: &str) -> anyhow::Result<Self> {
-        match raw {
-            "truncate" => Ok(Self::Truncate),
-            "append" => Ok(Self::Append),
-            _ => anyhow::bail!(
-                "Invalid log file mode '{raw}' from {source}. Valid values: truncate, append."
-            ),
-        }
-    }
-
-    pub(crate) fn parse_env(raw: &str, key: &str) -> anyhow::Result<Self> {
-        match raw {
-            "truncate" => Ok(Self::Truncate),
-            "append" => Ok(Self::Append),
-            _ => anyhow::bail!("Invalid {key} '{raw}'. Valid values: truncate, append."),
-        }
-    }
-
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Truncate => "truncate",
-            Self::Append => "append",
         }
     }
 }
@@ -230,8 +197,8 @@ pub(crate) struct ResolvedAuthRuntimeConfig {
 pub(crate) struct ResolvedObservabilityRuntimeConfig {
     pub(crate) log_level: LogLevel,
     pub(crate) log_format: LogFormat,
-    pub(crate) log_file: Option<String>,
-    pub(crate) log_file_mode: LogFileMode,
+    pub(crate) log_dir: Option<String>,
+    pub(crate) log_file_retention_limit: usize,
     pub(crate) loaded_config_paths: Vec<LoadedConfigPath>,
     pub(crate) validation_errors: Vec<String>,
 }

@@ -139,6 +139,7 @@ pub struct ConversationTracePartBatch {
 pub struct SkippedConversationTracePayload {
     pub index: usize,
     pub reason: String,
+    pub session_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -212,12 +213,18 @@ fn run_conversation_trace_subcommand(
 ) -> String {
     let stdin_payload = match read_hook_stdin() {
         Ok(payload) => payload,
-        Err(error) => return log_conversation_trace_fail_open(&error, logger),
+        Err(error) => return log_conversation_trace_fail_open(&error, logger, None),
     };
+    let session_id = conversation_trace_fail_open_session_id(&stdin_payload);
 
-    match run_conversation_trace_subcommand_from_payload(repository_root, &stdin_payload, logger) {
+    match run_conversation_trace_subcommand_from_payload(
+        repository_root,
+        &stdin_payload,
+        logger,
+        session_id.as_deref(),
+    ) {
         Ok(output) => output,
-        Err(error) => log_conversation_trace_fail_open(&error, logger),
+        Err(error) => log_conversation_trace_fail_open(&error, logger, session_id.as_deref()),
     }
 }
 
@@ -225,17 +232,28 @@ fn run_conversation_trace_subcommand_from_payload(
     repository_root: &Path,
     stdin_payload: &str,
     logger: Option<&dyn Logger>,
+    session_id: Option<&str>,
 ) -> Result<String> {
     let payload = parse_conversation_trace_payload(stdin_payload)?;
-    persist_conversation_trace_payload_to_agent_trace_db(repository_root, payload, logger)
+    Ok(persist_conversation_trace_payload_to_agent_trace_db(
+        repository_root,
+        payload,
+        logger,
+        session_id,
+    ))
 }
 
-fn log_conversation_trace_fail_open(error: &anyhow::Error, logger: Option<&dyn Logger>) -> String {
+fn log_conversation_trace_fail_open(
+    error: &anyhow::Error,
+    logger: Option<&dyn Logger>,
+    session_id: Option<&str>,
+) -> String {
     if let Some(log) = logger {
         log.error(
             "sce.hooks.conversation_trace.error",
             &error.to_string(),
             &[],
+            session_id,
         );
     }
 
@@ -246,11 +264,26 @@ fn persist_conversation_trace_payload_to_agent_trace_db(
     repository_root: &Path,
     payload: ConversationTracePayload,
     logger: Option<&dyn Logger>,
-) -> Result<String> {
-    let db = open_agent_trace_db_for_hook_runtime(
+    session_id: Option<&str>,
+) -> String {
+    let db = match open_agent_trace_db_for_hook_runtime(
         repository_root,
         "Failed to open Agent Trace DB for conversation-trace persistence.",
-    )?;
+    ) {
+        Ok(db) => db,
+        Err(error) => {
+            if let Some(log) = logger {
+                log.error(
+                    "sce.hooks.conversation_trace.agent_trace_db_open_failed",
+                    &error.to_string(),
+                    &[],
+                    session_id,
+                );
+            }
+
+            return String::from("conversation-trace hook intake failed open; error logged.");
+        }
+    };
 
     let summary = persist_conversation_trace_payload_to_agent_trace_db_with(
         payload,
@@ -259,9 +292,8 @@ fn persist_conversation_trace_payload_to_agent_trace_db(
         |inserts| db.insert_parts(inserts),
     );
 
-    Ok(summary.render())
+    summary.render()
 }
-
 fn persist_conversation_trace_payload_to_agent_trace_db_with<IM, IP>(
     payload: ConversationTracePayload,
     logger: Option<&dyn Logger>,
@@ -331,6 +363,10 @@ where
     log_skipped_conversation_trace_payloads(logger, EVENT_TYPE, &batch.skipped);
 
     let valid_count = batch.inserts.len();
+    let session_id = batch
+        .inserts
+        .first()
+        .map(|insert| insert.session_id.clone());
     let persisted = if valid_count == 0 {
         0
     } else {
@@ -345,6 +381,7 @@ where
                     EVENT_TYPE,
                     valid_count,
                     &error,
+                    session_id.as_deref(),
                 );
                 0
             }
@@ -369,6 +406,10 @@ where
     log_skipped_conversation_trace_payloads(logger, EVENT_TYPE, &batch.skipped);
 
     let valid_count = batch.inserts.len();
+    let session_id = batch
+        .inserts
+        .first()
+        .map(|insert| insert.session_id.clone());
     let persisted = if valid_count == 0 {
         0
     } else {
@@ -383,6 +424,7 @@ where
                     EVENT_TYPE,
                     valid_count,
                     &error,
+                    session_id.as_deref(),
                 );
                 0
             }
@@ -410,6 +452,7 @@ fn log_skipped_conversation_trace_payloads(
                 ("event_type", event_type),
                 ("payload_index", index.as_str()),
             ],
+            skipped.session_id.as_deref(),
         );
     }
 }
@@ -419,6 +462,7 @@ fn log_conversation_trace_batch_insert_failure(
     event_type: &str,
     valid_count: usize,
     error: &anyhow::Error,
+    session_id: Option<&str>,
 ) {
     if let Some(log) = logger {
         let count = valid_count.to_string();
@@ -426,6 +470,7 @@ fn log_conversation_trace_batch_insert_failure(
             "sce.hooks.conversation_trace.agent_trace_db_batch_failed",
             &error.to_string(),
             &[("event_type", event_type), ("valid_count", count.as_str())],
+            session_id,
         );
     }
 }
@@ -481,6 +526,7 @@ fn parse_conversation_trace_payloads(payloads: &[Value]) -> ConversationTracePay
     let mut skipped = Vec::new();
 
     for (index, item) in payloads.iter().enumerate() {
+        let session_id = non_empty_string(item.get("session_id")).map(str::to_owned);
         let Some(item) = conversation_trace_payload_item(item, index, &mut skipped) else {
             continue;
         };
@@ -492,6 +538,7 @@ fn parse_conversation_trace_payloads(payloads: &[Value]) -> ConversationTracePay
                     skipped.push(SkippedConversationTracePayload {
                         index,
                         reason: error.to_string(),
+                        session_id: session_id.clone(),
                     });
                     continue;
                 }
@@ -503,6 +550,7 @@ fn parse_conversation_trace_payloads(payloads: &[Value]) -> ConversationTracePay
                 Err(error) => message_skipped.push(SkippedConversationTracePayload {
                     index,
                     reason: error.to_string(),
+                    session_id: session_id.clone(),
                 }),
             },
             CONVERSATION_TRACE_MESSAGE_PART_UPDATED => {
@@ -511,6 +559,7 @@ fn parse_conversation_trace_payloads(payloads: &[Value]) -> ConversationTracePay
                     Err(error) => part_skipped.push(SkippedConversationTracePayload {
                         index,
                         reason: error.to_string(),
+                        session_id: session_id.clone(),
                     }),
                 }
             }
@@ -519,6 +568,7 @@ fn parse_conversation_trace_payloads(payloads: &[Value]) -> ConversationTracePay
                 reason: conversation_trace_validation_error(
                     "field 'type' must be one of 'message' or 'message.part'",
                 ),
+                session_id,
             }),
         }
     }
@@ -548,6 +598,7 @@ fn conversation_trace_payload_item<'a>(
             reason: conversation_trace_validation_error(&format!(
                 "payloads[{index}] must be an object"
             )),
+            session_id: None,
         });
         return None;
     };
@@ -683,15 +734,44 @@ fn conversation_trace_validation_error(detail: &str) -> String {
     format!("Invalid conversation-trace payload from STDIN: {detail}.")
 }
 
+fn conversation_trace_fail_open_session_id(stdin_payload: &str) -> Option<String> {
+    let payload: Value = serde_json::from_str(stdin_payload).ok()?;
+    let payload = payload.as_object()?;
+
+    if payload.contains_key("hook_event_name") {
+        return non_empty_string(payload.get("session_id")).map(str::to_owned);
+    }
+
+    let first_payload = payload.get("payloads")?.as_array()?.first()?;
+    non_empty_string(first_payload.get("session_id")).map(str::to_owned)
+}
+
+fn diff_trace_fail_open_session_id(stdin_payload: &str) -> Option<String> {
+    let payload: Value = serde_json::from_str(stdin_payload).ok()?;
+    let payload = payload.as_object()?;
+    let field_name = if payload.contains_key("hook_event_name") {
+        "session_id"
+    } else {
+        "sessionID"
+    };
+
+    non_empty_string(payload.get(field_name)).map(str::to_owned)
+}
+
+fn non_empty_string(value: Option<&Value>) -> Option<&str> {
+    value?.as_str().filter(|value| !value.trim().is_empty())
+}
+
 fn run_diff_trace_subcommand(repository_root: &Path, logger: Option<&dyn Logger>) -> String {
     let stdin_payload = match read_hook_stdin() {
         Ok(payload) => payload,
-        Err(error) => return log_diff_trace_fail_open(&error, logger),
+        Err(error) => return log_diff_trace_fail_open(&error, logger, None),
     };
+    let session_id = diff_trace_fail_open_session_id(&stdin_payload);
 
     match run_diff_trace_subcommand_from_payload(repository_root, &stdin_payload, logger) {
         Ok(output) => output,
-        Err(error) => log_diff_trace_fail_open(&error, logger),
+        Err(error) => log_diff_trace_fail_open(&error, logger, session_id.as_deref()),
     }
 }
 
@@ -712,9 +792,18 @@ fn run_diff_trace_subcommand_from_payload(
     ))
 }
 
-fn log_diff_trace_fail_open(error: &anyhow::Error, logger: Option<&dyn Logger>) -> String {
+fn log_diff_trace_fail_open(
+    error: &anyhow::Error,
+    logger: Option<&dyn Logger>,
+    session_id: Option<&str>,
+) -> String {
     if let Some(log) = logger {
-        log.error("sce.hooks.diff_trace.error", &error.to_string(), &[]);
+        log.error(
+            "sce.hooks.diff_trace.error",
+            &error.to_string(),
+            &[],
+            session_id,
+        );
     }
 
     String::from("diff-trace hook intake failed open; error logged.")
@@ -731,23 +820,25 @@ fn run_diff_trace_subcommand_from_payload_with(
                 "sce.hooks.diff_trace.agent_trace_db_time_invalid",
                 &error.to_string(),
                 &[],
+                Some(&payload.session_id),
             );
         }
     }
-    let agent_trace_db_result = persist_diff_trace_payload_to_agent_trace_db(
+    let agent_trace_db_persisted = match persist_diff_trace_payload_to_agent_trace_db(
         repository_root,
         payload,
         payload.model_id.as_deref(),
         payload.tool_version.as_deref(),
-    );
-    let agent_trace_db_persisted = match agent_trace_db_result {
-        Ok(()) => true,
+        logger,
+    ) {
+        Ok(persisted) => persisted,
         Err(error) => {
             if let Some(log) = logger {
                 log.warn(
                     "sce.hooks.diff_trace.agent_trace_db_write_failed",
                     &error.to_string(),
                     &[],
+                    Some(&payload.session_id),
                 );
             }
             false
@@ -1101,27 +1192,42 @@ fn persist_diff_trace_payload_to_agent_trace_db(
     payload: &DiffTracePayload,
     model_id: Option<&str>,
     tool_version: Option<&str>,
-) -> Result<()> {
+    logger: Option<&dyn Logger>,
+) -> Result<bool> {
     persist_diff_trace_payload_to_agent_trace_db_with(payload, model_id, tool_version, |input| {
-        let db = open_agent_trace_db_for_hook_runtime(
+        let db = match open_agent_trace_db_for_hook_runtime(
             repository_root,
             "Failed to open Agent Trace DB for diff-trace persistence.",
-        )?;
+        ) {
+            Ok(db) => db,
+            Err(error) => {
+                if let Some(log) = logger {
+                    log.error(
+                        "sce.hooks.diff_trace.agent_trace_db_open_failed",
+                        &error.to_string(),
+                        &[],
+                        Some(&payload.session_id),
+                    );
+                }
+
+                return Ok(false);
+            }
+        };
         db.insert_diff_trace(input)
             .context("Failed to persist diff-trace payload to Agent Trace DB.")?;
 
-        Ok(())
+        Ok(true)
     })
 }
 
-fn persist_diff_trace_payload_to_agent_trace_db_with<F>(
+fn persist_diff_trace_payload_to_agent_trace_db_with<F, T>(
     payload: &DiffTracePayload,
     model_id: Option<&str>,
     tool_version: Option<&str>,
     insert_fn: F,
-) -> Result<()>
+) -> Result<T>
 where
-    F: FnOnce(DiffTraceInsert<'_>) -> Result<()>,
+    F: FnOnce(DiffTraceInsert<'_>) -> Result<T>,
 {
     let time_ms = diff_trace_db_time_ms(payload.time)?;
     let session_id = prefixed_diff_trace_session_id(&payload.tool_name, &payload.session_id);
@@ -1419,6 +1525,7 @@ fn staged_diff_has_ai_overlap(
                     "sce.hooks.commit_msg.ai_overlap_error",
                     &format!("Staged AI-overlap evidence check failed: {error}."),
                     &[],
+                    None,
                 );
             }
             return StagedDiffAiOverlapResult::Error;
@@ -1438,6 +1545,7 @@ fn staged_diff_has_ai_overlap(
                 "sce.hooks.commit_msg.ai_overlap_error",
                 "Staged AI-overlap evidence check failed: error during staged-diff or trace query.",
                 &[],
+                None,
             );
         }
     }

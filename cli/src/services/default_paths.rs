@@ -258,11 +258,7 @@ mod roots {
 /// from the shared default-path catalog (`XDG_STATE_HOME` or platform
 /// equivalent).
 pub fn local_db_path() -> anyhow::Result<PathBuf> {
-    Ok(resolve_sce_default_locations()?
-        .roots()
-        .state_root()
-        .join("sce")
-        .join("local.db"))
+    Ok(sce_state_dir()?.join("local.db"))
 }
 
 /// Returns the canonical path to the encrypted auth Turso database file.
@@ -271,11 +267,7 @@ pub fn local_db_path() -> anyhow::Result<PathBuf> {
 /// from the shared default-path catalog (`XDG_STATE_HOME` or platform
 /// equivalent).
 pub fn auth_db_path() -> anyhow::Result<PathBuf> {
-    Ok(resolve_sce_default_locations()?
-        .roots()
-        .state_root()
-        .join("sce")
-        .join("auth.db"))
+    Ok(sce_state_dir()?.join("auth.db"))
 }
 
 /// Returns the canonical repository-scoped Agent Trace Turso database file path.
@@ -315,6 +307,21 @@ pub fn agent_trace_db_path_for_repository_at(
         .join("agent-trace.db"))
 }
 
+/// Returns the canonical default observability log directory.
+///
+/// The path is `<state_root>/sce/logs`, where `state_root` comes from the
+/// shared default-path catalog (`XDG_STATE_HOME` or platform equivalent).
+pub fn observability_log_dir() -> anyhow::Result<PathBuf> {
+    Ok(sce_state_dir()?.join("logs"))
+}
+
+fn sce_state_dir() -> anyhow::Result<PathBuf> {
+    Ok(resolve_sce_default_locations()?
+        .roots()
+        .state_root()
+        .join("sce"))
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PersistedArtifactRootKind {
@@ -337,7 +344,6 @@ pub(crate) struct PersistedArtifactLocation {
     pub path: PathBuf,
 }
 
-#[allow(dead_code)]
 pub(crate) mod repo_dir {
     pub const SCE: &str = ".sce";
     pub const OPENCODE: &str = ".opencode";
@@ -346,15 +352,12 @@ pub(crate) mod repo_dir {
     pub const GIT: &str = ".git";
 }
 
-#[allow(dead_code)]
 pub(crate) mod repo_file {
     pub const SCE_CONFIG: &str = "config.json";
-    pub const SCE_LOG: &str = "sce.log";
     pub const OPENCODE_MANIFEST: &str = "opencode.json";
     pub const GIT_COMMIT_EDITMSG: &str = "COMMIT_EDITMSG";
 }
 
-#[allow(dead_code)]
 pub(crate) mod hook_dir {
     pub const HOOKS: &str = "hooks";
     pub const PRE_COMMIT: &str = "pre-commit";
@@ -362,7 +365,6 @@ pub(crate) mod hook_dir {
     pub const POST_COMMIT: &str = "post-commit";
 }
 
-#[allow(dead_code)]
 pub(crate) mod embedded_asset_root {
     pub const GENERATED_CONFIG: &str = "assets/generated/config";
     pub const HOOKS: &str = "assets/hooks";
@@ -397,7 +399,6 @@ pub(crate) mod pi_asset {
     pub const EXTENSIONS_DIR: &str = "extensions";
 }
 
-#[allow(dead_code)]
 pub(crate) mod context_dir {
     pub const CONTEXT_ROOT: &str = "context";
     pub const PLANS: &str = "plans";
@@ -406,7 +407,6 @@ pub(crate) mod context_dir {
     pub const TMP: &str = "tmp";
 }
 
-#[allow(dead_code)]
 pub(crate) mod context_file {
     pub const OVERVIEW: &str = "overview.md";
     pub const ARCHITECTURE: &str = "architecture.md";
@@ -416,7 +416,6 @@ pub(crate) mod context_file {
     pub const SKILL_DEFINITION: &str = "SKILL.md";
 }
 
-#[allow(dead_code)]
 pub(crate) mod schema {
     pub const SCHEMA_DIR: &str = "config/schema";
     pub const SCE_CONFIG_SCHEMA: &str = "sce-config.schema.json";
@@ -439,10 +438,6 @@ impl RepoPaths {
 
     pub(crate) fn sce_config_file(&self) -> PathBuf {
         self.sce_dir().join(repo_file::SCE_CONFIG)
-    }
-
-    pub(crate) fn sce_log_file(&self) -> PathBuf {
-        self.sce_dir().join(repo_file::SCE_LOG)
     }
 
     pub(crate) fn opencode_dir(&self) -> PathBuf {

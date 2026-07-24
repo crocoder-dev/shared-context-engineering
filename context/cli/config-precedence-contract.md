@@ -4,7 +4,7 @@
 
 This contract documents the implemented `sce config` command behavior in `cli/src/services/config/mod.rs`, the runtime resolver in `cli/src/services/config/resolver.rs`, the text/JSON output renderer in `cli/src/services/config/render.rs`, the canonical Pkl-authored `sce/config.json` schema artifact generated to `config/schema/sce-config.schema.json` and embedded by `cli/src/services/config/schema.rs` as `SCE_CONFIG_SCHEMA_JSON`, the typed serde DTO + mapping pipeline used for config-file parsing, and parser/dispatch wiring in `cli/src/app.rs`.
 
-The current implementation resolves flat logging keys with deterministic env-over-config precedence and source metadata, uses those resolved values in `cli/src/app.rs` / `cli/src/services/observability.rs` for runtime logging, exposes resolved-value inspection through `sce config show`, and keeps `sce config validate` focused on validation status plus errors/warnings.
+The current implementation resolves flat logging keys with deterministic precedence and source metadata, exposes resolved-value inspection through `sce config show`, and keeps `sce config validate` focused on validation status plus errors/warnings. Threshold, format, directory, and `log_file_retention_limit` values are consumed by runtime logging; the concrete logger uses the retention value for primary and v2 creation-triggered cleanup.
 
 ## Command surface
 
@@ -32,9 +32,14 @@ Agent Trace repository identity keys are also config-file only with per-key `glo
 
 Resolved observability values that currently have no CLI flag layer follow the same lower-precedence chain without a flag step:
 
-1. environment values (`SCE_LOG_FORMAT`, `SCE_LOG_FILE`, `SCE_LOG_FILE_MODE`)
-2. config file values (`log_format`, `log_file`, `log_file_mode`)
-3. defaults where defined (`log_format=text`, `log_file_mode=truncate`); `log_file` remains unset when no env/config value is present
+1. environment values (`SCE_LOG_FORMAT`, `SCE_LOG_DIR`)
+2. config file values (`log_format`, `log_dir`)
+3. defaults (`log_format=text`; `log_dir=<state_root>/sce/logs` through `default_paths::observability_log_dir()`, resolving on Linux to `$XDG_STATE_HOME/sce/logs` or `~/.local/state/sce/logs` when `XDG_STATE_HOME` is unset)
+
+`log_file_retention_limit` intentionally has no environment or CLI-flag layer:
+
+1. config file value (`log_file_retention_limit`)
+2. default (`10`)
 
 Supported auth-adjacent runtime keys can participate in one shared key-declared precedence path without defining CLI flags. Each key declares its config-file name, environment variable name, and whether a baked default is allowed. The shared resolver supports keys that allow a baked default and keys that intentionally omit one. The first implemented migrated key is `workos_client_id`, which resolves as:
 
@@ -66,13 +71,12 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - Startup/runtime config resolution now degrades gracefully only for default-discovered files: invalid discovered files are skipped and reported via collected `validation_errors`, while explicit `--config` / `SCE_CONFIG_FILE` targets still fail immediately on the same parse or validation errors.
 
 - Config file content must be valid JSON with a top-level object.
-- Allowed keys: `$schema`, `log_level`, `log_format`, `log_file`, `log_file_mode`, `timeout_ms`, `workos_client_id`, `agent_trace`, `policies`, `integrations`.
+- Allowed keys: `$schema`, `log_level`, `log_format`, `log_dir`, `log_file_retention_limit`, `timeout_ms`, `workos_client_id`, `agent_trace`, `policies`, `integrations`.
 - Unknown keys fail validation.
 - `log_level` must be one of `error|warn|info|debug`.
 - `log_format` must be `text` or `json` when present.
-- `log_file` must be a non-empty string when present.
-- `log_file_mode` must be `truncate` or `append` when present.
-- `log_file_mode` requires `log_file`.
+- `log_dir` must be a non-empty string when present.
+- `log_file_retention_limit` must be an integer with minimum `1`; zero, negative, fractional, string, and object values fail schema validation.
 - `timeout_ms` must be an unsigned integer.
 - `workos_client_id` must be a string when present.
 
@@ -103,14 +107,15 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `show` reports discovered config files as `config_paths` (JSON) / `Config files:` (text).
 - Resolved values in `show` continue to report `source`; when source is `config_file`, output also reports a deterministic `config_source` value (`flag`, `env`, `default_discovered_global`, `default_discovered_local`).
 - `show` includes migrated supported auth keys in `result.resolved`.
-- `show` includes resolved observability values directly in `result.resolved`, preserving flat logging keys (`log_level`, `log_format`, `log_file`, `log_file_mode`).
+- `show` includes resolved observability values directly in `result.resolved`, preserving flat logging keys (`log_level`, `log_format`, `log_dir`, `log_file_retention_limit`).
 - `validate` text output is limited to `SCE config validation`, `Validation issues`, and `Validation warnings` lines.
 - `validate` JSON output is limited to `result.command`, `result.valid`, `result.issues`, and `result.warnings`.
 - `show` includes resolved Agent Trace repository identity under `result.resolved.agent_trace` (JSON: `repository_id` optional-value shape, `repository_remote` resolved-value shape) and as `agent_trace.repository_id` / `agent_trace.repository_remote` per-key text lines, reporting `(unset)` for a missing `repository_id` and `source: default` for the `origin` remote fallback.
 - `show` includes resolved bash-tool policies under `result.resolved.policies.bash`.
 - Bash-policy output includes resolved preset IDs, expanded custom entries (`id`, `match.argv_prefix`, `message`), and config-file source metadata when present.
 - `show` text output renders `policies.bash` as a single deterministic line and reports `(unset)` when no policy config resolves.
-- `show` text output renders observability values as deterministic per-key lines, reporting `(unset)` for `log_file` when no value resolves.
+- `show` text output renders observability values as deterministic per-key lines, reporting the default `log_dir` with `source: default` when no env/config value resolves.
+- `show` reports `log_file_retention_limit=10` with `source: default` when omitted; configured values report `source: config_file` and the winning global/local `config_source`.
 - `show` and `validate` both include `warnings`; this list is empty for normal valid config and carries deterministic redundancy messaging for valid-but-overlapping preset combinations such as `forbid-git-all` plus `forbid-git-commit`.
 - `validate` reports skipped invalid discovered config files through `result.valid = false` plus `result.issues`, using the collected `validation_errors` verbatim in both text and JSON output rather than hard-failing before render.
 - `validate` reaches its normal renderer for invalid discovered config; invalid discovered config is reported as a validation result rather than causing a pre-render startup failure.

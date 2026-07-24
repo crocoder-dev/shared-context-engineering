@@ -88,6 +88,7 @@ pub(crate) fn log_startup_configuration(
                 ("path", loaded_path.path.to_string_lossy().as_ref()),
                 ("source", loaded_path.source.as_str()),
             ],
+            None,
         );
     }
     for validation_error in &observability_config.validation_errors {
@@ -95,6 +96,7 @@ pub(crate) fn log_startup_configuration(
             INVALID_CONFIG_WARNING_EVENT_ID,
             "Invalid discovered config skipped; using degraded defaults",
             &[("error", validation_error.as_str())],
+            None,
         );
     }
 }
@@ -112,6 +114,7 @@ where
         "sce.command.dispatch_start",
         "Dispatching command",
         &[("command", command_name.as_ref())],
+        None,
     );
     let dispatch_result = command.execute(context);
     if dispatch_result.is_ok() {
@@ -119,6 +122,7 @@ where
             "sce.command.dispatch_end",
             "Command dispatch completed",
             &[("command", command_name.as_ref())],
+            None,
         );
     }
     dispatch_result.inspect(|_payload| {
@@ -126,6 +130,7 @@ where
             "sce.command.completed",
             "Command completed",
             &[("command", command_name.as_ref())],
+            None,
         );
     })
 }
@@ -136,7 +141,7 @@ where
     W: Write,
 {
     if let Some(log) = logger {
-        log.log_classified_error(error);
+        log.log_classified_error(error, None);
     }
     write_error_diagnostic(stderr, error);
     ExitCode::from(error.class().exit_code())
