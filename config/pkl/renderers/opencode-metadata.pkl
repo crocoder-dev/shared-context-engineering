@@ -1,4 +1,69 @@
 import "../base/instruction-unit-inventory.pkl" as inventory
+import "../base/shared-content-common.pkl" as common
+
+/// OpenCode-only translation from canonical capability intent to native tool names.
+/// Permission intent remains in ToolPolicy; this module only renders that intent for OpenCode.
+capabilityTools: Mapping<common.CapabilityId, List<String>> = new {
+  ["repository.read"] = List("read")
+  ["repository.search"] = List("glob", "grep", "list", "codesearch", "lsp")
+  ["repository.write"] = List("edit")
+  ["process.execute"] = List("bash")
+  ["interaction.ask"] = List("question")
+  ["skill.invoke"] = List("skill")
+  ["vcs.commit"] = List("bash")
+}
+
+local scalarTools = List(
+  "read",
+  "edit",
+  "glob",
+  "grep",
+  "list",
+  "bash",
+  "question",
+  "codesearch",
+  "lsp"
+)
+
+local function capabilitiesForTool(tool: String): List<common.CapabilityId> =
+  common.capabilityIds.filter((capability) -> capabilityTools[capability].contains(tool))
+
+local function actionForTool(
+  tool: String,
+  policy: common.ToolPolicy,
+  deniedAction: String
+): String =
+  if (capabilitiesForTool(tool).any((capability) ->
+    policy.allowedCapabilities.contains(capability)
+    && policy.approvalRequiredCapabilities.contains(capability)
+  )) "ask"
+  else if (capabilitiesForTool(tool).any((capability) -> policy.allowedCapabilities.contains(capability))) "allow"
+  else deniedAction
+
+local function skillLines(
+  policy: common.ToolPolicy,
+  allowedSkills: List<String>,
+  deniedAction: String
+): String =
+  if (!policy.allowedCapabilities.contains("skill.invoke")) "    \"*\": \(deniedAction)"
+  else new Listing {
+    "    \"*\": \(deniedAction)"
+    for (skillSlug in allowedSkills) {
+      "    \"\(skillSlug)\": \(actionForTool("skill", policy, deniedAction))"
+    }
+  }.join("\n")
+
+function renderPermissionBlock(
+  policy: common.ToolPolicy,
+  allowedSkills: List<String>,
+  deniedAction: String
+): String = """
+permission:
+  default: \(deniedAction)
+\(scalarTools.map((tool) -> "  \(tool): \(actionForTool(tool, policy, deniedAction))").join("\n"))
+  skill:
+\(skillLines(policy, allowedSkills, deniedAction))
+"""
 
 // Hand-authored per-unit metadata text/blocks, looked up by slug. The exposed mappings are keyed by
 // iterating the canonical inventory so only active manual units render and stale entries cannot leak.
@@ -21,70 +86,6 @@ local agentColorText = new Mapping {
 local agentBehaviorBlockText = new Mapping {
   ["shared-context-plan"] = ""
   ["shared-context-code"] = ""
-}
-
-// The plan agent's guardrails state "Never run shell commands", so it receives `bash: ask` (not
-// `allow`) as least privilege for a manual, interactive role. The code agent keeps `bash: allow`.
-local agentPermissionBlockText = new Mapping {
-  ["shared-context-plan"] = """
-permission:
-  default: ask
-  read: allow
-  edit: allow
-  glob: allow
-  grep: allow
-  list: allow
-  bash: ask
-  task: allow
-  external_directory: ask
-  todowrite: allow
-  todoread: allow
-  question: allow
-  webfetch: allow
-  websearch: allow
-  codesearch: allow
-  lsp: allow
-  doom_loop: ask
-  skill:
-    "*": ask
-    "sce-bootstrap-context": allow
-    "sce-plan-authoring": allow
-"""
-  ["shared-context-code"] = """
-permission:
-  default: ask
-  read: allow
-  edit: allow
-  glob: allow
-  grep: allow
-  list: allow
-  bash: allow
-  task: allow
-  external_directory: ask
-  todowrite: allow
-  todoread: allow
-  question: allow
-  webfetch: allow
-  websearch: allow
-  codesearch: allow
-  lsp: allow
-  doom_loop: ask
-  skill:
-    "*": ask
-    "sce-plan-review": allow
-    "sce-task-execution": allow
-    "sce-context-sync": allow
-    "sce-validation": allow
-    "sce-atomic-commit": allow
-"""
-}
-
-local commandAgentText = new Mapping {
-  ["next-task"] = "Shared Context Code"
-  ["change-to-plan"] = "Shared Context Plan"
-  ["handover"] = "Shared Context Code"
-  ["commit"] = "Shared Context Code"
-  ["validate"] = "Shared Context Code"
 }
 
 local skillDescriptionText = new Mapping {
@@ -119,18 +120,6 @@ agentColors = new Mapping {
 agentBehaviorBlocks = new Mapping {
   for (slug, _ in inventory.manualAgents) {
     [slug] = agentBehaviorBlockText[slug]
-  }
-}
-
-agentPermissionBlocks = new Mapping {
-  for (slug, _ in inventory.manualAgents) {
-    [slug] = agentPermissionBlockText[slug]
-  }
-}
-
-commandAgents = new Mapping {
-  for (slug, _ in inventory.manualCommands) {
-    [slug] = commandAgentText[slug]
   }
 }
 

@@ -3,7 +3,7 @@ name: shared-context-code
 description: Use when the user wants to execute one approved SCE task and sync context.
 model: inherit
 color: green
-tools: ["Read", "Glob", "Grep", "Edit", "Write", "Skill", "AskUserQuestion", "Task", "Bash"]
+tools: ["Task", "Read", "Glob", "Grep", "Edit", "Write", "AskUserQuestion", "Skill", "Bash"]
 ---
 
 ## Purpose

@@ -10,7 +10,7 @@ The canonical manual and automated SCE aggregations in `config/pkl/base/shared-c
 
 The manual inventory contains two execution profiles (`shared-context-plan`, `shared-context-code`), five workflows (`next-task`, `change-to-plan`, `handover`, `commit`, `validate`), and eight skills. The automated inventory uses the same vocabulary with two profiles, six workflows, and nine skills; its additional interactive planning workflow and skill remain active alongside the deterministic automated planning path.
 
-Manual and automated target renderers consume `executionProfiles` and `workflows` but continue to expose target carrier collections named `agents` and `commands`. Automated topology remains OpenCode-only. Native profile-agent bodies render broad invocation policy rather than workflow sequencing; final native workflow binding remains a later boundary.
+Manual and automated target renderers consume `executionProfiles` and `workflows` while exposing target carrier collections named `agents` and `commands`. Automated topology remains OpenCode-only. OpenCode profile agents render broad invocation policy with `mode: primary`; OpenCode workflow commands bind the canonical profile title, set `subtask: false`, and derive `entry-skill` plus ordered `skills` directly from each workflow. Claude keeps both native profile agents for explicit `claude --agent` activation and composes the bound profile into each normal workflow command. Pi workflow composition remains a later target boundary.
 
 The plan profile owns planning/context and no-implementation boundaries without duplicating `/change-to-plan` ordering. The code profile owns controlled repository operations, evidence, and context alignment without imposing one-task execution on every invocation. One-task behavior remains workflow/skill-owned by `next-task` and `sce-task-execution`.
 
@@ -22,7 +22,7 @@ The plan profile owns planning/context and no-implementation boundaries without 
 - `composeProfile(profile, workflow)` combines profile and workflow fields before Markdown rendering, emits `<!-- sce-execution-profile: {slug} -->`, and generates profile/required-skill relationships;
 - `renderBody(...)` remains the only heading serializer, so composition never searches or replaces Markdown headings.
 
-Composition carries profile policy through purpose, inputs, preconditions, workflow posture, guardrails, outputs, completion criteria, and failure handling while retaining workflow-owned optional `Reference`/`Examples`. Target renderers currently adopt `nativeAgentBody`; Claude/Pi workflow composition and final OpenCode native binding remain deferred to their projection tasks.
+Composition carries profile policy through purpose, inputs, preconditions, workflow posture, guardrails, outputs, completion criteria, and failure handling while retaining workflow-owned optional `Reference`/`Examples`. Target renderers adopt `nativeAgentBody` for profile carriers. OpenCode keeps workflow bodies thin because its commands bind the native profile directly. Claude commands render `composeProfile(...)` so normal slash-command use receives the same policy without a fork; Pi workflow composition remains deferred to its projection task.
 
 ## Projection inventory
 
@@ -61,6 +61,18 @@ A workflow may only narrow its profile capability ceiling. Its effective allow-s
 ```
 
 `effectiveToolPolicy` implements this rule in canonical capability order.
+
+## OpenCode translation and enforcement
+
+`config/pkl/renderers/opencode-metadata.pkl` is the OpenCode-only translation boundary from canonical capabilities to native tool names. Both manual and automated profile permissions derive from profile policy; workflow command permissions derive from each workflow's effective policy. A native tool is `ask` when any effective capability mapped to it requires approval, is allowed when at least one mapped effective capability permits it, and otherwise inherits the profile-specific deny posture (`ask` for manual, `block` for automated).
+
+Skill permission entries derive from profile `allowedSkills` or workflow `requiredSkills`, with the wildcard retaining the deny posture. OpenCode metadata files now own presentation text only; they do not own command-agent maps, skill chains, or authored permission blocks.
+
+## Claude translation and composition
+
+`config/pkl/renderers/claude-metadata.pkl` translates canonical capabilities to Claude native tools. `repository.read/search/write`, `process.execute`, `interaction.ask`, and `skill.invoke` map to the ordered Claude tool set (`Read`, `Glob`, `Grep`, `Edit`, `Write`, `Bash`, `AskUserQuestion`, `Skill`, and `Task`); `vcs.commit` also maps to `Bash`. Native profile `tools` derive from profile ceilings, while command `allowed-tools` derive exactly from effective workflow policies with duplicate native tools removed.
+
+The two Claude native profile files remain available for explicit whole-session activation. All five normal commands instead compose their canonical profile policy into the command body, include the stable profile marker, and remain in the main conversation without `context: fork`. Focused checks cover valid composition, missing/wrong markers, missing policy fragments, exact allowed-tool derivation, and structural validity.
 
 ## Relationship contract
 

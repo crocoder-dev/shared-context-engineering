@@ -3,7 +3,7 @@ name: shared-context-plan
 description: Use when the user needs to create or update an SCE plan before implementation.
 model: inherit
 color: blue
-tools: ["Read", "Glob", "Grep", "Edit", "Write", "Skill", "AskUserQuestion", "Task", "Bash"]
+tools: ["Task", "Read", "Glob", "Grep", "Edit", "Write", "AskUserQuestion", "Skill", "Bash"]
 ---
 
 ## Purpose

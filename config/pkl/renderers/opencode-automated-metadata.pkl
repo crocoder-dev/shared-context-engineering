@@ -27,69 +27,6 @@ local agentBehaviorBlockText = new Mapping {
   ["shared-context-code"] = ""
 }
 
-local agentPermissionBlockText = new Mapping {
-  ["shared-context-plan"] = """
-permission:
-  default: allow
-  read: allow
-  edit: allow
-  glob: allow
-  grep: allow
-  list: allow
-  bash: block
-  task: allow
-  external_directory: block
-  todowrite: allow
-  todoread: allow
-  question: allow
-  webfetch: allow
-  websearch: allow
-  codesearch: allow
-  lsp: allow
-  doom_loop: block
-  skill:
-    "*": allow
-    "sce-bootstrap-context": allow
-    "sce-plan-authoring": allow
-"""
-  ["shared-context-code"] = """
-permission:
-  default: allow
-  read: allow
-  edit: allow
-  glob: allow
-  grep: allow
-  list: allow
-  bash: allow
-  task: allow
-  external_directory: block
-  todowrite: allow
-  todoread: allow
-  question: allow
-  webfetch: allow
-  websearch: allow
-  codesearch: allow
-  lsp: allow
-  doom_loop: block
-  skill:
-    "*": allow
-    "sce-plan-review": allow
-    "sce-task-execution": allow
-    "sce-context-sync": allow
-    "sce-validation": allow
-    "sce-atomic-commit": allow
-"""
-}
-
-local commandAgentText = new Mapping {
-  ["next-task"] = "Shared Context Code"
-  ["change-to-plan"] = "Shared Context Plan"
-  ["change-to-plan-interactive"] = "Shared Context Plan"
-  ["handover"] = "Shared Context Code"
-  ["commit"] = "Shared Context Code"
-  ["validate"] = "Shared Context Code"
-}
-
 local skillDescriptionText = new Mapping {
   ["sce-bootstrap-context"] = "Use when user wants to Bootstrap SCE baseline context directory when missing."
   ["sce-context-sync"] = "Use when user wants to update project documentation to reflect code changes, sync docs with code, refresh project context, or keep AI memory files accurate after completing an implementation task. Scans modified code, classifies the change significance, then updates or verifies Markdown context files under `context/` (overview, architecture, glossary, patterns, context-map, and domain files) so that durable AI memory stays aligned with current code truth."
@@ -123,18 +60,6 @@ agentColors = new Mapping {
 agentBehaviorBlocks = new Mapping {
   for (slug, _ in inventory.automatedAgents) {
     [slug] = agentBehaviorBlockText[slug]
-  }
-}
-
-agentPermissionBlocks = new Mapping {
-  for (slug, _ in inventory.automatedAgents) {
-    [slug] = agentPermissionBlockText[slug]
-  }
-}
-
-commandAgents = new Mapping {
-  for (slug, _ in inventory.automatedCommands) {
-    [slug] = commandAgentText[slug]
   }
 }
 

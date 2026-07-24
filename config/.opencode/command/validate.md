@@ -1,9 +1,24 @@
 ---
 description: "Run `sce-validation` to finish an SCE plan with validation and cleanup"
 agent: "Shared Context Code"
+subtask: false
 entry-skill: "sce-validation"
 skills:
   - "sce-validation"
+permission:
+  default: ask
+  read: allow
+  edit: allow
+  glob: allow
+  grep: allow
+  list: allow
+  bash: allow
+  question: allow
+  codesearch: allow
+  lsp: allow
+  skill:
+    "*": ask
+    "sce-validation": allow
 ---
 
 ## Purpose

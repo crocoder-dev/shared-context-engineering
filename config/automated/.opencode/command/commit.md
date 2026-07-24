@@ -1,6 +1,24 @@
 ---
 description: "Use `sce-atomic-commit` to propose atomic commit message(s) from staged changes"
 agent: "Shared Context Code"
+subtask: false
+entry-skill: "sce-atomic-commit"
+skills:
+  - "sce-atomic-commit"
+permission:
+  default: block
+  read: allow
+  edit: allow
+  glob: allow
+  grep: allow
+  list: allow
+  bash: allow
+  question: allow
+  codesearch: allow
+  lsp: allow
+  skill:
+    "*": block
+    "sce-atomic-commit": allow
 ---
 
 ## Purpose

@@ -1,5 +1,6 @@
 import "../base/shared-content-automated.pkl" as shared
 import "common.pkl" as common
+import "opencode-metadata.pkl" as capabilities
 import "opencode-automated-metadata.pkl" as metadata
 
 local generatedOpenCodePluginPathsJson = common.sceGeneratedOpenCodePluginPathsJson
@@ -12,18 +13,36 @@ name: "\(metadata.agentDisplayNames[unitSlug])"
 description: \(metadata.agentDescriptions[unitSlug])
 temperature: 0.1
 color: "\(metadata.agentColors[unitSlug])"\(metadata.agentBehaviorBlocks[unitSlug])
-\(metadata.agentPermissionBlocks[unitSlug])
+mode: primary
+\(capabilities.renderPermissionBlock(
+  shared.executionProfiles[unitSlug].policy.tools,
+  shared.executionProfiles[unitSlug].policy.allowedSkills,
+  "block"
+))
 ---
 """
   }
 }
 
+local function skillMetadataBlock(entrySkill: String, requiredSkills: List<String>): String = """
+entry-skill: "\(entrySkill)"
+skills:
+\(requiredSkills.map((skillSlug) -> "  - \"\(skillSlug)\"").join("\n"))
+"""
+
 local commandFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.workflows) {
+  for (unitSlug, unit in shared.workflows) {
     [unitSlug] = """
 ---
 description: "\(common.commandDescriptions[unitSlug])"
-agent: "\(metadata.commandAgents[unitSlug])"
+agent: "\(shared.executionProfiles[unit.executionProfile].title)"
+subtask: false
+\(skillMetadataBlock(unit.entrySkill, unit.requiredSkills))
+\(capabilities.renderPermissionBlock(
+  shared.effectiveWorkflowPolicies[unitSlug],
+  unit.requiredSkills,
+  "block"
+))
 ---
 """
   }

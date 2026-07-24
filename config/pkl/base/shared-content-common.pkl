@@ -136,48 +136,48 @@ function nativeAgentBody(profile: ExecutionProfile): InstructionBody =
   }
 
 /// Compose profile policy and workflow procedure section-by-section before Markdown rendering.
-function composeProfile(profile: ExecutionProfile, workflow: WorkflowUnit): InstructionBody =
+function composeProfile(profile: ExecutionProfile, workflowUnit: WorkflowUnit): InstructionBody =
   new InstructionBody {
     purpose = """
 \(profileCompositionMarker(profile.slug))
 \(profile.policy.body.purpose)
-\(workflow.body.purpose)
+\(workflowUnit.body.purpose)
 """
     inputs = """
 \(profile.policy.body.inputs)
-\(workflow.body.inputs)
+\(workflowUnit.body.inputs)
 """
     preconditions = """
 \(profile.policy.body.preconditions)
-\(workflow.body.preconditions)
+\(workflowUnit.body.preconditions)
 """
     workflow = """
 \(profile.policy.body.workflow)
-\(workflow.body.workflow)
+\(workflowUnit.body.workflow)
 """
     guardrails = """
 \(profile.policy.body.guardrails)
-\(workflow.body.guardrails)
+\(workflowUnit.body.guardrails)
 """
     outputs = """
 \(profile.policy.body.outputs)
-\(workflow.body.outputs)
+\(workflowUnit.body.outputs)
 """
     completionCriteria = """
 \(profile.policy.body.completionCriteria)
-\(workflow.body.completionCriteria)
+\(workflowUnit.body.completionCriteria)
 """
     failureHandling = """
 \(profile.policy.body.failureHandling)
-\(workflow.body.failureHandling)
+\(workflowUnit.body.failureHandling)
 """
     relatedUnits = """
 - `\(profile.slug)` — execution profile composed into this workflow.
-\(requiredSkillRelations(workflow))
-\(workflow.body.relatedUnits)
+\(requiredSkillRelations(workflowUnit))
+\(workflowUnit.body.relatedUnits)
 """
-    reference = workflow.body.reference
-    examples = workflow.body.examples
+    reference = workflowUnit.body.reference
+    examples = workflowUnit.body.examples
   }
 
 sharedSceCorePrinciplesSection = """

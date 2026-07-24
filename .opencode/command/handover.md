@@ -1,9 +1,24 @@
 ---
 description: "Run `sce-handover-writer` to capture the current task for handoff"
 agent: "Shared Context Code"
+subtask: false
 entry-skill: "sce-handover-writer"
 skills:
   - "sce-handover-writer"
+permission:
+  default: ask
+  read: allow
+  edit: allow
+  glob: allow
+  grep: allow
+  list: allow
+  bash: ask
+  question: allow
+  codesearch: allow
+  lsp: allow
+  skill:
+    "*": ask
+    "sce-handover-writer": allow
 ---
 
 ## Purpose

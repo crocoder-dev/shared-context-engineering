@@ -1,3 +1,4 @@
+import "../base/shared-content-common.pkl" as sharedCommon
 import "../base/shared-content.pkl" as shared
 import "../base/shared-content-automated.pkl" as sharedAutomated
 import "../base/instruction-unit-inventory.pkl" as inventory
@@ -20,6 +21,12 @@ inventoryCoverage = new {
   duplicateProjectionProblemCount = inventory.duplicateProjectionProblems.length
   staleEntryCount = inventory.staleEntries.length
   brokenReferenceCount = inventory.brokenReferences.length
+}
+
+opencodeCapabilityTranslationCoverage {
+  for (capability in sharedCommon.capabilityIds) {
+    [capability] = opencode.capabilityTools[capability]
+  }
 }
 
 projectionCoverage {
@@ -55,7 +62,12 @@ opencodeAgentCoverage {
       description = opencode.agentDescriptions[unitSlug]
       displayName = opencode.agentDisplayNames[unitSlug]
       color = opencode.agentColors[unitSlug]
-      permissionBlock = opencode.agentPermissionBlocks[unitSlug]
+      mode = "primary"
+      permissionBlock = opencode.renderPermissionBlock(
+        shared.executionProfiles[unitSlug].policy.tools,
+        shared.executionProfiles[unitSlug].policy.allowedSkills,
+        "ask"
+      )
     }
   }
 }
@@ -64,7 +76,15 @@ opencodeCommandCoverage {
   for (unitSlug, _ in shared.workflows) {
     [unitSlug] = new {
       description = common.commandDescriptions[unitSlug]
-      agent = opencode.commandAgents[unitSlug]
+      agent = shared.executionProfiles[shared.workflows[unitSlug].executionProfile].title
+      entrySkill = shared.workflows[unitSlug].entrySkill
+      requiredSkills = shared.workflows[unitSlug].requiredSkills
+      subtask = false
+      permissionBlock = opencode.renderPermissionBlock(
+        shared.effectiveWorkflowPolicies[unitSlug],
+        shared.workflows[unitSlug].requiredSkills,
+        "ask"
+      )
     }
   }
 }
@@ -78,21 +98,29 @@ opencodeSkillCoverage {
   }
 }
 
+claudeCapabilityTranslationCoverage {
+  for (capability in sharedCommon.capabilityIds) {
+    [capability] = claude.capabilityTools[capability]
+  }
+}
+
 claudeAgentCoverage {
-  for (unitSlug, _ in shared.executionProfiles) {
+  for (unitSlug, unit in shared.executionProfiles) {
     [unitSlug] = new {
       description = claude.agentDescriptions[unitSlug]
       color = claude.agentColors[unitSlug]
-      tools = claude.agentTools
+      tools = claude.renderAgentTools(unit.policy.tools)
     }
   }
 }
 
 claudeCommandCoverage {
-  for (unitSlug, _ in shared.workflows) {
+  for (unitSlug, unit in shared.workflows) {
     [unitSlug] = new {
       description = common.commandDescriptions[unitSlug]
-      allowedTools = claude.commandAllowedTools[unitSlug]
+      executionProfile = unit.executionProfile
+      allowedTools = claude.renderCommandAllowedTools(shared.effectiveWorkflowPolicies[unitSlug])
+      composedMarker = sharedCommon.profileCompositionMarker(unit.executionProfile)
     }
   }
 }
@@ -130,7 +158,12 @@ opencodeAutomatedAgentCoverage {
       description = opencodeAutomated.agentDescriptions[unitSlug]
       displayName = opencodeAutomated.agentDisplayNames[unitSlug]
       color = opencodeAutomated.agentColors[unitSlug]
-      permissionBlock = opencodeAutomated.agentPermissionBlocks[unitSlug]
+      mode = "primary"
+      permissionBlock = opencode.renderPermissionBlock(
+        sharedAutomated.executionProfiles[unitSlug].policy.tools,
+        sharedAutomated.executionProfiles[unitSlug].policy.allowedSkills,
+        "block"
+      )
     }
   }
 }
@@ -139,7 +172,15 @@ opencodeAutomatedCommandCoverage {
   for (unitSlug, _ in sharedAutomated.workflows) {
     [unitSlug] = new {
       description = common.commandDescriptions[unitSlug]
-      agent = opencodeAutomated.commandAgents[unitSlug]
+      agent = sharedAutomated.executionProfiles[sharedAutomated.workflows[unitSlug].executionProfile].title
+      entrySkill = sharedAutomated.workflows[unitSlug].entrySkill
+      requiredSkills = sharedAutomated.workflows[unitSlug].requiredSkills
+      subtask = false
+      permissionBlock = opencode.renderPermissionBlock(
+        sharedAutomated.effectiveWorkflowPolicies[unitSlug],
+        sharedAutomated.workflows[unitSlug].requiredSkills,
+        "block"
+      )
     }
   }
 }

@@ -3,6 +3,7 @@ name: "Shared Context Code"
 description: Executes one approved SCE task, validates behavior, and syncs context.
 temperature: 0.1
 color: "#059669"
+mode: primary
 permission:
   default: ask
   read: allow
@@ -10,24 +11,18 @@ permission:
   glob: allow
   grep: allow
   list: allow
-  bash: allow
-  task: allow
-  external_directory: ask
-  todowrite: allow
-  todoread: allow
+  bash: ask
   question: allow
-  webfetch: allow
-  websearch: allow
   codesearch: allow
   lsp: allow
-  doom_loop: ask
   skill:
     "*": ask
+    "sce-context-sync": allow
+    "sce-handover-writer": allow
     "sce-plan-review": allow
     "sce-task-execution": allow
-    "sce-context-sync": allow
-    "sce-validation": allow
     "sce-atomic-commit": allow
+    "sce-validation": allow
 ---
 
 ## Purpose

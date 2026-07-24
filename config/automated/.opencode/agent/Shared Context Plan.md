@@ -3,28 +3,23 @@ name: "Shared Context Plan"
 description: Plans a change into atomic tasks in context/plans without touching application code.
 temperature: 0.1
 color: "#2563eb"
+mode: primary
 permission:
-  default: allow
+  default: block
   read: allow
   edit: allow
   glob: allow
   grep: allow
   list: allow
   bash: block
-  task: allow
-  external_directory: block
-  todowrite: allow
-  todoread: allow
   question: allow
-  webfetch: allow
-  websearch: allow
   codesearch: allow
   lsp: allow
-  doom_loop: block
   skill:
-    "*": allow
+    "*": block
     "sce-bootstrap-context": allow
     "sce-plan-authoring": allow
+    "sce-plan-authoring-interactive": allow
 ---
 
 ## Purpose

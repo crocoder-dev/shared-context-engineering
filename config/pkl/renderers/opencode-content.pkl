@@ -12,55 +12,36 @@ name: "\(metadata.agentDisplayNames[unitSlug])"
 description: \(metadata.agentDescriptions[unitSlug])
 temperature: 0.1
 color: "\(metadata.agentColors[unitSlug])"\(metadata.agentBehaviorBlocks[unitSlug])
-\(metadata.agentPermissionBlocks[unitSlug])
+mode: primary
+\(metadata.renderPermissionBlock(
+  shared.executionProfiles[unitSlug].policy.tools,
+  shared.executionProfiles[unitSlug].policy.allowedSkills,
+  "ask"
+))
 ---
 """
   }
 }
 
-local commandSkillMetadataBlocks = new Mapping {
-  ["next-task"] = """
-entry-skill: "sce-plan-review"
+local function skillMetadataBlock(entrySkill: String, requiredSkills: List<String>): String = """
+entry-skill: "\(entrySkill)"
 skills:
-  - "sce-plan-review"
-  - "sce-task-execution"
-  - "sce-context-sync"
-  - "sce-validation"
+\(requiredSkills.map((skillSlug) -> "  - \"\(skillSlug)\"").join("\n"))
 """
-  ["change-to-plan"] = """
-entry-skill: "sce-plan-authoring"
-skills:
-  - "sce-plan-authoring"
-"""
-  ["handover"] = """
-entry-skill: "sce-handover-writer"
-skills:
-  - "sce-handover-writer"
-"""
-  ["commit"] = """
-entry-skill: "sce-atomic-commit"
-skills:
-  - "sce-atomic-commit"
-"""
-  ["validate"] = """
-entry-skill: "sce-validation"
-skills:
-  - "sce-validation"
-"""
-}
 
 local commandFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.workflows) {
-    [unitSlug] = if (commandSkillMetadataBlocks[unitSlug] == null) """
+  for (unitSlug, unit in shared.workflows) {
+    [unitSlug] = """
 ---
 description: "\(common.commandDescriptions[unitSlug])"
-agent: "\(metadata.commandAgents[unitSlug])"
----
-""" else """
----
-description: "\(common.commandDescriptions[unitSlug])"
-agent: "\(metadata.commandAgents[unitSlug])"
-\(commandSkillMetadataBlocks[unitSlug])
+agent: "\(shared.executionProfiles[unit.executionProfile].title)"
+subtask: false
+\(skillMetadataBlock(unit.entrySkill, unit.requiredSkills))
+\(metadata.renderPermissionBlock(
+  shared.effectiveWorkflowPolicies[unitSlug],
+  unit.requiredSkills,
+  "ask"
+))
 ---
 """
   }

@@ -9,14 +9,14 @@ local claudeSceHookScriptPath = "$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-sh
 local function sceHookCommand(arguments: String): String = "bash \\\"\(claudeSceHookScriptPath)\\\" \(arguments)"
 
 local agentFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.executionProfiles) {
+  for (unitSlug, unit in shared.executionProfiles) {
     [unitSlug] = """
 ---
 name: \(unitSlug)
 description: \(metadata.agentDescriptions[unitSlug])
 model: inherit
 color: \(metadata.agentColors[unitSlug])
-tools: \(metadata.agentTools)
+tools: \(metadata.renderAgentTools(unit.policy.tools))
 ---
 """
   }
@@ -37,7 +37,7 @@ local commandFrontmatterBySlug = new Mapping {
     [unitSlug] = """
 ---
 description: "\(common.commandDescriptions[unitSlug])"
-allowed-tools: \(metadata.commandAllowedTools[unitSlug])
+allowed-tools: \(metadata.renderCommandAllowedTools(shared.effectiveWorkflowPolicies[unitSlug]))
 ---
 """
   }
@@ -149,7 +149,10 @@ commands {
       slug = unitSlug
       title = unit.title
       frontmatter = commandFrontmatterBySlug[unitSlug]
-      body = common.renderBody(unit.body)
+      body = common.renderBody(common.composeProfile(
+        shared.executionProfiles[unit.executionProfile],
+        unit
+      ))
     }
   }
 }

@@ -1,12 +1,30 @@
 ---
 description: "Run `sce-plan-review` -> `sce-task-execution` -> `sce-context-sync` for one approved SCE task"
 agent: "Shared Context Code"
+subtask: false
 entry-skill: "sce-plan-review"
 skills:
   - "sce-plan-review"
   - "sce-task-execution"
   - "sce-context-sync"
   - "sce-validation"
+permission:
+  default: ask
+  read: allow
+  edit: allow
+  glob: allow
+  grep: allow
+  list: allow
+  bash: allow
+  question: allow
+  codesearch: allow
+  lsp: allow
+  skill:
+    "*": ask
+    "sce-plan-review": allow
+    "sce-task-execution": allow
+    "sce-context-sync": allow
+    "sce-validation": allow
 ---
 
 ## Purpose

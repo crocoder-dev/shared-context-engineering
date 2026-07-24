@@ -1,4 +1,40 @@
 import "../base/instruction-unit-inventory.pkl" as inventory
+import "../base/shared-content-common.pkl" as common
+
+/// Claude-only translation from canonical capability intent to native tool names.
+/// Allowed-tool metadata expresses the canonical ceiling; semantic policy remains prompt-enforced.
+capabilityTools: Mapping<common.CapabilityId, List<String>> = new {
+  ["repository.read"] = List("Read")
+  ["repository.search"] = List("Glob", "Grep")
+  ["repository.write"] = List("Edit", "Write")
+  ["process.execute"] = List("Bash")
+  ["interaction.ask"] = List("AskUserQuestion")
+  ["skill.invoke"] = List("Skill", "Task")
+  ["vcs.commit"] = List("Bash")
+}
+
+local nativeTools = List(
+  "Task",
+  "Read",
+  "Glob",
+  "Grep",
+  "Edit",
+  "Write",
+  "AskUserQuestion",
+  "Skill",
+  "Bash"
+)
+
+function translatedTools(policy: common.ToolPolicy): List<String> =
+  nativeTools.filter((tool) ->
+    policy.allowedCapabilities.any((capability) -> capabilityTools[capability].contains(tool))
+  )
+
+function renderAgentTools(policy: common.ToolPolicy): String =
+  "[\"\(translatedTools(policy).join("\", \""))\"]"
+
+function renderCommandAllowedTools(policy: common.ToolPolicy): String =
+  translatedTools(policy).join(", ")
 
 // Hand-authored per-unit metadata, looked up by slug. The exposed mappings are keyed by iterating the
 // canonical inventory so only active manual units render and stale entries cannot leak.
@@ -16,14 +52,6 @@ local agentColorText = new Mapping {
 local agentSystemPreambleBlockText = new Mapping {
   ["shared-context-plan"] = ""
   ["shared-context-code"] = ""
-}
-
-local commandAllowedToolsText = new Mapping {
-  ["next-task"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
-  ["change-to-plan"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill"
-  ["handover"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill"
-  ["commit"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
-  ["validate"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
 }
 
 local skillDescriptionText = new Mapping {
@@ -49,17 +77,9 @@ agentColors = new Mapping {
   }
 }
 
-agentTools = "[\"Read\", \"Glob\", \"Grep\", \"Edit\", \"Write\", \"Skill\", \"AskUserQuestion\", \"Task\", \"Bash\"]"
-
 agentSystemPreambleBlocks = new Mapping {
   for (slug, _ in inventory.manualAgents) {
     [slug] = agentSystemPreambleBlockText[slug]
-  }
-}
-
-commandAllowedTools = new Mapping {
-  for (slug, _ in inventory.manualCommands) {
-    [slug] = commandAllowedToolsText[slug]
   }
 }
 

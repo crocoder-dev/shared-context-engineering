@@ -1,9 +1,24 @@
 ---
 description: "Use `sce-plan-authoring` to turn a change request into a scoped SCE plan"
 agent: "Shared Context Plan"
+subtask: false
 entry-skill: "sce-plan-authoring"
 skills:
   - "sce-plan-authoring"
+permission:
+  default: ask
+  read: allow
+  edit: allow
+  glob: allow
+  grep: allow
+  list: allow
+  bash: ask
+  question: allow
+  codesearch: allow
+  lsp: allow
+  skill:
+    "*": ask
+    "sce-plan-authoring": allow
 ---
 
 ## Purpose

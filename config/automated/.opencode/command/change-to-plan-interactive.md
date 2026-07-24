@@ -1,6 +1,24 @@
 ---
 description: "Create or update an SCE plan from a change request with interactive clarification"
 agent: "Shared Context Plan"
+subtask: false
+entry-skill: "sce-plan-authoring-interactive"
+skills:
+  - "sce-plan-authoring-interactive"
+permission:
+  default: block
+  read: allow
+  edit: allow
+  glob: allow
+  grep: allow
+  list: allow
+  bash: block
+  question: allow
+  codesearch: allow
+  lsp: allow
+  skill:
+    "*": block
+    "sce-plan-authoring-interactive": allow
 ---
 
 ## Purpose

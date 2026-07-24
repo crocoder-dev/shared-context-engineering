@@ -3,6 +3,11 @@ import "../base/shared-content.pkl" as manual
 import "../base/shared-content-automated.pkl" as automated
 import "../base/instruction-unit-inventory.pkl" as inventory
 import "instruction-unit-validator.pkl" as validator
+import "opencode-metadata.pkl" as opencodeMetadata
+import "opencode-content.pkl" as manualOpenCode
+import "opencode-automated-content.pkl" as automatedOpenCode
+import "claude-metadata.pkl" as claudeMetadata
+import "claude-content.pkl" as manualClaude
 
 /// Focused gate for the manual and automated portable execution-profile models.
 profileReferenceProblems: Listing<String>(isEmpty) = manual.profileReferenceProblems
@@ -122,6 +127,20 @@ local unionIntersectionProbe = common.effectiveToolPolicy(
   }
 )
 
+capabilityTranslationProblems: Listing<String>(isEmpty) = new {
+  for (capability in common.capabilityIds) {
+    when (opencodeMetadata.capabilityTools.getOrNull(capability) == null) {
+      "OpenCode translation is missing canonical capability \(capability)"
+    }
+    when (opencodeMetadata.capabilityTools[capability].isEmpty) {
+      "OpenCode translation for canonical capability \(capability) has no native tools"
+    }
+  }
+  when (opencodeMetadata.capabilityTools.keys.toList().sort() != common.capabilityIds.sort()) {
+    "OpenCode capability translation keys differ from the canonical vocabulary"
+  }
+}
+
 effectivePolicyProblems: Listing<String>(isEmpty) = new {
   when (manual.effectiveWorkflowPolicies["next-task"].allowedCapabilities != manual.workflows["next-task"].tools.allowedCapabilities) {
     "next-task effective allow-set differs from its workflow allow-set"
@@ -134,6 +153,189 @@ effectivePolicyProblems: Listing<String>(isEmpty) = new {
   }
   when (unionIntersectionProbe.approvalRequiredCapabilities != List("process.execute", "interaction.ask")) {
     "effective approval helper does not implement ordered union/intersection semantics"
+  }
+}
+
+local function expectedSkillMetadata(entrySkill: String, requiredSkills: List<String>): String = """
+entry-skill: "\(entrySkill)"
+skills:
+\(requiredSkills.map((skillSlug) -> "  - \"\(skillSlug)\"").join("\n"))
+"""
+
+openCodeNativeBindingProblems: Listing<String>(isEmpty) = new {
+  for (profileSlug, profile in manual.executionProfiles) {
+    when (!manualOpenCode.agents[profileSlug].frontmatter.contains("mode: primary")) {
+      "manual OpenCode profile \(profileSlug) is not primary"
+    }
+    when (!manualOpenCode.agents[profileSlug].frontmatter.contains(
+      opencodeMetadata.renderPermissionBlock(profile.policy.tools, profile.policy.allowedSkills, "ask")
+    )) {
+      "manual OpenCode profile \(profileSlug) does not derive permissions from canonical policy"
+    }
+  }
+  for (workflowSlug, workflowUnit in manual.workflows) {
+    when (!manualOpenCode.commands[workflowSlug].frontmatter.contains("agent: \"\(manual.executionProfiles[workflowUnit.executionProfile].title)\"")) {
+      "manual OpenCode workflow \(workflowSlug) does not bind its canonical profile agent"
+    }
+    when (!manualOpenCode.commands[workflowSlug].frontmatter.contains("subtask: false")) {
+      "manual OpenCode workflow \(workflowSlug) can fork from the primary conversation"
+    }
+    when (!manualOpenCode.commands[workflowSlug].frontmatter.contains(expectedSkillMetadata(workflowUnit.entrySkill, workflowUnit.requiredSkills))) {
+      "manual OpenCode workflow \(workflowSlug) does not derive its canonical skill chain"
+    }
+    when (!manualOpenCode.commands[workflowSlug].frontmatter.contains(opencodeMetadata.renderPermissionBlock(
+      manual.effectiveWorkflowPolicies[workflowSlug],
+      workflowUnit.requiredSkills,
+      "ask"
+    ))) {
+      "manual OpenCode workflow \(workflowSlug) does not derive effective permissions"
+    }
+    when (manualOpenCode.commands[workflowSlug].body != common.renderBody(workflowUnit.body)) {
+      "manual OpenCode workflow \(workflowSlug) is not a thin canonical workflow body"
+    }
+  }
+  for (profileSlug, profile in automated.executionProfiles) {
+    when (!automatedOpenCode.agents[profileSlug].frontmatter.contains("mode: primary")) {
+      "automated OpenCode profile \(profileSlug) is not primary"
+    }
+    when (!automatedOpenCode.agents[profileSlug].frontmatter.contains(
+      opencodeMetadata.renderPermissionBlock(profile.policy.tools, profile.policy.allowedSkills, "block")
+    )) {
+      "automated OpenCode profile \(profileSlug) does not derive permissions from canonical policy"
+    }
+  }
+  for (workflowSlug, workflowUnit in automated.workflows) {
+    when (!automatedOpenCode.commands[workflowSlug].frontmatter.contains("agent: \"\(automated.executionProfiles[workflowUnit.executionProfile].title)\"")) {
+      "automated OpenCode workflow \(workflowSlug) does not bind its canonical profile agent"
+    }
+    when (!automatedOpenCode.commands[workflowSlug].frontmatter.contains("subtask: false")) {
+      "automated OpenCode workflow \(workflowSlug) can fork from the primary conversation"
+    }
+    when (!automatedOpenCode.commands[workflowSlug].frontmatter.contains(expectedSkillMetadata(workflowUnit.entrySkill, workflowUnit.requiredSkills))) {
+      "automated OpenCode workflow \(workflowSlug) does not derive its canonical skill chain"
+    }
+    when (!automatedOpenCode.commands[workflowSlug].frontmatter.contains(opencodeMetadata.renderPermissionBlock(
+      automated.effectiveWorkflowPolicies[workflowSlug],
+      workflowUnit.requiredSkills,
+      "block"
+    ))) {
+      "automated OpenCode workflow \(workflowSlug) does not derive effective permissions"
+    }
+    when (automatedOpenCode.commands[workflowSlug].body != common.renderBody(workflowUnit.body)) {
+      "automated OpenCode workflow \(workflowSlug) is not a thin canonical workflow body"
+    }
+  }
+  when (!manualOpenCode.commands["next-task"].frontmatter.contains("bash: allow")) {
+    "manual next-task lost allowed process execution"
+  }
+  when (!manualOpenCode.commands["commit"].frontmatter.contains("bash: ask")) {
+    "manual commit does not preserve vcs.commit approval"
+  }
+  when (!automatedOpenCode.commands["change-to-plan-interactive"].frontmatter.contains("bash: block")) {
+    "automated interactive planning workflow can execute processes"
+  }
+}
+
+local function claudeCompositionFindings(
+  expectedProfile: common.ExecutionProfile,
+  renderedBody: String
+): Listing<String> = new {
+  when (!renderedBody.contains(common.profileCompositionMarker(expectedProfile.slug))) {
+    "missing or wrong composed profile marker"
+  }
+  when (!renderedBody.contains(expectedProfile.policy.body.preconditions)) {
+    "missing profile preconditions"
+  }
+  when (!renderedBody.contains(expectedProfile.policy.body.guardrails)) {
+    "missing profile guardrails"
+  }
+  when (!renderedBody.contains(expectedProfile.policy.body.failureHandling)) {
+    "missing profile failure handling"
+  }
+}
+
+local claudeNextTask = manual.workflows["next-task"]
+local claudeCodeProfile = manual.executionProfiles["shared-context-code"]
+local claudePlanProfile = manual.executionProfiles["shared-context-plan"]
+local claudeValidComposedBody = common.renderBody(common.composeProfile(claudeCodeProfile, claudeNextTask))
+local claudeMissingMarkerBody = common.renderBody(claudeNextTask.body)
+local claudeWrongMarkerBody = common.renderBody(common.composeProfile(claudePlanProfile, claudeNextTask))
+local claudeMissingPolicyBody = "\(common.profileCompositionMarker(claudeCodeProfile.slug))\n\(common.renderBody(claudeNextTask.body))"
+
+claudeCompositionProblems: Listing<String>(isEmpty) = new {
+  when (manualClaude.agents.length != manual.executionProfiles.length) {
+    "Claude native profile projection count differs from the canonical profile count"
+  }
+  for (profileSlug, profile in manual.executionProfiles) {
+    when (manualClaude.agents.getOrNull(profileSlug) == null) {
+      "Claude native profile \(profileSlug) is missing"
+    }
+    when (manualClaude.agents[profileSlug].body != common.renderBody(common.nativeAgentBody(profile))) {
+      "Claude native profile \(profileSlug) does not render canonical native policy"
+    }
+    when (!manualClaude.agents[profileSlug].frontmatter.contains(
+      "tools: \(claudeMetadata.renderAgentTools(profile.policy.tools))"
+    )) {
+      "Claude native profile \(profileSlug) tools do not derive from its capability ceiling"
+    }
+  }
+  for (workflowSlug, workflowUnit in manual.workflows) {
+    when (manualClaude.commands[workflowSlug].body != common.renderBody(common.composeProfile(
+      manual.executionProfiles[workflowUnit.executionProfile],
+      workflowUnit
+    ))) {
+      "Claude workflow \(workflowSlug) is not the canonical composed body"
+    }
+    for (finding in claudeCompositionFindings(
+      manual.executionProfiles[workflowUnit.executionProfile],
+      manualClaude.commands[workflowSlug].body
+    )) {
+      "Claude workflow \(workflowSlug): \(finding)"
+    }
+    when (!manualClaude.commands[workflowSlug].frontmatter.contains(
+      "allowed-tools: \(claudeMetadata.renderCommandAllowedTools(manual.effectiveWorkflowPolicies[workflowSlug]))"
+    )) {
+      "Claude workflow \(workflowSlug) allowed tools do not equal translated effective capabilities"
+    }
+    when (manualClaude.commands[workflowSlug].frontmatter.contains("context: fork")
+      || manualClaude.commands[workflowSlug].body.contains("context: fork")) {
+      "Claude workflow \(workflowSlug) forks from the main conversation"
+    }
+    for (diagnostic in validator.validate(new validator.UnitInput {
+      path = "fixtures/portable-profile/claude-\(workflowSlug).md"
+      profile = "manual"
+      target = "claude"
+      kind = "command"
+      slug = workflowSlug
+      frontmatter = manualClaude.commands[workflowSlug].frontmatter
+      body = manualClaude.commands[workflowSlug].body
+    })) {
+      "Claude workflow \(workflowSlug) failed structural validation: \(diagnostic.rule)"
+    }
+  }
+  for (capability in common.capabilityIds) {
+    when (claudeMetadata.capabilityTools.getOrNull(capability) == null
+      || claudeMetadata.capabilityTools[capability].isEmpty) {
+      "Claude translation is missing canonical capability \(capability)"
+    }
+  }
+  when (claudeMetadata.capabilityTools.keys.toList().sort() != common.capabilityIds.sort()) {
+    "Claude capability translation keys differ from the canonical vocabulary"
+  }
+  when (!claudeCompositionFindings(claudeCodeProfile, claudeValidComposedBody).isEmpty) {
+    "valid Claude composed fixture was rejected"
+  }
+  when (!claudeCompositionFindings(claudeCodeProfile, claudeMissingMarkerBody)
+    .contains("missing or wrong composed profile marker")) {
+    "missing-marker Claude fixture was not detected"
+  }
+  when (!claudeCompositionFindings(claudeCodeProfile, claudeWrongMarkerBody)
+    .contains("missing or wrong composed profile marker")) {
+    "wrong-marker Claude fixture was not detected"
+  }
+  when (!claudeCompositionFindings(claudeCodeProfile, claudeMissingPolicyBody)
+    .contains("missing profile guardrails")) {
+    "missing-policy-fragment Claude fixture was not detected"
   }
 }
 
