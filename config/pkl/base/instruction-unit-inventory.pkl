@@ -38,11 +38,11 @@ manualTargets: List<String> = List("opencode", "claude", "pi")
 automatedTargets: List<String> = List("opencode")
 
 // Count locals reference the imports unambiguously (avoids the `counts.manual` self-reference trap).
-local manualAgentCount = manual.agents.length
-local manualCommandCount = manual.commands.length
+local manualAgentCount = manual.executionProfiles.length
+local manualCommandCount = manual.workflows.length
 local manualSkillCount = manual.skills.length
-local automatedAgentCount = automated.agents.length
-local automatedCommandCount = automated.commands.length
+local automatedAgentCount = automated.executionProfiles.length
+local automatedCommandCount = automated.workflows.length
 local automatedSkillCount = automated.skills.length
 
 /// Generated + tracked root-mirror destinations for one unit.
@@ -74,7 +74,7 @@ class InventoryUnit {
 
 /// Manual-profile inventory keyed by unit id (2 agents, 5 commands, 8 skills).
 manualUnits: Mapping<String, InventoryUnit> = new {
-  for (_, unit in manual.agents) {
+  for (_, unit in manual.executionProfiles) {
     [unit.id] = new InventoryUnit {
       id = unit.id
       kind = "agent"
@@ -95,7 +95,7 @@ manualUnits: Mapping<String, InventoryUnit> = new {
       }
     }
   }
-  for (_, unit in manual.commands) {
+  for (_, unit in manual.workflows) {
     [unit.id] = new InventoryUnit {
       id = unit.id
       kind = "command"
@@ -141,7 +141,7 @@ manualUnits: Mapping<String, InventoryUnit> = new {
 
 /// Automated-profile inventory keyed by unit id (2 agents, 6 commands, 9 skills; OpenCode only).
 automatedUnits: Mapping<String, InventoryUnit> = new {
-  for (_, unit in automated.agents) {
+  for (_, unit in automated.executionProfiles) {
     [unit.id] = new InventoryUnit {
       id = unit.id
       kind = "agent"
@@ -158,7 +158,7 @@ automatedUnits: Mapping<String, InventoryUnit> = new {
       }
     }
   }
-  for (_, unit in automated.commands) {
+  for (_, unit in automated.workflows) {
     [unit.id] = new InventoryUnit {
       id = unit.id
       kind = "command"

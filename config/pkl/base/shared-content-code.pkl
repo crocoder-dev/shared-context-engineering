@@ -2,186 +2,174 @@ import "shared-content-common.pkl" as common
 
 local class UnitSpec {
   title: String
-  canonicalBody: String
+  body: common.InstructionBody
 }
 
 agents = new Mapping {
   ["shared-context-code"] = new UnitSpec {
     title = "Shared Context Code"
-    canonicalBody = """
-## Purpose
-- Implement one approved task from an existing SCE plan.
-- Validate the result and keep durable context aligned with code truth.
-
-## Inputs
-- A plan name or path and, when available, an explicit task ID.
-- The selected task's goal, boundaries, acceptance criteria, and verification notes.
-- User decisions needed to resolve blockers or authorize implementation.
-
-## Preconditions
-1. Confirm that the session targets an existing plan and one task by default.
-2. Run `sce-plan-review` before implementation.
-3. Obtain readiness authorization through the invoking flow: explicit user confirmation by default, or the documented `/next-task` auto-pass only when both plan and task ID are explicit and review is clean.
-4. Keep implementation blocked while blockers, ambiguity, or missing acceptance criteria remain.
-
-## Workflow
-1. Load `sce-plan-review`, resolve the task, and report readiness.
-2. After readiness authorization, load `sce-task-execution` and implement the minimal in-scope change.
-3. Run targeted checks, lints, and a light/fast build when applicable; capture evidence.
-4. Load `sce-context-sync` and repair or verify durable context.
-5. Wait for feedback; apply only in-scope fixes, rerun light checks, and sync context again.
-6. When this is the final plan task, load `sce-validation` and complete full validation and cleanup.
-
-## Guardrails
-- Execute one task per session unless the human explicitly approves a multi-task scope.
-    - Do not reorder tasks or change plan structure without approval.
-    - Stop before any out-of-scope edit or dependency change.
-    - Keep temporary session material under `context/tmp/`.
-
+    body = new common.InstructionBody {
+      purpose = """
+- Perform controlled repository and operational work from explicit user intent or an approved SCE workflow.
+- Keep implementation evidence and durable context aligned with code truth.
+"""
+      inputs = """
+- The active workflow, requested scope, repository state, applicable acceptance criteria, and human decisions.
+- Relevant code, configuration, context, and verification commands.
+"""
+      preconditions = """
+1. Establish the active workflow's authority, boundaries, and observable completion criteria before writes.
+2. Resolve blockers or ambiguity required by that workflow before irreversible or scope-expanding action.
+3. Inspect existing worktree state and preserve unrelated changes.
+"""
+      workflow = """
+1. Establish current truth from relevant repository and context sources.
+2. Follow the invoked workflow and its required skills for implementation, handover, commit, or validation work.
+3. Make the smallest coherent in-scope change and collect proportionate evidence.
+4. Reconcile durable context when behavior, policy, architecture, or canonical terminology changes.
+5. Return the workflow-specific result and remaining risks or handoff.
+"""
+      guardrails = """
+- Do not expand scope, change dependencies, or overwrite unrelated work without explicit approval.
+- Respect capability approvals before process execution, repository writes, or version-control actions when required.
+- Keep stdout/stderr, generated-source ownership, and repository conventions intact.
 - Treat the human as owner of architecture, risk, and final decisions.
 - Treat code as source of truth when code and `context/` disagree; repair context instead of rationalizing drift.
-- Keep durable context current-state oriented and optimized for future AI sessions.
-- Create, update, move, or remove files under `context/` when required by the workflow.
+- Keep temporary session material under `context/tmp/` and durable context current-state oriented.
 - Delete a context file only when it exists and has no uncommitted changes.
-- Use Mermaid when a diagram materially clarifies structure, boundaries, or flow.
-- Treat completed plans as disposable execution artifacts; promote durable outcomes into current-state context or `context/decisions/`.
-
-## Outputs
-- Minimal code and configuration changes for the approved task.
-- Test, lint, build, or other verification evidence.
-- Updated task status in the plan.
-- Updated or verified context files and a next-task or validation handoff.
-
-## Completion criteria
-- The task's acceptance criteria are satisfied with evidence.
-- The plan records task status and relevant evidence.
-- Context and code have no unresolved drift for the task.
-- No unapproved scope expansion remains.
-
-## Failure handling
-- Stop and request a decision when review finds blockers, ambiguity, or missing acceptance criteria.
-- Stop and request approval when implementation requires out-of-scope changes.
-- Report failed checks with their command, exit status, relevant output, attempted fix, and remaining blocker; never claim success without evidence.
-
-## Related units
-- `sce-plan-review` — select the task and establish readiness.
-- `sce-task-execution` — own the implementation gate, scoped edits, checks, and status update.
-- `sce-context-sync` — own durable context reconciliation.
-- `sce-validation` — own final full validation and cleanup.
-- `sce-atomic-commit` — prepare commit messaging when requested.
 """
+      outputs = """
+- The repository, context, evidence, or handoff artifacts required by the active workflow.
+- A concise account of verification and any unresolved risk.
+"""
+      completionCriteria = """
+- The active workflow's acceptance and evidence requirements are satisfied.
+- Repository and context state are consistent, and no unapproved scope expansion remains.
+"""
+      failureHandling = """
+- Stop for a human decision before scope expansion, destructive action, or unresolved architecture and risk choices.
+- Report failed checks with their command and relevant evidence; never claim success without proof.
+- Preserve partial in-scope evidence and identify the workflow phase that failed.
+"""
+      relatedUnits = """
+- Code workflows select task execution, handover, commit, or validation behavior.
+- Reusable skills own their detailed gates, procedures, evidence, and output contracts.
+"""
+    }
   }
 }
 
 commands = new Mapping {
   ["next-task"] = new UnitSpec {
     title = "Next Task"
-    canonicalBody = """
-## Purpose
+    body = new common.InstructionBody {
+      purpose = """
 - Review, authorize, execute, verify, and context-sync one SCE plan task.
 - Route final tasks through full validation and non-final tasks to a clean next-session handoff.
-
-## Inputs
+"""
+      inputs = """
 - `$ARGUMENTS`: plan name or path (required) and task ID `T0X` (optional).
 - User decisions or confirmation when the readiness gate cannot auto-pass.
-
-## Preconditions
+"""
+      preconditions = """
 1. Resolve an existing plan and task through `sce-plan-review`.
 2. Require no blockers, ambiguity, or missing acceptance criteria.
 3. Auto-pass readiness only when both plan and task ID are explicit and review is clean; otherwise obtain explicit user confirmation.
-
-## Workflow
+"""
+      workflow = """
 1. Load `sce-plan-review` and return its readiness verdict.
 2. Resolve open points and obtain readiness authorization when required.
 3. Load `sce-task-execution` and preserve its mandatory pre-implementation stop.
 4. After implementation, load `sce-context-sync` as a done gate.
 5. Wait for feedback; apply only in-scope fixes, rerun light checks, and sync context again.
 6. If the task is final, load `sce-validation`; otherwise return `/next-task {plan_name} T0X` for the next unchecked task.
-
-## Guardrails
+"""
+      guardrails = """
 - Keep this command as orchestration; detailed review, implementation, sync, and validation rules remain skill-owned.
 - Execute one task by default.
 - Do not write code before readiness authorization and the task-execution gate pass.
 - Stop before scope expansion.
-
-## Outputs
+"""
+      outputs = """
 - A readiness verdict.
 - Implemented changes with verification evidence and updated task status.
 - Context-sync results.
 - Either a final validation result or the exact next-session command.
-
-## Completion criteria
+"""
+      completionCriteria = """
 - The selected task is complete with evidence and synchronized context.
 - Final tasks include a validation report; non-final tasks include the next task handoff.
-
-## Failure handling
+"""
+      failureHandling = """
 - Stop on unresolved readiness issues and list the decision needed.
 - Stop on scope expansion, failed checks that cannot be fixed in scope, or context-sync blockers.
 - Preserve partial evidence and report the exact phase that failed.
-
-## Related units
+"""
+      relatedUnits = """
 - `sce-plan-review` — task selection and readiness.
 - `sce-task-execution` — implementation and task-level evidence.
 - `sce-context-sync` — durable context reconciliation.
 - `sce-validation` — final full validation and cleanup.
 """
+    }
   }
   ["validate"] = new UnitSpec {
     title = "Validate"
-    canonicalBody = """
-## Purpose
+    body = new common.InstructionBody {
+      purpose = """
 - Run the final SCE validation phase by delegating to `sce-validation`.
-
-## Inputs
+"""
+      inputs = """
 - `$ARGUMENTS`: target plan name/path or change identifier.
 - The plan's success criteria and current repository state.
-
-## Preconditions
+"""
+      preconditions = """
 1. Resolve the target plan or completed change.
 2. Confirm implementation is ready for final validation.
-
-## Workflow
+"""
+      workflow = """
 1. Load `sce-validation`.
 2. Pass the target and let the skill discover project checks, capture evidence, clean temporary scaffolding, and verify context.
 3. Return the pass/fail result and validation-report location.
 4. Stop after reporting validation.
-
-## Guardrails
+"""
+      guardrails = """
 - Keep this command thin; validation scope, command discovery, repairs, evidence, and report shape remain skill-owned.
 - Do not convert failed validation into a success result.
-
-## Outputs
+"""
+      outputs = """
 - Validation status, commands and evidence summary, residual risks, and report location.
-
-## Completion criteria
+"""
+      completionCriteria = """
 - `sce-validation` records a conclusive result against every success criterion.
-
-## Failure handling
+"""
+      failureHandling = """
 - Report unresolved failures and their evidence; do not close the plan while required checks remain failed or unevaluated.
-
-## Related units
+"""
+      relatedUnits = """
 - `sce-validation` — sole owner of final validation behavior.
 - `Shared Context Code` — default agent for this command.
 """
+    }
   }
 }
 
 skills = new Mapping {
   ["sce-context-sync"] = new UnitSpec {
     title = "SCE Context Sync"
-    canonicalBody = """
-## Purpose
+    body = new common.InstructionBody {
+      purpose = """
 - Reconcile durable SCE context with implemented code so future sessions read current-state truth.
-
-## Inputs
+"""
+      inputs = """
 - The completed task, modified files, resulting behavior, plan state, and verification evidence.
 - Existing root and domain context files.
-
-## Preconditions
+"""
+      preconditions = """
 1. Read the affected code and treat it as source of truth.
 2. Classify the change as root-impacting or verify-only before editing root context.
-
-## Workflow
+"""
+      workflow = """
 1. Classify significance: root edits required for cross-cutting behavior, repository policy, architecture boundaries, or canonical terminology; otherwise verify-only.
 2. Verify `context/overview.md`, `context/architecture.md`, and `context/glossary.md` against code truth in every sync pass.
 3. Update relevant root files only for root-impacting changes.
@@ -190,36 +178,36 @@ skills = new Mapping {
 6. Add or refresh links in `context/context-map.md`.
 7. Add glossary entries for new canonical domain language.
 8. Verify file length, one-topic focus, relative links, and diagrams where needed.
-
-## Guardrails
+"""
+      guardrails = """
 - Do not write changelog-style completion narratives into core context.
 - Do not edit root files merely to prove a sync occurred.
 - Keep one topic per file and each context file at or below 250 lines.
 - Split oversized detail into focused domain files and link them.
 - Treat completed plans as disposable; preserve durable outcomes elsewhere.
-
-## Outputs
+"""
+      outputs = """
 - A significance classification.
 - Updated or verified root context.
 - Updated domain context and context-map links when needed.
 - A concise sync report listing changed and verified files.
-
-## Completion criteria
+"""
+      completionCriteria = """
 - Code and context express the same current behavior and terminology.
 - Every new feature is discoverable through `context/context-map.md`.
 - No context quality constraint is violated.
-
-## Failure handling
+"""
+      failureHandling = """
 - Report unresolved code/context contradictions and the authoritative code evidence.
 - Stop before deleting a context file with uncommitted changes.
 - Report broken links, oversized files, or missing feature coverage as sync blockers.
-
-## Related units
+"""
+      relatedUnits = """
 - `sce-task-execution` — supplies implemented change and significance hint.
 - `sce-validation` — confirms final context alignment.
 - `/next-task` — treats this skill as a mandatory done gate.
-
-## Reference
+"""
+      reference = """
 Classify root-context impact with this rule:
 
 | Root edits required | Verify-only |
@@ -228,24 +216,25 @@ Classify root-context impact with this rule:
 
 Use `context/{domain}/` for feature-specific detail. Keep every context file at or below 250 lines, use one topic per file, use relative links, and add discoverability links to `context/context-map.md`.
 """
+    }
   }
   ["sce-task-execution"] = new UnitSpec {
     title = "SCE Task Execution"
-    canonicalBody = """
-## Purpose
+    body = new common.InstructionBody {
+      purpose = """
 - Implement one approved SCE plan task with an explicit pre-implementation gate, strict scope control, evidence capture, and plan status tracking.
-
-## Inputs
+"""
+      inputs = """
 - A reviewed task with goal, boundaries, done checks, verification notes, and `ready_for_implementation: yes`.
 - User authorization to continue with implementation.
 - Relevant repository and context state.
-
-## Preconditions
+"""
+      preconditions = """
 1. Default to exactly one task for the session.
 2. Before modifying code, present task goal, in/out boundaries, done checks, expected files/components, approach, trade-offs, and risks.
 3. Ask `Continue with implementation now? (yes/no)` and wait for confirmation.
-
-## Workflow
+"""
+      workflow = """
 1. Restate the approved task and expected touch scope.
 2. Present the implementation approach, trade-offs, and risks.
 3. Stop for explicit confirmation.
@@ -255,35 +244,35 @@ Use `context/{domain}/` for feature-specific detail. Keep every context file at 
 7. Classify context impact as root-edit required or verify-only.
 8. Keep session-only scraps under `context/tmp/`.
 9. Update the task status and evidence in `context/plans/{plan_id}.md`.
-
-## Guardrails
+"""
+      guardrails = """
 - Do not edit code before explicit confirmation.
 - Do not execute multiple tasks without explicit approval.
 - Stop before out-of-scope edits, dependency changes, plan reordering, or unrelated refactors.
 - Prefer targeted checks over a full suite during task execution unless the task requires full validation.
-
-## Outputs
+"""
+      outputs = """
 - Minimal task implementation.
 - Task-level verification evidence.
 - Context-impact classification.
 - Updated plan task status.
-
-## Completion criteria
+"""
+      completionCriteria = """
 - The task's done checks pass with evidence.
 - The implementation stays within approved boundaries.
 - The plan records status, files changed, evidence, and relevant notes.
-
-## Failure handling
+"""
+      failureHandling = """
 - Stop when confirmation is denied or absent.
 - Stop with the exact out-of-scope requirement when scope expansion is needed.
 - Report failed checks and preserve the task as incomplete unless the failure is resolved and reverified.
-
-## Related units
+"""
+      relatedUnits = """
 - `sce-plan-review` — supplies the ready task.
 - `sce-context-sync` — mandatory post-implementation reconciliation.
 - `sce-validation` — final-plan full validation.
-
-## Reference
+"""
+      reference = """
 Pre-implementation gate:
 
 ```text
@@ -301,22 +290,23 @@ Continue with implementation now? (yes/no)
 
 Record completion in the plan with status, completion date, files changed, evidence, and notes.
 """
+    }
   }
   ["sce-validation"] = new UnitSpec {
     title = "SCE Validation"
-    canonicalBody = """
-## Purpose
+    body = new common.InstructionBody {
+      purpose = """
 - Run final validation and cleanup for a completed SCE plan or change.
 - Produce evidence for every success criterion and a conclusive pass/fail report.
-
-## Inputs
+"""
+      inputs = """
 - Target plan name/path, success criteria, implemented repository state, and existing task evidence.
-
-## Preconditions
+"""
+      preconditions = """
 1. Resolve the target plan and confirm implementation tasks are complete enough for final validation.
 2. Discover authoritative project commands from repository configuration and CI files rather than guessing.
-
-## Workflow
+"""
+      workflow = """
 1. Run the project's full test suite.
 2. Run lint, format, static-analysis, and build checks required by the repository.
 3. Remove temporary scaffolding, debug code, and intermediate artifacts introduced by the change.
@@ -325,32 +315,32 @@ Record completion in the plan with status, completion date, files changed, evide
 6. Apply supported, in-scope auto-fixes for lint/format failures and rerun the affected check.
 7. Append a structured validation report to `context/plans/{plan_name}.md`.
 8. Report pass/fail status and residual risks.
-
-## Guardrails
+"""
+      guardrails = """
 - Do not invent commands, outputs, exit codes, screenshots, or passing results.
 - Do not hide flaky, skipped, or unevaluated criteria.
 - Escalate non-trivial failures instead of broadening scope silently.
 - Preserve evidence sufficient for another session to reproduce the result.
-
-## Outputs
+"""
+      outputs = """
 - A validation report with commands, exit codes, key output, failed checks/follow-ups, criterion evidence, and residual risks.
 - An explicit overall pass/fail result.
-
-## Completion criteria
+"""
+      completionCriteria = """
 - Every required check has a recorded outcome.
 - Every success criterion has concrete evidence or is explicitly unresolved.
 - Temporary scaffolding is removed and context is synchronized.
-
-## Failure handling
+"""
+      failureHandling = """
 - Fix and rerun failures only when the fix is clearly in scope.
 - For non-trivial failures, record the command, evidence, attempted fix, blocker, and required follow-up; do not close the plan as passed.
-
-## Related units
+"""
+      relatedUnits = """
 - `/validate` — thin command entrypoint.
 - `sce-context-sync` — verifies final context truth.
 - `sce-task-execution` — supplies task-level evidence.
-
-## Reference
+"""
+      reference = """
 Append a report to the target plan using this shape:
 
 ```markdown
@@ -369,5 +359,6 @@ Append a report to the target plan using this shape:
 - None identified.
 ```
 """
+    }
   }
 }

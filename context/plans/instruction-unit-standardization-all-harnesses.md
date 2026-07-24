@@ -221,3 +221,8 @@ PASS for the approved implementation scope, with SC13 retained as an explicit us
 
 - The contributor workflow requested by SC13 remains absent until the accepted human follow-up is completed.
 - `nix flake check` validated the current `x86_64-linux` system and reported other flake systems as incompatible/omitted, consistent with normal host-scoped execution.
+
+## Follow-up
+
+The cross-harness agent projection established here is refined by
+`context/plans/portable-execution-profiles.md`.

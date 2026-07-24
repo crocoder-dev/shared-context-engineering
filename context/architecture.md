@@ -12,12 +12,12 @@ For authored config content, generation is standardized around one canonical Pkl
 
 Current scaffold location for canonical shared content primitives:
 
-- `config/pkl/base/shared-content.pkl` (manual profile aggregation surface)
-- `config/pkl/base/shared-content-common.pkl` (shared primitives)
+- `config/pkl/base/shared-content.pkl` (manual aggregation surface for typed execution profiles, workflows, and skills, including relationship checks and effective workflow policies)
+- `config/pkl/base/shared-content-common.pkl` (canonical typed `InstructionBody`, portable `ToolPolicy`/`ProfilePolicy` and logical-unit schemas, section-aware native/composed profile-body helpers, the sole production `renderBody` Markdown section serializer, and shared text primitives)
 - `config/pkl/base/shared-content-plan.pkl` (plan-focused content)
 - `config/pkl/base/shared-content-code.pkl` (code-focused content)
 - `config/pkl/base/shared-content-commit.pkl` (commit-focused content)
-- `config/pkl/base/shared-content-automated.pkl` (automated profile aggregation surface)
+- `config/pkl/base/shared-content-automated.pkl` (automated aggregation surface for typed execution profiles, workflows, and skills, including relationship checks and effective workflow policies)
 - `config/pkl/base/shared-content-automated-common.pkl`
 - `config/pkl/base/shared-content-automated-plan.pkl`
 - `config/pkl/base/shared-content-automated-code.pkl`
@@ -44,14 +44,14 @@ Current target renderer helper modules:
 - `config-lib-bun-tests` executes from `config/lib/` while using a repo-shaped copied source subset that also includes `cli/src/services/structured_patch/fixtures` for Claude agent-trace golden fixture coverage (fully Rust-owned; the Claude TypeScript Bun test was removed in T07).
 - `config/pkl/renderers/instruction-unit-validator.pkl` owns the Pkl structural and cross-reference validator for rendered OpenCode, Claude, and Pi instruction models; `instruction-unit-validator-check.pkl` owns the evaluation gate and focused fixtures. Validation applies target-aware frontmatter rules, the canonical section contract, skill identity checks, and OpenCode command/agent skill-reference checks with deterministic diagnostics across 62 rendered-model units and 107 committed generated files (62 config outputs plus 45 tracked manual root mirrors). The root flake's `pkl-parity` check evaluates the validator before generated-output comparison.
 
-The scaffold provides stable canonical content-unit identifiers and reusable target-agnostic text primitives for all planned authored generated classes (agents, commands, skills, shared runtime assets, OpenCode plugin entrypoints, the Pi extension entrypoint, generated OpenCode package manifests, and generated Claude project settings).
+The manual and automated canonical models identify logical units as execution profiles, workflows, and skills. Profiles own broad invocation policy, skill allowlists, and harness-neutral capability ceilings; workflows bind a profile and entry/required skill chain while narrowing that ceiling; skills remain profile-free procedures. The automated model preserves its deterministic gates and additional interactive planning units while remaining OpenCode-only. Target renderers currently adapt profiles/workflows back to existing agent/command carrier collections and preserve generated paths/frontmatter. Native agent carriers use the shared profile-body constructor; composed workflow adoption remains target-task owned.
 
 Renderer modules apply target-specific metadata/frontmatter rules while reusing canonical content bodies:
 
 - OpenCode renderer emits frontmatter with `agent`/`permission`/`compatibility: opencode` conventions; targeted SCE commands also emit machine-readable `entry-skill` and ordered `skills` metadata when the renderer explicitly defines that mapping.
 - Claude renderer emits frontmatter with `allowed-tools`/`model`/`compatibility: claude` conventions.
 - Pi renderer emits prompt-template frontmatter with `description`/`argument-hint` conventions: commands render to `config/.pi/prompts/{slug}.md`, SCE agents render as agent-role prompt templates at `config/.pi/prompts/agent-{slug}.md` with the canonical agent body beginning at `## Purpose` and no body preamble, and skills render to Agent Skills-format `config/.pi/skills/{slug}/SKILL.md`. Pi has no native sub-agent format and no settings/plugin manifest; runtime integration is provided by a project-local Pi extension emitted verbatim from `config/lib/pi-plugin/sce-pi-extension.ts` to `config/.pi/extensions/sce/index.ts` (auto-discovered by Pi, no registration manifest; see `context/sce/pi-extension-runtime.md`).
-- Shared renderer contracts (`RenderedTargetDocument`, command descriptions) live in `config/pkl/renderers/common.pkl`.
+- Shared renderer contracts (`RenderedTargetDocument`, command descriptions, `nativeAgentBody`/`composeProfile` adapters, and the target-facing `renderBody` adapter) live in `config/pkl/renderers/common.pkl`; all target renderers serialize typed canonical bodies through that boundary.
 - The canonical OpenCode plugin-registration source for generated SCE plugins lives in `config/pkl/base/opencode.pkl`; `config/pkl/renderers/common.pkl` re-exports the shared plugin list and JSON-ready paths for OpenCode renderers, and the current generated registration scope is limited to SCE-managed plugins emitted by this repo (`sce-bash-policy` and `sce-agent-trace`).
 - Target-specific metadata tables, including skill frontmatter descriptions, are isolated in `config/pkl/renderers/opencode-metadata.pkl`, `config/pkl/renderers/opencode-automated-metadata.pkl`, `config/pkl/renderers/claude-metadata.pkl`, and `config/pkl/renderers/pi-metadata.pkl` (Pi agent descriptions, argument hints, skill references, and command argument hints; Pi skill/command descriptions reuse the shared tables in `common.pkl`).
 - Metadata key coverage is enforced by `config/pkl/renderers/metadata-coverage-check.pkl`, which resolves all required lookup keys for all targets (OpenCode manual/automated, Claude, Pi) and fails evaluation on missing entries.
@@ -192,10 +192,10 @@ This phase establishes compile-safe extension seams with a dependency baseline (
 Shared Context Plan and Shared Context Code remain separate architectural roles.
 
 - Shared Context Plan owns planning and approval-readiness in `context/plans/` and does not execute implementation edits.
-- Shared Context Code owns exactly one approved task execution, validation, and mandatory `context/` synchronization.
+- Shared Context Code owns broad controlled repository operations, evidence, and context alignment; `next-task` and `sce-task-execution` own the one-approved-task constraint for task execution.
 - `/change-to-plan` and `/next-task` remain separate command entrypoints aligned to those roles.
 - Reuse is handled through shared canonical guidance blocks and skill-owned phase contracts, not by collapsing both roles into one agent.
-- Standardized agent, command, and skill bodies are authored directly in the grouped manual and automated `plan`, `code`, and `commit` Pkl modules; the aggregation surfaces `config/pkl/base/shared-content.pkl` and `config/pkl/base/shared-content-automated.pkl` import those groups for downstream renderers. The legacy manual/automated `common` modules remain in the scaffold but are not currently interpolated into the standardized bodies.
+- Standardized bodies are authored as typed `InstructionBody` sections directly in the grouped manual and automated `plan`, `code`, and `commit` Pkl modules. Both aggregations convert those sources into `ExecutionProfile`, `WorkflowUnit`, and `SkillUnit`; the automated common module aliases the canonical shared types and helpers rather than owning a parallel schema. `shared-content-common.pkl` owns the body type, ordered `renderBody` serializer, seven-ID capability vocabulary, policy types/effective-policy helper, deterministic profile marker, and section-aware `nativeAgentBody`/`composeProfile` constructors. Required headings and optional `Reference`/`Examples` are emitted only after typed composition, never manipulated as Markdown strings.
 - `/next-task` is a thin orchestration wrapper: it owns gate sequencing, while phase-detail contracts stay canonical in `sce-plan-review`, `sce-task-execution`, and `sce-context-sync`.
 - `/change-to-plan` is a thin orchestration wrapper: it delegates clarification and plan-shape ownership to `sce-plan-authoring` (including one-task/one-atomic-commit task slicing) while retaining wrapper-level plan creation confirmation and `/next-task` handoff obligations.
 - `/commit` is a thin orchestration wrapper: manual generated commands retain staged-changes confirmation and proposal-only behavior, while the automated OpenCode command skips the staging-confirmation gate, generates exactly one commit message through `sce-atomic-commit`, and runs `git commit` for the staged diff; commit grammar and plan-aware body rules stay canonical in `sce-atomic-commit`.

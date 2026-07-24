@@ -3,118 +3,272 @@ import "shared-content-plan.pkl" as plan
 import "shared-content-code.pkl" as code
 import "shared-content-commit.pkl" as commit
 
-/// Shared aggregation surface for canonical authored content units.
+/// Shared aggregation surface for canonical manual execution profiles, workflows, and skills.
 
-agents = new Mapping {
-  ["shared-context-plan"] = new common.ContentUnit {
-    id = "agent.shared-context-plan"
-    kind = "agent"
+executionProfiles: Mapping<String, common.ExecutionProfile> = new {
+  ["shared-context-plan"] = new common.ExecutionProfile {
+    id = "execution-profile.shared-context-plan"
+    kind = "execution-profile"
     slug = "shared-context-plan"
     title = plan.agents["shared-context-plan"].title
-    canonicalBody = plan.agents["shared-context-plan"].canonicalBody
+    policy = new common.ProfilePolicy {
+      body = plan.agents["shared-context-plan"].body
+      allowedSkills = List(
+        "sce-bootstrap-context",
+        "sce-plan-authoring"
+      )
+      tools = new common.ToolPolicy {
+        allowedCapabilities = List(
+          "repository.read",
+          "repository.search",
+          "repository.write",
+          "process.execute",
+          "interaction.ask",
+          "skill.invoke"
+        )
+        approvalRequiredCapabilities = List("process.execute")
+      }
+    }
   }
-  ["shared-context-code"] = new common.ContentUnit {
-    id = "agent.shared-context-code"
-    kind = "agent"
+  ["shared-context-code"] = new common.ExecutionProfile {
+    id = "execution-profile.shared-context-code"
+    kind = "execution-profile"
     slug = "shared-context-code"
     title = code.agents["shared-context-code"].title
-    canonicalBody = code.agents["shared-context-code"].canonicalBody
+    policy = new common.ProfilePolicy {
+      body = code.agents["shared-context-code"].body
+      allowedSkills = List(
+        "sce-context-sync",
+        "sce-handover-writer",
+        "sce-plan-review",
+        "sce-task-execution",
+        "sce-atomic-commit",
+        "sce-validation"
+      )
+      tools = new common.ToolPolicy {
+        allowedCapabilities = common.capabilityIds
+        approvalRequiredCapabilities = List("vcs.commit")
+      }
+    }
   }
 }
 
-commands = new Mapping {
-  ["next-task"] = new common.ContentUnit {
-    id = "command.next-task"
-    kind = "command"
+workflows: Mapping<String, common.WorkflowUnit> = new {
+  ["next-task"] = new common.WorkflowUnit {
+    id = "workflow.next-task"
+    kind = "workflow"
     slug = "next-task"
     title = code.commands["next-task"].title
-    canonicalBody = code.commands["next-task"].canonicalBody
+    body = code.commands["next-task"].body
+    executionProfile = "shared-context-code"
+    entrySkill = "sce-plan-review"
+    requiredSkills = List(
+      "sce-plan-review",
+      "sce-task-execution",
+      "sce-context-sync",
+      "sce-validation"
+    )
+    tools = new common.ToolPolicy {
+      allowedCapabilities = List(
+        "repository.read",
+        "repository.search",
+        "repository.write",
+        "process.execute",
+        "interaction.ask",
+        "skill.invoke"
+      )
+    }
   }
-  ["change-to-plan"] = new common.ContentUnit {
-    id = "command.change-to-plan"
-    kind = "command"
+  ["change-to-plan"] = new common.WorkflowUnit {
+    id = "workflow.change-to-plan"
+    kind = "workflow"
     slug = "change-to-plan"
     title = plan.commands["change-to-plan"].title
-    canonicalBody = plan.commands["change-to-plan"].canonicalBody
+    body = plan.commands["change-to-plan"].body
+    executionProfile = "shared-context-plan"
+    entrySkill = "sce-plan-authoring"
+    requiredSkills = List("sce-plan-authoring")
+    tools = new common.ToolPolicy {
+      allowedCapabilities = List(
+        "repository.read",
+        "repository.search",
+        "repository.write",
+        "process.execute",
+        "interaction.ask",
+        "skill.invoke"
+      )
+    }
   }
-  ["handover"] = new common.ContentUnit {
-    id = "command.handover"
-    kind = "command"
+  ["handover"] = new common.WorkflowUnit {
+    id = "workflow.handover"
+    kind = "workflow"
     slug = "handover"
     title = plan.commands["handover"].title
-    canonicalBody = plan.commands["handover"].canonicalBody
+    body = plan.commands["handover"].body
+    executionProfile = "shared-context-code"
+    entrySkill = "sce-handover-writer"
+    requiredSkills = List("sce-handover-writer")
+    tools = new common.ToolPolicy {
+      allowedCapabilities = List(
+        "repository.read",
+        "repository.search",
+        "repository.write",
+        "interaction.ask",
+        "skill.invoke"
+      )
+    }
   }
-  ["commit"] = new common.ContentUnit {
-    id = "command.commit"
-    kind = "command"
+  ["commit"] = new common.WorkflowUnit {
+    id = "workflow.commit"
+    kind = "workflow"
     slug = "commit"
     title = commit.commands["commit"].title
-    canonicalBody = commit.commands["commit"].canonicalBody
+    body = commit.commands["commit"].body
+    executionProfile = "shared-context-code"
+    entrySkill = "sce-atomic-commit"
+    requiredSkills = List("sce-atomic-commit")
+    tools = new common.ToolPolicy {
+      allowedCapabilities = common.capabilityIds
+      approvalRequiredCapabilities = List("vcs.commit")
+    }
   }
-  ["validate"] = new common.ContentUnit {
-    id = "command.validate"
-    kind = "command"
+  ["validate"] = new common.WorkflowUnit {
+    id = "workflow.validate"
+    kind = "workflow"
     slug = "validate"
     title = code.commands["validate"].title
-    canonicalBody = code.commands["validate"].canonicalBody
+    body = code.commands["validate"].body
+    executionProfile = "shared-context-code"
+    entrySkill = "sce-validation"
+    requiredSkills = List("sce-validation")
+    tools = new common.ToolPolicy {
+      allowedCapabilities = List(
+        "repository.read",
+        "repository.search",
+        "repository.write",
+        "process.execute",
+        "interaction.ask",
+        "skill.invoke"
+      )
+    }
   }
 }
 
-skills = new Mapping {
-  ["sce-bootstrap-context"] = new common.ContentUnit {
+skills: Mapping<String, common.SkillUnit> = new {
+  ["sce-bootstrap-context"] = new common.SkillUnit {
     id = "skill.sce-bootstrap-context"
     kind = "skill"
     slug = "sce-bootstrap-context"
     title = plan.skills["sce-bootstrap-context"].title
-    canonicalBody = plan.skills["sce-bootstrap-context"].canonicalBody
+    body = plan.skills["sce-bootstrap-context"].body
   }
-  ["sce-context-sync"] = new common.ContentUnit {
+  ["sce-context-sync"] = new common.SkillUnit {
     id = "skill.sce-context-sync"
     kind = "skill"
     slug = "sce-context-sync"
     title = code.skills["sce-context-sync"].title
-    canonicalBody = code.skills["sce-context-sync"].canonicalBody
+    body = code.skills["sce-context-sync"].body
   }
-  ["sce-handover-writer"] = new common.ContentUnit {
+  ["sce-handover-writer"] = new common.SkillUnit {
     id = "skill.sce-handover-writer"
     kind = "skill"
     slug = "sce-handover-writer"
     title = plan.skills["sce-handover-writer"].title
-    canonicalBody = plan.skills["sce-handover-writer"].canonicalBody
+    body = plan.skills["sce-handover-writer"].body
   }
-  ["sce-plan-authoring"] = new common.ContentUnit {
+  ["sce-plan-authoring"] = new common.SkillUnit {
     id = "skill.sce-plan-authoring"
     kind = "skill"
     slug = "sce-plan-authoring"
     title = plan.skills["sce-plan-authoring"].title
-    canonicalBody = plan.skills["sce-plan-authoring"].canonicalBody
+    body = plan.skills["sce-plan-authoring"].body
   }
-  ["sce-plan-review"] = new common.ContentUnit {
+  ["sce-plan-review"] = new common.SkillUnit {
     id = "skill.sce-plan-review"
     kind = "skill"
     slug = "sce-plan-review"
     title = plan.skills["sce-plan-review"].title
-    canonicalBody = plan.skills["sce-plan-review"].canonicalBody
+    body = plan.skills["sce-plan-review"].body
   }
-  ["sce-task-execution"] = new common.ContentUnit {
+  ["sce-task-execution"] = new common.SkillUnit {
     id = "skill.sce-task-execution"
     kind = "skill"
     slug = "sce-task-execution"
     title = code.skills["sce-task-execution"].title
-    canonicalBody = code.skills["sce-task-execution"].canonicalBody
+    body = code.skills["sce-task-execution"].body
   }
-  ["sce-atomic-commit"] = new common.ContentUnit {
+  ["sce-atomic-commit"] = new common.SkillUnit {
     id = "skill.sce-atomic-commit"
     kind = "skill"
     slug = "sce-atomic-commit"
     title = commit.skills["sce-atomic-commit"].title
-    canonicalBody = commit.skills["sce-atomic-commit"].canonicalBody
+    body = commit.skills["sce-atomic-commit"].body
   }
-  ["sce-validation"] = new common.ContentUnit {
+  ["sce-validation"] = new common.SkillUnit {
     id = "skill.sce-validation"
     kind = "skill"
     slug = "sce-validation"
     title = code.skills["sce-validation"].title
-    canonicalBody = code.skills["sce-validation"].canonicalBody
+    body = code.skills["sce-validation"].body
+  }
+}
+
+profileReferenceProblems: Listing<String> = new {
+  for (workflowSlug, workflow in workflows) {
+    when (executionProfiles.getOrNull(workflow.executionProfile) == null) {
+      "workflow \(workflowSlug) references missing execution profile \(workflow.executionProfile)"
+    }
+  }
+}
+
+skillReferenceProblems: Listing<String> = new {
+  for (profileSlug, profile in executionProfiles) {
+    for (skillSlug in profile.policy.allowedSkills) {
+      when (skills.getOrNull(skillSlug) == null) {
+        "execution profile \(profileSlug) allows missing skill \(skillSlug)"
+      }
+    }
+  }
+  for (workflowSlug, workflow in workflows) {
+    when (skills.getOrNull(workflow.entrySkill) == null) {
+      "workflow \(workflowSlug) references missing entry skill \(workflow.entrySkill)"
+    }
+    when (!workflow.requiredSkills.contains(workflow.entrySkill)) {
+      "workflow \(workflowSlug) entry skill \(workflow.entrySkill) is absent from requiredSkills"
+    }
+    for (skillSlug in workflow.requiredSkills) {
+      when (skills.getOrNull(skillSlug) == null) {
+        "workflow \(workflowSlug) requires missing skill \(skillSlug)"
+      }
+      when (
+        executionProfiles.getOrNull(workflow.executionProfile) != null
+        && !executionProfiles[workflow.executionProfile].policy.allowedSkills.contains(skillSlug)
+      ) {
+        "workflow \(workflowSlug) requires skill \(skillSlug) outside profile \(workflow.executionProfile) allowlist"
+      }
+    }
+  }
+}
+
+capabilityNarrowingProblems: Listing<String> = new {
+  for (workflowSlug, workflow in workflows) {
+    when (executionProfiles.getOrNull(workflow.executionProfile) != null) {
+      for (capability in workflow.tools.allowedCapabilities) {
+        when (!executionProfiles[workflow.executionProfile].policy.tools.allowedCapabilities.contains(capability)) {
+          "workflow \(workflowSlug) capability \(capability) exceeds profile \(workflow.executionProfile) ceiling"
+        }
+      }
+    }
+  }
+}
+
+effectiveWorkflowPolicies: Mapping<String, common.ToolPolicy> = new {
+  for (workflowSlug, workflow in workflows) {
+    when (executionProfiles.getOrNull(workflow.executionProfile) != null) {
+      [workflowSlug] = common.effectiveToolPolicy(
+        executionProfiles[workflow.executionProfile].policy.tools,
+        workflow.tools
+      )
+    }
   }
 }

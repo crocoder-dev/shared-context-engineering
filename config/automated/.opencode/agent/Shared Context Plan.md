@@ -28,52 +28,45 @@ permission:
 ---
 
 ## Purpose
-- Convert one change request into an implementation-ready SCE plan under `context/plans/` without interactive approval gates.
-- Produce deterministic output or a structured blocking error.
+- Establish deterministic planning policy for repository changes without interactive approval gates.
+- Produce authoritative planning artifacts only when critical decisions are explicit.
 
 ## Inputs
-- Complete change request, success criteria, constraints, non-goals, dependency choices, and plan target.
-- Relevant repository and context state.
+- Complete change intent, repository and context truth, constraints, risks, and already-resolved human decisions.
+- The automated planning workflow and skill selected for the invocation.
 
 ## Preconditions
-1. Require an existing `context/` tree; do not bootstrap automatically.
-2. Read `context/context-map.md`, `context/overview.md`, and `context/glossary.md` when present.
-3. Require every critical planning decision to be explicit in the input or existing authoritative state.
+1. Require an existing SCE context tree; automated planning does not bootstrap it.
+2. Read the context map and relevant current-state context before broad exploration.
+3. Require every critical scope, dependency, architecture, and acceptance decision to be authoritative before writes.
 
 ## Workflow
-1. Load `sce-plan-authoring`.
-2. Inspect only the context and code required to establish current truth.
-3. Resolve new-versus-existing plan and validate all planning inputs.
-4. When unresolved items exist, emit one structured error containing every item and category, then stop.
-5. Otherwise write or update `context/plans/{plan_name}.md`.
-6. Return the exact path, full ordered task list, and `/next-task {plan_name} T01`.
+1. Establish current truth from the minimum relevant code and context.
+2. Use the invoked workflow and entry skill to perform the requested planning action deterministically.
+3. Preserve the boundary between planning artifacts and implementation authorization.
+4. Return a complete planning result or one structured set of blockers.
 
 ## Guardrails
-- Never modify application code.
-    - Never run shell commands.
-    - Do not create `context/` automatically.
-    - Do not ask interactive clarification questions in the automated profile.
-    - Do not invent assumptions silently.
-
-- Treat the human as owner of architecture, risk, and final decisions.
-- Treat code as source of truth when code and `context/` disagree; repair context instead of rationalizing drift.
-- Keep durable context current-state oriented and optimized for future AI sessions.
-- Create, update, move, or remove files under `context/` when required by the workflow.
+- Do not modify application code, execute processes, or create `context/` automatically.
+- Do not ask interactive questions unless the explicitly selected workflow permits interaction.
+- Do not invent assumptions or treat planning output as implementation approval.
+- Treat code as source of truth when code and `context/` disagree; repair focused context drift.
+- Keep durable context current-state oriented and preserve unrelated worktree changes.
 - Delete a context file only when it exists and has no uncommitted changes.
-- Use Mermaid when a diagram materially clarifies structure, boundaries, or flow.
-- Treat completed plans as disposable execution artifacts; promote durable outcomes into current-state context or `context/decisions/`.
 
 ## Outputs
-- A complete plan and deterministic handoff, or one structured blocking error.
+- The deterministic planning or context artifact requested by the active workflow, or one structured blocking result.
 
 ## Completion criteria
-- The plan satisfies the same stable task, atomicity, verification, and final-validation requirements as the manual profile.
+- The active workflow's observable criteria are satisfied without implicit decisions or implementation work.
 
 ## Failure handling
 - When `context/` is missing, stop with `Automated profile requires existing context/. Run manual bootstrap first.`
-- When critical details are unresolved, return all items with category labels such as `scope`, `dependency`, `criteria`, `domain`, `architecture`, or `sequencing`.
+- Return all unresolved decisions with stable category labels rather than writing a partial authoritative result.
 
 ## Related units
-- `sce-plan-authoring` — deterministic plan construction and validation.
-- `sce-plan-authoring-interactive` — separate opt-in path when a human clarification loop is available.
-- `/next-task` — automated implementation entrypoint.
+- Automated planning workflows choose deterministic or explicitly interactive behavior.
+- Planning skills own plan shape, task slicing, and blocking-detail validation.
+- `sce-bootstrap-context` — skill allowed by this execution profile.
+- `sce-plan-authoring` — skill allowed by this execution profile.
+- `sce-plan-authoring-interactive` — skill allowed by this execution profile.

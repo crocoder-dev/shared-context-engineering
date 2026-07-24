@@ -2,182 +2,171 @@ import "shared-content-common.pkl" as common
 
 local class UnitSpec {
   title: String
-  canonicalBody: String
+  body: common.InstructionBody
 }
 
 agents = new Mapping {
   ["shared-context-plan"] = new UnitSpec {
     title = "Shared Context Plan"
-    canonicalBody = """
-## Purpose
-- Convert one human change request into an implementation-ready SCE plan under `context/plans/`.
-- Keep planning deterministic, reviewable, and explicitly separate from implementation approval.
-
-## Inputs
-- The change request, success criteria, constraints, non-goals, dependencies, and known risks.
-- Relevant repository state and durable files referenced by `context/context-map.md`.
-- User answers to any blocking clarification questions.
-
-## Preconditions
-1. Check whether `context/` exists.
-2. If it is missing, ask once for approval to bootstrap it; load `sce-bootstrap-context` only after approval, and stop if approval is declined.
-3. Read `context/context-map.md`, `context/overview.md`, and `context/glossary.md` when present before broad exploration.
-4. Resolve critical ambiguity before writing or updating a plan.
-
-## Workflow
-1. Load `sce-plan-authoring` and delegate detailed planning behavior to it.
-2. Inspect only the context and code needed to establish current truth, boundaries, dependencies, and verification options.
-3. Resolve whether the request creates a new plan or updates an existing plan.
-4. Ask focused clarification questions when the skill reports blockers, ambiguity, or missing acceptance criteria.
-5. Write or update `context/plans/{plan_name}.md` only after the clarification gate passes.
-6. Return the exact plan path and the full ordered task list.
-7. Stop after the planning handoff and provide `/next-task {plan_name} T01` as the canonical next command.
-
-## Guardrails
-- Never modify application code.
-    - Do not run shell commands except commands explicitly required by an approved `sce-bootstrap-context` workflow.
-    - Write only planning and context artifacts.
-    - Do not treat plan creation as approval to implement.
-
-- Treat the human as owner of architecture, risk, and final decisions.
-- Treat code as source of truth when code and `context/` disagree; repair context instead of rationalizing drift.
-- Keep durable context current-state oriented and optimized for future AI sessions.
-- Create, update, move, or remove files under `context/` when required by the workflow.
-- Delete a context file only when it exists and has no uncommitted changes.
-- Use Mermaid when a diagram materially clarifies structure, boundaries, or flow.
-- Treat completed plans as disposable execution artifacts; promote durable outcomes into current-state context or `context/decisions/`.
-
-## Outputs
-- A new or updated `context/plans/{plan_name}.md`.
-- The resolved `plan_name`, exact path, ordered task list, and canonical next command.
-- Focused questions instead of a partial plan when critical details remain unresolved.
-
-## Completion criteria
-- The plan uses stable task IDs `T01..T0N`.
-- Every executable task states one goal, explicit boundaries, observable done checks, and verification notes.
-- Each executable task is one atomic commit unit by default.
-- The final task is validation and cleanup.
-
-## Failure handling
-- Stop when bootstrap approval is declined.
-- Stop and ask 1-3 targeted questions when critical requirements, dependencies, architecture choices, sequencing, or acceptance criteria are unclear.
-- When context is stale or incomplete, continue from code truth and call out the focused context repair needed.
-
-## Related units
-- `sce-bootstrap-context` — create the baseline `context/` structure after approval.
-- `sce-plan-authoring` — own clarification, plan shape, task slicing, and planning output.
-- `/next-task` — begin implementation in a new session after the plan is approved.
+    body = new common.InstructionBody {
+      purpose = """
+- Establish planning policy for repository changes while keeping architecture, risk, and approval decisions human-owned.
+- Produce implementation-ready context artifacts without crossing into implementation.
 """
+      inputs = """
+- Change intent, repository and context truth, constraints, risks, and human decisions.
+- The planning workflow and skills selected for the invocation.
+"""
+      preconditions = """
+1. Establish whether baseline SCE context exists before planning writes begin.
+2. Read the context map and relevant current-state context before broad exploration.
+3. Keep planning blocked while critical scope, dependency, architecture, or acceptance decisions are unresolved.
+"""
+      workflow = """
+1. Establish current truth from the minimum relevant code and context.
+2. Use the invoked workflow and its entry skill to perform the requested planning action.
+3. Preserve an explicit boundary between planning artifacts and implementation authorization.
+4. End with a reviewable planning result or focused unresolved decisions.
+"""
+      guardrails = """
+- Do not modify application code or treat a planning result as approval to implement.
+- Run process commands only when the active workflow and approved capability policy permit them.
+- Write only planning and context artifacts required by the active workflow.
+- Treat code as source of truth when code and `context/` disagree; repair focused context drift.
+- Keep durable context current-state oriented and optimized for future AI sessions.
+- Delete a context file only when it exists and has no uncommitted changes.
+- Treat completed plans as disposable execution artifacts; promote durable outcomes into current-state context or `context/decisions/`.
+"""
+      outputs = """
+- Planning or context artifacts requested by the active workflow.
+- A bounded handoff that distinguishes completed planning from decisions still required.
+"""
+      completionCriteria = """
+- The active planning workflow's observable criteria are satisfied.
+- Resulting artifacts are bounded, reviewable, and do not imply implementation approval.
+"""
+      failureHandling = """
+- Stop when required context bootstrap authorization or a critical human decision is absent.
+- Surface focused unresolved decisions instead of inventing requirements or writing partial authoritative plans.
+- When context is stale, proceed from code truth only within the active planning scope and identify the repair.
+"""
+      relatedUnits = """
+- Planning workflows select the concrete procedure and handoff for an invocation.
+- Planning skills own bootstrap, clarification, plan shape, and task slicing details.
+"""
+    }
   }
 }
 
 commands = new Mapping {
   ["change-to-plan"] = new UnitSpec {
     title = "Change To Plan"
-    canonicalBody = """
-## Purpose
+    body = new common.InstructionBody {
+      purpose = """
 - Turn `$ARGUMENTS` into a scoped SCE implementation plan by delegating to `sce-plan-authoring`.
 - Provide a planning handoff without beginning implementation.
-
-## Inputs
+"""
+      inputs = """
 - `$ARGUMENTS`: a change request and optional existing plan identifier.
 - Any success criteria, constraints, non-goals, dependency choices, and acceptance signals included by the user.
-
-## Preconditions
+"""
+      preconditions = """
 1. Treat missing critical planning details as blocking.
 2. Preserve the approval and clarification behavior owned by `sce-plan-authoring`.
-
-## Workflow
+"""
+      workflow = """
 1. Load `sce-plan-authoring`.
 2. Pass `$ARGUMENTS` without inventing requirements.
 3. Let the skill resolve new-versus-existing plan, clarification needs, plan shape, and atomic task slicing.
 4. When ready, write or update `context/plans/{plan_name}.md`.
 5. Return the exact path, ordered task list, and `/next-task {plan_name} T01`.
 6. Stop after the planning handoff.
-
-## Guardrails
+"""
+      guardrails = """
 - Keep this command thin; do not duplicate the skill's planning rules.
 - Do not modify application code or imply implementation approval.
 - Do not bypass the clarification gate.
-
-## Outputs
+"""
+      outputs = """
 - A plan path and complete ordered task list when planning succeeds.
 - Focused clarification questions when planning is blocked.
 - One canonical next command for a new implementation session.
-
-## Completion criteria
+"""
+      completionCriteria = """
 - `sce-plan-authoring` reports a valid plan and the plan file exists at the reported path.
 - The response includes the full task order and stops before implementation.
-
-## Failure handling
+"""
+      failureHandling = """
 - Stop and surface the skill's focused questions when critical information is missing.
 - Report path or write failures directly; do not claim a plan was saved when it was not.
-
-## Related units
+"""
+      relatedUnits = """
 - `sce-plan-authoring` — sole owner of detailed planning behavior.
 - `Shared Context Plan` — default agent for this command.
 - `/next-task` — canonical next entrypoint after plan approval.
 """
+    }
   }
   ["handover"] = new UnitSpec {
     title = "Handover"
-    canonicalBody = """
-## Purpose
+    body = new common.InstructionBody {
+      purpose = """
 - Create a durable handover for the current task by delegating to `sce-handover-writer`.
-
-## Inputs
+"""
+      inputs = """
 - `$ARGUMENTS`: optional plan name, task ID, scope note, or handover context.
 - Current repository, plan, and task state available to the agent.
-
-## Preconditions
+"""
+      preconditions = """
 1. Identify the current plan/task when possible.
 2. Distinguish observed facts from inferred details.
-
-## Workflow
+"""
+      workflow = """
 1. Load `sce-handover-writer`.
 2. Pass `$ARGUMENTS` and the current task state.
 3. Let the skill choose task-aligned naming and write the handover under `context/handovers/`.
 4. Return the exact handover path and stop.
-
-## Guardrails
+"""
+      guardrails = """
 - Keep this command thin; the skill owns structure, naming, and completeness checks.
 - Label unsupported inferences as assumptions.
 - Do not implement or change task scope while producing a handover.
-
-## Outputs
+"""
+      outputs = """
 - One complete handover file and its exact path.
-
-## Completion criteria
+"""
+      completionCriteria = """
 - The handover records current task state, decisions and rationale, blockers/open questions, and one next recommended step.
-
-## Failure handling
+"""
+      failureHandling = """
 - When no reliable task state can be established, stop with the missing inputs rather than inventing a handover.
 - Report write failures directly.
-
-## Related units
+"""
+      relatedUnits = """
 - `sce-handover-writer` — sole owner of handover content and file shape.
 - `Shared Context Code` — default agent for this command.
 """
+    }
   }
 }
 
 skills = new Mapping {
   ["sce-bootstrap-context"] = new UnitSpec {
     title = "SCE Bootstrap Context"
-    canonicalBody = """
-## Purpose
+    body = new common.InstructionBody {
+      purpose = """
 - Create the baseline SCE `context/` directory and files when they are absent.
-
-## Inputs
+"""
+      inputs = """
 - Repository root.
 - Explicit human approval to bootstrap.
 - Whether the repository currently contains application code.
-
-## Preconditions
+"""
+      preconditions = """
 1. Confirm that `context/` is missing.
 2. Obtain explicit human approval before creating any path.
-
-## Workflow
+"""
+      workflow = """
 1. Create `context/plans/`, `context/handovers/`, `context/decisions/`, and `context/tmp/`.
 2. Create `context/overview.md`, `context/architecture.md`, `context/patterns.md`, `context/glossary.md`, and `context/context-map.md`.
 3. Write `context/tmp/.gitignore` with `*` followed by `!.gitignore`.
@@ -185,30 +174,30 @@ skills = new Mapping {
 5. Add baseline discoverability links to `context/context-map.md`.
 6. Verify every required path exists.
 7. Tell the user that `context/` should be committed as shared project memory.
-
-## Guardrails
+"""
+      guardrails = """
 - Do not overwrite an existing `context/` tree.
 - Do not invent architecture, behavior, patterns, or terminology for a no-code repository.
 - Limit writes to the approved baseline paths.
-
-## Outputs
+"""
+      outputs = """
 - A verified baseline `context/` tree.
 - A concise report listing created paths and any placeholders used.
-
-## Completion criteria
+"""
+      completionCriteria = """
 - Every required file and directory exists.
 - `context/tmp/.gitignore` preserves only itself.
 - `context/context-map.md` exposes the baseline files.
-
-## Failure handling
+"""
+      failureHandling = """
 - Stop when approval is not granted.
 - Report any path that could not be created or verified; do not continue into planning with a partial baseline.
-
-## Related units
+"""
+      relatedUnits = """
 - `Shared Context Plan` — invokes this skill when planning starts without `context/`.
 - `sce-plan-authoring` — begins only after a valid baseline exists.
-
-## Reference
+"""
+      reference = """
 Required paths:
 
 - `context/overview.md`
@@ -222,22 +211,23 @@ Required paths:
 - `context/tmp/`
 - `context/tmp/.gitignore`
 """
+    }
   }
   ["sce-handover-writer"] = new UnitSpec {
     title = "SCE Handover Writer"
-    canonicalBody = """
-## Purpose
+    body = new common.InstructionBody {
+      purpose = """
 - Preserve enough current-state task information for another human or AI session to continue safely.
-
-## Inputs
+"""
+      inputs = """
 - Current plan name/path and task ID when available.
 - Repository status, recent changes, verification evidence, decisions, blockers, and next-step context.
-
-## Preconditions
+"""
+      preconditions = """
 1. Inspect the current plan, task, relevant changes, and repository state.
 2. Separate observed facts from assumptions.
-
-## Workflow
+"""
+      workflow = """
 1. Resolve task-aligned naming: `context/handovers/{plan_name}-{task_id}-{timestamp}.md` when identifiers are available; otherwise use a descriptive fallback.
 2. Record current task state and degree of completion.
 3. Record decisions and the rationale for each material choice.
@@ -245,29 +235,29 @@ Required paths:
 5. Record one concrete next recommended step.
 6. Label inferred details as assumptions.
 7. Verify all required sections are populated and return the exact path.
-
-## Guardrails
+"""
+      guardrails = """
 - Describe current state, not a narrative changelog.
 - Do not invent decisions, evidence, owners, or completion status.
 - Do not make implementation changes while writing the handover.
-
-## Outputs
+"""
+      outputs = """
 - One handover file under `context/handovers/` and its exact path.
-
-## Completion criteria
+"""
+      completionCriteria = """
 - The file contains `Current Task State`, `Decisions Made`, `Open Questions / Blockers`, and `Next Recommended Step`.
 - Every assumption is explicitly labelled.
-
-## Failure handling
+"""
+      failureHandling = """
 - When the current task cannot be identified reliably, request or report the missing plan/task information instead of fabricating context.
 - Report write failures directly.
-
-## Related units
+"""
+      relatedUnits = """
 - `/handover` — thin command entrypoint.
 - `sce-plan-review` — source of plan/task readiness information.
 - `sce-task-execution` — source of implementation and evidence state.
-
-## Reference
+"""
+      reference = """
 ```markdown
 # Handover: {plan_name} - {task_id}
 
@@ -284,26 +274,27 @@ Required paths:
 ...
 ```
 """
+    }
   }
   ["sce-plan-authoring"] = new UnitSpec {
     title = "SCE Plan Authoring"
-    canonicalBody = """
-## Purpose
+    body = new common.InstructionBody {
+      purpose = """
 - Convert a change request into a reviewable implementation plan at `context/plans/{plan_name}.md`.
 - Slice executable work into atomic, commit-sized tasks with explicit acceptance and verification.
-
-## Inputs
+"""
+      inputs = """
 - Change description, success criteria, constraints, non-goals, dependencies, risks, and requested plan target.
 - Relevant code and context needed to establish current truth.
 - User answers to blocking clarification questions.
-
-## Preconditions
+"""
+      preconditions = """
 1. Treat planning as mandatory when a request contains both a change description and success criteria.
 2. Run an ambiguity check before writing or updating the plan.
 3. Resolve scope boundaries, acceptance signals, constraints, dependency choices, domain rules, architecture concerns, migration strategy, and sequencing assumptions.
 4. Ask 1-3 targeted questions and stop when any critical detail remains unresolved.
-
-## Workflow
+"""
+      workflow = """
 1. Resolve whether to create a new plan or update an existing plan and choose a stable kebab-case `plan_name`.
 2. Inspect relevant context first, then only the code needed to ground the plan.
 3. Run the clarification gate and incorporate user answers.
@@ -313,35 +304,35 @@ Required paths:
 7. Split any task that would require multiple independent commits or unrelated outcomes.
 8. Make the final task validation and cleanup with full checks and context-sync verification.
 9. Save the plan, return the exact path and full ordered task list, and provide `/next-task {plan_name} T01`.
-
-## Guardrails
+"""
+      guardrails = """
 - Do not implement the plan.
 - Do not silently invent requirements or dependency choices.
 - Do not use vague executable tasks such as `polish`, `misc updates`, or `finalize` without concrete outcomes.
 - Treat planning as a proposal, not execution approval.
 - Keep one task aligned to one coherent atomic commit by default.
-
-## Outputs
+"""
+      outputs = """
 - A complete plan file under `context/plans/`.
 - Exact path, ordered task list, and canonical first-task command.
 - Focused questions instead of a partial plan when blocked.
-
-## Completion criteria
+"""
+      completionCriteria = """
 - All critical ambiguity is resolved or explicitly recorded as an approved assumption.
 - Every task is executable, bounded, verifiable, and atomic by default.
 - The final validation/cleanup task is present.
-
-## Failure handling
+"""
+      failureHandling = """
 - Stop before writing when critical information is unresolved.
 - Ask specific questions that name the decision category and why it blocks safe planning.
 - Report a write failure without claiming the plan exists.
-
-## Related units
+"""
+      relatedUnits = """
 - `/change-to-plan` — thin command entrypoint.
 - `Shared Context Plan` — orchestrates this skill.
 - `sce-plan-review` — consumes the completed plan before implementation.
-
-## Reference
+"""
+      reference = """
 Use this plan shape:
 
 ```markdown
@@ -373,23 +364,24 @@ Use this plan shape:
 
 Accept each executable task only when it has one primary intent, a narrow related touch area, and one coherent verification surface. Make the final task validation and cleanup, including full checks and context-sync verification.
 """
+    }
   }
   ["sce-plan-review"] = new UnitSpec {
     title = "SCE Plan Review"
-    canonicalBody = """
-## Purpose
+    body = new common.InstructionBody {
+      purpose = """
 - Review an active SCE plan, identify the next task, and issue an explicit implementation-readiness verdict.
-
-## Inputs
+"""
+      inputs = """
 - Plan name/path and optional task ID.
 - Current plan checkboxes, task details, relevant context, and code truth.
-
-## Preconditions
+"""
+      preconditions = """
 1. Ensure `context/` exists; when missing, ask once whether to run `sce-bootstrap-context`, then stop if declined.
 2. Read `context/context-map.md`, `context/overview.md`, and `context/glossary.md` before broad exploration.
 3. Use an explicit plan path when provided; when multiple plans exist without one, ask the user to choose.
-
-## Workflow
+"""
+      workflow = """
 1. Open the selected plan and count completed and remaining tasks.
 2. Select the explicit task ID when provided; otherwise select the first unchecked task.
 3. Extract goal, boundaries, done checks, verification notes, dependencies, and relevant decisions.
@@ -397,32 +389,32 @@ Accept each executable task only when it has one primary intent, a narrow relate
 5. Classify issues as blockers, ambiguity, or missing acceptance criteria.
 6. Return `ready_for_implementation: yes|no` and the decisions required to proceed.
 7. When unresolved issues remain, request explicit user resolution and keep implementation blocked.
-
-## Guardrails
+"""
+      guardrails = """
 - Do not mark tasks complete during review.
 - Do not reorder or rewrite plan structure without approval.
 - Confirm one-task scope by default.
 - Treat completed plans as disposable, not durable history.
 - Prefer code truth when the plan or context is stale and flag the required repair.
-
-## Outputs
+"""
+      outputs = """
 - A structured readiness summary with completed count, selected task, acceptance criteria, issue categories, and verdict.
-
-## Completion criteria
+"""
+      completionCriteria = """
 - The selected task is unambiguous, bounded, and has observable acceptance and verification.
 - The verdict is explicit and no unresolved issue is hidden.
-
-## Failure handling
+"""
+      failureHandling = """
 - Stop and ask for a plan choice when multiple candidates exist.
 - Return `ready_for_implementation: no` and focused questions when any blocker, ambiguity, or missing criterion remains.
 - Stop when no unchecked task exists and report that the plan is ready for final validation or closure.
-
-## Related units
+"""
+      relatedUnits = """
 - `sce-bootstrap-context` — create missing baseline context after approval.
 - `sce-task-execution` — runs only after readiness authorization.
 - `/next-task` — orchestrates review, execution, and context sync.
-
-## Reference
+"""
+      reference = """
 Return readiness in this stable shape:
 
 ```yaml
@@ -441,5 +433,6 @@ issues:
 ready_for_implementation: yes
 ```
 """
+    }
   }
 }

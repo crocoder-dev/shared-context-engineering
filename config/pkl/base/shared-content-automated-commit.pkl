@@ -1,68 +1,71 @@
+import "shared-content-automated-common.pkl" as common
+
 local class UnitSpec {
   title: String
-  canonicalBody: String
+  body: common.InstructionBody
 }
 
-agents = new Mapping {}
+executionProfiles = new Mapping {}
 
-commands = new Mapping {
+workflows = new Mapping {
   ["commit"] = new UnitSpec {
     title = "Commit"
-    canonicalBody = """
-## Purpose
+    body = new common.InstructionBody {
+      purpose = """
 - Produce one repository-style commit message from staged changes and execute exactly one commit.
-
-## Inputs
+"""
+      inputs = """
 - `$ARGUMENTS`: optional commit context.
 - Non-empty staged diff.
-
-## Preconditions
+"""
+      preconditions = """
 1. Skip staging confirmation.
 2. Require `git diff --cached` to be non-empty.
-
-## Workflow
+"""
+      workflow = """
 1. Load `sce-atomic-commit`.
 2. Classify staged scope and apply the skill's context-guidance rules.
 3. Produce exactly one message for the staged diff; do not branch into split guidance.
 4. Run `git commit -m "<message>"` once.
 5. Report the commit hash or exact failure and stop.
-
-## Guardrails
+"""
+      guardrails = """
 - Use only staged changes.
 - Do not invent change intent or plan/task citations.
 - Do not retry, amend, or create fallback commits after failure.
-
-## Outputs
+"""
+      outputs = """
 - One commit message and either a successful commit hash or exact commit failure.
-
-## Completion criteria
+"""
+      completionCriteria = """
 - Exactly one commit attempt is reported.
-
-## Failure handling
+"""
+      failureHandling = """
 - Stop with `No staged changes. Stage changes before commit.` when empty.
 - Stop for ambiguous required plan citations rather than guessing.
-
-## Related units
+"""
+      relatedUnits = """
 - `sce-atomic-commit` — one-message construction owner.
 """
+    }
   }
 }
 
 skills = new Mapping {
   ["sce-atomic-commit"] = new UnitSpec {
     title = "SCE Atomic Commit"
-    canonicalBody = """
-## Purpose
+    body = new common.InstructionBody {
+      purpose = """
 - Produce exactly one faithful repository-style commit message for the current staged diff.
-
-## Inputs
+"""
+      inputs = """
 - Staged diff (preferred), optional changed-file notes, task/PR summary, or before/after behavior notes.
-
-## Preconditions
+"""
+      preconditions = """
 1. Treat the staged diff as authoritative.
 2. Require enough evidence to identify one message and any mandatory plan/task citations.
-
-## Workflow
+"""
+      workflow = """
 1. Review the staged diff as one unit.
 2. Choose the smallest stable subsystem as scope.
 3. Write one imperative `<scope>: <Subject>` line.
@@ -70,26 +73,26 @@ skills = new Mapping {
 5. Cite staged plan slug(s) and task ID(s) when `context/plans/*.md` is included.
 6. Apply context-file guidance based on context-only versus mixed staged scope.
 7. Validate the single message against all staged changes.
-
-## Guardrails
+"""
+      guardrails = """
 - Produce exactly one message and no split guidance.
 - Do not invent plan/task or issue references.
 - Avoid vague subjects, repeated bodies, playful tone for serious changes, and routine context-sync narration.
-
-## Outputs
+"""
+      outputs = """
 - Exactly one complete commit message.
-
-## Completion criteria
+"""
+      completionCriteria = """
 - The message faithfully describes the staged diff as one coherent unit and satisfies repository grammar.
-
-## Failure handling
+"""
+      failureHandling = """
 - Stop for clarification when required plan/task citations cannot be inferred faithfully.
 - Report insufficient staged evidence rather than guessing intent.
-
-## Related units
+"""
+      relatedUnits = """
 - `/commit` — executes the resulting commit once.
-
-## Reference
+"""
+      reference = """
 Use this message grammar:
 
 ```text
@@ -102,5 +105,6 @@ Use this message grammar:
 
 Use the smallest stable subsystem as scope. Do not end the subject with a period. Use a body only when it adds useful context.
 """
+    }
   }
 }

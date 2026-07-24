@@ -1,12 +1,184 @@
 /// Shared schema and reusable snippets for canonical authored content units.
 
-class ContentUnit {
+class InstructionBody {
+  purpose: String
+  inputs: String
+  preconditions: String
+  workflow: String
+  guardrails: String
+  outputs: String
+  completionCriteria: String
+  failureHandling: String
+  relatedUnits: String
+  reference: String? = null
+  examples: String? = null
+}
+
+function renderBody(body: InstructionBody): String =
+  new Listing {
+    "## Purpose\n\(body.purpose)"
+    "## Inputs\n\(body.inputs)"
+    "## Preconditions\n\(body.preconditions)"
+    "## Workflow\n\(body.workflow)"
+    "## Guardrails\n\(body.guardrails)"
+    "## Outputs\n\(body.outputs)"
+    "## Completion criteria\n\(body.completionCriteria)"
+    "## Failure handling\n\(body.failureHandling)"
+    "## Related units\n\(body.relatedUnits)"
+    when (body.reference != null) {
+      "## Reference\n\(body.reference)"
+    }
+    when (body.examples != null) {
+      "## Examples\n\(body.examples)"
+    }
+  }
+  .join("\n\n")
+
+typealias CapabilityId =
+  "repository.read"
+  | "repository.search"
+  | "repository.write"
+  | "process.execute"
+  | "interaction.ask"
+  | "skill.invoke"
+  | "vcs.commit"
+
+capabilityIds: List<CapabilityId> = List(
+  "repository.read",
+  "repository.search",
+  "repository.write",
+  "process.execute",
+  "interaction.ask",
+  "skill.invoke",
+  "vcs.commit"
+)
+
+class ToolPolicy {
+  allowedCapabilities: List<CapabilityId>
+  approvalRequiredCapabilities: List<CapabilityId> = List()
+}
+
+class ProfilePolicy {
+  body: InstructionBody
+  allowedSkills: List<String>
+  tools: ToolPolicy
+}
+
+class ExecutionProfile {
   id: String
-  kind: String
+  kind: "execution-profile"
   slug: String
   title: String
-  canonicalBody: String
+  policy: ProfilePolicy
 }
+
+class WorkflowUnit {
+  id: String
+  kind: "workflow"
+  slug: String
+  title: String
+  body: InstructionBody
+  executionProfile: String
+  entrySkill: String
+  requiredSkills: List<String>
+  tools: ToolPolicy
+}
+
+class SkillUnit {
+  id: String
+  kind: "skill"
+  slug: String
+  title: String
+  body: InstructionBody
+}
+
+function effectiveToolPolicy(profile: ToolPolicy, workflow: ToolPolicy): ToolPolicy =
+  new ToolPolicy {
+    allowedCapabilities = workflow.allowedCapabilities
+    approvalRequiredCapabilities = capabilityIds.filter((capability) ->
+      workflow.allowedCapabilities.contains(capability)
+      && (profile.approvalRequiredCapabilities.contains(capability)
+        || workflow.approvalRequiredCapabilities.contains(capability))
+    )
+  }
+
+/// Stable marker used to prove which canonical profile policy was composed into a workflow.
+function profileCompositionMarker(profileSlug: String): String =
+  "<!-- sce-execution-profile: \(profileSlug) -->"
+
+local function allowedSkillRelations(profile: ExecutionProfile): String =
+  profile.policy.allowedSkills
+    .map((skillSlug) -> "- `\(skillSlug)` — skill allowed by this execution profile.")
+    .join("\n")
+
+local function requiredSkillRelations(workflow: WorkflowUnit): String =
+  workflow.requiredSkills
+    .map((skillSlug) -> "- `\(skillSlug)` — skill required by this workflow.")
+    .join("\n")
+
+/// Construct a native profile-agent body directly from its canonical profile policy.
+function nativeAgentBody(profile: ExecutionProfile): InstructionBody =
+  new InstructionBody {
+    purpose = profile.policy.body.purpose
+    inputs = profile.policy.body.inputs
+    preconditions = profile.policy.body.preconditions
+    workflow = profile.policy.body.workflow
+    guardrails = profile.policy.body.guardrails
+    outputs = profile.policy.body.outputs
+    completionCriteria = profile.policy.body.completionCriteria
+    failureHandling = profile.policy.body.failureHandling
+    relatedUnits = """
+\(profile.policy.body.relatedUnits)
+\(allowedSkillRelations(profile))
+"""
+    reference = profile.policy.body.reference
+    examples = profile.policy.body.examples
+  }
+
+/// Compose profile policy and workflow procedure section-by-section before Markdown rendering.
+function composeProfile(profile: ExecutionProfile, workflow: WorkflowUnit): InstructionBody =
+  new InstructionBody {
+    purpose = """
+\(profileCompositionMarker(profile.slug))
+\(profile.policy.body.purpose)
+\(workflow.body.purpose)
+"""
+    inputs = """
+\(profile.policy.body.inputs)
+\(workflow.body.inputs)
+"""
+    preconditions = """
+\(profile.policy.body.preconditions)
+\(workflow.body.preconditions)
+"""
+    workflow = """
+\(profile.policy.body.workflow)
+\(workflow.body.workflow)
+"""
+    guardrails = """
+\(profile.policy.body.guardrails)
+\(workflow.body.guardrails)
+"""
+    outputs = """
+\(profile.policy.body.outputs)
+\(workflow.body.outputs)
+"""
+    completionCriteria = """
+\(profile.policy.body.completionCriteria)
+\(workflow.body.completionCriteria)
+"""
+    failureHandling = """
+\(profile.policy.body.failureHandling)
+\(workflow.body.failureHandling)
+"""
+    relatedUnits = """
+- `\(profile.slug)` — execution profile composed into this workflow.
+\(requiredSkillRelations(workflow))
+\(workflow.body.relatedUnits)
+"""
+    reference = workflow.body.reference
+    examples = workflow.body.examples
+  }
 
 sharedSceCorePrinciplesSection = """
 Core principles

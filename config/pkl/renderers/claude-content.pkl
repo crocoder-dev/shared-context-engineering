@@ -9,7 +9,7 @@ local claudeSceHookScriptPath = "$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-sh
 local function sceHookCommand(arguments: String): String = "bash \\\"\(claudeSceHookScriptPath)\\\" \(arguments)"
 
 local agentFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.agents) {
+  for (unitSlug, _ in shared.executionProfiles) {
     [unitSlug] = """
 ---
 name: \(unitSlug)
@@ -23,17 +23,17 @@ tools: \(metadata.agentTools)
 }
 
 local agentBodyBySlug = new Mapping {
-  for (unitSlug, unit in shared.agents) {
-    [unitSlug] = if (metadata.agentSystemPreambleBlocks[unitSlug] == "") unit.canonicalBody else """
+  for (unitSlug, unit in shared.executionProfiles) {
+    [unitSlug] = if (metadata.agentSystemPreambleBlocks[unitSlug] == "") common.renderBody(common.nativeAgentBody(unit)) else """
 \(metadata.agentSystemPreambleBlocks[unitSlug])
 
-\(unit.canonicalBody)
+\(common.renderBody(common.nativeAgentBody(unit)))
 """
   }
 }
 
 local commandFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.commands) {
+  for (unitSlug, _ in shared.workflows) {
     [unitSlug] = """
 ---
 description: "\(common.commandDescriptions[unitSlug])"
@@ -133,7 +133,7 @@ exec "$@"
 }
 
 agents {
-  for (unitSlug, unit in shared.agents) {
+  for (unitSlug, unit in shared.executionProfiles) {
     [unitSlug] = new common.RenderedTargetDocument {
       slug = unitSlug
       title = unit.title
@@ -144,12 +144,12 @@ agents {
 }
 
 commands {
-  for (unitSlug, unit in shared.commands) {
+  for (unitSlug, unit in shared.workflows) {
     [unitSlug] = new common.RenderedTargetDocument {
       slug = unitSlug
       title = unit.title
       frontmatter = commandFrontmatterBySlug[unitSlug]
-      body = unit.canonicalBody
+      body = common.renderBody(unit.body)
     }
   }
 }
@@ -160,7 +160,7 @@ skills {
       slug = unitSlug
       title = unit.title
       frontmatter = skillFrontmatterBySlug[unitSlug]
-      body = unit.canonicalBody
+      body = common.renderBody(unit.body)
     }
   }
 }

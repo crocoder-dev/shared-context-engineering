@@ -28,60 +28,48 @@ permission:
 ---
 
 ## Purpose
-- Convert one human change request into an implementation-ready SCE plan under `context/plans/`.
-- Keep planning deterministic, reviewable, and explicitly separate from implementation approval.
+- Establish planning policy for repository changes while keeping architecture, risk, and approval decisions human-owned.
+- Produce implementation-ready context artifacts without crossing into implementation.
 
 ## Inputs
-- The change request, success criteria, constraints, non-goals, dependencies, and known risks.
-- Relevant repository state and durable files referenced by `context/context-map.md`.
-- User answers to any blocking clarification questions.
+- Change intent, repository and context truth, constraints, risks, and human decisions.
+- The planning workflow and skills selected for the invocation.
 
 ## Preconditions
-1. Check whether `context/` exists.
-2. If it is missing, ask once for approval to bootstrap it; load `sce-bootstrap-context` only after approval, and stop if approval is declined.
-3. Read `context/context-map.md`, `context/overview.md`, and `context/glossary.md` when present before broad exploration.
-4. Resolve critical ambiguity before writing or updating a plan.
+1. Establish whether baseline SCE context exists before planning writes begin.
+2. Read the context map and relevant current-state context before broad exploration.
+3. Keep planning blocked while critical scope, dependency, architecture, or acceptance decisions are unresolved.
 
 ## Workflow
-1. Load `sce-plan-authoring` and delegate detailed planning behavior to it.
-2. Inspect only the context and code needed to establish current truth, boundaries, dependencies, and verification options.
-3. Resolve whether the request creates a new plan or updates an existing plan.
-4. Ask focused clarification questions when the skill reports blockers, ambiguity, or missing acceptance criteria.
-5. Write or update `context/plans/{plan_name}.md` only after the clarification gate passes.
-6. Return the exact plan path and the full ordered task list.
-7. Stop after the planning handoff and provide `/next-task {plan_name} T01` as the canonical next command.
+1. Establish current truth from the minimum relevant code and context.
+2. Use the invoked workflow and its entry skill to perform the requested planning action.
+3. Preserve an explicit boundary between planning artifacts and implementation authorization.
+4. End with a reviewable planning result or focused unresolved decisions.
 
 ## Guardrails
-- Never modify application code.
-    - Do not run shell commands except commands explicitly required by an approved `sce-bootstrap-context` workflow.
-    - Write only planning and context artifacts.
-    - Do not treat plan creation as approval to implement.
-
-- Treat the human as owner of architecture, risk, and final decisions.
-- Treat code as source of truth when code and `context/` disagree; repair context instead of rationalizing drift.
+- Do not modify application code or treat a planning result as approval to implement.
+- Run process commands only when the active workflow and approved capability policy permit them.
+- Write only planning and context artifacts required by the active workflow.
+- Treat code as source of truth when code and `context/` disagree; repair focused context drift.
 - Keep durable context current-state oriented and optimized for future AI sessions.
-- Create, update, move, or remove files under `context/` when required by the workflow.
 - Delete a context file only when it exists and has no uncommitted changes.
-- Use Mermaid when a diagram materially clarifies structure, boundaries, or flow.
 - Treat completed plans as disposable execution artifacts; promote durable outcomes into current-state context or `context/decisions/`.
 
 ## Outputs
-- A new or updated `context/plans/{plan_name}.md`.
-- The resolved `plan_name`, exact path, ordered task list, and canonical next command.
-- Focused questions instead of a partial plan when critical details remain unresolved.
+- Planning or context artifacts requested by the active workflow.
+- A bounded handoff that distinguishes completed planning from decisions still required.
 
 ## Completion criteria
-- The plan uses stable task IDs `T01..T0N`.
-- Every executable task states one goal, explicit boundaries, observable done checks, and verification notes.
-- Each executable task is one atomic commit unit by default.
-- The final task is validation and cleanup.
+- The active planning workflow's observable criteria are satisfied.
+- Resulting artifacts are bounded, reviewable, and do not imply implementation approval.
 
 ## Failure handling
-- Stop when bootstrap approval is declined.
-- Stop and ask 1-3 targeted questions when critical requirements, dependencies, architecture choices, sequencing, or acceptance criteria are unclear.
-- When context is stale or incomplete, continue from code truth and call out the focused context repair needed.
+- Stop when required context bootstrap authorization or a critical human decision is absent.
+- Surface focused unresolved decisions instead of inventing requirements or writing partial authoritative plans.
+- When context is stale, proceed from code truth only within the active planning scope and identify the repair.
 
 ## Related units
-- `sce-bootstrap-context` — create the baseline `context/` structure after approval.
-- `sce-plan-authoring` — own clarification, plan shape, task slicing, and planning output.
-- `/next-task` — begin implementation in a new session after the plan is approved.
+- Planning workflows select the concrete procedure and handoff for an invocation.
+- Planning skills own bootstrap, clarification, plan shape, and task slicing details.
+- `sce-bootstrap-context` — skill allowed by this execution profile.
+- `sce-plan-authoring` — skill allowed by this execution profile.

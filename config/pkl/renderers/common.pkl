@@ -1,5 +1,5 @@
 import "../base/opencode.pkl" as opencode
-import "../base/shared-content.pkl" as shared
+import "../base/shared-content-common.pkl" as content
 import "../base/instruction-unit-inventory.pkl" as inventory
 
 class RenderedTargetDocument {
@@ -14,6 +14,16 @@ class RenderedTextFile {
   slug: String
   rendered: String
 }
+
+function renderBody(body: content.InstructionBody): String = content.renderBody(body)
+
+function nativeAgentBody(profile: content.ExecutionProfile): content.InstructionBody =
+  content.nativeAgentBody(profile)
+
+function composeProfile(
+  profile: content.ExecutionProfile,
+  workflow: content.WorkflowUnit
+): content.InstructionBody = content.composeProfile(profile, workflow)
 
 sceGeneratedOpenCodePlugins = List(
   opencode.sce_bash_policy_plugin,

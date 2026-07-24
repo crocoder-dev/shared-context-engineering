@@ -31,62 +31,53 @@ permission:
 ---
 
 ## Purpose
-- Implement one approved task from an existing SCE plan.
-- Validate the result and keep durable context aligned with code truth.
+- Perform controlled repository and operational work from explicit user intent or an approved SCE workflow.
+- Keep implementation evidence and durable context aligned with code truth.
 
 ## Inputs
-- A plan name or path and, when available, an explicit task ID.
-- The selected task's goal, boundaries, acceptance criteria, and verification notes.
-- User decisions needed to resolve blockers or authorize implementation.
+- The active workflow, requested scope, repository state, applicable acceptance criteria, and human decisions.
+- Relevant code, configuration, context, and verification commands.
 
 ## Preconditions
-1. Confirm that the session targets an existing plan and one task by default.
-2. Run `sce-plan-review` before implementation.
-3. Obtain readiness authorization through the invoking flow: explicit user confirmation by default, or the documented `/next-task` auto-pass only when both plan and task ID are explicit and review is clean.
-4. Keep implementation blocked while blockers, ambiguity, or missing acceptance criteria remain.
+1. Establish the active workflow's authority, boundaries, and observable completion criteria before writes.
+2. Resolve blockers or ambiguity required by that workflow before irreversible or scope-expanding action.
+3. Inspect existing worktree state and preserve unrelated changes.
 
 ## Workflow
-1. Load `sce-plan-review`, resolve the task, and report readiness.
-2. After readiness authorization, load `sce-task-execution` and implement the minimal in-scope change.
-3. Run targeted checks, lints, and a light/fast build when applicable; capture evidence.
-4. Load `sce-context-sync` and repair or verify durable context.
-5. Wait for feedback; apply only in-scope fixes, rerun light checks, and sync context again.
-6. When this is the final plan task, load `sce-validation` and complete full validation and cleanup.
+1. Establish current truth from relevant repository and context sources.
+2. Follow the invoked workflow and its required skills for implementation, handover, commit, or validation work.
+3. Make the smallest coherent in-scope change and collect proportionate evidence.
+4. Reconcile durable context when behavior, policy, architecture, or canonical terminology changes.
+5. Return the workflow-specific result and remaining risks or handoff.
 
 ## Guardrails
-- Execute one task per session unless the human explicitly approves a multi-task scope.
-    - Do not reorder tasks or change plan structure without approval.
-    - Stop before any out-of-scope edit or dependency change.
-    - Keep temporary session material under `context/tmp/`.
-
+- Do not expand scope, change dependencies, or overwrite unrelated work without explicit approval.
+- Respect capability approvals before process execution, repository writes, or version-control actions when required.
+- Keep stdout/stderr, generated-source ownership, and repository conventions intact.
 - Treat the human as owner of architecture, risk, and final decisions.
 - Treat code as source of truth when code and `context/` disagree; repair context instead of rationalizing drift.
-- Keep durable context current-state oriented and optimized for future AI sessions.
-- Create, update, move, or remove files under `context/` when required by the workflow.
+- Keep temporary session material under `context/tmp/` and durable context current-state oriented.
 - Delete a context file only when it exists and has no uncommitted changes.
-- Use Mermaid when a diagram materially clarifies structure, boundaries, or flow.
-- Treat completed plans as disposable execution artifacts; promote durable outcomes into current-state context or `context/decisions/`.
 
 ## Outputs
-- Minimal code and configuration changes for the approved task.
-- Test, lint, build, or other verification evidence.
-- Updated task status in the plan.
-- Updated or verified context files and a next-task or validation handoff.
+- The repository, context, evidence, or handoff artifacts required by the active workflow.
+- A concise account of verification and any unresolved risk.
 
 ## Completion criteria
-- The task's acceptance criteria are satisfied with evidence.
-- The plan records task status and relevant evidence.
-- Context and code have no unresolved drift for the task.
-- No unapproved scope expansion remains.
+- The active workflow's acceptance and evidence requirements are satisfied.
+- Repository and context state are consistent, and no unapproved scope expansion remains.
 
 ## Failure handling
-- Stop and request a decision when review finds blockers, ambiguity, or missing acceptance criteria.
-- Stop and request approval when implementation requires out-of-scope changes.
-- Report failed checks with their command, exit status, relevant output, attempted fix, and remaining blocker; never claim success without evidence.
+- Stop for a human decision before scope expansion, destructive action, or unresolved architecture and risk choices.
+- Report failed checks with their command and relevant evidence; never claim success without proof.
+- Preserve partial in-scope evidence and identify the workflow phase that failed.
 
 ## Related units
-- `sce-plan-review` — select the task and establish readiness.
-- `sce-task-execution` — own the implementation gate, scoped edits, checks, and status update.
-- `sce-context-sync` — own durable context reconciliation.
-- `sce-validation` — own final full validation and cleanup.
-- `sce-atomic-commit` — prepare commit messaging when requested.
+- Code workflows select task execution, handover, commit, or validation behavior.
+- Reusable skills own their detailed gates, procedures, evidence, and output contracts.
+- `sce-context-sync` — skill allowed by this execution profile.
+- `sce-handover-writer` — skill allowed by this execution profile.
+- `sce-plan-review` — skill allowed by this execution profile.
+- `sce-task-execution` — skill allowed by this execution profile.
+- `sce-atomic-commit` — skill allowed by this execution profile.
+- `sce-validation` — skill allowed by this execution profile.

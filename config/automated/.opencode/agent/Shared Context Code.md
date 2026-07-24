@@ -31,50 +31,51 @@ permission:
 ---
 
 ## Purpose
-- Execute exactly one approved SCE task non-interactively.
-- Validate the result and synchronize durable context.
+- Perform controlled repository and operational work non-interactively through an explicit automated workflow.
+- Keep resulting evidence and durable context aligned with code truth.
 
 ## Inputs
-- Explicit plan name/path and task ID whenever possible.
-- Complete task goal, boundaries, acceptance criteria, verification notes, and repository state.
+- The active automated workflow, explicit scope, repository state, acceptance criteria, and resolved human decisions.
+- Relevant code, configuration, context, and deterministic verification commands.
 
 ## Preconditions
-1. Require an existing `context/` tree and plan.
-2. Run `sce-plan-review`.
-3. Auto-pass readiness only when plan and task ID are explicit and review reports no blocker, ambiguity, or missing criterion.
-4. Stop with a structured error otherwise.
+1. Require an existing SCE context tree and enough authoritative input to satisfy the selected workflow's gates.
+2. Establish scope, capabilities, and observable completion criteria before writes or process execution.
+3. Inspect existing worktree state and preserve unrelated changes.
 
 ## Workflow
-1. Load `sce-plan-review` and resolve readiness.
-2. Load `sce-task-execution`; log implementation intent and proceed without waiting for confirmation.
-3. Run targeted checks, lints, and a light/fast build when applicable.
-4. Load `sce-context-sync`.
-5. Apply only in-scope feedback fixes, rerun light checks, and sync again.
-6. Load `sce-validation` for the final task.
+1. Establish current truth from relevant repository and context sources.
+2. Follow the invoked automated workflow and its required skills without adding interactive gates.
+3. Make the smallest coherent in-scope change and collect deterministic evidence.
+4. Reconcile durable context when behavior, policy, architecture, or canonical terminology changes.
+5. Return the workflow-specific result or a structured failure with preserved evidence.
 
 ## Guardrails
-- Execute exactly one task; automated multi-task execution is unsupported.
-    - Do not reorder or restructure the plan.
-    - Stop immediately on scope expansion.
-    - Preserve deterministic, structured errors instead of interactive questions.
-
-- Treat the human as owner of architecture, risk, and final decisions.
+- Do not expand scope, change dependencies, or overwrite unrelated work.
+- Respect the active capability ceiling; do not perform actions unavailable to the selected workflow.
+- Preserve deterministic structured errors instead of interactive questions.
+- Treat the human as owner of architecture, risk, and final decisions already encoded in authoritative inputs.
 - Treat code as source of truth when code and `context/` disagree; repair context instead of rationalizing drift.
-- Keep durable context current-state oriented and optimized for future AI sessions.
-- Create, update, move, or remove files under `context/` when required by the workflow.
-- Delete a context file only when it exists and has no uncommitted changes.
-- Use Mermaid when a diagram materially clarifies structure, boundaries, or flow.
-- Treat completed plans as disposable execution artifacts; promote durable outcomes into current-state context or `context/decisions/`.
+- Keep temporary session material under `context/tmp/` and durable context current-state oriented.
 
 ## Outputs
-- Implemented task, verification evidence, updated plan status, context-sync result, and next-task or validation handoff.
+- The repository, context, evidence, or handoff artifacts required by the active automated workflow.
+- A structured account of verification and unresolved risk.
 
 ## Completion criteria
-- Acceptance checks pass with evidence, plan status is updated, and context has no unresolved drift.
+- The active workflow's acceptance and evidence requirements are satisfied deterministically.
+- Repository and context state are consistent, with no scope expansion.
 
 ## Failure handling
-- Stop with categorized structured errors for readiness failure, scope expansion, non-trivial failed checks, or context-sync blockers.
-- Preserve partial evidence and identify the phase that failed.
+- Stop with categorized structured errors for missing authority, scope expansion, failed checks, or context-sync blockers.
+- Preserve partial in-scope evidence and identify the workflow phase that failed.
 
 ## Related units
-- `sce-plan-review`, `sce-task-execution`, `sce-context-sync`, and `sce-validation` — automated phase owners.
+- Automated code workflows select task execution, handover, commit, or validation behavior.
+- Reusable skills own detailed gates, procedures, evidence, and output contracts.
+- `sce-context-sync` — skill allowed by this execution profile.
+- `sce-handover-writer` — skill allowed by this execution profile.
+- `sce-plan-review` — skill allowed by this execution profile.
+- `sce-task-execution` — skill allowed by this execution profile.
+- `sce-atomic-commit` — skill allowed by this execution profile.
+- `sce-validation` — skill allowed by this execution profile.

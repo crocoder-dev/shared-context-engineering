@@ -3,7 +3,7 @@ import "common.pkl" as common
 import "pi-metadata.pkl" as metadata
 
 local commandFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.commands) {
+  for (unitSlug, _ in shared.workflows) {
     [unitSlug] = """
 ---
 description: "\(common.commandDescriptions[unitSlug])"
@@ -14,7 +14,7 @@ argument-hint: "\(metadata.commandArgumentHints[unitSlug])"
 }
 
 local agentPromptFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.agents) {
+  for (unitSlug, _ in shared.executionProfiles) {
     [unitSlug] = """
 ---
 description: "\(metadata.agentDescriptions[unitSlug])"
@@ -25,11 +25,11 @@ argument-hint: "\(metadata.agentArgumentHints[unitSlug])"
 }
 
 local agentPromptBodyBySlug = new Mapping {
-  for (unitSlug, unit in shared.agents) {
+  for (unitSlug, unit in shared.executionProfiles) {
     // Role activation and argument intent live in the Pi frontmatter (`description` /
     // `argument-hint`); the prompt body is the standardized canonical body so it begins at
     // `## Purpose` with no prose inserted before the first required section.
-    [unitSlug] = unit.canonicalBody
+    [unitSlug] = common.renderBody(common.nativeAgentBody(unit))
   }
 }
 
@@ -45,7 +45,7 @@ description: \(common.skillDescriptions[unitSlug])
 }
 
 agentPrompts {
-  for (unitSlug, unit in shared.agents) {
+  for (unitSlug, unit in shared.executionProfiles) {
     [unitSlug] = new common.RenderedTargetDocument {
       slug = unitSlug
       title = unit.title
@@ -56,12 +56,12 @@ agentPrompts {
 }
 
 commands {
-  for (unitSlug, unit in shared.commands) {
+  for (unitSlug, unit in shared.workflows) {
     [unitSlug] = new common.RenderedTargetDocument {
       slug = unitSlug
       title = unit.title
       frontmatter = commandFrontmatterBySlug[unitSlug]
-      body = unit.canonicalBody
+      body = common.renderBody(unit.body)
     }
   }
 }
@@ -72,7 +72,7 @@ skills {
       slug = unitSlug
       title = unit.title
       frontmatter = skillFrontmatterBySlug[unitSlug]
-      body = unit.canonicalBody
+      body = common.renderBody(unit.body)
     }
   }
 }

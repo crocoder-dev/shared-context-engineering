@@ -19,7 +19,7 @@ A passing result reports `productionUnitCount = 62`, `generatedFileUnitCount = 1
 
 ## Input ownership
 
-Production validation consumes the rendered document objects from the manual OpenCode, Claude, and Pi renderers and the automated OpenCode renderer. Unit paths, kinds, profiles, targets, and slugs come from `instruction-unit-inventory.pkl`; the resulting unit list is sorted by destination path before validation.
+Canonical manual and automated bodies are authored as typed `InstructionBody` sections and serialized by the shared `renderBody` boundary before target rendering. Production validation consumes the resulting document objects from the manual OpenCode, Claude, and Pi renderers and the automated OpenCode renderer. Unit paths, kinds, profiles, targets, and slugs come from `instruction-unit-inventory.pkl`; the resulting unit list is sorted by destination path before validation.
 
 The same inventory drives direct validation of all 62 committed config instruction outputs and all 45 tracked manual root mirrors. Generated-file inputs are path-sorted and parsed into frontmatter/body before applying the same rules, while generated-output parity separately proves byte equality with the renderer model.
 

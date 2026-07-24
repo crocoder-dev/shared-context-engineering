@@ -1,10 +1,9 @@
 // Canonical reusable templates for SCE instruction units (agent, command, skill).
 //
 // This is the single authoring source for the contributor-facing templates published at repository
-// root `templates/{agent,command,skill}.md`. Section headings and their order are derived from the
-// canonical section contract in `instruction-unit-inventory.pkl` (`requiredSections` +
-// `optionalSections`), so a template can never drift from the standard order by hand: the scaffold is
-// computed, only the per-section guidance is authored here.
+// root `templates/{agent,command,skill}.md`. Template guidance uses the same typed `InstructionBody`
+// model and `renderBody` boundary as active units, so section headings and order cannot drift through
+// a parallel serializer.
 //
 // The guidance text is standardized from the read-only reference bundle
 // `sce-opencode-standardization/templates/`. That bundle is input only; it is never the authority.
@@ -12,27 +11,17 @@
 // Frontmatter demonstrates supported-target fields (OpenCode-flavored, matching the reference bundle);
 // per-target frontmatter differences are called out inline where they matter.
 
-import "instruction-unit-inventory.pkl" as inventory
+import "shared-content-common.pkl" as common
 
-/// One instruction-unit template: frontmatter plus body guidance keyed by section name.
+/// One instruction-unit template: frontmatter plus a typed instruction body.
 class UnitTemplate {
   /// Rendered YAML frontmatter block including the enclosing `---` delimiters.
   frontmatter: String
-  /// Guidance body for each required and optional section, keyed by exact section heading.
-  guidance: Mapping<String, String>
-
-  /// Required sections rendered in canonical order.
-  local requiredBody: String = inventory.requiredSections
-    .map((section) -> "## \(section)\n\(guidance[section])")
-    .join("\n\n")
-
-  /// Optional sections rendered in canonical order, after the full required set.
-  local optionalBody: String = inventory.optionalSections
-    .map((section) -> "## \(section)\n\(guidance[section])")
-    .join("\n\n")
+  /// Guidance authored in the same typed section model as active instruction units.
+  body: common.InstructionBody
 
   /// Full template file text: frontmatter, blank line, body, trailing newline.
-  rendered: String = "\(frontmatter)\n\n\(requiredBody)\n\n\(optionalBody)\n"
+  rendered: String = "\(frontmatter)\n\n\(common.renderBody(body))\n"
 }
 
 agent: UnitTemplate = new {
@@ -52,21 +41,21 @@ agent: UnitTemplate = new {
         "<allowed-skill>": allow
     ---
     """
-  guidance = new {
-    ["Purpose"] = "- State the role-owned outcome and what this agent orchestrates."
-    ["Inputs"] = "- List required user input, repository state, context, and decisions."
-    ["Preconditions"] = "1. List startup checks and blocking gates in execution order."
-    ["Workflow"] = """
+  body = new common.InstructionBody {
+    purpose = "- State the role-owned outcome and what this agent orchestrates."
+    inputs = "- List required user input, repository state, context, and decisions."
+    preconditions = "1. List startup checks and blocking gates in execution order."
+    workflow = """
       1. Orchestrate skills and tools in execution order.
       2. Keep detailed reusable behavior in skills, not here.
       """
-    ["Guardrails"] = "- State role boundaries, authority, approval rules, and stop conditions."
-    ["Outputs"] = "- State artifacts, evidence, and user-visible handoffs."
-    ["Completion criteria"] = "- State observable conditions required before the role is done."
-    ["Failure handling"] = "- State when to stop, ask, escalate, or return a structured error."
-    ["Related units"] = "- `<skill-or-command>` — explain the relationship and ownership boundary."
-    ["Reference"] = "<!-- Optional. Put schemas, tables, and detailed formats here or in a linked reference file. -->"
-    ["Examples"] = "<!-- Optional. Keep examples non-normative and place them last. -->"
+    guardrails = "- State role boundaries, authority, approval rules, and stop conditions."
+    outputs = "- State artifacts, evidence, and user-visible handoffs."
+    completionCriteria = "- State observable conditions required before the role is done."
+    failureHandling = "- State when to stop, ask, escalate, or return a structured error."
+    relatedUnits = "- `<skill-or-command>` — explain the relationship and ownership boundary."
+    reference = "<!-- Optional. Put schemas, tables, and detailed formats here or in a linked reference file. -->"
+    examples = "<!-- Optional. Keep examples non-normative and place them last. -->"
   }
 }
 
@@ -80,29 +69,29 @@ command: UnitTemplate = new {
       - "<primary-skill>"
     ---
     """
-  guidance = new {
-    ["Purpose"] = "- State the user-facing action and delegated skill chain."
-    ["Inputs"] = "- `$ARGUMENTS`: define required and optional positional or free-form input."
-    ["Preconditions"] = "1. State argument, repository-state, and approval gates."
-    ["Workflow"] = """
+  body = new common.InstructionBody {
+    purpose = "- State the user-facing action and delegated skill chain."
+    inputs = "- `$ARGUMENTS`: define required and optional positional or free-form input."
+    preconditions = "1. State argument, repository-state, and approval gates."
+    workflow = """
       1. Load the primary skill.
       2. Pass normalized inputs.
       3. Preserve skill-owned gates.
       4. Return the result and stop.
       """
-    ["Guardrails"] = """
+    guardrails = """
       - Keep the command thin; never duplicate detailed skill behavior.
       - State mode switches and command-owned side effects only.
       """
-    ["Outputs"] = "- State the exact response or artifact shape."
-    ["Completion criteria"] = "- State how the command knows the delegated workflow completed."
-    ["Failure handling"] = "- State argument errors, delegated blockers, and side-effect failures."
-    ["Related units"] = """
+    outputs = "- State the exact response or artifact shape."
+    completionCriteria = "- State how the command knows the delegated workflow completed."
+    failureHandling = "- State argument errors, delegated blockers, and side-effect failures."
+    relatedUnits = """
       - `<skill>` — sole owner of detailed behavior.
       - `<agent>` — default execution role.
       """
-    ["Reference"] = "<!-- Optional. Document argument syntax or modes. -->"
-    ["Examples"] = "<!-- Optional. Keep examples last. -->"
+    reference = "<!-- Optional. Document argument syntax or modes. -->"
+    examples = "<!-- Optional. Keep examples last. -->"
   }
 }
 
@@ -115,20 +104,20 @@ skill: UnitTemplate = new {
     compatibility: opencode
     ---
     """
-  guidance = new {
-    ["Purpose"] = "- State the reusable behavior this skill owns."
-    ["Inputs"] = "- List accepted inputs, authoritative sources, and optional context."
-    ["Preconditions"] = "1. State required state and blocking gates."
-    ["Workflow"] = """
+  body = new common.InstructionBody {
+    purpose = "- State the reusable behavior this skill owns."
+    inputs = "- List accepted inputs, authoritative sources, and optional context."
+    preconditions = "1. State required state and blocking gates."
+    workflow = """
       1. Give a deterministic ordered procedure.
       2. Keep fragile or repeated operations in scripts when appropriate.
       """
-    ["Guardrails"] = "- State invariants, scope boundaries, approval requirements, and forbidden behavior."
-    ["Outputs"] = "- State artifacts, structured response fields, and evidence."
-    ["Completion criteria"] = "- State observable validation and done conditions."
-    ["Failure handling"] = "- State recoverable versus blocking failures and required escalation."
-    ["Related units"] = "- `<command-or-agent>` — explain who invokes or consumes the skill."
-    ["Reference"] = "<!-- Optional. Keep schemas, tables, and detailed formats here or in a directly linked reference file. -->"
-    ["Examples"] = "<!-- Optional. Keep examples non-normative and last. -->"
+    guardrails = "- State invariants, scope boundaries, approval requirements, and forbidden behavior."
+    outputs = "- State artifacts, structured response fields, and evidence."
+    completionCriteria = "- State observable validation and done conditions."
+    failureHandling = "- State recoverable versus blocking failures and required escalation."
+    relatedUnits = "- `<command-or-agent>` — explain who invokes or consumes the skill."
+    reference = "<!-- Optional. Keep schemas, tables, and detailed formats here or in a directly linked reference file. -->"
+    examples = "<!-- Optional. Keep examples non-normative and last. -->"
   }
 }

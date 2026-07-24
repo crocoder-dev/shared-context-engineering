@@ -1,6 +1,8 @@
+import "shared-content-common.pkl" as common
+
 local class UnitSpec {
   title: String
-  canonicalBody: String
+  body: common.InstructionBody
 }
 
 agents = new Mapping {}
@@ -8,70 +10,71 @@ agents = new Mapping {}
 commands = new Mapping {
   ["commit"] = new UnitSpec {
     title = "Commit"
-    canonicalBody = """
-## Purpose
+    body = new common.InstructionBody {
+      purpose = """
 - Produce repository-style atomic commit messaging from staged changes.
 - In regular mode, return proposals only; in `oneshot`/`skip` mode, produce one message and execute one commit.
-
-## Inputs
+"""
+      inputs = """
 - `$ARGUMENTS`: optional commit context; the first token selects bypass mode when it is `oneshot` or `skip` (case-insensitive).
 - The staged diff from `git diff --cached`.
-
-## Preconditions
+"""
+      preconditions = """
 1. Determine regular or bypass mode from the first argument token.
 2. In regular mode, ask the user to stage all intended files and confirm staging.
 3. In bypass mode, skip the staging prompt but require a non-empty staged diff.
-
-## Workflow
+"""
+      workflow = """
 1. Load `sce-atomic-commit`.
 2. In regular mode, classify staged scope, apply the skill's context guidance, and return one or more proposals plus split guidance when needed; do not commit.
 3. In bypass mode, skip context-guidance gating and split analysis, require exactly one message, and treat plan/task citations as best-effort.
 4. In bypass mode, run `git commit -m "<message>"` once.
 5. Report proposals in regular mode or the new commit hash in bypass mode, then stop.
-
-## Guardrails
+"""
+      guardrails = """
 - Analyze only intentionally staged changes.
 - Keep message grammar and atomicity decisions skill-owned.
 - Never invent plan slugs, task IDs, issue references, or change intent.
 - In bypass mode, do not amend, retry, create fallback commits, or propose splits after a failed commit.
-
-## Outputs
+"""
+      outputs = """
 - Regular mode: commit-message proposal(s) and file split guidance when justified.
 - Bypass mode: exactly one commit message and either the successful commit hash or the exact commit failure.
-
-## Completion criteria
+"""
+      completionCriteria = """
 - Regular mode ends after faithful proposals are returned.
 - Bypass mode ends after exactly one `git commit` attempt is reported.
-
-## Failure handling
+"""
+      failureHandling = """
 - Stop with `No staged changes. Stage changes before commit.` when the staged diff is empty.
 - In regular mode, stop for clarification when staged plan changes require citations that cannot be inferred faithfully.
 - In bypass mode, omit ambiguous plan citations and report a failed commit without retrying.
-
-## Related units
+"""
+      relatedUnits = """
 - `sce-atomic-commit` — sole owner of staged-diff analysis and message construction.
 - `Shared Context Code` — default agent for this command.
 """
+    }
   }
 }
 
 skills = new Mapping {
   ["sce-atomic-commit"] = new UnitSpec {
     title = "SCE Atomic Commit"
-    canonicalBody = """
-## Purpose
+    body = new common.InstructionBody {
+      purpose = """
 - Convert intentionally staged changes into faithful repository-style commit-message proposal(s).
 - Keep each proposed commit focused on one coherent change; honor command-provided bypass overrides when present.
-
-## Inputs
+"""
+      inputs = """
 - Staged diff (preferred), changed-file list with notes, PR/task summary, or before/after behavior notes.
 - Optional command mode overrides for regular versus bypass behavior.
-
-## Preconditions
+"""
+      preconditions = """
 1. Prefer the staged diff as authoritative change truth.
 2. Require enough evidence to identify the change intent, scope, and any required plan/task citations.
-
-## Workflow
+"""
+      workflow = """
 1. Analyze the staged diff for one or more coherent change units.
 2. Choose the smallest stable subsystem or module as scope for each unit.
 3. Write an imperative, concrete subject using `<scope>: <Subject>`.
@@ -81,34 +84,34 @@ skills = new Mapping {
 7. In regular mode, propose file split guidance when unrelated goals are staged together.
 8. In bypass mode, produce exactly one message, omit split guidance, skip context-guidance gating, and treat plan citations as best-effort.
 9. Validate every proposal against the staged diff.
-
-## Guardrails
+"""
+      guardrails = """
 - Remain proposal-only in regular mode.
 - Do not force an already coherent change into multiple commits.
 - Do not combine unrelated goals merely to avoid split guidance.
 - Do not invent plan slugs, task IDs, issue references, or rationale.
 - Do not mention routine context-sync activity in commit messages.
 - Avoid vague subjects such as `cleanup` or `updates`.
-
-## Outputs
+"""
+      outputs = """
 - Regular mode: one or more complete commit-message proposals and justified split guidance.
 - Bypass mode: exactly one complete commit message.
-
-## Completion criteria
+"""
+      completionCriteria = """
 - Every proposal faithfully describes its intended staged files as one coherent unit.
 - Subjects are concise, technical, imperative, and punctuation-correct.
 - Bodies add useful context rather than repeat the subject.
-
-## Failure handling
+"""
+      failureHandling = """
 - In regular mode, stop for clarification when required plan/task citations cannot be inferred faithfully.
 - Report insufficient staged evidence instead of guessing change intent.
 - In bypass mode, omit ambiguous plan citations rather than block the command.
-
-## Related units
+"""
+      relatedUnits = """
 - `/commit` — selects regular or bypass mode and owns any `git commit` execution.
 - `Shared Context Code` — default agent for commit workflows.
-
-## Reference
+"""
+      reference = """
 Use this message grammar:
 
 ```text
@@ -121,5 +124,6 @@ Use this message grammar:
 
 Use the smallest stable subsystem as scope. Do not end the subject with a period. Use a body only when it adds useful context.
 """
+    }
   }
 }

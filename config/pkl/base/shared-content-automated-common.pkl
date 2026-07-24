@@ -1,13 +1,28 @@
+import "shared-content-common.pkl" as shared
+
 /// Shared schema and reusable snippets for canonical authored content units (automated profile).
 /// See context/sce/automated-profile-contract.md for gate policies P1-P10.
 
-class ContentUnit {
-  id: String
-  kind: String
-  slug: String
-  title: String
-  canonicalBody: String
-}
+typealias InstructionBody = shared.InstructionBody
+typealias ToolPolicy = shared.ToolPolicy
+typealias ProfilePolicy = shared.ProfilePolicy
+typealias ExecutionProfile = shared.ExecutionProfile
+typealias WorkflowUnit = shared.WorkflowUnit
+typealias SkillUnit = shared.SkillUnit
+
+capabilityIds = shared.capabilityIds
+
+function effectiveToolPolicy(profile: ToolPolicy, workflow: ToolPolicy): ToolPolicy =
+  shared.effectiveToolPolicy(profile, workflow)
+
+function profileCompositionMarker(profileSlug: String): String =
+  shared.profileCompositionMarker(profileSlug)
+
+function nativeAgentBody(profile: ExecutionProfile): InstructionBody =
+  shared.nativeAgentBody(profile)
+
+function composeProfile(profile: ExecutionProfile, workflow: WorkflowUnit): InstructionBody =
+  shared.composeProfile(profile, workflow)
 
 sharedSceCorePrinciplesSection = """
 Core principles

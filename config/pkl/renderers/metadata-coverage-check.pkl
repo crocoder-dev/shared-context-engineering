@@ -20,7 +20,7 @@ inventoryCoverage = new {
 }
 
 opencodeAgentCoverage {
-  for (unitSlug, _ in shared.agents) {
+  for (unitSlug, _ in shared.executionProfiles) {
     [unitSlug] = new {
       description = opencode.agentDescriptions[unitSlug]
       displayName = opencode.agentDisplayNames[unitSlug]
@@ -31,7 +31,7 @@ opencodeAgentCoverage {
 }
 
 opencodeCommandCoverage {
-  for (unitSlug, _ in shared.commands) {
+  for (unitSlug, _ in shared.workflows) {
     [unitSlug] = new {
       description = common.commandDescriptions[unitSlug]
       agent = opencode.commandAgents[unitSlug]
@@ -49,7 +49,7 @@ opencodeSkillCoverage {
 }
 
 claudeAgentCoverage {
-  for (unitSlug, _ in shared.agents) {
+  for (unitSlug, _ in shared.executionProfiles) {
     [unitSlug] = new {
       description = claude.agentDescriptions[unitSlug]
       color = claude.agentColors[unitSlug]
@@ -59,7 +59,7 @@ claudeAgentCoverage {
 }
 
 claudeCommandCoverage {
-  for (unitSlug, _ in shared.commands) {
+  for (unitSlug, _ in shared.workflows) {
     [unitSlug] = new {
       description = common.commandDescriptions[unitSlug]
       allowedTools = claude.commandAllowedTools[unitSlug]
@@ -77,7 +77,7 @@ claudeSkillCoverage {
 }
 
 piAgentPromptCoverage {
-  for (unitSlug, _ in shared.agents) {
+  for (unitSlug, _ in shared.executionProfiles) {
     [unitSlug] = new {
       description = pi.agentDescriptions[unitSlug]
       argumentHint = pi.agentArgumentHints[unitSlug]
@@ -87,7 +87,7 @@ piAgentPromptCoverage {
 }
 
 piCommandCoverage {
-  for (unitSlug, _ in shared.commands) {
+  for (unitSlug, _ in shared.workflows) {
     [unitSlug] = new {
       description = common.commandDescriptions[unitSlug]
       argumentHint = pi.commandArgumentHints[unitSlug]
@@ -105,7 +105,7 @@ piSkillCoverage {
 
 // Automated OpenCode profile coverage checks
 opencodeAutomatedAgentCoverage {
-  for (unitSlug, _ in sharedAutomated.agents) {
+  for (unitSlug, _ in sharedAutomated.executionProfiles) {
     [unitSlug] = new {
       description = opencodeAutomated.agentDescriptions[unitSlug]
       displayName = opencodeAutomated.agentDisplayNames[unitSlug]
@@ -116,7 +116,7 @@ opencodeAutomatedAgentCoverage {
 }
 
 opencodeAutomatedCommandCoverage {
-  for (unitSlug, _ in sharedAutomated.commands) {
+  for (unitSlug, _ in sharedAutomated.workflows) {
     [unitSlug] = new {
       description = common.commandDescriptions[unitSlug]
       agent = opencodeAutomated.commandAgents[unitSlug]
