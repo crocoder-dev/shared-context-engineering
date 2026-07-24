@@ -183,6 +183,15 @@ effectivePolicyProblems: Listing<String>(isEmpty) = new {
   when (!manual.effectiveWorkflowPolicies["commit"].approvalRequiredCapabilities.contains("vcs.commit")) {
     "commit effective policy does not require approval for vcs.commit"
   }
+  when (manual.executionProfiles["shared-context-code"].policy.tools.approvalRequiredCapabilities.contains("vcs.commit")) {
+    "manual code profile makes commit approval profile-wide instead of workflow-specific"
+  }
+  when (manual.executionProfiles["shared-context-plan"].policy.tools.allowedCapabilities.contains("process.execute")) {
+    "manual planning profile allows process execution"
+  }
+  when (manual.effectiveWorkflowPolicies["change-to-plan"].allowedCapabilities.contains("process.execute")) {
+    "manual change-to-plan allows process execution"
+  }
   when (manual.effectiveWorkflowPolicies["next-task"].approvalRequiredCapabilities.contains("vcs.commit")) {
     "next-task inherited profile approval outside its effective allow-set"
   }
@@ -260,11 +269,36 @@ openCodeNativeBindingProblems: Listing<String>(isEmpty) = new {
       "automated OpenCode workflow \(workflowSlug) is not a thin canonical workflow body"
     }
   }
+  when (!manualOpenCode.agents["shared-context-code"].frontmatter.contains("bash: allow")) {
+    "manual code profile does not allow process execution"
+  }
+  when (!manualOpenCode.agents["shared-context-plan"].frontmatter.contains("bash: block")) {
+    "manual planning profile does not block process execution"
+  }
+  when (!manualOpenCode.commands["change-to-plan"].frontmatter.contains("bash: block")) {
+    "manual change-to-plan does not block process execution"
+  }
   when (!manualOpenCode.commands["next-task"].frontmatter.contains("bash: allow")) {
     "manual next-task lost allowed process execution"
   }
+  when (!manualOpenCode.commands["handover"].frontmatter.contains("bash: block")) {
+    "manual handover does not preserve its process-execution exclusion"
+  }
   when (!manualOpenCode.commands["commit"].frontmatter.contains("bash: ask")) {
     "manual commit does not preserve vcs.commit approval"
+  }
+  for (workflowSlug, workflowUnit in manual.workflows) {
+    when (!manualOpenCode.commands[workflowSlug].frontmatter.contains("permission:\n")) {
+      "manual OpenCode workflow \(workflowSlug) omits its explicit permission block"
+    }
+    when (!manualOpenCode.commands[workflowSlug].frontmatter.contains("    \"*\": ask")) {
+      "manual OpenCode workflow \(workflowSlug) omits the wildcard skill posture"
+    }
+    for (skillSlug in workflowUnit.requiredSkills) {
+      when (!manualOpenCode.commands[workflowSlug].frontmatter.contains("    \"\(skillSlug)\": allow")) {
+        "manual OpenCode workflow \(workflowSlug) does not allow required skill \(skillSlug)"
+      }
+    }
   }
   when (!automatedOpenCode.commands["change-to-plan-interactive"].frontmatter.contains("bash: block")) {
     "automated interactive planning workflow can execute processes"
@@ -275,9 +309,6 @@ local function claudeCompositionFindings(
   expectedProfile: common.ExecutionProfile,
   renderedBody: String
 ): Listing<String> = new {
-  when (!renderedBody.contains(common.profileCompositionMarker(expectedProfile.slug))) {
-    "missing or wrong composed profile marker"
-  }
   when (!renderedBody.contains(expectedProfile.policy.body.preconditions)) {
     "missing profile preconditions"
   }
@@ -293,9 +324,9 @@ local claudeNextTask = manual.workflows["next-task"]
 local claudeCodeProfile = manual.executionProfiles["shared-context-code"]
 local claudePlanProfile = manual.executionProfiles["shared-context-plan"]
 local claudeValidComposedBody = common.renderBody(common.composeProfile(claudeCodeProfile, claudeNextTask))
-local claudeMissingMarkerBody = common.renderBody(claudeNextTask.body)
-local claudeWrongMarkerBody = common.renderBody(common.composeProfile(claudePlanProfile, claudeNextTask))
-local claudeMissingPolicyBody = "\(common.profileCompositionMarker(claudeCodeProfile.slug))\n\(common.renderBody(claudeNextTask.body))"
+local claudeMissingProfileBody = common.renderBody(claudeNextTask.body)
+local claudeWrongProfileBody = common.renderBody(common.composeProfile(claudePlanProfile, claudeNextTask))
+local claudeMissingPolicyBody = common.renderBody(claudeNextTask.body)
 local claudeCommands = manualClaude.commands.toMap()
 
 claudeCompositionProblems: Listing<String>(isEmpty) = new {
@@ -345,13 +376,13 @@ claudeCompositionProblems: Listing<String>(isEmpty) = new {
   when (!claudeCompositionFindings(claudeCodeProfile, claudeValidComposedBody).isEmpty) {
     "valid Claude composed fixture was rejected"
   }
-  when (!claudeCompositionFindings(claudeCodeProfile, claudeMissingMarkerBody)
-    .contains("missing or wrong composed profile marker")) {
-    "missing-marker Claude fixture was not detected"
+  when (!claudeCompositionFindings(claudeCodeProfile, claudeMissingProfileBody)
+    .contains("missing profile preconditions")) {
+    "missing-profile-policy Claude fixture was not detected"
   }
-  when (!claudeCompositionFindings(claudeCodeProfile, claudeWrongMarkerBody)
-    .contains("missing or wrong composed profile marker")) {
-    "wrong-marker Claude fixture was not detected"
+  when (!claudeCompositionFindings(claudeCodeProfile, claudeWrongProfileBody)
+    .contains("missing profile preconditions")) {
+    "wrong-profile-policy Claude fixture was not detected"
   }
   when (!claudeCompositionFindings(claudeCodeProfile, claudeMissingPolicyBody)
     .contains("missing profile guardrails")) {
@@ -381,11 +412,6 @@ piCompositionProblems: Listing<String>(isEmpty) = new {
     "Pi workflow prompt count differs from the canonical workflow count"
   }
   for (workflowSlug, workflowUnit in manual.workflows) {
-    when (!piCommands[workflowSlug].body.contains(
-      common.profileCompositionMarker(piProfile(workflowUnit).slug)
-    )) {
-      "Pi workflow \(workflowSlug) is missing its composed profile marker"
-    }
     when (!piCommands[workflowSlug].body.contains(piProfile(workflowUnit).policy.body.preconditions)
       || !piCommands[workflowSlug].body.contains(piProfile(workflowUnit).policy.body.guardrails)
       || !piCommands[workflowSlug].body.contains(piProfile(workflowUnit).policy.body.failureHandling)) {
@@ -470,11 +496,14 @@ helperCompositionProblems: Listing<String>(isEmpty) = new {
   when (!manualNativeBody.relatedUnits.contains("`sce-task-execution` — skill allowed by this execution profile.")) {
     "native profile helper did not generate allowed-skill relationships"
   }
-  when (!manualComposedBody.purpose.startsWith(common.profileCompositionMarker("shared-context-code"))) {
-    "manual composed workflow has a missing or unstable profile marker"
+  when (!manualComposedBody.purpose.contains(manualCodeProfile.policy.body.purpose)) {
+    "manual composition omitted profile purpose"
   }
-  when (!automatedComposedBody.purpose.startsWith(common.profileCompositionMarker("shared-context-code"))) {
-    "automated composed workflow has a missing or unstable profile marker"
+  when (!automatedComposedBody.purpose.contains(automatedCodeProfile.policy.body.purpose)) {
+    "automated composition omitted profile purpose"
+  }
+  when (manualComposedRendered.contains("<!--") || automatedComposedRendered.contains("<!--")) {
+    "composed workflow helper emitted an HTML comment"
   }
   when (!manualComposedBody.preconditions.contains(manualCodeProfile.policy.body.preconditions)) {
     "manual composition omitted profile preconditions"

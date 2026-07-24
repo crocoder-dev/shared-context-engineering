@@ -15,9 +15,6 @@ capabilityIds = shared.capabilityIds
 function effectiveToolPolicy(profile: ToolPolicy, workflow: ToolPolicy): ToolPolicy =
   shared.effectiveToolPolicy(profile, workflow)
 
-function profileCompositionMarker(profileSlug: String): String =
-  shared.profileCompositionMarker(profileSlug)
-
 function nativeAgentBody(profile: ExecutionProfile): InstructionBody =
   shared.nativeAgentBody(profile)
 

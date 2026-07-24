@@ -102,10 +102,6 @@ function effectiveToolPolicy(profile: ToolPolicy, workflow: ToolPolicy): ToolPol
     )
   }
 
-/// Stable marker used to prove which canonical profile policy was composed into a workflow.
-function profileCompositionMarker(profileSlug: String): String =
-  "<!-- sce-execution-profile: \(profileSlug) -->"
-
 local function allowedSkillRelations(profile: ExecutionProfile): String =
   profile.policy.allowedSkills
     .map((skillSlug) -> "- `\(skillSlug)` — skill allowed by this execution profile.")
@@ -139,7 +135,6 @@ function nativeAgentBody(profile: ExecutionProfile): InstructionBody =
 function composeProfile(profile: ExecutionProfile, workflowUnit: WorkflowUnit): InstructionBody =
   new InstructionBody {
     purpose = """
-\(profileCompositionMarker(profile.slug))
 \(profile.policy.body.purpose)
 \(workflowUnit.body.purpose)
 """

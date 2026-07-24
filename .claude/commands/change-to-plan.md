@@ -1,10 +1,9 @@
 ---
 description: "Use `sce-plan-authoring` to turn a change request into a scoped SCE plan"
-allowed-tools: Task, Read, Glob, Grep, Edit, Write, AskUserQuestion, Skill, Bash
+allowed-tools: Task, Read, Glob, Grep, Edit, Write, AskUserQuestion, Skill
 ---
 
 ## Purpose
-<!-- sce-execution-profile: shared-context-plan -->
 - Establish planning policy for repository changes while keeping architecture, risk, and approval decisions human-owned.
 - Produce implementation-ready context artifacts without crossing into implementation.
 - Turn `$ARGUMENTS` into a scoped SCE implementation plan by delegating to `sce-plan-authoring`.

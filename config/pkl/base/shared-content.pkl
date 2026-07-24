@@ -22,11 +22,9 @@ executionProfiles: Mapping<String, common.ExecutionProfile> = new {
           "repository.read",
           "repository.search",
           "repository.write",
-          "process.execute",
           "interaction.ask",
           "skill.invoke"
         )
-        approvalRequiredCapabilities = List("process.execute")
       }
     }
   }
@@ -47,7 +45,6 @@ executionProfiles: Mapping<String, common.ExecutionProfile> = new {
       )
       tools = new common.ToolPolicy {
         allowedCapabilities = common.capabilityIds
-        approvalRequiredCapabilities = List("vcs.commit")
       }
     }
   }
@@ -93,7 +90,6 @@ workflows: Mapping<String, common.WorkflowUnit> = new {
         "repository.read",
         "repository.search",
         "repository.write",
-        "process.execute",
         "interaction.ask",
         "skill.invoke"
       )

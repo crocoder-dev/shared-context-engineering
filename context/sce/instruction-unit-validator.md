@@ -15,7 +15,7 @@ nix develop -c pkl eval \
   -x summary
 ```
 
-A passing result reports `productionUnitCount = 58`, `generatedFileUnitCount = 99`, zero rendered-model and generated-file diagnostics, eight valid fixtures, 18 invalid fixtures, zero fixture failures, and `status = "VALIDATION_OK"`.
+A passing result reports `productionUnitCount = 58`, `generatedFileUnitCount = 99`, zero rendered-model and generated-file diagnostics, eight valid fixtures, 19 invalid fixtures, zero fixture failures, and `status = "VALIDATION_OK"`.
 
 ## Input ownership
 
@@ -37,9 +37,10 @@ The validator enforces:
 - OpenCode command skill references resolving to the automated skill inventory, which is the active superset;
 - OpenCode agent `permission.skill` entries resolving to that inventory, except wildcard `*`;
 - OpenCode execution-profile agents using `mode: primary`;
-- OpenCode workflows binding the canonical profile agent, remaining non-subtask, declaring canonical entry/required skills, and matching capability-derived permissions;
-- Claude workflows carrying the correct composed-profile marker and guardrails with capability-derived `allowed-tools`;
-- Pi workflows carrying the correct composed-profile marker and guardrails, requiring the full project-local entry-skill read, and resolving that skill to its generated path.
+- OpenCode workflows binding the canonical profile agent, remaining non-subtask, declaring canonical entry/ordered required skills, and matching complete capability-derived permission blocks including wildcard and required-skill entries;
+- command and prompt bodies containing no HTML comments;
+- Claude workflows carrying canonical profile preconditions, guardrails, and failure handling with capability-derived `allowed-tools`;
+- Pi workflows carrying canonical profile preconditions, guardrails, and failure handling, requiring the full project-local entry-skill read, and resolving that skill to its generated path.
 
 Diagnostics use the stable shape:
 
@@ -49,9 +50,9 @@ Diagnostics use the stable shape:
 
 ## Fixtures
 
-The Pkl check module includes valid agent, command, skill, manual-profile, and automated-profile fixtures plus valid OpenCode-native, Claude-composed, and Pi-composed workflow bindings. Its 18 invalid fixtures retain the ten structural/frontmatter/skill-reference cases and add missing OpenCode primary mode, mismatched workflow agent, missing `subtask: false`, missing/wrong composed marker, missing composed guardrail, excessive Claude tools, and missing Pi entry-skill read coverage.
+The Pkl check module includes valid agent, command, skill, manual-profile, and automated-profile fixtures plus valid OpenCode-native, Claude-composed, and Pi-composed workflow bindings. Its 19 invalid fixtures retain the ten structural/frontmatter/skill-reference cases and add missing OpenCode primary mode, mismatched workflow agent, missing `subtask: false`, missing/wrong composed profile policy, missing composed guardrail, an HTML-comment command body, excessive Claude tools, and missing Pi entry-skill read coverage. The adjacent portable-model gate additionally asserts the exact manual OpenCode Code/Plan Bash postures, command-specific Bash outcomes, explicit permission blocks, wildcard skill posture, required-skill allows, and commit-only approval ownership.
 
-Logical-reference, capability-ceiling, projection-classification/destination, unresolved Pi skill-path, and stale Pi prompt cases use ten additional typed fixtures in `portable-execution-profile-check.pkl`, because malformed canonical objects cannot inhabit the production Pkl types.
+Logical-reference, capability-ceiling, projection-classification/destination, unresolved Pi skill-path, and stale Claude/Pi profile-output cases use 12 additional typed fixtures in `portable-execution-profile-check.pkl`, because malformed canonical objects cannot inhabit the production Pkl types.
 
 The check module constrains production diagnostics and fixture-failure listings to be empty, so evaluation fails when the production model becomes invalid or a fixture no longer proves its expected rule.
 

@@ -4,7 +4,6 @@ allowed-tools: Task, Read, Glob, Grep, Edit, Write, AskUserQuestion, Skill, Bash
 ---
 
 ## Purpose
-<!-- sce-execution-profile: shared-context-code -->
 - Perform controlled repository and operational work from explicit user intent or an approved SCE workflow.
 - Keep implementation evidence and durable context aligned with code truth.
 - Review, authorize, execute, verify, and context-sync one SCE plan task.

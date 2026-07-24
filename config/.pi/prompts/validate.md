@@ -4,7 +4,6 @@ argument-hint: "<plan-name>"
 ---
 
 ## Purpose
-<!-- sce-execution-profile: shared-context-code -->
 - Perform controlled repository and operational work from explicit user intent or an approved SCE workflow.
 - Keep implementation evidence and durable context aligned with code truth.
 - Run the final SCE validation phase by delegating to `sce-validation`.

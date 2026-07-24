@@ -115,6 +115,10 @@ function validate(unit: UnitInput): Listing<Diagnostic> =
       newDiagnostic(unit, "body.starts_with_purpose", "body does not begin with ## Purpose", "first body line is ## Purpose")
     }
 
+    when (unit.kind == "command" && unit.body.contains("<!--")) {
+      newDiagnostic(unit, "body.html_comment", "command or prompt body contains an HTML comment", "no <!-- sequences")
+    }
+
     for (section in inventory.requiredSections) {
       when (bodyHeadings.filter((heading) -> heading == section).length == 0) {
         newDiagnostic(unit, "body.required_section", "missing required section \(section)", "exactly one ## \(section)")
@@ -191,11 +195,14 @@ function validate(unit: UnitInput): Listing<Diagnostic> =
     }
 
     when (unit.target == "claude" && unit.profile == "manual" && isKnownWorkflow(unit)) {
-      when (!unit.body.contains(common.profileCompositionMarker(profileFor(unit).slug))) {
-        newDiagnostic(unit, "composition.marker", "workflow has a missing or wrong execution-profile marker", common.profileCompositionMarker(profileFor(unit).slug))
+      when (!unit.body.contains(profileFor(unit).policy.body.preconditions)) {
+        newDiagnostic(unit, "composition.preconditions", "workflow omits composed profile preconditions", "canonical profile preconditions")
       }
       when (!unit.body.contains(profileFor(unit).policy.body.guardrails)) {
         newDiagnostic(unit, "composition.guardrail", "workflow omits composed profile guardrails", "canonical profile guardrails")
+      }
+      when (!unit.body.contains(profileFor(unit).policy.body.failureHandling)) {
+        newDiagnostic(unit, "composition.failure_handling", "workflow omits composed profile failure handling", "canonical profile failure handling")
       }
       when (!unit.frontmatter.contains("allowed-tools: \(claudeMetadata.renderCommandAllowedTools(effectivePolicyFor(unit)))")) {
         newDiagnostic(unit, "target.tool_ceiling", "Claude tools differ from effective capabilities", "capability-translated effective allowed-tools")
@@ -203,11 +210,14 @@ function validate(unit: UnitInput): Listing<Diagnostic> =
     }
 
     when (unit.target == "pi" && unit.profile == "manual" && isKnownWorkflow(unit)) {
-      when (!unit.body.contains(common.profileCompositionMarker(profileFor(unit).slug))) {
-        newDiagnostic(unit, "composition.marker", "workflow has a missing or wrong execution-profile marker", common.profileCompositionMarker(profileFor(unit).slug))
+      when (!unit.body.contains(profileFor(unit).policy.body.preconditions)) {
+        newDiagnostic(unit, "composition.preconditions", "workflow omits composed profile preconditions", "canonical profile preconditions")
       }
       when (!unit.body.contains(profileFor(unit).policy.body.guardrails)) {
         newDiagnostic(unit, "composition.guardrail", "workflow omits composed profile guardrails", "canonical profile guardrails")
+      }
+      when (!unit.body.contains(profileFor(unit).policy.body.failureHandling)) {
+        newDiagnostic(unit, "composition.failure_handling", "workflow omits composed profile failure handling", "canonical profile failure handling")
       }
       when (!unit.body.contains(piEntrySkillRead(workflowFor(unit).entrySkill))) {
         newDiagnostic(unit, "pi.skill_read", "workflow does not require a full project-local entry-skill read", piEntrySkillRead(workflowFor(unit).entrySkill))

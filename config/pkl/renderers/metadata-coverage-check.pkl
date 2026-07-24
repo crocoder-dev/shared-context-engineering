@@ -110,7 +110,6 @@ claudeCommandCoverage {
       description = common.commandDescriptions[unitSlug]
       executionProfile = unit.executionProfile
       allowedTools = claude.renderCommandAllowedTools(shared.effectiveWorkflowPolicies[unitSlug])
-      composedMarker = sharedCommon.profileCompositionMarker(unit.executionProfile)
     }
   }
 }
@@ -130,7 +129,6 @@ piCommandCoverage {
       description = common.commandDescriptions[unitSlug]
       argumentHint = pi.commandArgumentHints[unitSlug]
       executionProfile = unit.executionProfile
-      composedMarker = sharedCommon.profileCompositionMarker(unit.executionProfile)
       entrySkill = unit.entrySkill
       entrySkillPath = ".pi/skills/\(unit.entrySkill)/SKILL.md"
     }

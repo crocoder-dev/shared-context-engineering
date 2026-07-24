@@ -4,7 +4,6 @@ argument-hint: "<change request>"
 ---
 
 ## Purpose
-<!-- sce-execution-profile: shared-context-plan -->
 - Establish planning policy for repository changes while keeping architecture, risk, and approval decisions human-owned.
 - Produce implementation-ready context artifacts without crossing into implementation.
 - Turn `$ARGUMENTS` into a scoped SCE implementation plan by delegating to `sce-plan-authoring`.

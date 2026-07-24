@@ -11,7 +11,7 @@ permission:
   glob: allow
   grep: allow
   list: allow
-  bash: ask
+  bash: allow
   question: allow
   codesearch: allow
   lsp: allow

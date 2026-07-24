@@ -4,7 +4,6 @@ allowed-tools: Task, Read, Glob, Grep, Edit, Write, AskUserQuestion, Skill
 ---
 
 ## Purpose
-<!-- sce-execution-profile: shared-context-code -->
 - Perform controlled repository and operational work from explicit user intent or an approved SCE workflow.
 - Keep implementation evidence and durable context aligned with code truth.
 - Create a durable handover for the current task by delegating to `sce-handover-writer`.

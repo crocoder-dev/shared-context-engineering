@@ -263,19 +263,24 @@ skills:
     expectedRule = "opencode.subtask"
   }
   new FixtureCase {
-    name = "missing-composed-marker"
-    unit = renderedFixture("missing-composed-marker", "claude", "next-task", claude.commands["next-task"].frontmatter, common.renderBody(manual.workflows["next-task"].body))
-    expectedRule = "composition.marker"
+    name = "missing-composed-preconditions"
+    unit = renderedFixture("missing-composed-preconditions", "claude", "next-task", claude.commands["next-task"].frontmatter, common.renderBody(manual.workflows["next-task"].body))
+    expectedRule = "composition.preconditions"
   }
   new FixtureCase {
-    name = "wrong-composed-marker"
-    unit = renderedFixture("wrong-composed-marker", "claude", "next-task", claude.commands["next-task"].frontmatter, common.renderBody(common.composeProfile(manual.executionProfiles["shared-context-plan"], manual.workflows["next-task"])))
-    expectedRule = "composition.marker"
+    name = "wrong-composed-profile"
+    unit = renderedFixture("wrong-composed-profile", "claude", "next-task", claude.commands["next-task"].frontmatter, common.renderBody(common.composeProfile(manual.executionProfiles["shared-context-plan"], manual.workflows["next-task"])))
+    expectedRule = "composition.preconditions"
   }
   new FixtureCase {
     name = "missing-composed-guardrail"
-    unit = renderedFixture("missing-composed-guardrail", "claude", "next-task", claude.commands["next-task"].frontmatter, "\(common.profileCompositionMarker("shared-context-code"))\n\(common.renderBody(manual.workflows["next-task"].body))")
+    unit = renderedFixture("missing-composed-guardrail", "claude", "next-task", claude.commands["next-task"].frontmatter, common.renderBody(manual.workflows["next-task"].body))
     expectedRule = "composition.guardrail"
+  }
+  new FixtureCase {
+    name = "html-comment-in-command"
+    unit = renderedFixture("html-comment-in-command", "claude", "next-task", claude.commands["next-task"].frontmatter, "## Purpose\n<!-- hidden marker -->\n\(claude.commands["next-task"].body.drop("## Purpose\n".length))")
+    expectedRule = "body.html_comment"
   }
   new FixtureCase {
     name = "excessive-claude-tools"
