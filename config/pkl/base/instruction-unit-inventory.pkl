@@ -1,0 +1,358 @@
+// Canonical cross-harness inventory and standard section contract for SCE instruction units.
+//
+// Logical units are derived from the manual and automated shared-content aggregations. Explicit
+// projections own target carriers, profile binding, enforcement classification, generated paths,
+// and optional tracked root mirrors without embedding target policy in canonical units.
+
+import "shared-content.pkl" as manual
+import "shared-content-automated.pkl" as automated
+
+/// Ordered required body sections. Every active instruction body must contain each of these level-two
+/// headings exactly once and in this order.
+requiredSections: List<String> = List(
+  "Purpose",
+  "Inputs",
+  "Preconditions",
+  "Workflow",
+  "Guardrails",
+  "Outputs",
+  "Completion criteria",
+  "Failure handling",
+  "Related units"
+)
+
+/// Optional sections permitted only after the full required set, in this order.
+optionalSections: List<String> = List("Reference", "Examples")
+
+typealias LogicalKind = "execution-profile"|"workflow"|"skill"
+typealias ProjectionTarget = "opencode"|"claude"|"pi"
+typealias ProjectionCarrier = "agent"|"command"|"prompt"|"skill"
+typealias ProfileBinding = "native"|"composed"|"none"
+typealias ControlStrength = "native"|"prompt"|"none"
+
+/// Recognized canonical logical-unit kinds.
+unitKinds: List<LogicalKind> = List("execution-profile", "workflow", "skill")
+
+/// One explicit target projection of a canonical logical unit.
+class Projection {
+  target: ProjectionTarget
+  carrier: ProjectionCarrier
+  profileBinding: ProfileBinding
+  toolControl: ControlStrength
+  semanticControl: ControlStrength
+  destination: String
+  rootMirror: String?
+}
+
+/// One canonical logical unit and its approved target projections.
+class InventoryUnit {
+  id: String
+  kind: LogicalKind
+  slug: String
+  title: String
+  /// "manual" or "automated" generation profile.
+  profile: String
+  status: "active"
+  projections: List<Projection>
+}
+
+local function manualProfileProjections(slug: String, title: String): List<Projection> = List(
+  new Projection {
+    target = "opencode"
+    carrier = "agent"
+    profileBinding = "native"
+    toolControl = "native"
+    semanticControl = "prompt"
+    destination = "config/.opencode/agent/\(title).md"
+    rootMirror = ".opencode/agent/\(title).md"
+  },
+  new Projection {
+    target = "claude"
+    carrier = "agent"
+    profileBinding = "native"
+    toolControl = "native"
+    semanticControl = "prompt"
+    destination = "config/.claude/agents/\(slug).md"
+    rootMirror = ".claude/agents/\(slug).md"
+  }
+)
+
+local function manualWorkflowProjections(slug: String): List<Projection> = List(
+  new Projection {
+    target = "opencode"
+    carrier = "command"
+    profileBinding = "native"
+    toolControl = "native"
+    semanticControl = "prompt"
+    destination = "config/.opencode/command/\(slug).md"
+    rootMirror = ".opencode/command/\(slug).md"
+  },
+  new Projection {
+    target = "claude"
+    carrier = "command"
+    profileBinding = "composed"
+    toolControl = "native"
+    semanticControl = "prompt"
+    destination = "config/.claude/commands/\(slug).md"
+    rootMirror = ".claude/commands/\(slug).md"
+  },
+  new Projection {
+    target = "pi"
+    carrier = "prompt"
+    profileBinding = "composed"
+    toolControl = "none"
+    semanticControl = "prompt"
+    destination = "config/.pi/prompts/\(slug).md"
+    rootMirror = ".pi/prompts/\(slug).md"
+  }
+)
+
+local function manualSkillProjections(slug: String): List<Projection> = List(
+  new Projection {
+    target = "opencode"
+    carrier = "skill"
+    profileBinding = "none"
+    toolControl = "none"
+    semanticControl = "prompt"
+    destination = "config/.opencode/skills/\(slug)/SKILL.md"
+    rootMirror = ".opencode/skills/\(slug)/SKILL.md"
+  },
+  new Projection {
+    target = "claude"
+    carrier = "skill"
+    profileBinding = "none"
+    toolControl = "none"
+    semanticControl = "prompt"
+    destination = "config/.claude/skills/\(slug)/SKILL.md"
+    rootMirror = ".claude/skills/\(slug)/SKILL.md"
+  },
+  new Projection {
+    target = "pi"
+    carrier = "skill"
+    profileBinding = "none"
+    toolControl = "none"
+    semanticControl = "prompt"
+    destination = "config/.pi/skills/\(slug)/SKILL.md"
+    rootMirror = ".pi/skills/\(slug)/SKILL.md"
+  }
+)
+
+local function automatedProjection(kind: LogicalKind, slug: String, title: String): Projection =
+  new Projection {
+    target = "opencode"
+    carrier = if (kind == "execution-profile") "agent" else if (kind == "workflow") "command" else "skill"
+    profileBinding = if (kind == "execution-profile" || kind == "workflow") "native" else "none"
+    toolControl = if (kind == "execution-profile" || kind == "workflow") "native" else "none"
+    semanticControl = "prompt"
+    destination = if (kind == "execution-profile") "config/automated/.opencode/agent/\(title).md"
+      else if (kind == "workflow") "config/automated/.opencode/command/\(slug).md"
+      else "config/automated/.opencode/skills/\(slug)/SKILL.md"
+    rootMirror = null
+  }
+
+/// Manual inventory: profiles project to OpenCode/Claude; workflows and skills also project to Pi.
+manualUnits: Mapping<String, InventoryUnit> = new {
+  for (_, unit in manual.executionProfiles) {
+    [unit.id] = new InventoryUnit {
+      id = unit.id
+      kind = "execution-profile"
+      slug = unit.slug
+      title = unit.title
+      profile = "manual"
+      status = "active"
+      projections = manualProfileProjections(unit.slug, unit.title)
+    }
+  }
+  for (_, unit in manual.workflows) {
+    [unit.id] = new InventoryUnit {
+      id = unit.id
+      kind = "workflow"
+      slug = unit.slug
+      title = unit.title
+      profile = "manual"
+      status = "active"
+      projections = manualWorkflowProjections(unit.slug)
+    }
+  }
+  for (_, unit in manual.skills) {
+    [unit.id] = new InventoryUnit {
+      id = unit.id
+      kind = "skill"
+      slug = unit.slug
+      title = unit.title
+      profile = "manual"
+      status = "active"
+      projections = manualSkillProjections(unit.slug)
+    }
+  }
+}
+
+/// Automated inventory: every logical unit has one OpenCode-only projection and no root mirror.
+automatedUnits: Mapping<String, InventoryUnit> = new {
+  for (_, unit in automated.executionProfiles) {
+    [unit.id] = new InventoryUnit {
+      id = unit.id
+      kind = "execution-profile"
+      slug = unit.slug
+      title = unit.title
+      profile = "automated"
+      status = "active"
+      projections = List(automatedProjection("execution-profile", unit.slug, unit.title))
+    }
+  }
+  for (_, unit in automated.workflows) {
+    [unit.id] = new InventoryUnit {
+      id = unit.id
+      kind = "workflow"
+      slug = unit.slug
+      title = unit.title
+      profile = "automated"
+      status = "active"
+      projections = List(automatedProjection("workflow", unit.slug, unit.title))
+    }
+  }
+  for (_, unit in automated.skills) {
+    [unit.id] = new InventoryUnit {
+      id = unit.id
+      kind = "skill"
+      slug = unit.slug
+      title = unit.title
+      profile = "automated"
+      status = "active"
+      projections = List(automatedProjection("skill", unit.slug, unit.title))
+    }
+  }
+}
+
+manualProjections: List<Projection> = new Listing {
+  for (_, unit in manualUnits) {
+    for (projection in unit.projections) { projection }
+  }
+}.toList()
+
+automatedProjections: List<Projection> = new Listing {
+  for (_, unit in automatedUnits) {
+    for (projection in unit.projections) { projection }
+  }
+}.toList()
+
+allProjections: List<Projection> = manualProjections + automatedProjections
+
+local targetOrder: List<ProjectionTarget> = List("opencode", "claude", "pi")
+manualTargets: List<ProjectionTarget> = targetOrder.filter((target) ->
+  manualProjections.any((projection) -> projection.target == target)
+)
+automatedTargets: List<ProjectionTarget> = targetOrder.filter((target) ->
+  automatedProjections.any((projection) -> projection.target == target)
+)
+
+generatedInstructionPaths: List<String> = allProjections
+  .map((projection) -> projection.destination)
+  .sort()
+rootMirrorPaths: List<String> = new Listing {
+  for (projection in allProjections) {
+    when (projection.rootMirror != null) { projection.rootMirror }
+  }
+}.toList().sort()
+committedInstructionPaths: List<String> = (generatedInstructionPaths + rootMirrorPaths).sort()
+
+/// Duplicate target/carrier pairs within one logical unit are invalid.
+duplicateProjectionProblems: Listing<String> = new {
+  for (_, unit in manualUnits) {
+    for (projection in unit.projections) {
+      when (unit.projections.filter((candidate) ->
+        candidate.target == projection.target && candidate.carrier == projection.carrier
+      ).length > 1) {
+        "manual unit \(unit.id) duplicates \(projection.target)/\(projection.carrier) projection"
+      }
+    }
+  }
+  for (_, unit in automatedUnits) {
+    for (projection in unit.projections) {
+      when (unit.projections.filter((candidate) ->
+        candidate.target == projection.target && candidate.carrier == projection.carrier
+      ).length > 1) {
+        "automated unit \(unit.id) duplicates \(projection.target)/\(projection.carrier) projection"
+      }
+    }
+  }
+}
+
+/// Per-kind slug-keyed views used by renderer metadata coverage.
+manualAgents: Mapping<String, InventoryUnit> = new {
+  for (_, unit in manualUnits) {
+    when (unit.kind == "execution-profile") { [unit.slug] = unit }
+  }
+}
+manualCommands: Mapping<String, InventoryUnit> = new {
+  for (_, unit in manualUnits) {
+    when (unit.kind == "workflow") { [unit.slug] = unit }
+  }
+}
+manualSkills: Mapping<String, InventoryUnit> = new {
+  for (_, unit in manualUnits) {
+    when (unit.kind == "skill") { [unit.slug] = unit }
+  }
+}
+automatedAgents: Mapping<String, InventoryUnit> = new {
+  for (_, unit in automatedUnits) {
+    when (unit.kind == "execution-profile") { [unit.slug] = unit }
+  }
+}
+automatedCommands: Mapping<String, InventoryUnit> = new {
+  for (_, unit in automatedUnits) {
+    when (unit.kind == "workflow") { [unit.slug] = unit }
+  }
+}
+automatedSkills: Mapping<String, InventoryUnit> = new {
+  for (_, unit in automatedUnits) {
+    when (unit.kind == "skill") { [unit.slug] = unit }
+  }
+}
+
+local manualExecutionProfileCount = manual.executionProfiles.length
+local manualWorkflowCount = manual.workflows.length
+local manualSkillCount = manual.skills.length
+local automatedExecutionProfileCount = automated.executionProfiles.length
+local automatedWorkflowCount = automated.workflows.length
+local automatedSkillCount = automated.skills.length
+
+/// Logical-unit and projection-derived file counts.
+counts = new {
+  manual = new {
+    executionProfiles = manualExecutionProfileCount
+    workflows = manualWorkflowCount
+    skills = manualSkillCount
+    projections = manualProjections.length
+  }
+  automated = new {
+    executionProfiles = automatedExecutionProfileCount
+    workflows = automatedWorkflowCount
+    skills = automatedSkillCount
+    projections = automatedProjections.length
+  }
+  renderedInstructionFiles = generatedInstructionPaths.length
+  rootMirrors = rootMirrorPaths.length
+  committedInstructionFiles = committedInstructionPaths.length
+}
+
+/// Metadata entry that no active generated unit consumes.
+class StaleEntry {
+  location: String
+  entry: String
+  profile: String
+  reason: String
+}
+
+// No stale metadata entry remains. Pi profile prompt projections and generated outputs are removed.
+staleEntries: Listing<StaleEntry> = new {}
+
+/// Reference that an active body points at but does not resolve.
+class BrokenReference {
+  location: String
+  reference: String
+  reason: String
+}
+
+// The prior missing plan-example reference was replaced by an inline Reference section.
+brokenReferences: Listing<BrokenReference> = new {}

@@ -1,0 +1,136 @@
+// Canonical reusable templates for SCE instruction units (execution profile, workflow, skill).
+//
+// This is the single authoring source for the contributor-facing templates published at repository
+// root `templates/{execution-profile,workflow,skill}.md`. Template guidance uses the same typed
+// `InstructionBody` model and `renderBody` boundary as active units, so section headings and order
+// cannot drift through a parallel serializer.
+//
+// The guidance text is standardized from the read-only reference bundle
+// `sce-opencode-standardization/templates/`. That bundle is input only; it is never the authority.
+//
+// Frontmatter demonstrates supported-target fields (OpenCode-flavored, matching the reference bundle);
+// per-target frontmatter differences are called out inline where they matter.
+
+import "shared-content-common.pkl" as common
+
+/// One instruction-unit template: frontmatter plus a typed instruction body.
+class UnitTemplate {
+  /// Rendered YAML frontmatter block including the enclosing `---` delimiters.
+  frontmatter: String
+  /// Guidance authored in the same typed section model as active instruction units.
+  body: common.InstructionBody
+
+  /// Full template file text: frontmatter, blank line, body, trailing newline.
+  rendered: String = "\(frontmatter)\n\n\(common.renderBody(body))\n"
+}
+
+executionProfile: UnitTemplate = new {
+  frontmatter = """
+    ---
+    name: "<Human-readable execution-profile name>"
+    description: <What invocation-wide role this profile owns and when it should be selected.>
+    mode: primary
+    permission:
+      default: ask
+      read: allow
+      edit: ask
+      bash: ask
+      skill:
+        "*": ask
+        "<allowed-skill>": allow
+    ---
+    """
+  body = new common.InstructionBody {
+    purpose = "- State the broad invocation-wide role outcome without duplicating a workflow."
+    inputs = "- List required user intent, repository state, context, and human decisions."
+    preconditions = "1. List profile-wide startup checks and blocking gates."
+    workflow = """
+      1. State the broad operating posture for workflows bound to this profile.
+      2. Keep user-invoked sequencing in workflows and reusable procedures in skills.
+      """
+    guardrails = "- State role boundaries, authority, approval rules, and stop conditions."
+    outputs = "- State profile-wide evidence and user-visible handoff expectations."
+    completionCriteria = "- State observable conditions shared by invocations of this profile."
+    failureHandling = "- State when profile-bound work must stop, ask, escalate, or return an error."
+    relatedUnits = "- `<allowed-skill>` — explain why the profile permits this reusable procedure."
+    reference = """
+      <!--
+      Required canonical declaration fields: slug, title, and policy. ProfilePolicy must contain
+      body, allowedSkills, and toolPolicy. ToolPolicy contains harness-neutral allowedCapabilities
+      and approvalRequiredCapabilities; target renderers translate those capabilities to native tools.
+      -->
+      """
+    examples = "<!-- Optional. Keep examples non-normative and place them last. -->"
+  }
+}
+
+workflow: UnitTemplate = new {
+  frontmatter = """
+    ---
+    description: "<Action-oriented outcome>"
+    agent: "<Projected execution-profile carrier name>"
+    entry-skill: "<primary-skill>"
+    skills:
+      - "<primary-skill>"
+    subtask: false
+    ---
+    """
+  body = new common.InstructionBody {
+    purpose = "- State the user-invoked action and delegated skill chain."
+    inputs = "- `$ARGUMENTS`: define required and optional positional or free-form input."
+    preconditions = "1. State argument, repository-state, and approval gates."
+    workflow = """
+      1. Load the entry skill.
+      2. Pass normalized inputs.
+      3. Preserve skill-owned gates.
+      4. Return the result and stop.
+      """
+    guardrails = """
+      - Keep the workflow thin; never duplicate execution-profile policy or detailed skill behavior.
+      - A workflow capability allow-set may only narrow its execution-profile ceiling.
+      - State mode switches and workflow-owned side effects only.
+      """
+    outputs = "- State the exact response or artifact shape."
+    completionCriteria = "- State how the workflow knows the delegated procedure completed."
+    failureHandling = "- State argument errors, delegated blockers, and side-effect failures."
+    relatedUnits = """
+      - `<entry-skill>` — sole owner of the primary detailed procedure.
+      - `<execution-profile>` — invocation-wide role policy bound by this workflow.
+      """
+    reference = """
+      <!--
+      Required canonical declaration fields: slug, title, description, body, executionProfile,
+      entrySkill, requiredSkills, and toolPolicy. entrySkill must occur in requiredSkills, all skills
+      must resolve through the bound profile, and workflow capabilities must be a profile subset.
+      -->
+      """
+    examples = "<!-- Optional. Keep examples last. -->"
+  }
+}
+
+skill: UnitTemplate = new {
+  frontmatter = """
+    ---
+    name: lowercase-kebab-name
+    description: |
+      Explain what the skill does and concrete trigger contexts. Put discovery conditions here, not in a body section named "When to use".
+    compatibility: opencode
+    ---
+    """
+  body = new common.InstructionBody {
+    purpose = "- State the reusable behavior this skill owns."
+    inputs = "- List accepted inputs, authoritative sources, and optional context."
+    preconditions = "1. State required state and blocking gates."
+    workflow = """
+      1. Give a deterministic ordered procedure.
+      2. Keep fragile or repeated operations in scripts when appropriate.
+      """
+    guardrails = "- State invariants, scope boundaries, approval requirements, and forbidden behavior."
+    outputs = "- State artifacts, structured response fields, and evidence."
+    completionCriteria = "- State observable validation and done conditions."
+    failureHandling = "- State recoverable versus blocking failures and required escalation."
+    relatedUnits = "- `<command-or-agent>` — explain who invokes or consumes the skill."
+    reference = "<!-- Optional. Keep schemas, tables, and detailed formats here or in a directly linked reference file. -->"
+    examples = "<!-- Optional. Keep examples non-normative and last. -->"
+  }
+}

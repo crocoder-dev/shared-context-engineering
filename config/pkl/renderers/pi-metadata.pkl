@@ -1,22 +1,18 @@
-agentDescriptions = new Mapping {
-  ["shared-context-plan"] = "Act in the shared-context-plan role to create or update an SCE plan before implementation."
-  ["shared-context-code"] = "Act in the shared-context-code role to execute one approved SCE task and sync context."
-}
+import "../base/instruction-unit-inventory.pkl" as inventory
 
-agentArgumentHints = new Mapping {
-  ["shared-context-plan"] = "<change request>"
-  ["shared-context-code"] = "<plan-name> [T0X]"
-}
+// Hand-authored workflow presentation metadata, looked up by slug. The exposed mapping is keyed by
+// the canonical inventory so only active manual workflows render and stale entries cannot leak.
 
-agentSkillReferences = new Mapping {
-  ["shared-context-plan"] = "sce-plan-authoring"
-  ["shared-context-code"] = "sce-task-execution"
-}
-
-commandArgumentHints = new Mapping {
+local commandArgumentHintText = new Mapping {
   ["next-task"] = "<plan-name> [T0X]"
   ["change-to-plan"] = "<change request>"
   ["handover"] = "[task context]"
   ["commit"] = "[oneshot|skip]"
   ["validate"] = "<plan-name>"
+}
+
+commandArgumentHints = new Mapping {
+  for (slug, _ in inventory.manualCommands) {
+    [slug] = commandArgumentHintText[slug]
+  }
 }

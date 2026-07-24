@@ -1,24 +1,64 @@
 ---
 description: "Run `sce-plan-review` -> `sce-task-execution` -> `sce-context-sync` for one approved SCE task"
 agent: "Shared Context Code"
+subtask: false
+entry-skill: "sce-plan-review"
+skills:
+  - "sce-plan-review"
+  - "sce-task-execution"
+  - "sce-context-sync"
+  - "sce-validation"
+permission:
+  default: block
+  read: allow
+  edit: allow
+  glob: allow
+  grep: allow
+  list: allow
+  bash: allow
+  question: allow
+  codesearch: allow
+  lsp: allow
+  skill:
+    "*": block
+    "sce-plan-review": allow
+    "sce-task-execution": allow
+    "sce-context-sync": allow
+    "sce-validation": allow
 ---
 
-Load and follow `sce-plan-review`, then `sce-task-execution`, then `sce-context-sync`.
+## Purpose
+- Review and execute exactly one SCE task non-interactively, then synchronize context and run final validation when applicable.
 
-Input:
-`$ARGUMENTS`
+## Inputs
+- `$ARGUMENTS`: plan name/path (required) and task ID (strongly preferred).
 
-Expected arguments:
-- plan name or plan path (required)
-- task ID (`T0X`) (optional)
+## Preconditions
+1. Require an existing plan and context tree.
+2. Auto-pass readiness only with explicit plan and task ID plus a clean review.
+3. Stop with structured errors for every unresolved issue.
 
-Behavior:
-- Run `sce-plan-review` first to resolve plan target/task and readiness.
-- Apply readiness confirmation gate from `sce-plan-review`:
-  - auto-pass only when both plan + task ID are provided and review reports no blockers/ambiguity/missing acceptance criteria
-  - otherwise stop with structured error listing unresolved items
-- Run `sce-task-execution`; keep mandatory implementation stop (auto-proceed with logging), scoped implementation, checks/lints/build, and plan status updates skill-owned.
-- Run `sce-context-sync` as the required done gate.
-- Wait for user feedback; if in-scope fixes are requested, apply fixes, rerun light checks (and a light/fast build when applicable), then run `sce-context-sync` again.
-- If this is the final plan task, run `sce-validation`.
-- If more tasks remain, prompt a new session with `/next-task {plan_name} T0X`.
+## Workflow
+1. Load `sce-plan-review`.
+2. When ready, load `sce-task-execution`; log intent and proceed.
+3. Load `sce-context-sync` after implementation.
+4. Apply only in-scope feedback fixes, rerun light checks, and sync again.
+5. Run `sce-validation` for the final task; otherwise return the next `/next-task` command.
+
+## Guardrails
+- Keep orchestration thin and deterministic.
+- Execute one task only.
+- Do not wait for interactive implementation confirmation.
+- Stop immediately on scope expansion or unresolved readiness.
+
+## Outputs
+- Readiness, implementation evidence, plan status, context-sync result, and final validation or next-task handoff.
+
+## Completion criteria
+- The task is complete with evidence and synchronized context.
+
+## Failure handling
+- Return a structured error with category, evidence, and required human action.
+
+## Related units
+- `sce-plan-review`, `sce-task-execution`, `sce-context-sync`, and `sce-validation`.

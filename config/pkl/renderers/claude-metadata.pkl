@@ -1,29 +1,60 @@
-agentDescriptions = new Mapping {
+import "../base/instruction-unit-inventory.pkl" as inventory
+import "../base/shared-content-common.pkl" as common
+
+/// Claude-only translation from canonical capability intent to native tool names.
+/// Allowed-tool metadata expresses the canonical ceiling; semantic policy remains prompt-enforced.
+capabilityTools: Mapping<common.CapabilityId, List<String>> = new {
+  ["repository.read"] = List("Read")
+  ["repository.search"] = List("Glob", "Grep")
+  ["repository.write"] = List("Edit", "Write")
+  ["process.execute"] = List("Bash")
+  ["interaction.ask"] = List("AskUserQuestion")
+  ["skill.invoke"] = List("Skill", "Task")
+  ["vcs.commit"] = List("Bash")
+}
+
+local nativeTools = List(
+  "Task",
+  "Read",
+  "Glob",
+  "Grep",
+  "Edit",
+  "Write",
+  "AskUserQuestion",
+  "Skill",
+  "Bash"
+)
+
+function translatedTools(policy: common.ToolPolicy): List<String> =
+  nativeTools.filter((tool) ->
+    policy.allowedCapabilities.any((capability) -> capabilityTools[capability].contains(tool))
+  )
+
+function renderAgentTools(policy: common.ToolPolicy): String =
+  "[\"\(translatedTools(policy).join("\", \""))\"]"
+
+function renderCommandAllowedTools(policy: common.ToolPolicy): String =
+  translatedTools(policy).join(", ")
+
+// Hand-authored per-unit metadata, looked up by slug. The exposed mappings are keyed by iterating the
+// canonical inventory so only active manual units render and stale entries cannot leak.
+
+local agentDescriptionText = new Mapping {
   ["shared-context-plan"] = "Use when the user needs to create or update an SCE plan before implementation."
   ["shared-context-code"] = "Use when the user wants to execute one approved SCE task and sync context."
 }
 
-agentColors = new Mapping {
+local agentColorText = new Mapping {
   ["shared-context-plan"] = "blue"
   ["shared-context-code"] = "green"
 }
 
-agentTools = "[\"Read\", \"Glob\", \"Grep\", \"Edit\", \"Write\", \"Skill\", \"AskUserQuestion\", \"Task\", \"Bash\"]"
-
-agentSystemPreambleBlocks = new Mapping {
+local agentSystemPreambleBlockText = new Mapping {
   ["shared-context-plan"] = ""
   ["shared-context-code"] = ""
 }
 
-commandAllowedTools = new Mapping {
-  ["next-task"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
-  ["change-to-plan"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill"
-  ["handover"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill"
-  ["commit"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
-  ["validate"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
-}
-
-skillDescriptions = new Mapping {
+local skillDescriptionText = new Mapping {
   ["sce-bootstrap-context"] = "Creates the SCE (Shared Context Engineering) baseline `context/` directory structure — a set of markdown files and sub-folders used as shared project memory (overview, architecture, patterns, glossary, decisions, plans, handovers, and a temporary scratch space). Use when the `context/` folder is missing from the repository, when a user asks to initialise the project context, set up context, create baseline documentation structure, or when shared configuration files for project memory are absent."
   ["sce-context-sync"] = "Use when user wants to update project documentation to reflect code changes, sync docs with code, refresh project context, or keep AI memory files accurate after completing an implementation task. Scans modified code, classifies the change significance, then updates or verifies Markdown context files under `context/` (overview, architecture, glossary, patterns, context-map, and domain files) so that durable AI memory stays aligned with current code truth."
   ["sce-handover-writer"] = "Creates a structured handover document summarizing task context, decisions made, open questions, and recommended next steps — saved to `context/handovers/`. Use when a user wants to hand off, transition, or pass a task to someone else, create handover notes, write a task transition document, or capture current progress for a future session. Trigger phrases include \"create a handover\", \"hand this off\", \"write handover notes\", \"pass this task on\", or \"document where I'm up to\"."
@@ -32,6 +63,30 @@ skillDescriptions = new Mapping {
   ["sce-task-execution"] = "Executes a single planned implementation task with a mandatory approval gate, scope guardrails, and evidence capture. Use when a user wants to implement, run, or execute a specific task from a project plan — such as coding a feature, applying a patch, or making targeted file changes — while enforcing explicit scope boundaries, a pre-implementation confirmation prompt, test/lint verification, and status tracking in context/plans/{plan_id}.md."
   ["sce-atomic-commit"] = "Write atomic, repo-style git commits from a change summary or diff. Use when preparing commit messages, splitting work into coherent commits, or reviewing whether a commit is too broad."
   ["sce-validation"] = "Runs the final validation phase of a project plan by executing the full test suite, lint and format checks, removing temporary scaffolding, and writing a structured validation report with command outputs and success-criteria evidence to `context/plans/{plan_name}.md`. Use when the user wants to verify a completed implementation, confirm all success criteria are met, wrap up a plan, finalize a feature or fix, or sign off on a change before closing it out."
+}
+
+agentDescriptions = new Mapping {
+  for (slug, _ in inventory.manualAgents) {
+    [slug] = agentDescriptionText[slug]
+  }
+}
+
+agentColors = new Mapping {
+  for (slug, _ in inventory.manualAgents) {
+    [slug] = agentColorText[slug]
+  }
+}
+
+agentSystemPreambleBlocks = new Mapping {
+  for (slug, _ in inventory.manualAgents) {
+    [slug] = agentSystemPreambleBlockText[slug]
+  }
+}
+
+skillDescriptions = new Mapping {
+  for (slug, _ in inventory.manualSkills) {
+    [slug] = skillDescriptionText[slug]
+  }
 }
 
 skillCompatibility = "claude"

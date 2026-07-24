@@ -1,95 +1,132 @@
-agentDescriptions = new Mapping {
+import "../base/instruction-unit-inventory.pkl" as inventory
+import "../base/shared-content-common.pkl" as common
+
+/// OpenCode-only translation from canonical capability intent to native tool names.
+/// Permission intent remains in ToolPolicy; this module only renders that intent for OpenCode.
+capabilityTools: Mapping<common.CapabilityId, List<String>> = new {
+  ["repository.read"] = List("read")
+  ["repository.search"] = List("glob", "grep", "list", "codesearch", "lsp")
+  ["repository.write"] = List("edit")
+  ["process.execute"] = List("bash")
+  ["interaction.ask"] = List("question")
+  ["skill.invoke"] = List("skill")
+  ["vcs.commit"] = List("bash")
+}
+
+local scalarTools = List(
+  "read",
+  "edit",
+  "glob",
+  "grep",
+  "list",
+  "bash",
+  "question",
+  "codesearch",
+  "lsp"
+)
+
+local function capabilitiesForTool(tool: String): List<common.CapabilityId> =
+  common.capabilityIds.filter((capability) -> capabilityTools[capability].contains(tool))
+
+local function actionForTool(
+  tool: String,
+  policy: common.ToolPolicy,
+  deniedAction: String
+): String =
+  if (capabilitiesForTool(tool).any((capability) ->
+    policy.allowedCapabilities.contains(capability)
+    && policy.approvalRequiredCapabilities.contains(capability)
+  )) "ask"
+  else if (capabilitiesForTool(tool).any((capability) -> policy.allowedCapabilities.contains(capability))) "allow"
+  else deniedAction
+
+local function skillLines(
+  policy: common.ToolPolicy,
+  allowedSkills: List<String>,
+  deniedAction: String
+): String =
+  if (!policy.allowedCapabilities.contains("skill.invoke")) "    \"*\": \(deniedAction)"
+  else new Listing {
+    "    \"*\": \(deniedAction)"
+    for (skillSlug in allowedSkills) {
+      "    \"\(skillSlug)\": \(actionForTool("skill", policy, deniedAction))"
+    }
+  }.join("\n")
+
+function renderPermissionBlock(
+  policy: common.ToolPolicy,
+  allowedSkills: List<String>,
+  deniedAction: String
+): String = """
+permission:
+  default: \(deniedAction)
+\(scalarTools.map((tool) -> "  \(tool): \(actionForTool(tool, policy, deniedAction))").join("\n"))
+  skill:
+\(skillLines(policy, allowedSkills, deniedAction))
+"""
+
+// Hand-authored per-unit metadata text/blocks, looked up by slug. The exposed mappings are keyed by
+// iterating the canonical inventory so only active manual units render and stale entries cannot leak.
+
+local agentDescriptionText = new Mapping {
   ["shared-context-plan"] = "Plans a change into atomic tasks in context/plans without touching application code."
   ["shared-context-code"] = "Executes one approved SCE task, validates behavior, and syncs context."
 }
 
-agentDisplayNames = new Mapping {
+local agentDisplayNameText = new Mapping {
   ["shared-context-plan"] = "Shared Context Plan"
   ["shared-context-code"] = "Shared Context Code"
 }
 
-agentColors = new Mapping {
+local agentColorText = new Mapping {
   ["shared-context-plan"] = "#2563eb"
   ["shared-context-code"] = "#059669"
 }
 
-agentBehaviorBlocks = new Mapping {
+local agentBehaviorBlockText = new Mapping {
   ["shared-context-plan"] = ""
   ["shared-context-code"] = ""
 }
 
-agentPermissionBlocks = new Mapping {
-  ["shared-context-plan"] = """
-permission:
-  default: ask
-  read: allow
-  edit: allow
-  glob: allow
-  grep: allow
-  list: allow
-  bash: allow
-  task: allow
-  external_directory: ask
-  todowrite: allow
-  todoread: allow
-  question: allow
-  webfetch: allow
-  websearch: allow
-  codesearch: allow
-  lsp: allow
-  doom_loop: ask
-  skill:
-    "*": ask
-    "sce-bootstrap-context": allow
-    "sce-plan-authoring": allow
-"""
-  ["shared-context-code"] = """
-permission:
-  default: ask
-  read: allow
-  edit: allow
-  glob: allow
-  grep: allow
-  list: allow
-  bash: allow
-  task: allow
-  external_directory: ask
-  todowrite: allow
-  todoread: allow
-  question: allow
-  webfetch: allow
-  websearch: allow
-  codesearch: allow
-  lsp: allow
-  doom_loop: ask
-  skill:
-    "*": ask
-    "sce-plan-review": allow
-    "sce-task-execution": allow
-    "sce-context-sync": allow
-    "sce-validation": allow
-    "sce-atomic-commit": allow
-"""
-}
-
-commandAgents = new Mapping {
-  ["next-task"] = "Shared Context Code"
-  ["change-to-plan"] = "Shared Context Plan"
-  ["handover"] = "Shared Context Code"
-  ["commit"] = "Shared Context Code"
-  ["validate"] = "Shared Context Code"
-}
-
-skillDescriptions = new Mapping {
+local skillDescriptionText = new Mapping {
   ["sce-bootstrap-context"] = "Creates the SCE (Shared Context Engineering) baseline `context/` directory structure — a set of markdown files and sub-folders used as shared project memory (overview, architecture, patterns, glossary, decisions, plans, handovers, and a temporary scratch space). Use when the `context/` folder is missing from the repository, when a user asks to initialise the project context, set up context, create baseline documentation structure, or when shared configuration files for project memory are absent."
   ["sce-context-sync"] = "Use when user wants to update project documentation to reflect code changes, sync docs with code, refresh project context, or keep AI memory files accurate after completing an implementation task. Scans modified code, classifies the change significance, then updates or verifies Markdown context files under `context/` (overview, architecture, glossary, patterns, context-map, and domain files) so that durable AI memory stays aligned with current code truth."
   ["sce-handover-writer"] = "Creates a structured handover document summarizing task context, decisions made, open questions, and recommended next steps — saved to `context/handovers/`. Use when a user wants to hand off, transition, or pass a task to someone else, create handover notes, write a task transition document, or capture current progress for a future session. Trigger phrases include \"create a handover\", \"hand this off\", \"write handover notes\", \"pass this task on\", or \"document where I'm up to\"."
   ["sce-plan-authoring"] = "Creates or updates structured SCE (Shared Context Engine) implementation plans saved to `context/plans/{plan_name}.md`. Breaks a change request into scoped, atomic tasks with clear goals, boundaries, acceptance criteria, and verification steps. Use when a user wants to plan a new feature, refactor, or integration; needs a project plan, task breakdown, implementation roadmap, or work plan; or describes a change with success criteria that requires structured planning before execution."
-  ["sce-plan-authoring-interactive"] = "Use when user wants to Create or update an SCE implementation plan with interactive clarification."
   ["sce-plan-review"] = "Reviews an existing SCE plan file (a Markdown checklist in `context/plans/`) to identify the next unchecked task, surface blockers or ambiguous acceptance criteria, and produce an explicit readiness verdict before implementation begins. Use when the user wants to continue a plan, resume work, pick the next step, or check what remains in an active plan — e.g. \"continue the plan\", \"what's next?\", \"resume work on the plan\", \"review my plan and prepare the next task\"."
   ["sce-task-execution"] = "Executes a single planned implementation task with a mandatory approval gate, scope guardrails, and evidence capture. Use when a user wants to implement, run, or execute a specific task from a project plan — such as coding a feature, applying a patch, or making targeted file changes — while enforcing explicit scope boundaries, a pre-implementation confirmation prompt, test/lint verification, and status tracking in context/plans/{plan_id}.md."
   ["sce-atomic-commit"] = "Write atomic, repo-style git commits from a change summary or diff. Use when preparing commit messages, splitting work into coherent commits, or reviewing whether a commit is too broad."
   ["sce-validation"] = "Runs the final validation phase of a project plan by executing the full test suite, lint and format checks, removing temporary scaffolding, and writing a structured validation report with command outputs and success-criteria evidence to `context/plans/{plan_name}.md`. Use when the user wants to verify a completed implementation, confirm all success criteria are met, wrap up a plan, finalize a feature or fix, or sign off on a change before closing it out."
+}
+
+agentDescriptions = new Mapping {
+  for (slug, _ in inventory.manualAgents) {
+    [slug] = agentDescriptionText[slug]
+  }
+}
+
+agentDisplayNames = new Mapping {
+  for (slug, _ in inventory.manualAgents) {
+    [slug] = agentDisplayNameText[slug]
+  }
+}
+
+agentColors = new Mapping {
+  for (slug, _ in inventory.manualAgents) {
+    [slug] = agentColorText[slug]
+  }
+}
+
+agentBehaviorBlocks = new Mapping {
+  for (slug, _ in inventory.manualAgents) {
+    [slug] = agentBehaviorBlockText[slug]
+  }
+}
+
+skillDescriptions = new Mapping {
+  for (slug, _ in inventory.manualSkills) {
+    [slug] = skillDescriptionText[slug]
+  }
 }
 
 skillCompatibility = "opencode"

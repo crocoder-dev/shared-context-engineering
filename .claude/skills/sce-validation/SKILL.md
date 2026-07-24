@@ -5,42 +5,65 @@ description: |
 compatibility: claude
 ---
 
-## When to use
-- Use for the plan's final validation task after implementation is complete.
-- Triggered by requests like "validate the plan", "run final checks", "confirm everything passes", "wrap up the task", or "sign off on this change".
+## Purpose
+- Run final validation and cleanup for a completed SCE plan or change.
+- Produce evidence for every success criterion and a conclusive pass/fail report.
 
-## Validation checklist
-1) **Run full test suite** - discover and run the project's primary test command (e.g., `pytest`, `npm test`, `go test ./...`, `cargo test`, `make test`). Check `package.json`, `Makefile`, `pyproject.toml`, or CI config files to find the right command.
-2) **Run lint/format checks** - discover and run the project's lint and format tools (e.g., `eslint`, `ruff`, `golangci-lint`, `cargo clippy`, `make lint`). Check project config files such as `.eslintrc`, `pyproject.toml`, or `.golangci.yml`.
-3) **Remove temporary scaffolding** - delete any debug code, temporary files, or intermediate artifacts introduced during the change.
-4) **Verify context reflects final implemented behavior** - confirm that plan context and notes match the actual final state of the implementation.
-5) **Confirm each success criterion has evidence** - for every success criterion defined in the plan, record concrete evidence (command output, exit code, screenshot reference, or file path).
+## Inputs
+- Target plan name/path, success criteria, implemented repository state, and existing task evidence.
 
-### If checks fail
-- **Fixable failures**: fix the issue, re-run the failing check, and update the report with the corrected output.
-- **Non-trivial failures**: document the failure, the attempted fix, and the blocker in the report under "Failed checks and follow-ups". Escalate to the user before closing out.
-- **Lint/format auto-fixes**: if the tool supports auto-fix (e.g., `ruff --fix`, `eslint --fix`), apply it, then re-run to confirm clean output.
+## Preconditions
+1. Resolve the target plan and confirm implementation tasks are complete enough for final validation.
+2. Discover authoritative project commands from repository configuration and CI files rather than guessing.
 
-## Validation report
-Write to `context/plans/{plan_name}.md` including:
-- Commands run
-- Exit codes and key outputs
-- Failed checks and follow-ups
-- Success-criteria verification summary
-- Residual risks, if any
+## Workflow
+1. Run the project's full test suite.
+2. Run lint, format, static-analysis, and build checks required by the repository.
+3. Remove temporary scaffolding, debug code, and intermediate artifacts introduced by the change.
+4. Verify durable context reflects final implemented behavior.
+5. Map concrete evidence to every plan success criterion.
+6. Apply supported, in-scope auto-fixes for lint/format failures and rerun the affected check.
+7. Append a structured validation report to `context/plans/{plan_name}.md`.
+8. Report pass/fail status and residual risks.
 
-### Example report entry
-```
+## Guardrails
+- Do not invent commands, outputs, exit codes, screenshots, or passing results.
+- Do not hide flaky, skipped, or unevaluated criteria.
+- Escalate non-trivial failures instead of broadening scope silently.
+- Preserve evidence sufficient for another session to reproduce the result.
+
+## Outputs
+- A validation report with commands, exit codes, key output, failed checks/follow-ups, criterion evidence, and residual risks.
+- An explicit overall pass/fail result.
+
+## Completion criteria
+- Every required check has a recorded outcome.
+- Every success criterion has concrete evidence or is explicitly unresolved.
+- Temporary scaffolding is removed and context is synchronized.
+
+## Failure handling
+- Fix and rerun failures only when the fix is clearly in scope.
+- For non-trivial failures, record the command, evidence, attempted fix, blocker, and required follow-up; do not close the plan as passed.
+
+## Related units
+- `/validate` — thin command entrypoint.
+- `sce-context-sync` — verifies final context truth.
+- `sce-task-execution` — supplies task-level evidence.
+
+## Reference
+Append a report to the target plan using this shape:
+
+```markdown
 ## Validation Report
 
 ### Commands run
-- `npm test` -> exit 0 (42 tests passed, 0 failed)
-- `eslint src/` -> exit 0 (no warnings)
-- Removed: `src/debug_patch.js` (temporary scaffolding)
+- `command` -> exit 0 (key result)
+
+### Failed checks and follow-ups
+- None.
 
 ### Success-criteria verification
-- [x] All API endpoints return 200 for valid input -> confirmed via test output line 34
-- [x] Error responses include structured JSON -> confirmed via `test_error_format.js`
+- [x] Criterion -> evidence
 
 ### Residual risks
 - None identified.

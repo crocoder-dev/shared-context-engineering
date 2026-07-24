@@ -1,0 +1,343 @@
+import "../base/instruction-unit-inventory.pkl" as inventory
+import "../base/shared-content-common.pkl" as common
+import "../base/shared-content.pkl" as manual
+import "../base/shared-content-automated.pkl" as automated
+import "opencode-content.pkl" as opencode
+import "opencode-automated-content.pkl" as opencodeAutomated
+import "opencode-metadata.pkl" as opencodeMetadata
+import "claude-content.pkl" as claude
+import "claude-metadata.pkl" as claudeMetadata
+import "pi-content.pkl" as pi
+
+/// One rendered instruction unit presented to the validator.
+class UnitInput {
+  path: String
+  profile: "manual"|"automated"
+  target: "opencode"|"claude"|"pi"
+  kind: "agent"|"command"|"skill"
+  slug: String
+  frontmatter: String
+  body: String
+}
+
+/// Stable diagnostic payload. Text rendering follows `<path> [<kind>] <rule>: ...; expected: ...`.
+class Diagnostic {
+  path: String
+  kind: String
+  rule: String
+  message: String
+  expected: String
+  rendered: String = "\(path) [\(kind)] \(rule): \(message); expected: \(expected)"
+}
+
+local expectedSections = (inventory.requiredSections + inventory.optionalSections).join(" -> ")
+local allowedSections = new Mapping {
+  for (section in inventory.requiredSections) { [section] = true }
+  for (section in inventory.optionalSections) { [section] = true }
+}
+local availableSkills = new Mapping {
+  // The automated skill inventory is the active superset of the manual skill inventory.
+  for (slug, _ in inventory.automatedSkills) { [slug] = true }
+}
+
+local requiredFrontmatter = new Mapping {
+  ["opencode:agent"] = List("name", "description", "permission")
+  ["opencode:command"] = List("description", "agent")
+  ["opencode:skill"] = List("name", "description", "compatibility")
+  ["claude:agent"] = List("name", "description", "tools")
+  ["claude:command"] = List("description", "allowed-tools")
+  ["claude:skill"] = List("name", "description", "compatibility")
+  ["pi:agent"] = List("description", "argument-hint")
+  ["pi:command"] = List("description", "argument-hint")
+  ["pi:skill"] = List("name", "description")
+}
+
+local fencedCode = Regex(#"(?s)```.*?```|~~~.*?~~~"#)
+local levelTwoHeading = Regex(#"(?m)^##\s+(.+?)\s*$"#)
+local skillReference = Regex(#"sce-[a-z0-9-]+"#)
+local agentSkillPermissionReference = Regex(#"(?m)^\s+[\"']?(sce-[a-z0-9-]+)[\"']?:\s*"#)
+
+local function headings(body: String): List<String> =
+  levelTwoHeading.findMatchesIn(body.replaceAll(fencedCode, ""))
+    .map((match) -> match.groups[1].value)
+
+local function hasFrontmatterField(frontmatter: String, field: String): Boolean =
+  !Regex("(?m)^" + field + ":(?:\\s|$)").findMatchesIn(frontmatter).isEmpty
+
+local function skillDirectory(path: String): String =
+  let (parts = path.split("/")) parts[parts.length - 2]
+
+local function fieldValue(frontmatter: String, field: String): String? =
+  let (matches = Regex("(?m)^" + field + ":\\s*[\\\"']?([^\\\"'\\n]+)[\\\"']?\\s*$").findMatchesIn(frontmatter))
+    if (matches.isEmpty) null else matches.first.groups[1].value
+
+local function newDiagnostic(unit: UnitInput, ruleName: String, messageText: String, expectedShape: String): Diagnostic =
+  new Diagnostic {
+    path = unit.path
+    kind = unit.kind
+    rule = ruleName
+    message = messageText
+    expected = expectedShape
+  }
+
+local function workflowFor(unit: UnitInput): common.WorkflowUnit =
+  if (unit.profile == "manual") manual.workflows[unit.slug] else automated.workflows[unit.slug]
+
+local function profileFor(unit: UnitInput): common.ExecutionProfile =
+  let (workflow = workflowFor(unit))
+    if (unit.profile == "manual") manual.executionProfiles[workflow.executionProfile]
+    else automated.executionProfiles[workflow.executionProfile]
+
+local function effectivePolicyFor(unit: UnitInput): common.ToolPolicy =
+  if (unit.profile == "manual") manual.effectiveWorkflowPolicies[unit.slug]
+  else automated.effectiveWorkflowPolicies[unit.slug]
+
+local function isKnownWorkflow(unit: UnitInput): Boolean =
+  unit.kind == "command" && if (unit.profile == "manual") manual.workflows.keys.contains(unit.slug)
+    else automated.workflows.keys.contains(unit.slug)
+
+local function piEntrySkillRead(entrySkill: String): String =
+  "- Before acting, read `.pi/skills/\(entrySkill)/SKILL.md` completely and follow it as the entry procedure."
+
+/// Validate one rendered unit. Discovery/path ordering remains inventory-owned.
+function validate(unit: UnitInput): Listing<Diagnostic> =
+  let (bodyHeadings = headings(unit.body))
+  let (recognizedHeadings = bodyHeadings.filter((heading) -> allowedSections.getOrNull(heading) == true))
+  let (presentOptional = inventory.optionalSections.filter((section) -> recognizedHeadings.contains(section)))
+  let (expectedPresentHeadings = inventory.requiredSections + presentOptional)
+  new Listing {
+    for (field in requiredFrontmatter["\(unit.target):\(unit.kind)"]) {
+      when (!hasFrontmatterField(unit.frontmatter, field)) {
+        newDiagnostic(unit, "frontmatter.required_field", "missing frontmatter field \(field)", "\(field): <value>")
+      }
+    }
+
+    when (!unit.body.startsWith("## Purpose\n")) {
+      newDiagnostic(unit, "body.starts_with_purpose", "body does not begin with ## Purpose", "first body line is ## Purpose")
+    }
+
+    for (section in inventory.requiredSections) {
+      when (bodyHeadings.filter((heading) -> heading == section).length == 0) {
+        newDiagnostic(unit, "body.required_section", "missing required section \(section)", "exactly one ## \(section)")
+      }
+      when (bodyHeadings.filter((heading) -> heading == section).length > 1) {
+        newDiagnostic(unit, "body.section_unique", "section \(section) appears \(bodyHeadings.filter((heading) -> heading == section).length) times", "exactly one ## \(section)")
+      }
+    }
+
+    for (heading in bodyHeadings) {
+      when (allowedSections.getOrNull(heading) != true) {
+        newDiagnostic(unit, "body.known_sections", "unknown level-two heading \(heading)", expectedSections)
+      }
+      when (heading.toLowerCase() == "when to use") {
+        newDiagnostic(unit, "body.when_to_use", "body contains a When to use section", "trigger conditions appear only in frontmatter description")
+      }
+    }
+
+    when (recognizedHeadings != expectedPresentHeadings) {
+      newDiagnostic(unit, "body.section_order", "section order is \(recognizedHeadings.join(" -> "))", expectedPresentHeadings.join(" -> "))
+    }
+
+    when (bodyHeadings.contains("Examples") && bodyHeadings.last != "Examples") {
+      newDiagnostic(unit, "body.examples_final", "Examples is not the final level-two section", "## Examples is final")
+    }
+
+    when (unit.kind == "skill") {
+      when (fieldValue(unit.frontmatter, "name") != null && fieldValue(unit.frontmatter, "name") != skillDirectory(unit.path)) {
+        newDiagnostic(unit, "skill.name_directory", "skill name \(fieldValue(unit.frontmatter, "name")) does not match directory \(skillDirectory(unit.path))", skillDirectory(unit.path))
+      }
+    }
+
+    when (unit.target == "opencode" && unit.kind == "command") {
+      for (match in skillReference.findMatchesIn(unit.frontmatter)) {
+        when (availableSkills.getOrNull(match.value) != true) {
+          newDiagnostic(unit, "command.skill_reference", "command references missing skill \(match.value)", "an available skill name")
+        }
+      }
+    }
+
+    when (unit.target == "opencode" && unit.kind == "agent") {
+      for (match in agentSkillPermissionReference.findMatchesIn(unit.frontmatter)) {
+        when (availableSkills.getOrNull(match.groups[1].value) != true) {
+          newDiagnostic(unit, "agent.skill_permission_reference", "agent permission references missing skill \(match.groups[1].value)", "an available skill name or *")
+        }
+      }
+      when (!unit.frontmatter.contains("mode: primary")) {
+        newDiagnostic(unit, "opencode.primary_mode", "execution profile is not a primary agent", "mode: primary")
+      }
+    }
+
+    when (unit.target == "opencode" && isKnownWorkflow(unit)) {
+      when (!unit.frontmatter.contains("agent: \"\(profileFor(unit).title)\"")) {
+        newDiagnostic(unit, "opencode.agent_binding", "workflow does not bind its canonical execution profile", "agent: \"\(profileFor(unit).title)\"")
+      }
+      when (!unit.frontmatter.contains("subtask: false")) {
+        newDiagnostic(unit, "opencode.subtask", "workflow may fork from the primary conversation", "subtask: false")
+      }
+      when (!unit.frontmatter.contains("entry-skill: \"\(workflowFor(unit).entrySkill)\"")) {
+        newDiagnostic(unit, "workflow.entry_skill", "workflow does not declare its canonical entry skill", "entry-skill: \"\(workflowFor(unit).entrySkill)\"")
+      }
+      for (skillSlug in workflowFor(unit).requiredSkills) {
+        when (!unit.frontmatter.contains("  - \"\(skillSlug)\"")) {
+          newDiagnostic(unit, "workflow.required_skill", "workflow omits required skill \(skillSlug)", "skills contains \(skillSlug)")
+        }
+      }
+      when (!unit.frontmatter.contains(opencodeMetadata.renderPermissionBlock(
+        effectivePolicyFor(unit),
+        workflowFor(unit).requiredSkills,
+        if (unit.profile == "manual") "ask" else "block"
+      ))) {
+        newDiagnostic(unit, "target.tool_ceiling", "OpenCode permissions differ from effective capabilities", "capability-translated effective permission block")
+      }
+    }
+
+    when (unit.target == "claude" && unit.profile == "manual" && isKnownWorkflow(unit)) {
+      when (!unit.body.contains(common.profileCompositionMarker(profileFor(unit).slug))) {
+        newDiagnostic(unit, "composition.marker", "workflow has a missing or wrong execution-profile marker", common.profileCompositionMarker(profileFor(unit).slug))
+      }
+      when (!unit.body.contains(profileFor(unit).policy.body.guardrails)) {
+        newDiagnostic(unit, "composition.guardrail", "workflow omits composed profile guardrails", "canonical profile guardrails")
+      }
+      when (!unit.frontmatter.contains("allowed-tools: \(claudeMetadata.renderCommandAllowedTools(effectivePolicyFor(unit)))")) {
+        newDiagnostic(unit, "target.tool_ceiling", "Claude tools differ from effective capabilities", "capability-translated effective allowed-tools")
+      }
+    }
+
+    when (unit.target == "pi" && unit.profile == "manual" && isKnownWorkflow(unit)) {
+      when (!unit.body.contains(common.profileCompositionMarker(profileFor(unit).slug))) {
+        newDiagnostic(unit, "composition.marker", "workflow has a missing or wrong execution-profile marker", common.profileCompositionMarker(profileFor(unit).slug))
+      }
+      when (!unit.body.contains(profileFor(unit).policy.body.guardrails)) {
+        newDiagnostic(unit, "composition.guardrail", "workflow omits composed profile guardrails", "canonical profile guardrails")
+      }
+      when (!unit.body.contains(piEntrySkillRead(workflowFor(unit).entrySkill))) {
+        newDiagnostic(unit, "pi.skill_read", "workflow does not require a full project-local entry-skill read", piEntrySkillRead(workflowFor(unit).entrySkill))
+      }
+      when (inventory.manualSkills[workflowFor(unit).entrySkill].projections
+        .filter((projection) -> projection.target == "pi")
+        .first.destination != "config/.pi/skills/\(workflowFor(unit).entrySkill)/SKILL.md") {
+        newDiagnostic(unit, "pi.skill_path", "entry skill does not resolve to its generated Pi path", "config/.pi/skills/\(workflowFor(unit).entrySkill)/SKILL.md")
+      }
+    }
+  }
+
+local function manualDocument(target: String, logicalKind: String, slug: String) =
+  if (target == "opencode")
+    if (logicalKind == "execution-profile") opencode.agents[slug]
+    else if (logicalKind == "workflow") opencode.commands[slug]
+    else opencode.skills[slug]
+  else if (target == "claude")
+    if (logicalKind == "execution-profile") claude.agents[slug]
+    else if (logicalKind == "workflow") claude.commands[slug]
+    else claude.skills[slug]
+  else
+    if (logicalKind == "workflow") pi.commands[slug]
+    else pi.skills[slug]
+
+local function automatedDocument(logicalKind: String, slug: String) =
+  if (logicalKind == "execution-profile") opencodeAutomated.agents[slug]
+  else if (logicalKind == "workflow") opencodeAutomated.commands[slug]
+  else opencodeAutomated.skills[slug]
+
+local function unitFromFile(
+  filePath: String,
+  profileName: String,
+  targetName: String,
+  unitKind: String,
+  unitSlug: String
+): UnitInput =
+  let (rendered = read("../../../\(filePath)").text)
+  let (parts = rendered.split("\n---\n\n"))
+  new UnitInput {
+    path = filePath
+    profile = if (profileName == "manual") "manual" else "automated"
+    target = if (targetName == "opencode") "opencode" else if (targetName == "claude") "claude" else "pi"
+    kind = if (unitKind == "execution-profile") "agent" else if (unitKind == "workflow") "command" else "skill"
+    slug = unitSlug
+    frontmatter = "\(parts.first)\n---"
+    body = parts.drop(1).join("\n---\n\n")
+  }
+
+/// All 60 approved target projections discovered from the inventory.
+local discoveredProductionUnits: Listing<UnitInput> = new {
+  for (_, unit in inventory.manualUnits) {
+    for (projection in unit.projections) {
+      new UnitInput {
+        path = projection.destination
+        profile = "manual"
+        target = projection.target
+        kind = if (unit.kind == "execution-profile") "agent" else if (unit.kind == "workflow") "command" else "skill"
+        slug = unit.slug
+        frontmatter = manualDocument(projection.target, unit.kind, unit.slug).frontmatter
+        body = manualDocument(projection.target, unit.kind, unit.slug).body
+      }
+    }
+  }
+  for (_, unit in inventory.automatedUnits) {
+    for (projection in unit.projections) {
+      new UnitInput {
+        path = projection.destination
+        profile = "automated"
+        target = projection.target
+        kind = if (unit.kind == "execution-profile") "agent" else if (unit.kind == "workflow") "command" else "skill"
+        slug = unit.slug
+        frontmatter = automatedDocument(unit.kind, unit.slug).frontmatter
+        body = automatedDocument(unit.kind, unit.slug).body
+      }
+    }
+  }
+}
+
+/// Production validation order is path-sorted independently of renderer/inventory insertion details.
+productionUnits: List<UnitInput> = discoveredProductionUnits.toList().sortBy((unit) -> unit.path)
+
+/// Deterministic rendered-model diagnostics. The check module constrains this listing to be empty.
+productionDiagnostics: Listing<Diagnostic> = new {
+  for (unit in productionUnits) {
+    for (diagnostic in validate(unit)) { diagnostic }
+  }
+}
+
+/// All 60 projected config files plus 43 tracked root mirrors, path-sorted.
+/// File loading makes structural validation independent of parity's byte-for-byte comparison.
+local discoveredGeneratedFileUnits: Listing<UnitInput> = new {
+  for (_, unit in inventory.manualUnits) {
+    for (projection in unit.projections) {
+      unitFromFile(
+        projection.destination,
+        "manual",
+        projection.target,
+        unit.kind,
+        unit.slug
+      )
+      when (projection.rootMirror != null) {
+        unitFromFile(
+          projection.rootMirror,
+          "manual",
+          projection.target,
+          unit.kind,
+          unit.slug
+        )
+      }
+    }
+  }
+  for (_, unit in inventory.automatedUnits) {
+    for (projection in unit.projections) {
+      unitFromFile(
+        projection.destination,
+        "automated",
+        projection.target,
+        unit.kind,
+        unit.slug
+      )
+    }
+  }
+}
+
+generatedFileUnits: List<UnitInput> = discoveredGeneratedFileUnits.toList().sortBy((unit) -> unit.path)
+
+generatedFileDiagnostics: Listing<Diagnostic> = new {
+  for (unit in generatedFileUnits) {
+    for (diagnostic in validate(unit)) { diagnostic }
+  }
+}

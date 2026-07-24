@@ -204,15 +204,33 @@
             (pkgs.lib.fileset.maybeMissing ./config/.opencode/agent)
             (pkgs.lib.fileset.maybeMissing ./config/.opencode/command)
             (pkgs.lib.fileset.maybeMissing ./config/.opencode/skills)
-            (pkgs.lib.fileset.maybeMissing ./config/.opencode/lib/drift-collectors.js)
+            (pkgs.lib.fileset.maybeMissing ./config/.opencode/lib/bash-policy-presets.json)
+            (pkgs.lib.fileset.maybeMissing ./config/.opencode/plugins)
+            (pkgs.lib.fileset.maybeMissing ./config/.opencode/opencode.json)
             (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/agent)
             (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/command)
             (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/skills)
-            (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/lib/drift-collectors.js)
+            (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/lib/bash-policy-presets.json)
+            (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/plugins)
+            (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/opencode.json)
             (pkgs.lib.fileset.maybeMissing ./config/.claude/agents)
             (pkgs.lib.fileset.maybeMissing ./config/.claude/commands)
             (pkgs.lib.fileset.maybeMissing ./config/.claude/skills)
+            (pkgs.lib.fileset.maybeMissing ./config/.claude/hooks/run-sce-or-show-install-guidance.sh)
+            (pkgs.lib.fileset.maybeMissing ./config/.claude/settings.json)
+            (pkgs.lib.fileset.maybeMissing ./config/.pi/prompts)
+            (pkgs.lib.fileset.maybeMissing ./config/.pi/skills)
+            (pkgs.lib.fileset.maybeMissing ./config/.pi/extensions)
             (pkgs.lib.fileset.maybeMissing ./config/schema/sce-config.schema.json)
+            (pkgs.lib.fileset.maybeMissing ./.opencode/agent)
+            (pkgs.lib.fileset.maybeMissing ./.opencode/command)
+            (pkgs.lib.fileset.maybeMissing ./.opencode/skills)
+            (pkgs.lib.fileset.maybeMissing ./.claude/agents)
+            (pkgs.lib.fileset.maybeMissing ./.claude/commands)
+            (pkgs.lib.fileset.maybeMissing ./.claude/skills)
+            (pkgs.lib.fileset.maybeMissing ./.pi/prompts)
+            (pkgs.lib.fileset.maybeMissing ./.pi/skills)
+            (pkgs.lib.fileset.maybeMissing ./templates)
             ./config/lib/pi-plugin/sce-pi-extension.ts
             ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
             ./config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts
@@ -1163,22 +1181,42 @@
               }
               trap cleanup EXIT
 
+              pkl eval config/pkl/renderers/metadata-coverage-check.pkl -x summary >/dev/null
+              pkl eval config/pkl/renderers/portable-execution-profile-check.pkl -x summary >/dev/null
+              pkl eval config/pkl/renderers/instruction-unit-validator-check.pkl -x summary >/dev/null
               pkl eval -m "$tmp_dir" config/pkl/generate.pkl >/dev/null
 
               paths=(
                 "config/.opencode/agent"
                 "config/.opencode/command"
                 "config/.opencode/skills"
-                "config/.opencode/lib/drift-collectors.js"
+                "config/.opencode/lib"
+                "config/.opencode/plugins"
+                "config/.opencode/opencode.json"
                 "config/automated/.opencode/agent"
                 "config/automated/.opencode/command"
                 "config/automated/.opencode/skills"
-                "config/automated/.opencode/lib/drift-collectors.js"
+                "config/automated/.opencode/lib"
+                "config/automated/.opencode/plugins"
+                "config/automated/.opencode/opencode.json"
                 "config/.claude/agents"
                 "config/.claude/commands"
                 "config/.claude/skills"
-                "config/.claude/lib/drift-collectors.js"
+                "config/.claude/hooks/run-sce-or-show-install-guidance.sh"
+                "config/.claude/settings.json"
+                "config/.pi/prompts"
+                "config/.pi/skills"
+                "config/.pi/extensions"
                 "config/schema/sce-config.schema.json"
+                ".opencode/agent"
+                ".opencode/command"
+                ".opencode/skills"
+                ".claude/agents"
+                ".claude/commands"
+                ".claude/skills"
+                ".pi/prompts"
+                ".pi/skills"
+                "templates"
               )
 
               stale=0

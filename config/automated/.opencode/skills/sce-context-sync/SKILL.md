@@ -5,89 +5,60 @@ description: |
 compatibility: opencode
 ---
 
-## Principle
-- Context is durable AI memory and must reflect current-state truth.
-- If context and code diverge, code is source of truth.
+## Purpose
+- Reconcile durable SCE context with implemented code so future sessions read current-state truth.
 
-## Mandatory sync pass (important-change gated)
-For every completed implementation task, run a sync pass over these shared files:
-- `context/overview.md`
-- `context/architecture.md`
-- `context/glossary.md`
-- `context/patterns.md`
-- `context/context-map.md`
+## Inputs
+- The completed task, modified files, resulting behavior, plan state, and verification evidence.
+- Existing root and domain context files.
 
-Classify whether the task is an important change before deciding to edit or verify root context files.
+## Preconditions
+1. Read the affected code and treat it as source of truth.
+2. Classify the change as root-impacting or verify-only before editing root context.
 
-## Root context significance gating
-- **Root edits required** - task introduces cross-cutting behavior, repository-wide policy/contracts, architecture boundaries, or canonical terminology changes.
-- **Verify-only** - task is localized to a single feature/domain with no root-level behavior, architecture, or terminology impact. Keep root files unchanged; capture details in domain files instead.
-- Even when verify-only, still verify `context/overview.md`, `context/architecture.md`, and `context/glossary.md` against code truth before declaring done.
+## Workflow
+1. Classify significance: root edits required for cross-cutting behavior, repository policy, architecture boundaries, or canonical terminology; otherwise verify-only.
+2. Verify `context/overview.md`, `context/architecture.md`, and `context/glossary.md` against code truth in every sync pass.
+3. Update relevant root files only for root-impacting changes.
+4. Create or update focused `context/{domain}/` files for feature-specific behavior.
+5. Ensure every newly implemented feature has a durable canonical description discoverable from context.
+6. Add or refresh links in `context/context-map.md`.
+7. Add glossary entries for new canonical domain language.
+8. Verify file length, one-topic focus, relative links, and diagrams where needed.
 
-## Step-by-step sync pass workflow
+## Guardrails
+- Do not write changelog-style completion narratives into core context.
+- Do not edit root files merely to prove a sync occurred.
+- Keep one topic per file and each context file at or below 250 lines.
+- Split oversized detail into focused domain files and link them.
+- Treat completed plans as disposable; preserve durable outcomes elsewhere.
 
-1. **Classify the change** - Important change or verify-only (see [Classification Reference](#classification-reference) below).
-2. **Read the affected code** - Review modified files to understand what actually changed.
-3. **Verify root files** - Open `context/overview.md`, `context/architecture.md`, and `context/glossary.md`; confirm they match code truth.
-4. **Edit or skip root files** - Important change: update relevant root files. Verify-only: leave root files unchanged.
-5. **Create or update domain files** - Write or revise `context/{domain}/` files for feature-specific detail (see [Domain File Policy](#domain-file-creation-policy) below).
-6. **Ensure feature existence** - Every newly implemented feature must have at least one durable canonical description discoverable from context (domain file or `context/overview.md` for cross-cutting features).
-7. **Update `context/context-map.md`** - Add or refresh discoverability links to any new or changed context files.
-8. **Add glossary entries** - For any new domain language introduced by the task.
-9. **Final check** - Confirm all updated files are <= 250 lines, diagrams are present where needed, and links use relative paths.
+## Outputs
+- A significance classification.
+- Updated or verified root context.
+- Updated domain context and context-map links when needed.
+- A concise sync report listing changed and verified files.
 
-### Before/after example
-A task adds a new `PaymentGateway` abstraction used only in the payments domain (verify-only - domain-local).
+## Completion criteria
+- Code and context express the same current behavior and terminology.
+- Every new feature is discoverable through `context/context-map.md`.
+- No context quality constraint is violated.
 
-**`context/glossary.md`** - unchanged (no new root-level terminology).
+## Failure handling
+- Report unresolved code/context contradictions and the authoritative code evidence.
+- Stop before deleting a context file with uncommitted changes.
+- Report broken links, oversized files, or missing feature coverage as sync blockers.
 
-**New file: `context/payments/payment-gateway.md`:**
-```markdown
-# PaymentGateway
+## Related units
+- `sce-task-execution` — supplies implemented change and significance hint.
+- `sce-validation` — confirms final context alignment.
+- `/next-task` — treats this skill as a mandatory done gate.
 
-Abstraction over external payment processors (Stripe, Adyen).
-Defined in `src/payments/gateway/`.
+## Reference
+Classify root-context impact with this rule:
 
-## Contract
-- `charge(amount, token): Result`
-- `refund(chargeId): Result`
+| Root edits required | Verify-only |
+| --- | --- |
+| Cross-cutting behavior, repository-wide policy, architecture boundaries, or canonical terminology changes | Localized feature or bug fix with no root-level behavior, architecture, or terminology impact |
 
-See also: [overview.md](../overview.md), [context-map.md](../context-map.md)
-```
-
-**`context/context-map.md`** - updated with a link to `context/payments/payment-gateway.md`.
-
----
-
-## Classification Reference
-
-| Important change (root edits required) | Verify-only (root files unchanged) |
-|---|---|
-| New auth strategy replacing existing one - architecture + terminology | New field on an existing API response - localized, no architecture impact |
-| Background job queue used across multiple domains - cross-cutting | Bug fix in a single service's retry logic - no new root-level behavior |
-| Renaming a core concept (e.g., `Order` -> `Purchase`) - canonical terminology | New UI component added to an existing feature - no cross-cutting impact |
-
----
-
-## Domain File Creation Policy
-
-- Use `context/{domain}/` for detailed feature behavior.
-- If a feature does not cleanly fit an existing domain file, create a new one - do not defer documentation.
-- If the feature appears to be part of a larger future domain, document the implemented slice now in a focused file and link it to related context.
-- Prefer a small, precise domain file over overloading `overview.md` with detail.
-- If updates for the current feature/domain outgrow shared files, migrate detail into `context/{domain}/` files, keep concise pointers in shared files, and add discoverability links in `context/context-map.md`.
-
----
-
-## Final-task requirement
-- In the final plan task (validation/cleanup), confirm feature existence documentation is present and linked.
-- If a feature was implemented but not represented in context, add the missing entry before declaring the task done.
-
-## Quality constraints
-- One topic per file.
-- Prefer concise current-state documentation over narrative changelogs.
-- Link related context files with relative paths.
-- Include concrete code examples when needed to clarify non-trivial behavior.
-- Every context file must stay at or below 250 lines; if it would exceed 250, split into focused files and link them.
-- Add a Mermaid diagram when structure, boundaries, or flows are complex.
-- Ensure major code areas have matching context coverage.
+Use `context/{domain}/` for feature-specific detail. Keep every context file at or below 250 lines, use one topic per file, use relative links, and add discoverability links to `context/context-map.md`.

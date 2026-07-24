@@ -5,85 +5,87 @@ description: |
 compatibility: claude
 ---
 
-## Goal
-Turn a human change request into `context/plans/{plan_name}.md`.
+## Purpose
+- Convert a change request into a reviewable implementation plan at `context/plans/{plan_name}.md`.
+- Slice executable work into atomic, commit-sized tasks with explicit acceptance and verification.
 
-## Intake trigger
-- If a request includes both a change description and success criteria, planning is mandatory before implementation.
-- Planning does not imply execution approval.
+## Inputs
+- Change description, success criteria, constraints, non-goals, dependencies, risks, and requested plan target.
+- Relevant code and context needed to establish current truth.
+- User answers to blocking clarification questions.
 
-## Clarification gate (blocking)
-- Before writing or updating any plan, run an ambiguity check.
-- If any critical detail is unclear, ask 1-3 targeted questions and stop.
-- Do not write or update `context/plans/{plan_name}.md` until the user answers.
-- Critical details that must be resolved before planning include:
-  - scope boundaries and out-of-scope items
-  - success criteria and acceptance signals
-  - constraints and non-goals
-  - dependency choices (new libs/services, versions, and integration approach)
-  - domain ambiguity (unclear business rules, terminology, or ownership)
-  - architecture concerns (patterns, interfaces, data flow, migration strategy, and risk tradeoffs)
-  - task ordering assumptions and prerequisite sequencing
-- Do not silently invent missing requirements.
-- If the user explicitly allows assumptions, record them in an `Assumptions` section.
-- Incorporate user answers into the plan before handoff.
+## Preconditions
+1. Treat planning as mandatory when a request contains both a change description and success criteria.
+2. Run an ambiguity check before writing or updating the plan.
+3. Resolve scope boundaries, acceptance signals, constraints, dependency choices, domain rules, architecture concerns, migration strategy, and sequencing assumptions.
+4. Ask 1-3 targeted questions and stop when any critical detail remains unresolved.
 
-Example clarification questions (use this style - specific, blocking, targeted):
-> 1. Should the new endpoint authenticate via the existing JWT middleware, or is a separate auth flow in scope?
-> 2. Is database migration rollback a hard requirement, or is forward-only acceptable for this change?
-> 3. Which service owns the `UserProfile` type - should this task modify that definition or only consume it?
+## Workflow
+1. Resolve whether to create a new plan or update an existing plan and choose a stable kebab-case `plan_name`.
+2. Inspect relevant context first, then only the code needed to ground the plan.
+3. Run the clarification gate and incorporate user answers.
+4. Record assumptions only when the user explicitly authorizes assumptions.
+5. Write `Change summary`, `Success criteria`, `Constraints and non-goals`, optional `Assumptions`, `Task stack`, and `Open questions`.
+6. Give each task a stable ID, one goal, explicit in/out boundaries, observable done checks, and targeted verification notes.
+7. Split any task that would require multiple independent commits or unrelated outcomes.
+8. Make the final task validation and cleanup with full checks and context-sync verification.
+9. Save the plan, return the exact path and full ordered task list, and provide `/next-task {plan_name} T01`.
 
-## Plan format
-1) Change summary
-2) Success criteria
-3) Constraints and non-goals
-4) Task stack (`T01..T0N`)
-5) Open questions (if any)
+## Guardrails
+- Do not implement the plan.
+- Do not silently invent requirements or dependency choices.
+- Do not use vague executable tasks such as `polish`, `misc updates`, or `finalize` without concrete outcomes.
+- Treat planning as a proposal, not execution approval.
+- Keep one task aligned to one coherent atomic commit by default.
 
-## Task format (required)
-For each task include:
-- Task ID
-- Goal
-- Boundaries (in/out of scope)
-- Done when
-- Verification notes (commands or checks)
+## Outputs
+- A complete plan file under `context/plans/`.
+- Exact path, ordered task list, and canonical first-task command.
+- Focused questions instead of a partial plan when blocked.
 
-## Atomic task slicing contract (required)
-- Author each executable task as one atomic commit unit by default.
-- Every task must be scoped so one contributor can complete it and land it as one coherent commit without bundling unrelated changes.
-- If a candidate task would require multiple independent commits (for example: refactor + behavior change + docs), split it into separate sequential tasks before finalizing the plan.
-- Keep broad wrappers (`polish`, `finalize`, `misc updates`) out of executable tasks; convert them into specific outcomes with concrete acceptance checks.
+## Completion criteria
+- All critical ambiguity is resolved or explicitly recorded as an approved assumption.
+- Every task is executable, bounded, verifiable, and atomic by default.
+- The final validation/cleanup task is present.
 
-Example compliant skeleton:
-- [ ] T0X: `[single intent title]` (status:todo)
-  - Task ID: T0X
-  - Goal: `[one outcome]`
-  - Boundaries (in/out of scope): `[tight scope]`
-  - Done when: `[clear acceptance for one coherent change]`
-  - Verification notes (commands or checks): `[targeted checks for this change]`
+## Failure handling
+- Stop before writing when critical information is unresolved.
+- Ask specific questions that name the decision category and why it blocks safe planning.
+- Report a write failure without claiming the plan exists.
 
-Example filled-in task entry:
-- [ ] T02: `Add /auth/refresh endpoint` (status:todo)
-  - Task ID: T02
-  - Goal: Implement a POST `/auth/refresh` endpoint that exchanges a valid refresh token for a new access token.
-  - Boundaries (in/out of scope): In - route handler, token validation logic, response schema. Out - refresh token rotation policy (covered in T03), client-side storage changes.
-  - Done when: `POST /auth/refresh` returns a signed JWT on valid input and 401 on expired/invalid token; unit tests pass; OpenAPI spec updated.
-  - Verification notes (commands or checks): `pnpm test src/auth/refresh.test.ts`; `curl -X POST localhost:3000/auth/refresh -d '{"token":"..."}' -w "%{http_code}"`.
+## Related units
+- `/change-to-plan` — thin command entrypoint.
+- `Shared Context Plan` — orchestrates this skill.
+- `sce-plan-review` — consumes the completed plan before implementation.
 
-Use checkbox lines for machine-friendly progress tracking:
-- `- [ ] T01: ... (status:todo)`
+## Reference
+Use this plan shape:
 
-## Complete plan example
+```markdown
+# Plan: {plan_name}
 
-See `context/plans/PLAN_EXAMPLE.md` for a full annotated reference plan (JWT auth walkthrough covering all required sections and four task entries).
+## Change summary
+...
 
-## Required final task
-- Final task is always validation and cleanup.
-- It must include full checks and context sync verification.
+## Success criteria
+- ...
 
-## Output contract
-- Save plan under `context/plans/`.
-- Confirm plan creation with `plan_name` and exact file path.
-- Present the full ordered task list in chat.
-- Prompt the user to start a new session with Shared Context Code agent to implement `T01`.
-- Provide one canonical next command: `/next-task {plan_name} T01`.
+## Constraints and non-goals
+- ...
+
+## Assumptions
+- ...  <!-- include only when explicitly allowed -->
+
+## Task stack
+- [ ] T01: `{single intent title}` (status:todo)
+  - Task ID: T01
+  - Goal: `{one outcome}`
+  - Boundaries (in/out of scope): `{tight scope}`
+  - Done when: `{observable acceptance checks}`
+  - Verification notes (commands or checks): `{targeted evidence}`
+
+## Open questions
+- ...
+```
+
+Accept each executable task only when it has one primary intent, a narrow related touch area, and one coherent verification surface. Make the final task validation and cleanup, including full checks and context-sync verification.

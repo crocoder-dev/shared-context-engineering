@@ -73,13 +73,13 @@
 ## Multi-file generation entrypoint
 
 - Use `config/pkl/generate.pkl` as the single generation module for authored config outputs.
-- Use `config/pkl/README.md` as the contributor-facing runbook for prerequisites, ownership boundaries, regeneration steps, and troubleshooting.
 - Run multi-file generation with `nix develop -c pkl eval -m . config/pkl/generate.pkl` to emit to repository-root mapped paths.
 - Run stale-output detection through the flake app entrypoint `nix run .#pkl-check-generated`; it wraps `nix develop -c ./config/pkl/check-generated.sh`, regenerates into a temporary directory, and fails if generated-owned paths differ from committed outputs.
 - Keep generated-output parity anchored to `nix run .#pkl-check-generated` and the root `nix flake check` `pkl-parity` derivation; no dedicated generated-parity workflow is currently checked in.
 - Treat `nix run .#pkl-check-generated` and `nix flake check` as the lightweight post-task verification baseline and run both after each completed task.
 - For non-destructive verification during development, run `nix develop -c pkl eval -m context/tmp/t04-generated config/pkl/generate.pkl` and inspect emitted paths under `context/tmp/`.
-- Keep `output.files` limited to generated-owned paths only (`config/{opencode_root}/{agent,command,skills,lib,plugins}`, generated `config/{opencode_root}/package.json`, `config/{claude_root}/{agents,commands,skills,hooks,settings.json}`, and `config/{pi_root}/{prompts,skills,extensions}`, where roots map to `.opencode`, `.claude`, and `.pi`).
+- Keep `output.files` limited to generated-owned paths only: config target trees under `config/{.opencode,automated/.opencode,.claude,.pi}`, generated schema artifacts, tracked manual instruction mirrors under root `.opencode/{agent,command,skills}`, `.claude/{agents,commands,skills}`, and `.pi/{prompts,skills}`, plus root `templates/`. Do not include local settings, dependency artifacts, package locks, or unrelated root harness runtime files.
+- Author instruction-unit bodies in the profile/responsibility grouped `shared-content-{plan,code,commit}.pkl` modules, derive inventory and destination ownership through `instruction-unit-inventory.pkl`, keep target-supported metadata in renderer metadata modules, and regenerate root mirrors/templates rather than hand-editing them.
 - For OpenCode pre-execution bash-policy hooks, keep the generated plugin entrypoint thin (`plugins/sce-bash-policy.ts`) and delegate policy evaluation to the Rust `sce policy bash --input normalized --output json` command so OpenCode and Claude share one evaluator.
 
 ## Internal subagent parity mapping

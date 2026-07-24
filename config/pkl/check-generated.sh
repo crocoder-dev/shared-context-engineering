@@ -25,6 +25,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+pkl eval config/pkl/renderers/metadata-coverage-check.pkl -x summary >/dev/null
+pkl eval config/pkl/renderers/portable-execution-profile-check.pkl -x summary >/dev/null
+pkl eval config/pkl/renderers/instruction-unit-validator-check.pkl -x summary >/dev/null
 pkl eval -m "$tmp_dir" config/pkl/generate.pkl >/dev/null
 
 # NOTE: This paths array must stay in sync with the output.files block in
@@ -46,10 +49,21 @@ paths=(
   "config/.claude/agents"
   "config/.claude/commands"
   "config/.claude/skills"
+  "config/.claude/hooks/run-sce-or-show-install-guidance.sh"
+  "config/.claude/settings.json"
   "config/.pi/prompts"
   "config/.pi/skills"
   "config/.pi/extensions"
   "config/schema/sce-config.schema.json"
+  ".opencode/agent"
+  ".opencode/command"
+  ".opencode/skills"
+  ".claude/agents"
+  ".claude/commands"
+  ".claude/skills"
+  ".pi/prompts"
+  ".pi/skills"
+  "templates"
 )
 
 stale=0

@@ -1,27 +1,90 @@
+import "../base/shared-content-common.pkl" as sharedCommon
 import "../base/shared-content.pkl" as shared
 import "../base/shared-content-automated.pkl" as sharedAutomated
+import "../base/instruction-unit-inventory.pkl" as inventory
 import "common.pkl" as common
 import "opencode-metadata.pkl" as opencode
 import "opencode-automated-metadata.pkl" as opencodeAutomated
 import "claude-metadata.pkl" as claude
 import "pi-metadata.pkl" as pi
 
+/// Consumption check: the canonical inventory is derived from the same shared content, so its unit
+/// counts and section contract are exposed here for coverage inspection instead of re-listing units.
+inventoryCoverage = new {
+  requiredSections = inventory.requiredSections
+  optionalSections = inventory.optionalSections
+  manualUnitCount = inventory.manualUnits.length
+  automatedUnitCount = inventory.automatedUnits.length
+  counts = inventory.counts
+  generatedInstructionPaths = inventory.generatedInstructionPaths
+  rootMirrorPaths = inventory.rootMirrorPaths
+  duplicateProjectionProblemCount = inventory.duplicateProjectionProblems.length
+  staleEntryCount = inventory.staleEntries.length
+  brokenReferenceCount = inventory.brokenReferences.length
+}
+
+opencodeCapabilityTranslationCoverage {
+  for (capability in sharedCommon.capabilityIds) {
+    [capability] = opencode.capabilityTools[capability]
+  }
+}
+
+projectionCoverage {
+  for (_, unit in inventory.manualUnits) {
+    for (projection in unit.projections) {
+      ["manual:\(unit.id):\(projection.target):\(projection.carrier)"] = new {
+        logicalKind = unit.kind
+        profileBinding = projection.profileBinding
+        toolControl = projection.toolControl
+        semanticControl = projection.semanticControl
+        destination = projection.destination
+        rootMirror = projection.rootMirror
+      }
+    }
+  }
+  for (_, unit in inventory.automatedUnits) {
+    for (projection in unit.projections) {
+      ["automated:\(unit.id):\(projection.target):\(projection.carrier)"] = new {
+        logicalKind = unit.kind
+        profileBinding = projection.profileBinding
+        toolControl = projection.toolControl
+        semanticControl = projection.semanticControl
+        destination = projection.destination
+        rootMirror = projection.rootMirror
+      }
+    }
+  }
+}
+
 opencodeAgentCoverage {
-  for (unitSlug, _ in shared.agents) {
+  for (unitSlug, _ in shared.executionProfiles) {
     [unitSlug] = new {
       description = opencode.agentDescriptions[unitSlug]
       displayName = opencode.agentDisplayNames[unitSlug]
       color = opencode.agentColors[unitSlug]
-      permissionBlock = opencode.agentPermissionBlocks[unitSlug]
+      mode = "primary"
+      permissionBlock = opencode.renderPermissionBlock(
+        shared.executionProfiles[unitSlug].policy.tools,
+        shared.executionProfiles[unitSlug].policy.allowedSkills,
+        "ask"
+      )
     }
   }
 }
 
 opencodeCommandCoverage {
-  for (unitSlug, _ in shared.commands) {
+  for (unitSlug, _ in shared.workflows) {
     [unitSlug] = new {
       description = common.commandDescriptions[unitSlug]
-      agent = opencode.commandAgents[unitSlug]
+      agent = shared.executionProfiles[shared.workflows[unitSlug].executionProfile].title
+      entrySkill = shared.workflows[unitSlug].entrySkill
+      requiredSkills = shared.workflows[unitSlug].requiredSkills
+      subtask = false
+      permissionBlock = opencode.renderPermissionBlock(
+        shared.effectiveWorkflowPolicies[unitSlug],
+        shared.workflows[unitSlug].requiredSkills,
+        "ask"
+      )
     }
   }
 }
@@ -35,21 +98,29 @@ opencodeSkillCoverage {
   }
 }
 
+claudeCapabilityTranslationCoverage {
+  for (capability in sharedCommon.capabilityIds) {
+    [capability] = claude.capabilityTools[capability]
+  }
+}
+
 claudeAgentCoverage {
-  for (unitSlug, _ in shared.agents) {
+  for (unitSlug, unit in shared.executionProfiles) {
     [unitSlug] = new {
       description = claude.agentDescriptions[unitSlug]
       color = claude.agentColors[unitSlug]
-      tools = claude.agentTools
+      tools = claude.renderAgentTools(unit.policy.tools)
     }
   }
 }
 
 claudeCommandCoverage {
-  for (unitSlug, _ in shared.commands) {
+  for (unitSlug, unit in shared.workflows) {
     [unitSlug] = new {
       description = common.commandDescriptions[unitSlug]
-      allowedTools = claude.commandAllowedTools[unitSlug]
+      executionProfile = unit.executionProfile
+      allowedTools = claude.renderCommandAllowedTools(shared.effectiveWorkflowPolicies[unitSlug])
+      composedMarker = sharedCommon.profileCompositionMarker(unit.executionProfile)
     }
   }
 }
@@ -63,21 +134,15 @@ claudeSkillCoverage {
   }
 }
 
-piAgentPromptCoverage {
-  for (unitSlug, _ in shared.agents) {
-    [unitSlug] = new {
-      description = pi.agentDescriptions[unitSlug]
-      argumentHint = pi.agentArgumentHints[unitSlug]
-      skillReference = pi.agentSkillReferences[unitSlug]
-    }
-  }
-}
-
 piCommandCoverage {
-  for (unitSlug, _ in shared.commands) {
+  for (unitSlug, unit in shared.workflows) {
     [unitSlug] = new {
       description = common.commandDescriptions[unitSlug]
       argumentHint = pi.commandArgumentHints[unitSlug]
+      executionProfile = unit.executionProfile
+      composedMarker = sharedCommon.profileCompositionMarker(unit.executionProfile)
+      entrySkill = unit.entrySkill
+      entrySkillPath = ".pi/skills/\(unit.entrySkill)/SKILL.md"
     }
   }
 }
@@ -92,21 +157,34 @@ piSkillCoverage {
 
 // Automated OpenCode profile coverage checks
 opencodeAutomatedAgentCoverage {
-  for (unitSlug, _ in sharedAutomated.agents) {
+  for (unitSlug, _ in sharedAutomated.executionProfiles) {
     [unitSlug] = new {
       description = opencodeAutomated.agentDescriptions[unitSlug]
       displayName = opencodeAutomated.agentDisplayNames[unitSlug]
       color = opencodeAutomated.agentColors[unitSlug]
-      permissionBlock = opencodeAutomated.agentPermissionBlocks[unitSlug]
+      mode = "primary"
+      permissionBlock = opencode.renderPermissionBlock(
+        sharedAutomated.executionProfiles[unitSlug].policy.tools,
+        sharedAutomated.executionProfiles[unitSlug].policy.allowedSkills,
+        "block"
+      )
     }
   }
 }
 
 opencodeAutomatedCommandCoverage {
-  for (unitSlug, _ in sharedAutomated.commands) {
+  for (unitSlug, _ in sharedAutomated.workflows) {
     [unitSlug] = new {
       description = common.commandDescriptions[unitSlug]
-      agent = opencodeAutomated.commandAgents[unitSlug]
+      agent = sharedAutomated.executionProfiles[sharedAutomated.workflows[unitSlug].executionProfile].title
+      entrySkill = sharedAutomated.workflows[unitSlug].entrySkill
+      requiredSkills = sharedAutomated.workflows[unitSlug].requiredSkills
+      subtask = false
+      permissionBlock = opencode.renderPermissionBlock(
+        sharedAutomated.effectiveWorkflowPolicies[unitSlug],
+        sharedAutomated.workflows[unitSlug].requiredSkills,
+        "block"
+      )
     }
   }
 }
@@ -118,4 +196,56 @@ opencodeAutomatedSkillCoverage {
       compatibility = opencodeAutomated.skillCompatibility
     }
   }
+}
+
+/// Evaluation gate proving metadata covers every logical kind, projection classification, and
+/// canonical capability translation without re-owning policy intent.
+metadataCoverageProblems: Listing<String>(isEmpty) = new {
+  when (inventoryCoverage.counts.renderedInstructionFiles != 60) {
+    "metadata coverage expected 60 rendered instruction projections"
+  }
+  when (inventoryCoverage.counts.committedInstructionFiles != 103) {
+    "metadata coverage expected 103 committed instruction files"
+  }
+  when (projectionCoverage.toMap().length != inventoryCoverage.counts.renderedInstructionFiles) {
+    "projection metadata coverage does not match the inventory"
+  }
+  when (opencodeCapabilityTranslationCoverage.toMap().length != sharedCommon.capabilityIds.length) {
+    "OpenCode capability translation coverage is incomplete"
+  }
+  when (claudeCapabilityTranslationCoverage.toMap().length != sharedCommon.capabilityIds.length) {
+    "Claude capability translation coverage is incomplete"
+  }
+  when (opencodeAgentCoverage.toMap().length != shared.executionProfiles.length
+    || opencodeCommandCoverage.toMap().length != shared.workflows.length
+    || opencodeSkillCoverage.toMap().length != shared.skills.length) {
+    "manual OpenCode logical-kind coverage is incomplete"
+  }
+  when (claudeAgentCoverage.toMap().length != shared.executionProfiles.length
+    || claudeCommandCoverage.toMap().length != shared.workflows.length
+    || claudeSkillCoverage.toMap().length != shared.skills.length) {
+    "Claude logical-kind coverage is incomplete"
+  }
+  when (piCommandCoverage.toMap().length != shared.workflows.length
+    || piSkillCoverage.toMap().length != shared.skills.length) {
+    "Pi workflow/skill coverage is incomplete"
+  }
+  when (opencodeAutomatedAgentCoverage.toMap().length != sharedAutomated.executionProfiles.length
+    || opencodeAutomatedCommandCoverage.toMap().length != sharedAutomated.workflows.length
+    || opencodeAutomatedSkillCoverage.toMap().length != sharedAutomated.skills.length) {
+    "automated OpenCode logical-kind coverage is incomplete"
+  }
+}
+
+summary = new {
+  manualLogicalUnits = inventoryCoverage.manualUnitCount
+  automatedLogicalUnits = inventoryCoverage.automatedUnitCount
+  projections = projectionCoverage.toMap().length
+  renderedInstructionFiles = inventoryCoverage.counts.renderedInstructionFiles
+  committedInstructionFiles = inventoryCoverage.counts.committedInstructionFiles
+  capabilityTranslations = new {
+    opencode = opencodeCapabilityTranslationCoverage.toMap().length
+    claude = claudeCapabilityTranslationCoverage.toMap().length
+  }
+  status = "METADATA_COVERAGE_OK"
 }

@@ -1,5 +1,6 @@
 import "../base/opencode.pkl" as opencode
-import "../base/shared-content.pkl" as shared
+import "../base/shared-content-common.pkl" as content
+import "../base/instruction-unit-inventory.pkl" as inventory
 
 class RenderedTargetDocument {
   slug: String
@@ -14,6 +15,16 @@ class RenderedTextFile {
   rendered: String
 }
 
+function renderBody(body: content.InstructionBody): String = content.renderBody(body)
+
+function nativeAgentBody(profile: content.ExecutionProfile): content.InstructionBody =
+  content.nativeAgentBody(profile)
+
+function composeProfile(
+  profile: content.ExecutionProfile,
+  workflow: content.WorkflowUnit
+): content.InstructionBody = content.composeProfile(profile, workflow)
+
 sceGeneratedOpenCodePlugins = List(
   opencode.sce_bash_policy_plugin,
   opencode.sce_agent_trace_plugin
@@ -22,18 +33,21 @@ sceGeneratedOpenCodePluginPathsJson = sceGeneratedOpenCodePlugins
   .map((plugin) -> plugin.path_json)
   .join(", ")
 
-commandDescriptions = new Mapping {
+// Hand-authored description text, looked up by slug. These maps are shared across the manual and
+// automated OpenCode/Claude/Pi renderers, so the consumed `commandDescriptions` / `skillDescriptions`
+// mappings below are keyed by iterating the automated inventory — the superset of manual units plus
+// the interactive planning command/skill that is active only in the automated profile. Truly stale
+// entries (`drift-detect`, `fix-drift`) belong to no active unit and are therefore absent.
+local commandDescriptionText = new Mapping {
   ["next-task"] = "Run `sce-plan-review` -> `sce-task-execution` -> `sce-context-sync` for one approved SCE task"
   ["change-to-plan"] = "Use `sce-plan-authoring` to turn a change request into a scoped SCE plan"
   ["change-to-plan-interactive"] = "Create or update an SCE plan from a change request with interactive clarification"
-  ["drift-detect"] = "Run `sce-drift-analyzer` to report context-code drift before edits"
-  ["fix-drift"] = "Run `sce-drift-fixer` to repair context files from current code truth"
   ["handover"] = "Run `sce-handover-writer` to capture the current task for handoff"
   ["commit"] = "Use `sce-atomic-commit` to propose atomic commit message(s) from staged changes"
   ["validate"] = "Run `sce-validation` to finish an SCE plan with validation and cleanup"
 }
 
-skillDescriptions = new Mapping {
+local skillDescriptionText = new Mapping {
   ["sce-bootstrap-context"] = "Use when user wants to Bootstrap SCE baseline context directory when missing."
   ["sce-context-sync"] = "Use when user wants to Synchronize context files to match current code behavior after task execution."
   ["sce-handover-writer"] = "Use when user wants to create a structured SCE handover for the current task."
@@ -43,5 +57,17 @@ skillDescriptions = new Mapping {
   ["sce-task-execution"] = "Use when user wants to Execute one approved task with explicit scope, evidence, and status updates."
   ["sce-atomic-commit"] = "Write atomic, repo-style git commits from a change summary or diff. Use when preparing commit messages, splitting work into coherent commits, or reviewing whether a commit is too broad."
   ["sce-validation"] = "Use when user wants to Run final plan validation and cleanup with evidence capture."
+}
+
+commandDescriptions = new Mapping {
+  for (slug, _ in inventory.automatedCommands) {
+    [slug] = commandDescriptionText[slug]
+  }
+}
+
+skillDescriptions = new Mapping {
+  for (slug, _ in inventory.automatedSkills) {
+    [slug] = skillDescriptionText[slug]
+  }
 }
 

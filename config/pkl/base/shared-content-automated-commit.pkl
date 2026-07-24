@@ -1,111 +1,110 @@
+import "shared-content-automated-common.pkl" as common
+
 local class UnitSpec {
   title: String
-  canonicalBody: String
+  body: common.InstructionBody
 }
 
-agents = new Mapping {}
+executionProfiles = new Mapping {}
 
-commands = new Mapping {
+workflows = new Mapping {
   ["commit"] = new UnitSpec {
     title = "Commit"
-    canonicalBody = """
-Load and follow the `sce-atomic-commit` skill.
-
-Input:
-`$ARGUMENTS`
-
-Behavior:
-- If arguments are empty, treat input as unstated and infer commit intent from staged changes only.
-- If arguments are provided, treat them as optional commit context to refine the one commit message.
-- Skip staging confirmation prompt.
-- Validate staged content exists; if empty, stop with error: "No staged changes. Stage changes before commit."
-- Classify staged diff scope (`context/`-only vs mixed `context/` + non-`context/`) and apply the context-guidance gate from `sce-atomic-commit`.
-- Run `sce-atomic-commit` to produce exactly one commit message for the staged diff.
-- Do not branch into multi-commit or split guidance.
-- Use the resulting message to run `git commit` against the staged changes.
-- If `git commit` fails, stop and report the failure without inventing fallback commits.
+    body = new common.InstructionBody {
+      purpose = """
+- Produce one repository-style commit message from staged changes and execute exactly one commit.
 """
+      inputs = """
+- `$ARGUMENTS`: optional commit context.
+- Non-empty staged diff.
+"""
+      preconditions = """
+1. Skip staging confirmation.
+2. Require `git diff --cached` to be non-empty.
+"""
+      workflow = """
+1. Load `sce-atomic-commit`.
+2. Classify staged scope and apply the skill's context-guidance rules.
+3. Produce exactly one message for the staged diff; do not branch into split guidance.
+4. Run `git commit -m "<message>"` once.
+5. Report the commit hash or exact failure and stop.
+"""
+      guardrails = """
+- Use only staged changes.
+- Do not invent change intent or plan/task citations.
+- Do not retry, amend, or create fallback commits after failure.
+"""
+      outputs = """
+- One commit message and either a successful commit hash or exact commit failure.
+"""
+      completionCriteria = """
+- Exactly one commit attempt is reported.
+"""
+      failureHandling = """
+- Stop with `No staged changes. Stage changes before commit.` when empty.
+- Stop for ambiguous required plan citations rather than guessing.
+"""
+      relatedUnits = """
+- `sce-atomic-commit` — one-message construction owner.
+"""
+    }
   }
 }
 
 skills = new Mapping {
   ["sce-atomic-commit"] = new UnitSpec {
     title = "SCE Atomic Commit"
-    canonicalBody = """
-## Goal
-
-Turn the current staged changes into one straightforward repository-style commit message.
-
-For this workflow:
-- produce exactly one commit message
-- keep the message focused on the staged change as a single coherent unit
-- do not default to multi-commit split planning
-
-## Inputs
-
-Accept any of:
-- staged diff (preferred)
-- changed file list with notes
-- PR/task summary
-- before/after behavior notes
-
-## Output format
-
-Produce one commit message that follows:
-- `scope: Subject`
-- imperative verb (Fix/Add/Remove/Implement/Refactor/Simplify/Rename/Update/Ensure/Allow)
-- no trailing period in subject
-- body when context is needed (why/what changed/impact)
-- issue references on their own lines (for example `Fixes #123`)
-
-When staged changes include `context/plans/*.md`, the commit body must also include:
-- affected plan slug(s)
-- updated task ID(s) (`T0X`)
-
-If staged `context/plans/*.md` changes do not expose the plan slug or updated task ID clearly enough to cite faithfully, stop and ask for clarification instead of inventing references.
-
-## Procedure
-
-1) Review the staged change as one unit
-- Infer the main reason for the staged change from the staged diff first.
-- Use optional notes only to refine wording, not to override the staged truth.
-
-2) Choose scope
-- Use the smallest stable subsystem/module name recognizable in the repo.
-- If unclear, use the primary directory/package of the change.
-
-3) Write subject
-- Pattern: `<scope>: <Imperative verb> <specific technical summary>`
-- Keep concrete and targeted.
-
-4) Add body when needed
-- Explain what was wrong/missing, why it matters, what changed conceptually, and impact.
-- Add issue references on separate lines.
-
-5) Apply the plan-update body rule when needed
-- Check whether staged changes include `context/plans/*.md`.
-- If yes, cite the affected plan slug(s) and updated task ID(s) in the body.
-- If the staged plan diff is ambiguous, stop with actionable guidance asking the user to stage or clarify the plan/task reference explicitly.
-
-6) Validate the single-message result
-- The message should describe the staged diff faithfully as one coherent change.
-- The subject should stay concise and technical.
-- The body should add useful why/impact context instead of repeating the subject.
-- Do not invent plan or task references.
-
-## Context-file Guidance gating
-
-- Check staged diff scope before proposing commit messaging guidance.
-- If staged changes are context-only (`context/**`), context-file-focused guidance is allowed.
-- If staged changes are mixed (`context/**` + non-`context/**`), avoid default context-file commit reminders and prioritize guidance that reflects the full staged scope.
-
-## Anti-patterns
-
-- vague subjects ("cleanup", "updates")
-- body repeats subject without adding why
-- playful tone in serious fixes/architecture changes
-- mention `context/` sync activity in commit messages
-- inventing plan slugs or task IDs for staged plan edits
+    body = new common.InstructionBody {
+      purpose = """
+- Produce exactly one faithful repository-style commit message for the current staged diff.
 """
+      inputs = """
+- Staged diff (preferred), optional changed-file notes, task/PR summary, or before/after behavior notes.
+"""
+      preconditions = """
+1. Treat the staged diff as authoritative.
+2. Require enough evidence to identify one message and any mandatory plan/task citations.
+"""
+      workflow = """
+1. Review the staged diff as one unit.
+2. Choose the smallest stable subsystem as scope.
+3. Write one imperative `<scope>: <Subject>` line.
+4. Add a body only when it adds why, conceptual change, or impact.
+5. Cite staged plan slug(s) and task ID(s) when `context/plans/*.md` is included.
+6. Apply context-file guidance based on context-only versus mixed staged scope.
+7. Validate the single message against all staged changes.
+"""
+      guardrails = """
+- Produce exactly one message and no split guidance.
+- Do not invent plan/task or issue references.
+- Avoid vague subjects, repeated bodies, playful tone for serious changes, and routine context-sync narration.
+"""
+      outputs = """
+- Exactly one complete commit message.
+"""
+      completionCriteria = """
+- The message faithfully describes the staged diff as one coherent unit and satisfies repository grammar.
+"""
+      failureHandling = """
+- Stop for clarification when required plan/task citations cannot be inferred faithfully.
+- Report insufficient staged evidence rather than guessing intent.
+"""
+      relatedUnits = """
+- `/commit` — executes the resulting commit once.
+"""
+      reference = """
+Use this message grammar:
+
+```text
+<scope>: <Imperative verb> <specific technical summary>
+
+<optional body explaining why, conceptual change, and impact>
+
+<optional issue reference, for example Fixes #123>
+```
+
+Use the smallest stable subsystem as scope. Do not end the subject with a period. Use a body only when it adds useful context.
+"""
+    }
   }
 }

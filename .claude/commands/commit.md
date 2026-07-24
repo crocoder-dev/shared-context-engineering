@@ -1,42 +1,76 @@
 ---
 description: "Use `sce-atomic-commit` to propose atomic commit message(s) from staged changes"
-allowed-tools: Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash
+allowed-tools: Task, Read, Glob, Grep, Edit, Write, AskUserQuestion, Skill, Bash
 ---
 
-Load and follow the `sce-atomic-commit` skill.
+## Purpose
+<!-- sce-execution-profile: shared-context-code -->
+- Perform controlled repository and operational work from explicit user intent or an approved SCE workflow.
+- Keep implementation evidence and durable context aligned with code truth.
+- Produce repository-style atomic commit messaging from staged changes.
+- In regular mode, return proposals only; in `oneshot`/`skip` mode, produce one message and execute one commit.
 
-Input:
-`$ARGUMENTS`
+## Inputs
+- The active workflow, requested scope, repository state, applicable acceptance criteria, and human decisions.
+- Relevant code, configuration, context, and verification commands.
+- `$ARGUMENTS`: optional commit context; the first token selects bypass mode when it is `oneshot` or `skip` (case-insensitive).
+- The staged diff from `git diff --cached`.
 
-## Bypass path (`/commit oneshot` or `/commit skip`)
+## Preconditions
+1. Establish the active workflow's authority, boundaries, and observable completion criteria before writes.
+2. Resolve blockers or ambiguity required by that workflow before irreversible or scope-expanding action.
+3. Inspect existing worktree state and preserve unrelated changes.
+1. Determine regular or bypass mode from the first argument token.
+2. In regular mode, ask the user to stage all intended files and confirm staging.
+3. In bypass mode, skip the staging prompt but require a non-empty staged diff.
 
-If `$ARGUMENTS` starts with `oneshot` or `skip` (case-insensitive, first token only):
+## Workflow
+1. Establish current truth from relevant repository and context sources.
+2. Follow the invoked workflow and its required skills for implementation, handover, commit, or validation work.
+3. Make the smallest coherent in-scope change and collect proportionate evidence.
+4. Reconcile durable context when behavior, policy, architecture, or canonical terminology changes.
+5. Return the workflow-specific result and remaining risks or handoff.
+1. Load `sce-atomic-commit`.
+2. In regular mode, classify staged scope, apply the skill's context guidance, and return one or more proposals plus split guidance when needed; do not commit.
+3. In bypass mode, skip context-guidance gating and split analysis, require exactly one message, and treat plan/task citations as best-effort.
+4. In bypass mode, run `git commit -m "<message>"` once.
+5. Report proposals in regular mode or the new commit hash in bypass mode, then stop.
 
-- **Skip the staging confirmation prompt.** Do not ask the user to stage files or confirm staging.
-- **Validate staged content exists.** Check that `git diff --cached` is non-empty. If no staged changes exist, stop with the error: "No staged changes. Stage changes before commit." Do not proceed.
-- **Skip context-guidance gate classification.** Do not classify staged diff scope as `context/`-only vs mixed. Do not apply context-file guidance gating.
-- **Produce exactly one commit message.** Run `sce-atomic-commit` with these overrides:
-  - Produce exactly one commit message. Do not propose splits. Do not emit split guidance.
-  - When staged changes include `context/plans/*.md`, make a best-effort inference to cite affected plan slug(s) and updated task ID(s). If ambiguous, omit the citation rather than stopping for clarification.
-- **Auto-execute `git commit`.** Use the produced commit message to run `git commit -m "<message>"`.
-  - If `git commit` succeeds, report the commit hash and stop.
-  - If `git commit` fails, stop and report the failure. Do not invent fallback commits, retry, or amend.
+## Guardrails
+- Do not expand scope, change dependencies, or overwrite unrelated work without explicit approval.
+- Respect capability approvals before process execution, repository writes, or version-control actions when required.
+- Keep stdout/stderr, generated-source ownership, and repository conventions intact.
+- Treat the human as owner of architecture, risk, and final decisions.
+- Treat code as source of truth when code and `context/` disagree; repair context instead of rationalizing drift.
+- Keep temporary session material under `context/tmp/` and durable context current-state oriented.
+- Delete a context file only when it exists and has no uncommitted changes.
+- Analyze only intentionally staged changes.
+- Keep message grammar and atomicity decisions skill-owned.
+- Never invent plan slugs, task IDs, issue references, or change intent.
+- In bypass mode, do not amend, retry, create fallback commits, or propose splits after a failed commit.
 
-## Regular path (no arguments or non-bypass arguments)
+## Outputs
+- The repository, context, evidence, or handoff artifacts required by the active workflow.
+- A concise account of verification and any unresolved risk.
+- Regular mode: commit-message proposal(s) and file split guidance when justified.
+- Bypass mode: exactly one commit message and either the successful commit hash or the exact commit failure.
 
-If `$ARGUMENTS` does not start with `oneshot` or `skip`:
+## Completion criteria
+- The active workflow's acceptance and evidence requirements are satisfied.
+- Repository and context state are consistent, and no unapproved scope expansion remains.
+- Regular mode ends after faithful proposals are returned.
+- Bypass mode ends after exactly one `git commit` attempt is reported.
 
-Behavior:
-- If arguments are empty, treat input as unstated and infer commit intent from staged changes only.
-- If arguments are provided, treat them as optional commit context to refine message proposals.
-- Keep this command as thin orchestration; staged-diff analysis, atomic split decisions, and message wording stay owned by `sce-atomic-commit`.
-- Before running `sce-atomic-commit`, explicitly stop and prompt the user:
+## Failure handling
+- Stop for a human decision before scope expansion, destructive action, or unresolved architecture and risk choices.
+- Report failed checks with their command and relevant evidence; never claim success without proof.
+- Preserve partial in-scope evidence and identify the workflow phase that failed.
+- Stop with `No staged changes. Stage changes before commit.` when the staged diff is empty.
+- In regular mode, stop for clarification when staged plan changes require citations that cannot be inferred faithfully.
+- In bypass mode, omit ambiguous plan citations and report a failed commit without retrying.
 
-  "Please run `git add <files>` for all changes you want included in this commit.
-  Atomic commits should only include intentionally staged changes.
-  Confirm once staging is complete."
-
-- After confirmation:
-  - Classify staged diff scope (`context/`-only vs mixed `context/` + non-`context/`) and apply the context-guidance gate from `sce-atomic-commit`.
-  - Run `sce-atomic-commit` to produce commit-message proposals and any needed split guidance.
-- Do not create commits automatically; stop after returning proposed commit message(s) and split guidance when needed.
+## Related units
+- `shared-context-code` — execution profile composed into this workflow.
+- `sce-atomic-commit` — skill required by this workflow.
+- `sce-atomic-commit` — sole owner of staged-diff analysis and message construction.
+- `Shared Context Code` — default agent for this command.

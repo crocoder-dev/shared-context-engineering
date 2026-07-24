@@ -1,19 +1,58 @@
 ---
 description: "Run `sce-handover-writer` to capture the current task for handoff"
 agent: "Shared Context Code"
+subtask: false
+entry-skill: "sce-handover-writer"
+skills:
+  - "sce-handover-writer"
+permission:
+  default: block
+  read: allow
+  edit: allow
+  glob: allow
+  grep: allow
+  list: allow
+  bash: block
+  question: allow
+  codesearch: allow
+  lsp: allow
+  skill:
+    "*": block
+    "sce-handover-writer": allow
 ---
 
-Load and follow the `sce-handover-writer` skill.
+## Purpose
+- Create a durable handover for the current task by delegating to `sce-handover-writer`.
 
-Input:
-`$ARGUMENTS`
+## Inputs
+- `$ARGUMENTS`: optional plan name, task ID, scope note, or handover context.
+- Current repository, plan, and task state available to the agent.
 
-Create a new handover file in `context/handovers/` that captures:
+## Preconditions
+1. Identify the current plan/task when possible.
+2. Distinguish observed facts from inferred details.
 
-- current task state
-- decisions made and rationale
-- open questions or blockers
-- next recommended step
+## Workflow
+1. Load `sce-handover-writer`.
+2. Pass `$ARGUMENTS` and the current task state.
+3. Let the skill choose task-aligned naming and write the handover under `context/handovers/`.
+4. Return the exact handover path and stop.
 
-Default naming should align with task execution handovers: `context/handovers/{plan_name}-{task_id}-{timestamp}.md`.
-If key details are missing, infer what you can from the current repo state and clearly label assumptions.
+## Guardrails
+- Keep this command thin; the skill owns structure, naming, and completeness checks.
+- Label unsupported inferences as assumptions.
+- Do not implement or change task scope while producing a handover.
+
+## Outputs
+- One complete handover file and its exact path.
+
+## Completion criteria
+- The handover records current task state, decisions and rationale, blockers/open questions, and one next recommended step.
+
+## Failure handling
+- When no reliable task state can be established, stop with the missing inputs rather than inventing a handover.
+- Report write failures directly.
+
+## Related units
+- `sce-handover-writer` — sole owner of handover content and file shape.
+- `Shared Context Code` — default agent for this command.

@@ -1,90 +1,33 @@
 // Automated OpenCode metadata variant with non-interactive permissions
 // See context/sce/automated-profile-contract.md for P1 gate policy
 
-agentDescriptions = new Mapping {
+import "../base/instruction-unit-inventory.pkl" as inventory
+
+// Hand-authored per-unit metadata, looked up by slug. The exposed mappings are keyed by iterating the
+// canonical automated inventory so only active automated units render. The interactive planning
+// command/skill are active in the automated profile and are intentionally retained.
+
+local agentDescriptionText = new Mapping {
   ["shared-context-plan"] = "Plans a change into atomic tasks in context/plans without touching application code."
   ["shared-context-code"] = "Executes one approved SCE task, validates behavior, and syncs context."
 }
 
-agentDisplayNames = new Mapping {
+local agentDisplayNameText = new Mapping {
   ["shared-context-plan"] = "Shared Context Plan"
   ["shared-context-code"] = "Shared Context Code"
 }
 
-agentColors = new Mapping {
+local agentColorText = new Mapping {
   ["shared-context-plan"] = "#2563eb"
   ["shared-context-code"] = "#059669"
 }
 
-agentBehaviorBlocks = new Mapping {
+local agentBehaviorBlockText = new Mapping {
   ["shared-context-plan"] = ""
   ["shared-context-code"] = ""
 }
 
-agentPermissionBlocks = new Mapping {
-  ["shared-context-plan"] = """
-permission:
-  default: allow
-  read: allow
-  edit: allow
-  glob: allow
-  grep: allow
-  list: allow
-  bash: allow
-  task: allow
-  external_directory: block
-  todowrite: allow
-  todoread: allow
-  question: allow
-  webfetch: allow
-  websearch: allow
-  codesearch: allow
-  lsp: allow
-  doom_loop: block
-  skill:
-    "*": allow
-    "sce-bootstrap-context": allow
-    "sce-plan-authoring": allow
-"""
-  ["shared-context-code"] = """
-permission:
-  default: allow
-  read: allow
-  edit: allow
-  glob: allow
-  grep: allow
-  list: allow
-  bash: allow
-  task: allow
-  external_directory: block
-  todowrite: allow
-  todoread: allow
-  question: allow
-  webfetch: allow
-  websearch: allow
-  codesearch: allow
-  lsp: allow
-  doom_loop: block
-  skill:
-    "*": allow
-    "sce-plan-review": allow
-    "sce-task-execution": allow
-    "sce-context-sync": allow
-    "sce-validation": allow
-    "sce-atomic-commit": allow
-"""
-}
-
-commandAgents = new Mapping {
-  ["next-task"] = "Shared Context Code"
-  ["change-to-plan"] = "Shared Context Plan"
-  ["change-to-plan-interactive"] = "Shared Context Plan"
-  ["handover"] = "Shared Context Code"
-  ["commit"] = "Shared Context Code"
-  ["validate"] = "Shared Context Code"
-}
-
-skillDescriptions = new Mapping {
+local skillDescriptionText = new Mapping {
   ["sce-bootstrap-context"] = "Use when user wants to Bootstrap SCE baseline context directory when missing."
   ["sce-context-sync"] = "Use when user wants to update project documentation to reflect code changes, sync docs with code, refresh project context, or keep AI memory files accurate after completing an implementation task. Scans modified code, classifies the change significance, then updates or verifies Markdown context files under `context/` (overview, architecture, glossary, patterns, context-map, and domain files) so that durable AI memory stays aligned with current code truth."
   ["sce-handover-writer"] = "Creates a structured handover document summarizing task context, decisions made, open questions, and recommended next steps — saved to `context/handovers/`. Use when a user wants to hand off, transition, or pass a task to someone else, create handover notes, write a task transition document, or capture current progress for a future session. Trigger phrases include \"create a handover\", \"hand this off\", \"write handover notes\", \"pass this task on\", or \"document where I'm up to\"."
@@ -94,6 +37,36 @@ skillDescriptions = new Mapping {
   ["sce-task-execution"] = "Executes a single scoped coding task with structured implementation logging, test and lint evidence capture, and plan status updates. Use when the user wants to run, implement, or complete one approved task from a plan — such as writing code changes, applying fixes, or executing a defined unit of work — while enforcing strict single-task scope boundaries, logging intent to context/tmp/automated-session-log.md, and updating task status in context/plans/{plan_id}.md. Triggers on phrases like \"execute task\", \"run this task\", \"implement task\", \"do the next task\", or \"apply this change\"."
   ["sce-atomic-commit"] = "Write atomic, repo-style git commits from a change summary or diff. Use when preparing commit messages, splitting work into coherent commits, or reviewing whether a commit is too broad."
   ["sce-validation"] = "Runs the final validation phase of a project plan by executing the full test suite, lint and format checks, removing temporary scaffolding, and writing a structured validation report with command outputs and success-criteria evidence to `context/plans/{plan_name}.md`. Use when the user wants to verify a completed implementation, confirm all success criteria are met, wrap up a plan, finalize a feature or fix, or sign off on a change before closing it out."
+}
+
+agentDescriptions = new Mapping {
+  for (slug, _ in inventory.automatedAgents) {
+    [slug] = agentDescriptionText[slug]
+  }
+}
+
+agentDisplayNames = new Mapping {
+  for (slug, _ in inventory.automatedAgents) {
+    [slug] = agentDisplayNameText[slug]
+  }
+}
+
+agentColors = new Mapping {
+  for (slug, _ in inventory.automatedAgents) {
+    [slug] = agentColorText[slug]
+  }
+}
+
+agentBehaviorBlocks = new Mapping {
+  for (slug, _ in inventory.automatedAgents) {
+    [slug] = agentBehaviorBlockText[slug]
+  }
+}
+
+skillDescriptions = new Mapping {
+  for (slug, _ in inventory.automatedSkills) {
+    [slug] = skillDescriptionText[slug]
+  }
 }
 
 skillCompatibility = "opencode"

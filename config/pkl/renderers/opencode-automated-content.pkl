@@ -1,29 +1,48 @@
 import "../base/shared-content-automated.pkl" as shared
 import "common.pkl" as common
+import "opencode-metadata.pkl" as capabilities
 import "opencode-automated-metadata.pkl" as metadata
 
 local generatedOpenCodePluginPathsJson = common.sceGeneratedOpenCodePluginPathsJson
 
 local agentFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.agents) {
+  for (unitSlug, _ in shared.executionProfiles) {
     [unitSlug] = """
 ---
 name: "\(metadata.agentDisplayNames[unitSlug])"
 description: \(metadata.agentDescriptions[unitSlug])
 temperature: 0.1
 color: "\(metadata.agentColors[unitSlug])"\(metadata.agentBehaviorBlocks[unitSlug])
-\(metadata.agentPermissionBlocks[unitSlug])
+mode: primary
+\(capabilities.renderPermissionBlock(
+  shared.executionProfiles[unitSlug].policy.tools,
+  shared.executionProfiles[unitSlug].policy.allowedSkills,
+  "block"
+))
 ---
 """
   }
 }
 
+local function skillMetadataBlock(entrySkill: String, requiredSkills: List<String>): String = """
+entry-skill: "\(entrySkill)"
+skills:
+\(requiredSkills.map((skillSlug) -> "  - \"\(skillSlug)\"").join("\n"))
+"""
+
 local commandFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.commands) {
+  for (unitSlug, unit in shared.workflows) {
     [unitSlug] = """
 ---
 description: "\(common.commandDescriptions[unitSlug])"
-agent: "\(metadata.commandAgents[unitSlug])"
+agent: "\(shared.executionProfiles[unit.executionProfile].title)"
+subtask: false
+\(skillMetadataBlock(unit.entrySkill, unit.requiredSkills))
+\(capabilities.renderPermissionBlock(
+  shared.effectiveWorkflowPolicies[unitSlug],
+  unit.requiredSkills,
+  "block"
+))
 ---
 """
   }
@@ -43,23 +62,23 @@ compatibility: \(metadata.skillCompatibility)
 }
 
 agents {
-  for (unitSlug, unit in shared.agents) {
+  for (unitSlug, unit in shared.executionProfiles) {
     [unitSlug] = new common.RenderedTargetDocument {
       slug = unitSlug
       title = unit.title
       frontmatter = agentFrontmatterBySlug[unitSlug]
-      body = unit.canonicalBody
+      body = common.renderBody(common.nativeAgentBody(unit))
     }
   }
 }
 
 commands {
-  for (unitSlug, unit in shared.commands) {
+  for (unitSlug, unit in shared.workflows) {
     [unitSlug] = new common.RenderedTargetDocument {
       slug = unitSlug
       title = unit.title
       frontmatter = commandFrontmatterBySlug[unitSlug]
-      body = unit.canonicalBody
+      body = common.renderBody(unit.body)
     }
   }
 }
@@ -70,7 +89,7 @@ skills {
       slug = unitSlug
       title = unit.title
       frontmatter = skillFrontmatterBySlug[unitSlug]
-      body = unit.canonicalBody
+      body = common.renderBody(unit.body)
     }
   }
 }

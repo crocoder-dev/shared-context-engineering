@@ -5,6 +5,7 @@ import "renderers/pi-content.pkl" as pi
 import "renderers/common.pkl" as common
 import "base/sce-config-schema.pkl" as sce_config_schema
 import "base/bash-policy-presets.pkl" as bash_policy_presets
+import "base/instruction-unit-templates.pkl" as templates
 
 local bashPolicyPresetCatalogSource = bash_policy_presets.output.text
 local opencodeBashPolicyPluginSource = read("../lib/bash-policy-plugin/opencode-bash-policy-plugin.ts").text
@@ -27,6 +28,16 @@ output {
         text = document.rendered
       }
     }
+    for (slug, document in opencode.agents) {
+      [".opencode/agent/\(document.title).md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in claude.agents) {
+      [".claude/agents/\(slug).md"] {
+        text = document.rendered
+      }
+    }
 
     for (slug, document in opencode.commands) {
       ["config/.opencode/command/\(slug).md"] {
@@ -40,6 +51,16 @@ output {
     }
     for (slug, document in claude.commands) {
       ["config/.claude/commands/\(slug).md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in opencode.commands) {
+      [".opencode/command/\(slug).md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in claude.commands) {
+      [".claude/commands/\(slug).md"] {
         text = document.rendered
       }
     }
@@ -65,18 +86,33 @@ output {
         text = document.rendered
       }
     }
+    for (slug, document in opencode.skills) {
+      [".opencode/skills/\(slug)/SKILL.md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in claude.skills) {
+      [".claude/skills/\(slug)/SKILL.md"] {
+        text = document.rendered
+      }
+    }
     for (slug, document in pi.commands) {
       ["config/.pi/prompts/\(slug).md"] {
         text = document.rendered
       }
     }
-    for (slug, document in pi.agentPrompts) {
-      ["config/.pi/prompts/agent-\(slug).md"] {
+    for (slug, document in pi.skills) {
+      ["config/.pi/skills/\(slug)/SKILL.md"] {
+        text = document.rendered
+      }
+    }
+    for (slug, document in pi.commands) {
+      [".pi/prompts/\(slug).md"] {
         text = document.rendered
       }
     }
     for (slug, document in pi.skills) {
-      ["config/.pi/skills/\(slug)/SKILL.md"] {
+      [".pi/skills/\(slug)/SKILL.md"] {
         text = document.rendered
       }
     }
@@ -109,6 +145,15 @@ output {
     }
     ["config/schema/sce-config.schema.json"] {
       text = sce_config_schema.rendered
+    }
+    ["templates/execution-profile.md"] {
+      text = templates.executionProfile.rendered
+    }
+    ["templates/workflow.md"] {
+      text = templates.workflow.rendered
+    }
+    ["templates/skill.md"] {
+      text = templates.skill.rendered
     }
   }
 }

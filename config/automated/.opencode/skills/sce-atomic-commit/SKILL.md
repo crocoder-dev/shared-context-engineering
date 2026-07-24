@@ -5,77 +5,52 @@ description: |
 compatibility: opencode
 ---
 
-## Goal
-
-Turn the current staged changes into one straightforward repository-style commit message.
-
-For this workflow:
-- produce exactly one commit message
-- keep the message focused on the staged change as a single coherent unit
-- do not default to multi-commit split planning
+## Purpose
+- Produce exactly one faithful repository-style commit message for the current staged diff.
 
 ## Inputs
+- Staged diff (preferred), optional changed-file notes, task/PR summary, or before/after behavior notes.
 
-Accept any of:
-- staged diff (preferred)
-- changed file list with notes
-- PR/task summary
-- before/after behavior notes
+## Preconditions
+1. Treat the staged diff as authoritative.
+2. Require enough evidence to identify one message and any mandatory plan/task citations.
 
-## Output format
+## Workflow
+1. Review the staged diff as one unit.
+2. Choose the smallest stable subsystem as scope.
+3. Write one imperative `<scope>: <Subject>` line.
+4. Add a body only when it adds why, conceptual change, or impact.
+5. Cite staged plan slug(s) and task ID(s) when `context/plans/*.md` is included.
+6. Apply context-file guidance based on context-only versus mixed staged scope.
+7. Validate the single message against all staged changes.
 
-Produce one commit message that follows:
-- `scope: Subject`
-- imperative verb (Fix/Add/Remove/Implement/Refactor/Simplify/Rename/Update/Ensure/Allow)
-- no trailing period in subject
-- body when context is needed (why/what changed/impact)
-- issue references on their own lines (for example `Fixes #123`)
+## Guardrails
+- Produce exactly one message and no split guidance.
+- Do not invent plan/task or issue references.
+- Avoid vague subjects, repeated bodies, playful tone for serious changes, and routine context-sync narration.
 
-When staged changes include `context/plans/*.md`, the commit body must also include:
-- affected plan slug(s)
-- updated task ID(s) (`T0X`)
+## Outputs
+- Exactly one complete commit message.
 
-If staged `context/plans/*.md` changes do not expose the plan slug or updated task ID clearly enough to cite faithfully, stop and ask for clarification instead of inventing references.
+## Completion criteria
+- The message faithfully describes the staged diff as one coherent unit and satisfies repository grammar.
 
-## Procedure
+## Failure handling
+- Stop for clarification when required plan/task citations cannot be inferred faithfully.
+- Report insufficient staged evidence rather than guessing intent.
 
-1) Review the staged change as one unit
-- Infer the main reason for the staged change from the staged diff first.
-- Use optional notes only to refine wording, not to override the staged truth.
+## Related units
+- `/commit` — executes the resulting commit once.
 
-2) Choose scope
-- Use the smallest stable subsystem/module name recognizable in the repo.
-- If unclear, use the primary directory/package of the change.
+## Reference
+Use this message grammar:
 
-3) Write subject
-- Pattern: `<scope>: <Imperative verb> <specific technical summary>`
-- Keep concrete and targeted.
+```text
+<scope>: <Imperative verb> <specific technical summary>
 
-4) Add body when needed
-- Explain what was wrong/missing, why it matters, what changed conceptually, and impact.
-- Add issue references on separate lines.
+<optional body explaining why, conceptual change, and impact>
 
-5) Apply the plan-update body rule when needed
-- Check whether staged changes include `context/plans/*.md`.
-- If yes, cite the affected plan slug(s) and updated task ID(s) in the body.
-- If the staged plan diff is ambiguous, stop with actionable guidance asking the user to stage or clarify the plan/task reference explicitly.
+<optional issue reference, for example Fixes #123>
+```
 
-6) Validate the single-message result
-- The message should describe the staged diff faithfully as one coherent change.
-- The subject should stay concise and technical.
-- The body should add useful why/impact context instead of repeating the subject.
-- Do not invent plan or task references.
-
-## Context-file Guidance gating
-
-- Check staged diff scope before proposing commit messaging guidance.
-- If staged changes are context-only (`context/**`), context-file-focused guidance is allowed.
-- If staged changes are mixed (`context/**` + non-`context/**`), avoid default context-file commit reminders and prioritize guidance that reflects the full staged scope.
-
-## Anti-patterns
-
-- vague subjects ("cleanup", "updates")
-- body repeats subject without adding why
-- playful tone in serious fixes/architecture changes
-- mention `context/` sync activity in commit messages
-- inventing plan slugs or task IDs for staged plan edits
+Use the smallest stable subsystem as scope. Do not end the subject with a period. Use a body only when it adds useful context.

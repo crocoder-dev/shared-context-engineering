@@ -1,9 +1,10 @@
+import "../base/shared-content-common.pkl" as sharedCommon
 import "../base/shared-content.pkl" as shared
 import "common.pkl" as common
 import "pi-metadata.pkl" as metadata
 
 local commandFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.commands) {
+  for (unitSlug, _ in shared.workflows) {
     [unitSlug] = """
 ---
 description: "\(common.commandDescriptions[unitSlug])"
@@ -13,29 +14,30 @@ argument-hint: "\(metadata.commandArgumentHints[unitSlug])"
   }
 }
 
-local agentPromptFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.agents) {
-    [unitSlug] = """
----
-description: "\(metadata.agentDescriptions[unitSlug])"
-argument-hint: "\(metadata.agentArgumentHints[unitSlug])"
----
+local function entrySkillReadInstruction(entrySkill: String): String =
+  "- Before acting, read `.pi/skills/\(entrySkill)/SKILL.md` completely and follow it as the entry procedure."
+
+local function piComposedBody(workflowUnit: sharedCommon.WorkflowUnit): sharedCommon.InstructionBody =
+  let (composed = common.composeProfile(
+    shared.executionProfiles[workflowUnit.executionProfile],
+    workflowUnit
+  ))
+  new sharedCommon.InstructionBody {
+    purpose = composed.purpose
+    inputs = composed.inputs
+    preconditions = """
+\(entrySkillReadInstruction(workflowUnit.entrySkill))
+\(composed.preconditions)
 """
+    workflow = composed.workflow
+    guardrails = composed.guardrails
+    outputs = composed.outputs
+    completionCriteria = composed.completionCriteria
+    failureHandling = composed.failureHandling
+    relatedUnits = composed.relatedUnits
+    reference = composed.reference
+    examples = composed.examples
   }
-}
-
-local agentPromptBodyBySlug = new Mapping {
-  for (unitSlug, unit in shared.agents) {
-    [unitSlug] = """
-Act as the \(unit.title) agent for the rest of this session. Load and follow the `\(metadata.agentSkillReferences[unitSlug])` skill when its workflow applies. Stay within this role's rules below until the task completes.
-
-Input:
-`$ARGUMENTS`
-
-\(unit.canonicalBody)
-"""
-  }
-}
 
 local skillFrontmatterBySlug = new Mapping {
   for (unitSlug, _ in shared.skills) {
@@ -48,24 +50,13 @@ description: \(common.skillDescriptions[unitSlug])
   }
 }
 
-agentPrompts {
-  for (unitSlug, unit in shared.agents) {
-    [unitSlug] = new common.RenderedTargetDocument {
-      slug = unitSlug
-      title = unit.title
-      frontmatter = agentPromptFrontmatterBySlug[unitSlug]
-      body = agentPromptBodyBySlug[unitSlug]
-    }
-  }
-}
-
 commands {
-  for (unitSlug, unit in shared.commands) {
+  for (unitSlug, unit in shared.workflows) {
     [unitSlug] = new common.RenderedTargetDocument {
       slug = unitSlug
       title = unit.title
       frontmatter = commandFrontmatterBySlug[unitSlug]
-      body = unit.canonicalBody
+      body = common.renderBody(piComposedBody(unit))
     }
   }
 }
@@ -76,7 +67,7 @@ skills {
       slug = unitSlug
       title = unit.title
       frontmatter = skillFrontmatterBySlug[unitSlug]
-      body = unit.canonicalBody
+      body = common.renderBody(unit.body)
     }
   }
 }

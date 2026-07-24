@@ -1,19 +1,56 @@
 ---
 description: "Use `sce-plan-authoring` to turn a change request into a scoped SCE plan"
 agent: "Shared Context Plan"
+subtask: false
+entry-skill: "sce-plan-authoring"
+skills:
+  - "sce-plan-authoring"
+permission:
+  default: block
+  read: allow
+  edit: allow
+  glob: allow
+  grep: allow
+  list: allow
+  bash: block
+  question: allow
+  codesearch: allow
+  lsp: allow
+  skill:
+    "*": block
+    "sce-plan-authoring": allow
 ---
 
-Load and follow the `sce-plan-authoring` skill.
+## Purpose
+- Convert `$ARGUMENTS` into a deterministic SCE plan through `sce-plan-authoring`.
 
-Input change request:
-`$ARGUMENTS`
+## Inputs
+- `$ARGUMENTS`: complete change request, criteria, constraints, dependency decisions, and optional existing plan target.
 
-Behavior:
-- Keep this command as thin orchestration; delegate clarification/ambiguity handling and plan-shape contracts to `sce-plan-authoring`.
-- If any critical detail is unclear, stop with structured error listing all unresolved items with category labels.
-- Do not invent assumptions silently.
-- Ensure plan output follows one-task/one-atomic-commit slicing through `sce-plan-authoring` task-shape rules.
-- Write/update `context/plans/{plan_name}.md`.
-- Confirm plan creation with `{plan_name}` and exact path.
-- Return the full ordered task list.
-- Prompt user to start a new session to implement `T01` and provide `/next-task {plan_name} T01`.
+## Preconditions
+1. Require an existing `context/` tree.
+2. Require all critical details to be explicit; this command does not conduct an interactive clarification loop.
+
+## Workflow
+1. Load `sce-plan-authoring`.
+2. Pass `$ARGUMENTS` and let the skill validate ambiguity and task atomicity.
+3. On success, write or update `context/plans/{plan_name}.md`.
+4. Return path, full task order, and `/next-task {plan_name} T01`.
+5. Stop after the planning handoff.
+
+## Guardrails
+- Keep this command thin.
+- Do not ask interactive questions, invent assumptions, modify application code, or begin implementation.
+
+## Outputs
+- A complete plan handoff or one structured error listing all unresolved planning items.
+
+## Completion criteria
+- The skill reports a valid atomic plan saved at the returned path.
+
+## Failure handling
+- Stop with categorized unresolved items; do not write a partial plan.
+
+## Related units
+- `sce-plan-authoring` — deterministic planning owner.
+- `/change-to-plan-interactive` — explicit interactive alternative.

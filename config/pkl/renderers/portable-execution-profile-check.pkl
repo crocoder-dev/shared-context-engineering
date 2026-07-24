@@ -1,0 +1,754 @@
+import "../base/shared-content-common.pkl" as common
+import "../base/shared-content.pkl" as manual
+import "../base/shared-content-automated.pkl" as automated
+import "../base/instruction-unit-inventory.pkl" as inventory
+import "instruction-unit-validator.pkl" as validator
+import "opencode-metadata.pkl" as opencodeMetadata
+import "opencode-content.pkl" as manualOpenCode
+import "opencode-automated-content.pkl" as automatedOpenCode
+import "claude-metadata.pkl" as claudeMetadata
+import "claude-content.pkl" as manualClaude
+import "pi-content.pkl" as manualPi
+
+/// Focused gate for the manual and automated portable execution-profile models.
+profileReferenceProblems: Listing<String>(isEmpty) = manual.profileReferenceProblems
+skillReferenceProblems: Listing<String>(isEmpty) = manual.skillReferenceProblems
+capabilityNarrowingProblems: Listing<String>(isEmpty) = manual.capabilityNarrowingProblems
+
+local expectedWorkflowProfiles = new Mapping {
+  ["next-task"] = "shared-context-code"
+  ["change-to-plan"] = "shared-context-plan"
+  ["handover"] = "shared-context-code"
+  ["commit"] = "shared-context-code"
+  ["validate"] = "shared-context-code"
+}
+
+workflowBindingProblems: Listing<String>(isEmpty) = new {
+  for (workflowSlug, expectedProfile in expectedWorkflowProfiles) {
+    when (manual.workflows[workflowSlug].executionProfile != expectedProfile) {
+      "workflow \(workflowSlug) binds \(manual.workflows[workflowSlug].executionProfile), expected \(expectedProfile)"
+    }
+  }
+}
+
+local expectedAutomatedWorkflowProfiles = new Mapping {
+  ["next-task"] = "shared-context-code"
+  ["change-to-plan"] = "shared-context-plan"
+  ["change-to-plan-interactive"] = "shared-context-plan"
+  ["handover"] = "shared-context-code"
+  ["commit"] = "shared-context-code"
+  ["validate"] = "shared-context-code"
+}
+
+automatedProfileReferenceProblems: Listing<String>(isEmpty) = automated.profileReferenceProblems
+automatedSkillReferenceProblems: Listing<String>(isEmpty) = automated.skillReferenceProblems
+automatedCapabilityNarrowingProblems: Listing<String>(isEmpty) = automated.capabilityNarrowingProblems
+automatedWorkflowBindingProblems: Listing<String>(isEmpty) = new {
+  for (workflowSlug, expectedProfile in expectedAutomatedWorkflowProfiles) {
+    when (automated.workflows[workflowSlug].executionProfile != expectedProfile) {
+      "automated workflow \(workflowSlug) binds \(automated.workflows[workflowSlug].executionProfile), expected \(expectedProfile)"
+    }
+  }
+  when (automated.workflows["change-to-plan-interactive"].entrySkill != "sce-plan-authoring-interactive") {
+    "automated interactive planning workflow lost its interactive entry skill"
+  }
+  when (automated.executionProfiles["shared-context-plan"].policy.tools.allowedCapabilities.contains("process.execute")) {
+    "automated planning profile allows process execution despite its bash-blocked posture"
+  }
+}
+
+automatedTopologyProblems: Listing<String>(isEmpty) = new {
+  for (_, unit in inventory.automatedUnits) {
+    for (projection in unit.projections) {
+      when (projection.target != "opencode") {
+        "automated unit \(unit.id) projects to target \(projection.target)"
+      }
+      when (projection.rootMirror != null) {
+        "automated unit \(unit.id) unexpectedly has a root mirror"
+      }
+    }
+  }
+}
+
+duplicateProjectionProblems: Listing<String>(isEmpty) = inventory.duplicateProjectionProblems
+
+local function expectedManualDestination(unit: inventory.InventoryUnit, projection: inventory.Projection): String =
+  if (unit.kind == "execution-profile")
+    if (projection.target == "opencode") "config/.opencode/agent/\(unit.title).md"
+    else "config/.claude/agents/\(unit.slug).md"
+  else if (unit.kind == "workflow")
+    if (projection.target == "opencode") "config/.opencode/command/\(unit.slug).md"
+    else if (projection.target == "claude") "config/.claude/commands/\(unit.slug).md"
+    else "config/.pi/prompts/\(unit.slug).md"
+  else
+    if (projection.target == "opencode") "config/.opencode/skills/\(unit.slug)/SKILL.md"
+    else if (projection.target == "claude") "config/.claude/skills/\(unit.slug)/SKILL.md"
+    else "config/.pi/skills/\(unit.slug)/SKILL.md"
+
+local function expectedManualRootMirror(destination: String): String = destination.drop("config/".length)
+
+local function expectedAutomatedDestination(unit: inventory.InventoryUnit): String =
+  if (unit.kind == "execution-profile") "config/automated/.opencode/agent/\(unit.title).md"
+  else if (unit.kind == "workflow") "config/automated/.opencode/command/\(unit.slug).md"
+  else "config/automated/.opencode/skills/\(unit.slug)/SKILL.md"
+
+projectionInventoryProblems: Listing<String>(isEmpty) = new {
+  for (_, unit in inventory.manualUnits) {
+    when (unit.kind == "execution-profile") {
+      when (unit.projections.map((projection) -> projection.target) != List("opencode", "claude")) {
+        "manual profile \(unit.id) does not project exactly to OpenCode and Claude"
+      }
+      for (projection in unit.projections) {
+        when (projection.carrier != "agent" || projection.profileBinding != "native") {
+          "manual profile \(unit.id) has invalid native-agent projection classification"
+        }
+      }
+    }
+    when (unit.kind == "workflow") {
+      when (unit.projections.map((projection) -> projection.target) != List("opencode", "claude", "pi")) {
+        "manual workflow \(unit.id) does not project to all approved targets"
+      }
+    }
+    when (unit.kind == "skill") {
+      when (unit.projections.map((projection) -> projection.target) != List("opencode", "claude", "pi")) {
+        "manual skill \(unit.id) does not project to all approved targets"
+      }
+    }
+    for (projection in unit.projections) {
+      when (projection.semanticControl != "prompt") {
+        "manual unit \(unit.id) claims non-prompt semantic control"
+      }
+      when (projection.destination != expectedManualDestination(unit, projection)) {
+        "manual unit \(unit.id) has mismatched \(projection.target) destination"
+      }
+      when (projection.rootMirror != expectedManualRootMirror(expectedManualDestination(unit, projection))) {
+        "manual unit \(unit.id) has mismatched \(projection.target) root mirror"
+      }
+    }
+  }
+  for (_, unit in inventory.automatedUnits) {
+    for (projection in unit.projections) {
+      when (projection.destination != expectedAutomatedDestination(unit)) {
+        "automated unit \(unit.id) has a mismatched destination"
+      }
+      when (projection.rootMirror != null) {
+        "automated unit \(unit.id) unexpectedly has a root mirror"
+      }
+    }
+  }
+  when (inventory.counts.renderedInstructionFiles != 60) {
+    "projection-derived rendered instruction count is not 60"
+  }
+  when (inventory.counts.rootMirrors != 43) {
+    "projection-derived root-mirror count is not 43"
+  }
+  when (inventory.counts.committedInstructionFiles != 103) {
+    "projection-derived committed instruction count is not 103"
+  }
+  when (inventory.generatedInstructionPaths != inventory.generatedInstructionPaths.sort()) {
+    "generated projection paths are not deterministic"
+  }
+  when (inventory.rootMirrorPaths != inventory.rootMirrorPaths.sort()) {
+    "root-mirror projection paths are not deterministic"
+  }
+}
+
+local unionIntersectionProbe = common.effectiveToolPolicy(
+  new common.ToolPolicy {
+    allowedCapabilities = common.capabilityIds
+    approvalRequiredCapabilities = List("process.execute", "vcs.commit")
+  },
+  new common.ToolPolicy {
+    allowedCapabilities = List("repository.read", "process.execute", "interaction.ask")
+    approvalRequiredCapabilities = List("interaction.ask", "vcs.commit")
+  }
+)
+
+capabilityTranslationProblems: Listing<String>(isEmpty) = new {
+  for (capability in common.capabilityIds) {
+    when (opencodeMetadata.capabilityTools.getOrNull(capability) == null) {
+      "OpenCode translation is missing canonical capability \(capability)"
+    }
+    when (opencodeMetadata.capabilityTools[capability].isEmpty) {
+      "OpenCode translation for canonical capability \(capability) has no native tools"
+    }
+  }
+  when (opencodeMetadata.capabilityTools.keys.toList().sort() != common.capabilityIds.sort()) {
+    "OpenCode capability translation keys differ from the canonical vocabulary"
+  }
+}
+
+effectivePolicyProblems: Listing<String>(isEmpty) = new {
+  when (manual.effectiveWorkflowPolicies["next-task"].allowedCapabilities != manual.workflows["next-task"].tools.allowedCapabilities) {
+    "next-task effective allow-set differs from its workflow allow-set"
+  }
+  when (!manual.effectiveWorkflowPolicies["commit"].approvalRequiredCapabilities.contains("vcs.commit")) {
+    "commit effective policy does not require approval for vcs.commit"
+  }
+  when (manual.effectiveWorkflowPolicies["next-task"].approvalRequiredCapabilities.contains("vcs.commit")) {
+    "next-task inherited profile approval outside its effective allow-set"
+  }
+  when (unionIntersectionProbe.approvalRequiredCapabilities != List("process.execute", "interaction.ask")) {
+    "effective approval helper does not implement ordered union/intersection semantics"
+  }
+}
+
+local function expectedSkillMetadata(entrySkill: String, requiredSkills: List<String>): String = """
+entry-skill: "\(entrySkill)"
+skills:
+\(requiredSkills.map((skillSlug) -> "  - \"\(skillSlug)\"").join("\n"))
+"""
+
+openCodeNativeBindingProblems: Listing<String>(isEmpty) = new {
+  for (profileSlug, profile in manual.executionProfiles) {
+    when (!manualOpenCode.agents[profileSlug].frontmatter.contains("mode: primary")) {
+      "manual OpenCode profile \(profileSlug) is not primary"
+    }
+    when (!manualOpenCode.agents[profileSlug].frontmatter.contains(
+      opencodeMetadata.renderPermissionBlock(profile.policy.tools, profile.policy.allowedSkills, "ask")
+    )) {
+      "manual OpenCode profile \(profileSlug) does not derive permissions from canonical policy"
+    }
+  }
+  for (workflowSlug, workflowUnit in manual.workflows) {
+    when (!manualOpenCode.commands[workflowSlug].frontmatter.contains("agent: \"\(manual.executionProfiles[workflowUnit.executionProfile].title)\"")) {
+      "manual OpenCode workflow \(workflowSlug) does not bind its canonical profile agent"
+    }
+    when (!manualOpenCode.commands[workflowSlug].frontmatter.contains("subtask: false")) {
+      "manual OpenCode workflow \(workflowSlug) can fork from the primary conversation"
+    }
+    when (!manualOpenCode.commands[workflowSlug].frontmatter.contains(expectedSkillMetadata(workflowUnit.entrySkill, workflowUnit.requiredSkills))) {
+      "manual OpenCode workflow \(workflowSlug) does not derive its canonical skill chain"
+    }
+    when (!manualOpenCode.commands[workflowSlug].frontmatter.contains(opencodeMetadata.renderPermissionBlock(
+      manual.effectiveWorkflowPolicies[workflowSlug],
+      workflowUnit.requiredSkills,
+      "ask"
+    ))) {
+      "manual OpenCode workflow \(workflowSlug) does not derive effective permissions"
+    }
+    when (manualOpenCode.commands[workflowSlug].body != common.renderBody(workflowUnit.body)) {
+      "manual OpenCode workflow \(workflowSlug) is not a thin canonical workflow body"
+    }
+  }
+  for (profileSlug, profile in automated.executionProfiles) {
+    when (!automatedOpenCode.agents[profileSlug].frontmatter.contains("mode: primary")) {
+      "automated OpenCode profile \(profileSlug) is not primary"
+    }
+    when (!automatedOpenCode.agents[profileSlug].frontmatter.contains(
+      opencodeMetadata.renderPermissionBlock(profile.policy.tools, profile.policy.allowedSkills, "block")
+    )) {
+      "automated OpenCode profile \(profileSlug) does not derive permissions from canonical policy"
+    }
+  }
+  for (workflowSlug, workflowUnit in automated.workflows) {
+    when (!automatedOpenCode.commands[workflowSlug].frontmatter.contains("agent: \"\(automated.executionProfiles[workflowUnit.executionProfile].title)\"")) {
+      "automated OpenCode workflow \(workflowSlug) does not bind its canonical profile agent"
+    }
+    when (!automatedOpenCode.commands[workflowSlug].frontmatter.contains("subtask: false")) {
+      "automated OpenCode workflow \(workflowSlug) can fork from the primary conversation"
+    }
+    when (!automatedOpenCode.commands[workflowSlug].frontmatter.contains(expectedSkillMetadata(workflowUnit.entrySkill, workflowUnit.requiredSkills))) {
+      "automated OpenCode workflow \(workflowSlug) does not derive its canonical skill chain"
+    }
+    when (!automatedOpenCode.commands[workflowSlug].frontmatter.contains(opencodeMetadata.renderPermissionBlock(
+      automated.effectiveWorkflowPolicies[workflowSlug],
+      workflowUnit.requiredSkills,
+      "block"
+    ))) {
+      "automated OpenCode workflow \(workflowSlug) does not derive effective permissions"
+    }
+    when (automatedOpenCode.commands[workflowSlug].body != common.renderBody(workflowUnit.body)) {
+      "automated OpenCode workflow \(workflowSlug) is not a thin canonical workflow body"
+    }
+  }
+  when (!manualOpenCode.commands["next-task"].frontmatter.contains("bash: allow")) {
+    "manual next-task lost allowed process execution"
+  }
+  when (!manualOpenCode.commands["commit"].frontmatter.contains("bash: ask")) {
+    "manual commit does not preserve vcs.commit approval"
+  }
+  when (!automatedOpenCode.commands["change-to-plan-interactive"].frontmatter.contains("bash: block")) {
+    "automated interactive planning workflow can execute processes"
+  }
+}
+
+local function claudeCompositionFindings(
+  expectedProfile: common.ExecutionProfile,
+  renderedBody: String
+): Listing<String> = new {
+  when (!renderedBody.contains(common.profileCompositionMarker(expectedProfile.slug))) {
+    "missing or wrong composed profile marker"
+  }
+  when (!renderedBody.contains(expectedProfile.policy.body.preconditions)) {
+    "missing profile preconditions"
+  }
+  when (!renderedBody.contains(expectedProfile.policy.body.guardrails)) {
+    "missing profile guardrails"
+  }
+  when (!renderedBody.contains(expectedProfile.policy.body.failureHandling)) {
+    "missing profile failure handling"
+  }
+}
+
+local claudeNextTask = manual.workflows["next-task"]
+local claudeCodeProfile = manual.executionProfiles["shared-context-code"]
+local claudePlanProfile = manual.executionProfiles["shared-context-plan"]
+local claudeValidComposedBody = common.renderBody(common.composeProfile(claudeCodeProfile, claudeNextTask))
+local claudeMissingMarkerBody = common.renderBody(claudeNextTask.body)
+local claudeWrongMarkerBody = common.renderBody(common.composeProfile(claudePlanProfile, claudeNextTask))
+local claudeMissingPolicyBody = "\(common.profileCompositionMarker(claudeCodeProfile.slug))\n\(common.renderBody(claudeNextTask.body))"
+local claudeAgents = manualClaude.agents.toMap()
+local claudeCommands = manualClaude.commands.toMap()
+
+claudeCompositionProblems: Listing<String>(isEmpty) = new {
+  when (claudeAgents.length != manual.executionProfiles.length) {
+    "Claude native profile projection count differs from the canonical profile count"
+  }
+  for (profileSlug, profile in manual.executionProfiles) {
+    when (claudeAgents.getOrNull(profileSlug) == null) {
+      "Claude native profile \(profileSlug) is missing"
+    }
+    when (claudeAgents[profileSlug].body != common.renderBody(common.nativeAgentBody(profile))) {
+      "Claude native profile \(profileSlug) does not render canonical native policy"
+    }
+    when (!claudeAgents[profileSlug].frontmatter.contains(
+      "tools: \(claudeMetadata.renderAgentTools(profile.policy.tools))"
+    )) {
+      "Claude native profile \(profileSlug) tools do not derive from its capability ceiling"
+    }
+  }
+  for (workflowSlug, workflowUnit in manual.workflows) {
+    when (claudeCommands[workflowSlug].body != common.renderBody(common.composeProfile(
+      manual.executionProfiles[workflowUnit.executionProfile],
+      workflowUnit
+    ))) {
+      "Claude workflow \(workflowSlug) is not the canonical composed body"
+    }
+    for (finding in claudeCompositionFindings(
+      manual.executionProfiles[workflowUnit.executionProfile],
+      claudeCommands[workflowSlug].body
+    )) {
+      "Claude workflow \(workflowSlug): \(finding)"
+    }
+    when (!claudeCommands[workflowSlug].frontmatter.contains(
+      "allowed-tools: \(claudeMetadata.renderCommandAllowedTools(manual.effectiveWorkflowPolicies[workflowSlug]))"
+    )) {
+      "Claude workflow \(workflowSlug) allowed tools do not equal translated effective capabilities"
+    }
+    when (claudeCommands[workflowSlug].frontmatter.contains("context: fork")
+      || claudeCommands[workflowSlug].body.contains("context: fork")) {
+      "Claude workflow \(workflowSlug) forks from the main conversation"
+    }
+    for (diagnostic in validator.validate(new validator.UnitInput {
+      path = "fixtures/portable-profile/claude-\(workflowSlug).md"
+      profile = "manual"
+      target = "claude"
+      kind = "command"
+      slug = workflowSlug
+      frontmatter = claudeCommands[workflowSlug].frontmatter
+      body = claudeCommands[workflowSlug].body
+    })) {
+      "Claude workflow \(workflowSlug) failed structural validation: \(diagnostic.rule)"
+    }
+  }
+  for (capability in common.capabilityIds) {
+    when (claudeMetadata.capabilityTools.getOrNull(capability) == null
+      || claudeMetadata.capabilityTools[capability].isEmpty) {
+      "Claude translation is missing canonical capability \(capability)"
+    }
+  }
+  when (claudeMetadata.capabilityTools.keys.toList().sort() != common.capabilityIds.sort()) {
+    "Claude capability translation keys differ from the canonical vocabulary"
+  }
+  when (!claudeCompositionFindings(claudeCodeProfile, claudeValidComposedBody).isEmpty) {
+    "valid Claude composed fixture was rejected"
+  }
+  when (!claudeCompositionFindings(claudeCodeProfile, claudeMissingMarkerBody)
+    .contains("missing or wrong composed profile marker")) {
+    "missing-marker Claude fixture was not detected"
+  }
+  when (!claudeCompositionFindings(claudeCodeProfile, claudeWrongMarkerBody)
+    .contains("missing or wrong composed profile marker")) {
+    "wrong-marker Claude fixture was not detected"
+  }
+  when (!claudeCompositionFindings(claudeCodeProfile, claudeMissingPolicyBody)
+    .contains("missing profile guardrails")) {
+    "missing-policy-fragment Claude fixture was not detected"
+  }
+}
+
+local function piEntrySkillPath(entrySkill: String): String =
+  ".pi/skills/\(entrySkill)/SKILL.md"
+
+local function piEntrySkillReadInstruction(entrySkill: String): String =
+  "- Before acting, read `\(piEntrySkillPath(entrySkill))` completely and follow it as the entry procedure."
+
+local function piProfile(workflowUnit: common.WorkflowUnit): common.ExecutionProfile =
+  manual.executionProfiles[workflowUnit.executionProfile]
+
+local function piSkillProjection(entrySkill: String): inventory.Projection =
+  inventory.manualSkills[entrySkill].projections
+    .filter((projection) -> projection.target == "pi")
+    .first
+
+local piCommands = manualPi.commands.toMap()
+local piSkills = manualPi.skills.toMap()
+
+piCompositionProblems: Listing<String>(isEmpty) = new {
+  when (piCommands.length != manual.workflows.length) {
+    "Pi workflow prompt count differs from the canonical workflow count"
+  }
+  for (workflowSlug, workflowUnit in manual.workflows) {
+    when (!piCommands[workflowSlug].body.contains(
+      common.profileCompositionMarker(piProfile(workflowUnit).slug)
+    )) {
+      "Pi workflow \(workflowSlug) is missing its composed profile marker"
+    }
+    when (!piCommands[workflowSlug].body.contains(piProfile(workflowUnit).policy.body.preconditions)
+      || !piCommands[workflowSlug].body.contains(piProfile(workflowUnit).policy.body.guardrails)
+      || !piCommands[workflowSlug].body.contains(piProfile(workflowUnit).policy.body.failureHandling)) {
+      "Pi workflow \(workflowSlug) is missing composed profile policy"
+    }
+    when (!piCommands[workflowSlug].body.contains(piEntrySkillReadInstruction(workflowUnit.entrySkill))) {
+      "Pi workflow \(workflowSlug) does not require a full entry-skill read"
+    }
+    when (manual.skills.getOrNull(workflowUnit.entrySkill) == null
+      || piSkills.getOrNull(workflowUnit.entrySkill) == null) {
+      "Pi workflow \(workflowSlug) entry skill does not resolve"
+    }
+    when (piSkillProjection(workflowUnit.entrySkill).destination != "config/\(piEntrySkillPath(workflowUnit.entrySkill))"
+      || piSkillProjection(workflowUnit.entrySkill).rootMirror != piEntrySkillPath(workflowUnit.entrySkill)) {
+      "Pi workflow \(workflowSlug) entry-skill projection paths do not resolve"
+    }
+    for (diagnostic in validator.validate(new validator.UnitInput {
+      path = "fixtures/portable-profile/pi-\(workflowSlug).md"
+      profile = "manual"
+      target = "pi"
+      kind = "command"
+      slug = workflowSlug
+      frontmatter = piCommands[workflowSlug].frontmatter
+      body = piCommands[workflowSlug].body
+    })) {
+      "Pi workflow \(workflowSlug) failed structural validation: \(diagnostic.rule)"
+    }
+  }
+}
+
+local manualCodeProfile = manual.executionProfiles["shared-context-code"]
+local automatedCodeProfile = automated.executionProfiles["shared-context-code"]
+local manualNextTask = manual.workflows["next-task"]
+local automatedNextTask = automated.workflows["next-task"]
+local manualNativeBody = common.nativeAgentBody(manualCodeProfile)
+local manualComposedBody = common.composeProfile(manualCodeProfile, manualNextTask)
+local automatedComposedBody = common.composeProfile(automatedCodeProfile, automatedNextTask)
+local manualNativeRendered = common.renderBody(manualNativeBody)
+local manualComposedRendered = common.renderBody(manualComposedBody)
+local automatedComposedRendered = common.renderBody(automatedComposedBody)
+
+local function helperUnit(pathName: String, profileName: String, unitKind: String, renderedBody: String): validator.UnitInput =
+  new validator.UnitInput {
+    path = "fixtures/portable-profile/\(pathName).md"
+    profile = if (profileName == "manual") "manual" else "automated"
+    target = "opencode"
+    kind = if (unitKind == "agent") "agent" else "command"
+    slug = pathName
+    frontmatter = if (unitKind == "agent") """
+---
+name: "Portable Profile"
+description: Portable profile helper fixture.
+mode: primary
+permission:
+  default: ask
+---
+""" else """
+---
+description: Portable composed workflow helper fixture.
+agent: "Shared Context Code"
+---
+"""
+    body = renderedBody
+  }
+
+helperCompositionProblems: Listing<String>(isEmpty) = new {
+  when (manualCodeProfile.policy.body.workflow.contains("Load `sce-plan-review`")) {
+    "manual code profile still duplicates next-task workflow ordering"
+  }
+  when (manualCodeProfile.policy.body.guardrails.contains("one task")) {
+    "manual code profile still imposes universal one-task behavior"
+  }
+  when (automatedCodeProfile.policy.body.guardrails.contains("one task")) {
+    "automated code profile still imposes universal one-task behavior"
+  }
+  when (!manualNextTask.body.guardrails.contains("one task")) {
+    "manual next-task workflow lost one-task ownership"
+  }
+  when (!automatedNextTask.body.guardrails.contains("one task")) {
+    "automated next-task workflow lost one-task ownership"
+  }
+  when (!manualNativeBody.relatedUnits.contains("`sce-task-execution` — skill allowed by this execution profile.")) {
+    "native profile helper did not generate allowed-skill relationships"
+  }
+  when (!manualComposedBody.purpose.startsWith(common.profileCompositionMarker("shared-context-code"))) {
+    "manual composed workflow has a missing or unstable profile marker"
+  }
+  when (!automatedComposedBody.purpose.startsWith(common.profileCompositionMarker("shared-context-code"))) {
+    "automated composed workflow has a missing or unstable profile marker"
+  }
+  when (!manualComposedBody.preconditions.contains(manualCodeProfile.policy.body.preconditions)) {
+    "manual composition omitted profile preconditions"
+  }
+  when (!manualComposedBody.guardrails.contains(manualCodeProfile.policy.body.guardrails)) {
+    "manual composition omitted profile guardrails"
+  }
+  when (!manualComposedBody.failureHandling.contains(manualCodeProfile.policy.body.failureHandling)) {
+    "manual composition omitted profile failure handling"
+  }
+  when (!manualComposedBody.relatedUnits.contains("`sce-context-sync` — skill required by this workflow.")) {
+    "manual composition did not generate required-skill relationships"
+  }
+  when (manualComposedRendered.contains("## Purpose\n## Purpose")) {
+    "manual composition introduced heading-level string concatenation"
+  }
+  for (diagnostic in validator.validate(helperUnit("manual-native", "manual", "agent", manualNativeRendered))) {
+    "manual native helper failed structural validation: \(diagnostic.rule)"
+  }
+  for (diagnostic in validator.validate(helperUnit("manual-composed", "manual", "command", manualComposedRendered))) {
+    "manual composed helper failed structural validation: \(diagnostic.rule)"
+  }
+  for (diagnostic in validator.validate(helperUnit("automated-composed", "automated", "command", automatedComposedRendered))) {
+    "automated composed helper failed structural validation: \(diagnostic.rule)"
+  }
+}
+
+class RelationshipFixtureInput {
+  profile: String?
+  entrySkill: String?
+  requiredSkills: List<String>
+  profileCapabilities: List<String>
+  workflowCapabilities: List<String>
+}
+
+local function relationshipFixtureRules(input: RelationshipFixtureInput): List<String> = new Listing {
+  when (input.profile == null) { "logical.profile_reference" }
+  when (input.entrySkill == null) { "logical.entry_skill_reference" }
+  when (input.entrySkill != null && !input.requiredSkills.contains(input.entrySkill)) {
+    "logical.entry_skill_required"
+  }
+  when (input.workflowCapabilities.any((capability) -> !input.profileCapabilities.contains(capability))) {
+    "capability.ceiling"
+  }
+}.toList()
+
+class ProjectionFixtureInput {
+  logicalKind: inventory.LogicalKind
+  target: inventory.ProjectionTarget
+  duplicateTargetCarrier: Boolean
+  toolControl: String?
+  semanticControl: String?
+  destination: String
+  expectedDestination: String
+}
+
+local function projectionFixtureRules(input: ProjectionFixtureInput): List<String> = new Listing {
+  when (input.logicalKind == "execution-profile" && input.target == "pi") {
+    "projection.pi_profile"
+  }
+  when (input.duplicateTargetCarrier) { "projection.duplicate" }
+  when (input.toolControl == null || input.semanticControl == null) {
+    "projection.enforcement_classification"
+  }
+  when (input.destination != input.expectedDestination) { "projection.destination" }
+}.toList()
+
+local function piPathFixtureRules(skillExists: Boolean, destination: String): List<String> = new Listing {
+  when (!skillExists || destination != "config/.pi/skills/sce-plan-review/SKILL.md") {
+    "pi.skill_path"
+  }
+}.toList()
+
+local function generatedPathFixtureRules(paths: List<String>): List<String> = new Listing {
+  when (paths.any((path) -> path.contains("/.pi/prompts/agent-") || path.startsWith(".pi/prompts/agent-")
+    || path.startsWith("config/.pi/prompts/agent-"))) {
+    "generated.stale_pi_agent_prompt"
+  }
+}.toList()
+
+class PortableFixtureCase {
+  name: String
+  observedRules: List<String>
+  expectedRule: String?
+}
+
+portableValidFixtures: Listing<PortableFixtureCase> = new {
+  new PortableFixtureCase {
+    name = "valid-logical-binding"
+    observedRules = relationshipFixtureRules(new RelationshipFixtureInput {
+      profile = "shared-context-code"
+      entrySkill = "sce-plan-review"
+      requiredSkills = List("sce-plan-review", "sce-task-execution")
+      profileCapabilities = common.capabilityIds
+      workflowCapabilities = List("repository.read", "repository.write")
+    })
+    expectedRule = null
+  }
+  new PortableFixtureCase {
+    name = "valid-projection"
+    observedRules = projectionFixtureRules(new ProjectionFixtureInput {
+      logicalKind = "workflow"
+      target = "pi"
+      duplicateTargetCarrier = false
+      toolControl = "none"
+      semanticControl = "prompt"
+      destination = "config/.pi/prompts/next-task.md"
+      expectedDestination = "config/.pi/prompts/next-task.md"
+    })
+    expectedRule = null
+  }
+  new PortableFixtureCase {
+    name = "valid-generated-paths"
+    observedRules = generatedPathFixtureRules(inventory.committedInstructionPaths)
+    expectedRule = null
+  }
+}
+
+portableInvalidFixtures: Listing<PortableFixtureCase> = new {
+  new PortableFixtureCase {
+    name = "missing-profile"
+    observedRules = relationshipFixtureRules(new RelationshipFixtureInput {
+      profile = null
+      entrySkill = "sce-plan-review"
+      requiredSkills = List("sce-plan-review")
+      profileCapabilities = common.capabilityIds
+      workflowCapabilities = List("repository.read")
+    })
+    expectedRule = "logical.profile_reference"
+  }
+  new PortableFixtureCase {
+    name = "missing-entry-skill"
+    observedRules = relationshipFixtureRules(new RelationshipFixtureInput {
+      profile = "shared-context-code"
+      entrySkill = null
+      requiredSkills = List()
+      profileCapabilities = common.capabilityIds
+      workflowCapabilities = List("repository.read")
+    })
+    expectedRule = "logical.entry_skill_reference"
+  }
+  new PortableFixtureCase {
+    name = "entry-skill-absent-from-required"
+    observedRules = relationshipFixtureRules(new RelationshipFixtureInput {
+      profile = "shared-context-code"
+      entrySkill = "sce-plan-review"
+      requiredSkills = List("sce-task-execution")
+      profileCapabilities = common.capabilityIds
+      workflowCapabilities = List("repository.read")
+    })
+    expectedRule = "logical.entry_skill_required"
+  }
+  new PortableFixtureCase {
+    name = "capability-ceiling-violation"
+    observedRules = relationshipFixtureRules(new RelationshipFixtureInput {
+      profile = "shared-context-plan"
+      entrySkill = "sce-plan-authoring"
+      requiredSkills = List("sce-plan-authoring")
+      profileCapabilities = List("repository.read")
+      workflowCapabilities = List("repository.read", "vcs.commit")
+    })
+    expectedRule = "capability.ceiling"
+  }
+  new PortableFixtureCase {
+    name = "unexpected-pi-profile-projection"
+    observedRules = projectionFixtureRules(new ProjectionFixtureInput {
+      logicalKind = "execution-profile"
+      target = "pi"
+      duplicateTargetCarrier = false
+      toolControl = "none"
+      semanticControl = "prompt"
+      destination = "config/.pi/prompts/agent-shared-context-code.md"
+      expectedDestination = "config/.pi/prompts/agent-shared-context-code.md"
+    })
+    expectedRule = "projection.pi_profile"
+  }
+  new PortableFixtureCase {
+    name = "duplicate-projection"
+    observedRules = projectionFixtureRules(new ProjectionFixtureInput {
+      logicalKind = "workflow"
+      target = "opencode"
+      duplicateTargetCarrier = true
+      toolControl = "native"
+      semanticControl = "prompt"
+      destination = "config/.opencode/command/next-task.md"
+      expectedDestination = "config/.opencode/command/next-task.md"
+    })
+    expectedRule = "projection.duplicate"
+  }
+  new PortableFixtureCase {
+    name = "omitted-enforcement-classification"
+    observedRules = projectionFixtureRules(new ProjectionFixtureInput {
+      logicalKind = "workflow"
+      target = "claude"
+      duplicateTargetCarrier = false
+      toolControl = null
+      semanticControl = null
+      destination = "config/.claude/commands/next-task.md"
+      expectedDestination = "config/.claude/commands/next-task.md"
+    })
+    expectedRule = "projection.enforcement_classification"
+  }
+  new PortableFixtureCase {
+    name = "destination-mismatch"
+    observedRules = projectionFixtureRules(new ProjectionFixtureInput {
+      logicalKind = "workflow"
+      target = "pi"
+      duplicateTargetCarrier = false
+      toolControl = "none"
+      semanticControl = "prompt"
+      destination = "config/.pi/prompts/wrong.md"
+      expectedDestination = "config/.pi/prompts/next-task.md"
+    })
+    expectedRule = "projection.destination"
+  }
+  new PortableFixtureCase {
+    name = "unresolved-pi-skill-path"
+    observedRules = piPathFixtureRules(false, "config/.pi/skills/sce-missing/SKILL.md")
+    expectedRule = "pi.skill_path"
+  }
+  new PortableFixtureCase {
+    name = "stale-pi-agent-prompt"
+    observedRules = generatedPathFixtureRules(List("config/.pi/prompts/agent-shared-context-code.md"))
+    expectedRule = "generated.stale_pi_agent_prompt"
+  }
+}
+
+portableFixtureFailures: Listing<String>(isEmpty) = new {
+  for (fixture in portableValidFixtures) {
+    when (!fixture.observedRules.isEmpty) { "valid fixture \(fixture.name) produced \(fixture.observedRules)" }
+  }
+  for (fixture in portableInvalidFixtures) {
+    when (!fixture.observedRules.contains(fixture.expectedRule)) {
+      "invalid fixture \(fixture.name) did not produce \(fixture.expectedRule)"
+    }
+  }
+}
+
+summary = new {
+  manualProfile = new {
+    executionProfileCount = manual.executionProfiles.length
+    workflowCount = manual.workflows.length
+    skillCount = manual.skills.length
+    checkedEffectivePolicyCount = manual.effectiveWorkflowPolicies.length
+  }
+  automatedProfile = new {
+    executionProfileCount = automated.executionProfiles.length
+    workflowCount = automated.workflows.length
+    skillCount = automated.skills.length
+    checkedEffectivePolicyCount = automated.effectiveWorkflowPolicies.length
+    targetCount = inventory.automatedTargets.length
+    targets = inventory.automatedTargets
+  }
+  capabilityCount = common.capabilityIds.length
+  validPortableFixtureCount = portableValidFixtures.length
+  invalidPortableFixtureCount = portableInvalidFixtures.length
+  status = "PORTABLE_EXECUTION_PROFILE_MODEL_OK"
+}
