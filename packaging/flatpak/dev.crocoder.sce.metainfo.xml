@@ -21,7 +21,7 @@
     <binary>sce</binary>
   </provides>
   <releases>
-    <release version="0.3.2" date="2025-07-23" />
+    <release version="0.3.3" date="2026-07-24" />
     <release version="0.3.0-pre-alpha-v4" date="2026-07-02" />
   </releases>
   <content_rating type="oars-1.1" />
