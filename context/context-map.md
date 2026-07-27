@@ -27,6 +27,7 @@ Feature/domain context:
 - [Context workflow rules](sce/context-workflow-rules.md) (canonical bootstrap, ongoing context maintenance, task synchronization, plan synchronization, hygiene, discoverability, and feature-existence rules)
 - `context/sce/plan-code-overlap-map.md` (current overlap matrix for thin OpenCode Plan/Code routing agents, the three workflow commands, and their phase-skill ownership boundaries)
 - `context/sce/dedup-ownership-table.md` (current canonical owner-vs-consumer matrix for the three workflow packages, seven phase skills, shared sync skeleton, and thin OpenCode agents)
+- [Atomic commit workflow](sce/atomic-commit-workflow.md) (`/commit` regular proposal-only mode vs `oneshot`/`skip` bypass mode, command-vs-`sce-atomic-commit` ownership boundary, staged-truth rule, plan-citation rule, and result contract; currently a project-root `.pi/` baseline only, not yet canonical Pkl or generated)
 
 - `context/sce/agent-trace-implementation-contract.md` (historical no-git-wrapper Agent Trace design contract; not active runtime behavior)
 - `context/sce/agent-trace-embedded-schema-validation.md` (implemented internal Agent Trace JSON schema-validation seam in `cli/src/services/agent_trace.rs`, embedding `config/schema/agent-trace.schema.json` at compile time, caching the compiled validator, validating string or parsed-JSON inputs, and returning deterministic invalid-JSON vs schema-validation errors without changing the current minimal generator output)

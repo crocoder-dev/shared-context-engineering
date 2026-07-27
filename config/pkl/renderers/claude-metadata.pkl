@@ -2,6 +2,7 @@ commandAllowedTools = new Mapping {
   ["next-task"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
   ["change-to-plan"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill"
   ["validate"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
+  ["commit"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
 }
 
 skillCompatibility = "claude"
