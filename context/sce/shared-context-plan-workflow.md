@@ -31,7 +31,9 @@ When context loading returns `bootstrap_required`, the workflow stops without cr
 
 `sce setup --bootstrap-context`
 
-The user then reruns `/change-to-plan` with the original request.
+After the user reports that bootstrap completed, the waiting workflow invokes
+`sce-context-load` again and continues with the original request in the same
+session.
 
 ## Planning boundary
 
