@@ -859,19 +859,22 @@ local planReportRole3 = """
 
 local reportCommon3 = """
 
+    """
+
+local taskReportRole4 = """
+    ## Updated files
+
+    - {List each changed file from the execution handoff except paths under
+      `context/`; state `None.` when no files remain.}
+    """
+
+local planReportRole4 = """
     ## Context impact
 
     **Classification:** `{local | domain | root}`\("  ")
     **Affected areas:** `{comma-separated areas}`
 
     {Explain which durable behavior, architecture, terminology, operation, or
-    """
-
-local taskReportRole4 = """
-    constraint required synchronization.}
-    """
-
-local planReportRole4 = """
     constraint required plan-level synchronization after validation.}
 
     ## Plan context requirements
@@ -885,6 +888,19 @@ local reportCommon4 = """
 
     - `{context file}` — {concise description of the durable truth updated}
 
+    """
+
+local taskReportRole5 = """
+    ## Feature existence
+
+    - `{feature}` — `{context file that canonically describes it}`
+
+    ## Verification
+
+    - {How the edited context was checked against implementation and execution evidence.}
+    """
+
+local planReportRole5 = """
     ## Root pass
 
     - `context/overview.md` — {verified | edited | absent}
@@ -899,13 +915,6 @@ local reportCommon4 = """
 
     ## Verification
 
-    """
-
-local taskReportRole5 = """
-    - {How the edited context was checked against implementation and execution evidence.}
-    """
-
-local planReportRole5 = """
     - {How the edited context was checked against the finished implementation and validation evidence.}
     """
 
@@ -948,18 +957,25 @@ local planReportRole7 = """
 
 local reportCommon7 = """
 
-    ## Context impact
-
-    **Classification:** none
-
     """
 
 local taskReportRole8 = """
+    ## Updated files
+
+    - {List each changed file from the execution handoff except paths under
+      `context/`; state `None.` when no files remain.}
+
+    ## Synchronization result
+
     {Explain why the completed implementation did not introduce durable,
     non-obvious repository knowledge requiring an update.}
     """
 
 local planReportRole8 = """
+    ## Context impact
+
+    **Classification:** none
+
     {Explain why the finished plan introduced no durable, non-obvious repository
     knowledge requiring an update, or why existing context already matched.}
 
@@ -975,6 +991,19 @@ local reportCommon8 = """
 
     - `{context file or area}` — {what was checked and why it remains accurate}
 
+    """
+
+local taskReportRole9 = """
+    ## Feature existence
+
+    - `{feature}` — `{context file that canonically describes it}`, already present.
+
+    ## Verification
+
+    - {How existing context was compared with implementation and execution evidence.}
+    """
+
+local planReportRole9 = """
     ## Root pass
 
     - `context/overview.md` — {verified | absent}
@@ -989,13 +1018,6 @@ local reportCommon8 = """
 
     ## Verification
 
-    """
-
-local taskReportRole9 = """
-    - {How existing context was compared with implementation and execution evidence.}
-    """
-
-local planReportRole9 = """
     - {How existing context was compared with the finished implementation and validation evidence.}
     """
 
@@ -1023,6 +1045,11 @@ local reportCommon10 = """
 local taskReportRole11 = """
     **Plan:** `{plan path}`\("  ")
     **Task:** `{task id} — {task title}`
+
+    ## Updated files
+
+    - {List each changed file from the execution handoff except paths under
+      `context/`; state `None.` when no files remain.}
     """
 
 local planReportRole11 = """
@@ -1063,8 +1090,8 @@ local reportCommon12 = """
     """
 
 local taskReportRole13 = """
-    - Report every file in the root pass, including any that is absent. A root pass
-      with a file missing from the list reads as a file that was never checked.
+    - Under **Updated files**, list every changed file from the execution handoff
+      except paths under `context/`.
     """
 
 local planReportRole13 = """

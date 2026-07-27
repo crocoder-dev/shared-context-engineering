@@ -127,9 +127,14 @@ makes the smallest coherent documentation change:
   ownership, or terminology changes.
 
 Every pass also accounts for feature existence, adds glossary entries for new
-domain language, verifies relative links and line limits, and reports each root
-file as verified, edited, or absent. Task synchronization does not run full-plan
-validation, and plan synchronization does not rerun final validation.
+domain language, and verifies relative links and line limits. Task reports list
+the execution handoff's changed files outside `context/` under `Updated files`;
+they do not render impact classification or the root-pass checklist, although
+task synchronization still uses the classification and performs the mandatory
+pass. Plan reports continue to render impact classification, plan context
+requirements, and each root file as verified, edited, or absent. Task
+synchronization does not run full-plan validation, and plan synchronization does
+not rerun final validation.
 
 ## Canonical sources
 

@@ -29,6 +29,9 @@ The implementation lifecycle executes at most one reviewed task per `/next-task`
    - Runs only from the complete successful execution handoff.
    - Reconciles one task with durable context and performs the mandatory root-file pass.
    - Returns a Markdown report with `synced`, `no_context_change`, or `blocked`.
+   - Every report variant lists changed files outside `context/` under `Updated files`;
+     task reports omit the impact classification and rendered root-pass checklist
+     without changing synchronization behavior.
 4. Command continuation
    - Emits exactly one next-task command for the first unchecked task in plan order, or a `/validate` command when all implementation tasks are complete.
    - Never executes the continuation in the same invocation.
