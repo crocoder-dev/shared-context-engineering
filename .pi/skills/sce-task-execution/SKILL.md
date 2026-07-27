@@ -3,9 +3,9 @@ name: sce-task-execution
 description: >
   Internal SCE workflow skill that always presents one reviewed task to the
   user before editing, executes it only after approval, verifies the
-  task, records evidence in the plan, and returns one YAML result:
-  awaiting_confirmation, declined, blocked, incomplete, or complete. Accepts a
-  ready result from sce-plan-review. Do not select or execute another task,
+  task, records evidence in the plan, and returns one YAML result: declined,
+  blocked, incomplete, or complete. Accepts a ready result from
+  sce-plan-review. Do not select or execute another task,
   synchronize durable context, run final plan validation, create commits, or
   expand task scope.
 ---
@@ -92,9 +92,8 @@ question:
 
 `Continue with implementation now? (yes/no)`
 
-Do not return the terminal YAML while waiting for the answer. When control must
-return to the invoking workflow before the user answers, return
-`awaiting_confirmation` and make no file modifications.
+Stop and wait for the user's answer. Do not return YAML, and make no file
+modifications, until the user has answered.
 
 When the `approve` flag is supplied, show the gate as a summary, omit the
 approval question, do not wait, and continue at *Prepare the implementation*.

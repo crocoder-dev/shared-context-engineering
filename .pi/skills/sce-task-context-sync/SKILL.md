@@ -49,8 +49,8 @@ Treat the execution result as the authoritative handoff for:
 - Done-check evidence.
 - Reported context impact.
 
-This skill must not be invoked for `declined`, `blocked`, `incomplete`, or
-`awaiting_confirmation` execution results.
+This skill must not be invoked for `declined`, `blocked`, or `incomplete`
+execution results.
 
 Do not reconstruct a missing execution result from conversation history.
 

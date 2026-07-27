@@ -3,8 +3,7 @@ name: sce-task-execution-result
 
 description: >
   Output contract for sce-task-execution. The skill returns exactly one YAML
-  document representing awaiting_confirmation, declined, blocked, incomplete,
-  or complete.
+  document representing declined, blocked, incomplete, or complete.
 
 output_rules:
   - Return exactly one result variant.
@@ -16,51 +15,13 @@ output_rules:
   - Report plan.completed_tasks and plan.total_tasks as they stand when the
     result is returned.
   - Do not serialize the implementation gate. The gate is user-facing prose
-    defined by implementation-gate.md.
+    defined by implementation-gate.md, and no result is returned until the
+    user has answered it.
   - Do not select or describe the next task.
   - Do not include context synchronization results.
   - Do not include final plan validation results.
 
 variants:
-
-  awaiting_confirmation:
-    meaning: >
-      The reviewed task has been presented as prose and no implementation
-      changes have been made.
-
-    required_fields:
-      - status
-      - plan
-      - task
-      - confirmation
-
-    shape:
-      status: awaiting_confirmation
-
-      plan:
-        path: string
-        completed_tasks: integer
-        total_tasks: integer
-
-      task:
-        id: string
-        title: string
-
-      confirmation: string
-
-    example:
-      status: awaiting_confirmation
-
-      plan:
-        path: context/plans/authentication.md
-        completed_tasks: 2
-        total_tasks: 5
-
-      task:
-        id: T03
-        title: Add login endpoint
-
-      confirmation: Continue with implementation now? (yes/no)
 
   declined:
     meaning: >

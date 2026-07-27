@@ -63,8 +63,7 @@ When the `approve` flag is supplied, omit the question and end after
 - Do not add requirements absent from the reviewed task.
 - Do not present multiple competing approaches unless a material decision is
   required.
-- Do not emit terminal YAML while waiting for the user's answer. When control
-  must return to the invoking workflow before the user answers, return the
-  `awaiting_confirmation` result and do not restate the gate inside it.
+- Do not emit YAML while waiting for the user's answer. Stop after the gate and
+  wait.
 - If the handoff is stale or incomplete, show the known task information and
   identify the problem under **Risks or trade-offs**.

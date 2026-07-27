@@ -74,8 +74,6 @@ Do not present an additional implementation confirmation.
 
 Branch on the execution result.
 
-`awaiting_confirmation` -> Present the confirmation request returned by `sce-task-execution`. Stop and wait for the user's response. When the user confirms in the same conversation, continue the pending execution workflow. Do not rerun plan review unless the plan or task changed.
-
 `declined` -> Present "You have declined to proceed with this task" Do not invoke context synchronization. Stop.
 
 `blocked` -> Present:
