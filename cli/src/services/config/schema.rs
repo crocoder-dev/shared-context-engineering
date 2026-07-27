@@ -23,8 +23,10 @@ use super::types::{
 };
 use crate::services::resilience::RetryPolicy;
 
-pub(crate) const SCE_CONFIG_SCHEMA_JSON: &str =
-    include_str!("../../../assets/generated/config/schema/sce-config.schema.json");
+pub(crate) const SCE_CONFIG_SCHEMA_JSON: &str = include_str!(concat!(
+    env!("OUT_DIR"),
+    "/pkl-generated/config/schema/sce-config.schema.json"
+));
 
 pub(crate) const CONFIG_SCHEMA_DECLARATION_KEY: &str = "$schema";
 

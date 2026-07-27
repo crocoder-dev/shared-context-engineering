@@ -7,7 +7,6 @@ finish-args:
 id: dev.crocoder.sce
 modules:
 - build-commands:
-  - bash ./scripts/prepare-cli-generated-assets.sh "$PWD"
   - cargo --offline build --release --manifest-path cli/Cargo.toml --bin sce
   - install -Dm755 cli/target/release/sce /app/bin/sce
   - install -Dm755 packaging/flatpak/git-host-bridge /app/bin/git
@@ -24,6 +23,9 @@ modules:
   - commit: b7f0fa002fca5f5320791ff5e4abfaadfcddf187
     type: git
     url: https://github.com/crocoder-dev/shared-context-engineering.git
+  - dest: cli/package-fallback
+    path: cli-package-fallback
+    type: dir
   - dest: packaging/flatpak
     path: dev.crocoder.sce.metainfo.xml
     type: file

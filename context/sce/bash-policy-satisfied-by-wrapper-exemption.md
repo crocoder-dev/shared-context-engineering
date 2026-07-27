@@ -53,7 +53,7 @@ The design point: policies declaring no `satisfied_by` cannot be laundered by wr
 - `cli/src/services/bash_policy.rs` (`NormalizedSegment`, `normalize_segment`, `policy_is_satisfied_by_wrapper`, `select_matching_policy`)
 - `cli/src/services/config/policy.rs` (`CustomBashPolicyEntry.satisfied_by`, `parse_custom_bash_policy_satisfied_by`, text-summary rendering)
 - `cli/src/services/config/schema.rs` (`ParsedCustomBashPolicyEntryDocument.satisfied_by`)
-- `config/pkl/base/sce-config-schema.pkl` and generated `config/schema/sce-config.schema.json` + `cli/assets/generated/config/schema/sce-config.schema.json`
+- `config/pkl/base/sce-config-schema.pkl`, with repository builds generating and embedding `OUT_DIR/pkl-generated/config/schema/sce-config.schema.json`
 - `.sce/config.json` (all ten `use-nix-for-*` custom entries now declare their `nix shell nixpkgs#<pkg>` satisfying wrapper)
 - `context/sce/bash-tool-policy-enforcement-contract.md` (parent contract)
 

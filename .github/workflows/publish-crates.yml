@@ -92,7 +92,7 @@ jobs:
             printf 'Publishing checked-in crate version %s from tag %s\n' "$version" "$release_tag"
           fi
 
-      - name: Prepare crate-local generated assets
+      - name: Prepare packaging-only crate fallback
         env:
           WORK_ROOT: ${{ runner.temp }}/sce-crates-publish
           REPO_COPY: ${{ runner.temp }}/sce-crates-publish/repo
@@ -101,14 +101,14 @@ jobs:
           rm -rf "$WORK_ROOT"
           mkdir -p "$REPO_COPY"
           rsync -a --exclude '.git/' ./ "$REPO_COPY/"
-          bash "$REPO_COPY/scripts/prepare-cli-generated-assets.sh" "$REPO_COPY"
+          nix develop "$REPO_COPY" -c bash "$REPO_COPY/scripts/prepare-cli-generated-assets.sh" "$REPO_COPY"
 
       - name: Cargo publish dry run
         if: env.DRY_RUN == 'true'
         env:
           REPO_COPY: ${{ runner.temp }}/sce-crates-publish/repo
         run: |
-          nix develop -c cargo publish --manifest-path "$REPO_COPY/cli/Cargo.toml" --locked --dry-run
+          nix develop "$REPO_COPY" -c cargo publish --manifest-path "$REPO_COPY/cli/Cargo.toml" --locked --dry-run
 
       - name: Ensure crates.io token is configured
         if: env.DRY_RUN != 'true'
@@ -125,4 +125,4 @@ jobs:
         env:
           REPO_COPY: ${{ runner.temp }}/sce-crates-publish/repo
         run: |
-          nix develop -c cargo publish --manifest-path "$REPO_COPY/cli/Cargo.toml" --locked
+          nix develop "$REPO_COPY" -c cargo publish --manifest-path "$REPO_COPY/cli/Cargo.toml" --locked

@@ -12,7 +12,7 @@ Task `sce-setup-githooks-any-repo` `T02` defines how required git-hook templates
 - `commit-msg`
 - `post-commit`
 
-These templates are emitted into `OUT_DIR/setup_embedded_assets.rs` as `HOOK_EMBEDDED_ASSETS` with deterministic sorted relative paths.
+The build script copies these templates to `OUT_DIR/static/hooks/`, then emits them into `OUT_DIR/setup_embedded_assets.rs` as `HOOK_EMBEDDED_ASSETS` with deterministic sorted relative paths. Production Rust includes therefore resolve through `OUT_DIR` rather than back into `cli/assets/`.
 
 All three templates are POSIX `sh` scripts with `set -eu`. Before invoking `sce`, each checks `command -v sce`; when the CLI is unavailable, it prints branded, multiline installation guidance to stderr and exits successfully so Git operations are not blocked solely by a missing local CLI installation. ANSI styling is emitted only when stderr is a terminal; redirected output remains plain text. Failures from an available `sce` command continue to propagate through `exec`.
 
