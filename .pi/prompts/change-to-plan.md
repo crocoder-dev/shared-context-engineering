@@ -69,12 +69,28 @@ The skill must return a result matching its authoring contract.
 
 Branch on `status`:
 
-`needs_clarification` -> No plan was written. Present the result as prose. Do not print the raw result. Present:
+`needs_clarification` -> No plan was written. Present the result as prose. Do not print the raw result. Return:
 
-- Each question in `questions`, and why it blocks planning.
-- That answering them and rerunning `/change-to-plan` with the answers resumes planning.
+```
 
-Do not answer the questions. Do not assume answers. Do not write a plan. Stop.
+-------------------------------------
+
+# Clarification needed.
+
+No plan was written.
+
+Answer each question below.  
+
+## {question-id} · {category}
+
+{question}
+
+Why this blocks planning: {why_blocking}
+```
+
+Render one `##` block per entry in `questions`, in result order. Use the question's `id`, `category`, `question`, and `why_blocking` fields exactly as returned.
+
+Do not answer the questions. Do not assume answers. Do not write a plan. Stop and wait.
 
 `blocked` -> No plan was written. Present the result as prose. Do not print the raw result. Present:
 
@@ -91,13 +107,13 @@ Render the `plan_ready` result as the summary defined by `sce-plan-authoring` in
 
 Take the next task from `next_task`. A `plan_ready` result always names one. Do not evaluate its dependencies; `sce-plan-review` checks them when the emitted command runs and returns `blocked` if they are unmet.
 
-Both continuations below invite revision. The plan was written from one prose request, so its assumptions are guesses about what the user meant, its scope is one reading of the request, and its task boundaries are the author's judgement. The user has seen none of it until now, and every one of those is cheaper to correct here than after a task has been built on it. A user who does not know revision is on the table will implement a plan they would have changed.
+The continuation invites revision. The plan was written from one prose request, so its assumptions are guesses about what the user meant, its scope is one reading of the request, and its task boundaries are the author's judgement. The user has seen none of it until now, and every one of those is cheaper to correct here than after a task has been built on it. A user who does not know revision is on the table will implement a plan they would have changed.
 
 Write `task` rather than `tasks` when `total_tasks` is 1.
 
-Branch on `open_questions`.
+Offer revision, but do not gate the handoff on it, do not manufacture concerns, and do not ask the user to confirm the plan. When the summary lists open questions, leave them in the summary only — do not restate them in the continuation, do not answer them, and do not block the handoff on them. Blocking questions belong in `needs_clarification` (step 2), not here.
 
-**Absent** -> The plan carries no unresolved doubt. Offer revision, but do not gate the handoff on it, do not manufacture concerns, and do not ask the user to confirm the plan. Return:
+Return:
 
 ```
 
@@ -116,30 +132,11 @@ Next up:
 `/next-task {plan-path} {next-task-id}`
 ```
 
-Then stop and wait.
-
-**Present** -> The plan was written, but `sce-plan-authoring` is not convinced of part of it. Those doubts are the point of this step.
-
-The summary already lists the questions under `Open questions:`. Do not repeat them in the continuation. Do not answer them, do not resolve them by assumption, and do not soften them into observations.
-
-Return:
-
-```
-
--------------------------------------
-
-# Plan {plan-name} is drafted, with {count} open questions.
-
-{total-tasks} tasks planned.
-
-Open questions remain unresolved. Answer them, or state a correction, and the plan will be updated.
-```
-
 Then stop and wait. Do not implement, and do not run the handoff yourself.
 
 ### 4. Revise the plan on request
 
-When the user answers the open questions, or answers with changes to the plan, revise it in this session. Do not ask them to rerun `/change-to-plan`, and do not ask for the original change request again.
+When the user answers clarification questions from step 2, answers open questions listed in the summary, or answers with changes to the plan, revise it in this session. Do not ask them to rerun `/change-to-plan`, and do not ask for the original change request again.
 
 Invoke `sce-plan-authoring` with their answer or correction and the same `loaded` brief from step 1. The brief still holds; durable context did not change because the user disagreed with a task boundary. Do not reload it.
 
@@ -149,7 +146,7 @@ Pass the correction as written. Do not restate, soften, or pre-scope it. `sce-pl
 
 Branch on `status` exactly as in step 2. A revision may legitimately return `needs_clarification` or `blocked`.
 
-On `plan_ready`, render the summary again and branch on `open_questions` exactly as in step 3, replacing `is ready` and `is drafted` with `revised` in the heading.
+On `plan_ready`, render the summary again and the continuation exactly as in step 3, replacing `is ready` with `revised` in the heading.
 
 Revise as many times as the user asks. Each revision is one invocation of `sce-plan-authoring` against the same plan.
 
@@ -161,8 +158,8 @@ Stop.
 
 - Plan at most one change request per invocation. Revisions to the plan that request produced are part of the same invocation, not a second request.
 - Always tell the user the plan can be revised, and always name its assumptions as the first thing worth checking.
-- Do not gate the handoff on review when the plan carries no open questions, and do not invent doubts to justify one. Offering revision is not the same as demanding it.
-- Do not suppress, soften, or answer an open question to reach a clean handoff.
+- Do not gate the handoff on open questions listed in the plan summary. Blocking questions return `needs_clarification` before any plan is written. Offering revision is not the same as demanding it, and inventing doubts to justify a review gate is not allowed.
+- Do not suppress, soften, or answer an open question or clarification question on the user's behalf.
 - Do not defer the user's revision to a rerun of `/change-to-plan`, and do not defer it to the implementation phase. Revise the plan here.
 - Do not narrow, expand, or reinterpret a revision the user asked for. Pass it to `sce-plan-authoring` as written.
 - Do not duplicate the internal instructions of invoked skills.
