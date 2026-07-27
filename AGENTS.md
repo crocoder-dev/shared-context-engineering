@@ -14,11 +14,49 @@ This repository uses the Shared Context Engineering (SCE) approach for AI-assist
 
 ## Rule files checked
 
-- No root `AGENTS.md` existed before this file.
+- Root agent guidance lives in this `AGENTS.md`.
+- Bash command policies live in `.sce/config.json` under `policies.bash.custom` (enforced by the SCE bash-policy plugin).
 - No `.cursor/rules/` directory was found.
 - No `.cursorrules` file was found.
 - No `.github/copilot-instructions.md` file was found.
 - If any of those files are added later, update this document to fold their instructions in.
+
+## How to run commands (agents)
+
+**Default rule:** host `coreutils` / POSIX basics are fine as-is. **Everything else must go through Nix** — do not assume `rg`, `jq`, `bun`, `python3`, `node`, `cargo`, etc. are on the host `PATH`.
+
+### Allowed without Nix
+
+Use the host shell for ordinary shell built-ins and common coreutils-style tools, for example:
+
+- shell: `cd`, `export`, `true`, `false`, pipelines, redirections
+- coreutils-ish: `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `chmod`, `ln`, `head`, `tail`, `sort`, `uniq`, `wc`, `cut`, `tr`, `tee`, `echo`, `printf`, `test`, `[`, `basename`, `dirname`, `realpath`, `pwd`, `env`, `xargs`, `find` (when already available)
+- git (repo workflows), and `nix` itself
+
+### Non-coreutils → Nix
+
+For any other CLI (`rg`, `fd`, `jq`, `yq`, `bun`, `node`, `python3`, `shellcheck`, `actionlint`, `hyperfine`, language toolchains, etc.), run it via one of:
+
+| Pattern | When to use | Example |
+| --- | --- | --- |
+| `nix develop -c …` | Repo flake tools (Rust toolchain, Bun, Pkl from this project’s dev shell) | `nix develop -c sh -c 'cd cli && cargo build'` |
+| `nix shell nixpkgs#pkg -c …` | One-shot tool from nixpkgs (preferred for policy-satisfied ad-hoc tools) | `nix shell nixpkgs#ripgrep -c rg pattern path` |
+| `nix run nixpkgs#pkg -- …` | Alternate one-shot form | `nix run nixpkgs#jq -- . file.json` |
+| `nix run .#attr -- …` | Flake apps / checks defined in this repo | `nix run .#pkl-check-generated` |
+| `nix flake check` | Default full verification | Prefer this over raw `cargo test` / `cargo check` / `cargo fmt --check` |
+
+Repo bash policy (`.sce/config.json`) already blocks bare invocations of several tools and steers agents to Nix. Known policy-covered tools:
+
+- **Cargo verification:** prefer `nix flake check` over bare `cargo test`, `cargo check`, and `cargo fmt --check`. Keep `cargo fmt` (autofix) only through `nix develop`.
+- **Ad-hoc tools via Nix:** `rg` → `nixpkgs#ripgrep`, `jq` → `nixpkgs#jq`, `python3` → `nixpkgs#python3`, `node` → `nixpkgs#nodejs`, `bun` → `nixpkgs#bun` (or repo `nix develop`), `fd` → `nixpkgs#fd`, `shellcheck` → `nixpkgs#shellcheck`, `actionlint` → `nixpkgs#actionlint`, `yq` → `nixpkgs#yq-go`, `hyperfine` → `nixpkgs#hyperfine`.
+
+If a tool is not listed above but is not coreutils, still run it through `nix shell` / `nix run` / `nix develop` the same way. Do not install host packages to work around missing binaries.
+
+### Choosing the right Nix entrypoint
+
+1. **Repo work (Rust CLI, Bun plugin, flake tools):** `nix develop -c sh -c '…'` from repo root.
+2. **Single external utility:** `nix shell nixpkgs#<pkg> -c <cmd> …` or `nix run nixpkgs#<pkg> -- …`.
+3. **Validation / CI parity:** `nix flake check` (and `nix run .#pkl-check-generated` when touching generated config).
 
 ## Tooling and environment
 
@@ -26,10 +64,10 @@ This repository uses the Shared Context Engineering (SCE) approach for AI-assist
 - Root `flake.nix` provides Bun, TypeScript, Pkl, jq, and the Rust toolchain.
 - Root `flake.nix` defines Crane-based Rust packaging and check derivations for the CLI.
 - Run Cargo via Nix, not directly from the host shell. Prefer `nix develop -c sh -c 'cd cli && <cargo command>'`.
-- For validation, prefer `nix flake check` and avoid running `cargo test` directly unless a user explicitly requests it.
+- For validation, prefer `nix flake check` and avoid running `cargo test` / `cargo check` / `cargo fmt --check` directly unless a user explicitly requests it.
 - Optional local Nix tuning can live in user-level `~/.config/nix/nix.conf`; recommended values are `max-jobs = auto` and `cores = 0`.
 - `auto-optimise-store = true` is intentionally treated as a system-level `/etc/nix/nix.conf` setting, not a repo-managed user setting.
-- Bun is used for repo-owned config/plugin workflows; prefer Bun rather than npm or pnpm scripts when working in those areas.
+- Bun is used for repo-owned config/plugin workflows; prefer Bun rather than npm or pnpm scripts when working in those areas. Always invoke Bun through Nix (`nix develop` or `nix shell nixpkgs#bun`).
 - Rust edition is `2021`.
 - TypeScript is still used in repo-owned config/plugin sources and should remain strict-mode friendly.
 
@@ -54,15 +92,16 @@ Run these through Nix from repo root unless noted otherwise.
 - Run Rust tests in one module/file pattern when explicitly needed: `nix develop -c sh -c 'cd cli && cargo test setup'`
 - Run ignored? none were found; do not assume ignored-test flows exist.
 - Rust format verification is covered by `nix flake check`
-- Auto-format: `nix develop -c sh -c 'cd cli && cargo fmt'`
+- Auto-format only (not verification): `nix develop -c sh -c 'cd cli && cargo fmt'`
 - Rust lint verification is covered by `nix flake check`
 
 ### Bun config/plugin commands
 
-Run these from `config/lib/bash-policy-plugin/` when working on the Bun-owned OpenCode bash-policy plugin wrapper tests.
+Run from repo root through Nix (do not call bare `bun` on the host). Working directory for the plugin tests is `config/lib/bash-policy-plugin/`.
 
-- Run plugin/runtime test suite: `bun test`
-- Run a single Bun test by name: `bun test -t "<test name>"`
+- Run plugin/runtime test suite: `nix develop -c sh -c 'cd config/lib/bash-policy-plugin && bun test'`
+- Run a single Bun test by name: `nix develop -c sh -c 'cd config/lib/bash-policy-plugin && bun test -t "<test name>"'`
+- One-shot Bun without the full flake shell: `nix shell nixpkgs#bun -c bun test` (run after `cd` into the plugin dir)
 
 ### Useful combined validation flows
 
@@ -70,20 +109,32 @@ Run these from `config/lib/bash-policy-plugin/` when working on the Bun-owned Op
 - Config/plugin validation from repo root: `nix develop -c sh -c 'cd config/lib/bash-policy-plugin && bun test'`
 - Generated-config validation from repo root: `nix run .#pkl-check-generated`
 
+### Ad-hoc tool examples (non-coreutils)
+
+- Ripgrep: `nix shell nixpkgs#ripgrep -c rg <pattern> <path>`
+- jq: `nix shell nixpkgs#jq -c jq . file.json`
+- Python: `nix shell nixpkgs#python3 -c python3 script.py`
+- Node: `nix shell nixpkgs#nodejs -c node script.js`
+- fd: `nix shell nixpkgs#fd -c fd <pattern>`
+- shellcheck: `nix shell nixpkgs#shellcheck -c shellcheck script.sh`
+- actionlint: `nix shell nixpkgs#actionlint -c actionlint`
+- yq: `nix shell nixpkgs#yq-go -c yq . file.yaml`
+- hyperfine: `nix shell nixpkgs#hyperfine -c hyperfine '<command>'`
+
 ## Testing notes
 
 - Rust tests live inline in source files and in module test files such as `cli/src/services/setup/tests.rs`.
 - Rust/Cargo commands should be executed through `nix develop`, even for one-off builds, tests, fmt, and clippy runs.
-- Prefer `nix flake check` for routine verification and avoid `cargo test` unless the user explicitly asks for it.
+- Prefer `nix flake check` for routine verification and avoid bare `cargo test` / `cargo check` / `cargo fmt --check` unless the user explicitly asks.
 - Rust single-test selection uses standard Cargo substring matching; add `-- --exact` for deterministic one-test runs.
-- Bun tests use `bun:test` and support `-t` name filtering.
+- Bun tests use `bun:test` and support `-t` name filtering; always launch Bun via Nix.
 - Bun/plugin tests under `config/lib/bash-policy-plugin/` are lighter-weight repo validation and remain part of the flake check surface.
 
 ## CI and release hints
 
-- Release workflow packages agent files from `config/.opencode/agent/Shared Context.md` and `config/.claude/agents/shared-context.md`.
+- Release builds generate assistant payloads from canonical `config/pkl/` sources; crates.io and Flatpak stage packaging-only fallbacks in temporary or ignored locations.
 - Root `flake.nix` packages `sce` through Crane's `buildDepsOnly` + `buildPackage` pipeline and runs `cli-tests`, `cli-clippy`, and `cli-fmt` through Crane-backed checks.
-- Changes under generated config trees may need a Pkl regeneration or parity check.
+- Changes to Pkl generation inputs require `nix run .#pkl-check-generated`; generated OpenCode, Claude, and Pi target trees are not committed.
 
 ## Code style: general
 
@@ -167,21 +218,22 @@ Run these from `config/lib/bash-policy-plugin/` when working on the Bun-owned Op
 
 - Shell scripts should fail fast, validate prerequisites early, and print concrete remediation steps.
 - Prefer staging-and-swap workflows for generated config updates instead of in-place mutation.
-- Treat `config/.opencode`, `config/.claude`, and repository-root `.opencode/` as sensitive generated trees.
-- If you edit generated outputs manually, verify whether the corresponding Pkl source should be updated instead.
+- Treat repository-root `.opencode/` as runtime-managed and keep `config/.opencode`, `config/.claude`, `config/.pi`, and `cli/assets/generated/` absent.
+- Edit canonical Pkl and `config/lib` authoring sources rather than temporary generated outputs.
 
 ## Working safely as an agent
 
 - Check for unrelated worktree changes before broad edits.
 - Avoid destructive git commands unless the user explicitly asks for them.
-- When touching both `config/` and `.opencode/`, verify whether sync/regeneration is expected.
-- When verifying changes, prefer `nix flake check` instead of running `cargo test` directly.
-- When changing Bun-owned config/plugin code, run the narrowest Bun test or script that covers the change.
+- When touching canonical generation inputs, verify ephemeral output with `nix run .#pkl-check-generated`; do not regenerate target trees into the repository.
+- When verifying changes, prefer `nix flake check` instead of bare `cargo test` / `cargo check`.
+- When changing Bun-owned config/plugin code, run the narrowest Bun test or script that covers the change — always through Nix.
+- Do not run non-coreutils CLIs from the host PATH; use `nix develop`, `nix shell`, or `nix run` (see **How to run commands**).
 
 ## Recommended minimum verification by change type
 
 - Default verification for code changes: `nix flake check`
-- Bun/TypeScript config-plugin change: `cd config/lib/bash-policy-plugin && bun test -t "<test name>"`
+- Bun/TypeScript config-plugin change: `nix develop -c sh -c 'cd config/lib/bash-policy-plugin && bun test -t "<test name>"'`
 - Generated config or Pkl change: `nix run .#pkl-check-generated`
 - Cross-cutting repo change: `nix flake check`
 
