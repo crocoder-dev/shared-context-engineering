@@ -201,17 +201,10 @@
           root = workspaceRoot;
           fileset = pkgs.lib.fileset.unions [
             ./config/pkl
-            (pkgs.lib.fileset.maybeMissing ./config/.opencode/agent)
-            (pkgs.lib.fileset.maybeMissing ./config/.opencode/command)
-            (pkgs.lib.fileset.maybeMissing ./config/.opencode/skills)
-            (pkgs.lib.fileset.maybeMissing ./config/.opencode/lib/drift-collectors.js)
-            (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/agent)
-            (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/command)
-            (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/skills)
-            (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/lib/drift-collectors.js)
-            (pkgs.lib.fileset.maybeMissing ./config/.claude/agents)
-            (pkgs.lib.fileset.maybeMissing ./config/.claude/commands)
-            (pkgs.lib.fileset.maybeMissing ./config/.claude/skills)
+            (pkgs.lib.fileset.maybeMissing ./config/.opencode)
+            (pkgs.lib.fileset.maybeMissing ./config/.claude)
+            (pkgs.lib.fileset.maybeMissing ./config/.pi)
+            (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode)
             (pkgs.lib.fileset.maybeMissing ./config/schema/sce-config.schema.json)
             ./config/lib/pi-plugin/sce-pi-extension.ts
             ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
@@ -1163,32 +1156,60 @@
               }
               trap cleanup EXIT
 
+              pkl eval config/pkl/renderers/metadata-coverage-check.pkl >/dev/null
               pkl eval -m "$tmp_dir" config/pkl/generate.pkl >/dev/null
 
               paths=(
                 "config/.opencode/agent"
                 "config/.opencode/command"
                 "config/.opencode/skills"
-                "config/.opencode/lib/drift-collectors.js"
-                "config/automated/.opencode/agent"
-                "config/automated/.opencode/command"
-                "config/automated/.opencode/skills"
-                "config/automated/.opencode/lib/drift-collectors.js"
-                "config/.claude/agents"
+                "config/.opencode/lib"
+                "config/.opencode/plugins"
+                "config/.opencode/opencode.json"
                 "config/.claude/commands"
                 "config/.claude/skills"
-                "config/.claude/lib/drift-collectors.js"
+                "config/.claude/hooks"
+                "config/.claude/settings.json"
+                "config/.pi/prompts"
+                "config/.pi/skills"
+                "config/.pi/extensions"
                 "config/schema/sce-config.schema.json"
+              )
+
+              forbidden_paths=(
+                "config/automated/.opencode"
+                "config/.claude/agents"
               )
 
               stale=0
               for path in "''${paths[@]}"; do
-                if [ -e "$tmp_dir/$path" ] || [ -e "$path" ]; then
-                  if ! git diff --no-index --exit-code -- "$tmp_dir/$path" "$path" >/dev/null 2>&1; then
-                    stale=1
-                    printf 'Generated output drift detected at %s\n' "$path"
-                    git diff --no-index -- "$tmp_dir/$path" "$path" || true
-                  fi
+                if [[ ! -e "$tmp_dir/$path" ]]; then
+                  stale=1
+                  printf 'Generator did not emit required output at %s\n' "$path"
+                  continue
+                fi
+
+                if [[ ! -e "$path" ]]; then
+                  stale=1
+                  printf 'Required generated output is missing at %s\n' "$path"
+                  continue
+                fi
+
+                if ! git diff --no-index --exit-code -- "$tmp_dir/$path" "$path" >/dev/null 2>&1; then
+                  stale=1
+                  printf 'Generated output drift detected at %s\n' "$path"
+                  git diff --no-index -- "$tmp_dir/$path" "$path" || true
+                fi
+              done
+
+              for path in "''${forbidden_paths[@]}"; do
+                if [[ -e "$tmp_dir/$path" ]]; then
+                  stale=1
+                  printf 'Generator emitted removed output at %s\n' "$path"
+                fi
+                if [[ -e "$path" ]]; then
+                  stale=1
+                  printf 'Removed generated output still exists at %s\n' "$path"
                 fi
               done
 

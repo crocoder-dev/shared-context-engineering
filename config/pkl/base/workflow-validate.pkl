@@ -1,0 +1,655 @@
+import "workflow-content.pkl" as model
+import "workflow-context-sync.pkl" as contextSync
+
+/// Canonical `/validate` workflow command and its self-contained skill
+/// packages. Text mirrors the project-root `.pi/` behavioral baseline; target
+/// renderers consume this model in later workflow-rendering tasks.
+
+local makeDocument = (documentPath: String, documentText: String) -> new model.WorkflowDocument {
+  path = documentPath
+  text = documentText
+}
+
+local packageDocuments = (documents: Listing<model.WorkflowDocument>) -> new Mapping {
+  for (item in documents) {
+    [item.path] = item
+  }
+}
+
+local validationPackage = new model.SkillPackage {
+  slug = "sce-validation"
+  title = "SCE Validation"
+  documents = packageDocuments.apply(new Listing {
+    makeDocument.apply("SKILL.md", VALIDATION_SKILL)
+    makeDocument.apply("references/validation-report.md", VALIDATION_REPORT)
+    makeDocument.apply("references/validation-result.md", VALIDATION_RESULT)
+  })
+}
+
+local COMMAND = """
+    ---
+    description: "Run `sce-validation` -> `sce-plan-context-sync` to finish an SCE plan"
+    argument-hint: "<plan-name>"
+    ---
+    
+    SCE VALIDATE `$ARGUMENTS`
+    
+    ## Input
+    
+    `$ARGUMENTS` is the plan name or plan path.
+    
+    - The plan name or path is required.
+    - Resolve exactly one plan. Do not invent a plan from the conversation or from
+      incomplete nearby work.
+    
+    When `$ARGUMENTS` is empty, report that a plan name or path is required, state
+    the expected argument, and stop. Do not infer the plan from repository state or
+    the conversation.
+    
+    Pass the plan name or path to `sce-validation` unmodified. Do not restate,
+    summarize, or pre-scope it.
+    
+    Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is
+    the path carried by `sce-validation` in its Markdown result (`Plan:`, or a
+    candidate path), so every emitted command is directly runnable.
+    
+    ## Workflow
+    
+    ### 1. Validate the plan
+    
+    Invoke `sce-validation` with the plan name or path.
+    
+    `sce-validation` exclusively owns:
+    
+    - Resolving one plan.
+    - Confirming every implementation task is complete.
+    - Running full validation and acceptance-criteria checks.
+    - Removing temporary scaffolding.
+    - Writing the Validation Report into the plan.
+    - Returning one Markdown validation result.
+    
+    Do not duplicate any of it. Do not write the Validation Report yourself.
+    
+    The skill must return a Markdown result matching its validation-result contract.
+    Branch on the report's `Status:`.
+    
+    `blocked` -> Do not invoke context synchronization. Print the blocked Markdown
+    report as returned. Do not rephrase it into a different layout. Stop.
+    
+    `failed` -> Do not invoke context synchronization. Print the failed Markdown
+    report as returned. It is already a session handoff: self-contained, actionable,
+    and ending with `/validate {plan-path}` after repairs.
+    
+    Do not rewrite it into a shorter summary. Do not drop the retry command. Do not
+    add an alternate continuation that replaces `/validate`.
+    
+    Stop. Do not mark the plan finished. Do not continue to context synchronization.
+    Do not start the repair work in this workflow unless the user explicitly asks
+    to continue here; the default is that the handoff can leave this session.
+    
+    `validated` -> Pass the complete validated Markdown result to
+    `sce-plan-context-sync`.
+    
+    Do not reconstruct, summarize, or reinterpret the validation result before
+    passing it.
+    
+    ### 2. Synchronize plan context
+    
+    Invoke `sce-plan-context-sync` only with a `Status: validated` Markdown result
+    from `sce-validation`.
+    
+    Do not invoke `sce-plan-context-sync` for `failed` or `blocked`. Those are not
+    success states.
+    
+    Pass the validated result verbatim. It is the authoritative handoff, and
+    `sce-plan-context-sync` owns reading the plan path, required context paths,
+    validation evidence, and reported context impact out of it.
+    
+    Do not restate, summarize, or reconstruct any part of the validation result.
+    
+    Branch on the synchronization result.
+    
+    `blocked` -> Validation itself succeeded and is already recorded in the plan.
+    Present:
+    
+    - That plan `{plan-path}` passed final validation and its Validation Report is
+      written.
+    - The context contradiction or synchronization failure.
+    - Any context edits the report says were preserved.
+    - The action required to resolve the problem.
+    - The retry condition stated by the report.
+    
+    State that durable context is now out of date relative to the validated
+    implementation, and that plan context synchronization must be resolved before
+    treating the plan as fully closed. Nothing records the skipped synchronization,
+    so it is lost once this session ends.
+    
+    Stop.
+    
+    `synced` | `no_context_change` -> Print out the report
+    `sce-plan-context-sync` returned. Continue to the next step.
+    
+    ### 3. Report completion
+    
+    Return exactly one completion block. Do not start another workflow.
+    
+    ```
+    
+    -------------------------------------
+    
+    # Plan {plan-name} validated.
+    
+    All implementation tasks were already complete.
+    Final validation passed.
+    Durable context is synchronized.
+    
+    Validation report: {plan-path}
+    ```
+    
+    When the synchronization status was `no_context_change`, keep the same
+    completion block. "Synchronized" here means the final context pass finished
+    successfully, including the case where no edit was warranted.
+    
+    Stop.
+    
+    ## Rules
+    
+    - Validate at most one plan per invocation.
+    - Do not duplicate the internal instructions of invoked skills.
+    - Do not run final validation when implementation tasks remain; `sce-validation`
+      returns `blocked`, and this workflow stops.
+    - Invoke `sce-plan-context-sync` only when `sce-validation` returned
+      `Status: validated`. Do not invoke it for `failed` or `blocked`.
+    - On `failed`, print the handoff Markdown as returned and stop. Preserve the
+      retry `/validate {plan-path}` instruction. Do not synchronize context.
+    - Do not implement remaining plan tasks from this workflow unless the user
+      explicitly continues in-session after a failed handoff.
+    - Do not create a Git commit or push changes.
+    - Do not mark the plan archived or delete the plan.
+    - Do not execute a follow-up `/next-task`, `/change-to-plan`, or `/validate`
+      yourself.
+    - Do not infer success when an invoked skill returns a non-success status.
+    - Preserve validation evidence already written to the plan when context
+      synchronization fails.
+    """
+
+local VALIDATION_SKILL = """
+    ---
+    name: sce-validation
+    description: >
+      Internal SCE workflow skill that runs final plan validation after all
+      implementation tasks are complete: full validation commands, acceptance
+      criteria checks, temporary scaffolding cleanup, a Validation Report written
+      into the plan, and one Markdown result (validated, failed, or blocked).
+      Failing checks are reported only; do not modify tests or product code to make
+      validation pass. A failed result is a session handoff that ends by retrying
+      /validate. Use from /validate. Do not synchronize durable context, implement
+      remaining plan tasks, create commits, or select another task.
+    ---
+    
+    # SCE Validation
+    
+    ## Purpose
+    
+    Prove that one finished SCE plan meets its acceptance criteria and repository
+    validation bar, then record the evidence on the plan and return one Markdown
+    result.
+    
+    This skill owns:
+    
+    - Resolving one plan.
+    - Confirming every implementation task is complete.
+    - Running the plan's full validation commands and each acceptance criterion
+      check.
+    - Removing temporary scaffolding introduced by the change.
+    - Writing the Validation Report into the plan.
+    - Marking acceptance criteria against the evidence.
+    - Returning one Markdown validation result.
+    
+    Return a result matching:
+    
+    `references/validation-result.md`
+    
+    Write plan-file evidence matching:
+    
+    `references/validation-report.md`
+    
+    Context synchronization is not this skill's job. The invoking `/validate`
+    workflow runs `sce-plan-context-sync` only after a `validated` result.
+    
+    ## Input
+    
+    The invoking workflow provides:
+    
+    - A plan name or path.
+    
+    ## Workflow
+    
+    ### 1. Resolve the plan
+    
+    Resolve the supplied plan name or path to exactly one existing plan under
+    `context/plans/`.
+    
+    When no plan can be found, return `blocked`.
+    
+    When multiple plans match and none can be selected safely, return `blocked`
+    with the matching candidates.
+    
+    Read the selected plan before exploring the repository.
+    
+    ### 2. Confirm implementation is finished
+    
+    Return `blocked` with incomplete tasks listed when any implementation task
+    remains incomplete.
+    
+    Final validation measures finished work. Do not run the full suite against a
+    partial stack, and do not complete remaining tasks here.
+    
+    ### 3. Read the validation contract from the plan
+    
+    From the plan, collect:
+    
+    - Every acceptance criterion and its `Validate:` check.
+    - The `Full validation` command list.
+    - The `Context sync` requirements, for the context-impact handoff only.
+    
+    Return `blocked` when the plan has no usable acceptance criteria, or when no
+    validation commands can be determined from the plan or repository conventions.
+    
+    Prefer the plan's authored checks. Fall back to repository-primary test, lint,
+    and format commands only when `Full validation` is absent, and record that
+    fallback under notes on a `validated` or `failed` result.
+    
+    ### 4. Remove temporary scaffolding
+    
+    Before or while running checks, remove temporary scaffolding introduced during
+    the change when it is clearly throwaway:
+    
+    - Debug-only patches or flags left enabled.
+    - Temporary files or intermediate artifacts not part of the delivered design.
+    - Local scaffolding the plan or task notes mark as temporary.
+    
+    Do not delete durable product code, tests, configuration, or context files.
+    
+    Record every removed path. When nothing temporary remains, report `None.`
+    
+    ### 5. Run full validation and acceptance checks
+    
+    Run the plan's `Full validation` commands.
+    
+    Then verify each acceptance criterion using its `Validate:` line. Prefer a
+    runnable command. Use a named inspection only when the criterion authorizes it,
+    and say exactly what was inspected.
+    
+    When a check fails, record the failure and continue gathering evidence. Do not
+    modify tests, application code, or configuration to make a check pass. Final
+    validation measures the finished work; repair belongs to a later work session,
+    not this skill.
+    
+    Never report a check as passed unless it ran successfully or the authorized
+    inspection confirmed the criterion.
+    
+    Do not run task-by-task implementation work for incomplete tasks. That belongs
+    to `/next-task`.
+    
+    ### 6. Update the plan
+    
+    For `validated` and `failed` outcomes:
+    
+    - Mark each acceptance criterion checkbox to match the evidence.
+    - Append or replace the plan's `## Validation Report` section using
+      `references/validation-report.md`.
+    - When status is `failed`, the plan-file report must include the retry command
+      `/validate {plan path}`.
+    
+    Do not reopen completed tasks, rewrite task evidence, or change the task stack.
+    
+    For `blocked`, leave the plan file unchanged.
+    
+    ### 7. Determine context impact for the handoff
+    
+    On `validated` only, classify the durable context impact of the finished plan
+    so `sce-plan-context-sync` can start from the plan's own requirements:
+    
+    - Start from the plan's `Context sync` section.
+    - Inspect what the completed implementation actually changed when needed.
+    - Report required context paths and affected areas.
+    - Use `none`, `local`, `domain`, or `root` with the same meanings as task-level
+      context sync.
+    
+    Do not edit context files here.
+    
+    On `failed` or `blocked`, omit context impact; context sync will not run.
+    
+    ### 8. Return the Markdown result
+    
+    Return exactly one Markdown result:
+    
+    - `validated` when every acceptance criterion is met, required full validation
+      passed, and the Validation Report was written.
+    - `failed` when evidence was captured but required checks or criteria remain
+      unsatisfied. Shape it as a session handoff per
+      `references/validation-result.md`, ending recommended work with
+      `/validate {plan path}`.
+    - `blocked` when validation cannot proceed safely.
+    
+    Return only the Markdown report. Do not add explanatory prose before or after
+    it. Do not return YAML.
+    
+    ## Boundaries
+    
+    Do not:
+    
+    - Validate more than one plan.
+    - Complete remaining implementation tasks.
+    - Modify tests, application code, or configuration to make a failing check pass.
+    - Apply lint or format auto-fixes that change product or test files as part of
+      making validation green.
+    - Synchronize durable context under `context/` outside the plan file.
+    - Create the context root.
+    - Mark the plan archived or delete the plan.
+    - Create a Git commit or push changes.
+    - Invent acceptance criteria the plan does not state.
+    - Claim verification that was not performed.
+    - Return a YAML result.
+    - Invoke plan context sync. The workflow owns that step.
+    
+    ## Completion
+    
+    The skill is complete after:
+    
+    - One plan was resolved, or resolution failed and was reported.
+    - Implementation completeness was checked.
+    - Validation ran to a terminal state, or a blocker prevented it.
+    - One valid Markdown result matching `references/validation-result.md` was
+      returned.
+    """
+
+local VALIDATION_REPORT = """
+    # Plan-file Validation Report
+    
+    The Markdown section `sce-validation` appends to the plan file when returning
+    `validated` or `failed`. Write it at the end of `context/plans/{plan_name}.md`
+    under exactly one `## Validation Report` heading.
+    
+    This is plan-file content. The skill's return value to the workflow is defined
+    separately in `validation-result.md`.
+    
+    Do not author this section while planning. Only `/validate` through
+    `sce-validation` writes it.
+    
+    ## Layout
+    
+    ```markdown
+    ## Validation Report
+    
+    **Status:** {validated | failed}  
+    **Date:** {YYYY-MM-DD}
+    
+    ### Commands run
+    
+    - `{command}` -> exit {code} ({concise outcome summary})
+    - `{command}` -> exit {code} ({concise outcome summary})
+    
+    ### Scaffolding removed
+    
+    - `{path}` — {why it was temporary}
+    - None.
+    
+    ### Success-criteria verification
+    
+    - [x] AC1: {criterion statement} -> {evidence}
+    - [ ] AC2: {criterion statement} -> {evidence of failure or not checked}
+    
+    ### Failed checks and follow-ups
+    
+    - {check}: {problem}; evidence: {command output or inspection}; required: {decision or next action}
+    - None.
+    
+    ### Residual risks
+    
+    - {risk}
+    - None identified.
+    
+    ### Retry
+    
+    {Only when Status is failed:}
+    
+    After repairs, rerun:
+    
+    `/validate {plan path}`
+    ```
+    
+    ## Rules
+    
+    - Use **Status:** `validated` only when every acceptance criterion is met and
+      every required full-validation command passed.
+    - Use **Status:** `failed` when evidence was captured but required checks or
+      criteria remain unsatisfied.
+    - List every command that ran under **Commands run**, including ones that
+      failed. Do not invent exit codes or outcomes.
+    - Prefer the plan's `Full validation` commands and each criterion's `Validate:`
+      line over rediscovering project defaults. Fall back to repository conventions
+      only when the plan omits them.
+    - Mark each acceptance criterion checkbox in the plan's `## Acceptance criteria`
+      section to match the evidence. Do not mark a criterion met unless the check
+      ran successfully or the inspection named by `Validate:` confirms it.
+    - Under **Scaffolding removed**, list only temporary debug code, intermediate
+      artifacts, or throwaway files introduced during the change. Write `None.` when
+      nothing temporary remained.
+    - Under **Failed checks and follow-ups**, record the failing check and its
+      evidence only. Do not describe code or test edits made during validation;
+      validation does not modify tests or product code to clear failures. Write
+      `None.` when status is `validated`.
+    - When status is `failed`, always include **Retry** with the exact
+      `/validate {plan path}` command. Omit **Retry** when status is `validated`.
+    - Keep evidence concise and factual. Do not narrate the whole implementation
+      history.
+    - Do not claim context synchronization completed. Plan context sync is a later
+      workflow step and runs only after `validated`.
+    - Do not rewrite task evidence or reopen completed tasks.
+    - When a previous `## Validation Report` already exists, replace it with the new
+      one rather than stacking duplicates.
+    """
+
+local VALIDATION_RESULT = """
+    # Validation Result
+    
+    Return only one completed Markdown report using the applicable variant below.
+    Do not include unused sections, placeholders, YAML, or a fenced code block.
+    
+    The `Status` value must be exactly one of:
+    
+    - `validated`
+    - `failed`
+    - `blocked`
+    
+    The plan-file `## Validation Report` section is written separately using
+    `validation-report.md`. This file is the skill's return value to the invoking
+    workflow.
+    
+    ## Validated variant
+    
+    # Validation Report
+    
+    **Status:** validated  
+    **Plan:** `{plan path}`  
+    **Name:** `{plan name}`  
+    **Tasks:** `{completed}/{total} complete`  
+    **Date:** `{YYYY-MM-DD}`
+    
+    ## Commands run
+    
+    - `{command}` -> {passed} — {concise outcome summary}
+    
+    ## Acceptance criteria
+    
+    - [x] AC1: {criterion statement} — {evidence}
+    - [x] AC2: {criterion statement} — {evidence}
+    
+    ## Scaffolding removed
+    
+    - `{path}` — {why it was temporary}
+    - None.
+    
+    ## Residual risks
+    
+    - {risk}
+    - None identified.
+    
+    ## Context impact
+    
+    **Classification:** `{none | local | domain | root}`  
+    **Affected areas:** `{comma-separated areas}`  
+    **Required context:**
+    
+    - `{path or statement from the plan Context sync section}`
+    
+    {One or two sentences on why this classification fits the finished plan.}
+    
+    ## Notes
+    
+    {Include only non-blocking information the invoking workflow should retain.
+    Omit this section when unnecessary.}
+    
+    ---
+    
+    ## Failed variant
+    
+    This variant is a session handoff. Another agent or a later session must be
+    able to act from it alone. Write it as a prompt the user can paste forward, not
+    as a summary of the validation run.
+    
+    # Validation failed — handoff
+    
+    **Status:** failed  
+    **Plan:** `{plan path}`  
+    **Name:** `{plan name}`  
+    **Tasks:** `{completed}/{total} complete`  
+    **Date:** `{YYYY-MM-DD}`  
+    **Validation report:** written to `{plan path}`
+    
+    ## Goal for the next session
+    
+    Repair the unfinished validation so every acceptance criterion and full
+    validation command passes. Do not modify tests or product code inside a
+    `/validate` run to force green results; fix the implementation (or the plan) in
+    a normal work session, then rerun validation.
+    
+    ## What failed
+    
+    - `{check or AC id}`: {problem}
+      - Evidence: {command output, exit summary, or inspection finding}
+      - Required action: {concrete repair or decision}
+    
+    ## Acceptance criteria
+    
+    - [x] AC1: {criterion} — {evidence}
+    - [ ] AC2: {criterion} — {why unmet}
+    
+    ## Commands run
+    
+    - `{command}` -> {passed | failed | not_run} — {concise outcome summary}
+    
+    ## Constraints
+    
+    - All implementation tasks were already complete when validation ran.
+    - Validation did not modify tests, application code, or configuration to clear
+      failures.
+    - Durable context was not synchronized; plan context sync runs only after
+      validation succeeds.
+    - Prefer the plan at `{plan path}` and its Validation Report as the source of
+      recorded evidence.
+    
+    ## Residual risks
+    
+    - {risk}
+    - None identified.
+    
+    ## Recommended work
+    
+    1. {First concrete fix, with files or areas when known}
+    2. {Second concrete fix, or decision the user must make}
+    3. Rerun final validation after the fixes land:
+    
+    `/validate {plan path}`
+    
+    Do not stop after the repair. The plan is not finished until `/validate`
+    returns `validated` and plan context sync completes.
+    
+    ---
+    
+    ## Blocked variant
+    
+    # Validation blocked
+    
+    **Status:** blocked  
+    **Plan:** `{plan path when resolved}`  
+    **Name:** `{plan name when resolved}`
+    
+    ## Issues
+    
+    - **{issue id}** ({category}): {problem}
+      - Impact: {impact}
+      - Required: {decision or action}
+    
+    ## Incomplete tasks
+    
+    - `{task id}` — {title}
+    - Omit this section when no incomplete tasks apply.
+    
+    ## Candidates
+    
+    - `{candidate plan path}`
+    - Omit this section when plan resolution was not ambiguous.
+    
+    ## Next step
+    
+    {Exactly one continuation, matching the blocker:}
+    
+    - Incomplete tasks:
+    
+    `/next-task {plan path}`
+    
+    - Ambiguous plan:
+    
+    `/validate {candidate path}`
+    
+    - Missing plan content or other blocker: state the decision required. Do not
+      invent a command.
+    
+    ---
+    
+    ## Report rules
+    
+    - Name the exact `Plan:` path so every emitted command is runnable.
+    - Use **Status:** exactly `validated`, `failed`, or `blocked`.
+    - Never claim a check passed unless it ran successfully or the authorized
+      inspection confirmed it.
+    - Do not modify tests or product code to clear a failure; record it under
+      **What failed**.
+    - The failed variant must always end its **Recommended work** with
+      `/validate {plan path}` as the final step after repairs.
+    - The failed variant must be self-contained enough to hand to another session
+      without the original chat.
+    - Include **Context impact** only on `validated`. Omit it on `failed` and
+      `blocked`; plan context sync is not invoked for non-success states.
+    - Do not include context synchronization results in this report. The invoking
+      workflow runs `sce-plan-context-sync` only after `validated`.
+    - Do not select or describe an unrelated next implementation task when status is
+      `validated`.
+    - Omit empty optional sections rather than writing placeholders.
+    """
+
+workflow = new model.WorkflowPackage {
+  slug = "validate"
+  command = new model.WorkflowCommand {
+    slug = "validate"
+    title = "SCE Validate"
+    document = makeDocument.apply("validate.md", COMMAND)
+  }
+  skills = new Mapping {
+    [validationPackage.slug] = validationPackage
+    ["sce-plan-context-sync"] = contextSync.skills["sce-plan-context-sync"]
+  }
+}

@@ -25,11 +25,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+pkl eval config/pkl/renderers/metadata-coverage-check.pkl >/dev/null
 pkl eval -m "$tmp_dir" config/pkl/generate.pkl >/dev/null
 
-# NOTE: This paths array must stay in sync with the output.files block in
-# config/pkl/generate.pkl. Whenever generate.pkl gains or loses outputs,
-# update this array to match so parity checks remain accurate.
+# Compare complete generated directories so nested skill references and stale
+# files are covered without maintaining a separate per-document path list.
 paths=(
   "config/.opencode/agent"
   "config/.opencode/command"
@@ -37,27 +37,53 @@ paths=(
   "config/.opencode/lib"
   "config/.opencode/plugins"
   "config/.opencode/opencode.json"
-  "config/automated/.opencode/agent"
-  "config/automated/.opencode/command"
-  "config/automated/.opencode/skills"
-  "config/automated/.opencode/lib"
-  "config/automated/.opencode/plugins"
-  "config/automated/.opencode/opencode.json"
-  "config/.claude/agents"
   "config/.claude/commands"
   "config/.claude/skills"
+  "config/.claude/hooks"
+  "config/.claude/settings.json"
   "config/.pi/prompts"
   "config/.pi/skills"
   "config/.pi/extensions"
   "config/schema/sce-config.schema.json"
 )
 
+# These removed surfaces must stay absent from both generated previews and the
+# committed tree. Obsolete files inside retained directories are caught by the
+# complete-directory comparisons above.
+forbidden_paths=(
+  "config/automated/.opencode"
+  "config/.claude/agents"
+)
+
 stale=0
 for path in "${paths[@]}"; do
+  if [[ ! -e "$tmp_dir/$path" ]]; then
+    stale=1
+    printf 'Generator did not emit required output at %s\n' "$path"
+    continue
+  fi
+
+  if [[ ! -e "$path" ]]; then
+    stale=1
+    printf 'Required generated output is missing at %s\n' "$path"
+    continue
+  fi
+
   if ! git diff --no-index --exit-code -- "$tmp_dir/$path" "$path" >/dev/null; then
     stale=1
     printf 'Generated output drift detected at %s\n' "$path"
     git diff --no-index -- "$tmp_dir/$path" "$path" || true
+  fi
+done
+
+for path in "${forbidden_paths[@]}"; do
+  if [[ -e "$tmp_dir/$path" ]]; then
+    stale=1
+    printf 'Generator emitted removed output at %s\n' "$path"
+  fi
+  if [[ -e "$path" ]]; then
+    stale=1
+    printf 'Removed generated output still exists at %s\n' "$path"
   fi
 done
 

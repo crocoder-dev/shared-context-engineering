@@ -1,5 +1,4 @@
 import "renderers/opencode-content.pkl" as opencode
-import "renderers/opencode-automated-content.pkl" as opencode_automated
 import "renderers/claude-content.pkl" as claude
 import "renderers/pi-content.pkl" as pi
 import "renderers/common.pkl" as common
@@ -17,30 +16,14 @@ output {
         text = document.rendered
       }
     }
-    for (slug, document in opencode_automated.agents) {
-      ["config/automated/.opencode/agent/\(document.title).md"] {
-        text = document.rendered
-      }
-    }
-    for (slug, document in claude.agents) {
-      ["config/.claude/agents/\(slug).md"] {
-        text = document.rendered
-      }
-    }
-
     for (slug, document in opencode.commands) {
       ["config/.opencode/command/\(slug).md"] {
-        text = document.rendered
-      }
-    }
-    for (slug, document in opencode_automated.commands) {
-      ["config/automated/.opencode/command/\(slug).md"] {
-        text = document.rendered
+        text = "\(document.text)\n"
       }
     }
     for (slug, document in claude.commands) {
       ["config/.claude/commands/\(slug).md"] {
-        text = document.rendered
+        text = "\(document.text)\n"
       }
     }
     ["config/.claude/settings.json"] {
@@ -50,34 +33,24 @@ output {
       text = claude.sceHookScript.rendered
     }
 
-    for (slug, document in opencode.skills) {
-      ["config/.opencode/skills/\(slug)/SKILL.md"] {
-        text = document.rendered
+    for (documentPath, document in opencode.skillDocuments) {
+      ["config/.opencode/skills/\(documentPath)"] {
+        text = "\(document.text)\n"
       }
     }
-    for (slug, document in opencode_automated.skills) {
-      ["config/automated/.opencode/skills/\(slug)/SKILL.md"] {
-        text = document.rendered
-      }
-    }
-    for (slug, document in claude.skills) {
-      ["config/.claude/skills/\(slug)/SKILL.md"] {
-        text = document.rendered
+    for (documentPath, document in claude.skillDocuments) {
+      ["config/.claude/skills/\(documentPath)"] {
+        text = "\(document.text)\n"
       }
     }
     for (slug, document in pi.commands) {
       ["config/.pi/prompts/\(slug).md"] {
-        text = document.rendered
+        text = "\(document.text)\n"
       }
     }
-    for (slug, document in pi.agentPrompts) {
-      ["config/.pi/prompts/agent-\(slug).md"] {
-        text = document.rendered
-      }
-    }
-    for (slug, document in pi.skills) {
-      ["config/.pi/skills/\(slug)/SKILL.md"] {
-        text = document.rendered
+    for (documentPath, document in pi.skillDocuments) {
+      ["config/.pi/skills/\(documentPath)"] {
+        text = "\(document.text)\n"
       }
     }
     ["config/.pi/extensions/sce/index.ts"] {
@@ -94,18 +67,6 @@ output {
     }
     ["config/.opencode/opencode.json"] {
       text = opencode.opencodeConfig.rendered
-    }
-    ["config/automated/.opencode/lib/bash-policy-presets.json"] {
-      text = bashPolicyPresetCatalogSource
-    }
-    ["config/automated/.opencode/plugins/sce-bash-policy.ts"] {
-      text = opencodeBashPolicyPluginSource
-    }
-    ["config/automated/.opencode/plugins/sce-agent-trace.ts"] {
-      text = opencodeAgentTracePluginSource
-    }
-    ["config/automated/.opencode/opencode.json"] {
-      text = opencode_automated.opencodeConfig.rendered
     }
     ["config/schema/sce-config.schema.json"] {
       text = sce_config_schema.rendered
