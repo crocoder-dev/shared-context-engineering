@@ -20,25 +20,14 @@ as a separate workflow state.
 **Plan:** `{plan path}`  
 **Task:** `{task id} — {task title}`
 
-## Context impact
+## Updated files
 
-**Classification:** `{local | domain | root}`  
-**Affected areas:** `{comma-separated areas}`
-
-{Explain which durable behavior, architecture, terminology, operation, or
-constraint required synchronization.}
+- {List each changed file from the execution handoff except paths under
+  `context/`; state `None.` when no files remain.}
 
 ## Updated context
 
 - `{context file}` — {concise description of the durable truth updated}
-
-## Root pass
-
-- `context/overview.md` — {verified | edited | absent}
-- `context/architecture.md` — {verified | edited | absent}
-- `context/glossary.md` — {verified | edited | absent}
-- `context/patterns.md` — {verified | edited | absent}
-- `context/context-map.md` — {verified | edited | absent}
 
 ## Feature existence
 
@@ -65,9 +54,12 @@ Omit this section when unnecessary.}
 **Plan:** `{plan path}`  
 **Task:** `{task id} — {task title}`
 
-## Context impact
+## Updated files
 
-**Classification:** none
+- {List each changed file from the execution handoff except paths under
+  `context/`; state `None.` when no files remain.}
+
+## Synchronization result
 
 {Explain why the completed implementation did not introduce durable,
 non-obvious repository knowledge requiring an update.}
@@ -75,14 +67,6 @@ non-obvious repository knowledge requiring an update.}
 ## Context reviewed
 
 - `{context file or area}` — {what was checked and why it remains accurate}
-
-## Root pass
-
-- `context/overview.md` — {verified | absent}
-- `context/architecture.md` — {verified | absent}
-- `context/glossary.md` — {verified | absent}
-- `context/patterns.md` — {verified | absent}
-- `context/context-map.md` — {verified | absent}
 
 ## Feature existence
 
@@ -102,6 +86,11 @@ non-obvious repository knowledge requiring an update.}
 **Plan:** `{plan path}`  
 **Task:** `{task id} — {task title}`
 
+## Updated files
+
+- {List each changed file from the execution handoff except paths under
+  `context/`; state `None.` when no files remain.}
+
 ## Blocker
 
 **Problem:** {specific synchronization blocker}  
@@ -120,8 +109,8 @@ again.}
 ## Report rules
 
 - Name exact context files when they were changed or reviewed.
-- Report every file in the root pass, including any that is absent. A root pass
-  with a file missing from the list reads as a file that was never checked.
+- Under **Updated files**, list every changed file from the execution handoff
+  except paths under `context/`.
 - Report the missing context root as `blocked`, with `sce setup
   --bootstrap-context` as the required action and the existence of `context/` as
   the retry condition.
