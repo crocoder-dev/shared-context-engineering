@@ -1,121 +1,126 @@
-import "../base/shared-content.pkl" as shared
-import "../base/shared-content-automated.pkl" as sharedAutomated
-import "common.pkl" as common
-import "opencode-metadata.pkl" as opencode
-import "opencode-automated-metadata.pkl" as opencodeAutomated
-import "claude-metadata.pkl" as claude
-import "pi-metadata.pkl" as pi
+import "opencode-content.pkl" as opencode
+import "claude-content.pkl" as claude
+import "pi-content.pkl" as pi
 
+local expectedCommandSlugs = Set(
+  "change-to-plan",
+  "next-task",
+  "validate"
+)
+
+local expectedAgentSlugs = Set(
+  "shared-context-plan",
+  "shared-context-code"
+)
+
+local expectedSkillDocumentPaths = Set(
+  "sce-context-load/SKILL.md",
+  "sce-context-load/references/context-brief.yaml",
+  "sce-plan-authoring/SKILL.md",
+  "sce-plan-authoring/references/authoring-contract.yaml",
+  "sce-plan-authoring/references/plan-summary.md",
+  "sce-plan-authoring/references/plan-template.md",
+  "sce-plan-context-sync/SKILL.md",
+  "sce-plan-context-sync/references/sync-report.md",
+  "sce-plan-review/SKILL.md",
+  "sce-plan-review/references/readiness-contract.yaml",
+  "sce-task-context-sync/SKILL.md",
+  "sce-task-context-sync/references/sync-report.md",
+  "sce-task-execution/SKILL.md",
+  "sce-task-execution/references/execution-contract.yaml",
+  "sce-task-execution/references/implementation-gate.md",
+  "sce-validation/SKILL.md",
+  "sce-validation/references/validation-report.md",
+  "sce-validation/references/validation-result.md"
+)
+
+local opencodeAgents = new Mapping {
+  for (slug, document in opencode.agents) {
+    [slug] = document
+  }
+}
+local opencodeCommands = new Mapping {
+  for (slug, document in opencode.commands) {
+    [slug] = document
+  }
+}
+local opencodeSkillDocuments = new Mapping {
+  for (path, document in opencode.skillDocuments) {
+    [path] = document
+  }
+}
+local claudeCommands = new Mapping {
+  for (slug, document in claude.commands) {
+    [slug] = document
+  }
+}
+local claudeSkillDocuments = new Mapping {
+  for (path, document in claude.skillDocuments) {
+    [path] = document
+  }
+}
+local piCommands = new Mapping {
+  for (slug, document in pi.commands) {
+    [slug] = document
+  }
+}
+local piSkillDocuments = new Mapping {
+  for (path, document in pi.skillDocuments) {
+    [path] = document
+  }
+}
+
+local assertExactKeys = (actual: Mapping, expected: Set<String>, label: String) ->
+  if (
+    actual.length == expected.length
+    && expected.every((key) -> actual.containsKey(key))
+  ) "\(label): complete"
+  else error("\(label) inventory does not match the canonical workflow matrix")
+
+inventoryChecks {
+  ["opencode-agents"] = assertExactKeys.apply(opencodeAgents, expectedAgentSlugs, "OpenCode agent")
+  ["opencode-commands"] = assertExactKeys.apply(opencodeCommands, expectedCommandSlugs, "OpenCode command")
+  ["opencode-skill-documents"] = assertExactKeys.apply(opencodeSkillDocuments, expectedSkillDocumentPaths, "OpenCode skill document")
+  ["claude-commands"] = assertExactKeys.apply(claudeCommands, expectedCommandSlugs, "Claude command")
+  ["claude-skill-documents"] = assertExactKeys.apply(claudeSkillDocuments, expectedSkillDocumentPaths, "Claude skill document")
+  ["pi-commands"] = assertExactKeys.apply(piCommands, expectedCommandSlugs, "Pi command")
+  ["pi-skill-documents"] = assertExactKeys.apply(piSkillDocuments, expectedSkillDocumentPaths, "Pi skill document")
+}
+
+/// Force rendering after exact inventory checks so target-specific metadata
+/// lookups and every nested package document are evaluated.
 opencodeAgentCoverage {
-  for (unitSlug, _ in shared.agents) {
-    [unitSlug] = new {
-      description = opencode.agentDescriptions[unitSlug]
-      displayName = opencode.agentDisplayNames[unitSlug]
-      color = opencode.agentColors[unitSlug]
-      permissionBlock = opencode.agentPermissionBlocks[unitSlug]
-    }
+  for (slug, document in opencodeAgents) {
+    [slug] = document.rendered
   }
 }
-
 opencodeCommandCoverage {
-  for (unitSlug, _ in shared.commands) {
-    [unitSlug] = new {
-      description = common.commandDescriptions[unitSlug]
-      agent = opencode.commandAgents[unitSlug]
-    }
+  for (slug, document in opencodeCommands) {
+    [slug] = document.text
   }
 }
-
-opencodeSkillCoverage {
-  for (unitSlug, _ in shared.skills) {
-    [unitSlug] = new {
-      description = common.skillDescriptions[unitSlug]
-      compatibility = opencode.skillCompatibility
-    }
+opencodeSkillDocumentCoverage {
+  for (path, document in opencodeSkillDocuments) {
+    [path] = document.text
   }
 }
-
-claudeAgentCoverage {
-  for (unitSlug, _ in shared.agents) {
-    [unitSlug] = new {
-      description = claude.agentDescriptions[unitSlug]
-      color = claude.agentColors[unitSlug]
-      tools = claude.agentTools
-    }
-  }
-}
-
 claudeCommandCoverage {
-  for (unitSlug, _ in shared.commands) {
-    [unitSlug] = new {
-      description = common.commandDescriptions[unitSlug]
-      allowedTools = claude.commandAllowedTools[unitSlug]
-    }
+  for (slug, document in claudeCommands) {
+    [slug] = document.text
   }
 }
-
-claudeSkillCoverage {
-  for (unitSlug, _ in shared.skills) {
-    [unitSlug] = new {
-      description = common.skillDescriptions[unitSlug]
-      compatibility = claude.skillCompatibility
-    }
+claudeSkillDocumentCoverage {
+  for (path, document in claudeSkillDocuments) {
+    [path] = document.text
   }
 }
-
-piAgentPromptCoverage {
-  for (unitSlug, _ in shared.agents) {
-    [unitSlug] = new {
-      description = pi.agentDescriptions[unitSlug]
-      argumentHint = pi.agentArgumentHints[unitSlug]
-      skillReference = pi.agentSkillReferences[unitSlug]
-    }
-  }
-}
-
 piCommandCoverage {
-  for (unitSlug, _ in shared.commands) {
-    [unitSlug] = new {
-      description = common.commandDescriptions[unitSlug]
-      argumentHint = pi.commandArgumentHints[unitSlug]
-    }
+  for (slug, document in piCommands) {
+    [slug] = document.text
   }
 }
-
-piSkillCoverage {
-  for (unitSlug, _ in shared.skills) {
-    [unitSlug] = new {
-      description = common.skillDescriptions[unitSlug]
-    }
-  }
-}
-
-// Automated OpenCode profile coverage checks
-opencodeAutomatedAgentCoverage {
-  for (unitSlug, _ in sharedAutomated.agents) {
-    [unitSlug] = new {
-      description = opencodeAutomated.agentDescriptions[unitSlug]
-      displayName = opencodeAutomated.agentDisplayNames[unitSlug]
-      color = opencodeAutomated.agentColors[unitSlug]
-      permissionBlock = opencodeAutomated.agentPermissionBlocks[unitSlug]
-    }
-  }
-}
-
-opencodeAutomatedCommandCoverage {
-  for (unitSlug, _ in sharedAutomated.commands) {
-    [unitSlug] = new {
-      description = common.commandDescriptions[unitSlug]
-      agent = opencodeAutomated.commandAgents[unitSlug]
-    }
-  }
-}
-
-opencodeAutomatedSkillCoverage {
-  for (unitSlug, _ in sharedAutomated.skills) {
-    [unitSlug] = new {
-      description = common.skillDescriptions[unitSlug]
-      compatibility = opencodeAutomated.skillCompatibility
-    }
+piSkillDocumentCoverage {
+  for (path, document in piSkillDocuments) {
+    [path] = document.text
   }
 }

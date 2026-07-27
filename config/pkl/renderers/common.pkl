@@ -1,5 +1,4 @@
 import "../base/opencode.pkl" as opencode
-import "../base/shared-content.pkl" as shared
 
 class RenderedTargetDocument {
   slug: String
@@ -21,27 +20,3 @@ sceGeneratedOpenCodePlugins = List(
 sceGeneratedOpenCodePluginPathsJson = sceGeneratedOpenCodePlugins
   .map((plugin) -> plugin.path_json)
   .join(", ")
-
-commandDescriptions = new Mapping {
-  ["next-task"] = "Run `sce-plan-review` -> `sce-task-execution` -> `sce-context-sync` for one approved SCE task"
-  ["change-to-plan"] = "Use `sce-plan-authoring` to turn a change request into a scoped SCE plan"
-  ["change-to-plan-interactive"] = "Create or update an SCE plan from a change request with interactive clarification"
-  ["drift-detect"] = "Run `sce-drift-analyzer` to report context-code drift before edits"
-  ["fix-drift"] = "Run `sce-drift-fixer` to repair context files from current code truth"
-  ["handover"] = "Run `sce-handover-writer` to capture the current task for handoff"
-  ["commit"] = "Use `sce-atomic-commit` to propose atomic commit message(s) from staged changes"
-  ["validate"] = "Run `sce-validation` to finish an SCE plan with validation and cleanup"
-}
-
-skillDescriptions = new Mapping {
-  ["sce-bootstrap-context"] = "Use when user wants to Bootstrap SCE baseline context directory when missing."
-  ["sce-context-sync"] = "Use when user wants to Synchronize context files to match current code behavior after task execution."
-  ["sce-handover-writer"] = "Use when user wants to create a structured SCE handover for the current task."
-  ["sce-plan-authoring"] = "Use when user wants to Create or update an SCE implementation plan with scoped atomic tasks."
-  ["sce-plan-authoring-interactive"] = "Use when user wants to Create or update an SCE implementation plan with interactive clarification."
-  ["sce-plan-review"] = "Use when user wants to review an existing plan and prepare the next task safely."
-  ["sce-task-execution"] = "Use when user wants to Execute one approved task with explicit scope, evidence, and status updates."
-  ["sce-atomic-commit"] = "Write atomic, repo-style git commits from a change summary or diff. Use when preparing commit messages, splitting work into coherent commits, or reviewing whether a commit is too broad."
-  ["sce-validation"] = "Use when user wants to Run final plan validation and cleanup with evidence capture."
-}
-

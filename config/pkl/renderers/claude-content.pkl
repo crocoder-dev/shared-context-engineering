@@ -1,4 +1,7 @@
-import "../base/shared-content.pkl" as shared
+import "../base/workflow-change-to-plan.pkl" as changeToPlan
+import "../base/workflow-next-task.pkl" as nextTask
+import "../base/workflow-validate.pkl" as validate
+import "../base/workflow-content.pkl" as model
 import "common.pkl" as common
 import "claude-metadata.pkl" as metadata
 
@@ -8,52 +11,26 @@ local claudeSceHookScriptPath = "$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-sh
 
 local function sceHookCommand(arguments: String): String = "bash \\\"\(claudeSceHookScriptPath)\\\" \(arguments)"
 
-local agentFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.agents) {
-    [unitSlug] = """
----
-name: \(unitSlug)
-description: \(metadata.agentDescriptions[unitSlug])
-model: inherit
-color: \(metadata.agentColors[unitSlug])
-tools: \(metadata.agentTools)
----
-"""
-  }
+local workflows = new Listing {
+  changeToPlan.workflow
+  nextTask.workflow
+  validate.workflow
 }
 
-local agentBodyBySlug = new Mapping {
-  for (unitSlug, unit in shared.agents) {
-    [unitSlug] = if (metadata.agentSystemPreambleBlocks[unitSlug] == "") unit.canonicalBody else """
-\(metadata.agentSystemPreambleBlocks[unitSlug])
-
-\(unit.canonicalBody)
-"""
-  }
+local renderCommand = (command: model.WorkflowCommand) -> new model.WorkflowDocument {
+  path = command.document.path
+  text = command.document.text.replaceFirst(
+    "\n---\n",
+    "\nallowed-tools: \(metadata.commandAllowedTools[command.slug])\n---\n"
+  )
 }
 
-local commandFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.commands) {
-    [unitSlug] = """
----
-description: "\(common.commandDescriptions[unitSlug])"
-allowed-tools: \(metadata.commandAllowedTools[unitSlug])
----
-"""
-  }
-}
-
-local skillFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.skills) {
-    [unitSlug] = """
----
-name: \(unitSlug)
-description: |
-  \(metadata.skillDescriptions[unitSlug])
-compatibility: \(metadata.skillCompatibility)
----
-"""
-  }
+local renderSkillDocument = (document: model.WorkflowDocument) -> new model.WorkflowDocument {
+  path = document.path
+  text = if (document.path == "SKILL.md") document.text.replaceFirst(
+    "\n---\n",
+    "\ncompatibility: \(metadata.skillCompatibility)\n---\n"
+  ) else document.text
 }
 
 settings = new common.RenderedTextFile {
@@ -132,35 +109,21 @@ exec "$@"
 """
 }
 
-agents {
-  for (unitSlug, unit in shared.agents) {
-    [unitSlug] = new common.RenderedTargetDocument {
-      slug = unitSlug
-      title = unit.title
-      frontmatter = agentFrontmatterBySlug[unitSlug]
-      body = agentBodyBySlug[unitSlug]
-    }
-  }
-}
-
 commands {
-  for (unitSlug, unit in shared.commands) {
-    [unitSlug] = new common.RenderedTargetDocument {
-      slug = unitSlug
-      title = unit.title
-      frontmatter = commandFrontmatterBySlug[unitSlug]
-      body = unit.canonicalBody
-    }
+  for (workflow in workflows) {
+    [workflow.command.slug] = renderCommand.apply(workflow.command)
   }
 }
 
-skills {
-  for (unitSlug, unit in shared.skills) {
-    [unitSlug] = new common.RenderedTargetDocument {
-      slug = unitSlug
-      title = unit.title
-      frontmatter = skillFrontmatterBySlug[unitSlug]
-      body = unit.canonicalBody
+/// Flatten package-relative document paths while retaining each skill's
+/// self-contained directory layout and adding only Claude-supported metadata
+/// to the package entrypoint.
+skillDocuments {
+  for (workflow in workflows) {
+    for (skillSlug, skillPackage in workflow.skills) {
+      for (documentPath, document in skillPackage.documents) {
+        ["\(skillSlug)/\(documentPath)"] = renderSkillDocument.apply(document)
+      }
     }
   }
 }

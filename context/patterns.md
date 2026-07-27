@@ -49,44 +49,45 @@
 
 ## Pkl renderer layering
 
-- Keep target-agnostic canonical content organized by concern in `config/pkl/base/shared-content-{common,plan,code,commit}.pkl` (manual) and `config/pkl/base/shared-content-automated-{common,plan,code,commit}.pkl` (automated); the aggregation surfaces `config/pkl/base/shared-content.pkl` and `config/pkl/base/shared-content-automated.pkl` import from these grouped modules for downstream renderers.
+- Keep the three target-agnostic workflow packages in `config/pkl/base/workflow-{change-to-plan,next-task,validate}.pkl`, with package primitives in `workflow-content.pkl` and shared task/plan synchronization policy in `workflow-context-sync.pkl`. Do not reintroduce the removed grouped shared-content catalog or automated-profile variants.
 - Keep cross-target generated-config primitives in focused base modules under `config/pkl/base/` and re-export them through `config/pkl/renderers/common.pkl` when multiple renderers need the same contract.
-- Keep the grouped shared-content modules synchronized with canonical authored instruction bodies (currently mirrored from the OpenCode source tree under `config/{opencode_root}` for `agent`, `command`, and `skills`, with frontmatter removed) before regenerating targets.
-- When two or more generated agent bodies share baseline doctrine, extract that doctrine into reusable canonical constants in `config/pkl/base/shared-content-common.pkl` and compose via interpolation instead of duplicating prose per agent.
+- Model workflow skills as self-contained packages with deterministic package-relative document paths, including nested `references/` files. Shared Pkl skeletons may instantiate multiple skills, but every rendered skill must receive complete local documents and must not depend on a sibling skill package.
+- Use the project-root `.pi/` workflows as the behavioral baseline for canonical workflow packages; do not use generated target Markdown as an authoring source.
+- Keep OpenCode agents as thin routing surfaces when canonical workflow commands and skills own the behavior; do not duplicate workflow doctrine in agent bodies.
 - Implement target-specific formatting in dedicated renderer modules under `config/pkl/renderers/`.
 - Keep shared renderer contracts and only truly shared description maps in `config/pkl/renderers/common.pkl`.
-- Keep per-target metadata tables in dedicated modules (`opencode-metadata.pkl`, `opencode-automated-metadata.pkl`, `claude-metadata.pkl`), including target-specific skill descriptions, and import them into target renderer modules.
-- When OpenCode commands need machine-readable orchestration metadata, add it in `config/pkl/renderers/opencode-content.pkl` as frontmatter fields that are explicitly scoped to the targeted commands, and keep non-target commands unchanged unless the contract expands deliberately.
-- Add and run `config/pkl/renderers/metadata-coverage-check.pkl` as a fail-fast metadata completeness guard whenever shared slugs or metadata tables change.
-- In renderer modules, produce per-item document objects with explicit `frontmatter`, `body`, and combined `rendered` fields to keep formatting deterministic and easy to map in a later output stage.
+- Keep only actively consumed target metadata in dedicated modules (`opencode-metadata.pkl` and `claude-metadata.pkl`); Pi-compatible metadata remains in canonical workflow documents.
+- Add OpenCode machine-readable orchestration metadata in `config/pkl/renderers/opencode-content.pkl`: `agent`, `entry-skill`, and the complete ordered `skills` chain must match the canonical workflow phases.
+- Keep `config/pkl/renderers/metadata-coverage-check.pkl` as a fail-fast exact-inventory guard for command slugs, OpenCode agents, skill entrypoints, and every package-local reference path; run it whenever workflow documents or target metadata change.
+- Workflow renderers may extend canonical frontmatter only with target-supported metadata, must preserve the workflow body, and append only the required final newline at the output mapping.
 - Keep the Markdown renderer contract in `config/pkl/renderers/common.pkl` limited to deterministic `frontmatter + body` assembly without injected generated-file marker text.
 - Validate each renderer module directly with `nix develop -c pkl eval <module-path>` before wiring output emission.
 
 ## Thin command orchestration
 
 - Keep SCE command bodies thin when phase skills already define detailed contracts.
-- For `/next-task`, retain only sequencing and confirmation gates in the command body and delegate phase details to `sce-plan-review`, `sce-task-execution`, and `sce-context-sync`.
-- For `/change-to-plan`, retain wrapper-level plan output/handoff obligations in the command body and delegate clarification and plan-shape contracts (including one-task/one-atomic-commit task slicing) to `sce-plan-authoring`.
-- For `/commit`, keep the command body thin and profile-aware: manual generated commands retain staging-confirmation and proposal-only gates, while the automated OpenCode command skips staging confirmation, generates exactly one staged commit message, and executes one staged `git commit`; delegate commit-message grammar, the single-message contract, and the staged-plan rule (cite affected plan slug(s) and updated task ID(s) when `context/plans/*.md` is staged, otherwise stop for clarification) to `sce-atomic-commit`.
-- Preserve mandatory gates (readiness confirmation, implementation stop, final-task validation trigger) while removing duplicated procedural prose from command text.
+- For `/change-to-plan`, sequence `sce-context-load` before `sce-plan-authoring`; keep context loading, clarification, plan output, and `/next-task` handoff in their declared owners.
+- For `/next-task`, retain one-task sequencing and confirmation gates while delegating phase details to `sce-plan-review`, `sce-task-execution`, and `sce-task-context-sync`.
+- For `/validate`, run `sce-validation` first and invoke `sce-plan-context-sync` only for a validated result.
+- Preserve mandatory gates and authoritative handoffs while removing duplicated phase instructions from agents or sibling skills.
 
 ## Multi-file generation entrypoint
 
-- Use `config/pkl/generate.pkl` as the single generation module for authored config outputs.
+- Use `config/pkl/generate.pkl` as the single generation module for authored config outputs. Flatten self-contained workflow skill documents as `{skill slug}/{package-relative path}` so nested references are emitted deterministically without sibling-package dependencies.
 - Use `config/pkl/README.md` as the contributor-facing runbook for prerequisites, ownership boundaries, regeneration steps, and troubleshooting.
 - Run multi-file generation with `nix develop -c pkl eval -m . config/pkl/generate.pkl` to emit to repository-root mapped paths.
-- Run stale-output detection through the flake app entrypoint `nix run .#pkl-check-generated`; it wraps `nix develop -c ./config/pkl/check-generated.sh`, regenerates into a temporary directory, and fails if generated-owned paths differ from committed outputs.
-- Keep generated-output parity anchored to `nix run .#pkl-check-generated` and the root `nix flake check` `pkl-parity` derivation; no dedicated generated-parity workflow is currently checked in.
+- Run stale-output detection through the flake app entrypoint `nix run .#pkl-check-generated`; it wraps `nix develop -c ./config/pkl/check-generated.sh`, evaluates exact inventory coverage, regenerates into a temporary directory, compares complete generated directories plus scalar outputs, and fails on missing, changed, extra, or explicitly forbidden removed paths.
+- Keep generated-output parity anchored to `nix run .#pkl-check-generated` and the root `nix flake check` `pkl-parity` derivation; removed target paths must be treated as forbidden stale outputs rather than generated inventory.
 - Treat `nix run .#pkl-check-generated` and `nix flake check` as the lightweight post-task verification baseline and run both after each completed task.
 - For non-destructive verification during development, run `nix develop -c pkl eval -m context/tmp/t04-generated config/pkl/generate.pkl` and inspect emitted paths under `context/tmp/`.
-- Keep `output.files` limited to generated-owned paths only (`config/{opencode_root}/{agent,command,skills,lib,plugins}`, generated `config/{opencode_root}/package.json`, `config/{claude_root}/{agents,commands,skills,hooks,settings.json}`, and `config/{pi_root}/{prompts,skills,extensions}`, where roots map to `.opencode`, `.claude`, and `.pi`).
+- Keep `output.files` limited to generated-owned paths only (`config/.opencode/{agent,command,skills,lib,plugins,opencode.json}`, `config/.claude/{commands,skills,hooks,settings.json}` with no Claude agents, `config/.pi/{prompts,skills,extensions}`, and the generated schema). Do not emit `config/automated/.opencode`.
 - For OpenCode pre-execution bash-policy hooks, keep the generated plugin entrypoint thin (`plugins/sce-bash-policy.ts`) and delegate policy evaluation to the Rust `sce policy bash --input normalized --output json` command so OpenCode and Claude share one evaluator.
 
 ## Internal subagent parity mapping
 
 - Encode internal-agent parity by target capability, not by forcing unsupported frontmatter keys.
-- For OpenCode agents that must be internal, set behavior flags in `config/pkl/renderers/opencode-metadata.pkl` (`agentBehaviorBlocks`) and render those directly into frontmatter.
-- For Claude agents, represent equivalent intent using supported metadata and body guidance in `config/pkl/renderers/claude-metadata.pkl` (for example description + preamble blocks for delegated command/task routing).
+- Keep manual OpenCode Plan and Code agent bodies limited to routing to their approved commands; keep target permissions and presentation metadata in `config/pkl/renderers/opencode-metadata.pkl`.
+- Do not generate Claude agents; Claude receives the canonical workflow commands and self-contained skill packages directly, with only supported command/skill metadata added by `config/pkl/renderers/claude-content.pkl`.
 - Keep parity decisions reproducible by validating generated outputs directly.
 
 ## Placeholder CLI scaffolding

@@ -16,10 +16,10 @@ The generated-config pipeline now has one canonical Pkl-authored source for Open
 
 ## OpenCode generated outputs
 
-- `config/pkl/renderers/opencode-content.pkl` and `config/pkl/renderers/opencode-automated-content.pkl` render `opencodeConfig` artifacts that include the shared plugin registration.
-- `config/pkl/generate.pkl` writes those artifacts to `config/.opencode/opencode.json` and `config/automated/.opencode/opencode.json`.
-- Both generated OpenCode profiles currently serialize `plugin: ["./plugins/sce-bash-policy.ts", "./plugins/sce-agent-trace.ts"]`.
-- The generated plugin files currently registered by those manifests are `config/.opencode/plugins/sce-bash-policy.ts`, `config/.opencode/plugins/sce-agent-trace.ts`, `config/automated/.opencode/plugins/sce-bash-policy.ts`, and `config/automated/.opencode/plugins/sce-agent-trace.ts`.
+- `config/pkl/renderers/opencode-content.pkl` renders the `opencodeConfig` artifact with the shared plugin registration.
+- `config/pkl/generate.pkl` writes that artifact to `config/.opencode/opencode.json`.
+- The generated OpenCode profile serializes `plugin: ["./plugins/sce-bash-policy.ts", "./plugins/sce-agent-trace.ts"]`.
+- The registered generated plugin files are `config/.opencode/plugins/sce-bash-policy.ts` and `config/.opencode/plugins/sce-agent-trace.ts`. The removed `config/automated/.opencode` profile has no plugin manifest or generated plugin copies.
 
 ## Claude boundary
 
@@ -32,14 +32,15 @@ The generated-config pipeline now has one canonical Pkl-authored source for Open
 
 ## Ownership and edit policy
 
-- Treat `config/.opencode/opencode.json`, `config/automated/.opencode/opencode.json`, and the corresponding generated plugin files under `config/.opencode/plugins/` and `config/automated/.opencode/plugins/` as generated-owned artifacts.
+- Treat `config/.opencode/opencode.json` and the corresponding generated plugin files under `config/.opencode/plugins/` as generated-owned artifacts.
 - When OpenCode plugin registration changes, edit canonical sources under `config/pkl/` (`config/pkl/base/opencode.pkl`, `config/pkl/renderers/common.pkl`, the OpenCode renderer modules, and `config/pkl/generate.pkl` when ownership wiring changes) instead of patching generated manifests directly.
 - Do not broaden this contract to third-party or user-supplied plugins without an explicit plan/task that defines new ownership and scope rules.
 
 ## Verification
 
-- Inspect `config/.opencode/opencode.json` and `config/automated/.opencode/opencode.json` for the generated `plugin` field.
-- Inspect `config/.opencode/plugins/sce-bash-policy.ts`, `config/.opencode/plugins/sce-agent-trace.ts`, `config/automated/.opencode/plugins/sce-bash-policy.ts`, and `config/automated/.opencode/plugins/sce-agent-trace.ts` for the generated plugin implementations.
+- Inspect `config/.opencode/opencode.json` for the generated `plugin` field.
+- Inspect `config/.opencode/plugins/sce-bash-policy.ts` and `config/.opencode/plugins/sce-agent-trace.ts` for the generated plugin implementations.
+- Assert `config/automated/.opencode` is absent.
 - Verify `config/.claude/settings.json` contains the generated `PreToolUse` `Bash` policy hook, verify `config/.claude/hooks/run-sce-or-show-install-guidance.sh` contains the missing-CLI guidance path, and verify `config/.claude/` still contains no Claude bash-policy TypeScript runtime files.
 
 See also: [../overview.md](../overview.md), [../architecture.md](../architecture.md), [../glossary.md](../glossary.md)
