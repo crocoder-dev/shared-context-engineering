@@ -1,0 +1,1274 @@
+import "workflow-content.pkl" as model
+import "workflow-context-sync.pkl" as contextSync
+
+/// Canonical `/next-task` workflow command and its self-contained skill
+/// packages. Text mirrors the project-root `.pi/` behavioral baseline; target
+/// renderers consume this model in later workflow-rendering tasks.
+
+local makeDocument = (documentPath: String, documentText: String) -> new model.WorkflowDocument {
+  path = documentPath
+  text = documentText
+}
+
+local packageDocuments = (documents: Listing<model.WorkflowDocument>) -> new Mapping {
+  for (item in documents) {
+    [item.path] = item
+  }
+}
+
+local planReviewPackage = new model.SkillPackage {
+  slug = "sce-plan-review"
+  title = "SCE Plan Review"
+  documents = packageDocuments.apply(new Listing {
+    makeDocument.apply("SKILL.md", REVIEW_SKILL)
+    makeDocument.apply("references/readiness-contract.yaml", READINESS_CONTRACT)
+  })
+}
+
+local taskExecutionPackage = new model.SkillPackage {
+  slug = "sce-task-execution"
+  title = "SCE Task Execution"
+  documents = packageDocuments.apply(new Listing {
+    makeDocument.apply("SKILL.md", EXECUTION_SKILL)
+    makeDocument.apply("references/execution-contract.yaml", EXECUTION_CONTRACT)
+    makeDocument.apply("references/implementation-gate.md", IMPLEMENTATION_GATE)
+  })
+}
+
+local COMMAND = """
+    ---
+    description: "Run `sce-plan-review` -> `sce-task-execution` -> `sce-task-context-sync` for one SCE plan task"
+    argument-hint: "<plan-name> [T0X] [approved]"
+    ---
+    
+    SCE NEXT TASK `$ARGUMENTS`
+    
+    ## Input
+    
+    Parse `$ARGUMENTS` into three positional parts before invoking any skill:
+    
+    <plan-name-or-path> [task-id] [auto-approve]
+    
+    - `plan-name-or-path` is required.
+    - `task-id` is optional. It is present only when the token matches a task ID (`T01`, `T02`, ...).
+    - `auto-approve` is optional. It is present only when the token is exactly `approved`.
+    
+    Resolve `auto-approve` even when `task-id` is absent.
+    
+    A token matching neither a task ID nor `approved` is an error. Report the unrecognized token and the expected arguments, and stop. Do not guess its meaning.
+    
+    Pass each part only to the phase that owns it. Do not forward the raw `$ARGUMENTS` string to a skill.
+    
+    Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is the path resolved by `sce-plan-review` (`plan.path`, or an entry of `candidates`), so every emitted command is directly runnable.
+    
+    ## Workflow
+    
+    ### 1. Review the task
+    
+    Invoke `sce-plan-review` with the parsed `plan-name-or-path` and, when present, the parsed `task-id`.
+    
+    Do not pass the `auto-approve` token to `sce-plan-review`.
+    
+    The skill must return a result matching its readiness contract.
+    
+    Branch on `status`:
+    
+    `blocked` -> Do not invoke implementation. Present the result as prose. Do not print the raw result. Stop.
+    
+    When `candidates` is present, the plan could not be resolved. Present:
+    
+    - The problem reported by the review.
+    - The candidate plan paths.
+    - `/next-task {candidate-path}` for the intended plan.
+    
+    Otherwise one plan and task were resolved. Present:
+    
+    - The task ID and title.
+    - Each issue in `issues`: its problem, its impact, and the decision it requires.
+    - When `executable_tasks_remaining` is true: other tasks remain executable, and `/next-task {plan-path} {task-id}` selects one.
+    - When `executable_tasks_remaining` is false: no task in the plan can proceed until the plan is updated.
+    
+    `plan_complete` -> Return:
+    
+    ```
+    
+    -------------------------------------
+    
+    # Implementation tasks are complete.
+    
+    Run the final validation:
+    
+    `/validate {plan-path}`
+    ```
+    
+    Stop.
+    
+    `ready` -> Pass the complete readiness result to `sce-task-execution`.
+    
+    Do not reconstruct, summarize, or reinterpret the reviewed task before passing it.
+    
+    ### 2. Execute the task
+    
+    Invoke `sce-task-execution` with the complete `ready` result from `sce-plan-review`.
+    
+    Branch on `auto-approve`:
+    
+    `approved` -> Also pass the `approve` flag. `sce-task-execution` then shows its implementation gate as a summary and proceeds without asking.
+    
+    else -> Do not pass the `approve` flag. `sce-task-execution` shows its implementation gate and waits for the user's decision.
+    
+    `sce-task-execution` exclusively owns:
+    
+    - Presenting the implementation summary.
+    - Requesting implementation confirmation.
+    - Implementing the task.
+    - Running task-level verification.
+    - Updating the task status and evidence.
+    
+    Do not present an additional implementation confirmation.
+    
+    Branch on the execution result.
+    
+    `declined` -> Present "You have declined to proceed with this task". Do not invoke context synchronization. Stop.
+    
+    `blocked` -> Present:
+    
+    - The blocker.
+    - Work completed before the blocker.
+    - The decision or action required.
+    
+    Do not invoke context synchronization. Stop.
+    
+    `incomplete` -> Present:
+    
+    - Work completed.
+    - Verification evidence.
+    - Remaining work.
+    - The reason the task is incomplete.
+    
+    Do not invoke context synchronization. Do not select another task. Stop.
+    
+    `complete` -> continue to the next step.
+    
+    ### 3. Synchronize context
+    
+    Invoke `sce-task-context-sync` with the complete `complete` result returned by `sce-task-execution`.
+    
+    Pass that result verbatim. It is the authoritative handoff, and `sce-task-context-sync` owns reading the plan, task, changed files, verification evidence, and reported context impact out of it.
+    
+    Do not restate, summarize, or reconstruct any part of the execution result.
+    
+    Branch on the synchronization result.
+    
+    `blocked` -> The task itself succeeded and is already marked complete in the plan. Present:
+    
+    - That task {completed-task-id} was implemented, verified, and recorded in the plan.
+    - The context contradiction or synchronization failure.
+    - Any context edits the report says were preserved.
+    - The action required to resolve the problem.
+    - The retry condition stated by the report.
+    
+    State that durable context is now out of date, and that synchronization must be resolved before continuing the plan. Nothing records the skipped synchronization, so it is lost once this session ends.
+    
+    Do not select another task. Stop.
+    
+    `synced` | `no_context_change` -> Print out the report `sce-task-context-sync` returned. Continue to the next step.
+    
+    ### 4. Determine the continuation
+    
+    Use `plan.completed_tasks` and `plan.total_tasks` from the execution result to determine which continuation applies.
+    
+    Do not execute another task. Return exactly one continuation.
+    
+    If incomplete tasks remain, read the plan and name the first unchecked task in plan order. Do not evaluate its dependencies; `sce-plan-review` checks them when the emitted command runs and returns `blocked` if they are unmet.
+    
+    Return:
+    
+    ```
+    
+    -------------------------------------
+    
+    # Task {completed-task-id} completed.
+    
+    {completed-tasks} of {total-tasks} tasks complete.
+    
+    Next up:
+    
+    {next-task-id} — {next-task-title}
+    
+    `/next-task {plan-path} {next-task-id}`
+    ```
+    
+    If all tasks are completed return:
+    
+    ```
+    
+    -------------------------------------
+    
+    # Task {completed-task-id} completed.
+    
+    All tasks are complete.
+    
+    Run the final validation:
+    
+    `/validate {plan-path}`
+    ```
+    
+    Stop.
+    
+    ## Rules
+    
+    - Execute at most one plan task per invocation.
+    - Review at most one task.
+    - Do not duplicate the internal instructions of invoked skills.
+    - Do not ask for implementation confirmation outside "sce-task-execution".
+    - Do not run full-plan validation.
+    - Do not mark the plan complete.
+    - Do not execute the continuation returned at the end.
+    - Do not infer success when an invoked skill returns a non-success status.
+    - Preserve completed work and evidence when a later phase fails.
+    """
+
+local REVIEW_SKILL = """
+    ---
+    name: sce-plan-review
+    description: >
+      Internal SCE workflow skill that resolves one task from an existing plan and
+      determines whether it is ready for implementation. Returns ready, blocked, or
+      plan_complete with a structured payload. Use from /next-task. Do not implement
+      changes, request implementation approval, update the plan, synchronize
+      context, or run final validation.
+    ---
+    
+    # SCE Plan Review
+    
+    ## Purpose
+    
+    Resolve exactly one task from an SCE plan (located in `context/plans/`) and
+    determine whether it can enter the implementation phase without inventing
+    material requirements.
+    
+    This skill owns:
+    
+    - Resolving one plan.
+    - Selecting at most one task.
+    - Inspecting the context needed to judge readiness.
+    - Determining readiness.
+    - Returning one structured readiness result.
+    
+    Return a result matching:
+    
+    `references/readiness-contract.yaml`
+    
+    ## Input
+    
+    The invoking workflow provides:
+    
+    - A plan name or path.
+    - An optional task ID.
+    
+    ## Workflow
+    
+    ### 1. Resolve the plan
+    
+    Resolve the supplied plan name or path to exactly one existing plan.
+    
+    When no plan can be found, return `blocked`.
+    
+    When multiple plans match and none can be selected safely, return `blocked` with
+    the matching candidates.
+    
+    Read the selected plan before exploring the repository.
+    
+    ### 2. Resolve one task
+    
+    When a task ID is supplied, select that task.
+    
+    Otherwise, select the first incomplete task in plan order whose declared
+    dependencies are complete.
+    
+    Return `plan_complete` when no incomplete tasks remain.
+    
+    Return `blocked` when incomplete tasks remain but none can currently be
+    executed.
+    
+    Review at most one task per invocation.
+    
+    ### 3. Inspect relevant context
+    
+    Start with the task and the files it directly references.
+    
+    Inspect only what is needed to understand:
+    
+    - Existing behavior.
+    - Applicable repository conventions.
+    - Architectural boundaries.
+    - Relevant tests.
+    - Available verification commands.
+    - Decisions or specifications connected to the task.
+    
+    Load root context only when the task affects repository-wide behavior,
+    architecture, shared terminology, or cross-domain interfaces.
+    
+    Do not explore the entire repository by default.
+    
+    ### 4. Determine readiness
+    
+    A task is `ready` when:
+    
+    - Its goal is clear.
+    - Its scope is sufficiently bounded.
+    - Its dependencies are complete.
+    - Its done checks are observable.
+    - A credible verification method exists.
+    - No unresolved decision would materially change the implementation.
+    
+    Use repository conventions for ordinary local choices.
+    
+    Do not block on:
+    
+    - Naming inferable from surrounding code.
+    - Established formatting or style.
+    - Reversible local implementation details.
+    - Details that do not change observable behavior or scope.
+    
+    Record these choices under `assumptions`.
+    
+    Return `blocked` when a missing decision materially affects:
+    
+    - User-visible behavior.
+    - Public interfaces.
+    - Architecture or ownership boundaries.
+    - Data shape or persistence.
+    - Security or privacy.
+    - External dependencies.
+    - Destructive or difficult-to-reverse behavior.
+    - The evidence needed to prove completion.
+    
+    ### 5. Return the result
+    
+    Return exactly one structured result:
+    
+    - `ready`
+    - `blocked`
+    - `plan_complete`
+    
+    Return only the structured result. Do not add explanatory prose before or after
+    it.
+    
+    ## Boundaries
+    
+    Do not:
+    
+    - Modify application code.
+    - Modify tests.
+    - Update the plan.
+    - Mark the task complete.
+    - Request implementation confirmation.
+    - Invoke task execution.
+    - Synchronize context.
+    - Run final validation.
+    - Review more than one task.
+    
+    ## Completion
+    
+    The skill is complete after:
+    
+    - One plan was resolved.
+    - At most one task was resolved.
+    - One valid readiness result matching `references/readiness-contract.yaml` was
+      returned.
+    """
+
+local READINESS_CONTRACT = """
+    version: 1
+    name: sce-plan-review-result
+    
+    description: >
+      Output contract for sce-plan-review. The skill returns exactly one YAML
+      document representing ready, blocked, or plan_complete.
+    
+    output_rules:
+      - Return exactly one result variant.
+      - The top-level status must be ready, blocked, or plan_complete.
+      - Return YAML only, without a Markdown code fence or explanatory prose.
+      - Include only fields belonging to the selected variant.
+      - Omit optional fields that do not apply rather than sending them empty.
+      - Do not return empty strings or null placeholders. An empty list is a valid
+        value for a required list field.
+      - Report plan.completed_tasks and plan.total_tasks as they stand when the
+        result is returned.
+      - Report plan.name as the plan file's base name without its extension. It is
+        required by the ready variant, which renders the implementation gate.
+      - Do not request implementation confirmation.
+      - Do not include implementation results.
+      - Do not include context synchronization results.
+      - Do not include final validation results.
+    
+    variants:
+    
+      ready:
+        meaning: >
+          One task has been selected and contains enough information to enter
+          the implementation-confirmation phase.
+    
+        required_fields:
+          - status
+          - plan
+          - task
+          - relevant_files
+          - relevant_context
+          - assumptions
+    
+        shape:
+          status: ready
+    
+          plan:
+            path: string
+            name: string
+            completed_tasks: integer
+            total_tasks: integer
+    
+          task:
+            id: string
+            title: string
+            goal: string
+    
+            in_scope:
+              - string
+    
+            out_of_scope:
+              - string
+    
+            done_checks:
+              - string
+    
+            dependencies:
+              - id: string
+                status: complete
+    
+            verification:
+              - string
+    
+          relevant_files:
+            - string
+    
+          relevant_context:
+            - string
+    
+          assumptions:
+            - string
+    
+        example:
+          status: ready
+    
+          plan:
+            path: context/plans/authentication.md
+            name: authentication
+            completed_tasks: 2
+            total_tasks: 5
+    
+          task:
+            id: T03
+            title: Add login endpoint
+    
+            goal: >
+              Add an endpoint that authenticates a user and returns the existing
+              token response type.
+    
+            in_scope:
+              - Add the login request handler.
+              - Reuse the existing credential verifier.
+              - Add tests for valid and invalid credentials.
+    
+            out_of_scope:
+              - Refresh-token support.
+              - Password reset.
+              - Changes to user registration.
+    
+            done_checks:
+              - Valid credentials return the existing token response type.
+              - Invalid credentials return the standard authentication error.
+              - Targeted authentication tests pass.
+    
+            dependencies:
+              - id: T02
+                status: complete
+    
+            verification:
+              - npm test -- tests/auth/login.test.ts
+    
+          relevant_files:
+            - src/auth/credentials.ts
+            - src/auth/token.ts
+            - tests/auth/login.test.ts
+    
+          relevant_context:
+            - context/authentication/overview.md
+    
+          assumptions:
+            - Use the error-response convention established by existing authentication handlers.
+    
+      blocked:
+        meaning: >
+          A plan could not be resolved, or a task cannot safely enter implementation
+          because a material decision, dependency, scope boundary, or completion
+          condition is unresolved.
+    
+        required_fields:
+          - status
+          - issues
+    
+        optional_fields:
+          - plan
+          - task
+          - candidates
+          - executable_tasks_remaining
+    
+        field_rules:
+          - Include plan whenever exactly one plan was resolved.
+          - Include candidates only when plan resolution was ambiguous or failed.
+          - Include task only when one task was selected before blocking.
+    
+        shape:
+          status: blocked
+    
+          plan:
+            path: string
+            completed_tasks: integer
+            total_tasks: integer
+    
+          candidates:
+            - string
+    
+          task:
+            id: string
+            title: string
+    
+          issues:
+            - id: string
+              category: missing_decision | ambiguity | missing_acceptance_criteria | dependency | scope
+              problem: string
+              impact: string
+              decision_required: string
+    
+          executable_tasks_remaining: boolean
+    
+        example:
+          status: blocked
+    
+          plan:
+            path: context/plans/authentication.md
+            completed_tasks: 2
+            total_tasks: 5
+    
+          task:
+            id: T03
+            title: Add login endpoint
+    
+          issues:
+            - id: B01
+              category: missing_decision
+    
+              problem: >
+                The plan does not specify whether authentication uses sessions
+                or tokens.
+    
+              impact: >
+                The decision changes persistence behavior, endpoint responses,
+                and the security model.
+    
+              decision_required: >
+                Choose session-based or token-based authentication.
+    
+          executable_tasks_remaining: true
+    
+        example_plan_unresolved:
+          status: blocked
+    
+          candidates:
+            - context/plans/authentication.md
+            - context/plans/authentication-refresh.md
+    
+          issues:
+            - id: B01
+              category: ambiguity
+    
+              problem: >
+                The supplied plan name matches more than one plan and none can be
+                selected safely.
+    
+              impact: >
+                Reviewing the wrong plan would select an unrelated task.
+    
+              decision_required: >
+                Name the exact plan path to review.
+    
+      plan_complete:
+        meaning: >
+          The selected plan contains no incomplete implementation tasks.
+    
+        required_fields:
+          - status
+          - plan
+    
+        shape:
+          status: plan_complete
+    
+          plan:
+            path: string
+            completed_tasks: integer
+            total_tasks: integer
+    
+        example:
+          status: plan_complete
+    
+          plan:
+            path: context/plans/authentication.md
+            completed_tasks: 5
+            total_tasks: 5
+    """
+
+local EXECUTION_SKILL = """
+    ---
+    name: sce-task-execution
+    description: >
+      Internal SCE workflow skill that always presents one reviewed task to the
+      user before editing, executes it only after approval, verifies the
+      task, records evidence in the plan, and returns one YAML result: declined,
+      blocked, incomplete, or complete. Accepts a ready result from
+      sce-plan-review. Do not select or execute another task,
+      synchronize durable context, run final plan validation, create commits, or
+      expand task scope.
+    ---
+    
+    # SCE Task Execution
+    
+    ## Purpose
+    
+    Execute exactly one reviewed SCE plan task (located in `context/plans/`).
+    
+    This skill owns:
+    
+    - Showing the implementation gate at the start of every invocation.
+    - Receiving the user's approval or rejection, or accepting approval
+      pre-supplied by the invoking workflow.
+    - Implementing one approved task.
+    - Running task-level verification.
+    - Updating that task and its evidence in the plan.
+    - Returning one terminal YAML result.
+    
+    Use the gate defined in:
+    
+    `references/implementation-gate.md`
+    
+    Return a final result matching:
+    
+    `references/execution-contract.yaml`
+    
+    ## Input
+    
+    The invoking workflow provides:
+    
+    - The complete `ready` result from `sce-plan-review`.
+    - An optional `approve` flag.
+    
+    The `approve` flag means the user pre-approved this task when invoking the
+    workflow. It suppresses the approval question and the wait. It never suppresses
+    the gate. Only the invoking workflow may set it, and only from an explicit
+    user-supplied approval token. Never infer it.
+    
+    The readiness result must identify:
+    
+    - One resolved plan.
+    - Exactly one incomplete task.
+    - The task goal and scope boundaries.
+    - Done checks.
+    - Verification expectations.
+    - Relevant files and context.
+    - Review assumptions.
+    
+    If required handoff information is absent or stale, still show the gate using
+    what is known, clearly identify the handoff problem, and do not edit files.
+    After the user responds, return `blocked`.
+    
+    ## Workflow
+    
+    ### 1. Validate the handoff without editing
+    
+    Confirm that:
+    
+    - The readiness status is `ready`.
+    - Exactly one task is present.
+    - The plan file exists.
+    - The selected task is still incomplete.
+    - The task has not materially changed since review.
+    - Declared dependencies remain complete.
+    
+    Do not reconstruct missing material requirements.
+    
+    ### 2. Always show the implementation gate
+    
+    At the start of the skill, before any file modification, present the task using
+    `references/implementation-gate.md`.
+    
+    The gate must be shown even when:
+    
+    - The task appears straightforward.
+    - The invoking workflow believes approval was already implied.
+    - The handoff is stale or incomplete.
+    - The user is likely to approve.
+    
+    When the `approve` flag is absent, end the gate with exactly one approval
+    question:
+    
+    `Continue with implementation now? (yes/no)`
+    
+    Stop and wait for the user's answer. Do not return YAML, and make no file
+    modifications, until the user has answered.
+    
+    When the `approve` flag is supplied, show the gate as a summary, omit the
+    approval question, do not wait, and continue at *Prepare the implementation*.
+    
+    ### 3. Handle the user's decision
+    
+    Skip this step when the `approve` flag was supplied.
+    
+    When the user rejects or cancels, do not modify files and return `declined`.
+    
+    When the user does not clearly approve, do not modify files. Ask the same
+    approval question once more only when the response is genuinely ambiguous.
+    Otherwise return `blocked`.
+    
+    When the user approves, continue with implementation.
+    
+    Treat constraints supplied with approval as part of the approved task boundary.
+    If those constraints materially contradict the reviewed task, return `blocked`
+    before editing.
+    
+    ### 4. Prepare the implementation
+    
+    Before editing:
+    
+    - Read the relevant files supplied by plan review.
+    - Inspect nearby code and tests when needed.
+    - Identify the smallest coherent change satisfying the task.
+    - Follow surrounding naming, structure, error handling, and test style.
+    - Preserve unrelated behavior.
+    
+    Do not create a second plan.
+    
+    Do not broaden the reviewed task.
+    
+    ### 5. Implement one task
+    
+    Make the minimum coherent changes required to satisfy the task goal and done
+    checks.
+    
+    Use judgment for ordinary, reversible local implementation choices.
+    
+    Stop when implementation requires:
+    
+    - Material scope expansion.
+    - A new external dependency not authorized by the task.
+    - A public-interface decision not established by the plan.
+    - A destructive or difficult-to-reverse operation.
+    - An unresolved security, privacy, or data decision.
+    - Contradicting the reviewed task or repository architecture.
+    
+    When stopped, preserve completed in-scope work unless retaining it would leave
+    the repository unsafe or invalid.
+    
+    ### 6. Verify the task
+    
+    Run the narrowest authoritative checks that demonstrate the done checks.
+    
+    Start with verification supplied by the readiness result. Add nearby or directly
+    relevant checks only when needed.
+    
+    Verification may include:
+    
+    - Targeted tests.
+    - Type checking for affected code.
+    - Linting affected files.
+    - Formatting checks.
+    - A focused build or compile step.
+    - Direct behavioral inspection when no automated check exists.
+    
+    Do not run final plan validation unless the task itself explicitly requires it.
+    
+    When a check fails:
+    
+    - Determine whether the task caused the failure.
+    - Fix it when the correction remains in scope.
+    - Rerun the relevant check.
+    - Return `incomplete` when a done check remains unsatisfied, or `blocked` when
+      completing it requires an unapproved decision or scope expansion.
+    
+    Never report a check as passed unless it ran successfully.
+    
+    ### 7. Update the plan
+    
+    Only after successful implementation and task-level verification:
+    
+    - Mark only the selected task complete.
+    - Record concise implementation evidence.
+    - Record verification commands and outcomes.
+    - Record material deviations or approved assumptions.
+    - Preserve the plan's existing structure and terminology.
+    
+    Do not mark the task complete when returning `declined`, `blocked`, or
+    `incomplete`.
+    
+    ### 8. Determine the terminal status
+    
+    Return `complete` when the task was implemented, verified, and marked complete
+    in the plan with evidence.
+    
+    Return `incomplete` when in-scope work was completed but one or more done checks
+    remain unsatisfied.
+    
+    Return `declined` when the user rejected implementation.
+    
+    Return `blocked` for every other non-successful outcome, including:
+    
+    - Missing approval.
+    - Stale or invalid handoff.
+    - Material blocker.
+    - A verification failure that cannot be resolved in scope.
+    
+    Use a blocker category defined by `references/execution-contract.yaml`.
+    
+    Do not determine whether the plan is complete. The invoking `/next-task`
+    workflow owns that decision after context synchronization.
+    
+    ### 9. Return YAML
+    
+    After the skill reaches a terminal state, return exactly one YAML document
+    matching `references/execution-contract.yaml`.
+    
+    Return only the YAML document. Do not add explanatory prose before or after it.
+    
+    ## Boundaries
+    
+    Do not:
+    
+    - Edit before approval, whether explicit or pre-supplied.
+    - Execute more than one task.
+    - Select or execute the next task.
+    - Skip the implementation gate.
+    - Ask for multiple approval gates for the same unchanged task.
+    - Expand scope without authorization.
+    - Synchronize durable context.
+    - Run final plan validation.
+    - Determine whether the plan is complete.
+    - Create a Git commit.
+    - Push changes.
+    - Modify unrelated files.
+    - Claim verification that was not performed.
+    
+    ## Completion
+    
+    The skill is complete after:
+    
+    - The implementation gate was shown.
+    - The user approved or rejected the task, or approval was pre-supplied.
+    - At most one task was executed.
+    - One valid terminal YAML result matching `references/execution-contract.yaml`
+      was returned.
+    """
+
+local EXECUTION_CONTRACT = """
+    version: 1
+    name: sce-task-execution-result
+    
+    description: >
+      Output contract for sce-task-execution. The skill returns exactly one YAML
+      document representing declined, blocked, incomplete, or complete.
+    
+    output_rules:
+      - Return exactly one result variant.
+      - Return YAML only, without a Markdown code fence or explanatory prose.
+      - Include only fields relevant to the selected status.
+      - Omit optional fields that do not apply rather than sending them empty.
+      - Do not return empty strings or null placeholders. An empty list is a valid
+        value for a required list field.
+      - Report plan.completed_tasks and plan.total_tasks as they stand when the
+        result is returned.
+      - Do not serialize the implementation gate. The gate is user-facing prose
+        defined by implementation-gate.md, and no result is returned until the
+        user has answered it.
+      - Do not select or describe the next task.
+      - Do not include context synchronization results.
+      - Do not include final plan validation results.
+    
+    variants:
+    
+      declined:
+        meaning: >
+          The user declined implementation and no implementation changes were made.
+    
+        required_fields:
+          - status
+          - plan
+          - task
+    
+        shape:
+          status: declined
+    
+          plan:
+            path: string
+            completed_tasks: integer
+            total_tasks: integer
+    
+          task:
+            id: string
+            title: string
+    
+        example:
+          status: declined
+    
+          plan:
+            path: context/plans/authentication.md
+            completed_tasks: 2
+            total_tasks: 5
+    
+          task:
+            id: T03
+            title: Add login endpoint
+    
+      blocked:
+        meaning: >
+          The task cannot continue without a material decision or authorization.
+    
+        required_fields:
+          - status
+          - plan
+          - task
+          - blocker
+          - work_preserved
+    
+        optional_fields:
+          - changes
+          - verification
+    
+        shape:
+          status: blocked
+    
+          plan:
+            path: string
+            completed_tasks: integer
+            total_tasks: integer
+    
+          task:
+            id: string
+            title: string
+    
+          blocker:
+            category: stale_review | scope | dependency | architecture | security | data | destructive_operation | other
+            problem: string
+            impact: string
+            decision_required: string
+    
+          changes:
+            files_changed:
+              - string
+    
+          verification:
+            - command: string
+              outcome: passed | failed | not_run
+              summary: string
+    
+          work_preserved: boolean
+    
+        example:
+          status: blocked
+    
+          plan:
+            path: context/plans/authentication.md
+            completed_tasks: 2
+            total_tasks: 5
+    
+          task:
+            id: T03
+            title: Add login endpoint
+    
+          blocker:
+            category: dependency
+            problem: The implementation requires adding a new token-signing package.
+            impact: The task does not authorize a new production dependency.
+            decision_required: Approve the dependency or choose an existing repository implementation.
+    
+          work_preserved: true
+    
+      incomplete:
+        meaning: >
+          In-scope implementation work was completed, but one or more task done
+          checks remain unsatisfied.
+    
+        required_fields:
+          - status
+          - plan
+          - task
+          - changes
+          - verification
+          - remaining_work
+    
+        optional_fields:
+          - satisfied_done_checks
+          - unsatisfied_done_checks
+          - reason
+    
+        shape:
+          status: incomplete
+    
+          plan:
+            path: string
+            completed_tasks: integer
+            total_tasks: integer
+    
+          task:
+            id: string
+            title: string
+    
+          changes:
+            files_changed:
+              - string
+            summary:
+              - string
+    
+          verification:
+            - command: string
+              outcome: passed | failed | not_run
+              summary: string
+    
+          satisfied_done_checks:
+            - string
+    
+          unsatisfied_done_checks:
+            - string
+    
+          remaining_work:
+            - string
+    
+          reason: string
+    
+        example:
+          status: incomplete
+    
+          plan:
+            path: context/plans/authentication.md
+            completed_tasks: 2
+            total_tasks: 5
+    
+          task:
+            id: T03
+            title: Add login endpoint
+    
+          changes:
+            files_changed:
+              - src/auth/login.ts
+              - tests/auth/login.test.ts
+            summary:
+              - Added the login handler.
+              - Added valid-credential coverage.
+    
+          verification:
+            - command: npm test -- tests/auth/login.test.ts
+              outcome: failed
+              summary: Invalid-credential response does not match the expected error format.
+    
+          satisfied_done_checks:
+            - Valid credentials return a token.
+    
+          unsatisfied_done_checks:
+            - Invalid credentials return the standard authentication error.
+    
+          remaining_work:
+            - Correct invalid-credential error mapping.
+            - Rerun targeted authentication tests.
+    
+          reason: Completing the correction requires clarification of the expected error mapping.
+    
+      complete:
+        meaning: >
+          The selected task was implemented, verified, and marked complete in
+          the plan with evidence.
+    
+        required_fields:
+          - status
+          - plan
+          - task
+          - changes
+          - verification
+          - done_checks
+          - plan_update
+          - context_impact
+    
+        shape:
+          status: complete
+    
+          plan:
+            path: string
+            completed_tasks: integer
+            total_tasks: integer
+    
+          task:
+            id: string
+            title: string
+    
+          changes:
+            files_changed:
+              - string
+            summary:
+              - string
+    
+          verification:
+            - command: string
+              outcome: passed
+              summary: string
+    
+          done_checks:
+            - check: string
+              evidence: string
+    
+          plan_update:
+            task_marked_complete: true
+            evidence_recorded: true
+    
+          context_impact:
+            classification: none | local | domain | root
+            affected_areas:
+              - string
+            reason: string
+    
+        example:
+          status: complete
+    
+          plan:
+            path: context/plans/authentication.md
+            completed_tasks: 3
+            total_tasks: 5
+    
+          task:
+            id: T03
+            title: Add login endpoint
+    
+          changes:
+            files_changed:
+              - src/auth/login.ts
+              - tests/auth/login.test.ts
+            summary:
+              - Added the login request handler.
+              - Reused the existing credential verifier and token response.
+              - Added focused success and failure tests.
+    
+          verification:
+            - command: npm test -- tests/auth/login.test.ts
+              outcome: passed
+              summary: 8 authentication tests passed.
+    
+          done_checks:
+            - check: Valid credentials return a token.
+              evidence: Covered by the successful login test.
+            - check: Invalid credentials return the standard authentication error.
+              evidence: Covered by the invalid-credential test.
+            - check: Targeted authentication tests pass.
+              evidence: npm test -- tests/auth/login.test.ts exited successfully.
+    
+          plan_update:
+            task_marked_complete: true
+            evidence_recorded: true
+    
+          context_impact:
+            classification: domain
+            affected_areas:
+              - authentication
+            reason: The task introduced durable login behavior that should be reflected in authentication context.
+    """
+
+local IMPLEMENTATION_GATE = """
+    # Implementation gate
+    
+    Always show this gate at the start of `sce-task-execution`, before editing any
+    file.
+    
+    The gate is user-facing prose. It is never serialized into a YAML result. This
+    file is the only authority for the gate's content and order.
+    
+    ## Format
+    
+    # `{task.id} - {task.title} - {plan.name}`
+    
+    ## Goal
+    
+    {task.goal}
+    
+    ## In scope
+    
+    - {task.in_scope}
+    
+    ## Out of scope
+    
+    - {task.out_of_scope}
+    
+    ## Done when
+    
+    - {task.done_checks}
+    
+    ## Expected changes
+    
+    - List confirmed files or areas expected to change.
+    - Label uncertain entries as likely rather than confirmed.
+    
+    ## Approach
+    
+    Describe the smallest coherent implementation approach in 2–5 steps.
+    
+    ## Assumptions
+    
+    - Include material assumptions returned by plan review.
+    - Omit this section when there are no assumptions.
+    
+    ## Risks or trade-offs
+    
+    - Include only risks relevant to approving this task.
+    - Omit this section when there are no meaningful risks.
+    
+    ## Verification
+    
+    - {task.verification}
+    
+    When the `approve` flag is absent, end with exactly:
+    
+    `Continue with implementation now? (yes/no)`
+    
+    When the `approve` flag is supplied, omit the question and end after
+    **Verification**.
+    
+    ## Rules
+    
+    - Show the gate exactly once for an unchanged task.
+    - Do not modify files before approval.
+    - Do not add requirements absent from the reviewed task.
+    - Do not present multiple competing approaches unless a material decision is
+      required.
+    - Do not emit YAML while waiting for the user's answer. Stop after the gate and
+      wait.
+    - If the handoff is stale or incomplete, show the known task information and
+      identify the problem under **Risks or trade-offs**.
+    """
+
+workflow = new model.WorkflowPackage {
+  slug = "next-task"
+  command = new model.WorkflowCommand {
+    slug = "next-task"
+    title = "SCE Next Task"
+    document = makeDocument.apply("next-task.md", COMMAND)
+  }
+  skills = new Mapping {
+    [planReviewPackage.slug] = planReviewPackage
+    [taskExecutionPackage.slug] = taskExecutionPackage
+    ["sce-task-context-sync"] = contextSync.skills["sce-task-context-sync"]
+  }
+}

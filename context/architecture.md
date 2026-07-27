@@ -10,32 +10,24 @@ The repository keeps three parallel config target trees:
 
 For authored config content, generation is standardized around one canonical Pkl source model with target-specific rendering applied later in the pipeline.
 
-Current scaffold location for canonical shared content primitives:
+Current location for canonical workflow content primitives:
 
-- `config/pkl/base/shared-content.pkl` (manual profile aggregation surface)
-- `config/pkl/base/shared-content-common.pkl` (shared primitives)
-- `config/pkl/base/shared-content-plan.pkl` (plan-focused content)
-- `config/pkl/base/shared-content-code.pkl` (code-focused content)
-- `config/pkl/base/shared-content-commit.pkl` (commit-focused content)
-- `config/pkl/base/shared-content-automated.pkl` (automated profile aggregation surface)
-- `config/pkl/base/shared-content-automated-common.pkl`
-- `config/pkl/base/shared-content-automated-plan.pkl`
-- `config/pkl/base/shared-content-automated-code.pkl`
-- `config/pkl/base/shared-content-automated-commit.pkl`
+- `config/pkl/base/workflow-content.pkl` (workflow command and self-contained skill-package document model, including deterministic package-relative nested references)
+- `config/pkl/base/workflow-change-to-plan.pkl` (canonical `/change-to-plan` package with the command plus self-contained `sce-context-load` and `sce-plan-authoring` skill/reference documents mirrored from the project-root `.pi/` baseline)
+- `config/pkl/base/workflow-next-task.pkl` (canonical `/next-task` package with self-contained `sce-plan-review` and `sce-task-execution` documents plus the task instance from the shared context-sync skeleton)
+- `config/pkl/base/workflow-validate.pkl` (canonical `/validate` package with the self-contained `sce-validation` documents plus the plan instance from the shared context-sync skeleton)
+- `config/pkl/base/workflow-context-sync.pkl` (one role-parameterized shared-fragment skeleton that emits exact, self-contained task and plan context-sync packages)
 - `config/pkl/base/opencode.pkl`
 - `config/pkl/base/sce-config-schema.pkl`
 
 Current target renderer helper modules:
 
 - `config/pkl/renderers/opencode-content.pkl`
-- `config/pkl/renderers/opencode-automated-content.pkl`
 - `config/pkl/renderers/claude-content.pkl`
 - `config/pkl/renderers/pi-content.pkl`
 - `config/pkl/renderers/common.pkl`
 - `config/pkl/renderers/opencode-metadata.pkl`
-- `config/pkl/renderers/opencode-automated-metadata.pkl`
 - `config/pkl/renderers/claude-metadata.pkl`
-- `config/pkl/renderers/pi-metadata.pkl`
 - `config/pkl/renderers/metadata-coverage-check.pkl`
 - `config/pkl/generate.pkl` (single multi-file generation entrypoint)
 - `config/pkl/check-generated.sh` (dev-shell integration stale-output detection against committed generated files)
@@ -46,17 +38,17 @@ The scaffold provides stable canonical content-unit identifiers and reusable tar
 
 Renderer modules apply target-specific metadata/frontmatter rules while reusing canonical content bodies:
 
-- OpenCode renderer emits frontmatter with `agent`/`permission`/`compatibility: opencode` conventions; targeted SCE commands also emit machine-readable `entry-skill` and ordered `skills` metadata when the renderer explicitly defines that mapping.
-- Claude renderer emits frontmatter with `allowed-tools`/`model`/`compatibility: claude` conventions.
-- Pi renderer emits prompt-template frontmatter with `description`/`argument-hint` conventions: commands render to `config/.pi/prompts/{slug}.md`, SCE agents render as agent-role prompt templates at `config/.pi/prompts/agent-{slug}.md` (act-as-role preamble + `$ARGUMENTS` input + canonical agent body), and skills render to Agent Skills-format `config/.pi/skills/{slug}/SKILL.md`. Pi has no native sub-agent format and no settings/plugin manifest; runtime integration is provided by a project-local Pi extension emitted verbatim from `config/lib/pi-plugin/sce-pi-extension.ts` to `config/.pi/extensions/sce/index.ts` (auto-discovered by Pi, no registration manifest; see `context/sce/pi-extension-runtime.md`).
-- Shared renderer contracts (`RenderedTargetDocument`, command descriptions) live in `config/pkl/renderers/common.pkl`.
+- The manual OpenCode renderer consumes the three canonical workflow packages directly, extends their supported frontmatter with `agent`, `entry-skill`, ordered `skills`, and `compatibility: opencode` metadata, flattens nested package documents, and emits two thin routing agents with OpenCode permission frontmatter.
+- Claude renderer consumes the three canonical workflow packages directly, extends command and skill entrypoint frontmatter with `allowed-tools` and `compatibility: claude`, flattens nested package documents, and emits exactly three commands plus seven self-contained skill packages without generated agents. Claude settings and the hook helper remain separate retained outputs.
+- Pi renderer consumes the three canonical workflow packages directly because their command and skill documents already carry Pi-compatible frontmatter. It emits exactly three prompts to `config/.pi/prompts/{slug}.md` and seven self-contained Agent Skills packages under `config/.pi/skills/{slug}/`, including nested `references/`; it emits no Pi agent-role prompts. Pi has no settings/plugin manifest; runtime integration remains the project-local extension emitted verbatim from `config/lib/pi-plugin/sce-pi-extension.ts` to `config/.pi/extensions/sce/index.ts` (auto-discovered by Pi, no registration manifest; see `context/sce/pi-extension-runtime.md`).
+- Shared renderer document types and OpenCode plugin-registration helpers live in `config/pkl/renderers/common.pkl`.
 - The canonical OpenCode plugin-registration source for generated SCE plugins lives in `config/pkl/base/opencode.pkl`; `config/pkl/renderers/common.pkl` re-exports the shared plugin list and JSON-ready paths for OpenCode renderers, and the current generated registration scope is limited to SCE-managed plugins emitted by this repo (`sce-bash-policy` and `sce-agent-trace`).
-- Target-specific metadata tables, including skill frontmatter descriptions, are isolated in `config/pkl/renderers/opencode-metadata.pkl`, `config/pkl/renderers/opencode-automated-metadata.pkl`, `config/pkl/renderers/claude-metadata.pkl`, and `config/pkl/renderers/pi-metadata.pkl` (Pi agent descriptions, argument hints, skill references, and command argument hints; Pi skill/command descriptions reuse the shared tables in `common.pkl`).
-- Metadata key coverage is enforced by `config/pkl/renderers/metadata-coverage-check.pkl`, which resolves all required lookup keys for all targets (OpenCode manual/automated, Claude, Pi) and fails evaluation on missing entries.
-- Both renderers expose per-class rendered document objects (`agents`, `commands`, `skills`) consumed by `config/pkl/generate.pkl`.
-- `config/pkl/generate.pkl` emits deterministic `output.files` mappings for all authored generated targets: OpenCode/Claude agents, commands, skills, Claude project settings, the Claude hook helper script at `config/.claude/hooks/run-sce-or-show-install-guidance.sh`, shared bash-policy preset assets under `lib/`, the OpenCode plugin entrypoints under `plugins/` (currently `sce-bash-policy.ts` and `sce-agent-trace.ts`), generated OpenCode `package.json` and `opencode.json` manifests for manual and automated profiles, the Pi target tree (`config/.pi/prompts/{slug}.md` command prompts, `config/.pi/prompts/agent-{slug}.md` agent-role prompts, `config/.pi/skills/{slug}/SKILL.md`, and the Pi extension at `config/.pi/extensions/sce/index.ts` emitted verbatim from `config/lib/pi-plugin/sce-pi-extension.ts`), and the generated `sce/config.json` schema artifact at `config/schema/sce-config.schema.json`.
+- Target-specific metadata tables remain isolated in their renderer modules. OpenCode metadata owns only thin-agent presentation, permissions, and compatibility; Claude metadata owns command tool and compatibility fields. Pi workflow documents own their supported frontmatter directly.
+- `config/pkl/renderers/metadata-coverage-check.pkl` asserts the exact current inventory—three commands, all 18 documents in seven self-contained skill packages, and two OpenCode agents—then forces every rendered document and target metadata lookup to evaluate across OpenCode, Claude, and Pi.
+- OpenCode, Claude, and Pi renderers expose canonical command documents plus flattened `{skill slug}/{package-relative path}` skill documents consumed by `config/pkl/generate.pkl`.
+- `config/pkl/generate.pkl` emits deterministic `output.files` mappings for all authored generated targets: OpenCode's three workflow commands, seven complete skill packages with nested references, and two thin routing agents; Claude's three workflow commands and seven complete skill packages with nested references but no agents; Claude project settings and hook helper; shared bash-policy preset assets; OpenCode plugin entrypoints (`sce-bash-policy.ts` and `sce-agent-trace.ts`); generated OpenCode `opencode.json`; the Pi target tree (three workflow prompts, seven complete skill packages with nested references, and the extension emitted verbatim from `config/lib/pi-plugin/sce-pi-extension.ts`); and the generated `sce/config.json` schema artifact. The removed `config/automated/.opencode` profile has no generator ownership or output mappings.
 - Generated-file warning markers are not injected by the generator: Markdown outputs render deterministic frontmatter + body, and shared library outputs are emitted without a leading generated warning header.
-- `config/pkl/check-generated.sh` is intentionally dev-shell scoped (`nix develop -c ...`): it requires `IN_NIX_SHELL`, runs `pkl eval -m <tmp> config/pkl/generate.pkl`, and fails when generated-owned paths drift.
+- `config/pkl/check-generated.sh` is intentionally dev-shell scoped (`nix develop -c ...`): it requires `IN_NIX_SHELL`, evaluates exact metadata coverage, regenerates into a temporary tree, and compares complete generated directories plus scalar/schema outputs. Complete-directory comparison covers nested references and extra stale files; explicit forbidden-path checks reject `config/automated/.opencode` and `config/.claude/agents`. The root-flake `pkl-parity` derivation mirrors this inventory from a focused source set containing all retained OpenCode, Claude, and Pi generated trees.
 
 Generated authored classes:
 
@@ -75,7 +67,7 @@ Explicitly excluded from generation ownership:
 - runtime dependency artifacts (for example `node_modules`)
 - lockfiles and install outputs
 
-See `context/decisions/2026-02-28-pkl-generation-architecture.md` for the full matrix and ownership table used by the plan task implementation.
+See `context/decisions/2026-07-27-workflow-oriented-pkl-generation.md` for the current target matrix and ownership rationale. The original canonical-source decision in `context/decisions/2026-02-28-pkl-generation-architecture.md` remains historical background; its old paired-output inventory is superseded.
 
 ## Placeholder SCE CLI boundary
 
@@ -193,7 +185,8 @@ Shared Context Plan and Shared Context Code remain separate architectural roles.
 - Shared Context Code owns exactly one approved task execution, validation, and mandatory `context/` synchronization.
 - `/change-to-plan` and `/next-task` remain separate command entrypoints aligned to those roles.
 - Reuse is handled through shared canonical guidance blocks and skill-owned phase contracts, not by collapsing both roles into one agent.
-- Shared baseline doctrine for both agents is centralized in reusable constants in `config/pkl/base/shared-content-common.pkl` and interpolated into each role body at generation time; the aggregation surfaces `config/pkl/base/shared-content.pkl` (manual) and `config/pkl/base/shared-content-automated.pkl` (automated) import from grouped `plan`, `code`, and `commit` modules for downstream renderers.
-- `/next-task` is a thin orchestration wrapper: it owns gate sequencing, while phase-detail contracts stay canonical in `sce-plan-review`, `sce-task-execution`, and `sce-context-sync`.
-- `/change-to-plan` is a thin orchestration wrapper: it delegates clarification and plan-shape ownership to `sce-plan-authoring` (including one-task/one-atomic-commit task slicing) while retaining wrapper-level plan creation confirmation and `/next-task` handoff obligations.
-- `/commit` is a thin orchestration wrapper: manual generated commands retain staged-changes confirmation and proposal-only behavior, while the automated OpenCode command skips the staging-confirmation gate, generates exactly one commit message through `sce-atomic-commit`, and runs `git commit` for the staged diff; commit grammar and plan-aware body rules stay canonical in `sce-atomic-commit`.
+- OpenCode agents are thin routing surfaces rather than behavior owners: Plan routes to `/change-to-plan`; Code routes to `/next-task` and `/validate`. Claude and Pi have no generated agents. Workflow commands and self-contained skill packages are the sole Markdown behavior owners.
+- `/change-to-plan` sequences `sce-context-load` and `sce-plan-authoring`, preserving context loading, clarification, plan output, and `/next-task` handoff ownership.
+- `/next-task` owns one-task sequencing across `sce-plan-review`, `sce-task-execution`, and `sce-task-context-sync`, including its implementation gate and continuation contract.
+- `/validate` owns final sequencing across `sce-validation` and validated-only `sce-plan-context-sync`.
+- OpenCode, Claude, and Pi expose no generated `/commit` or `/handover` command, and the automated OpenCode profile is removed.
