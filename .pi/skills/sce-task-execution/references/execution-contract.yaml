@@ -1,0 +1,345 @@
+version: 1
+name: sce-task-execution-result
+
+description: >
+  Output contract for sce-task-execution. The skill returns exactly one YAML
+  document representing awaiting_confirmation, declined, blocked, incomplete,
+  or complete.
+
+output_rules:
+  - Return exactly one result variant.
+  - Return YAML only, without a Markdown code fence or explanatory prose.
+  - Include only fields relevant to the selected status.
+  - Omit optional fields that do not apply rather than sending them empty.
+  - Do not return empty strings or null placeholders. An empty list is a valid
+    value for a required list field.
+  - Report plan.completed_tasks and plan.total_tasks as they stand when the
+    result is returned.
+  - Do not serialize the implementation gate. The gate is user-facing prose
+    defined by implementation-gate.md.
+  - Do not select or describe the next task.
+  - Do not include context synchronization results.
+  - Do not include final plan validation results.
+
+variants:
+
+  awaiting_confirmation:
+    meaning: >
+      The reviewed task has been presented as prose and no implementation
+      changes have been made.
+
+    required_fields:
+      - status
+      - plan
+      - task
+      - confirmation
+
+    shape:
+      status: awaiting_confirmation
+
+      plan:
+        path: string
+        completed_tasks: integer
+        total_tasks: integer
+
+      task:
+        id: string
+        title: string
+
+      confirmation: string
+
+    example:
+      status: awaiting_confirmation
+
+      plan:
+        path: context/plans/authentication.md
+        completed_tasks: 2
+        total_tasks: 5
+
+      task:
+        id: T03
+        title: Add login endpoint
+
+      confirmation: Continue with implementation now? (yes/no)
+
+  declined:
+    meaning: >
+      The user declined implementation and no implementation changes were made.
+
+    required_fields:
+      - status
+      - plan
+      - task
+
+    shape:
+      status: declined
+
+      plan:
+        path: string
+        completed_tasks: integer
+        total_tasks: integer
+
+      task:
+        id: string
+        title: string
+
+    example:
+      status: declined
+
+      plan:
+        path: context/plans/authentication.md
+        completed_tasks: 2
+        total_tasks: 5
+
+      task:
+        id: T03
+        title: Add login endpoint
+
+  blocked:
+    meaning: >
+      The task cannot continue without a material decision or authorization.
+
+    required_fields:
+      - status
+      - plan
+      - task
+      - blocker
+      - work_preserved
+
+    optional_fields:
+      - changes
+      - verification
+
+    shape:
+      status: blocked
+
+      plan:
+        path: string
+        completed_tasks: integer
+        total_tasks: integer
+
+      task:
+        id: string
+        title: string
+
+      blocker:
+        category: stale_review | scope | dependency | architecture | security | data | destructive_operation | other
+        problem: string
+        impact: string
+        decision_required: string
+
+      changes:
+        files_changed:
+          - string
+
+      verification:
+        - command: string
+          outcome: passed | failed | not_run
+          summary: string
+
+      work_preserved: boolean
+
+    example:
+      status: blocked
+
+      plan:
+        path: context/plans/authentication.md
+        completed_tasks: 2
+        total_tasks: 5
+
+      task:
+        id: T03
+        title: Add login endpoint
+
+      blocker:
+        category: dependency
+        problem: The implementation requires adding a new token-signing package.
+        impact: The task does not authorize a new production dependency.
+        decision_required: Approve the dependency or choose an existing repository implementation.
+
+      work_preserved: true
+
+  incomplete:
+    meaning: >
+      In-scope implementation work was completed, but one or more task done
+      checks remain unsatisfied.
+
+    required_fields:
+      - status
+      - plan
+      - task
+      - changes
+      - verification
+      - remaining_work
+
+    optional_fields:
+      - satisfied_done_checks
+      - unsatisfied_done_checks
+      - reason
+
+    shape:
+      status: incomplete
+
+      plan:
+        path: string
+        completed_tasks: integer
+        total_tasks: integer
+
+      task:
+        id: string
+        title: string
+
+      changes:
+        files_changed:
+          - string
+        summary:
+          - string
+
+      verification:
+        - command: string
+          outcome: passed | failed | not_run
+          summary: string
+
+      satisfied_done_checks:
+        - string
+
+      unsatisfied_done_checks:
+        - string
+
+      remaining_work:
+        - string
+
+      reason: string
+
+    example:
+      status: incomplete
+
+      plan:
+        path: context/plans/authentication.md
+        completed_tasks: 2
+        total_tasks: 5
+
+      task:
+        id: T03
+        title: Add login endpoint
+
+      changes:
+        files_changed:
+          - src/auth/login.ts
+          - tests/auth/login.test.ts
+        summary:
+          - Added the login handler.
+          - Added valid-credential coverage.
+
+      verification:
+        - command: npm test -- tests/auth/login.test.ts
+          outcome: failed
+          summary: Invalid-credential response does not match the expected error format.
+
+      satisfied_done_checks:
+        - Valid credentials return a token.
+
+      unsatisfied_done_checks:
+        - Invalid credentials return the standard authentication error.
+
+      remaining_work:
+        - Correct invalid-credential error mapping.
+        - Rerun targeted authentication tests.
+
+      reason: Completing the correction requires clarification of the expected error mapping.
+
+  complete:
+    meaning: >
+      The selected task was implemented, verified, and marked complete in
+      the plan with evidence.
+
+    required_fields:
+      - status
+      - plan
+      - task
+      - changes
+      - verification
+      - done_checks
+      - plan_update
+      - context_impact
+
+    shape:
+      status: complete
+
+      plan:
+        path: string
+        completed_tasks: integer
+        total_tasks: integer
+
+      task:
+        id: string
+        title: string
+
+      changes:
+        files_changed:
+          - string
+        summary:
+          - string
+
+      verification:
+        - command: string
+          outcome: passed
+          summary: string
+
+      done_checks:
+        - check: string
+          evidence: string
+
+      plan_update:
+        task_marked_complete: true
+        evidence_recorded: true
+
+      context_impact:
+        classification: none | local | domain | root
+        affected_areas:
+          - string
+        reason: string
+
+    example:
+      status: complete
+
+      plan:
+        path: context/plans/authentication.md
+        completed_tasks: 3
+        total_tasks: 5
+
+      task:
+        id: T03
+        title: Add login endpoint
+
+      changes:
+        files_changed:
+          - src/auth/login.ts
+          - tests/auth/login.test.ts
+        summary:
+          - Added the login request handler.
+          - Reused the existing credential verifier and token response.
+          - Added focused success and failure tests.
+
+      verification:
+        - command: npm test -- tests/auth/login.test.ts
+          outcome: passed
+          summary: 8 authentication tests passed.
+
+      done_checks:
+        - check: Valid credentials return a token.
+          evidence: Covered by the successful login test.
+        - check: Invalid credentials return the standard authentication error.
+          evidence: Covered by the invalid-credential test.
+        - check: Targeted authentication tests pass.
+          evidence: npm test -- tests/auth/login.test.ts exited successfully.
+
+      plan_update:
+        task_marked_complete: true
+        evidence_recorded: true
+
+      context_impact:
+        classification: domain
+        affected_areas:
+          - authentication
+        reason: The task introduced durable login behavior that should be reflected in authentication context.

@@ -1,0 +1,242 @@
+version: 1
+name: sce-plan-review-result
+
+description: >
+  Output contract for sce-plan-review. The skill returns exactly one YAML
+  document representing ready, blocked, or plan_complete.
+
+output_rules:
+  - Return exactly one result variant.
+  - The top-level status must be ready, blocked, or plan_complete.
+  - Return YAML only, without a Markdown code fence or explanatory prose.
+  - Include only fields belonging to the selected variant.
+  - Omit optional fields that do not apply rather than sending them empty.
+  - Do not return empty strings or null placeholders. An empty list is a valid
+    value for a required list field.
+  - Report plan.completed_tasks and plan.total_tasks as they stand when the
+    result is returned.
+  - Do not request implementation confirmation.
+  - Do not include implementation results.
+  - Do not include context synchronization results.
+  - Do not include final validation results.
+
+variants:
+
+  ready:
+    meaning: >
+      One task has been selected and contains enough information to enter
+      the implementation-confirmation phase.
+
+    required_fields:
+      - status
+      - plan
+      - task
+      - relevant_files
+      - relevant_context
+      - assumptions
+
+    shape:
+      status: ready
+
+      plan:
+        path: string
+        completed_tasks: integer
+        total_tasks: integer
+
+      task:
+        id: string
+        title: string
+        goal: string
+
+        in_scope:
+          - string
+
+        out_of_scope:
+          - string
+
+        done_checks:
+          - string
+
+        dependencies:
+          - id: string
+            status: complete
+
+        verification:
+          - string
+
+      relevant_files:
+        - string
+
+      relevant_context:
+        - string
+
+      assumptions:
+        - string
+
+    example:
+      status: ready
+
+      plan:
+        path: context/plans/authentication.md
+        completed_tasks: 2
+        total_tasks: 5
+
+      task:
+        id: T03
+        title: Add login endpoint
+
+        goal: >
+          Add an endpoint that authenticates a user and returns the existing
+          token response type.
+
+        in_scope:
+          - Add the login request handler.
+          - Reuse the existing credential verifier.
+          - Add tests for valid and invalid credentials.
+
+        out_of_scope:
+          - Refresh-token support.
+          - Password reset.
+          - Changes to user registration.
+
+        done_checks:
+          - Valid credentials return the existing token response type.
+          - Invalid credentials return the standard authentication error.
+          - Targeted authentication tests pass.
+
+        dependencies:
+          - id: T02
+            status: complete
+
+        verification:
+          - npm test -- tests/auth/login.test.ts
+
+      relevant_files:
+        - src/auth/credentials.ts
+        - src/auth/token.ts
+        - tests/auth/login.test.ts
+
+      relevant_context:
+        - context/authentication/overview.md
+
+      assumptions:
+        - Use the error-response convention established by existing authentication handlers.
+
+  blocked:
+    meaning: >
+      A plan could not be resolved, or a task cannot safely enter implementation
+      because a material decision, dependency, scope boundary, or completion
+      condition is unresolved.
+
+    required_fields:
+      - status
+      - issues
+
+    optional_fields:
+      - plan
+      - task
+      - candidates
+      - executable_tasks_remaining
+
+    field_rules:
+      - Include plan whenever exactly one plan was resolved.
+      - Include candidates only when plan resolution was ambiguous or failed.
+      - Include task only when one task was selected before blocking.
+
+    shape:
+      status: blocked
+
+      plan:
+        path: string
+        completed_tasks: integer
+        total_tasks: integer
+
+      candidates:
+        - string
+
+      task:
+        id: string
+        title: string
+
+      issues:
+        - id: string
+          category: missing_decision | ambiguity | missing_acceptance_criteria | dependency | scope
+          problem: string
+          impact: string
+          decision_required: string
+
+      executable_tasks_remaining: boolean
+
+    example:
+      status: blocked
+
+      plan:
+        path: context/plans/authentication.md
+        completed_tasks: 2
+        total_tasks: 5
+
+      task:
+        id: T03
+        title: Add login endpoint
+
+      issues:
+        - id: B01
+          category: missing_decision
+
+          problem: >
+            The plan does not specify whether authentication uses sessions
+            or tokens.
+
+          impact: >
+            The decision changes persistence behavior, endpoint responses,
+            and the security model.
+
+          decision_required: >
+            Choose session-based or token-based authentication.
+
+      executable_tasks_remaining: true
+
+    example_plan_unresolved:
+      status: blocked
+
+      candidates:
+        - context/plans/authentication.md
+        - context/plans/authentication-refresh.md
+
+      issues:
+        - id: B01
+          category: ambiguity
+
+          problem: >
+            The supplied plan name matches more than one plan and none can be
+            selected safely.
+
+          impact: >
+            Reviewing the wrong plan would select an unrelated task.
+
+          decision_required: >
+            Name the exact plan path to review.
+
+  plan_complete:
+    meaning: >
+      The selected plan contains no incomplete implementation tasks.
+
+    required_fields:
+      - status
+      - plan
+
+    shape:
+      status: plan_complete
+
+      plan:
+        path: string
+        completed_tasks: integer
+        total_tasks: integer
+
+    example:
+      status: plan_complete
+
+      plan:
+        path: context/plans/authentication.md
+        completed_tasks: 5
+        total_tasks: 5

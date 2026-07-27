@@ -436,6 +436,7 @@
             jq
             pkl
             pkl-lsp
+            ripgrep
             typescript
             typescript-language-server
             vscode-json-languageserver
