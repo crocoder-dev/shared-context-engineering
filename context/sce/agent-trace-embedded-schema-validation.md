@@ -10,7 +10,7 @@ Current internal validation seam for Agent Trace JSON in the Rust CLI.
 
 ## Current behavior
 
-- The CLI embeds the schema at compile time via `include_str!` from the crate-local mirror at `assets/generated/config/schema/agent-trace.schema.json`, which is prepared during Nix builds (via `flake.nix postUnpack`) and publish-prep (via `scripts/prepare-cli-generated-assets.sh`). The canonical source remains at `config/schema/agent-trace.schema.json`. Validation does not read the schema from disk at runtime.
+- The canonical schema remains at `config/schema/agent-trace.schema.json`. For repository builds, `cli/build.rs` copies it to `OUT_DIR/static/schema/agent-trace.schema.json`, and the CLI embeds that staged file at compile time via `include_str!`. Validation does not read the schema from disk at runtime; channel-specific package fallback preparation remains a distribution concern.
 - `agent_trace_schema_validator()` compiles the embedded schema once and caches the `jsonschema::Validator` in a `OnceLock`.
 - `validate_agent_trace_value(&serde_json::Value)` validates already-parsed JSON values against the embedded schema.
 - `validate_agent_trace_json(&str)` parses a JSON string and then validates it against the embedded schema.

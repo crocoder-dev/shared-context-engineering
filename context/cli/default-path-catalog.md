@@ -7,7 +7,6 @@
 - per-user persisted paths
 - repo-relative CLI paths
 - install target paths
-- embedded asset paths
 - context-document path constants used by CLI-owned workflows
 
 ## Current path families
@@ -28,12 +27,12 @@
 - `.git/`, `.git/hooks/`, `.git/COMMIT_EDITMSG`
 - `context/`, `context/plans/`, `context/decisions/`, `context/handovers/`, `context/tmp/`
 
-### Embedded/install paths
+### Install paths
 
-- `assets/generated/config/`
-- `assets/hooks/`
 - OpenCode plugin/catalog targets under `.opencode/`
 - required git hook install targets under `.git/hooks/`
+
+Compile-time payload locations are build-script-owned `OUT_DIR` paths rather than default runtime paths and are intentionally absent from this catalog.
 
 ## Contract
 

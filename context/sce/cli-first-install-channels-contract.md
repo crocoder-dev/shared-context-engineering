@@ -38,7 +38,7 @@ No other install channels are in scope for the current implementation stage.
 
 - The Flatpak application ID is `dev.crocoder.sce`.
 - The Flatpak manifest model is a Flathub-style release-source manifest plus a Nix-generated local checkout-source manifest/override for local builds from the current checkout.
-- The Flatpak build must use the standard source-build pattern for Rust CLI applications, including the Freedesktop SDK Rust extension, offline Cargo dependency sources generated from `cli/Cargo.lock`, and build-time preparation of `cli/assets/generated/config/**` from checked-in `config/` inputs.
+- The Flatpak build uses the Freedesktop SDK Rust extension and offline Cargo dependency sources generated from `cli/Cargo.lock`. Because Pkl is unavailable in the sandbox, Nix-side helpers prepare a temporary checksummed fallback from canonical Pkl/static inputs and the manifest stages it into `cli/package-fallback` before the Cargo source build.
 - Runtime Git access uses a host `git` bridge: install `/app/bin/git` as a wrapper that delegates to `flatpak-spawn --host git`, with the required Flatpak permission for `org.freedesktop.Flatpak`.
 - Nix-provided Flatpak commands/checks are orchestration only: they may provide `flatpak-builder`, AppStream validation, Flatpak linting, wrapper scripts, and generated local manifests/overrides, but they must not bypass the Flatpak source build with a Nix-built `sce` binary.
 
