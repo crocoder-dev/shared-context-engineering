@@ -27,7 +27,7 @@ Task: `T05`
 
 - Keep one canonical shared baseline block for cross-agent principles (`human owns decisions`, `context as durable memory`, `code truth wins`, and `context/` authority rules).
 - Keep role-specific mission, hard boundaries, and procedures local to each agent and phase-owning skills.
-- Keep `/next-task` concise and orchestration-focused, delegating detailed contracts to `sce-plan-review`, `sce-task-execution`, and `sce-context-sync`.
+- Keep `/next-task` concise and orchestration-focused, delegating detailed contracts to `sce-plan-review`, `sce-task-execution`, and `sce-task-context-sync`.
 
 ## Consequences for follow-up tasks
 
