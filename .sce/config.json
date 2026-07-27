@@ -54,7 +54,7 @@
               "rg"
             ]
           },
-          "message": "Use `nix shell nixpkgs#ripgrep` before running `rg`."
+          "message": "Run `rg` through nix: `nix run nixpkgs#ripgrep -- <args>`."
         },
         {
           "id": "use-nix-for-jq",
@@ -63,7 +63,7 @@
               "jq"
             ]
           },
-          "message": "Use `nix shell nixpkgs#jq` before running `jq`."
+          "message": "Run `jq` through nix: `nix run nixpkgs#jq -- <args>`."
         },
         {
           "id": "use-nix-for-python3",
@@ -72,7 +72,7 @@
               "python3"
             ]
           },
-          "message": "Use `nix shell nixpkgs#python3` before running `python3`."
+          "message": "Run `python3` through nix: `nix run nixpkgs#python3 -- <args>`."
         },
         {
           "id": "use-nix-for-node",
@@ -81,7 +81,7 @@
               "node"
             ]
           },
-          "message": "Use `nix shell nixpkgs#nodejs` before running `node`."
+          "message": "Run `node` through nix: `nix run nixpkgs#nodejs -- <args>`."
         },
         {
           "id": "use-nix-for-bun",
@@ -90,7 +90,7 @@
               "bun"
             ]
           },
-          "message": "Use `nix shell nixpkgs#bun` before running `bun`."
+          "message": "Run `bun` through nix: `nix run nixpkgs#bun -- <args>`."
         },
         {
           "id": "use-nix-for-fd",
@@ -99,7 +99,7 @@
               "fd"
             ]
           },
-          "message": "Use `nix shell nixpkgs#fd` before running `fd`."
+          "message": "Run `fd` through nix: `nix run nixpkgs#fd -- <args>`."
         },
         {
           "id": "use-nix-for-shellcheck",
@@ -108,7 +108,7 @@
               "shellcheck"
             ]
           },
-          "message": "Use `nix shell nixpkgs#shellcheck` before running `shellcheck`."
+          "message": "Run `shellcheck` through nix: `nix run nixpkgs#shellcheck -- <args>`."
         },
         {
           "id": "use-nix-for-actionlint",
@@ -117,7 +117,7 @@
               "actionlint"
             ]
           },
-          "message": "Use `nix shell nixpkgs#actionlint` before running `actionlint`."
+          "message": "Run `actionlint` through nix: `nix run nixpkgs#actionlint -- <args>`."
         },
         {
           "id": "use-nix-for-yq",
@@ -126,7 +126,7 @@
               "yq"
             ]
           },
-          "message": "Use `nix shell nixpkgs#yq-go` before running `yq`."
+          "message": "Run `yq` through nix: `nix run nixpkgs#yq-go -- <args>`."
         },
         {
           "id": "use-nix-for-hyperfine",
@@ -135,10 +135,11 @@
               "hyperfine"
             ]
           },
-          "message": "Use `nix shell nixpkgs#hyperfine` before running `hyperfine`."
+          "message": "Run `hyperfine` through nix: `nix run nixpkgs#hyperfine -- <args>`."
         }
       ],
       "presets": []
     }
   }
 }
+
