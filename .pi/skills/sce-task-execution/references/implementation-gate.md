@@ -49,14 +49,17 @@ Describe the smallest coherent implementation approach in 2–5 steps.
 
 - {task.verification}
 
-End with exactly:
+When the `approve` flag is absent, end with exactly:
 
 `Continue with implementation now? (yes/no)`
+
+When the `approve` flag is supplied, omit the question and end after
+**Verification**.
 
 ## Rules
 
 - Show the gate exactly once for an unchanged task.
-- Do not modify files before explicit approval.
+- Do not modify files before approval.
 - Do not add requirements absent from the reviewed task.
 - Do not present multiple competing approaches unless a material decision is
   required.

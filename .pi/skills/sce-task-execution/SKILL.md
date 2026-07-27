@@ -2,7 +2,7 @@
 name: sce-task-execution
 description: >
   Internal SCE workflow skill that always presents one reviewed task to the
-  user before editing, executes it only after explicit approval, verifies the
+  user before editing, executes it only after approval, verifies the
   task, records evidence in the plan, and returns one YAML result:
   awaiting_confirmation, declined, blocked, incomplete, or complete. Accepts a
   ready result from sce-plan-review. Do not select or execute another task,
@@ -19,7 +19,8 @@ Execute exactly one reviewed SCE plan task (located in `context/plans/`).
 This skill owns:
 
 - Showing the implementation gate at the start of every invocation.
-- Receiving explicit user approval or rejection.
+- Receiving the user's approval or rejection, or accepting approval
+  pre-supplied by the invoking workflow.
 - Implementing one approved task.
 - Running task-level verification.
 - Updating that task and its evidence in the plan.
@@ -39,6 +40,11 @@ The invoking workflow provides:
 
 - The complete `ready` result from `sce-plan-review`.
 - An optional `approve` flag.
+
+The `approve` flag means the user pre-approved this task when invoking the
+workflow. It suppresses the approval question and the wait. It never suppresses
+the gate. Only the invoking workflow may set it, and only from an explicit
+user-supplied approval token. Never infer it.
 
 The readiness result must identify:
 
@@ -81,7 +87,8 @@ The gate must be shown even when:
 - The handoff is stale or incomplete.
 - The user is likely to approve.
 
-Ask exactly one approval question:
+When the `approve` flag is absent, end the gate with exactly one approval
+question:
 
 `Continue with implementation now? (yes/no)`
 
@@ -89,10 +96,12 @@ Do not return the terminal YAML while waiting for the answer. When control must
 return to the invoking workflow before the user answers, return
 `awaiting_confirmation` and make no file modifications.
 
-When the `approve` flag is supplied, skip the gate and the user decision, and
-continue at *Prepare the implementation*.
+When the `approve` flag is supplied, show the gate as a summary, omit the
+approval question, do not wait, and continue at *Prepare the implementation*.
 
 ### 3. Handle the user's decision
+
+Skip this step when the `approve` flag was supplied.
 
 When the user rejects or cancels, do not modify files and return `declined`.
 
@@ -213,7 +222,7 @@ Return only the YAML document. Do not add explanatory prose before or after it.
 
 Do not:
 
-- Edit before explicit approval.
+- Edit before approval, whether explicit or pre-supplied.
 - Execute more than one task.
 - Select or execute the next task.
 - Skip the implementation gate.
@@ -232,7 +241,7 @@ Do not:
 The skill is complete after:
 
 - The implementation gate was shown.
-- The user approved or rejected the task.
+- The user approved or rejected the task, or approval was pre-supplied.
 - At most one task was executed.
 - One valid terminal YAML result matching `references/execution-contract.yaml`
   was returned.

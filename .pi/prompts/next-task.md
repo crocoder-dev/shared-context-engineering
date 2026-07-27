@@ -1,6 +1,6 @@
 ---
 description: "Run `sce-plan-review` -> `sce-task-execution` -> `sce-task-context-sync` for one approved SCE task"
-argument-hint: "<plan-name> [T0X] [approved|skip|go|ok]"
+argument-hint: "<plan-name> [T0X] [approved]"
 ---
 
 SCE NEXT TASK `$ARGUMENTS`
@@ -13,7 +13,7 @@ Parse `$ARGUMENTS` into three positional parts before invoking any skill:
 
 - `plan-name-or-path` is required.
 - `task-id` is optional. It is present only when the token matches a task ID (`T01`, `T02`, ...).
-- `auto-approve` is optional. It is present only when the token is `approved`, `skip`, `go`, or `ok`.
+- `auto-approve` is optional. It is present only when the token is exactly `approved`.
 
 Resolve `auto-approve` even when `task-id` is absent.
 
@@ -58,7 +58,7 @@ Invoke `sce-task-execution` with the complete `ready` result from `sce-plan-revi
 
 Branch on `auto-approve`:
 
-`approved` | `skip` | `go` | `ok` -> Also pass the `approve` flag. `sce-task-execution` then skips its implementation gate.
+`approved` -> Also pass the `approve` flag. `sce-task-execution` then shows its implementation gate as a summary and proceeds without asking.
 
 else -> Do not pass the `approve` flag. `sce-task-execution` shows its implementation gate and waits for the user's decision.
 
