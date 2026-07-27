@@ -69,6 +69,7 @@ struct BuiltinBashPolicyRedundancyWarning {
 pub(crate) struct CustomBashPolicyEntry {
     pub(crate) id: String,
     pub(crate) argv_prefix: Vec<String>,
+    pub(crate) satisfied_by: Vec<Vec<String>>,
     pub(crate) message: String,
 }
 
@@ -79,15 +80,28 @@ impl CustomBashPolicyEntry {
             "match": {
                 "argv_prefix": self.argv_prefix,
             },
+            "satisfied_by": self.satisfied_by,
             "message": self.message,
         })
     }
 
     fn text_summary(&self) -> String {
+        let satisfied_by = if self.satisfied_by.is_empty() {
+            String::new()
+        } else {
+            let wrappers = self
+                .satisfied_by
+                .iter()
+                .map(|prefix| prefix.join(" "))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(" (satisfied by: {wrappers})")
+        };
         format!(
-            "{} => [{}] :: {}",
+            "{} => [{}]{} :: {}",
             self.id,
             self.argv_prefix.join(" "),
+            satisfied_by,
             self.message
         )
     }
@@ -301,12 +315,43 @@ fn parse_custom_bash_policy_entry(
     }
 
     let argv_prefix = parse_custom_bash_policy_match(&id, item.matcher.as_ref(), path)?;
+    let satisfied_by =
+        parse_custom_bash_policy_satisfied_by(&id, item.satisfied_by.as_ref(), path)?;
 
     Ok(CustomBashPolicyEntry {
         id,
         argv_prefix,
+        satisfied_by,
         message: message.to_string(),
     })
+}
+
+fn parse_custom_bash_policy_satisfied_by(
+    id: &str,
+    satisfied_by_values: Option<&Vec<Vec<String>>>,
+    path: &Path,
+) -> Result<Vec<Vec<String>>> {
+    let Some(satisfied_by_values) = satisfied_by_values else {
+        return Ok(Vec::new());
+    };
+
+    let mut satisfied_by = Vec::with_capacity(satisfied_by_values.len());
+    for wrapper_prefix in satisfied_by_values {
+        if wrapper_prefix.is_empty() {
+            bail!(
+                "Custom bash policy '{}' in '{}' cannot use an empty 'satisfied_by' prefix.",
+                id,
+                path.display()
+            );
+        }
+        satisfied_by.push(parse_custom_bash_policy_argv_prefix(
+            id,
+            wrapper_prefix,
+            path,
+        )?);
+    }
+
+    Ok(satisfied_by)
 }
 
 fn parse_custom_bash_policy_match(

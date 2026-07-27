@@ -58,12 +58,9 @@ This task defines only one child policy domain:
 `policies.bash` contains exactly two optional keys:
 
 - `presets`: array of preset IDs
-- `custom`: array of custom policy entries
+- `custom`: array of custom policy entries, each with required `id`/`match`/`message` plus optional `satisfied_by` (see "Wrapper Exemption Extension" below)
 
-If `policies` is absent, `policies.bash` is absent, or both arrays are omitted/empty, no bash-tool command policy blocks are active.
-
-No other `policies.*` domains are defined by this task.
-Downstream work may add sibling policy domains later without reshaping the `policies.bash` contract.
+If `policies` is absent, `policies.bash` is absent, or both arrays are omitted/empty, no bash-tool command policy blocks are active. No other `policies.*` domains are defined by this task; downstream work may add sibling policy domains later without reshaping the `policies.bash` contract.
 
 ## Validation contract
 
@@ -75,12 +72,13 @@ Downstream work may add sibling policy domains later without reshaping the `poli
 - `presets` must be an array of unique strings.
 - Each preset ID must be one of the built-in IDs defined in this contract.
 - `custom` must be an array of objects.
-- Each custom policy must contain exactly `id`, `match`, and `message`.
+- Each custom policy must contain exactly `id`, `match`, and `message`, plus optional `satisfied_by`.
 - Custom `id` values must be unique within `custom` and must not collide with preset IDs.
 - `message` must be a non-empty string.
 - `match` must be an object containing exactly `argv_prefix`.
 - `argv_prefix` must be a non-empty array of non-empty strings.
-- Exact duplicate custom `argv_prefix` values are invalid to avoid ambiguous denial messages.
+- `satisfied_by`, when present, must be an array of non-empty string arrays (each inner array non-empty, only non-empty strings); an empty prefix is a validation error.
+- Exact duplicate custom `argv_prefix` values are invalid (ambiguous denial messages).
 - `use-pnpm-over-npm` and `use-bun-over-npm` are mutually exclusive and fail validation if both are enabled.
 - `forbid-git-all` and `forbid-git-commit` may both be enabled; this is valid but redundant.
 
@@ -154,6 +152,10 @@ The enforcement layer now also inspects a narrow set of nested command wrappers 
 - shells or wrappers other than the explicit cases above
 - arbitrary script files passed to shells without `-c`
 - alias expansion, shell functions, and runtime evaluation features beyond tokenization of the `-c` payload
+
+## Wrapper Exemption Extension (2026-07)
+
+A custom policy may declare an optional `satisfied_by` field: a list of wrapper argv prefixes that already satisfy the policy, so the policy does **not** fire when the matched command was unwrapped from one of those wrappers (e.g. a policy steering `rg` toward nix stays quiet for `nix shell nixpkgs#ripgrep -c rg ...` while still blocking a bare `rg`). Custom-policy-only; presets cannot declare satisfying wrappers. Full matching model, examples, and scope are documented in `context/sce/bash-policy-satisfied-by-wrapper-exemption.md`.
 
 ## Policy entry semantics
 
@@ -233,16 +235,15 @@ For a non-matching command, enforcement must allow the bash tool to continue nor
 `sce config show` and `sce config validate` should expose:
 
 - enabled preset IDs
-- custom policy IDs, match prefixes, and messages
-- validation failures for unknown preset IDs, invalid custom entries, conflicting preset combinations, and duplicate custom prefixes
+- custom policy IDs, match prefixes, `satisfied_by` wrappers (when declared), and messages
+- validation failures for unknown preset IDs, invalid custom entries, conflicting preset combinations, duplicate custom prefixes, and empty `satisfied_by` prefixes
 - redundancy reporting for `forbid-git-all` plus `forbid-git-commit` without treating that pair as invalid
 
 ## Related files
+- `context/sce/bash-policy-satisfied-by-wrapper-exemption.md` (full `satisfied_by` matching model)
 - `context/plans/bash-tool-policy-enforcement.md`
 - `context/plans/claude-bash-policy-rust-hook.md`
 - `context/cli/config-precedence-contract.md`
-- `config/pkl/base/bash-policy-presets.pkl`
-- `config/pkl/generate.pkl`
+- `config/pkl/base/bash-policy-presets.pkl`, `config/pkl/generate.pkl`
 - `config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts`
-- `cli/src/services/bash_policy.rs`
-- `cli/src/services/config/policy.rs`
+- `cli/src/services/bash_policy.rs`, `cli/src/services/config/policy.rs`

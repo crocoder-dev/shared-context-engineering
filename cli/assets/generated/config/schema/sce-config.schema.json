@@ -338,6 +338,18 @@
                       "argv_prefix"
                     ]
                   },
+                  "satisfied_by": {
+                    "description": "Wrapper argv prefixes that already satisfy this policy. The policy does not fire when the matched command was unwrapped from one of these wrappers, so a policy steering `rg` toward nix can stay quiet for `nix shell nixpkgs#ripgrep -c rg ...` while still blocking a bare `rg`.",
+                    "type": "array",
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 1
+                    }
+                  },
                   "message": {
                     "type": "string",
                     "minLength": 1

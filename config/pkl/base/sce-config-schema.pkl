@@ -170,6 +170,18 @@ local sceConfigSchema = new JsonSchema {
                       }
                     }
                   }
+                  ["satisfied_by"] = new JsonSchema {
+                    description = "Wrapper argv prefixes that already satisfy this policy. The policy does not fire when the matched command was unwrapped from one of these wrappers, so a policy steering `rg` toward nix can stay quiet for `nix shell nixpkgs#ripgrep -c rg ...` while still blocking a bare `rg`."
+                    type = "array"
+                    items = new JsonSchema {
+                      type = "array"
+                      minItems = 1
+                      items = new JsonSchema {
+                        type = "string"
+                        minLength = 1
+                      }
+                    }
+                  }
                   ["message"] = new JsonSchema {
                     type = "string"
                     minLength = 1

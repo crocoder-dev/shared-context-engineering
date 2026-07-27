@@ -111,6 +111,7 @@ pub(crate) struct ParsedCustomBashPolicyEntryDocument {
     pub(crate) id: Option<String>,
     #[serde(rename = "match")]
     pub(crate) matcher: Option<ParsedCustomBashPolicyMatchDocument>,
+    pub(crate) satisfied_by: Option<Vec<Vec<String>>>,
     pub(crate) message: Option<String>,
 }
 

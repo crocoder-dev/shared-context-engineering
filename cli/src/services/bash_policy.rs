@@ -44,8 +44,21 @@ pub(crate) struct PolicyMatch {
     pub(crate) id: String,
     pub(crate) message: String,
     pub(crate) argv_prefix: Vec<String>,
+    /// Wrapper argv prefixes that already satisfy this policy. A policy does not
+    /// fire when the matched command was unwrapped from one of these wrappers,
+    /// so `use-nix-for-rg` with `[["nix"]]` stays quiet for
+    /// `nix shell nixpkgs#ripgrep -c rg ...` while still blocking a bare `rg`.
+    pub(crate) satisfied_by: Vec<Vec<String>>,
     pub(crate) source: PolicySource,
     pub(crate) order: usize,
+}
+
+/// A command segment reduced to the argv a policy matches against, together with
+/// the argv of each wrapper it was unwrapped from (outermost first).
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NormalizedSegment {
+    argv: Vec<String>,
+    wrappers: Vec<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,16 +91,16 @@ pub(crate) fn evaluate_bash_command_policy(
     let mut first_normalized = None;
 
     for segment in segments {
-        for normalized_argv in normalize_segment(&segment) {
-            if normalized_argv.is_empty() {
+        for normalized in normalize_segment(&segment, &[]) {
+            if normalized.argv.is_empty() {
                 continue;
             }
             if first_normalized.is_none() {
-                first_normalized = Some(normalized_argv.clone());
+                first_normalized = Some(normalized.argv.clone());
             }
-            if let Some(policy) = select_matching_policy(&active_policies, &normalized_argv) {
+            if let Some(policy) = select_matching_policy(&active_policies, &normalized) {
                 return PolicyEvaluation::Blocked {
-                    normalized_argv,
+                    normalized_argv: normalized.argv,
                     policy,
                 };
             }
@@ -131,7 +144,7 @@ pub(crate) fn parse_command_segments(command: &str) -> Option<Vec<Vec<String>>> 
     Some(segments)
 }
 
-fn normalize_segment(segment: &[String]) -> Vec<Vec<String>> {
+fn normalize_segment(segment: &[String], wrappers: &[Vec<String>]) -> Vec<NormalizedSegment> {
     if segment.is_empty() {
         return Vec::new();
     }
@@ -158,16 +171,25 @@ fn normalize_segment(segment: &[String]) -> Vec<Vec<String>> {
         .to_string();
 
     let Some(nested_segments) = unwrap_nested_command_segments(&normalized) else {
-        return vec![normalized];
+        return vec![NormalizedSegment {
+            argv: normalized,
+            wrappers: wrappers.to_vec(),
+        }];
     };
+
+    let mut nested_wrappers = wrappers.to_vec();
+    nested_wrappers.push(normalized.clone());
 
     let mut nested_normalized = Vec::new();
     for nested_segment in nested_segments {
-        nested_normalized.extend(normalize_segment(&nested_segment));
+        nested_normalized.extend(normalize_segment(&nested_segment, &nested_wrappers));
     }
 
     if nested_normalized.is_empty() {
-        vec![normalized]
+        vec![NormalizedSegment {
+            argv: normalized,
+            wrappers: wrappers.to_vec(),
+        }]
     } else {
         nested_normalized
     }
@@ -230,6 +252,7 @@ fn build_active_policies_from_catalog(
                 id: preset.id.clone(),
                 message: preset.message.clone(),
                 argv_prefix: argv_prefix.clone(),
+                satisfied_by: Vec::new(),
                 source: PolicySource::Preset,
                 order: preset.order,
             });
@@ -259,6 +282,7 @@ fn custom_policy_match(policy: &CustomBashPolicyEntry, order: usize) -> Option<P
         id: policy.id.clone(),
         message: policy.message.clone(),
         argv_prefix: policy.argv_prefix.clone(),
+        satisfied_by: policy.satisfied_by.clone(),
         source: PolicySource::Custom,
         order,
     })
@@ -266,13 +290,22 @@ fn custom_policy_match(policy: &CustomBashPolicyEntry, order: usize) -> Option<P
 
 fn select_matching_policy(
     active_policies: &[PolicyMatch],
-    normalized_argv: &[String],
+    normalized: &NormalizedSegment,
 ) -> Option<PolicyMatch> {
     active_policies
         .iter()
-        .filter(|policy| argv_starts_with(normalized_argv, &policy.argv_prefix))
+        .filter(|policy| argv_starts_with(&normalized.argv, &policy.argv_prefix))
+        .filter(|policy| !policy_is_satisfied_by_wrapper(policy, &normalized.wrappers))
         .min_by(|left, right| compare_policy_priority(left, right))
         .cloned()
+}
+
+fn policy_is_satisfied_by_wrapper(policy: &PolicyMatch, wrappers: &[Vec<String>]) -> bool {
+    policy.satisfied_by.iter().any(|satisfying_prefix| {
+        wrappers
+            .iter()
+            .any(|wrapper| argv_starts_with(wrapper, satisfying_prefix))
+    })
 }
 
 fn compare_policy_priority(left: &PolicyMatch, right: &PolicyMatch) -> std::cmp::Ordering {
@@ -612,7 +645,23 @@ mod tests {
                 .iter()
                 .map(|token| (*token).to_string())
                 .collect(),
+            satisfied_by: Vec::new(),
             message: message.to_string(),
+        }
+    }
+
+    fn custom_satisfied_by(
+        id: &str,
+        argv_prefix: &[&str],
+        satisfied_by: &[&[&str]],
+        message: &str,
+    ) -> CustomBashPolicyEntry {
+        CustomBashPolicyEntry {
+            satisfied_by: satisfied_by
+                .iter()
+                .map(|prefix| prefix.iter().map(|token| (*token).to_string()).collect())
+                .collect(),
+            ..custom(id, argv_prefix, message)
         }
     }
 
@@ -696,6 +745,66 @@ mod tests {
                 if normalized_argv == ["cargo", "fmt", "--check"]
                     && policy.id == "use-nix-flake-check-over-cargo-fmt-check"
         ));
+    }
+
+    #[test]
+    fn bash_policy_skips_policies_satisfied_by_the_wrapping_command() {
+        let config = config(
+            &[],
+            vec![custom_satisfied_by(
+                "use-nix-for-ripgrep",
+                &["rg"],
+                &[&["nix", "shell", "nixpkgs#ripgrep"]],
+                "Run rg through nix.",
+            )],
+        );
+
+        assert_eq!(
+            blocked_policy_id("rg pattern src", &config).as_deref(),
+            Some("use-nix-for-ripgrep"),
+            "a bare invocation still blocks"
+        );
+        assert_eq!(
+            blocked_policy_id("nix shell nixpkgs#ripgrep -c rg pattern src", &config),
+            None,
+            "the satisfying wrapper exempts the policy"
+        );
+        assert_eq!(
+            blocked_policy_id(
+                "nix shell nixpkgs#ripgrep -c sh -c 'rg pattern src'",
+                &config
+            ),
+            None,
+            "the exemption survives a nested shell payload"
+        );
+        assert_eq!(
+            blocked_policy_id("nix shell nixpkgs#fd -c rg pattern src", &config).as_deref(),
+            Some("use-nix-for-ripgrep"),
+            "a different nix package does not satisfy the policy"
+        );
+        assert_eq!(
+            blocked_policy_id("sh -c 'rg pattern src'", &config).as_deref(),
+            Some("use-nix-for-ripgrep"),
+            "a plain shell wrapper does not satisfy the policy"
+        );
+    }
+
+    #[test]
+    fn bash_policy_keeps_blocking_policies_without_satisfied_by_under_wrappers() {
+        let config = config(
+            &[],
+            vec![custom(
+                "use-nix-flake-check-over-cargo-test",
+                &["cargo", "test"],
+                "Use nix flake check.",
+            )],
+        );
+
+        assert_eq!(
+            blocked_policy_id("nix shell nixpkgs#cargo -c cargo test", &config).as_deref(),
+            Some("use-nix-flake-check-over-cargo-test"),
+            "wrapping does not launder a policy that declares no satisfying wrapper"
+        );
     }
 
     #[test]
@@ -833,6 +942,7 @@ mod tests {
             vec![CustomBashPolicyEntry {
                 id: String::new(),
                 argv_prefix: vec!["rm".to_string()],
+                satisfied_by: Vec::new(),
                 message: "Empty id".to_string(),
             }],
         );
@@ -850,6 +960,7 @@ mod tests {
             vec![CustomBashPolicyEntry {
                 id: "missing-message".to_string(),
                 argv_prefix: vec!["rm".to_string()],
+                satisfied_by: Vec::new(),
                 message: String::new(),
             }],
         );
@@ -867,6 +978,7 @@ mod tests {
             vec![CustomBashPolicyEntry {
                 id: "empty-prefix".to_string(),
                 argv_prefix: vec![],
+                satisfied_by: Vec::new(),
                 message: "Empty prefix".to_string(),
             }],
         );
@@ -884,6 +996,7 @@ mod tests {
             vec![CustomBashPolicyEntry {
                 id: "empty-string-prefix".to_string(),
                 argv_prefix: vec!["rm".to_string(), String::new()],
+                satisfied_by: Vec::new(),
                 message: "Empty string in prefix".to_string(),
             }],
         );

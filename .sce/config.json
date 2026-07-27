@@ -54,7 +54,14 @@
               "rg"
             ]
           },
-          "message": "Run `rg` through nix: `nix run nixpkgs#ripgrep -- <args>`."
+          "message": "Run `rg` through nix: `nix run nixpkgs#ripgrep -- <args>`.",
+          "satisfied_by": [
+            [
+              "nix",
+              "shell",
+              "nixpkgs#ripgrep"
+            ]
+          ]
         },
         {
           "id": "use-nix-for-jq",
@@ -63,7 +70,14 @@
               "jq"
             ]
           },
-          "message": "Run `jq` through nix: `nix run nixpkgs#jq -- <args>`."
+          "message": "Run `jq` through nix: `nix run nixpkgs#jq -- <args>`.",
+          "satisfied_by": [
+            [
+              "nix",
+              "shell",
+              "nixpkgs#jq"
+            ]
+          ]
         },
         {
           "id": "use-nix-for-python3",
@@ -72,7 +86,14 @@
               "python3"
             ]
           },
-          "message": "Run `python3` through nix: `nix run nixpkgs#python3 -- <args>`."
+          "message": "Run `python3` through nix: `nix run nixpkgs#python3 -- <args>`.",
+          "satisfied_by": [
+            [
+              "nix",
+              "shell",
+              "nixpkgs#python3"
+            ]
+          ]
         },
         {
           "id": "use-nix-for-node",
@@ -81,7 +102,14 @@
               "node"
             ]
           },
-          "message": "Run `node` through nix: `nix run nixpkgs#nodejs -- <args>`."
+          "message": "Run `node` through nix: `nix run nixpkgs#nodejs -- <args>`.",
+          "satisfied_by": [
+            [
+              "nix",
+              "shell",
+              "nixpkgs#nodejs"
+            ]
+          ]
         },
         {
           "id": "use-nix-for-bun",
@@ -90,7 +118,14 @@
               "bun"
             ]
           },
-          "message": "Run `bun` through nix: `nix run nixpkgs#bun -- <args>`."
+          "message": "Run `bun` through nix: `nix run nixpkgs#bun -- <args>`.",
+          "satisfied_by": [
+            [
+              "nix",
+              "shell",
+              "nixpkgs#bun"
+            ]
+          ]
         },
         {
           "id": "use-nix-for-fd",
@@ -99,7 +134,14 @@
               "fd"
             ]
           },
-          "message": "Run `fd` through nix: `nix run nixpkgs#fd -- <args>`."
+          "message": "Run `fd` through nix: `nix run nixpkgs#fd -- <args>`.",
+          "satisfied_by": [
+            [
+              "nix",
+              "shell",
+              "nixpkgs#fd"
+            ]
+          ]
         },
         {
           "id": "use-nix-for-shellcheck",
@@ -108,7 +150,14 @@
               "shellcheck"
             ]
           },
-          "message": "Run `shellcheck` through nix: `nix run nixpkgs#shellcheck -- <args>`."
+          "message": "Run `shellcheck` through nix: `nix run nixpkgs#shellcheck -- <args>`.",
+          "satisfied_by": [
+            [
+              "nix",
+              "shell",
+              "nixpkgs#shellcheck"
+            ]
+          ]
         },
         {
           "id": "use-nix-for-actionlint",
@@ -117,7 +166,14 @@
               "actionlint"
             ]
           },
-          "message": "Run `actionlint` through nix: `nix run nixpkgs#actionlint -- <args>`."
+          "message": "Run `actionlint` through nix: `nix run nixpkgs#actionlint -- <args>`.",
+          "satisfied_by": [
+            [
+              "nix",
+              "shell",
+              "nixpkgs#actionlint"
+            ]
+          ]
         },
         {
           "id": "use-nix-for-yq",
@@ -126,7 +182,14 @@
               "yq"
             ]
           },
-          "message": "Run `yq` through nix: `nix run nixpkgs#yq-go -- <args>`."
+          "message": "Run `yq` through nix: `nix run nixpkgs#yq-go -- <args>`.",
+          "satisfied_by": [
+            [
+              "nix",
+              "shell",
+              "nixpkgs#yq-go"
+            ]
+          ]
         },
         {
           "id": "use-nix-for-hyperfine",
@@ -135,11 +198,17 @@
               "hyperfine"
             ]
           },
-          "message": "Run `hyperfine` through nix: `nix run nixpkgs#hyperfine -- <args>`."
+          "message": "Run `hyperfine` through nix: `nix run nixpkgs#hyperfine -- <args>`.",
+          "satisfied_by": [
+            [
+              "nix",
+              "shell",
+              "nixpkgs#hyperfine"
+            ]
+          ]
         }
       ],
       "presets": []
     }
   }
 }
-
