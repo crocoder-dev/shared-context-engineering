@@ -31,7 +31,20 @@ The skill must return a result matching its readiness contract.
 
 Branch on `status`:
 
-`blocked` ->  Do not invoke implementation. Return: Output from `sce-plan-review`. Stop.
+`blocked` -> Do not invoke implementation. Present the result as prose. Do not print the raw result. Stop.
+
+When `candidates` is present, the plan could not be resolved. Present:
+
+- The problem reported by the review.
+- The candidate plan paths.
+- `/next-task {candidate-path}` for the intended plan.
+
+Otherwise one plan and task were resolved. Present:
+
+- The task ID and title.
+- Each issue in `issues`: its problem, its impact, and the decision it requires.
+- When `executable_tasks_remaining` is true: other tasks remain executable, and `/next-task {plan-path} {task-id}` selects one.
+- When `executable_tasks_remaining` is false: no task in the plan can proceed until the plan is updated.
 
 `plan_complete` -> Return:
 
