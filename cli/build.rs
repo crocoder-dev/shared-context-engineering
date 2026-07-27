@@ -1,18 +1,27 @@
 use sha2::{Digest, Sha256};
 use std::{
     env,
+    ffi::OsString,
     fmt::Write,
     fs,
     io::{self, Write as IoWrite},
     path::{Path, PathBuf},
-    process::Command,
 };
 
 const PKL_OUTPUT_DIR: &str = "pkl-generated";
 const STATIC_OUTPUT_DIR: &str = "static";
 const MIGRATIONS_ROOT: &str = "migrations";
+const GENERATED_INPUT_ENV: &str = "SCE_CLI_GENERATED_INPUT_DIR";
+const GENERATED_INPUT_INVENTORY: &str = "SHA256SUMS";
+const CANONICAL_INPUT_INVENTORY: &str = "INPUTS.SHA256SUMS";
 const PACKAGE_FALLBACK_DIR: &str = "package-fallback";
 const PACKAGE_FALLBACK_INVENTORY: &str = "SHA256SUMS";
+const CANONICAL_GENERATOR_INPUTS: &[&str] = &[
+    "config/pkl",
+    "config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts",
+    "config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts",
+    "config/lib/pi-plugin/sce-pi-extension.ts",
+];
 
 const TARGETS: &[TargetSpec] = &[
     TargetSpec {
@@ -57,7 +66,9 @@ fn prepare_build_artifacts() -> io::Result<()> {
     let out_dir = PathBuf::from(env::var("OUT_DIR").map_err(|e| invalid_data(&e))?);
 
     if repository_sources_available(repository_root) {
-        generate_pkl_outputs(repository_root, &out_dir)?;
+        println!("cargo:rerun-if-env-changed={GENERATED_INPUT_ENV}");
+        let generated_input_root = generated_input_root(env::var_os(GENERATED_INPUT_ENV))?;
+        stage_generated_input(repository_root, &generated_input_root, &out_dir)?;
         stage_static_inputs(repository_root, &manifest_dir, &out_dir)?;
     } else {
         stage_packaged_fallback(&manifest_dir, &out_dir)?;
@@ -72,49 +83,119 @@ fn repository_sources_available(repository_root: &Path) -> bool {
         && repository_root.join("config/lib").is_dir()
 }
 
-fn generate_pkl_outputs(repository_root: &Path, out_dir: &Path) -> io::Result<()> {
-    let pkl_root = repository_root.join("config/pkl");
-    let config_lib_root = repository_root.join("config/lib");
-    emit_rerun_tree(&pkl_root)?;
-    emit_rerun_tree(&config_lib_root)?;
-
-    let output_root = out_dir.join(PKL_OUTPUT_DIR);
-    remove_path_if_exists(&output_root)?;
-    fs::create_dir_all(&output_root)?;
-
-    let generator = pkl_root.join("generate.pkl");
-    let status = Command::new("pkl")
-        .arg("eval")
-        .arg("-m")
-        .arg(&output_root)
-        .arg(&generator)
-        .current_dir(repository_root)
-        .status()
-        .map_err(|error| {
-            invalid_data(&format!(
-                "could not run Pkl generator '{}': {error}. Run Cargo from the Nix dev shell",
-                generator.display()
-            ))
-        })?;
-
-    if !status.success() {
+fn generated_input_root(value: Option<OsString>) -> io::Result<PathBuf> {
+    let value = value.ok_or_else(|| {
+        invalid_data(&format!(
+            "repository builds require a pre-generated Pkl payload. Set {GENERATED_INPUT_ENV} to a generated-input directory containing {PKL_OUTPUT_DIR}/, {GENERATED_INPUT_INVENTORY}, and {CANONICAL_INPUT_INVENTORY}"
+        ))
+    })?;
+    if value.is_empty() {
         return Err(invalid_data(&format!(
-            "Pkl generator '{}' exited with {status}",
-            generator.display()
+            "{GENERATED_INPUT_ENV} is empty; set it to a generated-input directory"
         )));
     }
+    Ok(PathBuf::from(value))
+}
 
-    for target in TARGETS.iter().take(3) {
-        let expected_root = output_root.join(target.generated_root);
-        if !expected_root.is_dir() {
-            return Err(invalid_data(&format!(
-                "Pkl generator did not emit required target directory '{}'",
-                expected_root.display()
-            )));
+fn stage_generated_input(
+    repository_root: &Path,
+    generated_input_root: &Path,
+    out_dir: &Path,
+) -> io::Result<()> {
+    for relative_path in CANONICAL_GENERATOR_INPUTS {
+        let path = repository_root.join(relative_path);
+        if path.is_dir() {
+            emit_rerun_tree(&path)?;
+        } else {
+            println!("cargo:rerun-if-changed={}", path.display());
         }
     }
 
+    let payload_inventory = generated_input_root.join(GENERATED_INPUT_INVENTORY);
+    let canonical_inventory = generated_input_root.join(CANONICAL_INPUT_INVENTORY);
+    println!("cargo:rerun-if-changed={}", payload_inventory.display());
+    println!("cargo:rerun-if-changed={}", canonical_inventory.display());
+
+    validate_inventory(
+        generated_input_root,
+        &[PKL_OUTPUT_DIR],
+        &payload_inventory,
+        "generated Pkl payload",
+    )?;
+    validate_inventory(
+        repository_root,
+        CANONICAL_GENERATOR_INPUTS,
+        &canonical_inventory,
+        "canonical Pkl inputs",
+    )
+    .map_err(|error| {
+        invalid_data(&format!(
+            "generated Pkl payload at '{}' is stale: {error}. Regenerate it from the current config/pkl and config/lib inputs",
+            generated_input_root.display()
+        ))
+    })?;
+
+    let output_root = out_dir.join(PKL_OUTPUT_DIR);
+    remove_path_if_exists(&output_root)?;
+    copy_tree(&generated_input_root.join(PKL_OUTPUT_DIR), &output_root)?;
+
     Ok(())
+}
+
+fn validate_inventory(
+    root: &Path,
+    directories: &[&str],
+    inventory_path: &Path,
+    description: &str,
+) -> io::Result<()> {
+    let expected = fs::read_to_string(inventory_path).map_err(|error| {
+        invalid_data(&format!(
+            "{description} inventory '{}' is unavailable: {error}",
+            inventory_path.display()
+        ))
+    })?;
+    let actual = inventory_for_paths(root, directories).map_err(|error| {
+        invalid_data(&format!(
+            "could not inspect {description} under '{}': {error}",
+            root.display()
+        ))
+    })?;
+    if actual != expected {
+        return Err(invalid_data(&format!(
+            "{description} inventory '{}' does not match the current files",
+            inventory_path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn inventory_for_paths(root: &Path, paths: &[&str]) -> io::Result<String> {
+    let mut files = Vec::new();
+    for relative_path in paths {
+        let path = root.join(relative_path);
+        if path.is_dir() {
+            collect_files(root, &path, &mut files)?;
+        } else if path.is_file() {
+            files.push(SourceFile {
+                relative_path: normalize_relative_path(Path::new(relative_path))?,
+                absolute_path: path,
+            });
+        } else {
+            return Err(invalid_data(&format!(
+                "required path '{}' is missing",
+                path.display()
+            )));
+        }
+    }
+    files.sort_unstable_by(|left, right| left.relative_path.cmp(&right.relative_path));
+
+    let mut inventory = String::new();
+    for file in files {
+        let digest = compute_sha256(&fs::read(&file.absolute_path)?);
+        writeln!(inventory, "{}  {}", format_hex(&digest), file.relative_path)
+            .expect("writing to String buffer should never fail");
+    }
+    Ok(inventory)
 }
 
 fn stage_packaged_fallback(manifest_dir: &Path, out_dir: &Path) -> io::Result<()> {
@@ -563,4 +644,180 @@ fn write_if_changed(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 fn invalid_data<E: ToString>(error: &E) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        ffi::OsString,
+        fs,
+        path::{Path, PathBuf},
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    use super::{
+        generated_input_root, inventory_for_paths, stage_generated_input,
+        CANONICAL_GENERATOR_INPUTS, CANONICAL_INPUT_INVENTORY, GENERATED_INPUT_INVENTORY,
+        PKL_OUTPUT_DIR,
+    };
+
+    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "sce-build-script-{name}-{}-{id}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("create test temporary directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).expect("remove test temporary directory");
+        }
+    }
+
+    fn write_file(root: &Path, relative_path: &str, contents: &str) {
+        let path = root.join(relative_path);
+        fs::create_dir_all(path.parent().expect("fixture file parent"))
+            .expect("create fixture directory");
+        fs::write(path, contents).expect("write fixture file");
+    }
+
+    fn create_fixture() -> (TempDir, PathBuf, PathBuf) {
+        let temp = TempDir::new("handoff");
+        let repository_root = temp.path().join("repository");
+        let handoff_root = temp.path().join("handoff");
+
+        write_file(&repository_root, "config/pkl/generate.pkl", "generator");
+        write_file(
+            &repository_root,
+            "config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts",
+            "agent trace",
+        );
+        write_file(
+            &repository_root,
+            "config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts",
+            "bash policy",
+        );
+        write_file(
+            &repository_root,
+            "config/lib/pi-plugin/sce-pi-extension.ts",
+            "pi extension",
+        );
+        write_file(
+            &handoff_root,
+            "pkl-generated/config/.opencode/opencode.json",
+            "opencode",
+        );
+        write_file(
+            &handoff_root,
+            "pkl-generated/config/.claude/settings.json",
+            "claude",
+        );
+        write_file(
+            &handoff_root,
+            "pkl-generated/config/.pi/extensions/sce/index.ts",
+            "pi",
+        );
+
+        let payload_inventory =
+            inventory_for_paths(&handoff_root, &[PKL_OUTPUT_DIR]).expect("payload inventory");
+        fs::write(
+            handoff_root.join(GENERATED_INPUT_INVENTORY),
+            payload_inventory,
+        )
+        .expect("write payload inventory");
+        let canonical_inventory = inventory_for_paths(&repository_root, CANONICAL_GENERATOR_INPUTS)
+            .expect("canonical inventory");
+        fs::write(
+            handoff_root.join(CANONICAL_INPUT_INVENTORY),
+            canonical_inventory,
+        )
+        .expect("write canonical inventory");
+
+        (temp, repository_root, handoff_root)
+    }
+
+    #[test]
+    fn generated_input_requires_handoff_environment_value() {
+        let error = generated_input_root(None).expect_err("missing handoff must fail");
+        assert!(error
+            .to_string()
+            .contains("repository builds require a pre-generated Pkl payload"));
+        assert!(generated_input_root(Some(OsString::from(""))).is_err());
+    }
+
+    #[test]
+    fn missing_generated_input_directory_is_rejected() {
+        let temp = TempDir::new("missing-handoff");
+        let repository_root = temp.path().join("repository");
+        write_file(&repository_root, "config/pkl/generate.pkl", "generator");
+        for relative_path in CANONICAL_GENERATOR_INPUTS.iter().skip(1) {
+            write_file(&repository_root, relative_path, "plugin");
+        }
+
+        let error = stage_generated_input(
+            &repository_root,
+            &temp.path().join("missing"),
+            &temp.path().join("out"),
+        )
+        .expect_err("missing handoff directory must fail");
+        assert!(error.to_string().contains("inventory"));
+        assert!(error.to_string().contains("is unavailable"));
+    }
+
+    #[test]
+    fn valid_generated_input_is_copied_with_matching_inventory() {
+        let (temp, repository_root, handoff_root) = create_fixture();
+        let out_dir = temp.path().join("out");
+
+        stage_generated_input(&repository_root, &handoff_root, &out_dir)
+            .expect("valid handoff should be staged");
+
+        let expected =
+            inventory_for_paths(&handoff_root, &[PKL_OUTPUT_DIR]).expect("source inventory");
+        let actual = inventory_for_paths(&out_dir, &[PKL_OUTPUT_DIR]).expect("copied inventory");
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn incomplete_generated_input_is_rejected() {
+        let (temp, repository_root, handoff_root) = create_fixture();
+        fs::remove_file(handoff_root.join("pkl-generated/config/.claude/settings.json"))
+            .expect("remove generated fixture file");
+
+        let error =
+            stage_generated_input(&repository_root, &handoff_root, &temp.path().join("out"))
+                .expect_err("incomplete handoff must fail");
+        assert!(error
+            .to_string()
+            .contains("generated Pkl payload inventory"));
+    }
+
+    #[test]
+    fn stale_generated_input_is_rejected() {
+        let (temp, repository_root, handoff_root) = create_fixture();
+        write_file(
+            &repository_root,
+            "config/lib/pi-plugin/sce-pi-extension.ts",
+            "changed extension",
+        );
+
+        let error =
+            stage_generated_input(&repository_root, &handoff_root, &temp.path().join("out"))
+                .expect_err("stale handoff must fail");
+        assert!(error.to_string().contains("is stale"));
+        assert!(error.to_string().contains("Regenerate it"));
+    }
 }
