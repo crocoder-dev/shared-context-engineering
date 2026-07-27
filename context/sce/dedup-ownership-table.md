@@ -26,4 +26,5 @@
 - Keep Plan and Code routing roles separate without placing workflow doctrine in agent bodies.
 - Keep commands at sequencing, branching, and handoff scope; phase behavior remains skill-owned.
 - Keep task and plan synchronization packages self-contained even though one Pkl skeleton owns their shared policy.
-- Do not reintroduce removed `/commit`, `/handover`, legacy context-sync, or automated-profile Markdown ownership.
+- Do not reintroduce removed `/handover`, legacy context-sync, or automated-profile Markdown ownership.
+- `/commit` is being restored as a fourth workflow. Its behavioral baseline exists in the project-root `.pi/` package (see [Atomic commit workflow](atomic-commit-workflow.md)); canonical Pkl ownership and generated target inventories still carry only the three workflows above.

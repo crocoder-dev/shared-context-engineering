@@ -1,0 +1,135 @@
+# Atomic Commit Workflow
+
+Behavior contract for the `/commit` workflow and its `sce-atomic-commit` skill
+package.
+
+## Current surface
+
+The workflow currently exists only as the project-root `.pi/` behavioral
+baseline:
+
+- `.pi/prompts/commit.md` — the command.
+- `.pi/skills/sce-atomic-commit/SKILL.md` — the skill.
+- `.pi/skills/sce-atomic-commit/references/commit-contract.yaml` — the result
+  contract.
+- `.pi/skills/sce-atomic-commit/references/commit-message-style.md` — the
+  message wording rules.
+
+Canonical Pkl ownership and generated OpenCode/Claude/Pi payloads do not carry
+it yet. Until they do, the emitted workflow inventory described in
+[the ownership table](dedup-ownership-table.md) remains three commands and seven
+skill packages.
+
+Per the root `.pi/` baseline convention in `context/patterns.md`, this package is
+the authoring source for the canonical Pkl workflow package, not the reverse.
+
+## Modes
+
+`/commit` takes an optional argument. Its first whitespace-separated token
+selects the mode; everything else is free-form commit context that refines
+message wording only.
+
+- `oneshot` or `skip` as the exact first token, compared case-insensitively,
+  selects **bypass mode**. The two aliases are behaviorally identical.
+- Any other first token, or no argument at all, selects **regular mode**.
+
+Nothing else selects bypass — not the commit context, not repository state.
+
+```mermaid
+flowchart TD
+    A["/commit [mode-token] [context]"] --> B{First token is<br/>oneshot or skip?}
+    B -- no --> C[Regular mode]
+    B -- yes --> D[Bypass mode]
+
+    C --> C1[Stop and prompt for staging confirmation]
+    C1 --> C2[sce-atomic-commit mode: regular]
+    C2 --> C3[Present proposals + split guidance]
+    C3 --> C4([Stop — never commits])
+
+    D --> D1{git diff --cached<br/>non-empty?}
+    D1 -- no --> D2([Stop: No staged changes.<br/>Stage changes before commit.])
+    D1 -- yes --> D3[sce-atomic-commit mode: bypass]
+    D3 --> D4[Exactly one git commit]
+    D4 --> D5([Report hash, or report failure<br/>with no retry or amend])
+```
+
+## Regular mode
+
+Proposal-only. The command stops before invoking the skill and asks the user to
+stage everything they intend to commit, because atomic commits should contain
+only intentionally staged changes. After confirmation, the skill analyzes the
+staged diff and returns one or more messages.
+
+When the staged changes pursue unrelated goals, the skill returns one message
+per coherent unit plus the rationale and file grouping for the split. When they
+form one unit, it returns one message and no split guidance.
+
+The command presents the proposals and stops. It never runs `git commit`; the
+user runs the commits they accept.
+
+## Bypass mode
+
+Single-message, command-committed. The command first checks that staged content
+exists and stops with `No staged changes. Stage changes before commit.` when
+nothing is staged. It then requests exactly one message covering all staged
+files and runs `git commit` once.
+
+On success it reports the commit hash. On failure it reports the failure and
+stops — no retry, no amend, no fallback commit.
+
+Bypass mode relaxes three regular-mode rules: no split proposals, no
+context-file guidance gating, and plan citations are best-effort rather than
+blocking.
+
+## Ownership boundary
+
+The command owns user prompting, mode routing, the staged-content precondition,
+and the single `git commit`. The skill owns everything about what the commit
+says:
+
+- Reading and analyzing the staged diff.
+- Deciding whether staged changes form one coherent unit or several.
+- Choosing scope and writing every subject and body.
+- The plan-citation body rule.
+- Staged-scope classification and context-file guidance gating.
+
+Each rule is stated once by its owner. The skill never commits and never asks
+about staging.
+
+## Staged truth
+
+Staged changes are the only input describing what is being committed. Neither
+document reads unstaged or untracked changes, and neither stages, unstages, or
+otherwise modifies files. Supplied commit context refines wording but never
+overrides the diff and never adds a claim the diff does not support.
+
+## Plan citations
+
+When a commit's staged files include `context/plans/*.md`, its body cites the
+affected plan slug and every updated task ID. Plan slugs and task IDs are never
+invented.
+
+When the staged plan diff does not expose them clearly enough to cite
+faithfully, regular mode blocks and asks for the reference to be stated or
+staged explicitly; bypass mode omits the citation instead of stopping.
+
+## Result contract
+
+The skill returns exactly one YAML result:
+
+- `proposal` — regular mode, one or more messages, optional split rationale and
+  staged-scope classification.
+- `bypass_message` — bypass mode, exactly one message plus the full staged file
+  list.
+- `blocked` — messages cannot be written faithfully. Categories are
+  `no_staged_changes`, `plan_citation_ambiguity`, `unreadable_diff`, and
+  `contradictory_context`.
+
+Every staged file appears under exactly one returned commit. No result carries a
+commit hash, because the skill never commits.
+
+## Related context
+
+- [SCE workflow ownership table](dedup-ownership-table.md)
+- [Plan/Code overlap map](plan-code-overlap-map.md)
+- [Context workflow rules](context-workflow-rules.md)
