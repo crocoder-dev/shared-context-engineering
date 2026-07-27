@@ -23,17 +23,33 @@ Published Cargo releases target the `shared-context-engineering` crate and insta
 cargo install shared-context-engineering --locked
 ```
 
-### Git repository
-
-```bash
-cargo install --git https://github.com/crocoder-dev/shared-context-engineering shared-context-engineering --locked
-```
-
 ### Local checkout
 
+Repository source builds require Pkl-generated assets to be prepared before
+Cargo starts. From the repository root, use the repository-owned wrapper rather
+than invoking Cargo directly:
+
 ```bash
-cargo install --path cli --locked
+./scripts/run-cli-cargo.sh install --path cli --locked
 ```
+
+The wrapper creates a fresh temporary payload from the canonical Pkl inputs,
+passes it to the build through `SCE_CLI_GENERATED_INPUT_DIR`, and removes it when
+Cargo exits. Direct `cargo install --git` is not supported because a Git install
+has no pre-Cargo generation boundary; use crates.io or a local checkout instead.
+
+## Develop from a local checkout
+
+Use the same wrapper for supported Cargo development workflows:
+
+```bash
+./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml
+./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup
+./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings
+```
+
+The wrapper requires `pkl`, `cargo`, and `sha256sum` on `PATH`. The repository
+Nix dev shell provides them when they are not installed by the host system.
 
 ## Other supported install channels
 

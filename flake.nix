@@ -143,6 +143,15 @@
           ./config/lib/pi-plugin/sce-pi-extension.ts
           ./config/schema/agent-trace.schema.json
         ];
+        cliGeneratedInputSrc = pkgs.lib.fileset.toSource {
+          root = workspaceRoot;
+          fileset = pkgs.lib.fileset.unions [
+            ./config/pkl
+            ./config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts
+            ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
+            ./config/lib/pi-plugin/sce-pi-extension.ts
+          ];
+        };
         workspaceSrc = pkgs.lib.fileset.toSource {
           root = workspaceRoot;
           fileset = pkgs.lib.fileset.unions [
@@ -271,14 +280,78 @@
           SCE_GIT_COMMIT = shortGitCommit;
         };
 
-        commonCargoArgs = cargoBaseArgs // {
+        # Generate the canonical Pkl payload before entering any Cargo
+        # derivation. The output is content-addressed by only the canonical
+        # generator inputs, so native, release, test, and Clippy builds share
+        # one handoff while dependency-only and formatting derivations remain
+        # independent of it.
+        cliGeneratedInput = pkgs.runCommand "sce-cli-generated-input"
+          {
+            src = cliGeneratedInputSrc;
+            nativeBuildInputs = [
+              pkgs.coreutils
+              pkgs.diffutils
+              pkgs.findutils
+              pkgs.pkl
+            ];
+          }
+          ''
+            set -euo pipefail
+
+            cp -r "$src" ./repo
+            chmod -R u+w ./repo
+            comparison_root="$(mktemp -d)"
+            mkdir -p "$out/pkl-generated" "$comparison_root/pkl-generated"
+
+            (
+              cd ./repo
+              pkl eval -m "$out/pkl-generated" config/pkl/generate.pkl >/dev/null
+              pkl eval -m "$comparison_root/pkl-generated" config/pkl/generate.pkl >/dev/null
+            )
+
+            diff -qr "$out/pkl-generated" "$comparison_root/pkl-generated" >/dev/null
+
+            (
+              cd "$out"
+              find pkl-generated -type f -print \
+                | LC_ALL=C sort \
+                | while IFS= read -r path; do
+                    sha256sum "$path"
+                  done
+            ) > "$out/SHA256SUMS"
+
+            (
+              cd ./repo
+              {
+                find config/pkl -type f -print
+                printf '%s\n' \
+                  config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts \
+                  config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts \
+                  config/lib/pi-plugin/sce-pi-extension.ts
+              } \
+                | LC_ALL=C sort \
+                | while IFS= read -r path; do
+                    sha256sum "$path"
+                  done
+            ) > "$out/INPUTS.SHA256SUMS"
+          '';
+
+        cliGeneratedInputArgs = {
+          SCE_CLI_GENERATED_INPUT_DIR = cliGeneratedInput;
+        };
+
+        commonCargoArgs = cargoBaseArgs // cliGeneratedInputArgs // {
           pname = "sce";
           src = workspaceSrc;
-          nativeBuildInputs = cargoBaseArgs.nativeBuildInputs ++ [ pkgs.pkl ];
 
           postUnpack = ''
             cd "$sourceRoot/cli"
             sourceRoot="."
+
+            if command -v pkl >/dev/null 2>&1; then
+              printf 'Pkl must not be available inside CLI Cargo derivations\n' >&2
+              exit 1
+            fi
           '';
         };
 
@@ -1156,6 +1229,32 @@
               mkdir -p "$out"
             '';
 
+        cliGeneratedInputCheck =
+          pkgs.runCommand "sce-cli-generated-input-check"
+            {
+              nativeBuildInputs = [ pkgs.coreutils ];
+            }
+            ''
+              set -euo pipefail
+
+              test -d "${cliGeneratedInput}/pkl-generated/config/.opencode"
+              test -d "${cliGeneratedInput}/pkl-generated/config/.claude"
+              test -d "${cliGeneratedInput}/pkl-generated/config/.pi"
+
+              (
+                cd "${cliGeneratedInput}"
+                sha256sum -c SHA256SUMS >/dev/null
+              )
+
+              cp -r "${cliGeneratedInputSrc}" ./repo
+              (
+                cd ./repo
+                sha256sum -c "${cliGeneratedInput}/INPUTS.SHA256SUMS" >/dev/null
+              )
+
+              mkdir -p "$out"
+            '';
+
         mkCopiedSourceCheck =
           { name
           , src
@@ -1442,6 +1541,7 @@
               }
             );
 
+            cli-generated-input = cliGeneratedInputCheck;
             pkl-generated = pklGeneratedCheck;
 
             npm-bun-tests = npmTests;

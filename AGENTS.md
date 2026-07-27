@@ -45,13 +45,14 @@ This repository uses the Shared Context Engineering (SCE) approach for AI-assist
 
 Run these through Nix from repo root unless noted otherwise.
 
-- Build CLI: `nix develop -c sh -c 'cd cli && cargo build'`
-- Run CLI: `nix develop -c sh -c 'cd cli && cargo run -- --help'`
+- Build CLI: `nix develop -c ./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml`
+- Run CLI: `nix develop -c ./scripts/run-cli-cargo.sh run --manifest-path cli/Cargo.toml -- --help`
 - Build packaged CLI output: `nix build .#default`
 - Run packaged CLI app: `nix run .#sce -- --help`
 - Preferred repo-level verification: `nix flake check`
-- Run a single Rust test by exact name when explicitly needed: `nix develop -c sh -c 'cd cli && cargo test parser_routes_mcp -- --exact'`
-- Run Rust tests in one module/file pattern when explicitly needed: `nix develop -c sh -c 'cd cli && cargo test setup'`
+- Run a single Rust test by exact name when explicitly needed: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml parser_routes_mcp -- --exact`
+- Run Rust tests in one module/file pattern when explicitly needed: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup`
+- Run pre-Cargo wrapper tests: `bash scripts/test-run-cli-cargo.sh`
 - Run ignored? none were found; do not assume ignored-test flows exist.
 - Rust format verification is covered by `nix flake check`
 - Auto-format: `nix develop -c sh -c 'cd cli && cargo fmt'`
@@ -73,6 +74,7 @@ Run these from `config/lib/bash-policy-plugin/` when working on the Bun-owned Op
 ## Testing notes
 
 - Rust tests live inline in source files and in module test files such as `cli/src/services/setup/tests.rs`.
+- Repository Cargo builds must use `scripts/run-cli-cargo.sh`; it generates a fresh temporary Pkl payload, passes `SCE_CLI_GENERATED_INPUT_DIR` to Cargo, and cleans up the payload afterward.
 - Rust/Cargo commands should be executed through `nix develop`, even for one-off builds, tests, fmt, and clippy runs.
 - Prefer `nix flake check` for routine verification and avoid `cargo test` unless the user explicitly asks for it.
 - Rust single-test selection uses standard Cargo substring matching; add `-- --exact` for deterministic one-test runs.
