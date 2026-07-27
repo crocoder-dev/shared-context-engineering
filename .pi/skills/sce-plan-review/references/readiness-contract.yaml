@@ -15,6 +15,8 @@ output_rules:
     value for a required list field.
   - Report plan.completed_tasks and plan.total_tasks as they stand when the
     result is returned.
+  - Report plan.name as the plan file's base name without its extension. It is
+    required by the ready variant, which renders the implementation gate.
   - Do not request implementation confirmation.
   - Do not include implementation results.
   - Do not include context synchronization results.
@@ -40,6 +42,7 @@ variants:
 
       plan:
         path: string
+        name: string
         completed_tasks: integer
         total_tasks: integer
 
@@ -78,6 +81,7 @@ variants:
 
       plan:
         path: context/plans/authentication.md
+        name: authentication
         completed_tasks: 2
         total_tasks: 5
 

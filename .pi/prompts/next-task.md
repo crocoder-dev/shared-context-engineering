@@ -1,5 +1,5 @@
 ---
-description: "Run `sce-plan-review` -> `sce-task-execution` -> `sce-task-context-sync` for one approved SCE task"
+description: "Run `sce-plan-review` -> `sce-task-execution` -> `sce-task-context-sync` for one SCE plan task"
 argument-hint: "<plan-name> [T0X] [approved]"
 ---
 
@@ -17,7 +17,11 @@ Parse `$ARGUMENTS` into three positional parts before invoking any skill:
 
 Resolve `auto-approve` even when `task-id` is absent.
 
+A token matching neither a task ID nor `approved` is an error. Report the unrecognized token and the expected arguments, and stop. Do not guess its meaning.
+
 Pass each part only to the phase that owns it. Do not forward the raw `$ARGUMENTS` string to a skill.
+
+Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is the path resolved by `sce-plan-review` (`plan.path`, or an entry of `candidates`), so every emitted command is directly runnable.
 
 ## Workflow
 
@@ -87,7 +91,7 @@ Do not present an additional implementation confirmation.
 
 Branch on the execution result.
 
-`declined` -> Present "You have declined to proceed with this task" Do not invoke context synchronization. Stop.
+`declined` -> Present "You have declined to proceed with this task". Do not invoke context synchronization. Stop.
 
 `blocked` -> Present:
 
@@ -104,7 +108,7 @@ Do not invoke context synchronization. Stop.
 - Remaining work.
 - The reason the task is incomplete.
 
-Do not select another task. Stop.
+Do not invoke context synchronization. Do not select another task. Stop.
 
 `complete` -> continue to the next step.
 
@@ -118,25 +122,29 @@ Do not restate, summarize, or reconstruct any part of the execution result.
 
 Branch on the synchronization result.
 
-`blocked` -> Present:
+`blocked` -> The task itself succeeded and is already marked complete in the plan. Present:
 
+- That task {completed-task-id} was implemented, verified, and recorded in the plan.
 - The context contradiction or synchronization failure.
-- Application changes already completed.
+- Any context edits the report says were preserved.
 - The action required to resolve the problem.
+- The retry condition stated by the report.
+
+State that durable context is now out of date, and that synchronization must be resolved before continuing the plan. Nothing records the skipped synchronization, so it is lost once this session ends.
 
 Do not select another task. Stop.
 
-`synced` | `no_context_change` -> Print out the report `sce-task-context-sync` outputed. Continue to the next step.
+`synced` | `no_context_change` -> Print out the report `sce-task-context-sync` returned. Continue to the next step.
 
 ### 4. Determine the continuation
 
-Re-read the plan after context synchronization.
-
-Use the plan path resolved by `sce-plan-review` (`plan.path`) in the emitted command, so the command is directly runnable.
+Use `plan.completed_tasks` and `plan.total_tasks` from the execution result to determine which continuation applies.
 
 Do not execute another task. Return exactly one continuation.
 
-If another task is executable return:
+If incomplete tasks remain, read the plan and name the first unchecked task in plan order. Do not evaluate its dependencies; `sce-plan-review` checks them when the emitted command runs and returns `blocked` if they are unmet.
+
+Return:
 
 ```
 
@@ -144,12 +152,15 @@ If another task is executable return:
 
 # Task {completed-task-id} completed.
 
-Next task:
+{completed-tasks} of {total-tasks} tasks complete.
+
+Next up:
 
 {next-task-id} — {next-task-title}
 
 `/next-task {plan-path} {next-task-id}`
 ```
+
 If all tasks are completed return:
 
 ```
