@@ -1,89 +1,148 @@
 ---
 name: sce-plan-review
-description: Use when user wants to review an existing plan and prepare the next task safely.
+description: >
+  Internal SCE workflow skill that resolves one task from an existing plan and
+  determines whether it is ready for implementation. Returns ready, blocked, or
+  plan_complete with a structured payload. Use from /next-task. Do not implement
+  changes, request implementation approval, update the plan, synchronize
+  context, or run final validation.
 ---
 
-## What I do
-- Continue execution from an existing plan in `context/plans/`.
-- Read the selected plan and identify the next task from the first unchecked checkbox.
-- Ask focused questions for anything not clear enough to execute safely.
+# SCE Plan Review
 
-## How to run this
-- Use this skill when the user asks to continue a plan or pick the next task.
-- If `context/` is missing, ask once: "`context/` is missing. Bootstrap SCE baseline now?"
-  - If yes, create baseline with `sce-bootstrap-context` and continue.
-  - If no, stop and explain SCE workflows require `context/`.
-- Read `context/context-map.md`, `context/overview.md`, and `context/glossary.md` before broad exploration.
-- Resolve plan target:
-  - If plan path argument exists, use it.
-  - If multiple plans exist and no explicit path is provided, ask user to choose.
-- Collect:
-  - completed tasks
-  - next task
-  - blockers, ambiguity, and missing acceptance criteria
-- Prompt user to resolve unclear points before implementation.
-- Confirm scope explicitly for this session: one task by default unless user requests multi-task execution.
+## Purpose
 
-## Plan file format
-SCE plans are Markdown files stored in `context/plans/`. Tasks are tracked as checkboxes:
+Resolve exactly one task from an SCE plan (located in `context/plans/`) and
+determine whether it can enter the implementation phase without inventing
+material requirements.
 
-```markdown
-# Plan: Add user authentication
+This skill owns:
 
-## Tasks
-- [x] Scaffold auth module
-- [x] Add password hashing utility
-- [ ] Implement login endpoint        <- next task (first unchecked)
-- [ ] Write integration tests
-- [ ] Update context/current-state.md
-```
+- Resolving one plan.
+- Selecting at most one task.
+- Inspecting the context needed to judge readiness.
+- Determining readiness.
+- Returning one structured readiness result.
 
-The first unchecked `- [ ]` item is the next task to review and prepare.
+Return a result matching:
 
-## Rules
-- Do not auto-mark tasks complete during review.
-- Keep continuation state in the plan markdown itself.
-- Treat `context/plans/` as active execution artifacts; completed plans are disposable and not a durable context source.
-- If durable history is needed, record it in current-state context files and/or `context/decisions/` instead of completed plan files.
-- Keep implementation blocked until decision alignment on unclear points.
-- If plan context is stale or partial, continue with code truth and flag context updates.
+`references/readiness-contract.yaml`
 
-## Expected output
+## Input
 
-Produce a structured readiness summary after review:
+The invoking workflow provides:
 
-```
-## Plan Review - [plan filename]
+- A plan name or path.
+- An optional task ID.
 
-**Completed tasks:** 2 of 5
-**Next task:** Implement login endpoint
+## Workflow
 
-**Acceptance criteria:**
-- POST /auth/login returns JWT on success
-- Returns 401 on invalid credentials
+### 1. Resolve the plan
 
-**Issues found:**
-- Blocker: JWT secret source not specified (env var? config file?)
-- Ambiguity: Should failed attempts be rate-limited in this task or a later one?
+Resolve the supplied plan name or path to exactly one existing plan.
 
-**ready_for_implementation: no**
+When no plan can be found, return `blocked`.
 
-**Required decisions before proceeding:**
-1. Confirm JWT secret source
-2. Confirm rate-limiting scope
-```
+When multiple plans match and none can be selected safely, return `blocked` with
+the matching candidates.
 
-When all issues are resolved:
+Read the selected plan before exploring the repository.
 
-```
-**ready_for_implementation: yes**
-Proceeding with: Implement login endpoint
-```
+### 2. Resolve one task
 
-- Explicit readiness verdict: `ready_for_implementation: yes|no`.
-- If not ready, explicit issue categories: blockers, ambiguity, missing acceptance criteria.
-- Explicit user-aligned decisions needed to proceed to implementation.
-- Explicit user confirmation request that the task is ready for implementation when unresolved issues remain.
+When a task ID is supplied, select that task.
 
-## Related skills
-- `sce-bootstrap-context` - creates the `context/` baseline required by this skill
+Otherwise, select the first incomplete task in plan order whose declared
+dependencies are complete.
+
+Return `plan_complete` when no incomplete tasks remain.
+
+Return `blocked` when incomplete tasks remain but none can currently be
+executed.
+
+Review at most one task per invocation.
+
+### 3. Inspect relevant context
+
+Start with the task and the files it directly references.
+
+Inspect only what is needed to understand:
+
+- Existing behavior.
+- Applicable repository conventions.
+- Architectural boundaries.
+- Relevant tests.
+- Available verification commands.
+- Decisions or specifications connected to the task.
+
+Load root context only when the task affects repository-wide behavior,
+architecture, shared terminology, or cross-domain interfaces.
+
+Do not explore the entire repository by default.
+
+### 4. Determine readiness
+
+A task is `ready` when:
+
+- Its goal is clear.
+- Its scope is sufficiently bounded.
+- Its dependencies are complete.
+- Its done checks are observable.
+- A credible verification method exists.
+- No unresolved decision would materially change the implementation.
+
+Use repository conventions for ordinary local choices.
+
+Do not block on:
+
+- Naming inferable from surrounding code.
+- Established formatting or style.
+- Reversible local implementation details.
+- Details that do not change observable behavior or scope.
+
+Record these choices under `assumptions`.
+
+Return `blocked` when a missing decision materially affects:
+
+- User-visible behavior.
+- Public interfaces.
+- Architecture or ownership boundaries.
+- Data shape or persistence.
+- Security or privacy.
+- External dependencies.
+- Destructive or difficult-to-reverse behavior.
+- The evidence needed to prove completion.
+
+### 5. Return the result
+
+Return exactly one structured result:
+
+- `ready`
+- `blocked`
+- `plan_complete`
+
+Return only the structured result. Do not add explanatory prose before or after
+it.
+
+## Boundaries
+
+Do not:
+
+- Modify application code.
+- Modify tests.
+- Update the plan.
+- Mark the task complete.
+- Request implementation confirmation.
+- Invoke task execution.
+- Synchronize context.
+- Run final validation.
+- Review more than one task.
+
+## Completion
+
+The skill is complete after:
+
+- One plan was resolved.
+- At most one task was resolved.
+- One valid readiness result matching `references/readiness-contract.yaml` was
+  returned.
