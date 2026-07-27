@@ -1296,4 +1296,22 @@ mod tests {
         assert!(iter_embedded_assets_for_setup_target(SetupTarget::Pi).count() > 0);
         assert_eq!(all_count, concrete_sum);
     }
+
+    #[test]
+    fn embedded_build_payload_contains_generated_targets_and_static_hooks() {
+        let contains = |target, path| {
+            iter_embedded_assets_for_setup_target(target)
+                .any(|asset| asset.relative_path == path && !asset.bytes.is_empty())
+        };
+
+        assert!(contains(SetupTarget::OpenCode, "command/next-task.md"));
+        assert!(contains(
+            SetupTarget::OpenCode,
+            "lib/bash-policy-presets.json"
+        ));
+        assert!(contains(SetupTarget::Claude, "commands/next-task.md"));
+        assert!(contains(SetupTarget::Pi, "prompts/next-task.md"));
+        assert!(contains(SetupTarget::Pi, "extensions/sce/index.ts"));
+        assert!(iter_required_hook_assets().all(|asset| !asset.bytes.is_empty()));
+    }
 }

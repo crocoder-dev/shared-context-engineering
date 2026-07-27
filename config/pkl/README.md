@@ -47,25 +47,17 @@ Validate the generator entrypoint:
 nix develop -c pkl eval config/pkl/generate.pkl
 ```
 
-Preview generation without touching committed outputs:
+Generate into an explicit temporary directory without touching repository paths:
 
 ```bash
-nix develop -c pkl eval -m context/tmp/pkl-generated config/pkl/generate.pkl
+tmp_dir="$(mktemp -d)"
+nix run .#pkl-generate -- "$tmp_dir"
+find "$tmp_dir/config" -type f | sort
 ```
 
-Regenerate tracked outputs in place:
+Repository and Nix Cargo builds invoke the same generator from `cli/build.rs` and write its output under Cargo `OUT_DIR`. Do not evaluate with `-m .`: `config/.opencode`, `config/.claude`, and `config/.pi` are install payload layouts, not repository-owned output directories.
 
-```bash
-nix develop -c pkl eval -m . config/pkl/generate.pkl
-```
-
-Inspect the target trees:
-
-```bash
-git status --short config/.opencode config/.claude config/.pi config/schema/sce-config.schema.json
-```
-
-## Verify parity
+## Verify ephemeral generation
 
 Run the focused generated-output check:
 
@@ -75,13 +67,13 @@ nix run .#pkl-check-generated
 
 The check:
 
+- rejects committed `config/.opencode`, `config/.claude`, `config/.pi`, `config/schema/sce-config.schema.json`, and `cli/assets/generated` outputs;
 - evaluates `metadata-coverage-check.pkl` for the exact three-command, seven-skill-package, nested-reference, and two-agent OpenCode inventory;
-- regenerates into a temporary directory;
-- compares complete OpenCode, Claude, and Pi generated directories, so extra, missing, or changed nested files fail parity;
-- compares retained scalar outputs and the generated SCE config schema;
-- rejects removed whole-tree outputs such as `config/automated/.opencode` and `config/.claude/agents`.
+- generates twice into temporary directories and compares sorted SHA-256 inventories;
+- requires all generated target roots and the SCE config schema while rejecting removed surfaces such as `config/automated/.opencode` and `config/.claude/agents`;
+- prints the stable inventory count and digest without preserving generated files.
 
-`nix flake check` runs the same contract through the `pkl-parity` derivation. Keep `config/pkl/check-generated.sh`, the `pklParitySrc` fileset, and the `pklParityCheck` path lists in `flake.nix` aligned with `config/pkl/generate.pkl` whenever output ownership changes.
+`nix flake check` runs the same script through the `pkl-generated` derivation. Keep `config/pkl/check-generated.sh` and the `pklGeneratedCheckSrc` fileset in `flake.nix` aligned with `config/pkl/generate.pkl` whenever generator inputs change.
 
 ## Vendored dependencies
 
@@ -98,8 +90,8 @@ Pkl dependencies are vendored under `config/pkl/deps/` for Nix sandbox compatibi
 
 **Inventory check failure** — Compare the three workflow modules and renderer output mappings with the expected commands, agents, skill entrypoints, and package-local reference paths in `metadata-coverage-check.pkl`.
 
-**Generated output drift** — Regenerate with `nix develop -c pkl eval -m . config/pkl/generate.pkl`, inspect the diff, and rerun `nix run .#pkl-check-generated`.
+**Nondeterministic output** — Generate twice into separate temporary directories, compare their inventories, and correct the canonical Pkl or renderer input responsible for the difference.
 
-**Removed output still exists** — Delete the reported obsolete generated path after confirming it is generation-owned; do not add it back to the generator or parity source list.
+**Removed output still exists** — Delete the reported obsolete generated path after confirming it is generation-owned; do not restore repository target trees or add them to a source filter.
 
 **Unexpected drift outside generated-owned paths** — Stop and confirm whether the path is manual or runtime-managed before changing generation ownership.

@@ -59,6 +59,18 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "$1 is required. $2"
 }
 
+prepare_flatpak_fallback() {
+  local repo_root="$1" support_dir="$2"
+  local fallback_source_directory="${SCE_FLATPAK_FALLBACK_SOURCE_DIRECTORY:-}"
+  [ -n "${fallback_source_directory}" ] \
+    || die "prepare_flatpak_fallback: fallback source directory not available; run via 'nix run .#sce-flatpak'"
+  require_file "${repo_root}/scripts/prepare-cli-generated-assets.sh"
+
+  mkdir -p "${support_dir}"
+  bash "${repo_root}/scripts/prepare-cli-generated-assets.sh" \
+    "${repo_root}" "${support_dir}/${fallback_source_directory}" >&2
+}
+
 ensure_flatpak_user_remote() {
   printf 'Ensuring Flatpak user remote %s is configured for SDK/runtime dependencies.\n' "${FLATHUB_REMOTE_NAME}"
   flatpak --user remote-add --if-not-exists --from "${FLATHUB_REMOTE_NAME}" "${FLATHUB_REMOTE_URL}"
@@ -90,6 +102,7 @@ generate_local_manifest() {
   cp "${flatpak_dir}/${METAINFO_NAME}" "${out_dir}/${METAINFO_NAME}"
   cp "${flatpak_dir}/git-host-bridge" "${out_dir}/git-host-bridge"
   cp "${flatpak_dir}/cargo-sources.json" "${out_dir}/cargo-sources.json"
+  prepare_flatpak_fallback "${repo_root}" "${out_dir}"
   local abs_repo_root; abs_repo_root="$(cd "${repo_root}" && pwd -P)"
   substitute_placeholder "${SCE_FLATPAK_LOCAL_PATH_PLACEHOLDER}" "${abs_repo_root}" \
     "${SCE_FLATPAK_LOCAL_MANIFEST_TEMPLATE}" > "${out_dir}/${MANIFEST_NAME}"
@@ -151,12 +164,14 @@ emit_source_manifest_metadata() {
   "packaged_support_files": [
     "${METAINFO_NAME}",
     "cargo-sources.json",
+    "cli-package-fallback/",
     "git-host-bridge"
   ],
   "packaged_files": [
     "${MANIFEST_NAME}",
     "${METAINFO_NAME}",
     "cargo-sources.json",
+    "cli-package-fallback/",
     "git-host-bridge"
   ]
 }
@@ -280,6 +295,7 @@ cmd_release_package() {
   cp "${flatpak_dir}/${METAINFO_NAME}" "${stage_dir}/${METAINFO_NAME}"
   cp "${flatpak_dir}/cargo-sources.json" "${stage_dir}/cargo-sources.json"
   cp "${flatpak_dir}/git-host-bridge" "${stage_dir}/git-host-bridge"
+  prepare_flatpak_fallback "${repo_root}" "${stage_dir}"
   chmod 0644 "${stage_dir}/${MANIFEST_NAME}" "${stage_dir}/${METAINFO_NAME}" "${stage_dir}/cargo-sources.json"
   chmod 0755 "${stage_dir}/git-host-bridge"
 

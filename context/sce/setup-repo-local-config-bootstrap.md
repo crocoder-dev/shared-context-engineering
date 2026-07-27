@@ -38,4 +38,4 @@ After config asset installation succeeds for a non-interactive target (`--openco
 
 - The git-repo gate (`ensure_git_repository`) was introduced in T01 of the same plan.
 - Local bootstrap (repo config + local DB init) is independent of config install and hook install; it runs before both.
-- The bootstrap payload matches the `$schema` declaration accepted by the config service's startup config loading and the Pkl-authored JSON Schema at `config/schema/sce-config.schema.json`.
+- The bootstrap payload matches the `$schema` declaration accepted by startup config loading and the Pkl-authored JSON Schema embedded from Cargo `OUT_DIR`.

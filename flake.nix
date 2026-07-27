@@ -136,11 +136,11 @@
         tursoCraneLib = (crane.mkLib pkgs).overrideToolchain (_: tursoToolchain);
 
         workspaceRoot = ./.;
-        generatedConfigFileset = pkgs.lib.fileset.unions [
-          (pkgs.lib.fileset.maybeMissing ./config/.opencode)
-          (pkgs.lib.fileset.maybeMissing ./config/.claude)
-          (pkgs.lib.fileset.maybeMissing ./config/.pi)
-          ./config/schema/sce-config.schema.json
+        cliBuildInputFileset = pkgs.lib.fileset.unions [
+          ./config/pkl
+          ./config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts
+          ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
+          ./config/lib/pi-plugin/sce-pi-extension.ts
           ./config/schema/agent-trace.schema.json
         ];
         workspaceSrc = pkgs.lib.fileset.toSource {
@@ -153,7 +153,7 @@
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/patch/fixtures)
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/structured_patch/fixtures)
             (pkgs.lib.fileset.maybeMissing ./cli/migrations)
-            generatedConfigFileset
+            cliBuildInputFileset
             (pkgs.lib.fileset.maybeMissing ./cli/assets/hooks)
           ];
         };
@@ -197,18 +197,18 @@
           ];
         };
 
-        pklParitySrc = pkgs.lib.fileset.toSource {
+        pklGeneratedCheckSrc = pkgs.lib.fileset.toSource {
           root = workspaceRoot;
           fileset = pkgs.lib.fileset.unions [
             ./config/pkl
-            (pkgs.lib.fileset.maybeMissing ./config/.opencode)
-            (pkgs.lib.fileset.maybeMissing ./config/.claude)
-            (pkgs.lib.fileset.maybeMissing ./config/.pi)
-            (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode)
-            (pkgs.lib.fileset.maybeMissing ./config/schema/sce-config.schema.json)
             ./config/lib/pi-plugin/sce-pi-extension.ts
             ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
             ./config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts
+            (pkgs.lib.fileset.maybeMissing ./config/.opencode)
+            (pkgs.lib.fileset.maybeMissing ./config/.claude)
+            (pkgs.lib.fileset.maybeMissing ./config/.pi)
+            (pkgs.lib.fileset.maybeMissing ./config/schema/sce-config.schema.json)
+            (pkgs.lib.fileset.maybeMissing ./cli/assets/generated)
           ];
         };
 
@@ -274,16 +274,9 @@
         commonCargoArgs = cargoBaseArgs // {
           pname = "sce";
           src = workspaceSrc;
+          nativeBuildInputs = cargoBaseArgs.nativeBuildInputs ++ [ pkgs.pkl ];
 
           postUnpack = ''
-            mkdir -p "$sourceRoot/cli/assets/generated/config"
-            cp -R ${./config/.opencode} "$sourceRoot/cli/assets/generated/config/opencode"
-            cp -R ${./config/.claude} "$sourceRoot/cli/assets/generated/config/claude"
-            cp -R ${./config/.pi} "$sourceRoot/cli/assets/generated/config/pi"
-            mkdir -p "$sourceRoot/cli/assets/generated/config/schema"
-            cp ${./config/schema/sce-config.schema.json} "$sourceRoot/cli/assets/generated/config/schema/sce-config.schema.json"
-            cp ${./config/schema/agent-trace.schema.json} "$sourceRoot/cli/assets/generated/config/schema/agent-trace.schema.json"
-
             cd "$sourceRoot/cli"
             sourceRoot="."
           '';
@@ -452,7 +445,7 @@
           echo "- tsc: $(version_of tsc)"
           echo "- tsserver-lsp: $(version_of typescript-language-server)"
           echo "- rust: $(version_of rustc)"
-          echo "- pkl-generate: nix run .#pkl-generate"
+          echo "- pkl-generate: nix run .#pkl-generate -- <output-dir>"
           echo "- pkl-check-generated: nix run .#pkl-check-generated"
           echo "- release-artifacts: nix run .#release-artifacts -- --help"
           echo "- native-portability-audit: nix run .#native-portability-audit -- --help"
@@ -500,7 +493,15 @@
               repo_root="$(pwd)"
             fi
 
-            exec nix develop "''${repo_root}" -c pkl eval -m "''${repo_root}" "''${repo_root}/config/pkl/generate.pkl"
+            if [ "$#" -ne 1 ]; then
+              printf 'Usage: pkl-generate <output-dir>\n' >&2
+              exit 2
+            fi
+
+            output_dir="$1"
+            mkdir -p "''${output_dir}"
+            output_dir="$(cd "''${output_dir}" && pwd)"
+            exec nix develop "''${repo_root}" -c pkl eval -m "''${output_dir}" "''${repo_root}/config/pkl/generate.pkl"
           '';
         };
 
@@ -1025,6 +1026,7 @@
             pkgs.git
             pkgs.gnutar
             pkgs.gzip
+            pkgs.pkl
             pkgs.python3
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
@@ -1084,6 +1086,7 @@
             export SCE_FLATPAK_COMMIT_MANIFEST_TEMPLATE="${flatpakManifest.commitManifestTemplate}"
             export SCE_FLATPAK_LOCAL_PATH_PLACEHOLDER="${flatpakManifest.localPathPlaceholder}"
             export SCE_FLATPAK_COMMIT_PLACEHOLDER="${flatpakManifest.commitPlaceholder}"
+            export SCE_FLATPAK_FALLBACK_SOURCE_DIRECTORY="${flatpakManifest.fallbackSourceDirectory}"
             export SCE_FLATPAK_STATIC_CHECK="${flatpakStaticCheckApp}/bin/flatpak-static-check"
             export SCE_FLATPAK_VERSION_PARITY_CHECK="${flatpakVersionParityCheckApp}/bin/flatpak-version-parity-check"
             export SCE_FLATPAK_LOCAL_MANIFEST_CHECK="${flatpakLocalManifestCheckApp}/bin/flatpak-local-manifest-check"
@@ -1130,100 +1133,26 @@
             mkdir -p "$out"
           '';
 
-        pklParityCheck =
-          pkgs.runCommand "pkl-parity-check"
+        pklGeneratedCheck =
+          pkgs.runCommand "pkl-generated-check"
             {
               nativeBuildInputs = [
-                pkgs.git
+                pkgs.coreutils
+                pkgs.diffutils
                 pkgs.pkl
               ];
             }
             ''
               set -euo pipefail
 
-              # Copy only the Pkl authoring inputs and generated outputs that
-              # this parity check reads, so unrelated repository changes do not
-              # invalidate the cheap generated-output drift check.
-              cp -r "${pklParitySrc}" ./repo
+              cp -r "${pklGeneratedCheckSrc}" ./repo
               chmod -R u+w ./repo
               cd ./repo
 
-              export GIT_PAGER=cat
+              export IN_NIX_SHELL=1
+              export SCE_REPO_ROOT="$PWD"
+              ${pkgs.bash}/bin/bash ./config/pkl/check-generated.sh
 
-              tmp_dir="$(mktemp -d)"
-              cleanup() {
-                rm -rf "$tmp_dir"
-              }
-              trap cleanup EXIT
-
-              pkl eval config/pkl/renderers/metadata-coverage-check.pkl >/dev/null
-              pkl eval -m "$tmp_dir" config/pkl/generate.pkl >/dev/null
-
-              paths=(
-                "config/.opencode/agent"
-                "config/.opencode/command"
-                "config/.opencode/skills"
-                "config/.opencode/lib"
-                "config/.opencode/plugins"
-                "config/.opencode/opencode.json"
-                "config/.claude/commands"
-                "config/.claude/skills"
-                "config/.claude/hooks"
-                "config/.claude/settings.json"
-                "config/.pi/prompts"
-                "config/.pi/skills"
-                "config/.pi/extensions"
-                "config/schema/sce-config.schema.json"
-              )
-
-              forbidden_paths=(
-                "config/automated/.opencode"
-                "config/.claude/agents"
-              )
-
-              stale=0
-              for path in "''${paths[@]}"; do
-                if [[ ! -e "$tmp_dir/$path" ]]; then
-                  stale=1
-                  printf 'Generator did not emit required output at %s\n' "$path"
-                  continue
-                fi
-
-                if [[ ! -e "$path" ]]; then
-                  stale=1
-                  printf 'Required generated output is missing at %s\n' "$path"
-                  continue
-                fi
-
-                if ! git diff --no-index --exit-code -- "$tmp_dir/$path" "$path" >/dev/null 2>&1; then
-                  stale=1
-                  printf 'Generated output drift detected at %s\n' "$path"
-                  git diff --no-index -- "$tmp_dir/$path" "$path" || true
-                fi
-              done
-
-              for path in "''${forbidden_paths[@]}"; do
-                if [[ -e "$tmp_dir/$path" ]]; then
-                  stale=1
-                  printf 'Generator emitted removed output at %s\n' "$path"
-                fi
-                if [[ -e "$path" ]]; then
-                  stale=1
-                  printf 'Removed generated output still exists at %s\n' "$path"
-                fi
-              done
-
-              if [[ "$stale" -ne 0 ]]; then
-                cat <<'EOF'
-              Generated files are stale.
-
-              Regenerate with:
-                nix develop -c pkl eval -m . config/pkl/generate.pkl
-              EOF
-                exit 1
-              fi
-
-              printf 'Generated outputs are up to date.\n'
               mkdir -p "$out"
             '';
 
@@ -1513,7 +1442,7 @@
               }
             );
 
-            pkl-parity = pklParityCheck;
+            pkl-generated = pklGeneratedCheck;
 
             npm-bun-tests = npmTests;
             npm-biome-check = npmBiomeCheck;

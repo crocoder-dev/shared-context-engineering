@@ -8,23 +8,22 @@ repository = "https://github.com/crocoder-dev/shared-context-engineering"
 homepage = "https://sce.crocoder.dev"
 documentation = "https://sce.crocoder.dev/docs"
 readme = "README.md"
+include = [
+  "/README.md",
+  "/Cargo.toml",
+  "/Cargo.lock",
+  "/build.rs",
+  "/package-fallback/SHA256SUMS",
+  "/package-fallback/pkl-generated/**",
+  "/package-fallback/static/**",
+  "/src/**",
+]
+keywords = ["cli", "automation", "developer-tools"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "sce"
 path = "src/main.rs"
-
-include = [
-  "README.md",
-  "Cargo.toml",
-  "Cargo.lock",
-  "build.rs",
-  "assets/hooks/**",
-  "assets/generated/**",
-  "migrations/**",
-  "src/**",
-]
-keywords = ["cli", "automation", "developer-tools"]
-categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 anyhow = "1"

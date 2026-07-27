@@ -58,8 +58,13 @@ require_contains() {
 require_contains "id: dev.crocoder.sce" "manifest app ID is not dev.crocoder.sce"
 require_contains "command: sce" "manifest command is not sce"
 require_contains "org.freedesktop.Sdk.Extension.rust-stable" "Rust SDK extension is missing"
-require_contains "bash ./scripts/prepare-cli-generated-assets.sh \"\$PWD\"" "generated-asset preparation command is missing"
+require_contains "path: cli-package-fallback" "ephemeral package-fallback source is missing"
+require_contains "dest: cli/package-fallback" "package-fallback source destination is missing"
 require_contains "cargo --offline build --release --manifest-path cli/Cargo.toml --bin sce" "offline Cargo source-build command is missing"
+
+if [[ "$manifest" == *"prepare-cli-generated-assets.sh"* ]]; then
+  errors+=("manifest attempts to run Pkl fallback preparation inside Flatpak")
+fi
 require_contains "install -Dm755 cli/target/release/sce /app/bin/sce" "sce install command is missing"
 require_contains "install -Dm755 packaging/flatpak/git-host-bridge /app/bin/git" "host git bridge install command is missing"
 require_contains "--talk-name=org.freedesktop.Flatpak" "host Flatpak permission is missing"

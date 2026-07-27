@@ -363,12 +363,6 @@ pub(crate) mod hook_dir {
 }
 
 #[allow(dead_code)]
-pub(crate) mod embedded_asset_root {
-    pub const GENERATED_CONFIG: &str = "assets/generated/config";
-    pub const HOOKS: &str = "assets/hooks";
-}
-
-#[allow(dead_code)]
 pub(crate) mod opencode_asset {
     pub const OPENCODE_DIR: &str = "opencode";
     pub const PLUGINS_DIR: &str = "plugins";
@@ -383,7 +377,6 @@ pub(crate) mod opencode_asset {
 }
 
 pub(crate) mod claude_asset {
-    pub const CLAUDE_DIR: &str = "claude";
     pub const SETTINGS_FILE: &str = "settings.json";
     pub const HOOKS_DIR: &str = "hooks";
     pub const SKILLS_DIR: &str = "skills";
@@ -515,79 +508,6 @@ impl RepoPaths {
 
     pub(crate) fn context_map_file(&self) -> PathBuf {
         self.context_dir().join(context_file::CONTEXT_MAP)
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct EmbeddedAssetPaths {
-    cli_root: PathBuf,
-}
-
-#[allow(dead_code)]
-impl EmbeddedAssetPaths {
-    pub(crate) fn new(cli_root: impl Into<PathBuf>) -> Self {
-        Self {
-            cli_root: cli_root.into(),
-        }
-    }
-
-    pub(crate) fn generated_config_root(&self) -> PathBuf {
-        self.cli_root.join(embedded_asset_root::GENERATED_CONFIG)
-    }
-
-    pub(crate) fn hooks_root(&self) -> PathBuf {
-        self.cli_root.join(embedded_asset_root::HOOKS)
-    }
-
-    pub(crate) fn opencode_assets_dir(&self) -> PathBuf {
-        self.generated_config_root()
-            .join(opencode_asset::OPENCODE_DIR)
-    }
-
-    pub(crate) fn opencode_plugins_dir(&self) -> PathBuf {
-        self.opencode_assets_dir().join(opencode_asset::PLUGINS_DIR)
-    }
-
-    pub(crate) fn opencode_plugin_file(&self) -> PathBuf {
-        self.opencode_plugins_dir()
-            .join(opencode_asset::PLUGIN_FILE)
-    }
-
-    pub(crate) fn opencode_lib_dir(&self) -> PathBuf {
-        self.opencode_assets_dir().join(opencode_asset::LIB_DIR)
-    }
-
-    pub(crate) fn opencode_preset_catalog(&self) -> PathBuf {
-        self.opencode_lib_dir().join(opencode_asset::PRESET_CATALOG)
-    }
-
-    pub(crate) fn opencode_skills_dir(&self) -> PathBuf {
-        self.opencode_assets_dir().join(opencode_asset::SKILLS_DIR)
-    }
-
-    pub(crate) fn opencode_agents_dir(&self) -> PathBuf {
-        self.opencode_assets_dir().join(opencode_asset::AGENTS_DIR)
-    }
-
-    pub(crate) fn claude_assets_dir(&self) -> PathBuf {
-        self.generated_config_root().join(claude_asset::CLAUDE_DIR)
-    }
-
-    pub(crate) fn claude_skills_dir(&self) -> PathBuf {
-        self.claude_assets_dir().join(claude_asset::SKILLS_DIR)
-    }
-
-    pub(crate) fn claude_agents_dir(&self) -> PathBuf {
-        self.claude_assets_dir().join(claude_asset::AGENTS_DIR)
-    }
-
-    pub(crate) fn config_schema_dir(&self) -> PathBuf {
-        self.cli_root.join(schema::SCHEMA_DIR)
-    }
-
-    pub(crate) fn sce_config_schema_file(&self) -> PathBuf {
-        self.config_schema_dir().join(schema::SCE_CONFIG_SCHEMA)
     }
 }
 

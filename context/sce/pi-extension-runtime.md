@@ -2,9 +2,9 @@
 
 Project-local Pi extension that wires the Pi coding agent into SCE runtime
 systems. Source of truth: `config/lib/pi-plugin/sce-pi-extension.ts`, emitted
-verbatim by `config/pkl/generate.pkl` to `config/.pi/extensions/sce/index.ts`
-(same source-to-generated pattern as the OpenCode plugins under
-`config/lib/{bash-policy-plugin,agent-trace-plugin}/`).
+verbatim by `config/pkl/generate.pkl` to payload-relative
+`config/.pi/extensions/sce/index.ts` beneath Cargo `OUT_DIR`, temporary previews,
+or packaging fallbacks.
 
 ## Registration model
 
@@ -80,10 +80,10 @@ verbatim by `config/pkl/generate.pkl` to `config/.pi/extensions/sce/index.ts`
 
 ## Verification
 
-- `nix develop -c ./config/pkl/check-generated.sh` covers
-  `config/.pi/extensions` in its parity paths.
-- Regeneration must be diff-clean; edit the `config/lib/pi-plugin/` source,
-  never the generated copy.
+- `nix run .#pkl-check-generated` requires `config/.pi/extensions/sce/index.ts`
+  in both temporary inventories and rejects a committed `config/.pi` tree.
+- Edit `config/lib/pi-plugin/` and inspect temporary output when needed; never
+  create or edit a repository generated copy.
 
 ## Rust-side session provenance
 
@@ -95,11 +95,12 @@ unprefixed.
 
 ## Asset pipeline, install, and doctor coverage
 
-- `scripts/prepare-cli-generated-assets.sh` copies the whole `config/.pi` tree
-  (including `extensions/sce/index.ts`) into
-  `cli/assets/generated/config/pi/`; `cli/build.rs` embeds that tree wholesale
+- For repository builds, `cli/build.rs` evaluates the canonical Pkl model into
+  `OUT_DIR/pkl-generated` and embeds the generated `config/.pi` tree wholesale
   as `PI_EMBEDDED_ASSETS`, so `sce setup --pi` installs the extension to
   repo-root `.pi/extensions/sce/index.ts` with no per-asset enumeration.
+  Pkl-free package fallback preparation is owned by the Cargo distribution
+  path rather than this runtime contract.
 - `sce doctor` buckets embedded Pi assets under `extensions/` into a
   `Pi extensions` integration group (`collect_pi_integration_groups()` in
   `cli/src/services/doctor/inspect.rs`, `pi_asset::EXTENSIONS_DIR`), reporting
