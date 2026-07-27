@@ -19,6 +19,7 @@ Markdown report.
 This skill owns:
 
 - Validating the execution handoff.
+- Confirming the context root exists.
 - Discovering the context affected by one completed task.
 - Deciding whether durable context changed.
 - Editing and verifying the affected context files.
@@ -71,7 +72,21 @@ Confirm that:
 If the handoff is missing required information or is internally contradictory,
 do not modify context. Return a `blocked` Markdown report.
 
-### 2. Discover applicable context
+### 2. Confirm the context root
+
+When `context/` does not exist, there is no durable memory to synchronize.
+Do not create it, and do not write context files outside it.
+
+Return a `blocked` report whose required action is:
+
+`sce setup --bootstrap-context`
+
+State that the task itself is complete and recorded in the plan, and that
+synchronization should run again once the context root exists.
+
+Bootstrapping is the user's action, not this skill's.
+
+### 3. Discover applicable context
 
 Start with the execution result:
 
@@ -88,7 +103,8 @@ Then inspect existing repository context in this order when present:
 3. `context/overview.md`
 4. `context/architecture.md`
 5. `context/glossary.md`
-6. Operational, product, or decision records directly related to the change
+6. `context/patterns.md`
+7. Operational, product, or decision records directly related to the change
 
 Use the context map and existing links to locate authoritative files.
 
@@ -97,7 +113,29 @@ Do not scan or rewrite the entire `context/` tree by default.
 Do not create a new context file when an existing authoritative file can be
 updated coherently.
 
-### 3. Determine whether durable context changed
+#### The mandatory root pass
+
+Every invocation verifies these five files against code truth, whatever the
+reported classification is:
+
+- `context/overview.md`
+- `context/architecture.md`
+- `context/glossary.md`
+- `context/patterns.md`
+- `context/context-map.md`
+
+Verifying is not editing. A classification that warrants no root edit still
+requires reading each of these and confirming it is not contradicted by the
+completed implementation. A file that is absent is a gap; record it in the
+report rather than creating it to satisfy the pass.
+
+Report each of the five as verified or edited. Never declare synchronization
+done while one of them is unchecked.
+
+Do not create a new context file when an existing authoritative file can be
+updated coherently.
+
+### 4. Determine whether durable context changed
 
 Use the reported context impact as a strong hint, then verify it against the
 implementation and existing context.
@@ -121,19 +159,26 @@ Do not document:
 - Speculation or future work not established by the completed implementation.
 - Generic engineering practices.
 
-Interpret impact classifications as follows:
+Interpret impact classifications as follows. Each governs which files are
+*edited*; none of them waives the mandatory root pass.
 
-- `none`: Verify that existing context remains accurate; normally make no edits.
+- `none`: Make no edits beyond any correction the root pass turns up.
 - `local`: Update the nearest existing authoritative context only when the new
   behavior is not reliably discoverable from code.
 - `domain`: Update affected domain context and the context map when its links or
   summaries changed.
 - `root`: Update the relevant root context and any affected domain context.
 
+A change is `root` when it introduces cross-cutting behavior, repository-wide
+policy or contracts, an architecture or ownership boundary, or a change to
+canonical terminology. A change confined to one feature or domain, with no
+repository-wide behavior, architecture, or terminology impact, is `domain` or
+`local`: capture its detail in domain files and leave the root files unedited.
+
 If the reported classification is inconsistent with the actual change, use the
 verified classification and explain the difference in the report.
 
-### 4. Synchronize context
+### 5. Synchronize context
 
 Make the smallest coherent documentation change that preserves repository truth.
 
@@ -153,12 +198,55 @@ Create a new context file only when:
 - No existing file owns it coherently.
 - The new file has a clear place in the context map.
 
-### 5. Verify synchronization
+#### Feature existence
+
+Every feature the completed task implemented must have at least one durable
+canonical description discoverable from `context/`, in a domain file under
+`context/{domain}/` or in `context/overview.md` for a cross-cutting feature.
+
+When the task implemented a feature no context file describes, add that
+description. A feature that fits no existing domain file gets a new focused
+file; do not defer it to a later task. Prefer a small, precise domain file over
+overloading `overview.md` with detail.
+
+This is the one case where documentation is warranted by the change itself
+rather than by a gap in durable knowledge. It is not license to narrate the
+diff: describe what the feature is and how it behaves, not what was edited.
+
+#### Glossary
+
+Add a `context/glossary.md` entry for any domain language the task introduced.
+New terminology is durable knowledge whatever the classification is: a `domain`
+change that names a new concept still earns its glossary entry.
+
+#### File hygiene
+
+Every context file this skill writes must satisfy:
+
+- One topic per file.
+- At most 250 lines. When an edit would push a file past 250 lines, split it
+  into focused files and link them rather than letting it grow.
+- Relative paths in every link to another context file.
+- A Mermaid diagram where structure, boundaries, or flows are complex enough
+  that prose alone would not carry them.
+- Concrete code examples only where they clarify non-trivial behavior.
+
+When detail outgrows a shared file, migrate it into `context/{domain}/`, leave a
+concise pointer behind, and link the new file from `context/context-map.md`.
+
+### 6. Verify synchronization
 
 After edits, verify:
 
 - Every changed context file accurately reflects the completed implementation.
 - No edited statement contradicts the code, plan, or execution evidence.
+- Every file in the mandatory root pass was read and confirmed against code
+  truth, whether or not it was edited.
+- Each feature implemented by the task has a durable canonical description
+  reachable from `context/`.
+- Every changed file is at or below 250 lines, covers one topic, and links other
+  context files by relative path.
+- Diagrams are present where structure, boundaries, or flows are complex.
 - Links and referenced paths resolve when practical to check.
 - New context files are reachable from the context map or another authoritative
   index.
@@ -173,7 +261,7 @@ If synchronization cannot be completed without inventing facts or resolving a
 material contradiction, preserve safe edits when appropriate and return a
 `blocked` report.
 
-### 6. Return the Markdown report
+### 7. Return the Markdown report
 
 Return exactly one report status:
 
@@ -204,13 +292,19 @@ Do not:
 - Run full-plan validation.
 - Mark the plan validated, closed, or archived.
 - Create a Git commit or push changes.
-- Add documentation solely because files changed.
+- Create the context root. `sce setup --bootstrap-context` owns that.
+- Narrate changed files as documentation. Feature existence is the only reason
+  to document a change that introduced no other durable knowledge.
+- Delete a context file that has uncommitted changes.
 - Return an execution-style YAML result.
 
 ## Completion
 
 The skill is complete after:
 
+- The context root was confirmed, or a `blocked` report named
+  `sce setup --bootstrap-context` as the required action.
+- The mandatory root pass was run.
 - Applicable durable context was synchronized and verified, no context change
   was warranted, or a synchronization blocker was reported.
 - One Markdown report matching `references/sync-report.md` was returned.
