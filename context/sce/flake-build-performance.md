@@ -20,6 +20,17 @@ The root flake separates ordinary development from release-only work:
 Git-commit embedding is release-only. Native packages and normal CLI check
 derivations do not receive `SCE_GIT_COMMIT`; release packages do.
 
+Generated CLI assets cross a separate pre-Cargo boundary. One deterministic
+`cliGeneratedInput` derivation evaluates the canonical Pkl model twice, rejects
+nondeterminism, and records exact SHA-256 inventories for both the payload and
+its canonical inputs. Native, release, test, and Clippy derivations all receive
+the same output through `SCE_CLI_GENERATED_INPUT_DIR`; Pkl is unavailable inside
+those Cargo derivations. Host and musl dependency-only derivations and
+`cli-fmt` omit the handoff, so generated-input changes invalidate generation
+and compiling outputs without rebuilding dependency artifacts or formatting.
+The `cli-generated-input` flake check verifies the payload roots and both
+inventories independently of Cargo compilation.
+
 ## Benchmark method
 
 Measurements were taken on x86_64-linux with 8 logical cores, Nix 2.34.8, and a

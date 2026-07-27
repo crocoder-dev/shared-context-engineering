@@ -7,10 +7,12 @@ This file captures the implemented Cargo distribution slice from `context/plans/
 - The published crate name is `shared-context-engineering`; it installs the `sce` binary.
 - `cli/Cargo.toml` keeps crates.io-facing metadata enabled for publication.
 - `cli/README.md` is the crate-facing install guidance source referenced by Cargo/crates.io surfaces.
-- Repository Cargo builds evaluate canonical Pkl inputs directly into Cargo `OUT_DIR` and do not consume `cli/assets/generated/` or the packaging fallback.
+- Repository Cargo builds require a pre-Cargo generated-input directory through `SCE_CLI_GENERATED_INPUT_DIR`; `cli/build.rs` never invokes Pkl and does not consume `cli/assets/generated/` or the packaging fallback when canonical repository sources are present.
+- The handoff contains `pkl-generated/`, `SHA256SUMS` for that exact payload, and `INPUTS.SHA256SUMS` for canonical `config/pkl` plus referenced `config/lib` inputs. `cli/build.rs` rejects missing, incomplete, modified, or stale handoffs, then copies the validated payload into `OUT_DIR/pkl-generated`.
+- `scripts/run-cli-cargo.sh` is the supported repository Cargo boundary. It generates canonical Pkl twice into a fresh temporary directory, rejects nondeterminism, writes both inventories, exports the handoff only for the requested Cargo process, forwards Cargo arguments unchanged, and removes the directory after success, failure, or a handled signal. Build, targeted-test, Clippy, run, and `cargo install --path cli` workflows use this wrapper rather than direct Cargo.
 - Before packaging, `scripts/prepare-cli-generated-assets.sh` evaluates canonical Pkl twice, rejects nondeterministic output, stages generated targets plus hooks, schemas, and migrations under ignored `cli/package-fallback/`, and writes `SHA256SUMS` for the exact payload.
 - Published crates include only the packaging fallback, Rust sources, and crate metadata. In an unpacked crate, `cli/build.rs` validates the fallback inventory and copies it into the consumer's `OUT_DIR`; downstream Cargo builds do not require Pkl or parent repository paths.
-- Missing or changed fallback files fail the build with guidance to recreate the package through the preparation script. When canonical repository Pkl sources exist, `build.rs` always prefers direct generation and does not silently fall back when Pkl execution fails.
+- Missing or changed fallback files fail the build with guidance to recreate the package through the preparation script. When canonical repository Pkl sources exist, `build.rs` requires the generated-input handoff and does not silently use the packaging fallback.
 
 ## Publish workflow
 
@@ -26,8 +28,9 @@ This file captures the implemented Cargo distribution slice from `context/plans/
 ## Supported Cargo install paths
 
 - crates.io: `cargo install shared-context-engineering --locked`
-- Git repository: `cargo install --git https://github.com/crocoder-dev/shared-context-engineering shared-context-engineering --locked`
-- Local checkout: `cargo install --path cli --locked`
+- Local checkout: `./scripts/run-cli-cargo.sh install --path cli --locked`
+
+Direct `cargo install --git` is unsupported because Cargo provides no repository-owned pre-generation boundary before compiling the checkout.
 
 ## Scope notes
 

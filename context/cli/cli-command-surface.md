@@ -36,7 +36,7 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 ## Cargo release and future crates.io posture
 
 - `cli/Cargo.toml` includes crates.io-facing package metadata (`description`, `license`, `repository`, `homepage`, `documentation`, `readme`, `keywords`, `categories`) and is aligned to the current crates.io publication posture described by the root release/publish workflows.
-- Current local install contract is `cargo install --path cli --locked`.
+- Current local install contract is `./scripts/run-cli-cargo.sh install --path cli --locked`; direct `cargo install --git` is unsupported because it cannot run the required repository pre-Cargo producer.
 - Current build/installability checks run through the root flake against the native package (`nix build .#sce`, `nix run .#sce -- --help`) so the packaged binary and embedded generated assets stay aligned with the canonical Nix-owned build path; the static-musl release archive is built from `.#sce-release` (see `context/sce/cli-release-artifact-contract.md`).
 - Crates.io publication is now a dedicated downstream publish stage (`.github/workflows/publish-crates.yml`) that validates `.version`/tag/Cargo parity before publishing the checked-in crate version.
 

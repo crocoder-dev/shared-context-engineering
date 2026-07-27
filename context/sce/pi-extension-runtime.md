@@ -95,9 +95,11 @@ unprefixed.
 
 ## Asset pipeline, install, and doctor coverage
 
-- For repository builds, `cli/build.rs` evaluates the canonical Pkl model into
-  `OUT_DIR/pkl-generated` and embeds the generated `config/.pi` tree wholesale
-  as `PI_EMBEDDED_ASSETS`, so `sce setup --pi` installs the extension to
+- For repository builds, a pre-Cargo step evaluates the canonical Pkl model and
+  passes its checksummed payload through `SCE_CLI_GENERATED_INPUT_DIR`.
+  `cli/build.rs` validates and copies it into `OUT_DIR/pkl-generated`, then
+  embeds the generated `config/.pi` tree wholesale as `PI_EMBEDDED_ASSETS`, so
+  `sce setup --pi` installs the extension to
   repo-root `.pi/extensions/sce/index.ts` with no per-asset enumeration.
   Pkl-free package fallback preparation is owned by the Cargo distribution
   path rather than this runtime contract.
