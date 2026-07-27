@@ -1,0 +1,256 @@
+version: 1
+name: sce-plan-authoring-result
+
+description: >
+  Output contract for sce-plan-authoring. The skill returns exactly one YAML
+  document representing plan_ready, needs_clarification, or blocked.
+
+output_rules:
+  - Return exactly one result variant.
+  - The top-level status must be plan_ready, needs_clarification, or blocked.
+  - Return YAML only, without a Markdown code fence or explanatory prose.
+  - Include only fields belonging to the selected variant.
+  - Omit optional fields that do not apply rather than sending them empty.
+  - Do not return empty strings or null placeholders. An empty list is a valid
+    value for a required list field.
+  - Report plan.name as the plan file's base name without its extension, and
+    plan.path as the exact written path, so emitted commands are runnable.
+  - Report plan.completed_tasks and plan.total_tasks as they stand in the
+    written plan.
+  - Write a plan file only for plan_ready. needs_clarification and blocked mean
+    nothing was written or modified.
+  - Do not ask the user questions directly. Clarification questions belong in
+    the needs_clarification variant.
+  - Do not report a trailing validation, cleanup, or context-verification task.
+    The written plan states how it is validated in its acceptance criteria, and
+    /validate runs that phase after the last task.
+  - plan_ready always leaves at least one incomplete task and always names
+    next_task. A request that would add no incomplete task is not plan_ready;
+    return blocked with category no_actionable_work.
+  - Do not request implementation confirmation.
+  - Do not include implementation results.
+  - Do not include context synchronization results.
+  - Do not include final validation results.
+
+variants:
+
+  plan_ready:
+    meaning: >
+      One plan was written or updated and its task stack is ready to enter the
+      review-and-implementation workflow.
+
+    required_fields:
+      - status
+      - plan
+      - summary
+      - tasks
+      - next_task
+      - assumptions
+
+    optional_fields:
+      - open_questions
+
+    field_rules:
+      - Report summary as one or two sentences condensing the plan's Change
+        summary section: what changes, where, and why. It is what the user reads
+        to decide whether the plan understood the request at all.
+      - Write summary as the resulting behavior, not as a list of the tasks. The
+        task list is already carried by tasks.
+      - Set plan.action to created for a new plan file, or updated for an
+        existing one.
+      - List tasks in plan order, including tasks already complete on an
+        updated plan.
+      - Report next_task as the first unchecked task in plan order. It is always
+        present, because plan_ready requires at least one incomplete task.
+      - Include open_questions only for non-blocking questions recorded in the
+        plan. A blocking question requires needs_clarification instead.
+      - Record unresolved doubt about the change's value here: whether it is
+        worth building, whether it duplicates existing behavior, whether a
+        smaller version would do. Such a doubt does not block authoring, and
+        the invoking workflow surfaces it before handing off.
+      - Omit open_questions when there is nothing genuinely unresolved. Do not
+        manufacture a question to appear rigorous. An empty section is the
+        expected outcome for a well-specified change.
+
+    shape:
+      status: plan_ready
+
+      plan:
+        path: string
+        name: string
+        action: created | updated
+        completed_tasks: integer
+        total_tasks: integer
+
+      summary: string
+
+      tasks:
+        - id: string
+          title: string
+          status: todo | done
+
+      next_task:
+        id: string
+        title: string
+
+      assumptions:
+        - string
+
+      open_questions:
+        - string
+
+    example:
+      status: plan_ready
+
+      plan:
+        path: context/plans/authentication.md
+        name: authentication
+        action: created
+        completed_tasks: 0
+        total_tasks: 3
+
+      summary: >
+        Adds password authentication to the HTTP API: a login endpoint that
+        verifies credentials and issues a token, and refresh-token rotation
+        behind it. Registration and password reset are untouched.
+
+      tasks:
+        - id: T01
+          title: Add credential verifier
+          status: todo
+        - id: T02
+          title: Add login endpoint
+          status: todo
+        - id: T03
+          title: Add refresh-token rotation
+          status: todo
+
+      next_task:
+        id: T01
+        title: Add credential verifier
+
+      assumptions:
+        - Use the error-response convention established by existing handlers.
+
+      open_questions:
+        - T03 adds refresh-token rotation, but nothing in the request says a token is ever revoked. Is rotation worth its own task here, or is it being planned because it usually comes with auth?
+
+  needs_clarification:
+    meaning: >
+      A critical detail is unresolved, so no plan was written. The invoking
+      workflow must present the questions and stop.
+
+    required_fields:
+      - status
+      - questions
+
+    optional_fields:
+      - plan_target
+
+    field_rules:
+      - Include one to three questions. Each must be specific, answerable, and
+        blocking.
+      - Include plan_target when the request clearly resolved to one new or
+        existing plan before the gate stopped authoring.
+      - Do not include a plan path unless that plan already exists on disk.
+
+    shape:
+      status: needs_clarification
+
+      plan_target:
+        name: string
+        action: created | updated
+        path: string
+
+      questions:
+        - id: string
+          category: scope | success_criteria | constraints | dependency | domain | architecture | sequencing
+          question: string
+          why_blocking: string
+
+    example:
+      status: needs_clarification
+
+      plan_target:
+        name: authentication
+        action: created
+
+      questions:
+        - id: Q01
+          category: architecture
+
+          question: >
+            Should the new endpoint authenticate via the existing JWT
+            middleware, or is a separate auth flow in scope?
+
+          why_blocking: >
+            The answer changes the task stack, the affected modules, and the
+            security boundary.
+
+        - id: Q02
+          category: scope
+
+          question: >
+            Is database migration rollback a hard requirement, or is
+            forward-only acceptable for this change?
+
+          why_blocking: >
+            Rollback support is a separate atomic task with its own
+            verification.
+
+  blocked:
+    meaning: >
+      The plan target could not be resolved, or the request cannot be planned
+      safely. No plan was written.
+
+    required_fields:
+      - status
+      - issues
+
+    optional_fields:
+      - candidates
+
+    field_rules:
+      - Include candidates only when the request matched more than one existing
+        plan and none could be selected safely.
+      - Use needs_clarification, not blocked, when the request is plannable once
+        the user answers a question.
+      - Use no_actionable_work when the request resolved to a plan but produced
+        no incomplete task, for example because the requested change is already
+        implemented or already covered by completed tasks.
+
+    shape:
+      status: blocked
+
+      candidates:
+        - string
+
+      issues:
+        - id: string
+          category: ambiguous_plan_target | missing_request | conflicting_request | no_actionable_work | other
+          problem: string
+          impact: string
+          decision_required: string
+
+    example:
+      status: blocked
+
+      candidates:
+        - context/plans/authentication.md
+        - context/plans/authentication-refresh.md
+
+      issues:
+        - id: B01
+          category: ambiguous_plan_target
+
+          problem: >
+            The change request matches more than one existing plan and none can
+            be selected safely.
+
+          impact: >
+            Updating the wrong plan would reorder tasks unrelated to the
+            request.
+
+          decision_required: >
+            Name the exact plan path to update, or state that a new plan should
+            be created.
