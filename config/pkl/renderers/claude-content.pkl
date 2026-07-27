@@ -1,6 +1,7 @@
 import "../base/workflow-change-to-plan.pkl" as changeToPlan
 import "../base/workflow-next-task.pkl" as nextTask
 import "../base/workflow-validate.pkl" as validate
+import "../base/workflow-commit.pkl" as commit
 import "../base/workflow-content.pkl" as model
 import "common.pkl" as common
 import "claude-metadata.pkl" as metadata
@@ -15,6 +16,7 @@ local workflows = new Listing {
   changeToPlan.workflow
   nextTask.workflow
   validate.workflow
+  commit.workflow
 }
 
 local renderCommand = (command: model.WorkflowCommand) -> new model.WorkflowDocument {

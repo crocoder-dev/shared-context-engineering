@@ -1,0 +1,205 @@
+version: 1
+name: sce-atomic-commit-result
+
+description: >
+  Output contract for sce-atomic-commit. The skill returns exactly one YAML
+  document representing proposal, bypass_message, or blocked.
+
+output_rules:
+  - Return exactly one result variant.
+  - The top-level status must be proposal, bypass_message, or blocked.
+  - Return YAML only, without a Markdown code fence or explanatory prose.
+  - Include only fields belonging to the selected variant.
+  - Omit optional fields that do not apply rather than sending them empty.
+  - Do not return empty strings or null placeholders.
+  - Return proposal only in regular mode, and bypass_message only in bypass
+    mode. blocked is valid in both.
+  - Every staged file must appear under exactly one commit's files.
+  - Report file paths exactly as `git diff --cached --name-only` reports them.
+  - Carry the message body inside message, separated from the subject by one
+    blank line. Do not split it into a separate field.
+  - Do not include a commit hash. This skill never commits.
+  - Do not report guidance the mode forbids.
+
+variants:
+
+  proposal:
+    meaning: >
+      The staged changes were analyzed in regular mode and one or more atomic
+      commit messages were written. Proposal-only: nothing was committed.
+
+    required_fields:
+      - status
+      - mode
+      - commits
+
+    optional_fields:
+      - split_rationale
+      - scope_classification
+      - notes
+
+    field_rules:
+      - Include split_rationale only when commits holds more than one entry.
+      - scope_classification reports the context-file guidance gate as
+        context_only or mixed.
+
+    shape:
+      status: proposal
+      mode: regular
+
+      commits:
+        - id: string
+          message: string
+          files:
+            - string
+          cites_plan: boolean
+
+      split_rationale: string
+      scope_classification: context_only | mixed
+
+      notes:
+        - string
+
+    example:
+      status: proposal
+      mode: regular
+
+      commits:
+        - id: C01
+
+          message: |
+            auth: Add token refresh endpoint
+
+            Sessions expired without a way to renew them, forcing a full
+            re-login. Adds the refresh handler and reuses the existing token
+            issuer.
+
+          files:
+            - src/auth/refresh.ts
+            - tests/auth/refresh.test.ts
+
+          cites_plan: false
+
+        - id: C02
+
+          message: |
+            build: Pin the formatter to the toolchain version
+
+            The formatter floated across environments and produced diff noise
+            unrelated to any change.
+
+          files:
+            - flake.nix
+
+          cites_plan: false
+
+      split_rationale: >
+        The refresh endpoint and the formatter pin pursue unrelated goals and
+        share no files. Committing them together would hide the build change
+        behind a feature subject.
+
+      scope_classification: mixed
+
+  bypass_message:
+    meaning: >
+      The staged changes were analyzed in bypass mode and exactly one commit
+      message covering all staged files was written. The invoking workflow
+      executes the commit.
+
+    required_fields:
+      - status
+      - mode
+      - message
+      - files
+
+    optional_fields:
+      - cites_plan
+      - notes
+
+    field_rules:
+      - files lists every staged file, because one message covers all of them.
+      - Never include commits, split_rationale, or scope_classification.
+
+    shape:
+      status: bypass_message
+      mode: bypass
+
+      message: string
+
+      files:
+        - string
+
+      cites_plan: boolean
+
+      notes:
+        - string
+
+    example:
+      status: bypass_message
+      mode: bypass
+
+      message: |
+        auth: Add token refresh endpoint
+
+        Sessions expired without a way to renew them, forcing a full re-login.
+        Adds the refresh handler and reuses the existing token issuer.
+
+      files:
+        - src/auth/refresh.ts
+        - tests/auth/refresh.test.ts
+
+      cites_plan: false
+
+  blocked:
+    meaning: >
+      Faithful commit messages cannot be written from the staged changes.
+
+    required_fields:
+      - status
+      - issues
+
+    optional_fields:
+      - mode
+      - files
+
+    field_rules:
+      - Include mode whenever the workflow supplied one.
+      - Include files when staged files were read before blocking.
+      - Plan-citation ambiguity blocks in regular mode only. In bypass mode the
+        citation is omitted instead.
+
+    shape:
+      status: blocked
+      mode: regular | bypass
+
+      files:
+        - string
+
+      issues:
+        - id: string
+          category: no_staged_changes | plan_citation_ambiguity | unreadable_diff | contradictory_context
+          problem: string
+          impact: string
+          decision_required: string
+
+    example:
+      status: blocked
+      mode: regular
+
+      files:
+        - context/plans/authentication.md
+
+      issues:
+        - id: B01
+          category: plan_citation_ambiguity
+
+          problem: >
+            The staged plan diff changes two task checkboxes and does not
+            expose which task this commit completes.
+
+          impact: >
+            The commit body would cite a task ID the staged diff does not
+            support.
+
+          decision_required: >
+            State the completed task ID, or stage only that task's plan edit.

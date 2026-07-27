@@ -1,6 +1,7 @@
 import "../base/workflow-change-to-plan.pkl" as changeToPlan
 import "../base/workflow-next-task.pkl" as nextTask
 import "../base/workflow-validate.pkl" as validate
+import "../base/workflow-commit.pkl" as commit
 import "../base/workflow-content.pkl" as model
 import "common.pkl" as common
 import "opencode-metadata.pkl" as metadata
@@ -11,12 +12,15 @@ local workflows = new Listing {
   changeToPlan.workflow
   nextTask.workflow
   validate.workflow
+  commit.workflow
 }
 
+/// Commands routed by a thin agent declare it here.
 local commandAgentBySlug = new Mapping {
   ["change-to-plan"] = "Shared Context Plan"
   ["next-task"] = "Shared Context Code"
   ["validate"] = "Shared Context Code"
+  ["commit"] = "Shared Context Code"
 }
 
 local commandSkillMetadataBySlug = new Mapping {
@@ -39,13 +43,21 @@ skills:
   - "sce-validation"
   - "sce-plan-context-sync"
 """
+  ["commit"] = """
+entry-skill: "sce-atomic-commit"
+skills:
+  - "sce-atomic-commit"
+"""
 }
+
+local commandAgentLine = (slug: String) ->
+  if (commandAgentBySlug.containsKey(slug)) "agent: \"\(commandAgentBySlug[slug])\"\n" else ""
 
 local renderCommand = (command: model.WorkflowCommand) -> new model.WorkflowDocument {
   path = command.document.path
   text = command.document.text.replaceFirst(
     "\n---\n",
-    "\nagent: \"\(commandAgentBySlug[command.slug])\"\n\(commandSkillMetadataBySlug[command.slug])\n---\n"
+    "\n\(commandAgentLine.apply(command.slug))\(commandSkillMetadataBySlug[command.slug])\n---\n"
   )
 }
 

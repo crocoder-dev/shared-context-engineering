@@ -1,6 +1,7 @@
 import "../base/workflow-change-to-plan.pkl" as changeToPlan
 import "../base/workflow-next-task.pkl" as nextTask
 import "../base/workflow-validate.pkl" as validate
+import "../base/workflow-commit.pkl" as commit
 
 /// Pi consumes the canonical workflow documents directly because those
 /// documents are authored against the project-root `.pi/` baseline.
@@ -8,6 +9,7 @@ local workflows = new Listing {
   changeToPlan.workflow
   nextTask.workflow
   validate.workflow
+  commit.workflow
 }
 
 commands {

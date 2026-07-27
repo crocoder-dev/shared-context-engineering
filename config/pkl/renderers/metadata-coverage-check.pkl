@@ -5,7 +5,8 @@ import "pi-content.pkl" as pi
 local expectedCommandSlugs = Set(
   "change-to-plan",
   "next-task",
-  "validate"
+  "validate",
+  "commit"
 )
 
 local expectedAgentSlugs = Set(
@@ -14,6 +15,9 @@ local expectedAgentSlugs = Set(
 )
 
 local expectedSkillDocumentPaths = Set(
+  "sce-atomic-commit/SKILL.md",
+  "sce-atomic-commit/references/commit-contract.yaml",
+  "sce-atomic-commit/references/commit-message-style.md",
   "sce-context-load/SKILL.md",
   "sce-context-load/references/context-brief.yaml",
   "sce-plan-authoring/SKILL.md",
