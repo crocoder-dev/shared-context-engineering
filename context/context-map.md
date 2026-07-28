@@ -25,9 +25,9 @@ Feature/domain context:
 - `context/sce/shared-context-code-workflow.md`
 - `context/sce/shared-context-plan-workflow.md` (canonical `/change-to-plan` workflow, clarification/readiness gate contract, and one-task/one-atomic-commit task-slicing policy)
 - [Context workflow rules](sce/context-workflow-rules.md) (canonical bootstrap, ongoing context maintenance, task synchronization, plan synchronization, hygiene, discoverability, and feature-existence rules)
-- `context/sce/plan-code-overlap-map.md` (current overlap matrix for thin OpenCode Plan/Code routing agents, the three workflow commands, and their phase-skill ownership boundaries)
-- `context/sce/dedup-ownership-table.md` (current canonical owner-vs-consumer matrix for the three workflow packages, seven phase skills, shared sync skeleton, and thin OpenCode agents)
-- [Atomic commit workflow](sce/atomic-commit-workflow.md) (`/commit` regular proposal-only mode vs `oneshot`/`skip` bypass mode, command-vs-`sce-atomic-commit` ownership boundary, staged-truth rule, plan-citation rule, and result contract; currently a project-root `.pi/` baseline only, not yet canonical Pkl or generated)
+- `context/sce/plan-code-overlap-map.md` (overlap matrix for thin OpenCode Plan/Code routing agents and workflow phase ownership; its original three-workflow inventory predates the generated `/commit` package)
+- `context/sce/dedup-ownership-table.md` (canonical owner-vs-consumer boundaries for workflow packages, phase skills, the shared sync skeleton, and thin OpenCode agents; its original three-workflow/seven-skill inventory predates generated `/commit` and `sce-atomic-commit`)
+- [Atomic commit workflow](sce/atomic-commit-workflow.md) (`/commit` regular proposal-only mode vs `oneshot`/`skip` bypass mode, command-vs-`sce-atomic-commit` ownership boundary, staged-truth rule, plan-citation rule, and result contract; now canonical Pkl and generated for OpenCode, Claude, and Pi)
 
 - `context/sce/agent-trace-implementation-contract.md` (historical no-git-wrapper Agent Trace design contract; not active runtime behavior)
 - `context/sce/agent-trace-embedded-schema-validation.md` (implemented internal Agent Trace JSON schema-validation seam in `cli/src/services/agent_trace.rs`, embedding `config/schema/agent-trace.schema.json` at compile time, caching the compiled validator, validating string or parsed-JSON inputs, and returning deterministic invalid-JSON vs schema-validation errors without changing the current minimal generator output)

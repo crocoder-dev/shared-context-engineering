@@ -307,3 +307,11 @@ The skill is complete after:
 - Applicable durable context was synchronized and verified, no context change
   was warranted, or a synchronization blocker was reported.
 - One Markdown report matching `references/sync-report.md` was returned.
+
+## Control flow
+
+This skill is one phase of a workflow, not a turn. Return the result to the
+invoking command and let it continue in the same turn. Do not present the
+result to the user as workflow output, and do not end your turn after
+returning it — the invoking command decides what the user sees and when the
+workflow stops.

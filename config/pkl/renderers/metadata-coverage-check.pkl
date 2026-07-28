@@ -14,7 +14,7 @@ local expectedAgentSlugs = Set(
   "shared-context-code"
 )
 
-local expectedSkillDocumentPaths = Set(
+local expectedCanonicalSkillDocumentPaths = Set(
   "sce-atomic-commit/SKILL.md",
   "sce-atomic-commit/references/commit-contract.yaml",
   "sce-atomic-commit/references/commit-message-style.md",
@@ -36,6 +36,25 @@ local expectedSkillDocumentPaths = Set(
   "sce-validation/SKILL.md",
   "sce-validation/references/validation-report.md",
   "sce-validation/references/validation-result.md"
+)
+
+/// Claude folds machine contracts and plan templates into SKILL.md, so each
+/// package keeps at most one human-presentation `references/` file.
+local expectedClaudeSkillDocumentPaths = Set(
+  "sce-atomic-commit/SKILL.md",
+  "sce-atomic-commit/references/commit-message-style.md",
+  "sce-context-load/SKILL.md",
+  "sce-plan-authoring/SKILL.md",
+  "sce-plan-authoring/references/plan-summary.md",
+  "sce-plan-context-sync/SKILL.md",
+  "sce-plan-context-sync/references/sync-report.md",
+  "sce-plan-review/SKILL.md",
+  "sce-task-context-sync/SKILL.md",
+  "sce-task-context-sync/references/sync-report.md",
+  "sce-task-execution/SKILL.md",
+  "sce-task-execution/references/implementation-gate.md",
+  "sce-validation/SKILL.md",
+  "sce-validation/references/validation-report.md"
 )
 
 local opencodeAgents = new Mapping {
@@ -84,11 +103,11 @@ local assertExactKeys = (actual: Mapping, expected: Set<String>, label: String) 
 inventoryChecks {
   ["opencode-agents"] = assertExactKeys.apply(opencodeAgents, expectedAgentSlugs, "OpenCode agent")
   ["opencode-commands"] = assertExactKeys.apply(opencodeCommands, expectedCommandSlugs, "OpenCode command")
-  ["opencode-skill-documents"] = assertExactKeys.apply(opencodeSkillDocuments, expectedSkillDocumentPaths, "OpenCode skill document")
+  ["opencode-skill-documents"] = assertExactKeys.apply(opencodeSkillDocuments, expectedCanonicalSkillDocumentPaths, "OpenCode skill document")
   ["claude-commands"] = assertExactKeys.apply(claudeCommands, expectedCommandSlugs, "Claude command")
-  ["claude-skill-documents"] = assertExactKeys.apply(claudeSkillDocuments, expectedSkillDocumentPaths, "Claude skill document")
+  ["claude-skill-documents"] = assertExactKeys.apply(claudeSkillDocuments, expectedClaudeSkillDocumentPaths, "Claude skill document")
   ["pi-commands"] = assertExactKeys.apply(piCommands, expectedCommandSlugs, "Pi command")
-  ["pi-skill-documents"] = assertExactKeys.apply(piSkillDocuments, expectedSkillDocumentPaths, "Pi skill document")
+  ["pi-skill-documents"] = assertExactKeys.apply(piSkillDocuments, expectedCanonicalSkillDocumentPaths, "Pi skill document")
 }
 
 /// Force rendering after exact inventory checks so target-specific metadata

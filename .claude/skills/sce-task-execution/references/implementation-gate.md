@@ -3,8 +3,12 @@
 Always show this gate at the start of `sce-task-execution`, before editing any
 file.
 
-The gate is user-facing prose. It is never serialized into a YAML result. This
+The gate is user-facing prose. It is never serialized into a Markdown result. This
 file is the only authority for the gate's content and order.
+
+Every `{task.*}` field below comes from that task's entry in the plan file.
+The readiness result supplies only the plan and task identity, relevant files
+and context, and review assumptions.
 
 ## Format
 
@@ -63,7 +67,7 @@ When the `approve` flag is supplied, omit the question and end after
 - Do not add requirements absent from the reviewed task.
 - Do not present multiple competing approaches unless a material decision is
   required.
-- Do not emit YAML while waiting for the user's answer. Stop after the gate and
+- Do not emit Markdown while waiting for the user's answer. Stop after the gate and
   wait.
 - If the handoff is stale or incomplete, show the known task information and
   identify the problem under **Risks or trade-offs**.
