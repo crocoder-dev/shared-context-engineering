@@ -406,6 +406,7 @@ pub(crate) mod context_file {
     pub const GLOSSARY: &str = "glossary.md";
     pub const PATTERNS: &str = "patterns.md";
     pub const CONTEXT_MAP: &str = "context-map.md";
+    pub const TMP_GITIGNORE: &str = ".gitignore";
     pub const SKILL_DEFINITION: &str = "SKILL.md";
 }
 
@@ -508,6 +509,10 @@ impl RepoPaths {
 
     pub(crate) fn context_map_file(&self) -> PathBuf {
         self.context_dir().join(context_file::CONTEXT_MAP)
+    }
+
+    pub(crate) fn context_tmp_gitignore_file(&self) -> PathBuf {
+        self.context_tmp_dir().join(context_file::TMP_GITIGNORE)
     }
 }
 

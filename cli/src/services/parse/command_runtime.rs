@@ -222,7 +222,17 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
             non_interactive,
             hooks,
             repo,
-        } => convert_setup_command(opencode, claude, pi, all, non_interactive, hooks, repo),
+            bootstrap_context,
+        } => convert_setup_command(
+            opencode,
+            claude,
+            pi,
+            all,
+            non_interactive,
+            hooks,
+            repo,
+            bootstrap_context,
+        ),
         cli_schema::Commands::Doctor { fix, format } => Ok(convert_doctor_command(fix, format)),
         cli_schema::Commands::Hooks { subcommand } => convert_hooks_subcommand(subcommand),
         cli_schema::Commands::Policy { subcommand } => Ok(convert_policy_subcommand(&subcommand)),
@@ -401,6 +411,7 @@ fn convert_setup_command(
     non_interactive: bool,
     hooks: bool,
     repo: Option<PathBuf>,
+    bootstrap_context: bool,
 ) -> Result<RuntimeCommand, ClassifiedError> {
     let options = services::setup::SetupCliOptions {
         help: false,
@@ -411,6 +422,7 @@ fn convert_setup_command(
         all,
         hooks,
         repo_path: repo,
+        bootstrap_context,
     };
 
     let request = services::setup::resolve_setup_request(options)

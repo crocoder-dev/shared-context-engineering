@@ -187,6 +187,10 @@ pub enum Commands {
 
         #[arg(long, requires = "hooks")]
         repo: Option<PathBuf>,
+
+        /// Create the baseline durable-context tree without installing integrations
+        #[arg(long)]
+        bootstrap_context: bool,
     },
 
     #[command(about = DOCTOR_CLAP_ABOUT, hide = !DOCTOR_SHOW_IN_TOP_LEVEL_HELP)]
