@@ -13,7 +13,9 @@ pub struct SetupCommand {
 
 impl SetupCommand {
     pub fn execute<C: ContextWithRepoRoot>(&self, context: &C) -> Result<String, ClassifiedError> {
-        let setup_dispatch = if let Some(mode) = self.request.config_mode {
+        let setup_dispatch = if self.request.context_only {
+            None
+        } else if let Some(mode) = self.request.config_mode {
             match setup::resolve_setup_dispatch(mode, &setup::InquireSetupTargetPrompter)
                 .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?
             {
@@ -36,13 +38,23 @@ impl SetupCommand {
         let repository_root = setup::ensure_git_repository(&setup_start_path)
             .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
 
+        let mut sections = Vec::new();
+
+        // Every successful setup path ensures the durable-context baseline exists.
+        let context_message = setup::bootstrap_context_baseline(&repository_root)
+            .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
+        sections.push(context_message);
+
+        if self.request.context_only {
+            return Ok(sections.join("\n\n"));
+        }
+
         // Scope the runtime AppContext to the resolved repository root for lifecycle providers.
         let ctx = context.with_repo_root(repository_root.clone());
 
         // Aggregate setup steps from lifecycle providers in order:
         // config → local_db → auth_db → agent_trace_db → hooks (when requested).
         let providers = lifecycle_providers(self.request.install_hooks);
-        let mut sections = Vec::new();
 
         for provider in &providers {
             let outcome = provider

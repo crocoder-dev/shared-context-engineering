@@ -137,6 +137,7 @@ pub fn default_runtime_command(name: &str) -> Option<RuntimeCommand> {
                     config_mode: Some(services::setup::SetupMode::Interactive),
                     install_hooks: true,
                     hooks_repo_path: None,
+                    context_only: false,
                 },
             },
         )),

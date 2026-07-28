@@ -25,7 +25,7 @@
 - `.claude/`
 - `.pi/`
 - `.git/`, `.git/hooks/`, `.git/COMMIT_EDITMSG`
-- `context/`, `context/plans/`, `context/decisions/`, `context/handovers/`, `context/tmp/`
+- `context/`, `context/plans/`, `context/decisions/`, `context/handovers/`, `context/tmp/`, `context/tmp/.gitignore` via `RepoPaths::context_tmp_gitignore_file()`
 
 ### Install paths
 
