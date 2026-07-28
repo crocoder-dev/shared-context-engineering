@@ -5,6 +5,7 @@ import "../base/workflow-commit.pkl" as commit
 import "../base/workflow-content.pkl" as model
 import "common.pkl" as common
 import "claude-metadata.pkl" as metadata
+import "claude-workflow-results.pkl" as workflowResults
 
 local missingSceInstallMessage = "sce CLI not found. Install it from https://sce.crocoder.dev/docs/getting-started#install-cli"
 
@@ -19,21 +20,138 @@ local workflows = new Listing {
   commit.workflow
 }
 
+/// Claude reads a phase result as a finished deliverable and ends the turn
+/// unless the continuation branch is at least as vivid as the stop branch. The
+/// canonical bodies specify stopping in detail and continuing in four words, so
+/// Claude-only command bodies name the next skill and rule out ending the turn.
+local turnBoundaryRule = "Run every step in one turn. Stop only where a step says to wait for the user."
+
+local withTurnBoundaryRule = (text: String) ->
+  text.replaceFirst("## Workflow\n\n", "## Workflow\n\n\(turnBoundaryRule)\n\n")
+
+local changeToPlanContinuations = (text: String) ->
+  text
+    .replaceFirst(
+      "`loaded` -> Continue to the next step.",
+      """
+      `loaded` -> The brief is internal workflow input, not workflow output. Do not print it, and do not end your turn. Invoke `sce-plan-authoring` in the same turn.
+
+      This step ends the turn only on `bootstrap_required`.
+      """
+    )
+    .replaceFirst(
+      "`plan_ready` -> Continue to the next step.",
+      """
+      `plan_ready` -> An authoring result is never presented to the user as workflow output. Do not print it, and do not end your turn. Continue to the next step in the same turn.
+
+      This step ends the turn only on `needs_clarification` or `blocked`.
+      """
+    )
+
+local nextTaskContinuations = (text: String) ->
+  text
+    .replaceFirst(
+      "`ready` -> Pass the complete readiness result to `sce-task-execution`.",
+      """
+      `ready` -> A readiness result is never presented to the user. Do not print it, and do not end your turn. Pass the complete readiness result to `sce-task-execution` in the same turn.
+
+      The readiness result is a compact handoff: plan and task identity, relevant files, relevant context, and review assumptions. It deliberately omits the task's goal, scope, done checks, dependencies, and verification, which `sce-task-execution` reads from the plan and presents in its implementation gate. Do not reconstruct the omitted fields, and do not treat their absence as a stale handoff.
+
+      This step ends the turn only on `blocked` or `plan_complete`.
+      """
+    )
+    .replaceFirst(
+      "`complete` -> continue to the next step.",
+      """
+      `complete` -> Do not print the raw result, and do not end your turn. Invoke `sce-task-context-sync` in the same turn.
+
+      This result stays full-size: `sce-task-context-sync` validates the changed files, implementation summary, verification evidence, done-check evidence, and context impact, and blocks when any is missing. Pass it through untouched rather than trimming it to match the compact readiness handoff.
+
+      This step ends the turn only on `declined`, `blocked`, or `incomplete`.
+      """
+    )
+    .replaceFirst(
+      "`synced` | `no_context_change` -> Print out the report `sce-task-context-sync` returned. Continue to the next step.",
+      """
+      `synced` | `no_context_change` -> Print out the report `sce-task-context-sync` returned, then continue to the next step in the same turn. Do not end your turn before the continuation block.
+
+      This step ends the turn only on `blocked`.
+      """
+    )
+
+local validateContinuations = (text: String) ->
+  text
+    .replaceFirst(
+      """
+      `validated` -> Pass the complete validated Markdown result to
+      `sce-plan-context-sync`.
+      """,
+      """
+      `validated` -> A validated result is never presented to the user as workflow
+      output. Do not print it, and do not end your turn. Pass the complete validated
+      Markdown result to `sce-plan-context-sync` in the same turn.
+
+      This step ends the turn only on `blocked` or `failed`.
+      """
+    )
+    .replaceFirst(
+    """
+    `synced` | `no_context_change` -> Print out the report
+    `sce-plan-context-sync` returned. Continue to the next step.
+    """,
+    """
+    `synced` | `no_context_change` -> Print out the report
+    `sce-plan-context-sync` returned, then continue to the next step in the same
+    turn. Do not end your turn before the completion block.
+
+    This step ends the turn only on `blocked`.
+    """
+  )
+
+local nextTaskHandoffProse = (text: String) ->
+  text.replaceFirst(
+    "`sce-task-context-sync` owns reading the plan, task, changed files, verification evidence, and reported context impact out of it.",
+    "`sce-task-context-sync` owns reading the plan, task, changed files, implementation summary, verification evidence, done-check evidence, and reported context impact out of it."
+  )
+
+local commitContinuations = (text: String) ->
+  text.replaceFirst(
+    "`bypass_message` -> Continue to the next step.",
+    """
+    `bypass_message` -> The message is internal workflow input, not workflow output. Do not print it as the deliverable, and do not end your turn. The commit is this path's deliverable, so continue to the next step in the same turn.
+
+    This step ends the turn only on `blocked` or a contract violation.
+    """
+  )
+
+local renderCommandBody = (slug: String, text: String) ->
+  if (slug == "change-to-plan") changeToPlanContinuations.apply(withTurnBoundaryRule.apply(text))
+  else if (slug == "next-task") nextTaskHandoffProse.apply(nextTaskContinuations.apply(withTurnBoundaryRule.apply(text)))
+  else if (slug == "validate") validateContinuations.apply(withTurnBoundaryRule.apply(text))
+  else if (slug == "commit") commitContinuations.apply(withTurnBoundaryRule.apply(text))
+  else text
+
 local renderCommand = (command: model.WorkflowCommand) -> new model.WorkflowDocument {
   path = command.document.path
-  text = command.document.text.replaceFirst(
-    "\n---\n",
-    "\nallowed-tools: \(metadata.commandAllowedTools[command.slug])\n---\n"
+  text = renderCommandBody.apply(
+    command.slug,
+    command.document.text.replaceFirst(
+      "\n---\n",
+      "\nallowed-tools: \(metadata.commandAllowedTools[command.slug])\n---\n"
+    )
   )
 }
 
-local renderSkillDocument = (document: model.WorkflowDocument) -> new model.WorkflowDocument {
-  path = document.path
-  text = if (document.path == "SKILL.md") document.text.replaceFirst(
-    "\n---\n",
-    "\ncompatibility: \(metadata.skillCompatibility)\n---\n"
-  ) else document.text
-}
+local withClaudeEntrypointMetadata = (document: model.WorkflowDocument) ->
+  if (document.path == "SKILL.md")
+    new model.WorkflowDocument {
+      path = document.path
+      text = document.text.replaceFirst(
+        "\n---\n",
+        "\ncompatibility: \(metadata.skillCompatibility)\n---\n"
+      )
+    }
+  else document
 
 settings = new common.RenderedTextFile {
   slug = "settings"
@@ -119,12 +237,14 @@ commands {
 
 /// Flatten package-relative document paths while retaining each skill's
 /// self-contained directory layout and adding only Claude-supported metadata
-/// to the package entrypoint.
+/// to the package entrypoint. Machine contracts are folded into SKILL.md by
+/// the Claude workflow-results renderer so each package keeps at most one
+/// human-presentation `references/` file.
 skillDocuments {
   for (workflow in workflows) {
     for (skillSlug, skillPackage in workflow.skills) {
-      for (documentPath, document in skillPackage.documents) {
-        ["\(skillSlug)/\(documentPath)"] = renderSkillDocument.apply(document)
+      for (documentPath, document in workflowResults.renderSkillPackage.apply(skillSlug, skillPackage)) {
+        ["\(skillSlug)/\(documentPath)"] = withClaudeEntrypointMetadata.apply(document)
       }
     }
   }

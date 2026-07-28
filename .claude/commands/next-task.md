@@ -26,6 +26,8 @@ Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is 
 
 ## Workflow
 
+Run every step in one turn. Stop only where a step says to wait for the user.
+
 ### 1. Review the task
 
 Invoke `sce-plan-review` with the parsed `plan-name-or-path` and, when present, the parsed `task-id`.
@@ -66,7 +68,11 @@ Run the final validation:
 
 Stop.
 
-`ready` -> Pass the complete readiness result to `sce-task-execution`.
+`ready` -> A readiness result is never presented to the user. Do not print it, and do not end your turn. Pass the complete readiness result to `sce-task-execution` in the same turn.
+
+The readiness result is a compact handoff: plan and task identity, relevant files, relevant context, and review assumptions. It deliberately omits the task's goal, scope, done checks, dependencies, and verification, which `sce-task-execution` reads from the plan and presents in its implementation gate. Do not reconstruct the omitted fields, and do not treat their absence as a stale handoff.
+
+This step ends the turn only on `blocked` or `plan_complete`.
 
 Do not reconstruct, summarize, or reinterpret the reviewed task before passing it.
 
@@ -111,13 +117,17 @@ Do not invoke context synchronization. Stop.
 
 Do not invoke context synchronization. Do not select another task. Stop.
 
-`complete` -> continue to the next step.
+`complete` -> Do not print the raw result, and do not end your turn. Invoke `sce-task-context-sync` in the same turn.
+
+This result stays full-size: `sce-task-context-sync` validates the changed files, implementation summary, verification evidence, done-check evidence, and context impact, and blocks when any is missing. Pass it through untouched rather than trimming it to match the compact readiness handoff.
+
+This step ends the turn only on `declined`, `blocked`, or `incomplete`.
 
 ### 3. Synchronize context
 
 Invoke `sce-task-context-sync` with the complete `complete` result returned by `sce-task-execution`.
 
-Pass that result verbatim. It is the authoritative handoff, and `sce-task-context-sync` owns reading the plan, task, changed files, verification evidence, and reported context impact out of it.
+Pass that result verbatim. It is the authoritative handoff, and `sce-task-context-sync` owns reading the plan, task, changed files, implementation summary, verification evidence, done-check evidence, and reported context impact out of it.
 
 Do not restate, summarize, or reconstruct any part of the execution result.
 
@@ -135,7 +145,9 @@ State that durable context is now out of date, and that synchronization must be 
 
 Do not select another task. Stop.
 
-`synced` | `no_context_change` -> Print out the report `sce-task-context-sync` returned. Continue to the next step.
+`synced` | `no_context_change` -> Print out the report `sce-task-context-sync` returned, then continue to the next step in the same turn. Do not end your turn before the continuation block.
+
+This step ends the turn only on `blocked`.
 
 ### 4. Determine the continuation
 

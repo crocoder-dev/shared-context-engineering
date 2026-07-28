@@ -3,7 +3,7 @@ name: sce-atomic-commit
 description: >
   Internal SCE workflow skill that analyzes the staged diff and returns atomic,
   repository-style commit messages: coherent-unit detection, split guidance,
-  scope and subject wording, and the plan-citation body rule. Returns one YAML
+  scope and subject wording, and the plan-citation body rule. Returns one Markdown
   result (proposal, bypass_message, or blocked). Use from /commit. Do not stage
   files, create commits, or ask the user to confirm staging.
 compatibility: claude
@@ -22,7 +22,7 @@ This skill owns:
 - Choosing the scope and writing the subject and body of every message.
 - Applying the plan-citation body rule.
 - Classifying staged scope and applying context-file guidance gating.
-- Returning one terminal YAML result.
+- Returning one terminal Markdown result.
 
 Write messages matching:
 
@@ -30,7 +30,7 @@ Write messages matching:
 
 Return a result matching:
 
-`references/commit-contract.yaml`
+the **Result contract** section in this file
 
 Committing is not this skill's job. The invoking `/commit` workflow decides
 whether a returned message is committed, and it is the only thing that runs
@@ -131,15 +131,15 @@ Confirm before returning that:
 - No plan slug or task ID appears that the staged diff does not support.
 - The mode's own constraints hold.
 
-### 9. Return YAML
+### 9. Return Markdown
 
-Return exactly one YAML document matching `references/commit-contract.yaml`:
+Return exactly one Markdown document matching the **Result contract** section in this file:
 
 - `proposal` in `regular` mode, with one or more messages.
 - `bypass_message` in `bypass` mode, with exactly one message.
 - `blocked` when messages cannot be written faithfully.
 
-Return only the YAML document. Do not add explanatory prose before or after it.
+Return only the Markdown document. Do not add explanatory prose before or after it.
 
 ## Boundaries
 
@@ -163,5 +163,134 @@ The skill is complete after:
 
 - The staged diff was read, or reading it failed and was reported.
 - Messages were written for every staged file, or a blocker prevented it.
-- One valid terminal YAML result matching `references/commit-contract.yaml` was
+- One valid terminal Markdown result matching the **Result contract** section in this file was
   returned.
+
+## Result contract
+
+# SCE Atomic Commit Result Contract
+
+Return exactly one Markdown document using one layout below. `Status` is the
+branch value consumed by `/commit`. Use every required heading and label
+exactly as written, omit optional sections that do not apply, and do not add
+prose outside the selected layout.
+
+Report paths exactly as `git diff --cached --name-only` reports them. Every
+staged file belongs to exactly one proposed commit. Keep each message's body
+in the same fenced block as its subject, separated by one blank line. Never
+report a commit hash or guidance forbidden by the mode.
+
+## Status: `proposal`
+
+Use only in regular mode. Nothing is committed.
+
+````markdown
+# Atomic Commit Result
+
+Status: proposal
+Mode: regular
+
+## Commits
+
+### {commit.id}
+
+#### Message
+
+```text
+{subject}
+
+{body}
+```
+
+#### Files
+
+- {file}
+
+#### Cites plan
+
+{true|false}
+
+## Split rationale
+
+{split_rationale}
+
+## Scope classification
+
+{context_only|mixed}
+
+## Notes
+
+- {note}
+````
+
+`Commits` is required. Repeat the commit block as needed. Include `Split
+rationale` only for multiple commits. `Scope classification` and `Notes` are
+optional.
+
+## Status: `bypass_message`
+
+Use only in bypass mode. Exactly one message covers every staged file.
+
+````markdown
+# Atomic Commit Result
+
+Status: bypass_message
+Mode: bypass
+
+## Message
+
+```text
+{subject}
+
+{body}
+```
+
+## Files
+
+- {file}
+
+## Cites plan
+
+{true|false}
+
+## Notes
+
+- {note}
+````
+
+`Message` and `Files` are required. `Cites plan` and `Notes` are optional.
+Never include commits, split rationale, or scope classification.
+
+## Status: `blocked`
+
+````markdown
+# Atomic Commit Result
+
+Status: blocked
+Mode: {regular|bypass}
+
+## Files
+
+- {file}
+
+## Issues
+
+### {issue.id}
+
+- Category: {no_staged_changes|plan_citation_ambiguity|unreadable_diff|contradictory_context}
+- Problem: {problem}
+- Impact: {impact}
+- Decision required: {decision_required}
+````
+
+`Issues` is required. Include `Mode` when supplied and `Files` when staged
+files were read. Plan-citation ambiguity blocks only in regular mode; bypass
+mode omits the citation instead.
+
+## Control flow
+
+This skill is one phase of a workflow, not a turn. Return the result to the
+invoking command and let it continue in the same turn. Do not present the
+result to the user as workflow output, and do not end your turn after
+returning it — the invoking command decides what the user sees and when the
+workflow stops.

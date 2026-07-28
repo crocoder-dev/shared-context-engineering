@@ -21,6 +21,8 @@ Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is 
 
 ## Workflow
 
+Run every step in one turn. Stop only where a step says to wait for the user.
+
 ### 1. Load durable context
 
 Invoke `sce-context-load` with the change request as the focus.
@@ -46,7 +48,9 @@ Bootstrap it, then continue in this session:
 
 Wait for the user. When they report the command ran, invoke `sce-context-load` again and continue in this session. Do not restart planning, and do not ask for the change request again.
 
-`loaded` -> Continue to the next step.
+`loaded` -> The brief is internal workflow input, not workflow output. Do not print it, and do not end your turn. Invoke `sce-plan-authoring` in the same turn.
+
+This step ends the turn only on `bootstrap_required`.
 
 Do not read `context/` yourself. Do not repair drift or stale context; the brief reports it and the plan may schedule the repair.
 
@@ -100,7 +104,9 @@ Do not answer the questions. Do not assume answers. Do not write a plan. Stop an
 
 Stop.
 
-`plan_ready` -> Continue to the next step.
+`plan_ready` -> An authoring result is never presented to the user as workflow output. Do not print it, and do not end your turn. Continue to the next step in the same turn.
+
+This step ends the turn only on `needs_clarification` or `blocked`.
 
 ### 3. Determine the continuation
 

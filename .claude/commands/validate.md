@@ -27,6 +27,8 @@ candidate path), so every emitted command is directly runnable.
 
 ## Workflow
 
+Run every step in one turn. Stop only where a step says to wait for the user.
+
 ### 1. Validate the plan
 
 Invoke `sce-validation` with the plan name or path.
@@ -59,8 +61,11 @@ Stop. Do not mark the plan finished. Do not continue to context synchronization.
 Do not start the repair work in this workflow unless the user explicitly asks
 to continue here; the default is that the handoff can leave this session.
 
-`validated` -> Pass the complete validated Markdown result to
-`sce-plan-context-sync`.
+`validated` -> A validated result is never presented to the user as workflow
+output. Do not print it, and do not end your turn. Pass the complete validated
+Markdown result to `sce-plan-context-sync` in the same turn.
+
+This step ends the turn only on `blocked` or `failed`.
 
 Do not reconstruct, summarize, or reinterpret the validation result before
 passing it.
@@ -99,7 +104,10 @@ so it is lost once this session ends.
 Stop.
 
 `synced` | `no_context_change` -> Print out the report
-`sce-plan-context-sync` returned. Continue to the next step.
+`sce-plan-context-sync` returned, then continue to the next step in the same
+turn. Do not end your turn before the completion block.
+
+This step ends the turn only on `blocked`.
 
 ### 3. Report completion
 
