@@ -49,12 +49,12 @@
 
 ## Pkl renderer layering
 
-- Keep the three target-agnostic workflow packages in `config/pkl/base/workflow-{change-to-plan,next-task,validate}.pkl`, with package primitives in `workflow-content.pkl` and shared task/plan synchronization policy in `workflow-context-sync.pkl`. Do not reintroduce the removed grouped shared-content catalog or automated-profile variants.
+- Keep the four target-agnostic workflow packages in `config/pkl/base/workflow-{change-to-plan,next-task,validate,commit}.pkl`, with package primitives in `workflow-content.pkl` and shared task/plan synchronization policy in `workflow-context-sync.pkl`. Do not reintroduce the removed grouped shared-content catalog or automated-profile variants.
 - Keep cross-target generated-config primitives in focused base modules under `config/pkl/base/` and re-export them through `config/pkl/renderers/common.pkl` when multiple renderers need the same contract.
 - Model workflow skills as self-contained packages with deterministic package-relative document paths, including nested `references/` files. Shared Pkl skeletons may instantiate multiple skills, but every rendered skill must receive complete local documents and must not depend on a sibling skill package.
 - Use the project-root `.pi/` workflows as the behavioral baseline for canonical workflow packages; do not use generated target Markdown as an authoring source.
 - Keep OpenCode agents as thin routing surfaces when canonical workflow commands and skills own the behavior; do not duplicate workflow doctrine in agent bodies.
-- Implement target-specific formatting in dedicated renderer modules under `config/pkl/renderers/`.
+- Implement target-specific formatting in dedicated renderer modules under `config/pkl/renderers/`. Keep canonical Pi/OpenCode YAML phase-result contracts unchanged; render Claude's five affected phase results as package-local Markdown contracts with fixed `Status` lines, headings, and labels that preserve every invoking-command value.
 - Keep shared renderer contracts and only truly shared description maps in `config/pkl/renderers/common.pkl`.
 - Keep only actively consumed target metadata in dedicated modules (`opencode-metadata.pkl` and `claude-metadata.pkl`); Pi-compatible metadata remains in canonical workflow documents.
 - Add OpenCode machine-readable orchestration metadata in `config/pkl/renderers/opencode-content.pkl`: `agent`, `entry-skill`, and the complete ordered `skills` chain must match the canonical workflow phases.
@@ -69,6 +69,7 @@
 - For `/change-to-plan`, sequence `sce-context-load` before `sce-plan-authoring`; keep context loading, clarification, plan output, and `/next-task` handoff in their declared owners.
 - For `/next-task`, retain one-task sequencing and confirmation gates while delegating phase details to `sce-plan-review`, `sce-task-execution`, and `sce-task-context-sync`.
 - For `/validate`, run `sce-validation` first and invoke `sce-plan-context-sync` only for a validated result.
+- For `/commit`, delegate staged-diff analysis and commit-message construction to `sce-atomic-commit`, preserving regular proposal-only and explicit bypass behavior.
 - Preserve mandatory gates and authoritative handoffs while removing duplicated phase instructions from agents or sibling skills.
 
 ## Multi-file generation entrypoint

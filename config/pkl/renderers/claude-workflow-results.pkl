@@ -1,0 +1,659 @@
+import "../base/workflow-content.pkl" as model
+
+/// Claude cannot reliably transport YAML-only phase handoffs between workflow
+/// skills and commands. Keep the canonical Pi/OpenCode documents unchanged and
+/// replace only Claude's five structured phase-result contracts with Markdown.
+
+local markdownContractPathBySkill = new Mapping {
+  ["sce-context-load"] = "references/context-brief.md"
+  ["sce-plan-authoring"] = "references/authoring-contract.md"
+  ["sce-plan-review"] = "references/readiness-contract.md"
+  ["sce-task-execution"] = "references/execution-contract.md"
+  ["sce-atomic-commit"] = "references/commit-contract.md"
+}
+
+local markdownContractBySkill = new Mapping {
+  ["sce-context-load"] = CONTEXT_BRIEF
+  ["sce-plan-authoring"] = AUTHORING_CONTRACT
+  ["sce-plan-review"] = READINESS_CONTRACT
+  ["sce-task-execution"] = EXECUTION_CONTRACT
+  ["sce-atomic-commit"] = COMMIT_CONTRACT
+}
+
+renderSkillDocument = (skillSlug: String, document: model.WorkflowDocument) ->
+  if (document.path == "SKILL.md" && markdownContractPathBySkill.containsKey(skillSlug))
+    new model.WorkflowDocument {
+      path = document.path
+      text = document.text
+        .replaceAll("YAML", "Markdown")
+        .replaceAll(".yaml", ".md")
+    }
+  else if (markdownContractPathBySkill.containsKey(skillSlug) && document.path.endsWith(".yaml"))
+    new model.WorkflowDocument {
+      path = markdownContractPathBySkill[skillSlug]
+      text = markdownContractBySkill[skillSlug]
+    }
+  else if (markdownContractPathBySkill.containsKey(skillSlug))
+    new model.WorkflowDocument {
+      path = document.path
+      text = document.text
+        .replaceAll("YAML", "Markdown")
+        .replaceAll(".yaml", ".md")
+    }
+  else document
+
+local CONTEXT_BRIEF = """
+    # SCE Context Load Result Contract
+
+    Return exactly one Markdown document using one layout below. The first line
+    after the title is the status source consumed by the invoking command. Use
+    the headings and labels exactly as written, omit optional sections that do
+    not apply, and do not add prose outside the selected layout.
+
+    List every file read and no file that was not read. Key facts are durable
+    statements, not planning or implementation recommendations. Empty required
+    lists must contain `- None.`. This skill never reports context edits.
+
+    ## Status: `loaded`
+
+    Use when the context root exists and relevant context was read.
+
+    ```markdown
+    # Context Load Result
+
+    Status: loaded
+
+    ## Context root
+
+    {context_root}
+
+    ## Entry points
+
+    ### {path}
+
+    - Read: {true|false}
+    - Reason: {reason; omit only when read is true and no reason is needed}
+
+    ## Domain context
+
+    ### {path}
+
+    **Relevance:** {relevance}
+
+    **Key facts:**
+
+    - {key_fact}
+
+    ## Gaps
+
+    ### {area}
+
+    {detail}
+
+    ## Drift
+
+    ### {path}
+
+    - Context says: {context_says}
+    - Code says: {code_says}
+    - Repair needed: {repair_needed}
+    ```
+
+    `Context root`, `Entry points`, `Domain context`, and `Gaps` are required.
+    Repeat the entry-point, domain-context, gap, and drift blocks as needed.
+    Include `Drift` only when recorded context contradicts code. Record gaps for
+    absent entry points and focus areas without durable context.
+
+    ## Status: `bootstrap_required`
+
+    Use when the context root does not exist. Read and create nothing.
+
+    ```markdown
+    # Context Load Result
+
+    Status: bootstrap_required
+
+    ## Context root
+
+    {context_root}
+
+    ## Reason
+
+    {reason}
+    ```
+    """
+
+local AUTHORING_CONTRACT = """
+    # SCE Plan Authoring Result Contract
+
+    Return exactly one Markdown document using one layout below. `Status` is the
+    branch value consumed by the invoking command. Use every required heading and
+    label exactly as written, omit optional sections that do not apply, and do
+    not add prose outside the selected layout. Empty required lists must contain
+    `- None.`.
+
+    Report plan names without extensions and paths exactly as written so emitted
+    commands are runnable. Only `plan_ready` writes a plan. Do not include
+    implementation, synchronization, or final-validation results.
+
+    ## Status: `plan_ready`
+
+    Use after creating or updating a plan with at least one incomplete task.
+
+    ```markdown
+    # Plan Authoring Result
+
+    Status: plan_ready
+
+    ## Plan
+
+    - Path: {plan.path}
+    - Name: {plan.name}
+    - Action: {created|updated}
+    - Completed tasks: {plan.completed_tasks}
+    - Total tasks: {plan.total_tasks}
+
+    ## Summary
+
+    {summary}
+
+    ## Tasks
+
+    - {task.id} — {task.title} — {todo|done}
+
+    ## Next task
+
+    - ID: {next_task.id}
+    - Title: {next_task.title}
+
+    ## Assumptions
+
+    - {assumption}
+
+    ## Open questions
+
+    - {open_question}
+    ```
+
+    `Plan`, `Summary`, `Tasks`, `Next task`, and `Assumptions` are required.
+    List tasks in plan order, including completed tasks. `Next task` is the first
+    unchecked task. Include `Open questions` only for genuine non-blocking
+    questions. Summary describes resulting behavior rather than repeating tasks.
+
+    ## Status: `needs_clarification`
+
+    Use when one to three critical questions block writing the plan.
+
+    ```markdown
+    # Plan Authoring Result
+
+    Status: needs_clarification
+
+    ## Plan target
+
+    - Name: {plan_target.name}
+    - Action: {created|updated}
+    - Path: {existing plan_target.path; omit this label when no plan exists}
+
+    ## Questions
+
+    ### {question.id}
+
+    - Category: {scope|success_criteria|constraints|dependency|domain|architecture|sequencing}
+    - Question: {question}
+    - Why blocking: {why_blocking}
+    ```
+
+    `Questions` is required. `Plan target` is optional and appears only when the
+    request resolved to one target before authoring stopped. Never report a path
+    for a plan that does not exist.
+
+    ## Status: `blocked`
+
+    Use when the target cannot be resolved or the request cannot be safely
+    planned. Nothing is written.
+
+    ```markdown
+    # Plan Authoring Result
+
+    Status: blocked
+
+    ## Candidates
+
+    - {candidate_path}
+
+    ## Issues
+
+    ### {issue.id}
+
+    - Category: {ambiguous_plan_target|missing_request|conflicting_request|no_actionable_work|other}
+    - Problem: {problem}
+    - Impact: {impact}
+    - Decision required: {decision_required}
+    ```
+
+    `Issues` is required. Include `Candidates` only for an ambiguous existing-plan
+    match. Use `needs_clarification` when an answer would make the request
+    plannable; use `no_actionable_work` when no incomplete task would result.
+    """
+
+local READINESS_CONTRACT = """
+    # SCE Plan Review Result Contract
+
+    Return exactly one Markdown document using one layout below. `Status` is the
+    branch value consumed by `/next-task`. Use every required heading and label
+    exactly as written, omit optional sections that do not apply, and do not add
+    prose outside the selected layout. Empty required lists must contain
+    `- None.`.
+
+    Report task counts as they stand and the plan path exactly as resolved. Do
+    not request implementation confirmation or include implementation,
+    synchronization, or final-validation results.
+
+    ## Status: `ready`
+
+    ```markdown
+    # Plan Review Result
+
+    Status: ready
+
+    ## Plan
+
+    - Path: {plan.path}
+    - Name: {plan.name}
+    - Completed tasks: {plan.completed_tasks}
+    - Total tasks: {plan.total_tasks}
+
+    ## Task
+
+    - ID: {task.id}
+    - Title: {task.title}
+
+    ### Goal
+
+    {task.goal}
+
+    ### In scope
+
+    - {task.in_scope}
+
+    ### Out of scope
+
+    - {task.out_of_scope}
+
+    ### Done checks
+
+    - {task.done_checks}
+
+    ### Dependencies
+
+    - {dependency.id} — complete
+
+    ### Verification
+
+    - {task.verification}
+
+    ## Relevant files
+
+    - {relevant_file}
+
+    ## Relevant context
+
+    - {relevant_context}
+
+    ## Assumptions
+
+    - {assumption}
+    ```
+
+    Every section is required. `Name` is the plan basename without its extension.
+    Repeat list items as needed.
+
+    ## Status: `blocked`
+
+    ```markdown
+    # Plan Review Result
+
+    Status: blocked
+
+    ## Plan
+
+    - Path: {plan.path}
+    - Completed tasks: {plan.completed_tasks}
+    - Total tasks: {plan.total_tasks}
+
+    ## Task
+
+    - ID: {task.id}
+    - Title: {task.title}
+
+    ## Candidates
+
+    - {candidate_path}
+
+    ## Issues
+
+    ### {issue.id}
+
+    - Category: {missing_decision|ambiguity|missing_acceptance_criteria|dependency|scope}
+    - Problem: {problem}
+    - Impact: {impact}
+    - Decision required: {decision_required}
+
+    ## Executable tasks remaining
+
+    {true|false}
+    ```
+
+    `Issues` is required. Include `Plan` whenever exactly one plan resolved,
+    `Task` when one was selected, and `Candidates` only when plan resolution
+    failed or was ambiguous. Include `Executable tasks remaining` when a plan
+    resolved.
+
+    ## Status: `plan_complete`
+
+    ```markdown
+    # Plan Review Result
+
+    Status: plan_complete
+
+    ## Plan
+
+    - Path: {plan.path}
+    - Completed tasks: {plan.completed_tasks}
+    - Total tasks: {plan.total_tasks}
+    ```
+    """
+
+local EXECUTION_CONTRACT = """
+    # SCE Task Execution Result Contract
+
+    Return exactly one Markdown document using one layout below after the
+    implementation gate reaches a terminal state. `Status` is the branch value
+    consumed by `/next-task`. Use every required heading and label exactly as
+    written, omit optional sections that do not apply, and do not add prose
+    outside the selected layout. Empty required lists must contain `- None.`.
+
+    Report task counts as they stand. Never serialize the implementation gate,
+    select the next task, or include synchronization or final-validation results.
+
+    ## Shared Plan and Task layout
+
+    Every status includes these sections:
+
+    ```markdown
+    ## Plan
+
+    - Path: {plan.path}
+    - Completed tasks: {plan.completed_tasks}
+    - Total tasks: {plan.total_tasks}
+
+    ## Task
+
+    - ID: {task.id}
+    - Title: {task.title}
+    ```
+
+    ## Status: `declined`
+
+    ```markdown
+    # Task Execution Result
+
+    Status: declined
+
+    {Shared Plan and Task layout}
+    ```
+
+    Use only when the user declines and no implementation changes were made.
+
+    ## Status: `blocked`
+
+    ```markdown
+    # Task Execution Result
+
+    Status: blocked
+
+    {Shared Plan and Task layout}
+
+    ## Blocker
+
+    - Category: {stale_review|scope|dependency|architecture|security|data|destructive_operation|other}
+    - Problem: {problem}
+    - Impact: {impact}
+    - Decision required: {decision_required}
+
+    ## Changes
+
+    ### Files changed
+
+    - {file}
+
+    ## Verification
+
+    ### {command}
+
+    - Outcome: {passed|failed|not_run}
+    - Summary: {summary}
+
+    ## Work preserved
+
+    {true|false}
+    ```
+
+    `Blocker` and `Work preserved` are required. `Changes` and `Verification` are
+    optional and appear only when work or checks occurred.
+
+    ## Status: `incomplete`
+
+    ```markdown
+    # Task Execution Result
+
+    Status: incomplete
+
+    {Shared Plan and Task layout}
+
+    ## Changes
+
+    ### Files changed
+
+    - {file}
+
+    ### Summary
+
+    - {change_summary}
+
+    ## Verification
+
+    ### {command}
+
+    - Outcome: {passed|failed|not_run}
+    - Summary: {summary}
+
+    ## Satisfied done checks
+
+    - {check}
+
+    ## Unsatisfied done checks
+
+    - {check}
+
+    ## Remaining work
+
+    - {remaining_work}
+
+    ## Reason
+
+    {reason}
+    ```
+
+    `Changes`, `Verification`, and `Remaining work` are required. The done-check
+    sections and `Reason` are optional.
+
+    ## Status: `complete`
+
+    ```markdown
+    # Task Execution Result
+
+    Status: complete
+
+    {Shared Plan and Task layout}
+
+    ## Changes
+
+    ### Files changed
+
+    - {file}
+
+    ### Summary
+
+    - {change_summary}
+
+    ## Verification
+
+    ### {command}
+
+    - Outcome: passed
+    - Summary: {summary}
+
+    ## Done checks
+
+    ### {check}
+
+    {evidence}
+
+    ## Plan update
+
+    - Task marked complete: true
+    - Evidence recorded: true
+
+    ## Context impact
+
+    - Classification: {none|local|domain|root}
+    - Affected areas: {comma-separated areas, or none}
+    - Reason: {reason}
+    ```
+
+    Every shown section is required. Repeat verification and done-check blocks as
+    needed. This layout is the authoritative handoff to context synchronization.
+    """
+
+local COMMIT_CONTRACT = """
+    # SCE Atomic Commit Result Contract
+
+    Return exactly one Markdown document using one layout below. `Status` is the
+    branch value consumed by `/commit`. Use every required heading and label
+    exactly as written, omit optional sections that do not apply, and do not add
+    prose outside the selected layout.
+
+    Report paths exactly as `git diff --cached --name-only` reports them. Every
+    staged file belongs to exactly one proposed commit. Keep each message's body
+    in the same fenced block as its subject, separated by one blank line. Never
+    report a commit hash or guidance forbidden by the mode.
+
+    ## Status: `proposal`
+
+    Use only in regular mode. Nothing is committed.
+
+    ````markdown
+    # Atomic Commit Result
+
+    Status: proposal
+    Mode: regular
+
+    ## Commits
+
+    ### {commit.id}
+
+    #### Message
+
+    ```text
+    {subject}
+
+    {body}
+    ```
+
+    #### Files
+
+    - {file}
+
+    #### Cites plan
+
+    {true|false}
+
+    ## Split rationale
+
+    {split_rationale}
+
+    ## Scope classification
+
+    {context_only|mixed}
+
+    ## Notes
+
+    - {note}
+    ````
+
+    `Commits` is required. Repeat the commit block as needed. Include `Split
+    rationale` only for multiple commits. `Scope classification` and `Notes` are
+    optional.
+
+    ## Status: `bypass_message`
+
+    Use only in bypass mode. Exactly one message covers every staged file.
+
+    ````markdown
+    # Atomic Commit Result
+
+    Status: bypass_message
+    Mode: bypass
+
+    ## Message
+
+    ```text
+    {subject}
+
+    {body}
+    ```
+
+    ## Files
+
+    - {file}
+
+    ## Cites plan
+
+    {true|false}
+
+    ## Notes
+
+    - {note}
+    ````
+
+    `Message` and `Files` are required. `Cites plan` and `Notes` are optional.
+    Never include commits, split rationale, or scope classification.
+
+    ## Status: `blocked`
+
+    ````markdown
+    # Atomic Commit Result
+
+    Status: blocked
+    Mode: {regular|bypass}
+
+    ## Files
+
+    - {file}
+
+    ## Issues
+
+    ### {issue.id}
+
+    - Category: {no_staged_changes|plan_citation_ambiguity|unreadable_diff|contradictory_context}
+    - Problem: {problem}
+    - Impact: {impact}
+    - Decision required: {decision_required}
+    ````
+
+    `Issues` is required. Include `Mode` when supplied and `Files` when staged
+    files were read. Plan-citation ambiguity blocks only in regular mode; bypass
+    mode omits the citation instead.
+    """

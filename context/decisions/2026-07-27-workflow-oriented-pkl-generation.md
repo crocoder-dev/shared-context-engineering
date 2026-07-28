@@ -6,11 +6,12 @@ Plan: `context/plans/rebuild-pkl-workflow-markdown.md`
 
 ## Decision
 
-- Model generated SCE Markdown as three canonical workflow packages: `/change-to-plan`, `/next-task`, and `/validate`.
+- Model generated SCE Markdown as four canonical workflow packages: `/change-to-plan`, `/next-task`, `/validate`, and `/commit`.
 - Use the project-root `.pi/` prompts, skills, and package-local references as the behavioral baseline.
-- Generate the same seven self-contained skill packages for Pi, OpenCode, and Claude. A generated skill may share Pkl source with another skill, but it must not depend on a sibling generated package.
+- Generate the same eight self-contained skill packages for Pi, OpenCode, and Claude. A generated skill may share Pkl source with another skill, but it must not depend on a sibling generated package.
+- Preserve canonical YAML phase-result contracts for Pi and OpenCode, while Claude renders target-specific Markdown contracts for the five structured phase skills; fixed statuses and labeled sections preserve command handoff semantics.
 - Instantiate `sce-task-context-sync` and `sce-plan-context-sync` from one role-parameterized Pkl skeleton while preserving their distinct handoff gates, lifecycle boundaries, and reports.
-- Keep only two generated agents, both for OpenCode and both routing-only: Plan routes to `/change-to-plan`; Code routes to `/next-task` and `/validate`. Claude and Pi receive no generated agents.
+- Keep only two generated agents, both for OpenCode and both routing-only: Plan routes to `/change-to-plan`; Code routes to `/next-task`, `/validate`, and `/commit`. Claude and Pi receive no generated agents.
 - Remove the automated OpenCode profile and obsolete generated commit, handover, bootstrap, atomic-commit, and legacy context-sync Markdown surfaces.
 - Preserve retained non-Markdown generation for OpenCode plugins/config, Claude settings/hooks, the Pi extension, and the SCE config schema.
 
@@ -22,8 +23,8 @@ The automated profile and obsolete Markdown catalog represented a second behavio
 
 ## Consequences
 
-- Canonical workflow content lives in `config/pkl/base/workflow-{change-to-plan,next-task,validate}.pkl`, with shared types in `workflow-content.pkl` and synchronization policy in `workflow-context-sync.pkl`.
-- Generated inventory is three commands and seven skill packages for each target, plus two OpenCode agents. Pi also retains its extension; Claude retains settings and hooks.
+- Canonical workflow content lives in `config/pkl/base/workflow-{change-to-plan,next-task,validate,commit}.pkl`, with shared types in `workflow-content.pkl` and synchronization policy in `workflow-context-sync.pkl`; Claude phase-result overrides live in `config/pkl/renderers/claude-workflow-results.pkl`.
+- Generated inventory is four commands and eight skill packages for each target, plus two OpenCode agents. Pi also retains its extension; Claude retains settings and hooks.
 - `config/pkl/renderers/metadata-coverage-check.pkl`, `config/pkl/check-generated.sh`, and the root flake parity check enforce exact inventories, nested package references, and forbidden removed trees.
 - `config/automated/.opencode` and `config/.claude/agents` are forbidden outputs rather than compatibility surfaces.
 

@@ -5,6 +5,7 @@ import "../base/workflow-commit.pkl" as commit
 import "../base/workflow-content.pkl" as model
 import "common.pkl" as common
 import "claude-metadata.pkl" as metadata
+import "claude-workflow-results.pkl" as workflowResults
 
 local missingSceInstallMessage = "sce CLI not found. Install it from https://sce.crocoder.dev/docs/getting-started#install-cli"
 
@@ -27,12 +28,14 @@ local renderCommand = (command: model.WorkflowCommand) -> new model.WorkflowDocu
   )
 }
 
-local renderSkillDocument = (document: model.WorkflowDocument) -> new model.WorkflowDocument {
-  path = document.path
-  text = if (document.path == "SKILL.md") document.text.replaceFirst(
+local renderSkillDocument = (skillSlug: String, document: model.WorkflowDocument) -> new model.WorkflowDocument {
+  local renderedResult = workflowResults.renderSkillDocument.apply(skillSlug, document)
+
+  path = renderedResult.path
+  text = if (renderedResult.path == "SKILL.md") renderedResult.text.replaceFirst(
     "\n---\n",
     "\ncompatibility: \(metadata.skillCompatibility)\n---\n"
-  ) else document.text
+  ) else renderedResult.text
 }
 
 settings = new common.RenderedTextFile {
@@ -123,8 +126,8 @@ commands {
 skillDocuments {
   for (workflow in workflows) {
     for (skillSlug, skillPackage in workflow.skills) {
-      for (documentPath, document in skillPackage.documents) {
-        ["\(skillSlug)/\(documentPath)"] = renderSkillDocument.apply(document)
+      for (_, document in skillPackage.documents) {
+        ["\(skillSlug)/\(renderSkillDocument.apply(skillSlug, document).path)"] = renderSkillDocument.apply(skillSlug, document)
       }
     }
   }
