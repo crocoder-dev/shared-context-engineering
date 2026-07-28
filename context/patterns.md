@@ -108,6 +108,7 @@
 - For runtime CLI configuration, keep precedence deterministic and explicit (`flags > env > config file > defaults`) and expose inspect/validate command entrypoints with stable text/JSON outputs.
 - For commands that support text/JSON dual output, centralize `--format <text|json>` parsing in one shared contract and pass command-specific `--help` guidance into invalid-value errors instead of duplicating parser logic per command.
 - For setup-style command contracts, keep interactive mode as the zero-flag default and enforce mutually-exclusive explicit target flags for non-interactive automation.
+- For durable-context bootstrap, keep create-if-missing additive semantics: ensure baseline paths on every successful setup path, offer a dedicated standalone `--bootstrap-context` mode, and never overwrite existing context content.
 - For security-sensitive CLI UX, redact common secret-bearing token/value forms before emitting diagnostics/log lines, including app-level errors, setup git stderr diagnostics, and observability sink output.
 - For user-supplied setup repository paths (`sce setup --hooks --repo <path>`), canonicalize/validate the path as an existing directory before git command execution, and run deterministic write-permission probes on setup write targets before staging/swap operations.
 - For interactive setup flows, isolate prompt handling behind a service-layer prompter seam so selection mapping and cancellation behavior can be tested without a live TTY.

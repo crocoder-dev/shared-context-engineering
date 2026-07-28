@@ -18,7 +18,15 @@ stops. It does not create durable context. The user bootstraps it with:
 
 `sce setup --bootstrap-context`
 
-That command owns creation of the baseline context tree. The baseline contains:
+That command is the dedicated context-only setup mode: it creates the baseline
+context tree without prompting for an integration target or installing
+integration assets. Normal successful `sce setup` paths also ensure the same
+baseline exists before continuing. Bootstrap is additive and idempotent:
+missing baseline files and directories are created with neutral placeholders,
+while existing context documents, plans, decisions, handovers, and scratch
+ignore content are never overwritten.
+
+The baseline contains:
 
 - `context/overview.md`
 - `context/architecture.md`
