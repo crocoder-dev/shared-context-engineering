@@ -33,7 +33,7 @@ Use the gate defined in:
 
 Return a final result matching:
 
-`references/execution-contract.md`
+the **Result contract** section in this file
 
 ## Input
 
@@ -51,11 +51,14 @@ The readiness result must identify:
 
 - One resolved plan.
 - Exactly one incomplete task.
-- The task goal and scope boundaries.
-- Done checks.
-- Verification expectations.
 - Relevant files and context.
 - Review assumptions.
+
+The readiness result is a compact handoff carrying only what review
+discovered. Read the task's goal, scope boundaries, done checks,
+dependencies, and verification from that task's entry in the plan file.
+The handoff does not repeat them, and their absence from it is not a
+handoff problem.
 
 If required handoff information is absent or stale, still show the gate using
 what is known, clearly identify the handoff problem, and do not edit files.
@@ -71,7 +74,7 @@ Confirm that:
 - Exactly one task is present.
 - The plan file exists.
 - The selected task is still incomplete.
-- The task has not materially changed since review.
+- The task entry in the plan still matches the reviewed task ID and title.
 - Declared dependencies remain complete.
 
 Do not reconstruct missing material requirements.
@@ -79,7 +82,8 @@ Do not reconstruct missing material requirements.
 ### 2. Always show the implementation gate
 
 At the start of the skill, before any file modification, present the task using
-`references/implementation-gate.md`.
+`references/implementation-gate.md`. Read that task's entry in the plan file for
+the gate's goal, scope, done-check, and verification fields.
 
 The gate must be shown even when:
 
@@ -152,8 +156,8 @@ the repository unsafe or invalid.
 
 Run the narrowest authoritative checks that demonstrate the done checks.
 
-Start with verification supplied by the readiness result. Add nearby or directly
-relevant checks only when needed.
+Start with the verification declared by that task's entry in the plan. Add
+nearby or directly relevant checks only when needed.
 
 Verification may include:
 
@@ -206,7 +210,7 @@ Return `blocked` for every other non-successful outcome, including:
 - Material blocker.
 - A verification failure that cannot be resolved in scope.
 
-Use a blocker category defined by `references/execution-contract.md`.
+Use a blocker category defined by the **Result contract** section in this file.
 
 Do not determine whether the plan is complete. The invoking `/next-task`
 workflow owns that decision after context synchronization.
@@ -214,7 +218,7 @@ workflow owns that decision after context synchronization.
 ### 9. Return Markdown
 
 After the skill reaches a terminal state, return exactly one Markdown document
-matching `references/execution-contract.md`.
+matching the **Result contract** section in this file.
 
 Return only the Markdown document. Do not add explanatory prose before or after it.
 
@@ -243,5 +247,186 @@ The skill is complete after:
 - The implementation gate was shown.
 - The user approved or rejected the task, or approval was pre-supplied.
 - At most one task was executed.
-- One valid terminal Markdown result matching `references/execution-contract.md`
+- One valid terminal Markdown result matching the **Result contract** section in this file
   was returned.
+
+## Result contract
+
+# SCE Task Execution Result Contract
+
+Return exactly one Markdown document using one layout below after the
+implementation gate reaches a terminal state. `Status` is the branch value
+consumed by `/next-task`. Use every required heading and label exactly as
+written, omit optional sections that do not apply, and do not add prose
+outside the selected layout. Empty required lists must contain `- None.`.
+
+Report task counts as they stand. Never serialize the implementation gate,
+select the next task, or include synchronization or final-validation results.
+
+## Shared Plan and Task layout
+
+Every status includes these sections:
+
+```markdown
+## Plan
+
+- Path: {plan.path}
+- Completed tasks: {plan.completed_tasks}
+- Total tasks: {plan.total_tasks}
+
+## Task
+
+- ID: {task.id}
+- Title: {task.title}
+```
+
+## Status: `declined`
+
+```markdown
+# Task Execution Result
+
+Status: declined
+
+{Shared Plan and Task layout}
+```
+
+Use only when the user declines and no implementation changes were made.
+
+## Status: `blocked`
+
+```markdown
+# Task Execution Result
+
+Status: blocked
+
+{Shared Plan and Task layout}
+
+## Blocker
+
+- Category: {stale_review|scope|dependency|architecture|security|data|destructive_operation|other}
+- Problem: {problem}
+- Impact: {impact}
+- Decision required: {decision_required}
+
+## Changes
+
+### Files changed
+
+- {file}
+
+## Verification
+
+### {command}
+
+- Outcome: {passed|failed|not_run}
+- Summary: {summary}
+
+## Work preserved
+
+{true|false}
+```
+
+`Blocker` and `Work preserved` are required. `Changes` and `Verification` are
+optional and appear only when work or checks occurred.
+
+## Status: `incomplete`
+
+```markdown
+# Task Execution Result
+
+Status: incomplete
+
+{Shared Plan and Task layout}
+
+## Changes
+
+### Files changed
+
+- {file}
+
+### Summary
+
+- {change_summary}
+
+## Verification
+
+### {command}
+
+- Outcome: {passed|failed|not_run}
+- Summary: {summary}
+
+## Satisfied done checks
+
+- {check}
+
+## Unsatisfied done checks
+
+- {check}
+
+## Remaining work
+
+- {remaining_work}
+
+## Reason
+
+{reason}
+```
+
+`Changes`, `Verification`, and `Remaining work` are required. The done-check
+sections and `Reason` are optional.
+
+## Status: `complete`
+
+```markdown
+# Task Execution Result
+
+Status: complete
+
+{Shared Plan and Task layout}
+
+## Changes
+
+### Files changed
+
+- {file}
+
+### Summary
+
+- {change_summary}
+
+## Verification
+
+### {command}
+
+- Outcome: passed
+- Summary: {summary}
+
+## Done checks
+
+### {check}
+
+{evidence}
+
+## Context impact
+
+- Classification: {none|local|domain|root}
+- Affected areas: {comma-separated areas, or none}
+- Reason: {reason}
+```
+
+Every shown section is required. Repeat verification and done-check blocks as
+needed. This layout is the authoritative handoff to context synchronization.
+
+Keep it at exactly these sections. `sce-task-context-sync` validates the
+changed files, implementation summary, verification evidence, done-check
+evidence, and context impact, and blocks when any is missing, so none of them
+may be dropped. `Status: complete` already asserts the task was marked
+complete in the plan with evidence recorded; do not restate that as a section.
+
+## Control flow
+
+This skill is one phase of a workflow, not a turn. Return the result to the
+invoking command and let it continue in the same turn. Do not present the
+result to the user as workflow output, and do not end your turn after
+returning it — the invoking command decides what the user sees and when the
+workflow stops.

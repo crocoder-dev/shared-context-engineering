@@ -3,6 +3,10 @@ import "../base/workflow-content.pkl" as model
 /// Claude cannot reliably transport YAML-only phase handoffs between workflow
 /// skills and commands. Keep the canonical Pi/OpenCode documents unchanged and
 /// replace only Claude's five structured phase-result contracts with Markdown.
+///
+/// Claude also collapses multi-file skill `references/` so each package emits at
+/// most one human-facing presentation layout. Machine contracts and plan
+/// templates are folded into that package's `SKILL.md`.
 
 local markdownContractPathBySkill = new Mapping {
   ["sce-context-load"] = "references/context-brief.md"
@@ -20,6 +24,32 @@ local markdownContractBySkill = new Mapping {
   ["sce-atomic-commit"] = COMMIT_CONTRACT
 }
 
+/// Presentation layouts shown to a human reviewer. All other `references/`
+/// documents are machine contracts and fold into Claude's `SKILL.md`.
+local humanPresentationPaths = Set(
+  "references/plan-summary.md",
+  "references/implementation-gate.md",
+  "references/validation-report.md",
+  "references/sync-report.md",
+  "references/commit-message-style.md"
+)
+
+local planTemplatePath = "references/plan-template.md"
+local validationResultPath = "references/validation-result.md"
+
+local rewriteMachineReferencePaths = (text: String) ->
+  text
+    .replaceAll("`references/context-brief.md`", "the **Result contract** section in this file")
+    .replaceAll("`references/authoring-contract.md`", "the **Result contract** section in this file")
+    .replaceAll("`references/readiness-contract.md`", "the **Result contract** section in this file")
+    .replaceAll("`references/execution-contract.md`", "the **Result contract** section in this file")
+    .replaceAll("`references/commit-contract.md`", "the **Result contract** section in this file")
+    .replaceAll("`references/validation-result.md`", "the **Result contract** section in this file")
+    .replaceAll("`references/plan-template.md`", "the **Plan template** section in this file")
+
+/// Per-document Claude transform: Markdown phase contracts and YAML→Markdown
+/// wording for the five structured skills. Package-level folding happens in
+/// `renderSkillPackage`.
 renderSkillDocument = (skillSlug: String, document: model.WorkflowDocument) ->
   if (document.path == "SKILL.md" && markdownContractPathBySkill.containsKey(skillSlug))
     new model.WorkflowDocument {
@@ -41,6 +71,145 @@ renderSkillDocument = (skillSlug: String, document: model.WorkflowDocument) ->
         .replaceAll(".yaml", ".md")
     }
   else document
+
+/// Claude's readiness handoff carries only what plan review discovered, because
+/// a skill "returning" a result and printing it to the user are the same act.
+/// Point `sce-task-execution` at the plan file for the fields the compact
+/// handoff no longer repeats.
+local rewriteTaskExecutionSourcing = (path: String, text: String) ->
+  if (path == "SKILL.md")
+    text
+      .replaceFirst(
+        """
+        - One resolved plan.
+        - Exactly one incomplete task.
+        - The task goal and scope boundaries.
+        - Done checks.
+        - Verification expectations.
+        - Relevant files and context.
+        - Review assumptions.
+        """,
+        """
+        - One resolved plan.
+        - Exactly one incomplete task.
+        - Relevant files and context.
+        - Review assumptions.
+
+        The readiness result is a compact handoff carrying only what review
+        discovered. Read the task's goal, scope boundaries, done checks,
+        dependencies, and verification from that task's entry in the plan file.
+        The handoff does not repeat them, and their absence from it is not a
+        handoff problem.
+        """
+      )
+      .replaceFirst(
+        "- The task has not materially changed since review.",
+        "- The task entry in the plan still matches the reviewed task ID and title."
+      )
+      .replaceFirst(
+        """
+        At the start of the skill, before any file modification, present the task using
+        `references/implementation-gate.md`.
+        """,
+        """
+        At the start of the skill, before any file modification, present the task using
+        `references/implementation-gate.md`. Read that task's entry in the plan file for
+        the gate's goal, scope, done-check, and verification fields.
+        """
+      )
+      .replaceFirst(
+        """
+        Start with verification supplied by the readiness result. Add nearby or directly
+        relevant checks only when needed.
+        """,
+        """
+        Start with the verification declared by that task's entry in the plan. Add
+        nearby or directly relevant checks only when needed.
+        """
+      )
+  else if (path == "references/implementation-gate.md")
+    text.replaceFirst(
+      "file is the only authority for the gate's content and order.",
+      """
+      file is the only authority for the gate's content and order.
+
+      Every `{task.*}` field below comes from that task's entry in the plan file.
+      The readiness result supplies only the plan and task identity, relevant files
+      and context, and review assumptions.
+      """
+    )
+  else text
+
+local rewriteHandoffSourcing = (skillSlug: String, document: model.WorkflowDocument) ->
+  if (skillSlug == "sce-task-execution")
+    new model.WorkflowDocument {
+      path = document.path
+      text = rewriteTaskExecutionSourcing.apply(document.path, document.text)
+    }
+  else document
+
+local renderPackageDocuments = (skillSlug: String, skillPackage: model.SkillPackage) -> new Mapping {
+  for (_, document in skillPackage.documents) {
+    [renderSkillDocument.apply(skillSlug, document).path] =
+      rewriteHandoffSourcing.apply(skillSlug, renderSkillDocument.apply(skillSlug, document))
+  }
+}
+
+local foldResultContract = (skillSlug: String, skillText: String, renderedByPath: Mapping) ->
+  if (markdownContractBySkill.containsKey(skillSlug))
+    skillText + "\n\n## Result contract\n\n" + markdownContractBySkill[skillSlug]
+  else if (renderedByPath.containsKey(validationResultPath))
+    skillText + "\n\n## Result contract\n\n" + renderedByPath[validationResultPath].text
+  else skillText
+
+local foldPlanTemplate = (skillText: String, renderedByPath: Mapping) ->
+  if (renderedByPath.containsKey(planTemplatePath))
+    skillText + "\n\n## Plan template\n\n" + renderedByPath[planTemplatePath].text
+  else skillText
+
+/// Claude treats the most recently injected instruction block as the strongest
+/// one, so a phase skill that ends on "return only the result" reads as the end
+/// of the turn and the invoking command never resumes. State the turn boundary
+/// explicitly at the end of every Claude `SKILL.md`.
+local appendControlFlow = (skillText: String) -> skillText + "\n\n" + CONTROL_FLOW
+
+local buildClaudeSkillText = (skillSlug: String, renderedByPath: Mapping) ->
+  appendControlFlow.apply(
+    foldPlanTemplate.apply(
+      foldResultContract.apply(
+        skillSlug,
+        rewriteMachineReferencePaths.apply(renderedByPath["SKILL.md"].text),
+        renderedByPath
+      ),
+      renderedByPath
+    )
+  )
+
+/// Emit Claude skill documents with machine contracts folded into `SKILL.md`
+/// and at most one human-presentation file under `references/`.
+renderSkillPackage = (skillSlug: String, skillPackage: model.SkillPackage) ->
+  let (renderedByPath = renderPackageDocuments.apply(skillSlug, skillPackage))
+    new Mapping {
+      ["SKILL.md"] = new model.WorkflowDocument {
+        path = "SKILL.md"
+        text = buildClaudeSkillText.apply(skillSlug, renderedByPath)
+      }
+      for (path, document in renderedByPath) {
+        when (humanPresentationPaths.contains(path)) {
+          [path] = document
+        }
+      }
+    }
+
+local CONTROL_FLOW = """
+    ## Control flow
+
+    This skill is one phase of a workflow, not a turn. Return the result to the
+    invoking command and let it continue in the same turn. Do not present the
+    result to the user as workflow output, and do not end your turn after
+    returning it — the invoking command decides what the user sees and when the
+    workflow stops.
+    """
 
 local CONTEXT_BRIEF = """
     # SCE Context Load Result Contract
@@ -269,30 +438,6 @@ local READINESS_CONTRACT = """
     - ID: {task.id}
     - Title: {task.title}
 
-    ### Goal
-
-    {task.goal}
-
-    ### In scope
-
-    - {task.in_scope}
-
-    ### Out of scope
-
-    - {task.out_of_scope}
-
-    ### Done checks
-
-    - {task.done_checks}
-
-    ### Dependencies
-
-    - {dependency.id} — complete
-
-    ### Verification
-
-    - {task.verification}
-
     ## Relevant files
 
     - {relevant_file}
@@ -308,6 +453,12 @@ local READINESS_CONTRACT = """
 
     Every section is required. `Name` is the plan basename without its extension.
     Repeat list items as needed.
+
+    This layout is a compact handoff, not a task presentation. It carries only
+    what review discovered and the next phase cannot recover on its own. The
+    task's goal, scope boundaries, done checks, dependencies, and verification
+    stay in the plan file, where `sce-task-execution` reads them. Do not restate
+    them here.
 
     ## Status: `blocked`
 
@@ -521,11 +672,6 @@ local EXECUTION_CONTRACT = """
 
     {evidence}
 
-    ## Plan update
-
-    - Task marked complete: true
-    - Evidence recorded: true
-
     ## Context impact
 
     - Classification: {none|local|domain|root}
@@ -535,6 +681,12 @@ local EXECUTION_CONTRACT = """
 
     Every shown section is required. Repeat verification and done-check blocks as
     needed. This layout is the authoritative handoff to context synchronization.
+
+    Keep it at exactly these sections. `sce-task-context-sync` validates the
+    changed files, implementation summary, verification evidence, done-check
+    evidence, and context impact, and blocks when any is missing, so none of them
+    may be dropped. `Status: complete` already asserts the task was marked
+    complete in the plan with evidence recorded; do not restate that as a section.
     """
 
 local COMMIT_CONTRACT = """

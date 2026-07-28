@@ -6,6 +6,10 @@ file.
 The gate is user-facing prose. It is never serialized into a Markdown result. This
 file is the only authority for the gate's content and order.
 
+Every `{task.*}` field below comes from that task's entry in the plan file.
+The readiness result supplies only the plan and task identity, relevant files
+and context, and review assumptions.
+
 ## Format
 
 # `{task.id} - {task.title} - {plan.name}`

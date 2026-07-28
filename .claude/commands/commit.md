@@ -33,6 +33,8 @@ command never stages, unstages, or modifies files.
 
 ## Workflow
 
+Run every step in one turn. Stop only where a step says to wait for the user.
+
 Follow exactly one path.
 
 ### Bypass path (`oneshot` or `skip`)
@@ -59,7 +61,9 @@ The skill must return a result matching its commit contract. Branch on
 
 `blocked` -> Present the issue and stop. Do not commit.
 
-`bypass_message` -> Continue to the next step.
+`bypass_message` -> The message is internal workflow input, not workflow output. Do not print it as the deliverable, and do not end your turn. The commit is this path's deliverable, so continue to the next step in the same turn.
+
+This step ends the turn only on `blocked` or a contract violation.
 
 The skill never returns `proposal` in bypass mode. Treat a `proposal` result as
 a contract violation: report it and stop without committing.

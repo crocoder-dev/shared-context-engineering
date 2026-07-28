@@ -38,28 +38,23 @@ local expectedCanonicalSkillDocumentPaths = Set(
   "sce-validation/references/validation-result.md"
 )
 
+/// Claude folds machine contracts and plan templates into SKILL.md, so each
+/// package keeps at most one human-presentation `references/` file.
 local expectedClaudeSkillDocumentPaths = Set(
   "sce-atomic-commit/SKILL.md",
-  "sce-atomic-commit/references/commit-contract.md",
   "sce-atomic-commit/references/commit-message-style.md",
   "sce-context-load/SKILL.md",
-  "sce-context-load/references/context-brief.md",
   "sce-plan-authoring/SKILL.md",
-  "sce-plan-authoring/references/authoring-contract.md",
   "sce-plan-authoring/references/plan-summary.md",
-  "sce-plan-authoring/references/plan-template.md",
   "sce-plan-context-sync/SKILL.md",
   "sce-plan-context-sync/references/sync-report.md",
   "sce-plan-review/SKILL.md",
-  "sce-plan-review/references/readiness-contract.md",
   "sce-task-context-sync/SKILL.md",
   "sce-task-context-sync/references/sync-report.md",
   "sce-task-execution/SKILL.md",
-  "sce-task-execution/references/execution-contract.md",
   "sce-task-execution/references/implementation-gate.md",
   "sce-validation/SKILL.md",
-  "sce-validation/references/validation-report.md",
-  "sce-validation/references/validation-result.md"
+  "sce-validation/references/validation-report.md"
 )
 
 local opencodeAgents = new Mapping {

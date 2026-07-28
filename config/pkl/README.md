@@ -26,7 +26,7 @@ Apply target-specific rendering and supported metadata under `config/pkl/rendere
 
 Each skill package includes its package-local `SKILL.md` and any nested `references/` documents. Generated skill trees must remain self-contained; a generated skill must not depend on a sibling skill package.
 
-Pi and OpenCode consume the canonical YAML phase-result contracts. Claude receives target-specific Markdown result contracts for `sce-context-load`, `sce-plan-authoring`, `sce-plan-review`, `sce-task-execution`, and `sce-atomic-commit`; their fixed status lines, headings, and labels preserve the same command-to-skill handoff data. Validation and context-synchronization reports remain Markdown for every target.
+Pi and OpenCode consume the canonical multi-file packages, including YAML phase-result contracts under `references/`. Claude receives the same skills with two Claude-only transforms: Markdown phase-result contracts for `sce-context-load`, `sce-plan-authoring`, `sce-plan-review`, `sce-task-execution`, and `sce-atomic-commit`, and a reduced package shape where machine contracts and plan templates are folded into `SKILL.md` so each Claude package keeps at most one human-presentation file under `references/` (`plan-summary.md`, `implementation-gate.md`, `validation-report.md`, `sync-report.md`, or `commit-message-style.md`). Validation and context-synchronization reports remain Markdown for every target; on Claude, `validation-result` lives in `SKILL.md` while `validation-report` / `sync-report` stay as the single human-facing reference when present.
 
 The automated OpenCode profile, the generated `/handover` command, legacy bootstrap/handover/context-sync skills, Claude agents, and Pi agent-role prompts are removed surfaces. `config/automated/.opencode` and `config/.claude/agents` must remain absent.
 
@@ -71,7 +71,7 @@ nix run .#pkl-check-generated
 The check:
 
 - rejects committed `config/.opencode`, `config/.claude`, `config/.pi`, `config/schema/sce-config.schema.json`, and `cli/assets/generated` outputs;
-- evaluates `metadata-coverage-check.pkl` for exact per-target four-command, eight-skill-package, and nested-reference inventories, including Claude's target-specific Markdown result-contract paths, plus the two-agent OpenCode inventory;
+- evaluates `metadata-coverage-check.pkl` for exact per-target four-command, eight-skill-package, and nested-reference inventories, including Claude's reduced single human-presentation reference inventory (machine contracts inlined in `SKILL.md`), plus the two-agent OpenCode inventory;
 - generates twice into temporary directories and compares sorted SHA-256 inventories;
 - requires all generated target roots and the SCE config schema while rejecting removed surfaces such as `config/automated/.opencode` and `config/.claude/agents`;
 - prints the stable inventory count and digest without preserving generated files.
