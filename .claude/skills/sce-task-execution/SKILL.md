@@ -3,7 +3,7 @@ name: sce-task-execution
 description: >
   Internal SCE workflow skill that always presents one reviewed task to the
   user before editing, executes it only after approval, verifies the
-  task, records evidence in the plan, and returns one YAML result: declined,
+  task, records evidence in the plan, and returns one Markdown result: declined,
   blocked, incomplete, or complete. Accepts a ready result from
   sce-plan-review. Do not select or execute another task,
   synchronize durable context, run final plan validation, create commits, or
@@ -25,7 +25,7 @@ This skill owns:
 - Implementing one approved task.
 - Running task-level verification.
 - Updating that task and its evidence in the plan.
-- Returning one terminal YAML result.
+- Returning one terminal Markdown result.
 
 Use the gate defined in:
 
@@ -33,7 +33,7 @@ Use the gate defined in:
 
 Return a final result matching:
 
-`references/execution-contract.yaml`
+`references/execution-contract.md`
 
 ## Input
 
@@ -93,7 +93,7 @@ question:
 
 `Continue with implementation now? (yes/no)`
 
-Stop and wait for the user's answer. Do not return YAML, and make no file
+Stop and wait for the user's answer. Do not return Markdown, and make no file
 modifications, until the user has answered.
 
 When the `approve` flag is supplied, show the gate as a summary, omit the
@@ -206,17 +206,17 @@ Return `blocked` for every other non-successful outcome, including:
 - Material blocker.
 - A verification failure that cannot be resolved in scope.
 
-Use a blocker category defined by `references/execution-contract.yaml`.
+Use a blocker category defined by `references/execution-contract.md`.
 
 Do not determine whether the plan is complete. The invoking `/next-task`
 workflow owns that decision after context synchronization.
 
-### 9. Return YAML
+### 9. Return Markdown
 
-After the skill reaches a terminal state, return exactly one YAML document
-matching `references/execution-contract.yaml`.
+After the skill reaches a terminal state, return exactly one Markdown document
+matching `references/execution-contract.md`.
 
-Return only the YAML document. Do not add explanatory prose before or after it.
+Return only the Markdown document. Do not add explanatory prose before or after it.
 
 ## Boundaries
 
@@ -243,5 +243,5 @@ The skill is complete after:
 - The implementation gate was shown.
 - The user approved or rejected the task, or approval was pre-supplied.
 - At most one task was executed.
-- One valid terminal YAML result matching `references/execution-contract.yaml`
+- One valid terminal Markdown result matching `references/execution-contract.md`
   was returned.

@@ -27,7 +27,7 @@ This skill owns:
 
 Return a result matching:
 
-`references/readiness-contract.yaml`
+`references/readiness-contract.md`
 
 ## Input
 
@@ -145,5 +145,5 @@ The skill is complete after:
 
 - One plan was resolved.
 - At most one task was resolved.
-- One valid readiness result matching `references/readiness-contract.yaml` was
+- One valid readiness result matching `references/readiness-contract.md` was
   returned.

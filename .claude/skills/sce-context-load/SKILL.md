@@ -3,7 +3,7 @@ name: sce-context-load
 description: >
   Internal SCE workflow skill that loads the durable context in `context/`
   relevant to one focus, reports gaps and context-versus-code drift, and returns
-  one YAML result: loaded or bootstrap_required. Use from /change-to-plan and
+  one Markdown result: loaded or bootstrap_required. Use from /change-to-plan and
   any workflow that needs durable context before acting. Do not modify context,
   repair drift, plan, or implement.
 compatibility: claude
@@ -30,7 +30,7 @@ This skill owns:
 
 Return a result matching:
 
-`references/context-brief.yaml`
+`references/context-brief.md`
 
 ## Input
 
@@ -126,4 +126,4 @@ The skill is complete after:
 - The context root was confirmed, or `bootstrap_required` was returned.
 - The entry points were read, and the relevant domain context was selected and
   read.
-- One valid result matching `references/context-brief.yaml` was returned.
+- One valid result matching `references/context-brief.md` was returned.

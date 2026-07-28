@@ -3,7 +3,7 @@ name: sce-plan-authoring
 description: >
   Internal SCE workflow skill that turns one change request into a scoped plan
   in `context/plans/`, sliced into atomic implementation tasks, and returns one
-  YAML result: plan_ready, needs_clarification, or blocked. Use from
+  Markdown result: plan_ready, needs_clarification, or blocked. Use from
   /change-to-plan. Do not implement plan tasks, request implementation approval,
   synchronize context, or run final validation.
 compatibility: claude
@@ -34,7 +34,7 @@ Use the document format defined in:
 
 Return a result matching:
 
-`references/authoring-contract.yaml`
+`references/authoring-contract.md`
 
 The invoking workflow renders that result as the summary defined in:
 
@@ -287,4 +287,4 @@ The skill is complete after:
 - One plan target was resolved, or resolution failed and was reported.
 - The plan file was written, or no file was written because the result is
   `needs_clarification` or `blocked`.
-- One valid result matching `references/authoring-contract.yaml` was returned.
+- One valid result matching `references/authoring-contract.md` was returned.

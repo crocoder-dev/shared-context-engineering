@@ -3,7 +3,7 @@ name: sce-atomic-commit
 description: >
   Internal SCE workflow skill that analyzes the staged diff and returns atomic,
   repository-style commit messages: coherent-unit detection, split guidance,
-  scope and subject wording, and the plan-citation body rule. Returns one YAML
+  scope and subject wording, and the plan-citation body rule. Returns one Markdown
   result (proposal, bypass_message, or blocked). Use from /commit. Do not stage
   files, create commits, or ask the user to confirm staging.
 compatibility: claude
@@ -22,7 +22,7 @@ This skill owns:
 - Choosing the scope and writing the subject and body of every message.
 - Applying the plan-citation body rule.
 - Classifying staged scope and applying context-file guidance gating.
-- Returning one terminal YAML result.
+- Returning one terminal Markdown result.
 
 Write messages matching:
 
@@ -30,7 +30,7 @@ Write messages matching:
 
 Return a result matching:
 
-`references/commit-contract.yaml`
+`references/commit-contract.md`
 
 Committing is not this skill's job. The invoking `/commit` workflow decides
 whether a returned message is committed, and it is the only thing that runs
@@ -131,15 +131,15 @@ Confirm before returning that:
 - No plan slug or task ID appears that the staged diff does not support.
 - The mode's own constraints hold.
 
-### 9. Return YAML
+### 9. Return Markdown
 
-Return exactly one YAML document matching `references/commit-contract.yaml`:
+Return exactly one Markdown document matching `references/commit-contract.md`:
 
 - `proposal` in `regular` mode, with one or more messages.
 - `bypass_message` in `bypass` mode, with exactly one message.
 - `blocked` when messages cannot be written faithfully.
 
-Return only the YAML document. Do not add explanatory prose before or after it.
+Return only the Markdown document. Do not add explanatory prose before or after it.
 
 ## Boundaries
 
@@ -163,5 +163,5 @@ The skill is complete after:
 
 - The staged diff was read, or reading it failed and was reported.
 - Messages were written for every staged file, or a blocker prevented it.
-- One valid terminal YAML result matching `references/commit-contract.yaml` was
+- One valid terminal Markdown result matching `references/commit-contract.md` was
   returned.
