@@ -78,5 +78,5 @@ flowchart TD
 - `config/pkl/base/workflow-next-task.pkl`
 - `config/pkl/base/workflow-validate.pkl`
 - `config/pkl/base/workflow-context-sync.pkl`
-- Claude composition: `config/pkl/renderers/claude-workflow-results.pkl`
+- Workflow composition: `config/pkl/renderers/workflow-composite.pkl` (shared; Claude consumes it)
 - Behavioral baselines: `.pi/prompts/{next-task,validate}.md`

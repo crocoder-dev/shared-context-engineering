@@ -10,7 +10,7 @@ Supersedes in part: `2026-07-27-workflow-oriented-pkl-generation.md`
 - Keep the four canonical workflow definitions and eight phase-skill packages as the behavioral source for Pi and OpenCode.
 - Render Claude as exactly four thin commands and four workflow-level skills: `sce-change-to-plan`, `sce-next-task`, `sce-validate`, and `sce-commit`.
 - Route each Claude command to exactly one corresponding workflow skill. Claude commands do not sequence phase skills.
-- Compose each Claude workflow skill from the canonical command, phase behavior, and context-sync policy in `config/pkl/renderers/claude-workflow-results.pkl`.
+- Compose each Claude workflow skill from the canonical command, phase behavior, and context-sync policy in `config/pkl/renderers/claude-workflow-results.pkl` (since promoted to the target-neutral `config/pkl/renderers/workflow-composite.pkl`).
 - Keep phase statuses and phase-to-phase data as internal workflow state. A Claude workflow skill never invokes another SCE skill or sibling package.
 - Emit exactly two files per Claude package: `SKILL.md` and `references/output.md`. The latter is the sole package reference and owns all human-visible gates, reports, and terminal Markdown layouts.
 - Preserve Pi and OpenCode generated command behavior, eight-skill inventories, and phase contracts byte-for-byte.

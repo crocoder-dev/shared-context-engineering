@@ -1,3 +1,5 @@
+import "workflow-composite.pkl" as composite
+
 commandAllowedTools = new Mapping {
   ["next-task"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
   ["change-to-plan"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill"
@@ -5,11 +7,6 @@ commandAllowedTools = new Mapping {
   ["commit"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
 }
 
-/// One command routes to one workflow-level package. Phase-skill names are not
-/// part of Claude's generated inventory.
-workflowSkillSlugByCommand = new Mapping {
-  ["change-to-plan"] = "sce-change-to-plan"
-  ["next-task"] = "sce-next-task"
-  ["validate"] = "sce-validate"
-  ["commit"] = "sce-commit"
-}
+/// The workflow slugs are target-neutral; Claude re-exports the shared mapping
+/// so command routing and coverage checks read it from one place.
+workflowSkillSlugByCommand = composite.workflowSkillSlugByCommand
