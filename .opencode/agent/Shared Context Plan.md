@@ -23,8 +23,7 @@ permission:
   doom_loop: ask
   skill:
     "*": ask
-    "sce-context-load": allow
-    "sce-plan-authoring": allow
+    "sce-change-to-plan": allow
 ---
 
 Route plan creation and revision through `/change-to-plan`.

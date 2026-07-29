@@ -23,12 +23,9 @@ permission:
   doom_loop: ask
   skill:
     "*": ask
-    "sce-plan-review": allow
-    "sce-task-execution": allow
-    "sce-task-context-sync": allow
-    "sce-validation": allow
-    "sce-plan-context-sync": allow
-    "sce-atomic-commit": allow
+    "sce-next-task": allow
+    "sce-validate": allow
+    "sce-commit": allow
 ---
 
 Route implementation work through `/next-task` and final plan validation through `/validate`.
