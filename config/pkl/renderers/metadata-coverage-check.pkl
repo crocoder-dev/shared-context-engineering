@@ -17,30 +17,6 @@ local expectedAgentSlugs = Set(
 
 local expectedWorkflowSkillByCommand = claudeMetadata.workflowSkillSlugByCommand
 
-local expectedCanonicalSkillDocumentPaths = Set(
-  "sce-atomic-commit/SKILL.md",
-  "sce-atomic-commit/references/commit-contract.yaml",
-  "sce-atomic-commit/references/commit-message-style.md",
-  "sce-context-load/SKILL.md",
-  "sce-context-load/references/context-brief.yaml",
-  "sce-plan-authoring/SKILL.md",
-  "sce-plan-authoring/references/authoring-contract.yaml",
-  "sce-plan-authoring/references/plan-summary.md",
-  "sce-plan-authoring/references/plan-template.md",
-  "sce-plan-context-sync/SKILL.md",
-  "sce-plan-context-sync/references/sync-report.md",
-  "sce-plan-review/SKILL.md",
-  "sce-plan-review/references/readiness-contract.yaml",
-  "sce-task-context-sync/SKILL.md",
-  "sce-task-context-sync/references/sync-report.md",
-  "sce-task-execution/SKILL.md",
-  "sce-task-execution/references/execution-contract.yaml",
-  "sce-task-execution/references/implementation-gate.md",
-  "sce-validation/SKILL.md",
-  "sce-validation/references/validation-report.md",
-  "sce-validation/references/validation-result.md"
-)
-
 /// A collapsed target renders each workflow as one package with one entrypoint
 /// and one user-visible Markdown output reference. Exact coverage rejects stale
 /// phase packages and any additional package-local references.
@@ -113,7 +89,10 @@ local assertCommandRoute = (target: String, slug: String, document: String) ->
 inventoryChecks {
   ["opencode-agents"] = assertExactKeys.apply(opencodeAgents, expectedAgentSlugs, "OpenCode agent")
   ["opencode-commands"] = assertExactKeys.apply(opencodeCommands, expectedCommandSlugs, "OpenCode command")
-  ["opencode-skill-documents"] = assertExactKeys.apply(opencodeSkillDocuments, expectedCanonicalSkillDocumentPaths, "OpenCode skill document")
+  ["opencode-skill-documents"] = assertExactKeys.apply(opencodeSkillDocuments, expectedWorkflowSkillDocumentPaths, "OpenCode skill document")
+  for (slug, document in opencodeCommands) {
+    ["opencode-command-route-\(slug)"] = assertCommandRoute.apply("OpenCode", slug, document.text)
+  }
   ["claude-commands"] = assertExactKeys.apply(claudeCommands, expectedCommandSlugs, "Claude command")
   ["claude-skill-documents"] = assertExactKeys.apply(claudeSkillDocuments, expectedWorkflowSkillDocumentPaths, "Claude skill document")
   for (slug, document in claudeCommands) {

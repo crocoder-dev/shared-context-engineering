@@ -40,8 +40,7 @@ permission:
   doom_loop: ask
   skill:
     "*": ask
-    "sce-context-load": allow
-    "sce-plan-authoring": allow
+    "sce-change-to-plan": allow
 """
   ["shared-context-code"] = """
 permission:
@@ -64,12 +63,9 @@ permission:
   doom_loop: ask
   skill:
     "*": ask
-    "sce-plan-review": allow
-    "sce-task-execution": allow
-    "sce-task-context-sync": allow
-    "sce-validation": allow
-    "sce-plan-context-sync": allow
-    "sce-atomic-commit": allow
+    "sce-next-task": allow
+    "sce-validate": allow
+    "sce-commit": allow
 """
 }
 

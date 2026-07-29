@@ -1,19 +1,8 @@
-import "../base/workflow-change-to-plan.pkl" as changeToPlan
-import "../base/workflow-next-task.pkl" as nextTask
-import "../base/workflow-validate.pkl" as validate
-import "../base/workflow-commit.pkl" as commit
-import "../base/workflow-content.pkl" as model
 import "common.pkl" as common
 import "opencode-metadata.pkl" as metadata
+import "workflow-composite.pkl" as workflowResults
 
 local generatedOpenCodePluginPathsJson = common.sceGeneratedOpenCodePluginPathsJson
-
-local workflows = new Listing {
-  changeToPlan.workflow
-  nextTask.workflow
-  validate.workflow
-  commit.workflow
-}
 
 /// Commands routed by a thin agent declare it here.
 local commandAgentBySlug = new Mapping {
@@ -23,51 +12,15 @@ local commandAgentBySlug = new Mapping {
   ["commit"] = "Shared Context Code"
 }
 
-local commandSkillMetadataBySlug = new Mapping {
-  ["change-to-plan"] = """
-entry-skill: "sce-context-load"
-skills:
-  - "sce-context-load"
-  - "sce-plan-authoring"
-"""
-  ["next-task"] = """
-entry-skill: "sce-plan-review"
-skills:
-  - "sce-plan-review"
-  - "sce-task-execution"
-  - "sce-task-context-sync"
-"""
-  ["validate"] = """
-entry-skill: "sce-validation"
-skills:
-  - "sce-validation"
-  - "sce-plan-context-sync"
-"""
-  ["commit"] = """
-entry-skill: "sce-atomic-commit"
-skills:
-  - "sce-atomic-commit"
-"""
-}
-
 local commandAgentLine = (slug: String) ->
   if (commandAgentBySlug.containsKey(slug)) "agent: \"\(commandAgentBySlug[slug])\"\n" else ""
 
-local renderCommand = (command: model.WorkflowCommand) -> new model.WorkflowDocument {
-  path = command.document.path
-  text = command.document.text.replaceFirst(
-    "\n---\n",
-    "\n\(commandAgentLine.apply(command.slug))\(commandSkillMetadataBySlug[command.slug])\n---\n"
-  )
-}
-
-local renderSkillDocument = (document: model.WorkflowDocument) -> new model.WorkflowDocument {
-  path = document.path
-  text = if (document.path == "SKILL.md") document.text.replaceFirst(
-    "\n---\n",
-    "\ncompatibility: opencode\n---\n"
-  ) else document.text
-}
+/// One command declares one workflow skill as both its entry skill and its whole
+/// skill chain. The skill owns every phase, so there is no sibling package to
+/// hand off to.
+local commandSkillLines = (slug: String) ->
+  let (skillSlug = workflowResults.workflowSkillSlugByCommand[slug])
+    "entry-skill: \"\(skillSlug)\"\nskills:\n  - \"\(skillSlug)\"\n"
 
 local agentFrontmatterBySlug = new Mapping {
   for (unitSlug, _ in metadata.agentDisplayNames) {
@@ -103,22 +56,25 @@ agents {
   }
 }
 
+/// OpenCode commands are intentionally thin. Each routes to exactly one composite
+/// workflow skill, which owns all phases, waits, and final response rendering.
 commands {
-  for (workflow in workflows) {
-    [workflow.command.slug] = renderCommand.apply(workflow.command)
+  for (slug, workflow in workflowResults.workflows) {
+    [slug] = workflowResults.renderCommand.apply(
+      workflow,
+      commandAgentLine.apply(slug) + commandSkillLines.apply(slug)
+    )
   }
 }
 
-/// Flatten package-relative document paths while retaining each skill's
-/// self-contained directory layout and adding only OpenCode-supported metadata
-/// to the package entrypoint.
+/// OpenCode has four workflow packages, each with exactly SKILL.md and one
+/// references/output.md presentation contract. Package-relative document paths
+/// stay flattened for deterministic generation while retaining each skill's
+/// self-contained directory layout, and only the entrypoint carries
+/// OpenCode-supported metadata.
 skillDocuments {
-  for (workflow in workflows) {
-    for (skillSlug, skillPackage in workflow.skills) {
-      for (documentPath, document in skillPackage.documents) {
-        ["\(skillSlug)/\(documentPath)"] = renderSkillDocument.apply(document)
-      }
-    }
+  for (path, document in workflowResults.skillDocuments.apply("compatibility: \(metadata.skillCompatibility)\n")) {
+    [path] = document
   }
 }
 
