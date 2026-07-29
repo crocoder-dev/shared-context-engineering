@@ -28,6 +28,7 @@ permission:
     "sce-task-context-sync": allow
     "sce-validation": allow
     "sce-plan-context-sync": allow
+    "sce-atomic-commit": allow
 ---
 
 Route implementation work through `/next-task` and final plan validation through `/validate`.

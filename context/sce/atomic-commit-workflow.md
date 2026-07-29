@@ -1,27 +1,21 @@
 # Atomic Commit Workflow
 
-Behavior contract for the `/commit` workflow and its `sce-atomic-commit` skill
-package.
+Behavior contract for the generated `/commit` workflow.
 
 ## Current surface
 
-The workflow currently exists only as the project-root `.pi/` behavioral
-baseline:
+Canonical behavior is authored in `config/pkl/base/workflow-commit.pkl` from the
+project-root `.pi/` baseline and generated for OpenCode, Claude, and Pi.
 
-- `.pi/prompts/commit.md` — the command.
-- `.pi/skills/sce-atomic-commit/SKILL.md` — the skill.
-- `.pi/skills/sce-atomic-commit/references/commit-contract.yaml` — the result
-  contract.
-- `.pi/skills/sce-atomic-commit/references/commit-message-style.md` — the
-  message wording rules.
+- Pi/OpenCode emit the canonical command plus the `sce-atomic-commit` phase
+  package, its YAML result contract, and commit-message style reference.
+- Claude emits one thin command invoking `sce-commit`. The composite package
+  contains only `SKILL.md`, which owns mode routing, staged-diff analysis,
+  proposal/commit behavior, and internal statuses, plus `references/output.md`,
+  which owns all human-visible prompts and result layouts.
 
-Canonical Pkl ownership and generated OpenCode/Claude/Pi payloads do not carry
-it yet. Until they do, the emitted workflow inventory described in
-[the ownership table](dedup-ownership-table.md) remains three commands and seven
-skill packages.
-
-Per the root `.pi/` baseline convention in `context/patterns.md`, this package is
-the authoring source for the canonical Pkl workflow package, not the reverse.
+Claude's package invokes no `sce-atomic-commit` sibling skill; it embeds the
+canonical phase behavior directly.
 
 ## Modes
 
@@ -115,7 +109,7 @@ staged explicitly; bypass mode omits the citation instead of stopping.
 
 ## Result contract
 
-The skill returns exactly one YAML result:
+Pi/OpenCode's phase skill returns exactly one YAML result:
 
 - `proposal` — regular mode, one or more messages, optional split rationale and
   staged-scope classification.
@@ -125,8 +119,10 @@ The skill returns exactly one YAML result:
   `no_staged_changes`, `plan_citation_ambiguity`, `unreadable_diff`, and
   `contradictory_context`.
 
-Every staged file appears under exactly one returned commit. No result carries a
-commit hash, because the skill never commits.
+Claude keeps the equivalent status as internal `sce-commit` state and renders
+only the applicable layout from `references/output.md`. Every staged file still
+belongs to exactly one commit message. The analysis phase never reports a hash;
+only successful bypass-mode `git commit` produces one.
 
 ## Related context
 

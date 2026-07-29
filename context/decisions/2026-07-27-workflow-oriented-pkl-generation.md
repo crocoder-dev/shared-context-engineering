@@ -1,7 +1,7 @@
 # Decision: Use Workflow-Oriented Pkl Generation
 
 Date: 2026-07-27
-Status: Accepted
+Status: Accepted (Claude inventory and transport superseded 2026-07-29)
 Plan: `context/plans/rebuild-pkl-workflow-markdown.md`
 
 ## Decision
@@ -31,5 +31,7 @@ The automated profile and obsolete Markdown catalog represented a second behavio
 ## Superseded scope
 
 This decision supersedes the generated path matrix, paired-output counts, and target inventory in `2026-02-28-pkl-generation-architecture.md`. That decision's canonical-Pkl-source, deterministic-rendering, and generated-vs-runtime ownership principles remain in force.
+
+`2026-07-29-claude-workflow-skill-packages.md` supersedes this decision's claims that Claude receives the same eight phase packages and transports Markdown phase results. Pi/OpenCode decomposition and all other ownership decisions here remain in force.
 
 The separate Plan/Code role decision in `2026-03-03-plan-code-agent-separation.md` remains in force, with agents now explicitly limited to routing.

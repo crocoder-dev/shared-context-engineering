@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`/change-to-plan` turns one change request into one scoped implementation plan under `context/plans/`. The generated OpenCode Plan agent is only a routing surface for this command; workflow behavior belongs to the command and its two phase skills.
+`/change-to-plan` turns one change request into one scoped implementation plan under `context/plans/`. The generated OpenCode Plan agent is only a routing surface. Pi/OpenCode behavior is owned by the command and two canonical phase skills; Claude renders the same behavior into the single `sce-change-to-plan` workflow skill.
 
 ## Command entrypoint
 
@@ -23,7 +23,7 @@ The request must be non-empty. The workflow does not accept approval or executio
    - Creates or updates one plan with stable task IDs, explicit scope, dependencies, done checks, and verification notes.
    - Returns `plan_ready`, `needs_clarification`, or `blocked`.
 
-The command forwards each phase result as the authoritative handoff rather than reconstructing it.
+Pi/OpenCode forward each phase result as the authoritative handoff rather than reconstructing it. Claude keeps the equivalent status and data as internal state inside `sce-change-to-plan`; no sibling skill handoff exists.
 
 ## Bootstrap boundary
 
@@ -57,8 +57,13 @@ flowchart TD
     F -- "plan_ready" --> I["Emit /next-task handoff"]
 ```
 
+## Target ownership
+
+- Pi/OpenCode: command sequencing plus `sce-context-load` and `sce-plan-authoring` packages.
+- Claude: one thin command invoking `sce-change-to-plan`; package files are `SKILL.md` and `references/output.md`.
+
 ## Canonical sources
 
 - `config/pkl/base/workflow-change-to-plan.pkl`
-- Generated baseline: `.pi/prompts/change-to-plan.md`
-- Skills: `sce-context-load`, `sce-plan-authoring`
+- Claude composition: `config/pkl/renderers/claude-workflow-results.pkl`
+- Behavioral baseline: `.pi/prompts/change-to-plan.md`
