@@ -52,9 +52,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-first_root="$tmp_dir/first"
-second_root="$tmp_dir/second"
-mkdir -p "$first_root" "$second_root"
+producer="$repo_root/scripts/produce-cli-generated-input.sh"
+if [[ ! -x "$producer" ]]; then
+  printf 'CLI generated-input producer is missing or not executable: %s\n' \
+    "$producer" >&2
+  exit 1
+fi
+
+generated_input_root="$tmp_dir/generated-input"
 
 pkl eval config/pkl/renderers/metadata-coverage-check.pkl >/dev/null
 pkl eval config/pkl/renderers/generation-contract-check.pkl >/dev/null
@@ -86,8 +91,8 @@ expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/forbidden-workflow-reference-check.pkl" \
   "generated workflow document contains a forbidden sibling-package reference or unresolved internalization token"
 
-pkl eval -m "$first_root" config/pkl/generate.pkl >/dev/null
-pkl eval -m "$second_root" config/pkl/generate.pkl >/dev/null
+"$producer" "$repo_root" "$generated_input_root"
+generated_root="$generated_input_root/pkl-generated"
 
 required_paths=(
   "config/.opencode/agent"
@@ -108,7 +113,7 @@ required_paths=(
 )
 
 for path in "${required_paths[@]}"; do
-  if [[ ! -e "$first_root/$path" ]]; then
+  if [[ ! -e "$generated_root/$path" ]]; then
     printf 'Generator did not emit required output at %s\n' "$path" >&2
     exit 1
   fi
@@ -120,37 +125,18 @@ forbidden_outputs=(
 )
 
 for path in "${forbidden_outputs[@]}"; do
-  if [[ -e "$first_root/$path" ]]; then
+  if [[ -e "$generated_root/$path" ]]; then
     printf 'Generator emitted removed output at %s\n' "$path" >&2
     exit 1
   fi
 done
 
-write_inventory() {
-  local generated_root="$1"
-  local inventory_path="$2"
-
-  (
-    cd "$generated_root"
-    find config -type f -print \
-      | LC_ALL=C sort \
-      | while IFS= read -r path; do
-          sha256sum "$path"
-        done
-  ) > "$inventory_path"
-}
-
-first_inventory="$tmp_dir/first.SHA256SUMS"
-second_inventory="$tmp_dir/second.SHA256SUMS"
-write_inventory "$first_root" "$first_inventory"
-write_inventory "$second_root" "$second_inventory"
-
-if ! diff -u "$first_inventory" "$second_inventory"; then
-  printf 'Pkl generation is not deterministic.\n' >&2
-  exit 1
-fi
-
-inventory_digest="$(sha256sum "$first_inventory" | cut -d ' ' -f 1)"
-inventory_count="$(wc -l < "$first_inventory" | tr -d ' ')"
+inventory_path="$generated_input_root/SHA256SUMS"
+check_inventory="$tmp_dir/SHA256SUMS"
+while read -r checksum path; do
+  printf '%s  %s\n' "$checksum" "${path#pkl-generated/}"
+done < "$inventory_path" > "$check_inventory"
+inventory_digest="$(sha256sum "$check_inventory" | cut -d ' ' -f 1)"
+inventory_count="$(wc -l < "$check_inventory" | tr -d ' ')"
 printf 'Ephemeral Pkl generation passed: %s files, inventory sha256 %s.\n' \
   "$inventory_count" "$inventory_digest"

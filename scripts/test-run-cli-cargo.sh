@@ -3,6 +3,8 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 helper="${script_dir}/run-cli-cargo.sh"
+producer="${script_dir}/produce-cli-generated-input.sh"
+input_declaration="${script_dir}/../config/pkl/generator-inputs.txt"
 tmp_root="$(mktemp -d)"
 cleanup() {
   rm -rf "${tmp_root}"
@@ -23,6 +25,8 @@ mkdir -p \
   "${state_root}" \
   "${tmp_dir}"
 cp "${helper}" "${test_repo}/scripts/run-cli-cargo.sh"
+cp "${producer}" "${test_repo}/scripts/produce-cli-generated-input.sh"
+cp "${input_declaration}" "${test_repo}/config/pkl/generator-inputs.txt"
 
 printf 'generator-v1\n' > "${test_repo}/config/pkl/generate.pkl"
 printf 'agent-trace\n' > "${test_repo}/config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts"
@@ -70,7 +74,11 @@ cp "${SCE_CLI_GENERATED_INPUT_DIR}/SHA256SUMS" "${FAKE_CARGO_STATE}/SHA256SUMS"
 cp "${SCE_CLI_GENERATED_INPUT_DIR}/INPUTS.SHA256SUMS" "${FAKE_CARGO_STATE}/INPUTS.SHA256SUMS"
 exit "${FAKE_CARGO_EXIT_CODE:-0}"
 EOF
-chmod +x "${fake_bin}/pkl" "${fake_bin}/cargo" "${test_repo}/scripts/run-cli-cargo.sh"
+chmod +x \
+  "${fake_bin}/pkl" \
+  "${fake_bin}/cargo" \
+  "${test_repo}/scripts/produce-cli-generated-input.sh" \
+  "${test_repo}/scripts/run-cli-cargo.sh"
 
 run_helper() {
   env \

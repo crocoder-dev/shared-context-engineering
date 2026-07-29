@@ -1,0 +1,5 @@
+# Repository-relative files and directories that determine generate.pkl output.
+config/pkl
+config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts
+config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
+config/lib/pi-plugin/sce-pi-extension.ts

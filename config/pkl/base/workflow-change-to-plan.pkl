@@ -1,46 +1,61 @@
 import "workflow-content.pkl" as model
 
+local contextLoad = model.semanticReference.apply("`sce-context-load`", "the **Context load phase**")
+local contextLoadName = model.semanticReference.apply("sce-context-load", "Context load phase")
+local planAuthoring = model.semanticReference.apply("`sce-plan-authoring`", "the **Plan authoring phase**")
+local planAuthoringName = model.semanticReference.apply("sce-plan-authoring", "Plan authoring phase")
+local planReview = model.semanticReference.apply("`sce-plan-review`", "the **Plan review phase**")
+local taskExecutionName = model.semanticReference.apply("`sce-task-execution`", "the **Task execution phase**")
+local contextBrief = model.semanticReference.apply(
+  "`references/context-brief.yaml`",
+  "the internal context-load state described by this workflow"
+)
+local authoringContract = model.semanticReference.apply(
+  "`references/authoring-contract.yaml`",
+  "the internal authoring state described by this workflow"
+)
+local planTemplate = model.semanticReference.apply(
+  "`references/plan-template.md`",
+  "the **Plan template** section embedded in this file"
+)
+local planSummary = model.semanticReference.apply("`references/plan-summary.md`", "`references/output.md`")
+local invoke = model.semanticReference.apply("Invoke", "Run")
+local invokeLower = model.semanticReference.apply("invoke", "run")
+local invokedSkills = model.semanticReference.apply("invoked skills", "embedded phases")
+local yamlResult = model.semanticReference.apply("YAML result", "internal state")
+local returnLower = model.semanticReference.apply("return", "set internal status")
+local returnUpper = model.semanticReference.apply("Return", "Set internal status")
+local returningContextBrief = model.semanticReference.apply("Returning one structured context brief", "Recording one structured context brief")
+local returningAuthoringResult = model.semanticReference.apply("Returning one structured authoring result", "Recording one structured authoring result")
+local invokeTaskExecution = model.semanticReference.apply("Invoke task execution", "Run task execution")
+local returnExactlyOneStructuredResult = model.semanticReference.apply("Return exactly one structured result", "Set exactly one internal state")
+local returnOnlyStructuredResult = model.semanticReference.apply("Return only the structured result", "Record only the internal state")
+
 /// Canonical `/change-to-plan` workflow command and its self-contained skill
 /// packages. Text mirrors the project-root `.pi/` behavioral baseline; target
 /// renderers consume this model in later workflow-rendering tasks.
 
-local makeDocument = (documentPath: String, documentText: String) -> new model.WorkflowDocument {
-  path = documentPath
-  text = documentText
-}
-
-local packageDocuments = (documents: Listing<model.WorkflowDocument>) -> new Mapping {
-  for (item in documents) {
-    [item.path] = item
-  }
-}
-
 local contextLoadPackage = new model.SkillPackage {
   slug = "sce-context-load"
   title = "SCE Context Load"
-  documents = packageDocuments.apply(new Listing {
-    makeDocument.apply("SKILL.md", CONTEXT_SKILL)
-    makeDocument.apply("references/context-brief.yaml", CONTEXT_CONTRACT)
+  documents = model.packageDocuments.apply(new Listing {
+    model.makeDocument.apply("SKILL.md", CONTEXT_SKILL)
+    model.makeDocument.apply("references/context-brief.yaml", CONTEXT_CONTRACT)
   })
 }
 
 local planAuthoringPackage = new model.SkillPackage {
   slug = "sce-plan-authoring"
   title = "SCE Plan Authoring"
-  documents = packageDocuments.apply(new Listing {
-    makeDocument.apply("SKILL.md", AUTHORING_SKILL)
-    makeDocument.apply("references/authoring-contract.yaml", AUTHORING_CONTRACT)
-    makeDocument.apply("references/plan-template.md", PLAN_TEMPLATE)
-    makeDocument.apply("references/plan-summary.md", PLAN_SUMMARY)
+  documents = model.packageDocuments.apply(new Listing {
+    model.makeDocument.apply("SKILL.md", AUTHORING_SKILL)
+    model.makeDocument.apply("references/authoring-contract.yaml", AUTHORING_CONTRACT)
+    model.makeDocument.apply("references/plan-template.md", PLAN_TEMPLATE)
+    model.makeDocument.apply("references/plan-summary.md", PLAN_SUMMARY)
   })
 }
 
-local COMMAND = """
-    ---
-    description: "Run `sce-context-load` -> `sce-plan-authoring` to turn a change request into a scoped SCE plan"
-    argument-hint: "<describe changes you want to introduce>"
-    ---
-
+local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     SCE CHANGE TO PLAN `$ARGUMENTS`
 
     ## Input
@@ -48,19 +63,19 @@ local COMMAND = """
     `$ARGUMENTS` is the change request, in free-form prose.
 
     - The change request is required.
-    - It may describe a new plan or a change to an existing plan. Do not resolve which one applies; `sce-plan-authoring` owns that decision.
+    - It may describe a new plan or a change to an existing plan. Do not resolve which one applies; \(planAuthoring.render.apply(mode)) owns that decision.
 
     When `$ARGUMENTS` is empty, report that a change request is required, state the expected argument, and stop. Do not infer a change request from the repository state or the conversation.
 
-    Pass the change request to `sce-plan-authoring` unmodified. Do not restate, summarize, or pre-scope it.
+    Pass the change request to \(planAuthoring.render.apply(mode)) unmodified. Do not restate, summarize, or pre-scope it.
 
-    Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is the path resolved by `sce-plan-authoring` (`plan.path`, or an entry of `candidates`), so every emitted command is directly runnable.
+    Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is the path resolved by \(planAuthoring.render.apply(mode)) (`plan.path`, or an entry of `candidates`), so every emitted command is directly runnable.
 
     ## Workflow
 
     ### 1. Load durable context
 
-    Invoke `sce-context-load` with the change request as the focus.
+    \(invoke.render.apply(mode)) \(contextLoad.render.apply(mode)) with the change request as the focus.
 
     `context/` is durable AI-first memory describing current state. Load it before planning so the plan starts from recorded truth. Where context and code disagree, the code is the source of truth.
 
@@ -81,7 +96,7 @@ local COMMAND = """
     `sce setup --bootstrap-context`
     ```
 
-    Wait for the user. When they report the command ran, invoke `sce-context-load` again and continue in this session. Do not restart planning, and do not ask for the change request again.
+    Wait for the user. When they report the command ran, \(invokeLower.render.apply(mode)) \(contextLoad.render.apply(mode)) again and continue in this session. Do not restart planning, and do not ask for the change request again.
 
     `loaded` -> Continue to the next step.
 
@@ -89,11 +104,11 @@ local COMMAND = """
 
     ### 2. Author the plan
 
-    Invoke `sce-plan-authoring` with the change request and the complete `loaded` brief from `sce-context-load`.
+    \(invoke.render.apply(mode)) \(planAuthoring.render.apply(mode)) with the change request and the complete `loaded` brief from \(contextLoad.render.apply(mode)).
 
     Pass the brief verbatim. Do not restate, summarize, or reinterpret it.
 
-    `sce-plan-authoring` exclusively owns:
+    \(planAuthoring.render.apply(mode)) exclusively owns:
 
     - Resolving whether the request targets a new or an existing plan.
     - The clarification gate.
@@ -141,9 +156,9 @@ local COMMAND = """
 
     ### 3. Determine the continuation
 
-    Render the `plan_ready` result as the summary defined by `sce-plan-authoring` in `references/plan-summary.md`. Follow that layout exactly. Do not print the raw result.
+    Render the `plan_ready` result as the summary defined by \(planAuthoring.render.apply(mode)) in \(planSummary.render.apply(mode)). Follow that layout exactly. Do not print the raw result.
 
-    Take the next task from `next_task`. A `plan_ready` result always names one. Do not evaluate its dependencies; `sce-plan-review` checks them when the emitted command runs and returns `blocked` if they are unmet.
+    Take the next task from `next_task`. A `plan_ready` result always names one. Do not evaluate its dependencies; \(planReview.render.apply(mode)) checks them when the emitted command runs and returns `blocked` if they are unmet.
 
     The continuation invites revision. The plan was written from one prose request, so its assumptions are guesses about what the user meant, its scope is one reading of the request, and its task boundaries are the author's judgement. The user has seen none of it until now, and every one of those is cheaper to correct here than after a task has been built on it. A user who does not know revision is on the table will implement a plan they would have changed.
 
@@ -176,17 +191,17 @@ local COMMAND = """
 
     When the user answers clarification questions from step 2, answers open questions listed in the summary, or answers with changes to the plan, revise it in this session. Do not ask them to rerun `/change-to-plan`, and do not ask for the original change request again.
 
-    Invoke `sce-plan-authoring` with their answer or correction and the same `loaded` brief from step 1. The brief still holds; durable context did not change because the user disagreed with a task boundary. Do not reload it.
+    \(invoke.render.apply(mode)) \(planAuthoring.render.apply(mode)) with their answer or correction and the same `loaded` brief from step 1. The brief still holds; durable context did not change because the user disagreed with a task boundary. Do not reload it.
 
     An answer that resolves a doubt removes that open question. An answer that does not resolve it leaves the question standing; do not drop it because the user replied to it. If the reply raises a new doubt, the revised plan carries a new open question.
 
-    Pass the correction as written. Do not restate, soften, or pre-scope it. `sce-plan-authoring` owns resolving it against the existing plan, and owns preserving completed tasks and their evidence.
+    Pass the correction as written. Do not restate, soften, or pre-scope it. \(planAuthoring.render.apply(mode)) owns resolving it against the existing plan, and owns preserving completed tasks and their evidence.
 
     Branch on `status` exactly as in step 2. A revision may legitimately return `needs_clarification` or `blocked`.
 
     On `plan_ready`, render the summary again and the continuation exactly as in step 3, replacing `is ready` with `revised` in the heading.
 
-    Revise as many times as the user asks. Each revision is one invocation of `sce-plan-authoring` against the same plan.
+    Revise as many times as the user asks. Each revision is one invocation of \(planAuthoring.render.apply(mode)) against the same plan.
 
     When the user signals the plan is good, or asks to begin, return the handoff without re-authoring the plan. Say so plainly if questions are still open: the user may proceed over an unresolved doubt, and that is their call, but do not record it as resolved.
 
@@ -199,8 +214,8 @@ local COMMAND = """
     - Do not gate the handoff on open questions listed in the plan summary. Blocking questions return `needs_clarification` before any plan is written. Offering revision is not the same as demanding it, and inventing doubts to justify a review gate is not allowed.
     - Do not suppress, soften, or answer an open question or clarification question on the user's behalf.
     - Do not defer the user's revision to a rerun of `/change-to-plan`, and do not defer it to the implementation phase. Revise the plan here.
-    - Do not narrow, expand, or reinterpret a revision the user asked for. Pass it to `sce-plan-authoring` as written.
-    - Do not duplicate the internal instructions of invoked skills.
+    - Do not narrow, expand, or reinterpret a revision the user asked for. Pass it to \(planAuthoring.render.apply(mode)) as written.
+    - Do not duplicate the internal instructions of \(invokedSkills.render.apply(mode)).
     - Do not plan before durable context is loaded.
     - Do not bootstrap `context/` yourself. `sce setup --bootstrap-context` owns that.
     - Do not modify any file under `context/` outside `context/plans/`.
@@ -210,20 +225,25 @@ local COMMAND = """
     - Do not emit a `/validate` command. This workflow always hands off to `/next-task`.
     - Do not answer the skill's clarification questions on the user's behalf.
     - Do not execute the continuation returned at the end.
-    - Do not infer success when `sce-plan-authoring` returns a non-`plan_ready` status.
+    - Do not infer success when \(planAuthoring.render.apply(mode)) returns a non-`plan_ready` status.
     """
 
-local CONTEXT_SKILL = """
-    ---
-    name: sce-context-load
-    description: >
-      Internal SCE workflow skill that loads the durable context in `context/`
-      relevant to one focus, reports gaps and context-versus-code drift, and returns
-      one YAML result: loaded or bootstrap_required. Use from /change-to-plan and
-      any workflow that needs durable context before acting. Do not modify context,
-      repair drift, plan, or implement.
-    ---
+local structuredCommand = new model.StructuredWorkflowDocument {
+  path = "change-to-plan.md"
+  frontmatter = new model.WorkflowFrontmatter {
+    lines = (mode: model.WorkflowRenderMode) -> new Listing {
+      "description: \"Run \(contextLoad.render.apply(mode)) -> \(planAuthoring.render.apply(mode)) to turn a change request into a scoped SCE plan\""
+      "argument-hint: \"<describe changes you want to introduce>\""
+    }
+  }
+  body = new model.WorkflowBody {
+    render = (mode: model.WorkflowRenderMode) -> renderCommandBody.apply(mode)
+  }
+}
 
+local COMMAND = structuredCommand.render.apply("package", "").text
+
+local renderContextSkillBody = (mode: model.WorkflowRenderMode) -> """
     # SCE Context Load
 
     ## Purpose
@@ -241,11 +261,11 @@ local CONTEXT_SKILL = """
     - Selecting the domain context relevant to the focus.
     - Reporting focus areas with no durable context.
     - Reporting context that contradicts the code.
-    - Returning one structured context brief.
+    - \(returningContextBrief.render.apply(mode)).
 
     Return a result matching:
 
-    `references/context-brief.yaml`
+    \(contextBrief.render.apply(mode))
 
     ## Input
 
@@ -258,7 +278,7 @@ local CONTEXT_SKILL = """
 
     ### 1. Confirm the context root
 
-    When `context/` does not exist, return `bootstrap_required` immediately. Read
+    When `context/` does not exist, \(returnLower.render.apply(mode)) `bootstrap_required` immediately. Read
     nothing further.
 
     Bootstrapping is the invoking workflow's decision, not this skill's.
@@ -309,7 +329,7 @@ local CONTEXT_SKILL = """
 
     ### 5. Return the brief
 
-    Return exactly one structured result:
+    \(returnExactlyOneStructuredResult.render.apply(mode)):
 
     - `loaded`
     - `bootstrap_required`
@@ -317,7 +337,7 @@ local CONTEXT_SKILL = """
     Report facts the invoking workflow can act on. A brief that only lists file
     paths has moved no knowledge.
 
-    Return only the structured result. Do not add explanatory prose before or after
+    \(returnOnlyStructuredResult.render.apply(mode)). Do not add explanatory prose before or after
     it.
 
     ## Boundaries
@@ -341,8 +361,28 @@ local CONTEXT_SKILL = """
     - The context root was confirmed, or `bootstrap_required` was returned.
     - The entry points were read, and the relevant domain context was selected and
       read.
-    - One valid result matching `references/context-brief.yaml` was returned.
+    - One valid result matching \(contextBrief.render.apply(mode)) was returned.
     """
+
+local structuredContextSkill = new model.StructuredWorkflowDocument {
+  path = "sce-context-load"
+  frontmatter = new model.WorkflowFrontmatter {
+    lines = (mode: model.WorkflowRenderMode) -> new Listing {
+      "name: \(contextLoadName.render.apply(mode))"
+      "description: >"
+      "  Internal SCE workflow skill that loads the durable context in `context/`"
+      "  relevant to one focus, reports gaps and context-versus-code drift, and returns"
+      "  one \(yamlResult.render.apply(mode)): loaded or bootstrap_required. Use from /change-to-plan and"
+      "  any workflow that needs durable context before acting. Do not modify context,"
+      "  repair drift, plan, or implement."
+    }
+  }
+  body = new model.WorkflowBody {
+    render = (mode: model.WorkflowRenderMode) -> renderContextSkillBody.apply(mode)
+  }
+}
+
+local CONTEXT_SKILL = structuredContextSkill.render.apply("package", "").text
 
 local CONTEXT_CONTRACT = """
     version: 1
@@ -500,17 +540,7 @@ local CONTEXT_CONTRACT = """
             to load for this focus.
     """
 
-local AUTHORING_SKILL = """
-    ---
-    name: sce-plan-authoring
-    description: >
-      Internal SCE workflow skill that turns one change request into a scoped plan
-      in `context/plans/`, sliced into atomic implementation tasks, and returns one
-      YAML result: plan_ready, needs_clarification, or blocked. Use from
-      /change-to-plan. Do not implement plan tasks, request implementation approval,
-      synchronize context, or run final validation.
-    ---
-
+local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
     # SCE Plan Authoring
 
     ## Purpose
@@ -528,26 +558,26 @@ local AUTHORING_SKILL = """
       non-goals.
     - Slicing the work into atomic implementation tasks.
     - Writing the plan file.
-    - Returning one structured authoring result.
+    - \(returningAuthoringResult.render.apply(mode)).
 
     Use the document format defined in:
 
-    `references/plan-template.md`
+    \(planTemplate.render.apply(mode))
 
     Return a result matching:
 
-    `references/authoring-contract.yaml`
+    \(authoringContract.render.apply(mode))
 
     The invoking workflow renders that result as the summary defined in:
 
-    `references/plan-summary.md`
+    \(planSummary.render.apply(mode))
 
     ## Input
 
     The invoking workflow provides:
 
     - One change request, in free-form prose.
-    - The `loaded` context brief from `sce-context-load`.
+    - The `loaded` context brief from \(contextLoad.render.apply(mode)).
 
     The change request may name a plan, describe a change to an existing plan, or
     describe entirely new work. Resolving which applies is this skill's
@@ -567,7 +597,7 @@ local AUTHORING_SKILL = """
     request, and it is usually terse: a task boundary the user disagrees with, an
     ordering they want changed, work they want added or dropped. Read it against the
     existing plan, which supplies the scope, criteria, and terminology it omits.
-    Terseness is not ambiguity. Do not return `needs_clarification` for detail the
+    Terseness is not ambiguity. Do not \(returnLower.render.apply(mode)) `needs_clarification` for detail the
     plan already carries; ask only when the revision itself is genuinely undecidable.
 
     ## Workflow
@@ -637,7 +667,7 @@ local AUTHORING_SKILL = """
       strategy, and risk tradeoffs.
     - Task ordering assumptions and prerequisite sequencing.
 
-    Return `needs_clarification` with one to three targeted questions when any of
+    \(returnUpper.render.apply(mode)) `needs_clarification` with one to three targeted questions when any of
     these would materially change the plan. Write no plan file in that case.
 
     Use repository conventions for ordinary local choices. Do not block on:
@@ -693,7 +723,7 @@ local AUTHORING_SKILL = """
     ### 6. Author the task stack
 
     Slice the work into sequential tasks `T01..T0N` using the task format and the
-    atomic slicing contract in `references/plan-template.md`.
+    atomic slicing contract in \(planTemplate.render.apply(mode)).
 
     Every executable task must be completable and landable as one coherent commit.
     Split any task that would require multiple independent commits. Convert broad
@@ -712,25 +742,25 @@ local AUTHORING_SKILL = """
     A finished stack always leaves at least one incomplete task, so the invoking
     workflow can always hand off to `/next-task`. When the request resolves to a
     plan but produces no incomplete task, because the change is already implemented
-    or already covered by completed tasks, return `blocked` with category
+    or already covered by completed tasks, \(returnLower.render.apply(mode)) `blocked` with category
     `no_actionable_work` instead of writing the plan.
 
     ### 7. Write the plan
 
-    Write `context/plans/{plan_name}.md` using `references/plan-template.md`.
+    Write `context/plans/{plan_name}.md` using \(planTemplate.render.apply(mode)).
 
     When updating an existing plan, keep completed tasks and their evidence intact,
     and append or renumber new tasks without disturbing recorded history.
 
     ### 8. Return the result
 
-    Return exactly one structured result:
+    \(returnExactlyOneStructuredResult.render.apply(mode)):
 
     - `plan_ready`
     - `needs_clarification`
     - `blocked`
 
-    Return only the structured result. Do not add explanatory prose before or after
+    \(returnOnlyStructuredResult.render.apply(mode)). Do not add explanatory prose before or after
     it.
 
     ## Tone
@@ -763,7 +793,7 @@ local AUTHORING_SKILL = """
 
     Do not:
 
-    - Ask the user questions directly. Return `needs_clarification` and let the
+    - Ask the user questions directly. \(returnUpper.render.apply(mode)) `needs_clarification` and let the
       invoking workflow present the questions.
     - Answer your own clarification questions.
     - Write a plan file when returning `needs_clarification` or `blocked`.
@@ -773,12 +803,12 @@ local AUTHORING_SKILL = """
       repair instead of performing it.
     - Mark any task complete.
     - Request implementation confirmation.
-    - Invoke task execution.
+    - \(invokeTaskExecution.render.apply(mode)).
     - Synchronize context.
     - Run final validation.
     - Author a validation, cleanup, or context-verification task. `/validate` owns
       that phase.
-    - Return `plan_ready` for a plan with no incomplete task.
+    - \(returnUpper.render.apply(mode)) `plan_ready` for a plan with no incomplete task.
     - Create a Git commit.
     - Author more than one plan.
 
@@ -789,8 +819,28 @@ local AUTHORING_SKILL = """
     - One plan target was resolved, or resolution failed and was reported.
     - The plan file was written, or no file was written because the result is
       `needs_clarification` or `blocked`.
-    - One valid result matching `references/authoring-contract.yaml` was returned.
+    - One valid result matching \(authoringContract.render.apply(mode)) was returned.
     """
+
+local structuredAuthoringSkill = new model.StructuredWorkflowDocument {
+  path = "sce-plan-authoring"
+  frontmatter = new model.WorkflowFrontmatter {
+    lines = (mode: model.WorkflowRenderMode) -> new Listing {
+      "name: \(planAuthoringName.render.apply(mode))"
+      "description: >"
+      "  Internal SCE workflow skill that turns one change request into a scoped plan"
+      "  in `context/plans/`, sliced into atomic implementation tasks, and returns one"
+      "  \(yamlResult.render.apply(mode)): plan_ready, needs_clarification, or blocked. Use from"
+      "  /change-to-plan. Do not implement plan tasks, request implementation approval,"
+      "  synchronize context, or run final validation."
+    }
+  }
+  body = new model.WorkflowBody {
+    render = (mode: model.WorkflowRenderMode) -> renderAuthoringSkillBody.apply(mode)
+  }
+}
+
+local AUTHORING_SKILL = structuredAuthoringSkill.render.apply("package", "").text
 
 local AUTHORING_CONTRACT = """
     version: 1
@@ -1051,7 +1101,7 @@ local AUTHORING_CONTRACT = """
                 be created.
     """
 
-local PLAN_TEMPLATE = """
+local renderPlanTemplate = (mode: model.WorkflowRenderMode) -> """
     # SCE Plan Template
 
     The document format for `context/plans/{plan_name}.md`. This is the plan file
@@ -1198,7 +1248,7 @@ local PLAN_TEMPLATE = """
 
     ## Completion records
 
-    `sce-task-execution` appends evidence to a task when it completes, and flips the
+    \(taskExecutionName.render.apply(mode)) appends evidence to a task when it completes, and flips the
     checkbox and status:
 
     ```markdown
@@ -1223,6 +1273,8 @@ local PLAN_TEMPLATE = """
     - Add acceptance criteria for newly planned outcomes rather than rewriting
       criteria already satisfied.
     """
+
+local PLAN_TEMPLATE = renderPlanTemplate.apply("package")
 
 local PLAN_SUMMARY = """
     # SCE Plan Summary
@@ -1321,12 +1373,26 @@ local PLAN_SUMMARY = """
     ```
     """
 
+structuredComposite = new model.StructuredCompositeSource {
+  command = structuredCommand
+  phases = new Listing {
+    structuredContextSkill
+    structuredAuthoringSkill
+  }
+  internalDocuments = new Listing {
+    model.makeDocument.apply("Plan template", renderPlanTemplate.apply("composite"))
+  }
+  outputDocuments = new Listing {
+    model.makeDocument.apply("Plan summary", PLAN_SUMMARY)
+  }
+}
+
 workflow = new model.WorkflowPackage {
   slug = "change-to-plan"
   command = new model.WorkflowCommand {
     slug = "change-to-plan"
     title = "Change to Plan"
-    document = makeDocument.apply("change-to-plan.md", COMMAND)
+    document = model.makeDocument.apply("change-to-plan.md", COMMAND)
   }
   skills = new Mapping {
     [contextLoadPackage.slug] = contextLoadPackage

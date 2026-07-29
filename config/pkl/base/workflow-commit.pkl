@@ -1,36 +1,35 @@
 import "workflow-content.pkl" as model
 
+local atomicCommit = model.semanticReference.apply("`sce-atomic-commit`", "the **Atomic commit phase**")
+local atomicCommitName = model.semanticReference.apply("sce-atomic-commit", "Atomic commit phase")
+local commitContract = model.semanticReference.apply("`references/commit-contract.yaml`", "the internal commit state described by this workflow")
+local commitMessageStyle = model.semanticReference.apply("`references/commit-message-style.md`", "`references/output.md`")
+local invoke = model.semanticReference.apply("Invoke", "Run")
+local invokeLower = model.semanticReference.apply("invoke", "run")
+local yamlResult = model.semanticReference.apply("YAML result", "internal state")
+local yaml = model.semanticReference.apply("YAML", "internal state")
+local returnUpper = model.semanticReference.apply("Return", "Set internal status")
+local returnLower = model.semanticReference.apply("return", "set internal status")
+local returningTerminalYamlResult = model.semanticReference.apply("Returning one terminal YAML result", "Recording one terminal internal state")
+local returnExactlyOneYamlDocument = model.semanticReference.apply("Return exactly one YAML document", "Set exactly one internal state")
+local returnOnlyYamlDocument = model.semanticReference.apply("Return only the YAML document", "Record only the internal state")
+local returnYaml = model.semanticReference.apply("Return YAML", "Return internal state")
+
 /// Canonical `/commit` workflow command and its self-contained skill package.
 /// Text mirrors the project-root `.pi/` behavioral baseline; target renderers
 /// consume this model in later workflow-rendering tasks.
 
-local makeDocument = (documentPath: String, documentText: String) -> new model.WorkflowDocument {
-  path = documentPath
-  text = documentText
-}
-
-local packageDocuments = (documents: Listing<model.WorkflowDocument>) -> new Mapping {
-  for (item in documents) {
-    [item.path] = item
-  }
-}
-
 local atomicCommitPackage = new model.SkillPackage {
   slug = "sce-atomic-commit"
   title = "SCE Atomic Commit"
-  documents = packageDocuments.apply(new Listing {
-    makeDocument.apply("SKILL.md", ATOMIC_COMMIT_SKILL)
-    makeDocument.apply("references/commit-contract.yaml", COMMIT_CONTRACT)
-    makeDocument.apply("references/commit-message-style.md", COMMIT_MESSAGE_STYLE)
+  documents = model.packageDocuments.apply(new Listing {
+    model.makeDocument.apply("SKILL.md", ATOMIC_COMMIT_SKILL)
+    model.makeDocument.apply("references/commit-contract.yaml", COMMIT_CONTRACT)
+    model.makeDocument.apply("references/commit-message-style.md", COMMIT_MESSAGE_STYLE)
   })
 }
 
-local COMMAND = """
-    ---
-    description: "Run `sce-atomic-commit` to turn staged changes into atomic commit message proposals"
-    argument-hint: "[oneshot|skip] [commit context]"
-    ---
-
+local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     SCE COMMIT `$ARGUMENTS`
 
     ## Input
@@ -52,7 +51,7 @@ local COMMAND = """
     Empty `$ARGUMENTS` is valid. It selects the regular path with no commit
     context, and commit intent is inferred from the staged changes alone.
 
-    Pass `commit context` to `sce-atomic-commit` unmodified. Do not restate,
+    Pass `commit context` to \(atomicCommit.render.apply(mode)) unmodified. Do not restate,
     summarize, or pre-scope it. Never pass the `mode-token` as commit context.
 
     Staged changes are the source of truth for what is being committed. This
@@ -76,10 +75,10 @@ local COMMAND = """
 
     #### 2. Request one commit message
 
-    Invoke `sce-atomic-commit` with `mode: bypass` and the commit context.
+    \(invoke.render.apply(mode)) \(atomicCommit.render.apply(mode)) with `mode: bypass` and the commit context.
 
     Bypass mode is the skill's contract for producing exactly one message. Do not
-    restate its overrides here; `sce-atomic-commit` owns them.
+    restate its overrides here; \(atomicCommit.render.apply(mode)) owns them.
 
     The skill must return a result matching its commit contract. Branch on
     `status`:
@@ -117,10 +116,10 @@ local COMMAND = """
 
     #### 2. Propose commits
 
-    After confirmation, invoke `sce-atomic-commit` with `mode: regular` and the
+    After confirmation, \(invokeLower.render.apply(mode)) \(atomicCommit.render.apply(mode)) with `mode: regular` and the
     commit context.
 
-    `sce-atomic-commit` exclusively owns:
+    \(atomicCommit.render.apply(mode)) exclusively owns:
 
     - Reading and analyzing the staged diff.
     - Deciding whether staged changes form one coherent unit or several.
@@ -149,25 +148,31 @@ local COMMAND = """
     - Never commit on the regular path.
     - Recognize `oneshot` and `skip` only as an exact case-insensitive first token.
       They are behaviorally identical.
-    - Do not duplicate the internal instructions of `sce-atomic-commit`.
+    - Do not duplicate the internal instructions of \(atomicCommit.render.apply(mode)).
     - Do not stage, unstage, restore, or otherwise modify files.
     - Do not amend, reset, revert, rebase, or push.
     - Do not read unstaged or untracked changes as commit input.
-    - Do not infer success when `sce-atomic-commit` returns a non-success status.
+    - Do not infer success when \(atomicCommit.render.apply(mode)) returns a non-success status.
     - Do not proceed past a failed `git commit`.
     - Do not run plan, task, or validation workflows from this command.
     """
-local ATOMIC_COMMIT_SKILL = """
-    ---
-    name: sce-atomic-commit
-    description: >
-      Internal SCE workflow skill that analyzes the staged diff and returns atomic,
-      repository-style commit messages: coherent-unit detection, split guidance,
-      scope and subject wording, and the plan-citation body rule. Returns one YAML
-      result (proposal, bypass_message, or blocked). Use from /commit. Do not stage
-      files, create commits, or ask the user to confirm staging.
-    ---
 
+local structuredCommand = new model.StructuredWorkflowDocument {
+  path = "commit.md"
+  frontmatter = new model.WorkflowFrontmatter {
+    lines = (mode: model.WorkflowRenderMode) -> new Listing {
+      "description: \"Run \(atomicCommit.render.apply(mode)) to turn staged changes into atomic commit message proposals\""
+      "argument-hint: \"[oneshot|skip] [commit context]\""
+    }
+  }
+  body = new model.WorkflowBody {
+    render = (mode: model.WorkflowRenderMode) -> renderCommandBody.apply(mode)
+  }
+}
+
+local COMMAND = structuredCommand.render.apply("package", "").text
+
+local renderAtomicCommitSkillBody = (mode: model.WorkflowRenderMode) -> """
     # SCE Atomic Commit
 
     ## Purpose
@@ -181,15 +186,15 @@ local ATOMIC_COMMIT_SKILL = """
     - Choosing the scope and writing the subject and body of every message.
     - Applying the plan-citation body rule.
     - Classifying staged scope and applying context-file guidance gating.
-    - Returning one terminal YAML result.
+    - \(returningTerminalYamlResult.render.apply(mode)).
 
     Write messages matching:
 
-    `references/commit-message-style.md`
+    \(commitMessageStyle.render.apply(mode))
 
     Return a result matching:
 
-    `references/commit-contract.yaml`
+    \(commitContract.render.apply(mode))
 
     Committing is not this skill's job. The invoking `/commit` workflow decides
     whether a returned message is committed, and it is the only thing that runs
@@ -221,7 +226,7 @@ local ATOMIC_COMMIT_SKILL = """
 
     Read staged file contents only when the diff alone does not explain the change.
 
-    Return `blocked` when nothing is staged.
+    \(returnUpper.render.apply(mode)) `blocked` when nothing is staged.
 
     ### 2. Identify coherent units
 
@@ -243,7 +248,7 @@ local ATOMIC_COMMIT_SKILL = """
 
     ### 4. Write each message
 
-    Follow `references/commit-message-style.md` for the subject pattern, the body
+    Follow \(commitMessageStyle.render.apply(mode)) for the subject pattern, the body
     rules, issue references, the plan-citation rule, and the anti-patterns.
 
     ### 5. Apply the plan-citation rule
@@ -254,7 +259,7 @@ local ATOMIC_COMMIT_SKILL = """
     When the staged plan diff does not expose the slug or task ID clearly enough to
     cite faithfully:
 
-    - In `regular` mode, return `blocked` and ask for the reference to be stated or
+    - In `regular` mode, \(returnLower.render.apply(mode)) `blocked` and ask for the reference to be stated or
       staged explicitly.
     - In `bypass` mode, infer the citation when the diff supports it, and otherwise
       omit it. Never stop, and never invent a slug or task ID.
@@ -290,15 +295,15 @@ local ATOMIC_COMMIT_SKILL = """
     - No plan slug or task ID appears that the staged diff does not support.
     - The mode's own constraints hold.
 
-    ### 9. Return YAML
+    ### 9. \(returnYaml.render.apply(mode))
 
-    Return exactly one YAML document matching `references/commit-contract.yaml`:
+    \(returnExactlyOneYamlDocument.render.apply(mode)) matching \(commitContract.render.apply(mode)):
 
     - `proposal` in `regular` mode, with one or more messages.
     - `bypass_message` in `bypass` mode, with exactly one message.
     - `blocked` when messages cannot be written faithfully.
 
-    Return only the YAML document. Do not add explanatory prose before or after it.
+    \(returnOnlyYamlDocument.render.apply(mode)). Do not add explanatory prose before or after it.
 
     ## Boundaries
 
@@ -322,9 +327,30 @@ local ATOMIC_COMMIT_SKILL = """
 
     - The staged diff was read, or reading it failed and was reported.
     - Messages were written for every staged file, or a blocker prevented it.
-    - One valid terminal YAML result matching `references/commit-contract.yaml` was
+    - One valid terminal \(yamlResult.render.apply(mode)) matching \(commitContract.render.apply(mode)) was
       returned.
     """
+
+local structuredAtomicCommitSkill = new model.StructuredWorkflowDocument {
+  path = "sce-atomic-commit"
+  frontmatter = new model.WorkflowFrontmatter {
+    lines = (mode: model.WorkflowRenderMode) -> new Listing {
+      "name: \(atomicCommitName.render.apply(mode))"
+      "description: >"
+      "  Internal SCE workflow skill that analyzes the staged diff and returns atomic,"
+      "  repository-style commit messages: coherent-unit detection, split guidance,"
+      "  scope and subject wording, and the plan-citation body rule. Returns one \(yaml.render.apply(mode))"
+      "  result (proposal, bypass_message, or blocked). Use from /commit. Do not stage"
+      "  files, create commits, or ask the user to confirm staging."
+    }
+  }
+  body = new model.WorkflowBody {
+    render = (mode: model.WorkflowRenderMode) -> renderAtomicCommitSkillBody.apply(mode)
+  }
+}
+
+local ATOMIC_COMMIT_SKILL = structuredAtomicCommitSkill.render.apply("package", "").text
+
 local COMMIT_CONTRACT = """
     version: 1
     name: sce-atomic-commit-result
@@ -532,10 +558,10 @@ local COMMIT_CONTRACT = """
               decision_required: >
                 State the completed task ID, or stage only that task's plan edit.
     """
-local COMMIT_MESSAGE_STYLE = """
+local renderCommitMessageStyle = (mode: model.WorkflowRenderMode) -> """
     # Commit message style
 
-    The wording rules for every message `sce-atomic-commit` returns, in either
+    The wording rules for every message \(atomicCommit.render.apply(mode)) returns, in either
     mode. This file is the only authority for message content and shape.
 
     Messages are carried in the result's `message` field, subject first, then one
@@ -598,12 +624,25 @@ local COMMIT_MESSAGE_STYLE = """
     - Describing intent the staged diff does not support.
     """
 
+local COMMIT_MESSAGE_STYLE = renderCommitMessageStyle.apply("package")
+
+structuredComposite = new model.StructuredCompositeSource {
+  command = structuredCommand
+  phases = new Listing {
+    structuredAtomicCommitSkill
+  }
+  internalDocuments = new Listing {}
+  outputDocuments = new Listing {
+    model.makeDocument.apply("Commit message style", renderCommitMessageStyle.apply("composite"))
+  }
+}
+
 workflow = new model.WorkflowPackage {
   slug = "commit"
   command = new model.WorkflowCommand {
     slug = "commit"
     title = "SCE Commit"
-    document = makeDocument.apply("commit.md", COMMAND)
+    document = model.makeDocument.apply("commit.md", COMMAND)
   }
   skills = new Mapping {
     [atomicCommitPackage.slug] = atomicCommitPackage
