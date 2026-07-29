@@ -1,31 +1,21 @@
-import "../base/workflow-change-to-plan.pkl" as changeToPlan
-import "../base/workflow-next-task.pkl" as nextTask
-import "../base/workflow-validate.pkl" as validate
-import "../base/workflow-commit.pkl" as commit
+import "workflow-composite.pkl" as workflowResults
 
-/// Pi consumes the canonical workflow documents directly because those
-/// documents are authored against the project-root `.pi/` baseline.
-local workflows = new Listing {
-  changeToPlan.workflow
-  nextTask.workflow
-  validate.workflow
-  commit.workflow
-}
-
+/// Pi prompts are intentionally thin. Each routes to exactly one composite
+/// workflow skill, which owns all phases, waits, and final response rendering.
+/// Pi prompts carry no target-specific frontmatter beyond the shared
+/// description and argument hint.
 commands {
-  for (workflow in workflows) {
-    [workflow.command.slug] = workflow.command.document
+  for (slug, workflow in workflowResults.workflows) {
+    [slug] = workflowResults.renderCommand.apply(workflow, "")
   }
 }
 
-/// Flatten package-relative document paths for deterministic generation while
-/// retaining each skill's self-contained directory layout.
+/// Pi has four workflow packages, each with exactly SKILL.md and one
+/// references/output.md presentation contract, and no target-specific skill
+/// frontmatter. Package-relative document paths stay flattened for
+/// deterministic generation while retaining each skill's directory layout.
 skillDocuments {
-  for (workflow in workflows) {
-    for (skillSlug, skillPackage in workflow.skills) {
-      for (documentPath, document in skillPackage.documents) {
-        ["\(skillSlug)/\(documentPath)"] = document
-      }
-    }
+  for (path, document in workflowResults.skillDocuments.apply("")) {
+    [path] = document
   }
 }

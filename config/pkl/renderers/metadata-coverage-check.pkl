@@ -15,7 +15,7 @@ local expectedAgentSlugs = Set(
   "shared-context-code"
 )
 
-local expectedClaudeSkillByCommand = claudeMetadata.workflowSkillSlugByCommand
+local expectedWorkflowSkillByCommand = claudeMetadata.workflowSkillSlugByCommand
 
 local expectedCanonicalSkillDocumentPaths = Set(
   "sce-atomic-commit/SKILL.md",
@@ -41,10 +41,10 @@ local expectedCanonicalSkillDocumentPaths = Set(
   "sce-validation/references/validation-result.md"
 )
 
-/// Claude collapses each workflow into one package with one entrypoint and one
-/// user-visible Markdown output reference. Exact coverage rejects stale phase
-/// packages and any additional package-local references.
-local expectedClaudeSkillDocumentPaths = Set(
+/// A collapsed target renders each workflow as one package with one entrypoint
+/// and one user-visible Markdown output reference. Exact coverage rejects stale
+/// phase packages and any additional package-local references.
+local expectedWorkflowSkillDocumentPaths = Set(
   "sce-change-to-plan/SKILL.md",
   "sce-change-to-plan/references/output.md",
   "sce-next-task/SKILL.md",
@@ -98,27 +98,32 @@ local assertExactKeys = (actual: Mapping, expected: Set<String>, label: String) 
   ) "\(label): complete"
   else error("\(label) inventory does not match the canonical workflow matrix")
 
-local assertClaudeCommandRoute = (slug: String, document: String) ->
-  let (expectedInvocation = "Invoke the `\(expectedClaudeSkillByCommand[slug])` skill exactly once")
+/// Routing is target-neutral: every collapsed target's command names exactly its
+/// own workflow skill and no other. `target` labels which one is being checked.
+local assertCommandRoute = (target: String, slug: String, document: String) ->
+  let (expectedInvocation = "Invoke the `\(expectedWorkflowSkillByCommand[slug])` skill exactly once")
     if (
       document.contains(expectedInvocation)
-      && expectedClaudeSkillByCommand.every((otherSlug, skillSlug) ->
+      && expectedWorkflowSkillByCommand.every((otherSlug, skillSlug) ->
         otherSlug == slug || !document.contains("`\(skillSlug)`")
       )
-    ) "Claude \(slug) command route: complete"
-    else error("Claude \(slug) command must invoke exactly its corresponding workflow skill")
+    ) "\(target) \(slug) command route: complete"
+    else error("\(target) \(slug) command must invoke exactly its corresponding workflow skill")
 
 inventoryChecks {
   ["opencode-agents"] = assertExactKeys.apply(opencodeAgents, expectedAgentSlugs, "OpenCode agent")
   ["opencode-commands"] = assertExactKeys.apply(opencodeCommands, expectedCommandSlugs, "OpenCode command")
   ["opencode-skill-documents"] = assertExactKeys.apply(opencodeSkillDocuments, expectedCanonicalSkillDocumentPaths, "OpenCode skill document")
   ["claude-commands"] = assertExactKeys.apply(claudeCommands, expectedCommandSlugs, "Claude command")
-  ["claude-skill-documents"] = assertExactKeys.apply(claudeSkillDocuments, expectedClaudeSkillDocumentPaths, "Claude skill document")
+  ["claude-skill-documents"] = assertExactKeys.apply(claudeSkillDocuments, expectedWorkflowSkillDocumentPaths, "Claude skill document")
   for (slug, document in claudeCommands) {
-    ["claude-command-route-\(slug)"] = assertClaudeCommandRoute.apply(slug, document.text)
+    ["claude-command-route-\(slug)"] = assertCommandRoute.apply("Claude", slug, document.text)
   }
   ["pi-commands"] = assertExactKeys.apply(piCommands, expectedCommandSlugs, "Pi command")
-  ["pi-skill-documents"] = assertExactKeys.apply(piSkillDocuments, expectedCanonicalSkillDocumentPaths, "Pi skill document")
+  ["pi-skill-documents"] = assertExactKeys.apply(piSkillDocuments, expectedWorkflowSkillDocumentPaths, "Pi skill document")
+  for (slug, document in piCommands) {
+    ["pi-command-route-\(slug)"] = assertCommandRoute.apply("Pi", slug, document.text)
+  }
 }
 
 /// Force rendering after exact inventory checks so target-specific metadata
