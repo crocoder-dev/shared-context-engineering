@@ -27,8 +27,8 @@ Keeping the collapse in the renderer rather than the canonical base preserves th
 
 - No target emits `sce-context-load`, `sce-plan-authoring`, `sce-plan-review`, `sce-task-execution`, `sce-task-context-sync`, `sce-validation`, `sce-plan-context-sync`, or `sce-atomic-commit` as a package. Those names now denote canonical authoring modules and internal phases only.
 - Per-target generated workflow inventory is four entrypoints plus eight skill Markdown files across four packages. OpenCode adds its two routing agents; Pi retains its extension; Claude retains settings and hooks.
-- `config/pkl/renderers/workflow-composite.pkl` owns `workflowSkillSlugByCommand` for all targets; `claude-metadata.pkl` re-exports it.
-- `config/pkl/renderers/metadata-coverage-check.pkl` asserts the workflow-package inventory and single-skill command route for all three targets through the target-neutral `expectedWorkflowSkillByCommand`, `expectedWorkflowSkillDocumentPaths`, and `assertCommandRoute(target, slug, document)`.
+- `config/pkl/base/workflow-catalog.pkl` owns the four workflows' shared identity plus OpenCode role and Claude allowed-tool metadata; composite, target-routing, permission, and coverage modules derive their workflow matrices from it.
+- `config/pkl/renderers/metadata-coverage-check.pkl` derives `expectedWorkflowSkillByCommand` and `expectedWorkflowSkillDocumentPaths` from that catalog, then asserts the workflow-package inventory and single-skill command route for all three targets through `assertCommandRoute(target, slug, document)`.
 - OpenCode command frontmatter still carries `entry-skill` and `skills`, now naming one skill in both.
 - Claude's generated output is unchanged by this decision; its byte-identity was verified across the change.
 - Stale installed phase-skill directories in existing checkouts are handled by the existing setup remove-and-replace policy for the whole target directory (`context/sce/setup-no-backup-policy-seam.md`). No migration code exists.

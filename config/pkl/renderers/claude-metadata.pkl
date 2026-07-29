@@ -1,12 +1,7 @@
-import "workflow-composite.pkl" as composite
+import "../base/workflow-catalog.pkl" as catalog
 
 commandAllowedTools = new Mapping {
-  ["next-task"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
-  ["change-to-plan"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill"
-  ["validate"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
-  ["commit"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
+  for (slug, workflow in catalog.workflows) {
+    [slug] = workflow.claudeAllowedTools
+  }
 }
-
-/// The workflow slugs are target-neutral; Claude re-exports the shared mapping
-/// so command routing and coverage checks read it from one place.
-workflowSkillSlugByCommand = composite.workflowSkillSlugByCommand

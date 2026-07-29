@@ -1,35 +1,34 @@
+import "../base/workflow-catalog.pkl" as catalog
 import "opencode-content.pkl" as opencode
 import "claude-content.pkl" as claude
-import "claude-metadata.pkl" as claudeMetadata
 import "pi-content.pkl" as pi
 
-local expectedCommandSlugs = Set(
-  "change-to-plan",
-  "next-task",
-  "validate",
-  "commit"
-)
+local expectedCommandSlugs = new Mapping {
+  for (slug, _ in catalog.workflows) {
+    [slug] = true
+  }
+}
 
-local expectedAgentSlugs = Set(
-  "shared-context-plan",
-  "shared-context-code"
-)
+local expectedAgentSlugs = new Mapping {
+  ["shared-context-plan"] = true
+  ["shared-context-code"] = true
+}
 
-local expectedWorkflowSkillByCommand = claudeMetadata.workflowSkillSlugByCommand
+local expectedWorkflowSkillByCommand = new Mapping {
+  for (slug, workflow in catalog.workflows) {
+    [slug] = workflow.skillSlug
+  }
+}
 
 /// A collapsed target renders each workflow as one package with one entrypoint
 /// and one user-visible Markdown output reference. Exact coverage rejects stale
 /// phase packages and any additional package-local references.
-local expectedWorkflowSkillDocumentPaths = Set(
-  "sce-change-to-plan/SKILL.md",
-  "sce-change-to-plan/references/output.md",
-  "sce-next-task/SKILL.md",
-  "sce-next-task/references/output.md",
-  "sce-validate/SKILL.md",
-  "sce-validate/references/output.md",
-  "sce-commit/SKILL.md",
-  "sce-commit/references/output.md"
-)
+local expectedWorkflowSkillDocumentPaths = new Mapping {
+  for (_, workflow in catalog.workflows) {
+    ["\(workflow.skillSlug)/SKILL.md"] = true
+    ["\(workflow.skillSlug)/references/output.md"] = true
+  }
+}
 
 local opencodeAgents = new Mapping {
   for (slug, document in opencode.agents) {
@@ -67,10 +66,10 @@ local piSkillDocuments = new Mapping {
   }
 }
 
-local assertExactKeys = (actual: Mapping, expected: Set<String>, label: String) ->
+local assertExactKeys = (actual: Mapping, expected: Mapping, label: String) ->
   if (
     actual.length == expected.length
-    && expected.every((key) -> actual.containsKey(key))
+    && expected.every((key, _) -> actual.containsKey(key))
   ) "\(label): complete"
   else error("\(label) inventory does not match the canonical workflow matrix")
 

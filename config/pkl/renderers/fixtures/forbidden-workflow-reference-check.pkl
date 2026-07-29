@@ -1,0 +1,14 @@
+import "../generation-contract-check.pkl" as contract
+
+local documentsWithForbiddenReference = new Mapping {
+  for (path, text in contract.workflowDocuments) {
+    [path] = if (path == "config/.opencode/skills/sce-next-task/SKILL.md")
+      "\(text)\nInvoke `sce-plan-review`."
+    else text
+  }
+}
+
+result = if (
+  documentsWithForbiddenReference.every((_, text) -> !text.contains("sce-plan-review"))
+) "negative fixture unexpectedly contained no forbidden reference"
+else error("generated workflow document contains a forbidden sibling-package reference or unresolved internalization token")
