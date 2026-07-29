@@ -7,9 +7,9 @@ Behavior contract for the generated `/commit` workflow.
 Canonical behavior is authored in `config/pkl/base/workflow-commit.pkl` from the
 project-root `.pi/` baseline and generated for OpenCode, Claude, and Pi.
 
-- Pi/OpenCode emit the canonical command plus the `sce-atomic-commit` phase
+- OpenCode emits the canonical command plus the `sce-atomic-commit` phase
   package, its YAML result contract, and commit-message style reference.
-- Claude emits one thin command invoking `sce-commit`. The composite package
+- Claude and Pi emit one thin command invoking `sce-commit`. The composite package
   contains only `SKILL.md`, which owns mode routing, staged-diff analysis,
   proposal/commit behavior, and internal statuses, plus `references/output.md`,
   which owns all human-visible prompts and result layouts.
@@ -109,7 +109,7 @@ staged explicitly; bypass mode omits the citation instead of stopping.
 
 ## Result contract
 
-Pi/OpenCode's phase skill returns exactly one YAML result:
+OpenCode's phase skill returns exactly one YAML result:
 
 - `proposal` — regular mode, one or more messages, optional split rationale and
   staged-scope classification.

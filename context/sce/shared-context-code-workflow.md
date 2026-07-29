@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The implementation lifecycle executes at most one reviewed task per `/next-task` invocation, synchronizes durable context only after successful task execution, and runs final plan validation separately through `/validate`. The generated OpenCode Code agent only routes to these commands. Pi/OpenCode retain phase-skill sequencing; Claude embeds each complete lifecycle in `sce-next-task` or `sce-validate`.
+The implementation lifecycle executes at most one reviewed task per `/next-task` invocation, synchronizes durable context only after successful task execution, and runs final plan validation separately through `/validate`. The generated OpenCode Code agent only routes to these commands. OpenCode retains phase-skill sequencing; Claude and Pi embed each complete lifecycle in `sce-next-task` or `sce-validate`.
 
 ## `/next-task` entrypoint
 
@@ -36,7 +36,7 @@ The implementation lifecycle executes at most one reviewed task per `/next-task`
    - Emits exactly one next-task command for the first unchecked task in plan order, or a `/validate` command when all implementation tasks are complete.
    - Never executes the continuation in the same invocation.
 
-A context-sync blocker does not undo successful implementation: the task remains complete in the plan, but the workflow stops because durable context is stale. On Claude, review, approval, execution, evidence recording, synchronization, and continuation are internal phases of one `sce-next-task` invocation rather than sibling skill calls.
+A context-sync blocker does not undo successful implementation: the task remains complete in the plan, but the workflow stops because durable context is stale. On Claude and Pi, review, approval, execution, evidence recording, synchronization, and continuation are internal phases of one `sce-next-task` invocation rather than sibling skill calls.
 
 ## `/validate` entrypoint
 
@@ -46,7 +46,7 @@ A context-sync blocker does not undo successful implementation: the task remains
 2. Failed or blocked validation ends the session without repair edits; retry uses `/validate {plan-path}`.
 3. `sce-plan-context-sync` runs only from a successful `Status: validated` handoff and reconciles the completed plan with durable repository context.
 
-On Claude, those validation and plan-sync phases execute inside one `sce-validate` skill; failed and blocked statuses stop before synchronization exactly as in the canonical flow. Final validation never runs from an individual implementation task.
+On Claude and Pi, those validation and plan-sync phases execute inside one `sce-validate` skill; failed and blocked statuses stop before synchronization exactly as in the canonical flow. Final validation never runs from an individual implementation task.
 
 ## Flow
 
@@ -70,13 +70,13 @@ flowchart TD
 
 ## Target ownership
 
-- Pi/OpenCode: command sequencing plus the canonical review, execution, validation, and context-sync phase packages.
-- Claude: thin commands invoking `sce-next-task` or `sce-validate`; each package contains only `SKILL.md` and `references/output.md`.
+- OpenCode: command sequencing plus the canonical review, execution, validation, and context-sync phase packages.
+- Claude and Pi: thin commands invoking `sce-next-task` or `sce-validate`; each package contains only `SKILL.md` and `references/output.md`.
 
 ## Canonical sources
 
 - `config/pkl/base/workflow-next-task.pkl`
 - `config/pkl/base/workflow-validate.pkl`
 - `config/pkl/base/workflow-context-sync.pkl`
-- Workflow composition: `config/pkl/renderers/workflow-composite.pkl` (shared; Claude consumes it)
+- Workflow composition: `config/pkl/renderers/workflow-composite.pkl` (shared; Claude and Pi consume it)
 - Behavioral baselines: `.pi/prompts/{next-task,validate}.md`

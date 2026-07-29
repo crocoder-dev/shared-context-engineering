@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`/change-to-plan` turns one change request into one scoped implementation plan under `context/plans/`. The generated OpenCode Plan agent is only a routing surface. Pi/OpenCode behavior is owned by the command and two canonical phase skills; Claude renders the same behavior into the single `sce-change-to-plan` workflow skill.
+`/change-to-plan` turns one change request into one scoped implementation plan under `context/plans/`. The generated OpenCode Plan agent is only a routing surface. OpenCode behavior is owned by the command and two canonical phase skills; Claude and Pi render the same behavior into the single `sce-change-to-plan` workflow skill.
 
 ## Command entrypoint
 
@@ -23,7 +23,7 @@ The request must be non-empty. The workflow does not accept approval or executio
    - Creates or updates one plan with stable task IDs, explicit scope, dependencies, done checks, and verification notes.
    - Returns `plan_ready`, `needs_clarification`, or `blocked`.
 
-Pi/OpenCode forward each phase result as the authoritative handoff rather than reconstructing it. Claude keeps the equivalent status and data as internal state inside `sce-change-to-plan`; no sibling skill handoff exists.
+OpenCode forwards each phase result as the authoritative handoff rather than reconstructing it. Claude and Pi keep the equivalent status and data as internal state inside `sce-change-to-plan`; no sibling skill handoff exists.
 
 ## Bootstrap boundary
 
@@ -59,11 +59,11 @@ flowchart TD
 
 ## Target ownership
 
-- Pi/OpenCode: command sequencing plus `sce-context-load` and `sce-plan-authoring` packages.
-- Claude: one thin command invoking `sce-change-to-plan`; package files are `SKILL.md` and `references/output.md`.
+- OpenCode: command sequencing plus `sce-context-load` and `sce-plan-authoring` packages.
+- Claude and Pi: one thin command invoking `sce-change-to-plan`; package files are `SKILL.md` and `references/output.md`.
 
 ## Canonical sources
 
 - `config/pkl/base/workflow-change-to-plan.pkl`
-- Workflow composition: `config/pkl/renderers/workflow-composite.pkl` (shared; Claude consumes it)
+- Workflow composition: `config/pkl/renderers/workflow-composite.pkl` (shared; Claude and Pi consume it)
 - Behavioral baseline: `.pi/prompts/change-to-plan.md`

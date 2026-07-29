@@ -5,7 +5,7 @@
 - Canonical packages: `config/pkl/base/workflow-{change-to-plan,next-task,validate}.pkl`
 - Shared synchronization skeleton: `config/pkl/base/workflow-context-sync.pkl`
 - Generated OpenCode routing agents and workflow commands under `config/.opencode/`
-- Seven canonical phase skills rendered for OpenCode, Claude, and Pi
+- Seven canonical phase skills, rendered as packages for OpenCode and composed into workflow skills for Claude and Pi
 
 ## Overlap matrix
 
