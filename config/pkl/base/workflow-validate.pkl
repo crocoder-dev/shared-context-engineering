@@ -1,37 +1,41 @@
 import "workflow-content.pkl" as model
 import "workflow-context-sync.pkl" as contextSync
 
+local validation = model.semanticReference.apply("`sce-validation`", "the **Validation phase**")
+local validationName = model.semanticReference.apply("sce-validation", "Validation phase")
+local planContextSync = model.semanticReference.apply("`sce-plan-context-sync`", "the **Plan context synchronization phase**")
+local validationResult = model.semanticReference.apply("`references/validation-result.md`", "`references/output.md`")
+local validationReport = model.semanticReference.apply("`references/validation-report.md`", "the **Plan-file validation report** section embedded in this file")
+local invoke = model.semanticReference.apply("Invoke", "Run")
+local invokeLower = model.semanticReference.apply("invoke", "run")
+local invokedSkills = model.semanticReference.apply("invoked skills", "embedded phases")
+local invokedSkill = model.semanticReference.apply("invoked skill", "embedded phase")
+local invokedFor = model.semanticReference.apply("invoked for", "run for")
+local markdownResult = model.semanticReference.apply("Markdown result", "internal state")
+local returningValidationResult = model.semanticReference.apply("Returning one Markdown validation result", "Recording one Markdown validation result")
+local returnExactlyOneMarkdownResult = model.semanticReference.apply("Return exactly one Markdown result", "Set exactly one internal state")
+local returnOnlyMarkdownReport = model.semanticReference.apply("Return only the Markdown report", "Record only the Markdown report")
+local returnLower = model.semanticReference.apply("return", "set internal status")
+local returnUpper = model.semanticReference.apply("Return", "Set internal status")
+local returnYamlResult = model.semanticReference.apply("Return a YAML result", "Return a internal state")
+local yaml = model.semanticReference.apply("YAML", "internal state")
+local invokePlanContextSync = model.semanticReference.apply("Invoke plan context sync", "Run plan context synchronization")
+
 /// Canonical `/validate` workflow command and its self-contained skill
 /// packages. Text mirrors the project-root `.pi/` behavioral baseline; target
 /// renderers consume this model in later workflow-rendering tasks.
 
-local makeDocument = (documentPath: String, documentText: String) -> new model.WorkflowDocument {
-  path = documentPath
-  text = documentText
-}
-
-local packageDocuments = (documents: Listing<model.WorkflowDocument>) -> new Mapping {
-  for (item in documents) {
-    [item.path] = item
-  }
-}
-
 local validationPackage = new model.SkillPackage {
   slug = "sce-validation"
   title = "SCE Validation"
-  documents = packageDocuments.apply(new Listing {
-    makeDocument.apply("SKILL.md", VALIDATION_SKILL)
-    makeDocument.apply("references/validation-report.md", VALIDATION_REPORT)
-    makeDocument.apply("references/validation-result.md", VALIDATION_RESULT)
+  documents = model.packageDocuments.apply(new Listing {
+    model.makeDocument.apply("SKILL.md", VALIDATION_SKILL)
+    model.makeDocument.apply("references/validation-report.md", VALIDATION_REPORT)
+    model.makeDocument.apply("references/validation-result.md", VALIDATION_RESULT)
   })
 }
 
-local COMMAND = """
-    ---
-    description: "Run `sce-validation` -> `sce-plan-context-sync` to finish an SCE plan"
-    argument-hint: "<plan-name>"
-    ---
-    
+local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     SCE VALIDATE `$ARGUMENTS`
     
     ## Input
@@ -46,20 +50,20 @@ local COMMAND = """
     the expected argument, and stop. Do not infer the plan from repository state or
     the conversation.
     
-    Pass the plan name or path to `sce-validation` unmodified. Do not restate,
+    Pass the plan name or path to \(validation.render.apply(mode)) unmodified. Do not restate,
     summarize, or pre-scope it.
     
     Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is
-    the path carried by `sce-validation` in its Markdown result (`Plan:`, or a
+    the path carried by \(validation.render.apply(mode)) in its Markdown result (`Plan:`, or a
     candidate path), so every emitted command is directly runnable.
     
     ## Workflow
     
     ### 1. Validate the plan
     
-    Invoke `sce-validation` with the plan name or path.
+    \(invoke.render.apply(mode)) \(validation.render.apply(mode)) with the plan name or path.
     
-    `sce-validation` exclusively owns:
+    \(validation.render.apply(mode)) exclusively owns:
     
     - Resolving one plan.
     - Confirming every implementation task is complete.
@@ -73,10 +77,10 @@ local COMMAND = """
     The skill must return a Markdown result matching its validation-result contract.
     Branch on the report's `Status:`.
     
-    `blocked` -> Do not invoke context synchronization. Print the blocked Markdown
+    `blocked` -> Do not \(invokeLower.render.apply(mode)) context synchronization. Print the blocked Markdown
     report as returned. Do not rephrase it into a different layout. Stop.
     
-    `failed` -> Do not invoke context synchronization. Print the failed Markdown
+    `failed` -> Do not \(invokeLower.render.apply(mode)) context synchronization. Print the failed Markdown
     report as returned. It is already a session handoff: self-contained, actionable,
     and ending with `/validate {plan-path}` after repairs.
     
@@ -88,21 +92,21 @@ local COMMAND = """
     to continue here; the default is that the handoff can leave this session.
     
     `validated` -> Pass the complete validated Markdown result to
-    `sce-plan-context-sync`.
+    \(planContextSync.render.apply(mode)).
     
     Do not reconstruct, summarize, or reinterpret the validation result before
     passing it.
     
     ### 2. Synchronize plan context
     
-    Invoke `sce-plan-context-sync` only with a `Status: validated` Markdown result
-    from `sce-validation`.
+    \(invoke.render.apply(mode)) \(planContextSync.render.apply(mode)) only with a `Status: validated` Markdown result
+    from \(validation.render.apply(mode)).
     
-    Do not invoke `sce-plan-context-sync` for `failed` or `blocked`. Those are not
+    Do not \(invokeLower.render.apply(mode)) \(planContextSync.render.apply(mode)) for `failed` or `blocked`. Those are not
     success states.
     
     Pass the validated result verbatim. It is the authoritative handoff, and
-    `sce-plan-context-sync` owns reading the plan path, required context paths,
+    \(planContextSync.render.apply(mode)) owns reading the plan path, required context paths,
     validation evidence, and reported context impact out of it.
     
     Do not restate, summarize, or reconstruct any part of the validation result.
@@ -127,7 +131,7 @@ local COMMAND = """
     Stop.
     
     `synced` | `no_context_change` -> Print out the report
-    `sce-plan-context-sync` returned. Continue to the next step.
+    \(planContextSync.render.apply(mode)) returned. Continue to the next step.
     
     ### 3. Report completion
     
@@ -155,11 +159,11 @@ local COMMAND = """
     ## Rules
     
     - Validate at most one plan per invocation.
-    - Do not duplicate the internal instructions of invoked skills.
-    - Do not run final validation when implementation tasks remain; `sce-validation`
+    - Do not duplicate the internal instructions of \(invokedSkills.render.apply(mode)).
+    - Do not run final validation when implementation tasks remain; \(validation.render.apply(mode))
       returns `blocked`, and this workflow stops.
-    - Invoke `sce-plan-context-sync` only when `sce-validation` returned
-      `Status: validated`. Do not invoke it for `failed` or `blocked`.
+    - \(invoke.render.apply(mode)) \(planContextSync.render.apply(mode)) only when \(validation.render.apply(mode)) returned
+      `Status: validated`. Do not \(invokeLower.render.apply(mode)) it for `failed` or `blocked`.
     - On `failed`, print the handoff Markdown as returned and stop. Preserve the
       retry `/validate {plan-path}` instruction. Do not synchronize context.
     - Do not implement remaining plan tasks from this workflow unless the user
@@ -168,25 +172,27 @@ local COMMAND = """
     - Do not mark the plan archived or delete the plan.
     - Do not execute a follow-up `/next-task`, `/change-to-plan`, or `/validate`
       yourself.
-    - Do not infer success when an invoked skill returns a non-success status.
+    - Do not infer success when an \(invokedSkill.render.apply(mode)) returns a non-success status.
     - Preserve validation evidence already written to the plan when context
       synchronization fails.
     """
 
-local VALIDATION_SKILL = """
-    ---
-    name: sce-validation
-    description: >
-      Internal SCE workflow skill that runs final plan validation after all
-      implementation tasks are complete: full validation commands, acceptance
-      criteria checks, temporary scaffolding cleanup, a Validation Report written
-      into the plan, and one Markdown result (validated, failed, or blocked).
-      Failing checks are reported only; do not modify tests or product code to make
-      validation pass. A failed result is a session handoff that ends by retrying
-      /validate. Use from /validate. Do not synchronize durable context, implement
-      remaining plan tasks, create commits, or select another task.
-    ---
-    
+local structuredCommand = new model.StructuredWorkflowDocument {
+  path = "validate.md"
+  frontmatter = new model.WorkflowFrontmatter {
+    lines = (mode: model.WorkflowRenderMode) -> new Listing {
+      "description: \"Run \(validation.render.apply(mode)) -> \(planContextSync.render.apply(mode)) to finish an SCE plan\""
+      "argument-hint: \"<plan-name>\""
+    }
+  }
+  body = new model.WorkflowBody {
+    render = (mode: model.WorkflowRenderMode) -> renderCommandBody.apply(mode)
+  }
+}
+
+local COMMAND = structuredCommand.render.apply("package", "").text
+
+local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     # SCE Validation
     
     ## Purpose
@@ -204,18 +210,18 @@ local VALIDATION_SKILL = """
     - Removing temporary scaffolding introduced by the change.
     - Writing the Validation Report into the plan.
     - Marking acceptance criteria against the evidence.
-    - Returning one Markdown validation result.
+    - \(returningValidationResult.render.apply(mode)).
     
     Return a result matching:
     
-    `references/validation-result.md`
+    \(validationResult.render.apply(mode))
     
     Write plan-file evidence matching:
     
-    `references/validation-report.md`
+    \(validationReport.render.apply(mode))
     
     Context synchronization is not this skill's job. The invoking `/validate`
-    workflow runs `sce-plan-context-sync` only after a `validated` result.
+    workflow runs \(planContextSync.render.apply(mode)) only after a `validated` result.
     
     ## Input
     
@@ -230,16 +236,16 @@ local VALIDATION_SKILL = """
     Resolve the supplied plan name or path to exactly one existing plan under
     `context/plans/`.
     
-    When no plan can be found, return `blocked`.
+    When no plan can be found, \(returnLower.render.apply(mode)) `blocked`.
     
-    When multiple plans match and none can be selected safely, return `blocked`
+    When multiple plans match and none can be selected safely, \(returnLower.render.apply(mode)) `blocked`
     with the matching candidates.
     
     Read the selected plan before exploring the repository.
     
     ### 2. Confirm implementation is finished
     
-    Return `blocked` with incomplete tasks listed when any implementation task
+    \(returnUpper.render.apply(mode)) `blocked` with incomplete tasks listed when any implementation task
     remains incomplete.
     
     Final validation measures finished work. Do not run the full suite against a
@@ -253,7 +259,7 @@ local VALIDATION_SKILL = """
     - The `Full validation` command list.
     - The `Context sync` requirements, for the context-impact handoff only.
     
-    Return `blocked` when the plan has no usable acceptance criteria, or when no
+    \(returnUpper.render.apply(mode)) `blocked` when the plan has no usable acceptance criteria, or when no
     validation commands can be determined from the plan or repository conventions.
     
     Prefer the plan's authored checks. Fall back to repository-primary test, lint,
@@ -298,7 +304,7 @@ local VALIDATION_SKILL = """
     
     - Mark each acceptance criterion checkbox to match the evidence.
     - Append or replace the plan's `## Validation Report` section using
-      `references/validation-report.md`.
+      \(validationReport.render.apply(mode)).
     - When status is `failed`, the plan-file report must include the retry command
       `/validate {plan path}`.
     
@@ -309,7 +315,7 @@ local VALIDATION_SKILL = """
     ### 7. Determine context impact for the handoff
     
     On `validated` only, classify the durable context impact of the finished plan
-    so `sce-plan-context-sync` can start from the plan's own requirements:
+    so \(planContextSync.render.apply(mode)) can start from the plan's own requirements:
     
     - Start from the plan's `Context sync` section.
     - Inspect what the completed implementation actually changed when needed.
@@ -321,20 +327,20 @@ local VALIDATION_SKILL = """
     
     On `failed` or `blocked`, omit context impact; context sync will not run.
     
-    ### 8. Return the Markdown result
+    ### 8. Return the \(markdownResult.render.apply(mode))
     
-    Return exactly one Markdown result:
+    \(returnExactlyOneMarkdownResult.render.apply(mode)):
     
     - `validated` when every acceptance criterion is met, required full validation
       passed, and the Validation Report was written.
     - `failed` when evidence was captured but required checks or criteria remain
       unsatisfied. Shape it as a session handoff per
-      `references/validation-result.md`, ending recommended work with
+      \(validationResult.render.apply(mode)), ending recommended work with
       `/validate {plan path}`.
     - `blocked` when validation cannot proceed safely.
     
-    Return only the Markdown report. Do not add explanatory prose before or after
-    it. Do not return YAML.
+    \(returnOnlyMarkdownReport.render.apply(mode)). Do not add explanatory prose before or after
+    it. Do not return \(yaml.render.apply(mode)).
     
     ## Boundaries
     
@@ -351,8 +357,8 @@ local VALIDATION_SKILL = """
     - Create a Git commit or push changes.
     - Invent acceptance criteria the plan does not state.
     - Claim verification that was not performed.
-    - Return a YAML result.
-    - Invoke plan context sync. The workflow owns that step.
+    - \(returnYamlResult.render.apply(mode)).
+    - \(invokePlanContextSync.render.apply(mode)). The workflow owns that step.
     
     ## Completion
     
@@ -361,14 +367,37 @@ local VALIDATION_SKILL = """
     - One plan was resolved, or resolution failed and was reported.
     - Implementation completeness was checked.
     - Validation ran to a terminal state, or a blocker prevented it.
-    - One valid Markdown result matching `references/validation-result.md` was
+    - One valid \(markdownResult.render.apply(mode)) matching \(validationResult.render.apply(mode)) was
       returned.
     """
 
-local VALIDATION_REPORT = """
+local structuredValidationSkill = new model.StructuredWorkflowDocument {
+  path = "sce-validation"
+  frontmatter = new model.WorkflowFrontmatter {
+    lines = (mode: model.WorkflowRenderMode) -> new Listing {
+      "name: \(validationName.render.apply(mode))"
+      "description: >"
+      "  Internal SCE workflow skill that runs final plan validation after all"
+      "  implementation tasks are complete: full validation commands, acceptance"
+      "  criteria checks, temporary scaffolding cleanup, a Validation Report written"
+      "  into the plan, and one \(markdownResult.render.apply(mode)) (validated, failed, or blocked)."
+      "  Failing checks are reported only; do not modify tests or product code to make"
+      "  validation pass. A failed result is a session handoff that ends by retrying"
+      "  /validate. Use from /validate. Do not synchronize durable context, implement"
+      "  remaining plan tasks, create commits, or select another task."
+    }
+  }
+  body = new model.WorkflowBody {
+    render = (mode: model.WorkflowRenderMode) -> renderValidationSkillBody.apply(mode)
+  }
+}
+
+local VALIDATION_SKILL = structuredValidationSkill.render.apply("package", "").text
+
+local renderValidationReport = (mode: model.WorkflowRenderMode) -> """
     # Plan-file Validation Report
     
-    The Markdown section `sce-validation` appends to the plan file when returning
+    The Markdown section \(validation.render.apply(mode)) appends to the plan file when returning
     `validated` or `failed`. Write it at the end of `context/plans/{plan_name}.md`
     under exactly one `## Validation Report` heading.
     
@@ -376,7 +405,7 @@ local VALIDATION_REPORT = """
     separately in `validation-result.md`.
     
     Do not author this section while planning. Only `/validate` through
-    `sce-validation` writes it.
+    \(validation.render.apply(mode)) writes it.
     
     ## Layout
     
@@ -452,7 +481,9 @@ local VALIDATION_REPORT = """
       one rather than stacking duplicates.
     """
 
-local VALIDATION_RESULT = """
+local VALIDATION_REPORT = renderValidationReport.apply("package")
+
+local renderValidationResult = (mode: model.WorkflowRenderMode) -> """
     # Validation Result
     
     Return only one completed Markdown report using the applicable variant below.
@@ -633,20 +664,37 @@ local VALIDATION_RESULT = """
     - The failed variant must be self-contained enough to hand to another session
       without the original chat.
     - Include **Context impact** only on `validated`. Omit it on `failed` and
-      `blocked`; plan context sync is not invoked for non-success states.
+      `blocked`; plan context sync is not \(invokedFor.render.apply(mode)) non-success states.
     - Do not include context synchronization results in this report. The invoking
-      workflow runs `sce-plan-context-sync` only after `validated`.
+      workflow runs \(planContextSync.render.apply(mode)) only after `validated`.
     - Do not select or describe an unrelated next implementation task when status is
       `validated`.
     - Omit empty optional sections rather than writing placeholders.
     """
+
+local VALIDATION_RESULT = renderValidationResult.apply("package")
+
+structuredComposite = new model.StructuredCompositeSource {
+  command = structuredCommand
+  phases = new Listing {
+    structuredValidationSkill
+    contextSync.planStructuredSkill
+  }
+  internalDocuments = new Listing {
+    model.makeDocument.apply("Plan-file validation report", renderValidationReport.apply("composite"))
+  }
+  outputDocuments = new Listing {
+    model.makeDocument.apply("Validation result", renderValidationResult.apply("composite"))
+    model.makeDocument.apply("Plan context sync report", contextSync.planOutputReport)
+  }
+}
 
 workflow = new model.WorkflowPackage {
   slug = "validate"
   command = new model.WorkflowCommand {
     slug = "validate"
     title = "SCE Validate"
-    document = makeDocument.apply("validate.md", COMMAND)
+    document = model.makeDocument.apply("validate.md", COMMAND)
   }
   skills = new Mapping {
     [validationPackage.slug] = validationPackage

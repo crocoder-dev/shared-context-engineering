@@ -17,13 +17,9 @@ class CompositeWorkflow {
   description: String = identity.description
   argumentHint: String = identity.argumentHint
   command: model.WorkflowDocument
-  phaseDocuments: Listing<model.WorkflowDocument>
-  internalDocuments: Listing<model.WorkflowDocument>
   outputText: String
+  structuredSource: model.StructuredCompositeSource
 }
-
-local stripFrontmatterMarkers = (text: String) ->
-  text.replaceFirst("---", "").replaceFirst("---", "")
 
 local phaseNameBySlug = new Mapping {
   ["sce-context-load"] = "Context load phase"
@@ -36,74 +32,28 @@ local phaseNameBySlug = new Mapping {
   ["sce-atomic-commit"] = "Atomic commit phase"
 }
 
-/// Remove sibling-package routing language while preserving canonical phase
-/// semantics. Status values become internal workflow state inside the composite
-/// skill; only layouts in references/output.md are rendered to the user.
-local internalize = (text: String) ->
-  text
-    .replaceAll("`sce-context-load`", "the **Context load phase**")
-    .replaceAll("`sce-plan-authoring`", "the **Plan authoring phase**")
-    .replaceAll("`sce-plan-review`", "the **Plan review phase**")
-    .replaceAll("`sce-task-execution`", "the **Task execution phase**")
-    .replaceAll("`sce-task-context-sync`", "the **Task context synchronization phase**")
-    .replaceAll("`sce-validation`", "the **Validation phase**")
-    .replaceAll("`sce-plan-context-sync`", "the **Plan context synchronization phase**")
-    .replaceAll("`sce-atomic-commit`", "the **Atomic commit phase**")
-    .replaceAll("sce-context-load", "Context load phase")
-    .replaceAll("sce-plan-authoring", "Plan authoring phase")
-    .replaceAll("sce-plan-review", "Plan review phase")
-    .replaceAll("sce-task-execution", "Task execution phase")
-    .replaceAll("sce-task-context-sync", "Task context synchronization phase")
-    .replaceAll("sce-validation", "Validation phase")
-    .replaceAll("sce-plan-context-sync", "Plan context synchronization phase")
-    .replaceAll("sce-atomic-commit", "Atomic commit phase")
-    .replaceAll("`references/context-brief.yaml`", "the internal context-load state described by this workflow")
-    .replaceAll("`references/authoring-contract.yaml`", "the internal authoring state described by this workflow")
-    .replaceAll("`references/readiness-contract.yaml`", "the internal readiness state described by this workflow")
-    .replaceAll("`references/execution-contract.yaml`", "the internal execution state described by this workflow")
-    .replaceAll("`references/commit-contract.yaml`", "the internal commit state described by this workflow")
-    .replaceAll("`references/implementation-gate.md`", "`references/output.md`")
-    .replaceAll("`references/plan-summary.md`", "`references/output.md`")
-    .replaceAll("`references/validation-result.md`", "`references/output.md`")
-    .replaceAll("`references/sync-report.md`", "`references/output.md`")
-    .replaceAll("`references/commit-message-style.md`", "`references/output.md`")
-    .replaceAll("Invoke the **", "Run the **")
-    .replaceAll("invoke the **", "run the **")
-    .replaceAll("invoked skills", "embedded phases")
-    .replaceAll("invoked skill", "embedded phase")
-    .replaceAll("Invoke task execution", "Run task execution")
-    .replaceAll("Invoke plan context sync", "Run plan context synchronization")
-    .replaceAll("invoke implementation", "run implementation")
-    .replaceAll("invoke context synchronization", "run context synchronization")
-    .replaceAll("invoke it", "run it")
-    .replaceAll("Invoke only", "Run only")
-    .replaceAll("invoked for", "run for")
+local renderStructuredPhase = (document: model.StructuredWorkflowDocument) ->
+  "## Internal phase: \(phaseNameBySlug[document.path])\n\n" + document.render.apply("composite", "").text
 
-local internalizePhase = (text: String) ->
-  internalize.apply(text)
-    .replaceAll("`references/plan-template.md`", "the **Plan template** section embedded in this file")
-    .replaceAll("`references/validation-report.md`", "the **Plan-file validation report** section embedded in this file")
-    .replaceAll("YAML result", "internal state")
-    .replaceAll("YAML document", "internal state")
-    .replaceAll("```yaml", "```text")
-    .replaceAll("YAML", "internal state")
-    .replaceAll("structured result", "internal state")
-    .replaceAll("terminal Markdown result", "terminal internal state")
-    .replaceAll("Markdown result", "internal state")
-    .replaceAll("Return exactly one", "Set exactly one")
-    .replaceAll("return exactly one", "set exactly one")
-    .replaceAll("Return only the", "Record only the")
-    .replaceAll("return only the", "record only the")
-    .replaceAll("Return `", "Set internal status `")
-    .replaceAll("return `", "set internal status `")
-    .replaceAll("Returning one", "Recording one")
-    .replaceAll("returning one", "recording one")
+local renderStructuredInternalDocument = (document: model.WorkflowDocument) ->
+  "## Internal persisted-document format: \(document.path)\n\n" + document.text
 
-local renderPhase = (slug: String, document: model.WorkflowDocument) ->
-  "## Internal phase: \(phaseNameBySlug[slug])\n\n" + internalizePhase.apply(stripFrontmatterMarkers.apply(document.text))
+local renderCanonicalWorkflow = (workflow: CompositeWorkflow) ->
+  workflow.structuredSource.command.render.apply("composite", "").text
 
-local renderInternalDocument = (title: String, document: model.WorkflowDocument) ->
-  "## Internal persisted-document format: \(title)\n\n" + internalize.apply(document.text)
+local renderPhases = (workflow: CompositeWorkflow) ->
+  new Listing {
+    for (document in workflow.structuredSource.phases) {
+      renderStructuredPhase.apply(document)
+    }
+  }.join("\n\n")
+
+local renderInternalDocuments = (workflow: CompositeWorkflow) ->
+  new Listing {
+    for (document in workflow.structuredSource.internalDocuments) {
+      renderStructuredInternalDocument.apply(document)
+    }
+  }.join("\n\n")
 
 /// `extraFrontmatterLines` carries the target-specific frontmatter a skill
 /// entrypoint supports. Each line ends with a newline; a target that adds none
@@ -133,13 +83,13 @@ internal state. The reference contains only human-visible Markdown layouts.
 
 ## Canonical workflow
 
-\(internalize.apply(stripFrontmatterMarkers.apply(workflow.command.text)))
+\(renderCanonicalWorkflow.apply(workflow))
 
 ## Embedded phase behavior
 
-\(new Listing { for (document in workflow.phaseDocuments) { renderPhase.apply(document.path, document) } }.join("\n\n"))
+\(renderPhases.apply(workflow))
 
-\(new Listing { for (document in workflow.internalDocuments) { renderInternalDocument.apply(document.path, document) } }.join("\n\n"))
+\(renderInternalDocuments.apply(workflow))
 
 ## Composite control flow
 
@@ -154,7 +104,7 @@ as the workflow's final response.
 /// `extraFrontmatterLines` carries the target-specific routing frontmatter a
 /// command supports, under the same newline-terminated convention as
 /// `renderSkill`.
-renderCommand = (workflow: CompositeWorkflow, extraFrontmatterLines: String) -> new model.WorkflowDocument {
+hidden renderCommand = (workflow: CompositeWorkflow, extraFrontmatterLines: String) -> new model.WorkflowDocument {
   path = workflow.command.path
   text = """
 ---
@@ -448,49 +398,45 @@ Present Git's failure unchanged and stop without retrying.
 local changeWorkflow = new CompositeWorkflow {
   identity = catalog.workflows["change-to-plan"]
   command = changeToPlan.workflow.command.document
-  phaseDocuments = new Listing {
-    new model.WorkflowDocument { path = "sce-context-load"; text = changeToPlan.workflow.skills["sce-context-load"].documents["SKILL.md"].text }
-    new model.WorkflowDocument { path = "sce-plan-authoring"; text = changeToPlan.workflow.skills["sce-plan-authoring"].documents["SKILL.md"].text }
-  }
-  internalDocuments = new Listing {
-    new model.WorkflowDocument { path = "Plan template"; text = changeToPlan.workflow.skills["sce-plan-authoring"].documents["references/plan-template.md"].text }
-  }
-  outputText = internalize.apply(CHANGE_OUTPUT + "\n\n" + changeToPlan.workflow.skills["sce-plan-authoring"].documents["references/plan-summary.md"].text)
+  structuredSource = changeToPlan.structuredComposite
+  outputText = CHANGE_OUTPUT + "\n\n" + new Listing {
+    for (document in changeToPlan.structuredComposite.outputDocuments) {
+      document.text
+    }
+  }.join("\n\n")
 }
 
 local nextWorkflow = new CompositeWorkflow {
   identity = catalog.workflows["next-task"]
   command = nextTask.workflow.command.document
-  phaseDocuments = new Listing {
-    new model.WorkflowDocument { path = "sce-plan-review"; text = nextTask.workflow.skills["sce-plan-review"].documents["SKILL.md"].text }
-    new model.WorkflowDocument { path = "sce-task-execution"; text = nextTask.workflow.skills["sce-task-execution"].documents["SKILL.md"].text }
-    new model.WorkflowDocument { path = "sce-task-context-sync"; text = nextTask.workflow.skills["sce-task-context-sync"].documents["SKILL.md"].text }
-  }
-  internalDocuments = new Listing {}
-  outputText = internalize.apply(NEXT_OUTPUT + "\n\n" + nextTask.workflow.skills["sce-task-execution"].documents["references/implementation-gate.md"].text + "\n\n" + nextTask.workflow.skills["sce-task-context-sync"].documents["references/sync-report.md"].text)
+  structuredSource = nextTask.structuredComposite
+  outputText = NEXT_OUTPUT + "\n\n" + new Listing {
+    for (document in nextTask.structuredComposite.outputDocuments) {
+      document.text
+    }
+  }.join("\n\n")
 }
 
 local validateWorkflow = new CompositeWorkflow {
   identity = catalog.workflows["validate"]
   command = validate.workflow.command.document
-  phaseDocuments = new Listing {
-    new model.WorkflowDocument { path = "sce-validation"; text = validate.workflow.skills["sce-validation"].documents["SKILL.md"].text }
-    new model.WorkflowDocument { path = "sce-plan-context-sync"; text = validate.workflow.skills["sce-plan-context-sync"].documents["SKILL.md"].text }
-  }
-  internalDocuments = new Listing {
-    new model.WorkflowDocument { path = "Plan-file validation report"; text = validate.workflow.skills["sce-validation"].documents["references/validation-report.md"].text }
-  }
-  outputText = internalize.apply(VALIDATE_OUTPUT + "\n\n" + validate.workflow.skills["sce-validation"].documents["references/validation-result.md"].text + "\n\n" + validate.workflow.skills["sce-plan-context-sync"].documents["references/sync-report.md"].text)
+  structuredSource = validate.structuredComposite
+  outputText = VALIDATE_OUTPUT + "\n\n" + new Listing {
+    for (document in validate.structuredComposite.outputDocuments) {
+      document.text
+    }
+  }.join("\n\n")
 }
 
 local commitWorkflow = new CompositeWorkflow {
   identity = catalog.workflows["commit"]
   command = commit.workflow.command.document
-  phaseDocuments = new Listing {
-    new model.WorkflowDocument { path = "sce-atomic-commit"; text = commit.workflow.skills["sce-atomic-commit"].documents["SKILL.md"].text }
-  }
-  internalDocuments = new Listing {}
-  outputText = internalize.apply(COMMIT_OUTPUT + "\n\n" + commit.workflow.skills["sce-atomic-commit"].documents["references/commit-message-style.md"].text)
+  structuredSource = commit.structuredComposite
+  outputText = COMMIT_OUTPUT + "\n\n" + new Listing {
+    for (document in commit.structuredComposite.outputDocuments) {
+      document.text
+    }
+  }.join("\n\n")
 }
 
 workflows = new Mapping {
@@ -502,7 +448,7 @@ workflows = new Mapping {
 
 /// Each target renders the same two documents per workflow package and differs
 /// only in the frontmatter its skill entrypoint carries.
-skillDocuments = (extraSkillFrontmatterLines: String) -> new Mapping {
+hidden skillDocuments = (extraSkillFrontmatterLines: String) -> new Mapping {
   for (_, workflow in workflows) {
     ["\(workflow.skillSlug)/SKILL.md"] = renderSkill.apply(workflow, extraSkillFrontmatterLines)
     ["\(workflow.skillSlug)/references/output.md"] = new model.WorkflowDocument {

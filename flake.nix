@@ -150,6 +150,7 @@
             ./config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts
             ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
             ./config/lib/pi-plugin/sce-pi-extension.ts
+            ./scripts/produce-cli-generated-input.sh
           ];
         };
         workspaceSrc = pkgs.lib.fileset.toSource {
@@ -218,6 +219,7 @@
             (pkgs.lib.fileset.maybeMissing ./config/.pi)
             (pkgs.lib.fileset.maybeMissing ./config/schema/sce-config.schema.json)
             (pkgs.lib.fileset.maybeMissing ./cli/assets/generated)
+            ./scripts/produce-cli-generated-input.sh
           ];
         };
 
@@ -280,11 +282,11 @@
           SCE_GIT_COMMIT = shortGitCommit;
         };
 
-        # Generate the canonical Pkl payload before entering any Cargo
-        # derivation. The output is content-addressed by only the canonical
-        # generator inputs, so native, release, test, and Clippy builds share
-        # one handoff while dependency-only and formatting derivations remain
-        # independent of it.
+        # Produce the canonical Pkl payload before entering any Cargo
+        # derivation. The output is content-addressed by only the producer and
+        # its canonical generator inputs, so native, release, test, and Clippy
+        # builds share one handoff while dependency-only and formatting
+        # derivations remain independent of it.
         cliGeneratedInput = pkgs.runCommand "sce-cli-generated-input"
           {
             src = cliGeneratedInputSrc;
@@ -300,40 +302,12 @@
 
             cp -r "$src" ./repo
             chmod -R u+w ./repo
-            comparison_root="$(mktemp -d)"
-            mkdir -p "$out/pkl-generated" "$comparison_root/pkl-generated"
 
-            (
-              cd ./repo
-              pkl eval -m "$out/pkl-generated" config/pkl/generate.pkl >/dev/null
-              pkl eval -m "$comparison_root/pkl-generated" config/pkl/generate.pkl >/dev/null
-            )
-
-            diff -qr "$out/pkl-generated" "$comparison_root/pkl-generated" >/dev/null
-
-            (
-              cd "$out"
-              find pkl-generated -type f -print \
-                | LC_ALL=C sort \
-                | while IFS= read -r path; do
-                    sha256sum "$path"
-                  done
-            ) > "$out/SHA256SUMS"
-
-            (
-              cd ./repo
-              {
-                find config/pkl -type f -print
-                printf '%s\n' \
-                  config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts \
-                  config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts \
-                  config/lib/pi-plugin/sce-pi-extension.ts
-              } \
-                | LC_ALL=C sort \
-                | while IFS= read -r path; do
-                    sha256sum "$path"
-                  done
-            ) > "$out/INPUTS.SHA256SUMS"
+            ${pkgs.bash}/bin/bash \
+              ./repo/scripts/produce-cli-generated-input.sh \
+              ./repo \
+              ./generated-input
+            mv ./generated-input "$out"
           '';
 
         cliGeneratedInputArgs = {
@@ -1220,6 +1194,7 @@
 
               cp -r "${pklGeneratedCheckSrc}" ./repo
               chmod -R u+w ./repo
+              patchShebangs ./repo/scripts/produce-cli-generated-input.sh
               cd ./repo
 
               export IN_NIX_SHELL=1

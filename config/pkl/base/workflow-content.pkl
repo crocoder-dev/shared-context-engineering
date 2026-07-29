@@ -9,6 +9,55 @@ class WorkflowDocument {
   text: String
 }
 
+typealias WorkflowRenderMode = "package"|"composite"
+
+/// A semantic token whose spelling depends on whether a canonical package or
+/// an embedded composite workflow is being rendered.
+class SemanticReference {
+  packageText: String
+  compositeText: String
+
+  hidden render = (mode: WorkflowRenderMode) ->
+    if (mode == "composite") compositeText else packageText
+}
+
+/// Frontmatter is modeled separately so composite rendering can embed its
+/// fields without parsing or stripping Markdown markers.
+class WorkflowFrontmatter {
+  hidden lines: (WorkflowRenderMode) -> Listing<String>
+
+  hidden render = (mode: WorkflowRenderMode, extraLines: String) ->
+    "---\n" + lines.apply(mode).join("\n") + "\n" + extraLines + "---\n"
+
+  hidden renderEmbedded = (mode: WorkflowRenderMode) -> "\n" + lines.apply(mode).join("\n") + "\n\n"
+}
+
+/// A body renderer receives semantic render mode before Markdown assembly.
+class WorkflowBody {
+  hidden render: (WorkflowRenderMode) -> String
+}
+
+class StructuredWorkflowDocument {
+  path: String
+  frontmatter: WorkflowFrontmatter
+  body: WorkflowBody
+
+  hidden render = (mode: WorkflowRenderMode, extraFrontmatterLines: String) -> new WorkflowDocument {
+    path = outer.path
+    text = if (mode == "composite")
+      frontmatter.renderEmbedded.apply(mode) + "\n" + body.render.apply(mode)
+    else
+      frontmatter.render.apply(mode, extraFrontmatterLines) + "\n" + body.render.apply(mode)
+  }
+}
+
+class StructuredCompositeSource {
+  command: StructuredWorkflowDocument
+  phases: Listing<StructuredWorkflowDocument>
+  internalDocuments: Listing<WorkflowDocument>
+  outputDocuments: Listing<WorkflowDocument>
+}
+
 class WorkflowCommand {
   slug: String
   title: String
@@ -29,3 +78,18 @@ class WorkflowPackage {
   skills: Mapping<String, SkillPackage>
 }
 
+hidden makeDocument = (documentPath: String, documentText: String) -> new WorkflowDocument {
+  path = documentPath
+  text = documentText
+}
+
+hidden packageDocuments = (documents: Listing<WorkflowDocument>) -> new Mapping {
+  for (document in documents) {
+    [document.path] = document
+  }
+}
+
+hidden semanticReference = (packageValue: String, compositeValue: String) -> new SemanticReference {
+  packageText = packageValue
+  compositeText = compositeValue
+}

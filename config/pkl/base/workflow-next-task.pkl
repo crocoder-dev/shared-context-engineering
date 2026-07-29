@@ -1,46 +1,55 @@
 import "workflow-content.pkl" as model
 import "workflow-context-sync.pkl" as contextSync
 
+local planReview = model.semanticReference.apply("`sce-plan-review`", "the **Plan review phase**")
+local planReviewName = model.semanticReference.apply("sce-plan-review", "Plan review phase")
+local taskExecution = model.semanticReference.apply("`sce-task-execution`", "the **Task execution phase**")
+local taskExecutionName = model.semanticReference.apply("sce-task-execution", "Task execution phase")
+local taskContextSync = model.semanticReference.apply("`sce-task-context-sync`", "the **Task context synchronization phase**")
+local readinessContract = model.semanticReference.apply("`references/readiness-contract.yaml`", "the internal readiness state described by this workflow")
+local executionContract = model.semanticReference.apply("`references/execution-contract.yaml`", "the internal execution state described by this workflow")
+local implementationGate = model.semanticReference.apply("`references/implementation-gate.md`", "`references/output.md`")
+local invoke = model.semanticReference.apply("Invoke", "Run")
+local invokeLower = model.semanticReference.apply("invoke", "run")
+local invokedSkills = model.semanticReference.apply("invoked skills", "embedded phases")
+local invokedSkill = model.semanticReference.apply("invoked skill", "embedded phase")
+local yamlResult = model.semanticReference.apply("YAML result", "internal state")
+local returnLower = model.semanticReference.apply("return", "set internal status")
+local returnUpper = model.semanticReference.apply("Return", "Set internal status")
+local returningTerminalResult = model.semanticReference.apply("Returning one terminal YAML result", "Recording one terminal internal state")
+local returnYaml = model.semanticReference.apply("Return YAML", "Return internal state")
+local returnYamlLower = model.semanticReference.apply("return YAML", "return internal state")
+local returnExactlyOneStructuredResult = model.semanticReference.apply("Return exactly one structured result", "Set exactly one internal state")
+local returnOnlyStructuredResult = model.semanticReference.apply("Return only the structured result", "Record only the internal state")
+local returnExactlyOneYamlDocument = model.semanticReference.apply("return exactly one YAML document", "set exactly one internal state")
+local returnOnlyYamlDocument = model.semanticReference.apply("Return only the YAML document", "Record only the internal state")
+local returningReadinessResult = model.semanticReference.apply("Returning one structured readiness result", "Recording one structured readiness result")
+local invokeTaskExecution = model.semanticReference.apply("Invoke task execution", "Run task execution")
+
 /// Canonical `/next-task` workflow command and its self-contained skill
 /// packages. Text mirrors the project-root `.pi/` behavioral baseline; target
 /// renderers consume this model in later workflow-rendering tasks.
 
-local makeDocument = (documentPath: String, documentText: String) -> new model.WorkflowDocument {
-  path = documentPath
-  text = documentText
-}
-
-local packageDocuments = (documents: Listing<model.WorkflowDocument>) -> new Mapping {
-  for (item in documents) {
-    [item.path] = item
-  }
-}
-
 local planReviewPackage = new model.SkillPackage {
   slug = "sce-plan-review"
   title = "SCE Plan Review"
-  documents = packageDocuments.apply(new Listing {
-    makeDocument.apply("SKILL.md", REVIEW_SKILL)
-    makeDocument.apply("references/readiness-contract.yaml", READINESS_CONTRACT)
+  documents = model.packageDocuments.apply(new Listing {
+    model.makeDocument.apply("SKILL.md", REVIEW_SKILL)
+    model.makeDocument.apply("references/readiness-contract.yaml", READINESS_CONTRACT)
   })
 }
 
 local taskExecutionPackage = new model.SkillPackage {
   slug = "sce-task-execution"
   title = "SCE Task Execution"
-  documents = packageDocuments.apply(new Listing {
-    makeDocument.apply("SKILL.md", EXECUTION_SKILL)
-    makeDocument.apply("references/execution-contract.yaml", EXECUTION_CONTRACT)
-    makeDocument.apply("references/implementation-gate.md", IMPLEMENTATION_GATE)
+  documents = model.packageDocuments.apply(new Listing {
+    model.makeDocument.apply("SKILL.md", EXECUTION_SKILL)
+    model.makeDocument.apply("references/execution-contract.yaml", EXECUTION_CONTRACT)
+    model.makeDocument.apply("references/implementation-gate.md", IMPLEMENTATION_GATE)
   })
 }
 
-local COMMAND = """
-    ---
-    description: "Run `sce-plan-review` -> `sce-task-execution` -> `sce-task-context-sync` for one SCE plan task"
-    argument-hint: "<plan-name> [T0X] [approved]"
-    ---
-    
+local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     SCE NEXT TASK `$ARGUMENTS`
     
     ## Input
@@ -59,21 +68,21 @@ local COMMAND = """
     
     Pass each part only to the phase that owns it. Do not forward the raw `$ARGUMENTS` string to a skill.
     
-    Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is the path resolved by `sce-plan-review` (`plan.path`, or an entry of `candidates`), so every emitted command is directly runnable.
+    Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is the path resolved by \(planReview.render.apply(mode)) (`plan.path`, or an entry of `candidates`), so every emitted command is directly runnable.
     
     ## Workflow
     
     ### 1. Review the task
     
-    Invoke `sce-plan-review` with the parsed `plan-name-or-path` and, when present, the parsed `task-id`.
+    \(invoke.render.apply(mode)) \(planReview.render.apply(mode)) with the parsed `plan-name-or-path` and, when present, the parsed `task-id`.
     
-    Do not pass the `auto-approve` token to `sce-plan-review`.
+    Do not pass the `auto-approve` token to \(planReview.render.apply(mode)).
     
     The skill must return a result matching its readiness contract.
     
     Branch on `status`:
     
-    `blocked` -> Do not invoke implementation. Present the result as prose. Do not print the raw result. Stop.
+    `blocked` -> Do not \(invokeLower.render.apply(mode)) implementation. Present the result as prose. Do not print the raw result. Stop.
     
     When `candidates` is present, the plan could not be resolved. Present:
     
@@ -103,21 +112,21 @@ local COMMAND = """
     
     Stop.
     
-    `ready` -> Pass the complete readiness result to `sce-task-execution`.
+    `ready` -> Pass the complete readiness result to \(taskExecution.render.apply(mode)).
     
     Do not reconstruct, summarize, or reinterpret the reviewed task before passing it.
     
     ### 2. Execute the task
     
-    Invoke `sce-task-execution` with the complete `ready` result from `sce-plan-review`.
+    \(invoke.render.apply(mode)) \(taskExecution.render.apply(mode)) with the complete `ready` result from \(planReview.render.apply(mode)).
     
     Branch on `auto-approve`:
     
-    `approved` -> Also pass the `approve` flag. `sce-task-execution` then shows its implementation gate as a summary and proceeds without asking.
+    `approved` -> Also pass the `approve` flag. \(taskExecution.render.apply(mode)) then shows its implementation gate as a summary and proceeds without asking.
     
-    else -> Do not pass the `approve` flag. `sce-task-execution` shows its implementation gate and waits for the user's decision.
+    else -> Do not pass the `approve` flag. \(taskExecution.render.apply(mode)) shows its implementation gate and waits for the user's decision.
     
-    `sce-task-execution` exclusively owns:
+    \(taskExecution.render.apply(mode)) exclusively owns:
     
     - Presenting the implementation summary.
     - Requesting implementation confirmation.
@@ -129,7 +138,7 @@ local COMMAND = """
     
     Branch on the execution result.
     
-    `declined` -> Present "You have declined to proceed with this task". Do not invoke context synchronization. Stop.
+    `declined` -> Present "You have declined to proceed with this task". Do not \(invokeLower.render.apply(mode)) context synchronization. Stop.
     
     `blocked` -> Present:
     
@@ -137,7 +146,7 @@ local COMMAND = """
     - Work completed before the blocker.
     - The decision or action required.
     
-    Do not invoke context synchronization. Stop.
+    Do not \(invokeLower.render.apply(mode)) context synchronization. Stop.
     
     `incomplete` -> Present:
     
@@ -146,15 +155,15 @@ local COMMAND = """
     - Remaining work.
     - The reason the task is incomplete.
     
-    Do not invoke context synchronization. Do not select another task. Stop.
+    Do not \(invokeLower.render.apply(mode)) context synchronization. Do not select another task. Stop.
     
     `complete` -> continue to the next step.
     
     ### 3. Synchronize context
     
-    Invoke `sce-task-context-sync` with the complete `complete` result returned by `sce-task-execution`.
+    \(invoke.render.apply(mode)) \(taskContextSync.render.apply(mode)) with the complete `complete` result returned by \(taskExecution.render.apply(mode)).
     
-    Pass that result verbatim. It is the authoritative handoff, and `sce-task-context-sync` owns reading the plan, task, changed files, verification evidence, and reported context impact out of it.
+    Pass that result verbatim. It is the authoritative handoff, and \(taskContextSync.render.apply(mode)) owns reading the plan, task, changed files, verification evidence, and reported context impact out of it.
     
     Do not restate, summarize, or reconstruct any part of the execution result.
     
@@ -172,7 +181,7 @@ local COMMAND = """
     
     Do not select another task. Stop.
     
-    `synced` | `no_context_change` -> Print out the report `sce-task-context-sync` returned. Continue to the next step.
+    `synced` | `no_context_change` -> Print out the report \(taskContextSync.render.apply(mode)) returned. Continue to the next step.
     
     ### 4. Determine the continuation
     
@@ -180,7 +189,7 @@ local COMMAND = """
     
     Do not execute another task. Return exactly one continuation.
     
-    If incomplete tasks remain, read the plan and name the first unchecked task in plan order. Do not evaluate its dependencies; `sce-plan-review` checks them when the emitted command runs and returns `blocked` if they are unmet.
+    If incomplete tasks remain, read the plan and name the first unchecked task in plan order. Do not evaluate its dependencies; \(planReview.render.apply(mode)) checks them when the emitted command runs and returns `blocked` if they are unmet.
     
     Return:
     
@@ -220,26 +229,31 @@ local COMMAND = """
     
     - Execute at most one plan task per invocation.
     - Review at most one task.
-    - Do not duplicate the internal instructions of invoked skills.
-    - Do not ask for implementation confirmation outside "sce-task-execution".
+    - Do not duplicate the internal instructions of \(invokedSkills.render.apply(mode)).
+    - Do not ask for implementation confirmation outside "\(taskExecutionName.render.apply(mode))".
     - Do not run full-plan validation.
     - Do not mark the plan complete.
     - Do not execute the continuation returned at the end.
-    - Do not infer success when an invoked skill returns a non-success status.
+    - Do not infer success when an \(invokedSkill.render.apply(mode)) returns a non-success status.
     - Preserve completed work and evidence when a later phase fails.
     """
 
-local REVIEW_SKILL = """
-    ---
-    name: sce-plan-review
-    description: >
-      Internal SCE workflow skill that resolves one task from an existing plan and
-      determines whether it is ready for implementation. Returns ready, blocked, or
-      plan_complete with a structured payload. Use from /next-task. Do not implement
-      changes, request implementation approval, update the plan, synchronize
-      context, or run final validation.
-    ---
-    
+local structuredCommand = new model.StructuredWorkflowDocument {
+  path = "next-task.md"
+  frontmatter = new model.WorkflowFrontmatter {
+    lines = (mode: model.WorkflowRenderMode) -> new Listing {
+      "description: \"Run \(planReview.render.apply(mode)) -> \(taskExecution.render.apply(mode)) -> \(taskContextSync.render.apply(mode)) for one SCE plan task\""
+      "argument-hint: \"<plan-name> [T0X] [approved]\""
+    }
+  }
+  body = new model.WorkflowBody {
+    render = (mode: model.WorkflowRenderMode) -> renderCommandBody.apply(mode)
+  }
+}
+
+local COMMAND = structuredCommand.render.apply("package", "").text
+
+local renderReviewSkillBody = (mode: model.WorkflowRenderMode) -> """
     # SCE Plan Review
     
     ## Purpose
@@ -254,11 +268,11 @@ local REVIEW_SKILL = """
     - Selecting at most one task.
     - Inspecting the context needed to judge readiness.
     - Determining readiness.
-    - Returning one structured readiness result.
+    - \(returningReadinessResult.render.apply(mode)).
     
     Return a result matching:
     
-    `references/readiness-contract.yaml`
+    \(readinessContract.render.apply(mode))
     
     ## Input
     
@@ -273,9 +287,9 @@ local REVIEW_SKILL = """
     
     Resolve the supplied plan name or path to exactly one existing plan.
     
-    When no plan can be found, return `blocked`.
+    When no plan can be found, \(returnLower.render.apply(mode)) `blocked`.
     
-    When multiple plans match and none can be selected safely, return `blocked` with
+    When multiple plans match and none can be selected safely, \(returnLower.render.apply(mode)) `blocked` with
     the matching candidates.
     
     Read the selected plan before exploring the repository.
@@ -287,9 +301,9 @@ local REVIEW_SKILL = """
     Otherwise, select the first incomplete task in plan order whose declared
     dependencies are complete.
     
-    Return `plan_complete` when no incomplete tasks remain.
+    \(returnUpper.render.apply(mode)) `plan_complete` when no incomplete tasks remain.
     
-    Return `blocked` when incomplete tasks remain but none can currently be
+    \(returnUpper.render.apply(mode)) `blocked` when incomplete tasks remain but none can currently be
     executed.
     
     Review at most one task per invocation.
@@ -334,7 +348,7 @@ local REVIEW_SKILL = """
     
     Record these choices under `assumptions`.
     
-    Return `blocked` when a missing decision materially affects:
+    \(returnUpper.render.apply(mode)) `blocked` when a missing decision materially affects:
     
     - User-visible behavior.
     - Public interfaces.
@@ -347,13 +361,13 @@ local REVIEW_SKILL = """
     
     ### 5. Return the result
     
-    Return exactly one structured result:
+    \(returnExactlyOneStructuredResult.render.apply(mode)):
     
     - `ready`
     - `blocked`
     - `plan_complete`
     
-    Return only the structured result. Do not add explanatory prose before or after
+    \(returnOnlyStructuredResult.render.apply(mode)). Do not add explanatory prose before or after
     it.
     
     ## Boundaries
@@ -365,7 +379,7 @@ local REVIEW_SKILL = """
     - Update the plan.
     - Mark the task complete.
     - Request implementation confirmation.
-    - Invoke task execution.
+    - \(invokeTaskExecution.render.apply(mode)).
     - Synchronize context.
     - Run final validation.
     - Review more than one task.
@@ -376,9 +390,29 @@ local REVIEW_SKILL = """
     
     - One plan was resolved.
     - At most one task was resolved.
-    - One valid readiness result matching `references/readiness-contract.yaml` was
+    - One valid readiness result matching \(readinessContract.render.apply(mode)) was
       returned.
     """
+
+local structuredReviewSkill = new model.StructuredWorkflowDocument {
+  path = "sce-plan-review"
+  frontmatter = new model.WorkflowFrontmatter {
+    lines = (mode: model.WorkflowRenderMode) -> new Listing {
+      "name: \(planReviewName.render.apply(mode))"
+      "description: >"
+      "  Internal SCE workflow skill that resolves one task from an existing plan and"
+      "  determines whether it is ready for implementation. Returns ready, blocked, or"
+      "  plan_complete with a structured payload. Use from /next-task. Do not implement"
+      "  changes, request implementation approval, update the plan, synchronize"
+      "  context, or run final validation."
+    }
+  }
+  body = new model.WorkflowBody {
+    render = (mode: model.WorkflowRenderMode) -> renderReviewSkillBody.apply(mode)
+  }
+}
+
+local REVIEW_SKILL = structuredReviewSkill.render.apply("package", "").text
 
 local READINESS_CONTRACT = """
     version: 1
@@ -629,19 +663,7 @@ local READINESS_CONTRACT = """
             total_tasks: 5
     """
 
-local EXECUTION_SKILL = """
-    ---
-    name: sce-task-execution
-    description: >
-      Internal SCE workflow skill that always presents one reviewed task to the
-      user before editing, executes it only after approval, verifies the
-      task, records evidence in the plan, and returns one YAML result: declined,
-      blocked, incomplete, or complete. Accepts a ready result from
-      sce-plan-review. Do not select or execute another task,
-      synchronize durable context, run final plan validation, create commits, or
-      expand task scope.
-    ---
-    
+local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     # SCE Task Execution
     
     ## Purpose
@@ -656,21 +678,21 @@ local EXECUTION_SKILL = """
     - Implementing one approved task.
     - Running task-level verification.
     - Updating that task and its evidence in the plan.
-    - Returning one terminal YAML result.
+    - \(returningTerminalResult.render.apply(mode)).
     
     Use the gate defined in:
     
-    `references/implementation-gate.md`
+    \(implementationGate.render.apply(mode))
     
     Return a final result matching:
     
-    `references/execution-contract.yaml`
+    \(executionContract.render.apply(mode))
     
     ## Input
     
     The invoking workflow provides:
     
-    - The complete `ready` result from `sce-plan-review`.
+    - The complete `ready` result from \(planReview.render.apply(mode)).
     - An optional `approve` flag.
     
     The `approve` flag means the user pre-approved this task when invoking the
@@ -690,7 +712,7 @@ local EXECUTION_SKILL = """
     
     If required handoff information is absent or stale, still show the gate using
     what is known, clearly identify the handoff problem, and do not edit files.
-    After the user responds, return `blocked`.
+    After the user responds, \(returnLower.render.apply(mode)) `blocked`.
     
     ## Workflow
     
@@ -710,7 +732,7 @@ local EXECUTION_SKILL = """
     ### 2. Always show the implementation gate
     
     At the start of the skill, before any file modification, present the task using
-    `references/implementation-gate.md`.
+    \(implementationGate.render.apply(mode)).
     
     The gate must be shown even when:
     
@@ -724,7 +746,7 @@ local EXECUTION_SKILL = """
     
     `Continue with implementation now? (yes/no)`
     
-    Stop and wait for the user's answer. Do not return YAML, and make no file
+    Stop and wait for the user's answer. Do not \(returnYamlLower.render.apply(mode)), and make no file
     modifications, until the user has answered.
     
     When the `approve` flag is supplied, show the gate as a summary, omit the
@@ -734,16 +756,16 @@ local EXECUTION_SKILL = """
     
     Skip this step when the `approve` flag was supplied.
     
-    When the user rejects or cancels, do not modify files and return `declined`.
+    When the user rejects or cancels, do not modify files and \(returnLower.render.apply(mode)) `declined`.
     
     When the user does not clearly approve, do not modify files. Ask the same
     approval question once more only when the response is genuinely ambiguous.
-    Otherwise return `blocked`.
+    Otherwise \(returnLower.render.apply(mode)) `blocked`.
     
     When the user approves, continue with implementation.
     
     Treat constraints supplied with approval as part of the approved task boundary.
-    If those constraints materially contradict the reviewed task, return `blocked`
+    If those constraints materially contradict the reviewed task, \(returnLower.render.apply(mode)) `blocked`
     before editing.
     
     ### 4. Prepare the implementation
@@ -802,7 +824,7 @@ local EXECUTION_SKILL = """
     - Determine whether the task caused the failure.
     - Fix it when the correction remains in scope.
     - Rerun the relevant check.
-    - Return `incomplete` when a done check remains unsatisfied, or `blocked` when
+    - \(returnUpper.render.apply(mode)) `incomplete` when a done check remains unsatisfied, or `blocked` when
       completing it requires an unapproved decision or scope expansion.
     
     Never report a check as passed unless it ran successfully.
@@ -822,32 +844,32 @@ local EXECUTION_SKILL = """
     
     ### 8. Determine the terminal status
     
-    Return `complete` when the task was implemented, verified, and marked complete
+    \(returnUpper.render.apply(mode)) `complete` when the task was implemented, verified, and marked complete
     in the plan with evidence.
     
-    Return `incomplete` when in-scope work was completed but one or more done checks
+    \(returnUpper.render.apply(mode)) `incomplete` when in-scope work was completed but one or more done checks
     remain unsatisfied.
     
-    Return `declined` when the user rejected implementation.
+    \(returnUpper.render.apply(mode)) `declined` when the user rejected implementation.
     
-    Return `blocked` for every other non-successful outcome, including:
+    \(returnUpper.render.apply(mode)) `blocked` for every other non-successful outcome, including:
     
     - Missing approval.
     - Stale or invalid handoff.
     - Material blocker.
     - A verification failure that cannot be resolved in scope.
     
-    Use a blocker category defined by `references/execution-contract.yaml`.
+    Use a blocker category defined by \(executionContract.render.apply(mode)).
     
     Do not determine whether the plan is complete. The invoking `/next-task`
     workflow owns that decision after context synchronization.
     
-    ### 9. Return YAML
+    ### 9. \(returnYaml.render.apply(mode))
     
-    After the skill reaches a terminal state, return exactly one YAML document
-    matching `references/execution-contract.yaml`.
+    After the skill reaches a terminal state, \(returnExactlyOneYamlDocument.render.apply(mode))
+    matching \(executionContract.render.apply(mode)).
     
-    Return only the YAML document. Do not add explanatory prose before or after it.
+    \(returnOnlyYamlDocument.render.apply(mode)). Do not add explanatory prose before or after it.
     
     ## Boundaries
     
@@ -874,9 +896,31 @@ local EXECUTION_SKILL = """
     - The implementation gate was shown.
     - The user approved or rejected the task, or approval was pre-supplied.
     - At most one task was executed.
-    - One valid terminal YAML result matching `references/execution-contract.yaml`
+    - One valid terminal \(yamlResult.render.apply(mode)) matching \(executionContract.render.apply(mode))
       was returned.
     """
+
+local structuredExecutionSkill = new model.StructuredWorkflowDocument {
+  path = "sce-task-execution"
+  frontmatter = new model.WorkflowFrontmatter {
+    lines = (mode: model.WorkflowRenderMode) -> new Listing {
+      "name: \(taskExecutionName.render.apply(mode))"
+      "description: >"
+      "  Internal SCE workflow skill that always presents one reviewed task to the"
+      "  user before editing, executes it only after approval, verifies the"
+      "  task, records evidence in the plan, and returns one \(yamlResult.render.apply(mode)): declined,"
+      "  blocked, incomplete, or complete. Accepts a ready result from"
+      "  \(planReviewName.render.apply(mode)). Do not select or execute another task,"
+      "  synchronize durable context, run final plan validation, create commits, or"
+      "  expand task scope."
+    }
+  }
+  body = new model.WorkflowBody {
+    render = (mode: model.WorkflowRenderMode) -> renderExecutionSkillBody.apply(mode)
+  }
+}
+
+local EXECUTION_SKILL = structuredExecutionSkill.render.apply("package", "").text
 
 local EXECUTION_CONTRACT = """
     version: 1
@@ -1187,10 +1231,10 @@ local EXECUTION_CONTRACT = """
             reason: The task introduced durable login behavior that should be reflected in authentication context.
     """
 
-local IMPLEMENTATION_GATE = """
+local renderImplementationGate = (mode: model.WorkflowRenderMode) -> """
     # Implementation gate
     
-    Always show this gate at the start of `sce-task-execution`, before editing any
+    Always show this gate at the start of \(taskExecution.render.apply(mode)), before editing any
     file.
     
     The gate is user-facing prose. It is never serialized into a YAML result. This
@@ -1259,12 +1303,28 @@ local IMPLEMENTATION_GATE = """
       identify the problem under **Risks or trade-offs**.
     """
 
+local IMPLEMENTATION_GATE = renderImplementationGate.apply("package")
+
+structuredComposite = new model.StructuredCompositeSource {
+  command = structuredCommand
+  phases = new Listing {
+    structuredReviewSkill
+    structuredExecutionSkill
+    contextSync.taskStructuredSkill
+  }
+  internalDocuments = new Listing {}
+  outputDocuments = new Listing {
+    model.makeDocument.apply("Implementation gate", renderImplementationGate.apply("composite"))
+    model.makeDocument.apply("Context sync report", contextSync.taskOutputReport)
+  }
+}
+
 workflow = new model.WorkflowPackage {
   slug = "next-task"
   command = new model.WorkflowCommand {
     slug = "next-task"
     title = "SCE Next Task"
-    document = makeDocument.apply("next-task.md", COMMAND)
+    document = model.makeDocument.apply("next-task.md", COMMAND)
   }
   skills = new Mapping {
     [planReviewPackage.slug] = planReviewPackage
