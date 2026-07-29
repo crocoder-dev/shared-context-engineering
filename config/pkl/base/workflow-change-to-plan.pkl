@@ -6,14 +6,6 @@ local planAuthoring = model.semanticReference.apply("`sce-plan-authoring`", "the
 local planAuthoringName = model.semanticReference.apply("sce-plan-authoring", "Plan authoring phase")
 local planReview = model.semanticReference.apply("`sce-plan-review`", "the **Plan review phase**")
 local taskExecutionName = model.semanticReference.apply("`sce-task-execution`", "the **Task execution phase**")
-local contextBrief = model.semanticReference.apply(
-  "`references/context-brief.yaml`",
-  "the internal context-load state described by this workflow"
-)
-local authoringContract = model.semanticReference.apply(
-  "`references/authoring-contract.yaml`",
-  "the internal authoring state described by this workflow"
-)
 local planTemplate = model.semanticReference.apply(
   "`references/plan-template.md`",
   "the **Plan template** section embedded in this file"
@@ -28,8 +20,138 @@ local returnUpper = model.semanticReference.apply("Return", "Set internal status
 local returningContextBrief = model.semanticReference.apply("Returning one structured context brief", "Recording one structured context brief")
 local returningAuthoringResult = model.semanticReference.apply("Returning one structured authoring result", "Recording one structured authoring result")
 local invokeTaskExecution = model.semanticReference.apply("Invoke task execution", "Run task execution")
+
+/// Contract references. A package owns `references/*.yaml`, so these sentences
+/// resolve there. A composite workflow has no such file and describes its
+/// internal states inline, so the reference would resolve to nothing and is
+/// dropped. Each block-shaped reference owns its surrounding blank lines.
+local contextBriefHandoffSentence = model.semanticReference.apply(
+  """
+
+  The skill must return a result matching its context brief contract.
+
+  """,
+  ""
+)
+local contextBriefBlock = model.semanticReference.apply(
+  """
+
+  Return a result matching:
+
+  `references/context-brief.yaml`
+
+  """,
+  ""
+)
+local contextBriefClause = model.semanticReference.apply(" matching `references/context-brief.yaml`", "")
+local authoringHandoffSentence = model.semanticReference.apply(
+  """
+
+  The skill must return a result matching its authoring contract.
+
+  """,
+  ""
+)
+local authoringContractBlock = model.semanticReference.apply(
+  """
+
+  Return a result matching:
+
+  `references/authoring-contract.yaml`
+
+  """,
+  ""
+)
+local authoringContractClause = model.semanticReference.apply(" matching `references/authoring-contract.yaml`", "")
 local returnExactlyOneStructuredResult = model.semanticReference.apply("Return exactly one structured result", "Set exactly one internal state")
 local returnOnlyStructuredResult = model.semanticReference.apply("Return only the structured result", "Record only the internal state")
+
+/// User-visible layouts. Package mode states each layout at its branch, because a
+/// command file has no sibling `references/output.md`. Composite mode cites the
+/// `output.md` section that owns the layout, and keeps only the field mapping,
+/// branch conditions, and prohibitions that travelled with it.
+local bootstrapLayout = model.semanticReference.apply(
+  """
+  Return:
+
+  ```
+
+  -------------------------------------
+
+  # This repository has no durable context.
+
+  Bootstrap it, then continue in this session:
+
+  `sce setup --bootstrap-context`
+  ```
+  """,
+  """
+  Render the **Missing context bootstrap gate** layout from `references/output.md`.
+  """
+)
+local clarificationLayout = model.semanticReference.apply(
+  """
+  Return:
+
+  ```
+
+  -------------------------------------
+
+  # Clarification needed.
+
+  No plan was written.
+
+  Answer each question below.\("  ")
+
+  ## {question-id} · {category}
+
+  {question}
+
+  Why this blocks planning: {why_blocking}
+  ```
+  """,
+  """
+  Render the **Clarification gate** layout from `references/output.md`.
+  """
+)
+local authoringBlockedBranch = model.semanticReference.apply(
+  """
+  `blocked` -> No plan was written. Present the result as prose. Do not print the raw result. Present:
+
+  - Each issue in `issues`: its problem, its impact, and the decision it requires.
+  - When `candidates` is present, the candidate plan paths, and that naming the intended `{candidate-path}` in the change request resolves the ambiguity.
+
+  Stop.
+  """,
+  """
+  `blocked` -> No plan was written. Render the **Blocked** layout from `references/output.md`, drawing its issues from `issues` and, when `candidates` is present, its candidate paths from `candidates`. Do not print the raw result. Stop.
+  """
+)
+local readyContinuationLayout = model.semanticReference.apply(
+  """
+  Return:
+
+  ```
+
+  -------------------------------------
+
+  # Plan {plan-name} is ready.
+
+  {total-tasks} tasks planned.
+
+  This plan is a draft. State a correction and it will be updated.
+
+  Next up:
+
+  {next-task-id} — {next-task-title}
+
+  `/next-task {plan-path} {next-task-id}`
+  ```
+  """,
+  """
+  Render the **Ready continuation** layout from `references/output.md`.
+  """
+)
 
 /// Canonical `/change-to-plan` workflow command and its self-contained skill
 /// packages. Text mirrors the project-root `.pi/` behavioral baseline; target
@@ -78,23 +200,10 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     \(invoke.render.apply(mode)) \(contextLoad.render.apply(mode)) with the change request as the focus.
 
     `context/` is durable AI-first memory describing current state. Load it before planning so the plan starts from recorded truth. Where context and code disagree, the code is the source of truth.
-
-    The skill must return a result matching its context brief contract.
-
+    \(contextBriefHandoffSentence.render.apply(mode))
     Branch on `status`:
 
-    `bootstrap_required` -> `context/` does not exist. Do not create it, and do not plan without it. Return:
-
-    ```
-
-    -------------------------------------
-
-    # This repository has no durable context.
-
-    Bootstrap it, then continue in this session:
-
-    `sce setup --bootstrap-context`
-    ```
+    `bootstrap_required` -> `context/` does not exist. Do not create it, and do not plan without it. \(bootstrapLayout.render.apply(mode))
 
     Wait for the user. When they report the command ran, \(invokeLower.render.apply(mode)) \(contextLoad.render.apply(mode)) again and continue in this session. Do not restart planning, and do not ask for the change request again.
 
@@ -117,40 +226,16 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     - Writing `context/plans/{plan_name}.md`.
 
     Do not duplicate any of it. Do not write or edit the plan file yourself.
-
-    The skill must return a result matching its authoring contract.
-
+    \(authoringHandoffSentence.render.apply(mode))
     Branch on `status`:
 
-    `needs_clarification` -> No plan was written. Present the result as prose. Do not print the raw result. Return:
-
-    ```
-
-    -------------------------------------
-
-    # Clarification needed.
-
-    No plan was written.
-
-    Answer each question below.  
-
-    ## {question-id} · {category}
-
-    {question}
-
-    Why this blocks planning: {why_blocking}
-    ```
+    `needs_clarification` -> No plan was written. Present the result as prose. Do not print the raw result. \(clarificationLayout.render.apply(mode))
 
     Render one `##` block per entry in `questions`, in result order. Use the question's `id`, `category`, `question`, and `why_blocking` fields exactly as returned.
 
     Do not answer the questions. Do not assume answers. Do not write a plan. Stop and wait.
 
-    `blocked` -> No plan was written. Present the result as prose. Do not print the raw result. Present:
-
-    - Each issue in `issues`: its problem, its impact, and the decision it requires.
-    - When `candidates` is present, the candidate plan paths, and that naming the intended `{candidate-path}` in the change request resolves the ambiguity.
-
-    Stop.
+    \(authoringBlockedBranch.render.apply(mode))
 
     `plan_ready` -> Continue to the next step.
 
@@ -166,24 +251,7 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
 
     Offer revision, but do not gate the handoff on it, do not manufacture concerns, and do not ask the user to confirm the plan. When the summary lists open questions, leave them in the summary only — do not restate them in the continuation, do not answer them, and do not block the handoff on them. Blocking questions belong in `needs_clarification` (step 2), not here.
 
-    Return:
-
-    ```
-
-    -------------------------------------
-
-    # Plan {plan-name} is ready.
-
-    {total-tasks} tasks planned.
-
-    This plan is a draft. State a correction and it will be updated.
-
-    Next up:
-
-    {next-task-id} — {next-task-title}
-
-    `/next-task {plan-path} {next-task-id}`
-    ```
+    \(readyContinuationLayout.render.apply(mode))
 
     Then stop and wait. Do not implement, and do not run the handoff yourself.
 
@@ -262,11 +330,7 @@ local renderContextSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Reporting focus areas with no durable context.
     - Reporting context that contradicts the code.
     - \(returningContextBrief.render.apply(mode)).
-
-    Return a result matching:
-
-    \(contextBrief.render.apply(mode))
-
+    \(contextBriefBlock.render.apply(mode))
     ## Input
 
     The invoking workflow provides:
@@ -361,7 +425,7 @@ local renderContextSkillBody = (mode: model.WorkflowRenderMode) -> """
     - The context root was confirmed, or `bootstrap_required` was returned.
     - The entry points were read, and the relevant domain context was selected and
       read.
-    - One valid result matching \(contextBrief.render.apply(mode)) was returned.
+    - One valid result\(contextBriefClause.render.apply(mode)) was returned.
     """
 
 local structuredContextSkill = new model.StructuredWorkflowDocument {
@@ -563,11 +627,7 @@ local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
     Use the document format defined in:
 
     \(planTemplate.render.apply(mode))
-
-    Return a result matching:
-
-    \(authoringContract.render.apply(mode))
-
+    \(authoringContractBlock.render.apply(mode))
     The invoking workflow renders that result as the summary defined in:
 
     \(planSummary.render.apply(mode))
@@ -819,7 +879,7 @@ local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
     - One plan target was resolved, or resolution failed and was reported.
     - The plan file was written, or no file was written because the result is
       `needs_clarification` or `blocked`.
-    - One valid result matching \(authoringContract.render.apply(mode)) was returned.
+    - One valid result\(authoringContractClause.render.apply(mode)) was returned.
     """
 
 local structuredAuthoringSkill = new model.StructuredWorkflowDocument {

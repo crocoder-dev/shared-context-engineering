@@ -12,19 +12,17 @@ compatibility: claude
 Own this workflow from input parsing through its terminal user-visible response.
 Execute the phases below directly and in order. Phase statuses are internal state,
 not inter-skill handoffs. Do not invoke another SCE skill, sibling package, or
-workflow command.
+workflow command. Follow the canonical workflow's steps, gates, and stops exactly
+as written: never invent, skip, reorder, or merge a step.
 
 ## User-visible output
 
 Use `references/output.md` for every gate and terminal response. Render no raw
 internal state. The reference contains only human-visible Markdown layouts.
+User-visible output is limited to those layouts: never invent a layout, and never
+wrap one in an added preamble, commentary, summary, or extra section.
 
 ## Canonical workflow
-
-
-description: "Run the **Validation phase** -> the **Plan context synchronization phase** to finish an SCE plan"
-argument-hint: "<plan-name>"
-
 
 SCE VALIDATE `$ARGUMENTS`
 
@@ -64,7 +62,6 @@ the **Validation phase** exclusively owns:
 
 Do not duplicate any of it. Do not write the Validation Report yourself.
 
-The skill must return a Markdown result matching its validation-result contract.
 Branch on the report's `Status:`.
 
 `blocked` -> Do not run context synchronization. Print the blocked Markdown
@@ -104,19 +101,9 @@ Do not restate, summarize, or reconstruct any part of the validation result.
 Branch on the synchronization result.
 
 `blocked` -> Validation itself succeeded and is already recorded in the plan.
-Present:
-
-- That plan `{plan-path}` passed final validation and its Validation Report is
-  written.
-- The context contradiction or synchronization failure.
-- Any context edits the report says were preserved.
-- The action required to resolve the problem.
-- The retry condition stated by the report.
-
-State that durable context is now out of date relative to the validated
-implementation, and that plan context synchronization must be resolved before
-treating the plan as fully closed. Nothing records the skipped synchronization,
-so it is lost once this session ends.
+Render the **Context synchronization blocked** layout from
+`references/output.md`. Nothing records the skipped synchronization, so it is
+lost once this session ends.
 
 Stop.
 
@@ -127,18 +114,7 @@ the **Plan context synchronization phase** returned. Continue to the next step.
 
 Return exactly one completion block. Do not start another workflow.
 
-```
-
--------------------------------------
-
-# Plan {plan-name} validated.
-
-All implementation tasks were already complete.
-Final validation passed.
-Durable context is synchronized.
-
-Validation report: {plan-path}
-```
+Render the **Completion** layout from `references/output.md`.
 
 When the synchronization status was `no_context_change`, keep the same
 completion block. "Synchronized" here means the final context pass finished
@@ -169,19 +145,6 @@ Stop.
 ## Embedded phase behavior
 
 ## Internal phase: Validation phase
-
-
-name: Validation phase
-description: >
-  Internal SCE workflow skill that runs final plan validation after all
-  implementation tasks are complete: full validation commands, acceptance
-  criteria checks, temporary scaffolding cleanup, a Validation Report written
-  into the plan, and one internal state (validated, failed, or blocked).
-  Failing checks are reported only; do not modify tests or product code to make
-  validation pass. A failed result is a session handoff that ends by retrying
-  /validate. Use from /validate. Do not synchronize durable context, implement
-  remaining plan tasks, create commits, or select another task.
-
 
 # SCE Validation
 
@@ -361,16 +324,6 @@ The skill is complete after:
   returned.
 
 ## Internal phase: Plan context synchronization phase
-
-
-name: Plan context synchronization phase
-description: >
-  Internal SCE workflow skill that accepts a successful Status: validated
-  internal state from Validation phase, reconciles the finished plan with durable
-  repository context, and returns a Markdown synchronization report. Run only
-  after final validation has passed. Do not implement application code, change
-  plan validation state, rerun full validation, or select another task.
-
 
 # SCE Plan Context Sync
 
@@ -679,8 +632,8 @@ The Markdown section the **Validation phase** appends to the plan file when retu
 `validated` or `failed`. Write it at the end of `context/plans/{plan_name}.md`
 under exactly one `## Validation Report` heading.
 
-This is plan-file content. The skill's return value to the workflow is defined
-separately in `validation-result.md`.
+This is plan-file content. The result returned to the workflow is defined
+separately in `references/output.md`.
 
 Do not author this section while planning. Only `/validate` through
 the **Validation phase** writes it.

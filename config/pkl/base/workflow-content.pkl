@@ -21,15 +21,13 @@ class SemanticReference {
     if (mode == "composite") compositeText else packageText
 }
 
-/// Frontmatter is modeled separately so composite rendering can embed its
-/// fields without parsing or stripping Markdown markers.
+/// Frontmatter is modeled separately so composite rendering can drop it without
+/// parsing or stripping Markdown markers.
 class WorkflowFrontmatter {
   hidden lines: (WorkflowRenderMode) -> Listing<String>
 
   hidden render = (mode: WorkflowRenderMode, extraLines: String) ->
     "---\n" + lines.apply(mode).join("\n") + "\n" + extraLines + "---\n"
-
-  hidden renderEmbedded = (mode: WorkflowRenderMode) -> "\n" + lines.apply(mode).join("\n") + "\n\n"
 }
 
 /// A body renderer receives semantic render mode before Markdown assembly.
@@ -45,7 +43,7 @@ class StructuredWorkflowDocument {
   hidden render = (mode: WorkflowRenderMode, extraFrontmatterLines: String) -> new WorkflowDocument {
     path = outer.path
     text = if (mode == "composite")
-      frontmatter.renderEmbedded.apply(mode) + "\n" + body.render.apply(mode)
+      body.render.apply(mode)
     else
       frontmatter.render.apply(mode, extraFrontmatterLines) + "\n" + body.render.apply(mode)
   }

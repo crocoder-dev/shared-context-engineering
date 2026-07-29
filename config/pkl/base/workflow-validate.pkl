@@ -6,6 +6,30 @@ local validationName = model.semanticReference.apply("sce-validation", "Validati
 local planContextSync = model.semanticReference.apply("`sce-plan-context-sync`", "the **Plan context synchronization phase**")
 local validationResult = model.semanticReference.apply("`references/validation-result.md`", "`references/output.md`")
 local validationReport = model.semanticReference.apply("`references/validation-report.md`", "the **Plan-file validation report** section embedded in this file")
+/// The paragraph that separates the plan-file report from the returned result.
+/// Both spellings wrap at the same width as the surrounding body text.
+local reportVersusResult = model.semanticReference.apply(
+  """
+  The plan-file `## Validation Report` section is written separately using
+  `references/validation-report.md`. This file is the skill's return value to the
+  invoking workflow.
+  """,
+  """
+  The plan-file `## Validation Report` section is written separately using the
+  **Plan-file validation report** section embedded in this file. This layout
+  carries the validation phase's result into the workflow's own branches.
+  """
+)
+/// The validation handoff sentence. A package owns
+/// `references/validation-result.md`, so naming that contract resolves there. A
+/// composite workflow has no such file, so only the branch instruction survives.
+local validationResultHandoff = model.semanticReference.apply(
+  """
+  The skill must return a Markdown result matching its validation-result contract.
+  Branch on the report's `Status:`.
+  """,
+  "Branch on the report's `Status:`."
+)
 local invoke = model.semanticReference.apply("Invoke", "Run")
 local invokeLower = model.semanticReference.apply("invoke", "run")
 local invokedSkills = model.semanticReference.apply("invoked skills", "embedded phases")
@@ -20,6 +44,54 @@ local returnUpper = model.semanticReference.apply("Return", "Set internal status
 local returnYamlResult = model.semanticReference.apply("Return a YAML result", "Return a internal state")
 local yaml = model.semanticReference.apply("YAML", "internal state")
 local invokePlanContextSync = model.semanticReference.apply("Invoke plan context sync", "Run plan context synchronization")
+
+/// User-visible layouts. Package mode states each layout at its branch, because a
+/// command file has no sibling `references/output.md`. Composite mode cites the
+/// `output.md` section that owns the layout, and keeps only the field mapping,
+/// branch conditions, and prohibitions that travelled with it.
+local syncBlockedBranch = model.semanticReference.apply(
+  """
+  `blocked` -> Validation itself succeeded and is already recorded in the plan.
+  Present:
+
+  - That plan `{plan-path}` passed final validation and its Validation Report is
+    written.
+  - The context contradiction or synchronization failure.
+  - Any context edits the report says were preserved.
+  - The action required to resolve the problem.
+  - The retry condition stated by the report.
+
+  State that durable context is now out of date relative to the validated
+  implementation, and that plan context synchronization must be resolved before
+  treating the plan as fully closed. Nothing records the skipped synchronization,
+  so it is lost once this session ends.
+  """,
+  """
+  `blocked` -> Validation itself succeeded and is already recorded in the plan.
+  Render the **Context synchronization blocked** layout from
+  `references/output.md`. Nothing records the skipped synchronization, so it is
+  lost once this session ends.
+  """
+)
+local completionLayout = model.semanticReference.apply(
+  """
+  ```
+
+  -------------------------------------
+
+  # Plan {plan-name} validated.
+
+  All implementation tasks were already complete.
+  Final validation passed.
+  Durable context is synchronized.
+
+  Validation report: {plan-path}
+  ```
+  """,
+  """
+  Render the **Completion** layout from `references/output.md`.
+  """
+)
 
 /// Canonical `/validate` workflow command and its self-contained skill
 /// packages. Text mirrors the project-root `.pi/` behavioral baseline; target
@@ -74,8 +146,7 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     
     Do not duplicate any of it. Do not write the Validation Report yourself.
     
-    The skill must return a Markdown result matching its validation-result contract.
-    Branch on the report's `Status:`.
+    \(validationResultHandoff.render.apply(mode))
     
     `blocked` -> Do not \(invokeLower.render.apply(mode)) context synchronization. Print the blocked Markdown
     report as returned. Do not rephrase it into a different layout. Stop.
@@ -113,20 +184,7 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     
     Branch on the synchronization result.
     
-    `blocked` -> Validation itself succeeded and is already recorded in the plan.
-    Present:
-    
-    - That plan `{plan-path}` passed final validation and its Validation Report is
-      written.
-    - The context contradiction or synchronization failure.
-    - Any context edits the report says were preserved.
-    - The action required to resolve the problem.
-    - The retry condition stated by the report.
-    
-    State that durable context is now out of date relative to the validated
-    implementation, and that plan context synchronization must be resolved before
-    treating the plan as fully closed. Nothing records the skipped synchronization,
-    so it is lost once this session ends.
+    \(syncBlockedBranch.render.apply(mode))
     
     Stop.
     
@@ -136,20 +194,9 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     ### 3. Report completion
     
     Return exactly one completion block. Do not start another workflow.
-    
-    ```
-    
-    -------------------------------------
-    
-    # Plan {plan-name} validated.
-    
-    All implementation tasks were already complete.
-    Final validation passed.
-    Durable context is synchronized.
-    
-    Validation report: {plan-path}
-    ```
-    
+
+    \(completionLayout.render.apply(mode))
+
     When the synchronization status was `no_context_change`, keep the same
     completion block. "Synchronized" here means the final context pass finished
     successfully, including the case where no edit was warranted.
@@ -401,8 +448,8 @@ local renderValidationReport = (mode: model.WorkflowRenderMode) -> """
     `validated` or `failed`. Write it at the end of `context/plans/{plan_name}.md`
     under exactly one `## Validation Report` heading.
     
-    This is plan-file content. The skill's return value to the workflow is defined
-    separately in `validation-result.md`.
+    This is plan-file content. The result returned to the workflow is defined
+    separately in \(validationResult.render.apply(mode)).
     
     Do not author this section while planning. Only `/validate` through
     \(validation.render.apply(mode)) writes it.
@@ -495,9 +542,7 @@ local renderValidationResult = (mode: model.WorkflowRenderMode) -> """
     - `failed`
     - `blocked`
     
-    The plan-file `## Validation Report` section is written separately using
-    `validation-report.md`. This file is the skill's return value to the invoking
-    workflow.
+    \(reportVersusResult.render.apply(mode))
     
     ## Validated variant
     

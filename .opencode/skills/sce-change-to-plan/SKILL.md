@@ -12,19 +12,17 @@ compatibility: opencode
 Own this workflow from input parsing through its terminal user-visible response.
 Execute the phases below directly and in order. Phase statuses are internal state,
 not inter-skill handoffs. Do not invoke another SCE skill, sibling package, or
-workflow command.
+workflow command. Follow the canonical workflow's steps, gates, and stops exactly
+as written: never invent, skip, reorder, or merge a step.
 
 ## User-visible output
 
 Use `references/output.md` for every gate and terminal response. Render no raw
 internal state. The reference contains only human-visible Markdown layouts.
+User-visible output is limited to those layouts: never invent a layout, and never
+wrap one in an added preamble, commentary, summary, or extra section.
 
 ## Canonical workflow
-
-
-description: "Run the **Context load phase** -> the **Plan authoring phase** to turn a change request into a scoped SCE plan"
-argument-hint: "<describe changes you want to introduce>"
-
 
 SCE CHANGE TO PLAN `$ARGUMENTS`
 
@@ -49,22 +47,9 @@ Run the **Context load phase** with the change request as the focus.
 
 `context/` is durable AI-first memory describing current state. Load it before planning so the plan starts from recorded truth. Where context and code disagree, the code is the source of truth.
 
-The skill must return a result matching its context brief contract.
-
 Branch on `status`:
 
-`bootstrap_required` -> `context/` does not exist. Do not create it, and do not plan without it. Return:
-
-```
-
--------------------------------------
-
-# This repository has no durable context.
-
-Bootstrap it, then continue in this session:
-
-`sce setup --bootstrap-context`
-```
+`bootstrap_required` -> `context/` does not exist. Do not create it, and do not plan without it. Render the **Missing context bootstrap gate** layout from `references/output.md`.
 
 Wait for the user. When they report the command ran, run the **Context load phase** again and continue in this session. Do not restart planning, and do not ask for the change request again.
 
@@ -88,39 +73,15 @@ the **Plan authoring phase** exclusively owns:
 
 Do not duplicate any of it. Do not write or edit the plan file yourself.
 
-The skill must return a result matching its authoring contract.
-
 Branch on `status`:
 
-`needs_clarification` -> No plan was written. Present the result as prose. Do not print the raw result. Return:
-
-```
-
--------------------------------------
-
-# Clarification needed.
-
-No plan was written.
-
-Answer each question below.  
-
-## {question-id} · {category}
-
-{question}
-
-Why this blocks planning: {why_blocking}
-```
+`needs_clarification` -> No plan was written. Present the result as prose. Do not print the raw result. Render the **Clarification gate** layout from `references/output.md`.
 
 Render one `##` block per entry in `questions`, in result order. Use the question's `id`, `category`, `question`, and `why_blocking` fields exactly as returned.
 
 Do not answer the questions. Do not assume answers. Do not write a plan. Stop and wait.
 
-`blocked` -> No plan was written. Present the result as prose. Do not print the raw result. Present:
-
-- Each issue in `issues`: its problem, its impact, and the decision it requires.
-- When `candidates` is present, the candidate plan paths, and that naming the intended `{candidate-path}` in the change request resolves the ambiguity.
-
-Stop.
+`blocked` -> No plan was written. Render the **Blocked** layout from `references/output.md`, drawing its issues from `issues` and, when `candidates` is present, its candidate paths from `candidates`. Do not print the raw result. Stop.
 
 `plan_ready` -> Continue to the next step.
 
@@ -136,24 +97,7 @@ Write `task` rather than `tasks` when `total_tasks` is 1.
 
 Offer revision, but do not gate the handoff on it, do not manufacture concerns, and do not ask the user to confirm the plan. When the summary lists open questions, leave them in the summary only — do not restate them in the continuation, do not answer them, and do not block the handoff on them. Blocking questions belong in `needs_clarification` (step 2), not here.
 
-Return:
-
-```
-
--------------------------------------
-
-# Plan {plan-name} is ready.
-
-{total-tasks} tasks planned.
-
-This plan is a draft. State a correction and it will be updated.
-
-Next up:
-
-{next-task-id} — {next-task-title}
-
-`/next-task {plan-path} {next-task-id}`
-```
+Render the **Ready continuation** layout from `references/output.md`.
 
 Then stop and wait. Do not implement, and do not run the handoff yourself.
 
@@ -201,16 +145,6 @@ Stop.
 
 ## Internal phase: Context load phase
 
-
-name: Context load phase
-description: >
-  Internal SCE workflow skill that loads the durable context in `context/`
-  relevant to one focus, reports gaps and context-versus-code drift, and returns
-  one internal state: loaded or bootstrap_required. Use from /change-to-plan and
-  any workflow that needs durable context before acting. Do not modify context,
-  repair drift, plan, or implement.
-
-
 # SCE Context Load
 
 ## Purpose
@@ -229,10 +163,6 @@ This skill owns:
 - Reporting focus areas with no durable context.
 - Reporting context that contradicts the code.
 - Recording one structured context brief.
-
-Return a result matching:
-
-the internal context-load state described by this workflow
 
 ## Input
 
@@ -328,19 +258,9 @@ The skill is complete after:
 - The context root was confirmed, or `bootstrap_required` was returned.
 - The entry points were read, and the relevant domain context was selected and
   read.
-- One valid result matching the internal context-load state described by this workflow was returned.
+- One valid result was returned.
 
 ## Internal phase: Plan authoring phase
-
-
-name: Plan authoring phase
-description: >
-  Internal SCE workflow skill that turns one change request into a scoped plan
-  in `context/plans/`, sliced into atomic implementation tasks, and returns one
-  internal state: plan_ready, needs_clarification, or blocked. Use from
-  /change-to-plan. Do not implement plan tasks, request implementation approval,
-  synchronize context, or run final validation.
-
 
 # SCE Plan Authoring
 
@@ -364,10 +284,6 @@ This skill owns:
 Use the document format defined in:
 
 the **Plan template** section embedded in this file
-
-Return a result matching:
-
-the internal authoring state described by this workflow
 
 The invoking workflow renders that result as the summary defined in:
 
@@ -620,7 +536,7 @@ The skill is complete after:
 - One plan target was resolved, or resolution failed and was reported.
 - The plan file was written, or no file was written because the result is
   `needs_clarification` or `blocked`.
-- One valid result matching the internal authoring state described by this workflow was returned.
+- One valid result was returned.
 
 ## Internal persisted-document format: Plan template
 
