@@ -7,15 +7,16 @@ Behavior contract for the generated `/commit` workflow.
 Canonical behavior is authored in `config/pkl/base/workflow-commit.pkl` from the
 project-root `.pi/` baseline and generated for OpenCode, Claude, and Pi.
 
-- OpenCode emits the canonical command plus the `sce-atomic-commit` phase
-  package, its YAML result contract, and commit-message style reference.
-- Claude and Pi emit one thin command invoking `sce-commit`. The composite package
-  contains only `SKILL.md`, which owns mode routing, staged-diff analysis,
-  proposal/commit behavior, and internal statuses, plus `references/output.md`,
-  which owns all human-visible prompts and result layouts.
+Every target emits one thin command (Pi: prompt) invoking `sce-commit`. The
+composite package contains only `SKILL.md`, which owns mode routing, staged-diff
+analysis, proposal/commit behavior, and internal statuses, plus
+`references/output.md`, which owns all human-visible prompts and result layouts.
+The commit-message style reference is composed into those two files rather than
+emitted separately.
 
-Claude's package invokes no `sce-atomic-commit` sibling skill; it embeds the
-canonical phase behavior directly.
+No target emits an `sce-atomic-commit` package or invokes it as a sibling skill;
+each `sce-commit` package embeds the canonical phase behavior directly.
+`sce-atomic-commit` names the canonical authoring module and that internal phase.
 
 ## Modes
 
@@ -36,13 +37,13 @@ flowchart TD
     B -- yes --> D[Bypass mode]
 
     C --> C1[Stop and prompt for staging confirmation]
-    C1 --> C2[sce-atomic-commit mode: regular]
+    C1 --> C2[Phase: atomic commit, mode: regular]
     C2 --> C3[Present proposals + split guidance]
     C3 --> C4([Stop — never commits])
 
     D --> D1{git diff --cached<br/>non-empty?}
     D1 -- no --> D2([Stop: No staged changes.<br/>Stage changes before commit.])
-    D1 -- yes --> D3[sce-atomic-commit mode: bypass]
+    D1 -- yes --> D3[Phase: atomic commit, mode: bypass]
     D3 --> D4[Exactly one git commit]
     D4 --> D5([Report hash, or report failure<br/>with no retry or amend])
 ```
@@ -109,7 +110,7 @@ staged explicitly; bypass mode omits the citation instead of stopping.
 
 ## Result contract
 
-OpenCode's phase skill returns exactly one YAML result:
+The canonical analysis phase reaches exactly one of three results:
 
 - `proposal` — regular mode, one or more messages, optional split rationale and
   staged-scope classification.
@@ -119,9 +120,9 @@ OpenCode's phase skill returns exactly one YAML result:
   `no_staged_changes`, `plan_citation_ambiguity`, `unreadable_diff`, and
   `contradictory_context`.
 
-Claude keeps the equivalent status as internal `sce-commit` state and renders
-only the applicable layout from `references/output.md`. Every staged file still
-belongs to exactly one commit message. The analysis phase never reports a hash;
+Every target keeps that status as internal `sce-commit` state and renders only
+the applicable layout from `references/output.md`; no result is serialized
+between packages. Every staged file still belongs to exactly one commit message. The analysis phase never reports a hash;
 only successful bypass-mode `git commit` produces one.
 
 ## Related context

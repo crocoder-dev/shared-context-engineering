@@ -68,8 +68,8 @@
 
 ## Thin command orchestration
 
-- Keep OpenCode command bodies thin when phase skills define detailed contracts: `/change-to-plan` sequences context load then plan authoring; `/next-task` sequences review, execution, and task context sync; `/validate` sequences validation then validated-only plan context sync; `/commit` delegates staged-diff analysis to atomic commit.
-- Keep Claude commands and Pi prompts thinner still: parse nothing and invoke exactly one workflow-level skill. The composite skill owns input parsing, every phase, user waits, writes, verification, synchronization, and continuation rendering.
+- Keep every target's commands and Pi prompts equally thin: parse nothing and invoke exactly one workflow-level skill. The composite skill owns input parsing, every phase, user waits, writes, verification, synchronization, and continuation rendering. No command sequences phases.
+- Keep the canonical phase sequence in the workflow modules, not in command bodies: `/change-to-plan` runs context load then plan authoring; `/next-task` runs review, execution, and task context sync; `/validate` runs validation then validated-only plan context sync; `/commit` runs staged-diff analysis and message authoring. Each sequence executes inside its one composed skill.
 - Preserve mandatory gates and authoritative internal state while removing duplicated behavior from agents, commands, or sibling packages.
 
 ## Multi-file generation entrypoint

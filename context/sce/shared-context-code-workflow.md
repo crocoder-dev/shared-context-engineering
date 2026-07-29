@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The implementation lifecycle executes at most one reviewed task per `/next-task` invocation, synchronizes durable context only after successful task execution, and runs final plan validation separately through `/validate`. The generated OpenCode Code agent only routes to these commands. OpenCode retains phase-skill sequencing; Claude and Pi embed each complete lifecycle in `sce-next-task` or `sce-validate`.
+The implementation lifecycle executes at most one reviewed task per `/next-task` invocation, synchronizes durable context only after successful task execution, and runs final plan validation separately through `/validate`. The generated OpenCode Code agent only routes to these commands. Every target embeds each complete lifecycle in `sce-next-task` or `sce-validate`; the phases below are canonical authoring source and internal phases of those skills, not separate generated packages.
 
 ## `/next-task` entrypoint
 
@@ -14,6 +14,8 @@ The implementation lifecycle executes at most one reviewed task per `/next-task`
 - Unknown positional tokens are rejected.
 
 ## `/next-task` phase ownership
+
+Phase names below identify canonical modules in `config/pkl/base/workflow-next-task.pkl` and `workflow-context-sync.pkl`, and the internal phases they compose into.
 
 1. `sce-plan-review`
    - Resolves exactly one plan and at most one task.
@@ -36,7 +38,7 @@ The implementation lifecycle executes at most one reviewed task per `/next-task`
    - Emits exactly one next-task command for the first unchecked task in plan order, or a `/validate` command when all implementation tasks are complete.
    - Never executes the continuation in the same invocation.
 
-A context-sync blocker does not undo successful implementation: the task remains complete in the plan, but the workflow stops because durable context is stale. On Claude and Pi, review, approval, execution, evidence recording, synchronization, and continuation are internal phases of one `sce-next-task` invocation rather than sibling skill calls.
+A context-sync blocker does not undo successful implementation: the task remains complete in the plan, but the workflow stops because durable context is stale. On every target, review, approval, execution, evidence recording, synchronization, and continuation are internal phases of one `sce-next-task` invocation rather than sibling skill calls.
 
 ## `/validate` entrypoint
 
@@ -46,32 +48,32 @@ A context-sync blocker does not undo successful implementation: the task remains
 2. Failed or blocked validation ends the session without repair edits; retry uses `/validate {plan-path}`.
 3. `sce-plan-context-sync` runs only from a successful `Status: validated` handoff and reconciles the completed plan with durable repository context.
 
-On Claude and Pi, those validation and plan-sync phases execute inside one `sce-validate` skill; failed and blocked statuses stop before synchronization exactly as in the canonical flow. Final validation never runs from an individual implementation task.
+On every target, those validation and plan-sync phases execute inside one `sce-validate` skill; failed and blocked statuses stop before synchronization exactly as in the canonical flow. Final validation never runs from an individual implementation task.
 
 ## Flow
 
 ```mermaid
 flowchart TD
-    A["/next-task {plan} {task?} {approved?}"] --> B["sce-plan-review"]
+    A["/next-task {plan} {task?} {approved?}"] --> B["Phase: plan review"]
     B --> C{"ready?"}
     C -- "No" --> D["Report blocked or plan_complete"]
-    C -- "Yes" --> E["sce-task-execution gate"]
+    C -- "Yes" --> E["Phase: task execution gate"]
     E --> F{"complete?"}
     F -- "No" --> G["Report declined, blocked, or incomplete"]
-    F -- "Yes" --> H["sce-task-context-sync"]
+    F -- "Yes" --> H["Phase: task context sync"]
     H --> I{"More tasks?"}
     I -- "Yes" --> J["Emit next /next-task command"]
     I -- "No" --> K["Emit /validate command"]
-    K --> L["sce-validation"]
+    K --> L["Phase: validation"]
     L --> M{"validated?"}
-    M -- "Yes" --> N["sce-plan-context-sync"]
+    M -- "Yes" --> N["Phase: plan context sync"]
     M -- "No" --> O["Stop and retry /validate later"]
 ```
 
 ## Target ownership
 
-- OpenCode: command sequencing plus the canonical review, execution, validation, and context-sync phase packages.
-- Claude and Pi: thin commands invoking `sce-next-task` or `sce-validate`; each package contains only `SKILL.md` and `references/output.md`.
+- OpenCode, Claude, and Pi: thin commands (Pi: prompts) invoking `sce-next-task` or `sce-validate`; each package contains only `SKILL.md` and `references/output.md`.
+- OpenCode adds `entry-skill` and a one-entry `skills` list naming that skill, and its Code routing agent allows exactly `sce-next-task`, `sce-validate`, and `sce-commit`.
 
 ## Canonical sources
 

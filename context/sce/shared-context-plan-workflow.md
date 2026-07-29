@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`/change-to-plan` turns one change request into one scoped implementation plan under `context/plans/`. The generated OpenCode Plan agent is only a routing surface. OpenCode behavior is owned by the command and two canonical phase skills; Claude and Pi render the same behavior into the single `sce-change-to-plan` workflow skill.
+`/change-to-plan` turns one change request into one scoped implementation plan under `context/plans/`. The generated OpenCode Plan agent is only a routing surface. Every target renders the same behavior into the single `sce-change-to-plan` workflow skill; the two phases below are canonical authoring source and internal phases of that skill, not separate generated packages.
 
 ## Command entrypoint
 
@@ -11,6 +11,8 @@
 The request must be non-empty. The workflow does not accept approval or execution flags.
 
 ## Phase ownership
+
+Phase names below identify canonical modules in `config/pkl/base/workflow-change-to-plan.pkl` and the internal phases they compose into.
 
 1. `sce-context-load`
    - Confirms whether `context/` exists.
@@ -23,7 +25,7 @@ The request must be non-empty. The workflow does not accept approval or executio
    - Creates or updates one plan with stable task IDs, explicit scope, dependencies, done checks, and verification notes.
    - Returns `plan_ready`, `needs_clarification`, or `blocked`.
 
-OpenCode forwards each phase result as the authoritative handoff rather than reconstructing it. Claude and Pi keep the equivalent status and data as internal state inside `sce-change-to-plan`; no sibling skill handoff exists.
+Every target keeps those statuses and their data as internal state inside `sce-change-to-plan` and continues immediately across the phase boundary. No sibling skill handoff and no serialized phase-result contract exists on any target.
 
 ## Bootstrap boundary
 
@@ -31,9 +33,8 @@ When context loading returns `bootstrap_required`, the workflow stops without cr
 
 `sce setup --bootstrap-context`
 
-After the user reports that bootstrap completed, the waiting workflow invokes
-`sce-context-load` again and continues with the original request in the same
-session.
+After the user reports that bootstrap completed, the waiting workflow re-runs the
+context-load phase and continues with the original request in the same session.
 
 ## Planning boundary
 
@@ -47,10 +48,10 @@ session.
 
 ```mermaid
 flowchart TD
-    A["/change-to-plan {request}"] --> B["sce-context-load"]
+    A["/change-to-plan {request}"] --> B["Phase: context load"]
     B --> C{"Context available?"}
     C -- "No" --> D["Stop: sce setup --bootstrap-context"]
-    C -- "Yes" --> E["sce-plan-authoring"]
+    C -- "Yes" --> E["Phase: plan authoring"]
     E --> F{"Authoring result"}
     F -- "needs_clarification" --> G["Ask only the reported questions"]
     F -- "blocked" --> H["Report blocker and required action"]
@@ -59,11 +60,11 @@ flowchart TD
 
 ## Target ownership
 
-- OpenCode: command sequencing plus `sce-context-load` and `sce-plan-authoring` packages.
-- Claude and Pi: one thin command invoking `sce-change-to-plan`; package files are `SKILL.md` and `references/output.md`.
+- OpenCode, Claude, and Pi: one thin command (Pi: prompt) invoking `sce-change-to-plan`; package files are `SKILL.md` and `references/output.md`.
+- OpenCode adds `entry-skill` and a one-entry `skills` list naming that skill, and its Plan routing agent allows exactly `sce-change-to-plan`.
 
 ## Canonical sources
 
 - `config/pkl/base/workflow-change-to-plan.pkl`
-- Workflow composition: `config/pkl/renderers/workflow-composite.pkl` (shared; Claude and Pi consume it)
+- Workflow composition: `config/pkl/renderers/workflow-composite.pkl` (shared by all three targets)
 - Behavioral baseline: `.pi/prompts/change-to-plan.md`
