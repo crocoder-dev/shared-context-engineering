@@ -6,8 +6,6 @@ local planReviewName = model.semanticReference.apply("sce-plan-review", "Plan re
 local taskExecution = model.semanticReference.apply("`sce-task-execution`", "the **Task execution phase**")
 local taskExecutionName = model.semanticReference.apply("sce-task-execution", "Task execution phase")
 local taskContextSync = model.semanticReference.apply("`sce-task-context-sync`", "the **Task context synchronization phase**")
-local readinessContract = model.semanticReference.apply("`references/readiness-contract.yaml`", "the internal readiness state described by this workflow")
-local executionContract = model.semanticReference.apply("`references/execution-contract.yaml`", "the internal execution state described by this workflow")
 local implementationGate = model.semanticReference.apply("`references/implementation-gate.md`", "`references/output.md`")
 local invoke = model.semanticReference.apply("Invoke", "Run")
 local invokeLower = model.semanticReference.apply("invoke", "run")
@@ -25,6 +23,198 @@ local returnExactlyOneYamlDocument = model.semanticReference.apply("return exact
 local returnOnlyYamlDocument = model.semanticReference.apply("Return only the YAML document", "Record only the internal state")
 local returningReadinessResult = model.semanticReference.apply("Returning one structured readiness result", "Recording one structured readiness result")
 local invokeTaskExecution = model.semanticReference.apply("Invoke task execution", "Run task execution")
+
+/// Contract references. A package owns `references/*-contract.yaml`, so these
+/// sentences resolve there. A composite workflow has no such file and describes
+/// its internal states inline, so the reference would resolve to nothing and is
+/// dropped. Each block-shaped reference owns its surrounding blank lines.
+local readinessHandoffSentence = model.semanticReference.apply(
+  """
+
+  The skill must return a result matching its readiness contract.
+
+  """,
+  ""
+)
+local readinessContractBlock = model.semanticReference.apply(
+  """
+
+  Return a result matching:
+
+  `references/readiness-contract.yaml`
+
+  """,
+  ""
+)
+local readinessCompletionBullet = model.semanticReference.apply(
+  """
+  - One valid readiness result matching `references/readiness-contract.yaml` was
+    returned.
+  """,
+  "- One valid readiness result was returned."
+)
+local executionContractBlock = model.semanticReference.apply(
+  """
+
+  Return a final result matching:
+
+  `references/execution-contract.yaml`
+
+  """,
+  ""
+)
+local blockerCategorySentence = model.semanticReference.apply(
+  """
+
+  Use a blocker category defined by `references/execution-contract.yaml`.
+
+  """,
+  ""
+)
+local executionContractClause = model.semanticReference.apply(" matching `references/execution-contract.yaml`", "")
+local executionCompletionBullet = model.semanticReference.apply(
+  """
+  - One valid terminal YAML result matching `references/execution-contract.yaml`
+    was returned.
+  """,
+  "- One valid terminal internal state was returned."
+)
+
+/// User-visible layouts. Package mode states each layout at its branch, because a
+/// command file has no sibling `references/output.md`. Composite mode cites the
+/// `output.md` section that owns the layout, and keeps only the field mapping,
+/// branch conditions, and prohibitions that travelled with it.
+local reviewBlockedBranch = model.semanticReference.apply(
+  """
+  `blocked` -> Do not invoke implementation. Present the result as prose. Do not print the raw result. Stop.
+
+  When `candidates` is present, the plan could not be resolved. Present:
+
+  - The problem reported by the review.
+  - The candidate plan paths.
+  - `/next-task {candidate-path}` for the intended plan.
+
+  Otherwise one plan and task were resolved. Present:
+
+  - The task ID and title.
+  - Each issue in `issues`: its problem, its impact, and the decision it requires.
+  - When `executable_tasks_remaining` is true: other tasks remain executable, and `/next-task {plan-path} {task-id}` selects one.
+  - When `executable_tasks_remaining` is false: no task in the plan can proceed until the plan is updated.
+  """,
+  """
+  `blocked` -> Do not run implementation. Render the **Review blocked** layout from `references/output.md`. When `candidates` is present the plan could not be resolved, and each entry is a candidate path for `/next-task {candidate-path}`. `executable_tasks_remaining` true means another task remains executable and `/next-task {plan-path} {task-id}` selects one; false means no task in the plan can proceed until the plan is updated. Do not print the raw result. Stop.
+  """
+)
+local planCompleteBranch = model.semanticReference.apply(
+  """
+  `plan_complete` -> Return:
+
+  ```
+
+  -------------------------------------
+
+  # Implementation tasks are complete.
+
+  Run the final validation:
+
+  `/validate {plan-path}`
+  ```
+
+  Stop.
+  """,
+  """
+  `plan_complete` -> Render the **Plan already complete** layout from `references/output.md`. Stop.
+  """
+)
+local declinedBranch = model.semanticReference.apply(
+  """
+  `declined` -> Present "You have declined to proceed with this task". Do not invoke context synchronization. Stop.
+  """,
+  """
+  `declined` -> Render the **Declined** layout from `references/output.md`. Do not run context synchronization. Stop.
+  """
+)
+local executionBlockedBranch = model.semanticReference.apply(
+  """
+  `blocked` -> Present:
+
+  - The blocker.
+  - Work completed before the blocker.
+  - The decision or action required.
+
+  Do not invoke context synchronization. Stop.
+
+  `incomplete` -> Present:
+
+  - Work completed.
+  - Verification evidence.
+  - Remaining work.
+  - The reason the task is incomplete.
+
+  Do not invoke context synchronization. Do not select another task. Stop.
+  """,
+  """
+  `blocked` -> Render the **Execution blocked or incomplete** layout from `references/output.md`. Do not run context synchronization. Stop.
+
+  `incomplete` -> Render the same **Execution blocked or incomplete** layout. Do not run context synchronization. Do not select another task. Stop.
+  """
+)
+local syncBlockedBranch = model.semanticReference.apply(
+  """
+  `blocked` -> The task itself succeeded and is already marked complete in the plan. Present:
+
+  - That task {completed-task-id} was implemented, verified, and recorded in the plan.
+  - The context contradiction or synchronization failure.
+  - Any context edits the report says were preserved.
+  - The action required to resolve the problem.
+  - The retry condition stated by the report.
+
+  State that durable context is now out of date, and that synchronization must be resolved before continuing the plan. Nothing records the skipped synchronization, so it is lost once this session ends.
+  """,
+  """
+  `blocked` -> The task itself succeeded and is already marked complete in the plan. Render the **Context synchronization blocked** layout from `references/output.md`. Nothing records the skipped synchronization, so it is lost once this session ends.
+  """
+)
+local continuationLayouts = model.semanticReference.apply(
+  """
+  Return:
+
+  ```
+
+  -------------------------------------
+
+  # Task {completed-task-id} completed.
+
+  {completed-tasks} of {total-tasks} tasks complete.
+
+  Next up:
+
+  {next-task-id} — {next-task-title}
+
+  `/next-task {plan-path} {next-task-id}`
+  ```
+
+  If all tasks are completed return:
+
+  ```
+
+  -------------------------------------
+
+  # Task {completed-task-id} completed.
+
+  All tasks are complete.
+
+  Run the final validation:
+
+  `/validate {plan-path}`
+  ```
+  """,
+  """
+  Render the **More tasks remain** layout from `references/output.md`.
+
+  If all tasks are completed, render the **All tasks complete** layout instead.
+  """
+)
 
 /// Canonical `/next-task` workflow command and its self-contained skill
 /// packages. Text mirrors the project-root `.pi/` behavioral baseline; target
@@ -77,41 +267,13 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     \(invoke.render.apply(mode)) \(planReview.render.apply(mode)) with the parsed `plan-name-or-path` and, when present, the parsed `task-id`.
     
     Do not pass the `auto-approve` token to \(planReview.render.apply(mode)).
-    
-    The skill must return a result matching its readiness contract.
-    
+    \(readinessHandoffSentence.render.apply(mode))
     Branch on `status`:
     
-    `blocked` -> Do not \(invokeLower.render.apply(mode)) implementation. Present the result as prose. Do not print the raw result. Stop.
-    
-    When `candidates` is present, the plan could not be resolved. Present:
-    
-    - The problem reported by the review.
-    - The candidate plan paths.
-    - `/next-task {candidate-path}` for the intended plan.
-    
-    Otherwise one plan and task were resolved. Present:
-    
-    - The task ID and title.
-    - Each issue in `issues`: its problem, its impact, and the decision it requires.
-    - When `executable_tasks_remaining` is true: other tasks remain executable, and `/next-task {plan-path} {task-id}` selects one.
-    - When `executable_tasks_remaining` is false: no task in the plan can proceed until the plan is updated.
-    
-    `plan_complete` -> Return:
-    
-    ```
-    
-    -------------------------------------
-    
-    # Implementation tasks are complete.
-    
-    Run the final validation:
-    
-    `/validate {plan-path}`
-    ```
-    
-    Stop.
-    
+    \(reviewBlockedBranch.render.apply(mode))
+
+    \(planCompleteBranch.render.apply(mode))
+
     `ready` -> Pass the complete readiness result to \(taskExecution.render.apply(mode)).
     
     Do not reconstruct, summarize, or reinterpret the reviewed task before passing it.
@@ -138,25 +300,10 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     
     Branch on the execution result.
     
-    `declined` -> Present "You have declined to proceed with this task". Do not \(invokeLower.render.apply(mode)) context synchronization. Stop.
-    
-    `blocked` -> Present:
-    
-    - The blocker.
-    - Work completed before the blocker.
-    - The decision or action required.
-    
-    Do not \(invokeLower.render.apply(mode)) context synchronization. Stop.
-    
-    `incomplete` -> Present:
-    
-    - Work completed.
-    - Verification evidence.
-    - Remaining work.
-    - The reason the task is incomplete.
-    
-    Do not \(invokeLower.render.apply(mode)) context synchronization. Do not select another task. Stop.
-    
+    \(declinedBranch.render.apply(mode))
+
+    \(executionBlockedBranch.render.apply(mode))
+
     `complete` -> continue to the next step.
     
     ### 3. Synchronize context
@@ -169,16 +316,8 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     
     Branch on the synchronization result.
     
-    `blocked` -> The task itself succeeded and is already marked complete in the plan. Present:
-    
-    - That task {completed-task-id} was implemented, verified, and recorded in the plan.
-    - The context contradiction or synchronization failure.
-    - Any context edits the report says were preserved.
-    - The action required to resolve the problem.
-    - The retry condition stated by the report.
-    
-    State that durable context is now out of date, and that synchronization must be resolved before continuing the plan. Nothing records the skipped synchronization, so it is lost once this session ends.
-    
+    \(syncBlockedBranch.render.apply(mode))
+
     Do not select another task. Stop.
     
     `synced` | `no_context_change` -> Print out the report \(taskContextSync.render.apply(mode)) returned. Continue to the next step.
@@ -191,38 +330,8 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     
     If incomplete tasks remain, read the plan and name the first unchecked task in plan order. Do not evaluate its dependencies; \(planReview.render.apply(mode)) checks them when the emitted command runs and returns `blocked` if they are unmet.
     
-    Return:
-    
-    ```
-    
-    -------------------------------------
-    
-    # Task {completed-task-id} completed.
-    
-    {completed-tasks} of {total-tasks} tasks complete.
-    
-    Next up:
-    
-    {next-task-id} — {next-task-title}
-    
-    `/next-task {plan-path} {next-task-id}`
-    ```
-    
-    If all tasks are completed return:
-    
-    ```
-    
-    -------------------------------------
-    
-    # Task {completed-task-id} completed.
-    
-    All tasks are complete.
-    
-    Run the final validation:
-    
-    `/validate {plan-path}`
-    ```
-    
+    \(continuationLayouts.render.apply(mode))
+
     Stop.
     
     ## Rules
@@ -269,11 +378,7 @@ local renderReviewSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Inspecting the context needed to judge readiness.
     - Determining readiness.
     - \(returningReadinessResult.render.apply(mode)).
-    
-    Return a result matching:
-    
-    \(readinessContract.render.apply(mode))
-    
+    \(readinessContractBlock.render.apply(mode))
     ## Input
     
     The invoking workflow provides:
@@ -390,8 +495,7 @@ local renderReviewSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     - One plan was resolved.
     - At most one task was resolved.
-    - One valid readiness result matching \(readinessContract.render.apply(mode)) was
-      returned.
+    \(readinessCompletionBullet.render.apply(mode))
     """
 
 local structuredReviewSkill = new model.StructuredWorkflowDocument {
@@ -683,11 +787,7 @@ local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     Use the gate defined in:
     
     \(implementationGate.render.apply(mode))
-    
-    Return a final result matching:
-    
-    \(executionContract.render.apply(mode))
-    
+    \(executionContractBlock.render.apply(mode))
     ## Input
     
     The invoking workflow provides:
@@ -858,16 +958,13 @@ local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Stale or invalid handoff.
     - Material blocker.
     - A verification failure that cannot be resolved in scope.
-    
-    Use a blocker category defined by \(executionContract.render.apply(mode)).
-    
+    \(blockerCategorySentence.render.apply(mode))
     Do not determine whether the plan is complete. The invoking `/next-task`
     workflow owns that decision after context synchronization.
     
     ### 9. \(returnYaml.render.apply(mode))
     
-    After the skill reaches a terminal state, \(returnExactlyOneYamlDocument.render.apply(mode))
-    matching \(executionContract.render.apply(mode)).
+    After the skill reaches a terminal state, \(returnExactlyOneYamlDocument.render.apply(mode))\(executionContractClause.render.apply(mode)).
     
     \(returnOnlyYamlDocument.render.apply(mode)). Do not add explanatory prose before or after it.
     
@@ -896,8 +993,7 @@ local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     - The implementation gate was shown.
     - The user approved or rejected the task, or approval was pre-supplied.
     - At most one task was executed.
-    - One valid terminal \(yamlResult.render.apply(mode)) matching \(executionContract.render.apply(mode))
-      was returned.
+    \(executionCompletionBullet.render.apply(mode))
     """
 
 local structuredExecutionSkill = new model.StructuredWorkflowDocument {

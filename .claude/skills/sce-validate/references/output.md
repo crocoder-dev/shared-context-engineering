@@ -2,81 +2,8 @@
 
 Use only the applicable layout. Values come from internal workflow state.
 
-## Validation blocked
-
-```markdown
-# Validation blocked
-
-**Status:** blocked  
-**Plan:** `{plan-path when resolved}`  
-**Name:** `{plan-name when resolved}`
-
-## Issues
-
-- **{issue-id}** ({category}): {problem}
-  - Impact: {impact}
-  - Required: {decision-or-action}
-
-## Incomplete tasks
-
-- `{task-id}` — {title}
-
-## Candidates
-
-- `{candidate-plan-path}`
-
-## Next step
-
-{one continuation matching the blocker}
-```
-
-Omit inapplicable optional sections.
-
-## Validation failed handoff
-
-```markdown
-# Validation failed — handoff
-
-**Status:** failed  
-**Plan:** `{plan-path}`  
-**Name:** `{plan-name}`  
-**Tasks:** `{completed}/{total} complete`  
-**Date:** `{YYYY-MM-DD}`  
-**Validation report:** written to `{plan-path}`
-
-## Goal for the next session
-
-{repair goal}
-
-## What failed
-
-- `{check-or-AC}`: {problem}
-  - Evidence: {evidence}
-  - Required action: {action}
-
-## Acceptance criteria
-
-- [{x-or-space}] {criterion}: {evidence}
-
-## Commands run
-
-- `{command}` -> {passed|failed|not_run} — {summary}
-
-## Constraints
-
-{canonical validation constraints}
-
-## Residual risks
-
-- {risk-or-none}
-
-## Recommended work
-
-1. {repair}
-2. Rerun final validation after repairs:
-
-`/validate {plan-path}`
-```
+The `blocked` and `failed` layouts are stated once, under **Validation Result**
+below.
 
 ## Context synchronization blocked
 
@@ -109,9 +36,9 @@ The `Status` value must be exactly one of:
 - `failed`
 - `blocked`
 
-The plan-file `## Validation Report` section is written separately using
-`validation-report.md`. This file is the skill's return value to the invoking
-workflow.
+The plan-file `## Validation Report` section is written separately using the
+**Plan-file validation report** section embedded in this file. This layout
+carries the validation phase's result into the workflow's own branches.
 
 ## Validated variant
 

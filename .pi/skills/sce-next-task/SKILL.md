@@ -11,19 +11,17 @@ description: >
 Own this workflow from input parsing through its terminal user-visible response.
 Execute the phases below directly and in order. Phase statuses are internal state,
 not inter-skill handoffs. Do not invoke another SCE skill, sibling package, or
-workflow command.
+workflow command. Follow the canonical workflow's steps, gates, and stops exactly
+as written: never invent, skip, reorder, or merge a step.
 
 ## User-visible output
 
 Use `references/output.md` for every gate and terminal response. Render no raw
 internal state. The reference contains only human-visible Markdown layouts.
+User-visible output is limited to those layouts: never invent a layout, and never
+wrap one in an added preamble, commentary, summary, or extra section.
 
 ## Canonical workflow
-
-
-description: "Run the **Plan review phase** -> the **Task execution phase** -> the **Task context synchronization phase** for one SCE plan task"
-argument-hint: "<plan-name> [T0X] [approved]"
-
 
 SCE NEXT TASK `$ARGUMENTS`
 
@@ -53,39 +51,11 @@ Run the **Plan review phase** with the parsed `plan-name-or-path` and, when pres
 
 Do not pass the `auto-approve` token to the **Plan review phase**.
 
-The skill must return a result matching its readiness contract.
-
 Branch on `status`:
 
-`blocked` -> Do not run implementation. Present the result as prose. Do not print the raw result. Stop.
+`blocked` -> Do not run implementation. Render the **Review blocked** layout from `references/output.md`. When `candidates` is present the plan could not be resolved, and each entry is a candidate path for `/next-task {candidate-path}`. `executable_tasks_remaining` true means another task remains executable and `/next-task {plan-path} {task-id}` selects one; false means no task in the plan can proceed until the plan is updated. Do not print the raw result. Stop.
 
-When `candidates` is present, the plan could not be resolved. Present:
-
-- The problem reported by the review.
-- The candidate plan paths.
-- `/next-task {candidate-path}` for the intended plan.
-
-Otherwise one plan and task were resolved. Present:
-
-- The task ID and title.
-- Each issue in `issues`: its problem, its impact, and the decision it requires.
-- When `executable_tasks_remaining` is true: other tasks remain executable, and `/next-task {plan-path} {task-id}` selects one.
-- When `executable_tasks_remaining` is false: no task in the plan can proceed until the plan is updated.
-
-`plan_complete` -> Return:
-
-```
-
--------------------------------------
-
-# Implementation tasks are complete.
-
-Run the final validation:
-
-`/validate {plan-path}`
-```
-
-Stop.
+`plan_complete` -> Render the **Plan already complete** layout from `references/output.md`. Stop.
 
 `ready` -> Pass the complete readiness result to the **Task execution phase**.
 
@@ -113,24 +83,11 @@ Do not present an additional implementation confirmation.
 
 Branch on the execution result.
 
-`declined` -> Present "You have declined to proceed with this task". Do not run context synchronization. Stop.
+`declined` -> Render the **Declined** layout from `references/output.md`. Do not run context synchronization. Stop.
 
-`blocked` -> Present:
+`blocked` -> Render the **Execution blocked or incomplete** layout from `references/output.md`. Do not run context synchronization. Stop.
 
-- The blocker.
-- Work completed before the blocker.
-- The decision or action required.
-
-Do not run context synchronization. Stop.
-
-`incomplete` -> Present:
-
-- Work completed.
-- Verification evidence.
-- Remaining work.
-- The reason the task is incomplete.
-
-Do not run context synchronization. Do not select another task. Stop.
+`incomplete` -> Render the same **Execution blocked or incomplete** layout. Do not run context synchronization. Do not select another task. Stop.
 
 `complete` -> continue to the next step.
 
@@ -144,15 +101,7 @@ Do not restate, summarize, or reconstruct any part of the execution result.
 
 Branch on the synchronization result.
 
-`blocked` -> The task itself succeeded and is already marked complete in the plan. Present:
-
-- That task {completed-task-id} was implemented, verified, and recorded in the plan.
-- The context contradiction or synchronization failure.
-- Any context edits the report says were preserved.
-- The action required to resolve the problem.
-- The retry condition stated by the report.
-
-State that durable context is now out of date, and that synchronization must be resolved before continuing the plan. Nothing records the skipped synchronization, so it is lost once this session ends.
+`blocked` -> The task itself succeeded and is already marked complete in the plan. Render the **Context synchronization blocked** layout from `references/output.md`. Nothing records the skipped synchronization, so it is lost once this session ends.
 
 Do not select another task. Stop.
 
@@ -166,37 +115,9 @@ Do not execute another task. Return exactly one continuation.
 
 If incomplete tasks remain, read the plan and name the first unchecked task in plan order. Do not evaluate its dependencies; the **Plan review phase** checks them when the emitted command runs and returns `blocked` if they are unmet.
 
-Return:
+Render the **More tasks remain** layout from `references/output.md`.
 
-```
-
--------------------------------------
-
-# Task {completed-task-id} completed.
-
-{completed-tasks} of {total-tasks} tasks complete.
-
-Next up:
-
-{next-task-id} — {next-task-title}
-
-`/next-task {plan-path} {next-task-id}`
-```
-
-If all tasks are completed return:
-
-```
-
--------------------------------------
-
-# Task {completed-task-id} completed.
-
-All tasks are complete.
-
-Run the final validation:
-
-`/validate {plan-path}`
-```
+If all tasks are completed, render the **All tasks complete** layout instead.
 
 Stop.
 
@@ -216,16 +137,6 @@ Stop.
 
 ## Internal phase: Plan review phase
 
-
-name: Plan review phase
-description: >
-  Internal SCE workflow skill that resolves one task from an existing plan and
-  determines whether it is ready for implementation. Returns ready, blocked, or
-  plan_complete with a structured payload. Use from /next-task. Do not implement
-  changes, request implementation approval, update the plan, synchronize
-  context, or run final validation.
-
-
 # SCE Plan Review
 
 ## Purpose
@@ -241,10 +152,6 @@ This skill owns:
 - Inspecting the context needed to judge readiness.
 - Determining readiness.
 - Recording one structured readiness result.
-
-Return a result matching:
-
-the internal readiness state described by this workflow
 
 ## Input
 
@@ -362,22 +269,9 @@ The skill is complete after:
 
 - One plan was resolved.
 - At most one task was resolved.
-- One valid readiness result matching the internal readiness state described by this workflow was
-  returned.
+- One valid readiness result was returned.
 
 ## Internal phase: Task execution phase
-
-
-name: Task execution phase
-description: >
-  Internal SCE workflow skill that always presents one reviewed task to the
-  user before editing, executes it only after approval, verifies the
-  task, records evidence in the plan, and returns one internal state: declined,
-  blocked, incomplete, or complete. Accepts a ready result from
-  Plan review phase. Do not select or execute another task,
-  synchronize durable context, run final plan validation, create commits, or
-  expand task scope.
-
 
 # SCE Task Execution
 
@@ -398,10 +292,6 @@ This skill owns:
 Use the gate defined in:
 
 `references/output.md`
-
-Return a final result matching:
-
-the internal execution state described by this workflow
 
 ## Input
 
@@ -574,15 +464,12 @@ Set internal status `blocked` for every other non-successful outcome, including:
 - Material blocker.
 - A verification failure that cannot be resolved in scope.
 
-Use a blocker category defined by the internal execution state described by this workflow.
-
 Do not determine whether the plan is complete. The invoking `/next-task`
 workflow owns that decision after context synchronization.
 
 ### 9. Return internal state
 
-After the skill reaches a terminal state, set exactly one internal state
-matching the internal execution state described by this workflow.
+After the skill reaches a terminal state, set exactly one internal state.
 
 Record only the internal state. Do not add explanatory prose before or after it.
 
@@ -611,21 +498,9 @@ The skill is complete after:
 - The implementation gate was shown.
 - The user approved or rejected the task, or approval was pre-supplied.
 - At most one task was executed.
-- One valid terminal internal state matching the internal execution state described by this workflow
-  was returned.
+- One valid terminal internal state was returned.
 
 ## Internal phase: Task context synchronization phase
-
-
-name: Task context synchronization phase
-description: >
-  Internal SCE workflow skill that accepts a successful status: complete result
-  from Task execution phase, reconciles the completed implementation with durable
-  repository context, and returns a Markdown synchronization report. Run only
-  after one task has been implemented and verified successfully. Do not implement
-  application code, change plan state, determine whether the plan is complete,
-  run final validation, or select another task.
-
 
 # SCE Task Context Sync
 

@@ -12,19 +12,17 @@ compatibility: opencode
 Own this workflow from input parsing through its terminal user-visible response.
 Execute the phases below directly and in order. Phase statuses are internal state,
 not inter-skill handoffs. Do not invoke another SCE skill, sibling package, or
-workflow command.
+workflow command. Follow the canonical workflow's steps, gates, and stops exactly
+as written: never invent, skip, reorder, or merge a step.
 
 ## User-visible output
 
 Use `references/output.md` for every gate and terminal response. Render no raw
 internal state. The reference contains only human-visible Markdown layouts.
+User-visible output is limited to those layouts: never invent a layout, and never
+wrap one in an added preamble, commentary, summary, or extra section.
 
 ## Canonical workflow
-
-
-description: "Run the **Atomic commit phase** to turn staged changes into atomic commit message proposals"
-argument-hint: "[oneshot|skip] [commit context]"
-
 
 SCE COMMIT `$ARGUMENTS`
 
@@ -63,9 +61,8 @@ Follow exactly one path.
 
 Run `git diff --cached --quiet`. A zero exit status means nothing is staged.
 
-When nothing is staged, stop with exactly:
-
-`No staged changes. Stage changes before commit.`
+When nothing is staged, stop with the **No staged changes** layout from
+`references/output.md`.
 
 Do not stage anything. Do not proceed to the skill.
 
@@ -76,10 +73,9 @@ Run the **Atomic commit phase** with `mode: bypass` and the commit context.
 Bypass mode is the skill's contract for producing exactly one message. Do not
 restate its overrides here; the **Atomic commit phase** owns them.
 
-The skill must return a result matching its commit contract. Branch on
-`status`:
+Branch on `status`:
 
-`blocked` -> Present the issue and stop. Do not commit.
+`blocked` -> Render the **Blocked** layout from `references/output.md` and stop. Do not commit.
 
 `bypass_message` -> Continue to the next step.
 
@@ -90,22 +86,20 @@ a contract violation: report it and stop without committing.
 
 Run `git commit` once with the returned message.
 
-On success, report the resulting commit hash and stop.
+On success, render the **Bypass success** layout from `references/output.md` and
+stop.
 
-On failure, report the failure as returned by Git and stop. Do not retry, do
-not amend, do not stage additional files, and do not invent a fallback commit.
+On failure, render the **Bypass Git failure** layout from the same file and stop.
+
+Do not retry, do not amend, do not stage additional files, and do not invent a
+fallback commit.
 
 ### Regular path (no mode token)
 
 #### 1. Confirm staging
 
-Before invoking the skill, stop and prompt the user:
-
-```
-Please run `git add <files>` for all changes you want included in this commit.
-Atomic commits should only include intentionally staged changes.
-Confirm once staging is complete.
-```
+Before running the phase, stop and prompt the user with the **Regular-mode
+staging gate** layout from `references/output.md`.
 
 Wait for the user's confirmation. Do not stage files on their behalf, and do
 not skip this prompt because the working tree looks ready.
@@ -125,13 +119,13 @@ the **Atomic commit phase** exclusively owns:
 
 Do not duplicate any of it. Do not write commit messages yourself.
 
-The skill must return a result matching its commit contract. Branch on
-`status`:
+Branch on `status`:
 
-`blocked` -> Present the issue and the decision it requires. Stop.
+`blocked` -> Render the **Blocked** layout from `references/output.md`. Stop.
 
-`proposal` -> Present each proposed commit: its message, the files it covers,
-and, when more than one commit is proposed, why the split is recommended.
+`proposal` -> Render the **Regular proposal** layout from `references/output.md`,
+which covers each proposed commit's message and files, and the split rationale
+when more than one commit is proposed.
 
 Then stop. The regular path is proposal-only.
 
@@ -156,16 +150,6 @@ runs the commits they accept.
 
 ## Internal phase: Atomic commit phase
 
-
-name: Atomic commit phase
-description: >
-  Internal SCE workflow skill that analyzes the staged diff and returns atomic,
-  repository-style commit messages: coherent-unit detection, split guidance,
-  scope and subject wording, and the plan-citation body rule. Returns one internal state
-  result (proposal, bypass_message, or blocked). Use from /commit. Do not stage
-  files, create commits, or ask the user to confirm staging.
-
-
 # SCE Atomic Commit
 
 ## Purpose
@@ -184,10 +168,6 @@ This skill owns:
 Write messages matching:
 
 `references/output.md`
-
-Return a result matching:
-
-the internal commit state described by this workflow
 
 Committing is not this skill's job. The invoking `/commit` workflow decides
 whether a returned message is committed, and it is the only thing that runs
@@ -290,7 +270,7 @@ Confirm before returning that:
 
 ### 9. Return internal state
 
-Set exactly one internal state matching the internal commit state described by this workflow:
+Set exactly one internal state:
 
 - `proposal` in `regular` mode, with one or more messages.
 - `bypass_message` in `bypass` mode, with exactly one message.
@@ -320,8 +300,7 @@ The skill is complete after:
 
 - The staged diff was read, or reading it failed and was reported.
 - Messages were written for every staged file, or a blocker prevented it.
-- One valid terminal internal state matching the internal commit state described by this workflow was
-  returned.
+- One valid terminal internal state was returned.
 
 
 
