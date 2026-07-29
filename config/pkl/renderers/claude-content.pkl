@@ -1,6 +1,6 @@
 import "common.pkl" as common
 import "claude-metadata.pkl" as metadata
-import "claude-workflow-results.pkl" as workflowResults
+import "workflow-composite.pkl" as workflowResults
 
 local missingSceInstallMessage = "sce CLI not found. Install it from https://sce.crocoder.dev/docs/getting-started#install-cli"
 
@@ -88,14 +88,14 @@ exec "$@"
 /// workflow skill, which owns all phases, waits, and final response rendering.
 commands {
   for (slug, workflow in workflowResults.workflows) {
-    [slug] = workflowResults.renderCommand.apply(workflow, metadata.commandAllowedTools[slug])
+    [slug] = workflowResults.renderCommand.apply(workflow, "allowed-tools: \(metadata.commandAllowedTools[slug])\n")
   }
 }
 
 /// Claude has four workflow packages, each with exactly SKILL.md and one
 /// references/output.md presentation contract.
 skillDocuments {
-  for (path, document in workflowResults.skillDocuments) {
+  for (path, document in workflowResults.skillDocuments.apply("compatibility: claude\n")) {
     [path] = document
   }
 }

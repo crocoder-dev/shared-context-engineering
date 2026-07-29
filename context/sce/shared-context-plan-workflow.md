@@ -65,5 +65,5 @@ flowchart TD
 ## Canonical sources
 
 - `config/pkl/base/workflow-change-to-plan.pkl`
-- Claude composition: `config/pkl/renderers/claude-workflow-results.pkl`
+- Workflow composition: `config/pkl/renderers/workflow-composite.pkl` (shared; Claude consumes it)
 - Behavioral baseline: `.pi/prompts/change-to-plan.md`

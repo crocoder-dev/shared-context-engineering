@@ -23,7 +23,7 @@ The automated profile and obsolete Markdown catalog represented a second behavio
 
 ## Consequences
 
-- Canonical workflow content lives in `config/pkl/base/workflow-{change-to-plan,next-task,validate,commit}.pkl`, with shared types in `workflow-content.pkl` and synchronization policy in `workflow-context-sync.pkl`; Claude phase-result overrides live in `config/pkl/renderers/claude-workflow-results.pkl`.
+- Canonical workflow content lives in `config/pkl/base/workflow-{change-to-plan,next-task,validate,commit}.pkl`, with shared types in `workflow-content.pkl` and synchronization policy in `workflow-context-sync.pkl`; Claude phase-result overrides live in `config/pkl/renderers/claude-workflow-results.pkl` (since promoted to the target-neutral `config/pkl/renderers/workflow-composite.pkl`).
 - Generated inventory is four commands and eight skill packages for each target, plus two OpenCode agents. Pi also retains its extension; Claude retains settings and hooks.
 - `config/pkl/renderers/metadata-coverage-check.pkl`, `config/pkl/check-generated.sh`, and the root flake parity check enforce exact inventories, nested package references, and forbidden removed trees.
 - `config/automated/.opencode` and `config/.claude/agents` are forbidden outputs rather than compatibility surfaces.

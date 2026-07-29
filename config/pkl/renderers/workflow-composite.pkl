@@ -3,12 +3,12 @@ import "../base/workflow-next-task.pkl" as nextTask
 import "../base/workflow-validate.pkl" as validate
 import "../base/workflow-commit.pkl" as commit
 import "../base/workflow-content.pkl" as model
-import "claude-metadata.pkl" as metadata
 
-/// Claude executes a skill as the unit of durable control flow. Compose the
-/// canonical phase packages into one workflow package instead of asking a
-/// command to transport phase results between sibling skills.
-class ClaudeWorkflow {
+/// A skill is the unit of durable control flow. Compose the canonical phase
+/// packages into one workflow package instead of asking a command to transport
+/// phase results between sibling skills. Composition is target-neutral: targets
+/// differ only in the frontmatter lines their skills and commands support.
+class CompositeWorkflow {
   slug: String
   skillSlug: String
   title: String
@@ -103,15 +103,17 @@ local renderPhase = (slug: String, document: model.WorkflowDocument) ->
 local renderInternalDocument = (title: String, document: model.WorkflowDocument) ->
   "## Internal persisted-document format: \(title)\n\n" + internalize.apply(document.text)
 
-local renderSkill = (workflow: ClaudeWorkflow) -> new model.WorkflowDocument {
+/// `extraFrontmatterLines` carries the target-specific frontmatter a skill
+/// entrypoint supports. Each line ends with a newline; a target that adds none
+/// passes the empty string.
+local renderSkill = (workflow: CompositeWorkflow, extraFrontmatterLines: String) -> new model.WorkflowDocument {
   path = "SKILL.md"
   text = """
 ---
 name: \(workflow.skillSlug)
 description: >
   \(workflow.description)
-compatibility: claude
----
+\(extraFrontmatterLines)---
 
 # \(workflow.title)
 
@@ -147,14 +149,16 @@ as the workflow's final response.
 """
 }
 
-renderCommand = (workflow: ClaudeWorkflow, allowedTools: String) -> new model.WorkflowDocument {
+/// `extraFrontmatterLines` carries the target-specific routing frontmatter a
+/// command supports, under the same newline-terminated convention as
+/// `renderSkill`.
+renderCommand = (workflow: CompositeWorkflow, extraFrontmatterLines: String) -> new model.WorkflowDocument {
   path = workflow.command.path
   text = """
 ---
 description: "\(workflow.description)"
 argument-hint: "\(workflow.argumentHint)"
-allowed-tools: \(allowedTools)
----
+\(extraFrontmatterLines)---
 
 Invoke the `\(workflow.skillSlug)` skill exactly once with `$ARGUMENTS`.
 The skill owns the complete workflow, including all waits and same-session resume
@@ -439,9 +443,18 @@ Committed {commit-hash}
 Present Git's failure unchanged and stop without retrying.
 """
 
-local changeWorkflow = new ClaudeWorkflow {
+/// One command routes to one workflow-level package. Phase-skill names are not
+/// part of any target's generated inventory.
+workflowSkillSlugByCommand = new Mapping {
+  ["change-to-plan"] = "sce-change-to-plan"
+  ["next-task"] = "sce-next-task"
+  ["validate"] = "sce-validate"
+  ["commit"] = "sce-commit"
+}
+
+local changeWorkflow = new CompositeWorkflow {
   slug = "change-to-plan"
-  skillSlug = metadata.workflowSkillSlugByCommand["change-to-plan"]
+  skillSlug = workflowSkillSlugByCommand["change-to-plan"]
   title = "SCE Change to Plan"
   description = "Turn one change request into a scoped SCE plan in one self-contained workflow"
   argumentHint = "<describe changes you want to introduce>"
@@ -456,9 +469,9 @@ local changeWorkflow = new ClaudeWorkflow {
   outputText = internalize.apply(CHANGE_OUTPUT + "\n\n" + changeToPlan.workflow.skills["sce-plan-authoring"].documents["references/plan-summary.md"].text)
 }
 
-local nextWorkflow = new ClaudeWorkflow {
+local nextWorkflow = new CompositeWorkflow {
   slug = "next-task"
-  skillSlug = metadata.workflowSkillSlugByCommand["next-task"]
+  skillSlug = workflowSkillSlugByCommand["next-task"]
   title = "SCE Next Task"
   description = "Review, approve, implement, verify, and synchronize one SCE plan task"
   argumentHint = "<plan-name> [T0X] [approved]"
@@ -472,9 +485,9 @@ local nextWorkflow = new ClaudeWorkflow {
   outputText = internalize.apply(NEXT_OUTPUT + "\n\n" + nextTask.workflow.skills["sce-task-execution"].documents["references/implementation-gate.md"].text + "\n\n" + nextTask.workflow.skills["sce-task-context-sync"].documents["references/sync-report.md"].text)
 }
 
-local validateWorkflow = new ClaudeWorkflow {
+local validateWorkflow = new CompositeWorkflow {
   slug = "validate"
-  skillSlug = metadata.workflowSkillSlugByCommand["validate"]
+  skillSlug = workflowSkillSlugByCommand["validate"]
   title = "SCE Validate"
   description = "Validate one completed SCE plan and synchronize its durable context"
   argumentHint = "<plan-name>"
@@ -489,9 +502,9 @@ local validateWorkflow = new ClaudeWorkflow {
   outputText = internalize.apply(VALIDATE_OUTPUT + "\n\n" + validate.workflow.skills["sce-validation"].documents["references/validation-result.md"].text + "\n\n" + validate.workflow.skills["sce-plan-context-sync"].documents["references/sync-report.md"].text)
 }
 
-local commitWorkflow = new ClaudeWorkflow {
+local commitWorkflow = new CompositeWorkflow {
   slug = "commit"
-  skillSlug = metadata.workflowSkillSlugByCommand["commit"]
+  skillSlug = workflowSkillSlugByCommand["commit"]
   title = "SCE Commit"
   description = "Analyze staged changes and run the regular or explicit bypass commit workflow"
   argumentHint = "[oneshot|skip] [commit context]"
@@ -510,9 +523,11 @@ workflows = new Mapping {
   [commitWorkflow.slug] = commitWorkflow
 }
 
-skillDocuments {
+/// Each target renders the same two documents per workflow package and differs
+/// only in the frontmatter its skill entrypoint carries.
+skillDocuments = (extraSkillFrontmatterLines: String) -> new Mapping {
   for (_, workflow in workflows) {
-    ["\(workflow.skillSlug)/SKILL.md"] = renderSkill.apply(workflow)
+    ["\(workflow.skillSlug)/SKILL.md"] = renderSkill.apply(workflow, extraSkillFrontmatterLines)
     ["\(workflow.skillSlug)/references/output.md"] = new model.WorkflowDocument {
       path = "references/output.md"
       text = workflow.outputText
