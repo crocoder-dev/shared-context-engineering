@@ -5,4 +5,11 @@ commandAllowedTools = new Mapping {
   ["commit"] = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
 }
 
-skillCompatibility = "claude"
+/// One command routes to one workflow-level package. Phase-skill names are not
+/// part of Claude's generated inventory.
+workflowSkillSlugByCommand = new Mapping {
+  ["change-to-plan"] = "sce-change-to-plan"
+  ["next-task"] = "sce-next-task"
+  ["validate"] = "sce-validate"
+  ["commit"] = "sce-commit"
+}

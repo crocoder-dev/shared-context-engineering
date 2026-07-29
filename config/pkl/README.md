@@ -20,13 +20,13 @@ Apply target-specific rendering and supported metadata under `config/pkl/rendere
 | Target | Workflow Markdown | Retained non-Markdown |
 | --- | --- | --- |
 | OpenCode | Four commands, eight self-contained skill packages, two thin routing agents | `lib/bash-policy-presets.json`, `plugins/{sce-bash-policy,sce-agent-trace}.ts`, `opencode.json` |
-| Claude | Four commands and eight self-contained skill packages; no agents | `hooks/run-sce-or-show-install-guidance.sh`, `settings.json` |
+| Claude | Four thin commands and four self-contained workflow skill packages; no agents | `hooks/run-sce-or-show-install-guidance.sh`, `settings.json` |
 | Pi | Four prompts and eight self-contained skill packages; no agent-role prompts | `extensions/sce/index.ts` |
 | SCE config | None | `config/schema/sce-config.schema.json` |
 
-Each skill package includes its package-local `SKILL.md` and any nested `references/` documents. Generated skill trees must remain self-contained; a generated skill must not depend on a sibling skill package.
+Pi and OpenCode skill packages include package-local `SKILL.md` files and their nested `references/` documents. Their generated trees remain self-contained; no skill depends on a sibling package.
 
-Pi and OpenCode consume the canonical multi-file packages, including YAML phase-result contracts under `references/`. Claude receives the same skills with two Claude-only transforms: Markdown phase-result contracts for `sce-context-load`, `sce-plan-authoring`, `sce-plan-review`, `sce-task-execution`, and `sce-atomic-commit`, and a reduced package shape where machine contracts and plan templates are folded into `SKILL.md` so each Claude package keeps at most one human-presentation file under `references/` (`plan-summary.md`, `implementation-gate.md`, `validation-report.md`, `sync-report.md`, or `commit-message-style.md`). Validation and context-synchronization reports remain Markdown for every target; on Claude, `validation-result` lives in `SKILL.md` while `validation-report` / `sync-report` stay as the single human-facing reference when present.
+Pi and OpenCode consume the canonical eight multi-file phase packages, including YAML phase-result contracts under `references/`. Claude instead composes each canonical workflow into one target-specific package: `sce-change-to-plan`, `sce-next-task`, `sce-validate`, and `sce-commit`. Each Claude command invokes exactly its corresponding workflow skill, and each package contains exactly `SKILL.md` plus `references/output.md`. The entrypoint owns the complete phase sequence, internal statuses, waits and same-session resume behavior; `output.md` is the sole package reference and defines the workflow's human-visible gates and terminal Markdown layouts. Canonical phase contracts remain unchanged for Pi and OpenCode and are not emitted as Claude inter-skill handoffs.
 
 The automated OpenCode profile, the generated `/handover` command, legacy bootstrap/handover/context-sync skills, Claude agents, and Pi agent-role prompts are removed surfaces. `config/automated/.opencode` and `config/.claude/agents` must remain absent.
 
@@ -71,7 +71,7 @@ nix run .#pkl-check-generated
 The check:
 
 - rejects committed `config/.opencode`, `config/.claude`, `config/.pi`, `config/schema/sce-config.schema.json`, and `cli/assets/generated` outputs;
-- evaluates `metadata-coverage-check.pkl` for exact per-target four-command, eight-skill-package, and nested-reference inventories, including Claude's reduced single human-presentation reference inventory (machine contracts inlined in `SKILL.md`), plus the two-agent OpenCode inventory;
+- evaluates `metadata-coverage-check.pkl` for exact inventories: four commands and eight phase-skill packages for OpenCode/Pi, four one-to-one workflow skill packages with exactly two files each for Claude, and two OpenCode agents;
 - generates twice into temporary directories and compares sorted SHA-256 inventories;
 - requires all generated target roots and the SCE config schema while rejecting removed surfaces such as `config/automated/.opencode` and `config/.claude/agents`;
 - prints the stable inventory count and digest without preserving generated files.

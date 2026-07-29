@@ -1,5 +1,6 @@
 import "opencode-content.pkl" as opencode
 import "claude-content.pkl" as claude
+import "claude-metadata.pkl" as claudeMetadata
 import "pi-content.pkl" as pi
 
 local expectedCommandSlugs = Set(
@@ -13,6 +14,8 @@ local expectedAgentSlugs = Set(
   "shared-context-plan",
   "shared-context-code"
 )
+
+local expectedClaudeSkillByCommand = claudeMetadata.workflowSkillSlugByCommand
 
 local expectedCanonicalSkillDocumentPaths = Set(
   "sce-atomic-commit/SKILL.md",
@@ -38,23 +41,18 @@ local expectedCanonicalSkillDocumentPaths = Set(
   "sce-validation/references/validation-result.md"
 )
 
-/// Claude folds machine contracts and plan templates into SKILL.md, so each
-/// package keeps at most one human-presentation `references/` file.
+/// Claude collapses each workflow into one package with one entrypoint and one
+/// user-visible Markdown output reference. Exact coverage rejects stale phase
+/// packages and any additional package-local references.
 local expectedClaudeSkillDocumentPaths = Set(
-  "sce-atomic-commit/SKILL.md",
-  "sce-atomic-commit/references/commit-message-style.md",
-  "sce-context-load/SKILL.md",
-  "sce-plan-authoring/SKILL.md",
-  "sce-plan-authoring/references/plan-summary.md",
-  "sce-plan-context-sync/SKILL.md",
-  "sce-plan-context-sync/references/sync-report.md",
-  "sce-plan-review/SKILL.md",
-  "sce-task-context-sync/SKILL.md",
-  "sce-task-context-sync/references/sync-report.md",
-  "sce-task-execution/SKILL.md",
-  "sce-task-execution/references/implementation-gate.md",
-  "sce-validation/SKILL.md",
-  "sce-validation/references/validation-report.md"
+  "sce-change-to-plan/SKILL.md",
+  "sce-change-to-plan/references/output.md",
+  "sce-next-task/SKILL.md",
+  "sce-next-task/references/output.md",
+  "sce-validate/SKILL.md",
+  "sce-validate/references/output.md",
+  "sce-commit/SKILL.md",
+  "sce-commit/references/output.md"
 )
 
 local opencodeAgents = new Mapping {
@@ -100,12 +98,25 @@ local assertExactKeys = (actual: Mapping, expected: Set<String>, label: String) 
   ) "\(label): complete"
   else error("\(label) inventory does not match the canonical workflow matrix")
 
+local assertClaudeCommandRoute = (slug: String, document: String) ->
+  let (expectedInvocation = "Invoke the `\(expectedClaudeSkillByCommand[slug])` skill exactly once")
+    if (
+      document.contains(expectedInvocation)
+      && expectedClaudeSkillByCommand.every((otherSlug, skillSlug) ->
+        otherSlug == slug || !document.contains("`\(skillSlug)`")
+      )
+    ) "Claude \(slug) command route: complete"
+    else error("Claude \(slug) command must invoke exactly its corresponding workflow skill")
+
 inventoryChecks {
   ["opencode-agents"] = assertExactKeys.apply(opencodeAgents, expectedAgentSlugs, "OpenCode agent")
   ["opencode-commands"] = assertExactKeys.apply(opencodeCommands, expectedCommandSlugs, "OpenCode command")
   ["opencode-skill-documents"] = assertExactKeys.apply(opencodeSkillDocuments, expectedCanonicalSkillDocumentPaths, "OpenCode skill document")
   ["claude-commands"] = assertExactKeys.apply(claudeCommands, expectedCommandSlugs, "Claude command")
   ["claude-skill-documents"] = assertExactKeys.apply(claudeSkillDocuments, expectedClaudeSkillDocumentPaths, "Claude skill document")
+  for (slug, document in claudeCommands) {
+    ["claude-command-route-\(slug)"] = assertClaudeCommandRoute.apply(slug, document.text)
+  }
   ["pi-commands"] = assertExactKeys.apply(piCommands, expectedCommandSlugs, "Pi command")
   ["pi-skill-documents"] = assertExactKeys.apply(piSkillDocuments, expectedCanonicalSkillDocumentPaths, "Pi skill document")
 }

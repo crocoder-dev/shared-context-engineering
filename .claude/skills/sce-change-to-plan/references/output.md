@@ -1,3 +1,62 @@
+# Change-to-plan output layouts
+
+Use only the applicable layout. Values come from internal workflow state.
+
+## Missing context bootstrap gate
+
+```markdown
+-------------------------------------
+
+# This repository has no durable context.
+
+Bootstrap it, then continue in this session:
+
+`sce setup --bootstrap-context`
+```
+
+## Clarification gate
+
+```markdown
+-------------------------------------
+
+# Clarification needed.
+
+No plan was written.
+
+Answer each question below.  
+
+## {question-id} · {category}
+
+{question}
+
+Why this blocks planning: {why_blocking}
+```
+
+## Blocked
+
+Present each issue's problem, impact, and required decision. For ambiguity, list
+candidate plan paths and explain that naming one candidate resolves it.
+
+## Ready continuation
+
+```markdown
+-------------------------------------
+
+# Plan {plan-name} is ready.
+
+{total-tasks} {task|tasks} planned.
+
+This plan is a draft. State a correction and it will be updated.
+
+Next up:
+
+{next-task-id} — {next-task-title}
+
+`/next-task {plan-path} {next-task-id}`
+```
+
+For revisions, replace `is ready` with `revised`.
+
 # SCE Plan Summary
 
 The user-facing summary shown after a plan is written. The invoking workflow
