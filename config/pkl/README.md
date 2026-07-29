@@ -4,7 +4,7 @@ Canonical generation pipeline for the four SCE workflows across OpenCode, Claude
 
 ## Ownership and target matrix
 
-Author workflow behavior in:
+`config/pkl/**` is the sole canonical authoring source consumed by generation and packaging. Author workflow behavior in:
 
 - `config/pkl/base/workflow-change-to-plan.pkl`
 - `config/pkl/base/workflow-next-task.pkl`
@@ -15,18 +15,18 @@ Author workflow behavior in:
 
 Apply target-specific rendering and supported metadata under `config/pkl/renderers/`. Do not hand-edit generated artifacts.
 
+The project-root `.pi/` workflow tree is the accepted behavioral reference used to review canonical behavior. It is not a second generation source: generators and packages consume `config/pkl/**`, not `.pi/`.
+
 `config/pkl/generate.pkl` emits:
 
 | Target | Workflow Markdown | Retained non-Markdown |
 | --- | --- | --- |
-| OpenCode | Four commands, eight self-contained skill packages, two thin routing agents | `lib/bash-policy-presets.json`, `plugins/{sce-bash-policy,sce-agent-trace}.ts`, `opencode.json` |
-| Claude | Four thin commands and four self-contained workflow skill packages; no agents | `hooks/run-sce-or-show-install-guidance.sh`, `settings.json` |
-| Pi | Four prompts and eight self-contained skill packages; no agent-role prompts | `extensions/sce/index.ts` |
+| OpenCode | Four commands, four self-contained workflow skill packages (eight Markdown files), two thin routing agents | `lib/bash-policy-presets.json`, `plugins/{sce-bash-policy,sce-agent-trace}.ts`, `opencode.json` |
+| Claude | Four thin commands and four self-contained workflow skill packages (eight Markdown files); no agents | `hooks/run-sce-or-show-install-guidance.sh`, `settings.json` |
+| Pi | Four prompts and four self-contained workflow skill packages (eight Markdown files); no agent-role prompts | `extensions/sce/index.ts` |
 | SCE config | None | `config/schema/sce-config.schema.json` |
 
-Pi and OpenCode skill packages include package-local `SKILL.md` files and their nested `references/` documents. Their generated trees remain self-contained; no skill depends on a sibling package.
-
-Pi and OpenCode consume the canonical eight multi-file phase packages, including YAML phase-result contracts under `references/`. Claude instead composes each canonical workflow into one target-specific package: `sce-change-to-plan`, `sce-next-task`, `sce-validate`, and `sce-commit`. Each Claude command invokes exactly its corresponding workflow skill, and each package contains exactly `SKILL.md` plus `references/output.md`. The entrypoint owns the complete phase sequence, internal statuses, waits and same-session resume behavior; `output.md` is the sole package reference and defines the workflow's human-visible gates and terminal Markdown layouts. Canonical phase contracts remain unchanged for Pi and OpenCode and are not emitted as Claude inter-skill handoffs.
+OpenCode, Claude, and Pi each receive the same four workflow packages: `sce-change-to-plan`, `sce-next-task`, `sce-validate`, and `sce-commit`. Every package contains exactly `SKILL.md` plus `references/output.md`, for eight workflow Markdown files per target. Each command or prompt invokes exactly its corresponding workflow skill, and no skill depends on a sibling package. The workflow entrypoint owns the complete phase sequence, internal statuses, waits, and same-session resume behavior; `output.md` is the sole package reference and defines the workflow's human-visible gates and terminal Markdown layouts. Canonical phase modules remain authoring inputs under `config/pkl/base/` and are composed into these workflow packages rather than emitted as separate phase packages.
 
 The automated OpenCode profile, the generated `/handover` command, legacy bootstrap/handover/context-sync skills, Claude agents, and Pi agent-role prompts are removed surfaces. `config/automated/.opencode` and `config/.claude/agents` must remain absent.
 
@@ -71,7 +71,7 @@ nix run .#pkl-check-generated
 The check:
 
 - rejects committed `config/.opencode`, `config/.claude`, `config/.pi`, `config/schema/sce-config.schema.json`, and `cli/assets/generated` outputs;
-- evaluates `metadata-coverage-check.pkl` for exact inventories: four commands and eight phase-skill packages for OpenCode/Pi, four one-to-one workflow skill packages with exactly two files each for Claude, and two OpenCode agents;
+- evaluates `metadata-coverage-check.pkl` for exact inventories: four entrypoints and four one-to-one workflow skill packages containing exactly `SKILL.md` and `references/output.md` for each target, plus two OpenCode agents;
 - generates twice into temporary directories and compares sorted SHA-256 inventories;
 - requires all generated target roots and the SCE config schema while rejecting removed surfaces such as `config/automated/.opencode` and `config/.claude/agents`;
 - prints the stable inventory count and digest without preserving generated files.

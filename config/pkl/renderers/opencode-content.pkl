@@ -1,25 +1,19 @@
+import "../base/workflow-catalog.pkl" as catalog
 import "common.pkl" as common
 import "opencode-metadata.pkl" as metadata
 import "workflow-composite.pkl" as workflowResults
 
 local generatedOpenCodePluginPathsJson = common.sceGeneratedOpenCodePluginPathsJson
 
-/// Commands routed by a thin agent declare it here.
-local commandAgentBySlug = new Mapping {
-  ["change-to-plan"] = "Shared Context Plan"
-  ["next-task"] = "Shared Context Code"
-  ["validate"] = "Shared Context Code"
-  ["commit"] = "Shared Context Code"
-}
-
 local commandAgentLine = (slug: String) ->
-  if (commandAgentBySlug.containsKey(slug)) "agent: \"\(commandAgentBySlug[slug])\"\n" else ""
+  let (agentSlug = catalog.workflows[slug].openCodeAgentSlug)
+    "agent: \"\(metadata.agentDisplayNames[agentSlug])\"\n"
 
 /// One command declares one workflow skill as both its entry skill and its whole
 /// skill chain. The skill owns every phase, so there is no sibling package to
 /// hand off to.
 local commandSkillLines = (slug: String) ->
-  let (skillSlug = workflowResults.workflowSkillSlugByCommand[slug])
+  let (skillSlug = catalog.workflows[slug].skillSlug)
     "entry-skill: \"\(skillSlug)\"\nskills:\n  - \"\(skillSlug)\"\n"
 
 local agentFrontmatterBySlug = new Mapping {

@@ -20,6 +20,17 @@ if ! command -v pkl >/dev/null 2>&1; then
   exit 1
 fi
 
+forbidden_source_artifacts=(
+  "config/pkl/rendered"
+)
+
+for path in "${forbidden_source_artifacts[@]}"; do
+  if [[ -e "$path" ]]; then
+    printf 'Accidental repository-local Pkl evaluation artifact exists at %s\n' "$path" >&2
+    exit 1
+  fi
+done
+
 legacy_paths=(
   "config/.opencode"
   "config/.claude"
@@ -46,6 +57,35 @@ second_root="$tmp_dir/second"
 mkdir -p "$first_root" "$second_root"
 
 pkl eval config/pkl/renderers/metadata-coverage-check.pkl >/dev/null
+pkl eval config/pkl/renderers/generation-contract-check.pkl >/dev/null
+
+expect_pkl_fixture_failure() {
+  local fixture_path="$1"
+  local expected_diagnostic="$2"
+  local diagnostic
+
+  if diagnostic="$(pkl eval "$fixture_path" 2>&1 >/dev/null)"; then
+    printf 'Negative Pkl fixture unexpectedly passed: %s\n' "$fixture_path" >&2
+    exit 1
+  fi
+
+  if [[ "$diagnostic" != *"$expected_diagnostic"* ]]; then
+    printf 'Negative Pkl fixture failed without the expected diagnostic: %s\n%s\n' \
+      "$fixture_path" "$diagnostic" >&2
+    exit 1
+  fi
+}
+
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/extra-artifact-check.pkl" \
+  "generated artifact inventory does not match the exact expected path contract"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/missing-artifact-check.pkl" \
+  "generated artifact inventory does not match the exact expected path contract"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/forbidden-workflow-reference-check.pkl" \
+  "generated workflow document contains a forbidden sibling-package reference or unresolved internalization token"
+
 pkl eval -m "$first_root" config/pkl/generate.pkl >/dev/null
 pkl eval -m "$second_root" config/pkl/generate.pkl >/dev/null
 

@@ -1,3 +1,14 @@
+import "../base/workflow-catalog.pkl" as catalog
+
+local workflowSkillPermissionLines = (agentSlug: String) ->
+  (new Listing {
+    for (_, workflow in catalog.workflows) {
+      when (workflow.openCodeAgentSlug == agentSlug) {
+        "    \"\(workflow.skillSlug)\": allow"
+      }
+    }
+  }).join("\n")
+
 agentDescriptions = new Mapping {
   ["shared-context-plan"] = "Plans a change into atomic tasks in context/plans without touching application code."
   ["shared-context-code"] = "Executes one approved SCE task, validates behavior, and syncs context."
@@ -40,7 +51,7 @@ permission:
   doom_loop: ask
   skill:
     "*": ask
-    "sce-change-to-plan": allow
+\(workflowSkillPermissionLines.apply("shared-context-plan"))
 """
   ["shared-context-code"] = """
 permission:
@@ -63,9 +74,7 @@ permission:
   doom_loop: ask
   skill:
     "*": ask
-    "sce-next-task": allow
-    "sce-validate": allow
-    "sce-commit": allow
+\(workflowSkillPermissionLines.apply("shared-context-code"))
 """
 }
 

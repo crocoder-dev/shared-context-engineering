@@ -2,6 +2,7 @@ import "../base/workflow-change-to-plan.pkl" as changeToPlan
 import "../base/workflow-next-task.pkl" as nextTask
 import "../base/workflow-validate.pkl" as validate
 import "../base/workflow-commit.pkl" as commit
+import "../base/workflow-catalog.pkl" as catalog
 import "../base/workflow-content.pkl" as model
 
 /// A skill is the unit of durable control flow. Compose the canonical phase
@@ -9,11 +10,12 @@ import "../base/workflow-content.pkl" as model
 /// phase results between sibling skills. Composition is target-neutral: targets
 /// differ only in the frontmatter lines their skills and commands support.
 class CompositeWorkflow {
-  slug: String
-  skillSlug: String
-  title: String
-  description: String
-  argumentHint: String
+  identity: catalog.WorkflowRecord
+  slug: String = identity.commandSlug
+  skillSlug: String = identity.skillSlug
+  title: String = identity.title
+  description: String = identity.description
+  argumentHint: String = identity.argumentHint
   command: model.WorkflowDocument
   phaseDocuments: Listing<model.WorkflowDocument>
   internalDocuments: Listing<model.WorkflowDocument>
@@ -443,21 +445,8 @@ Committed {commit-hash}
 Present Git's failure unchanged and stop without retrying.
 """
 
-/// One command routes to one workflow-level package. Phase-skill names are not
-/// part of any target's generated inventory.
-workflowSkillSlugByCommand = new Mapping {
-  ["change-to-plan"] = "sce-change-to-plan"
-  ["next-task"] = "sce-next-task"
-  ["validate"] = "sce-validate"
-  ["commit"] = "sce-commit"
-}
-
 local changeWorkflow = new CompositeWorkflow {
-  slug = "change-to-plan"
-  skillSlug = workflowSkillSlugByCommand["change-to-plan"]
-  title = "SCE Change to Plan"
-  description = "Turn one change request into a scoped SCE plan in one self-contained workflow"
-  argumentHint = "<describe changes you want to introduce>"
+  identity = catalog.workflows["change-to-plan"]
   command = changeToPlan.workflow.command.document
   phaseDocuments = new Listing {
     new model.WorkflowDocument { path = "sce-context-load"; text = changeToPlan.workflow.skills["sce-context-load"].documents["SKILL.md"].text }
@@ -470,11 +459,7 @@ local changeWorkflow = new CompositeWorkflow {
 }
 
 local nextWorkflow = new CompositeWorkflow {
-  slug = "next-task"
-  skillSlug = workflowSkillSlugByCommand["next-task"]
-  title = "SCE Next Task"
-  description = "Review, approve, implement, verify, and synchronize one SCE plan task"
-  argumentHint = "<plan-name> [T0X] [approved]"
+  identity = catalog.workflows["next-task"]
   command = nextTask.workflow.command.document
   phaseDocuments = new Listing {
     new model.WorkflowDocument { path = "sce-plan-review"; text = nextTask.workflow.skills["sce-plan-review"].documents["SKILL.md"].text }
@@ -486,11 +471,7 @@ local nextWorkflow = new CompositeWorkflow {
 }
 
 local validateWorkflow = new CompositeWorkflow {
-  slug = "validate"
-  skillSlug = workflowSkillSlugByCommand["validate"]
-  title = "SCE Validate"
-  description = "Validate one completed SCE plan and synchronize its durable context"
-  argumentHint = "<plan-name>"
+  identity = catalog.workflows["validate"]
   command = validate.workflow.command.document
   phaseDocuments = new Listing {
     new model.WorkflowDocument { path = "sce-validation"; text = validate.workflow.skills["sce-validation"].documents["SKILL.md"].text }
@@ -503,11 +484,7 @@ local validateWorkflow = new CompositeWorkflow {
 }
 
 local commitWorkflow = new CompositeWorkflow {
-  slug = "commit"
-  skillSlug = workflowSkillSlugByCommand["commit"]
-  title = "SCE Commit"
-  description = "Analyze staged changes and run the regular or explicit bypass commit workflow"
-  argumentHint = "[oneshot|skip] [commit context]"
+  identity = catalog.workflows["commit"]
   command = commit.workflow.command.document
   phaseDocuments = new Listing {
     new model.WorkflowDocument { path = "sce-atomic-commit"; text = commit.workflow.skills["sce-atomic-commit"].documents["SKILL.md"].text }

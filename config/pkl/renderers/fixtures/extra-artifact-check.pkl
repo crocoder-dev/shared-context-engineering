@@ -1,0 +1,14 @@
+import "../generation-contract-check.pkl" as contract
+
+local artifactsWithExtraPath = new Mapping {
+  for (path, text in contract.generatedArtifacts) {
+    [path] = text
+  }
+  ["config/.opencode/unexpected-artifact.txt"] = "fixture"
+}
+
+result = if (
+  artifactsWithExtraPath.length == contract.expectedArtifactPaths.length
+  && contract.expectedArtifactPaths.every((path, _) -> artifactsWithExtraPath.containsKey(path))
+) "negative fixture unexpectedly matched"
+else error("generated artifact inventory does not match the exact expected path contract")

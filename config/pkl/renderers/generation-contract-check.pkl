@@ -1,0 +1,101 @@
+import "../generate.pkl" as generated
+import "opencode-content.pkl" as opencode
+import "claude-content.pkl" as claude
+import "pi-content.pkl" as pi
+
+/// Build the expected inventory from each target's independently checked
+/// document inventory plus the retained non-workflow assets. This deliberately
+/// does not iterate `generate.pkl`'s output assembly.
+hidden expectedArtifactPaths = new Mapping {
+  for (_, document in opencode.agents) {
+    ["config/.opencode/agent/\(document.title).md"] = true
+  }
+  for (slug, _ in opencode.commands) {
+    ["config/.opencode/command/\(slug).md"] = true
+  }
+  for (path, _ in opencode.skillDocuments) {
+    ["config/.opencode/skills/\(path)"] = true
+  }
+  ["config/.opencode/lib/bash-policy-presets.json"] = true
+  ["config/.opencode/plugins/sce-bash-policy.ts"] = true
+  ["config/.opencode/plugins/sce-agent-trace.ts"] = true
+  ["config/.opencode/opencode.json"] = true
+
+  for (slug, _ in claude.commands) {
+    ["config/.claude/commands/\(slug).md"] = true
+  }
+  for (path, _ in claude.skillDocuments) {
+    ["config/.claude/skills/\(path)"] = true
+  }
+  ["config/.claude/settings.json"] = true
+  ["config/.claude/hooks/run-sce-or-show-install-guidance.sh"] = true
+
+  for (slug, _ in pi.commands) {
+    ["config/.pi/prompts/\(slug).md"] = true
+  }
+  for (path, _ in pi.skillDocuments) {
+    ["config/.pi/skills/\(path)"] = true
+  }
+  ["config/.pi/extensions/sce/index.ts"] = true
+
+  ["config/schema/sce-config.schema.json"] = true
+}
+
+hidden generatedArtifacts = new Mapping {
+  for (path, artifact in generated.output.files) {
+    [path] = artifact.text
+  }
+}
+
+hidden workflowDocuments = new Mapping {
+  for (path, document in opencode.skillDocuments) {
+    ["config/.opencode/skills/\(path)"] = document.text
+  }
+  for (path, document in claude.skillDocuments) {
+    ["config/.claude/skills/\(path)"] = document.text
+  }
+  for (path, document in pi.skillDocuments) {
+    ["config/.pi/skills/\(path)"] = document.text
+  }
+}
+
+local forbiddenWorkflowReferenceTokens = new Listing {
+  "sce-context-load"
+  "sce-plan-authoring"
+  "sce-plan-review"
+  "sce-task-execution"
+  "sce-task-context-sync"
+  "sce-validation"
+  "sce-plan-context-sync"
+  "sce-atomic-commit"
+  "references/context-brief.yaml"
+  "references/authoring-contract.yaml"
+  "references/readiness-contract.yaml"
+  "references/execution-contract.yaml"
+  "references/commit-contract.yaml"
+  "references/implementation-gate.md"
+  "references/plan-summary.md"
+  "references/validation-result.md"
+  "references/sync-report.md"
+  "references/commit-message-style.md"
+}
+
+local assertExactArtifactPaths = (actual: Mapping) ->
+  if (
+    actual.length == expectedArtifactPaths.length
+    && expectedArtifactPaths.every((path, _) -> actual.containsKey(path))
+  ) "generated artifact inventory: exactly \(expectedArtifactPaths.length) paths"
+  else error("generated artifact inventory does not match the exact expected path contract")
+
+local assertWorkflowReferences = (documents: Mapping) ->
+  if (
+    documents.every((_, text) ->
+      forbiddenWorkflowReferenceTokens.every((token) -> !text.contains(token))
+    )
+  ) "generated workflow references: fully internalized"
+  else error("generated workflow document contains a forbidden sibling-package reference or unresolved internalization token")
+
+contractChecks {
+  ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
+  ["workflow-references"] = assertWorkflowReferences.apply(workflowDocuments)
+}
