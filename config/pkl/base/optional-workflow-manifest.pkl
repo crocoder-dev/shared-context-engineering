@@ -1,0 +1,42 @@
+// Install-time view of the workflow catalog: the workflows a repository must
+// select explicitly before their generated assets are installed. Generation
+// content is unaffected — every catalog workflow is still generated for every
+// target — so this manifest exists only to carry optional workflow identity
+// out of Pkl and into the CLI.
+import "workflow-catalog.pkl" as catalog
+
+class OptionalWorkflowRecord {
+  id: String
+  title: String
+  description: String
+  commandSlug: String
+  skillSlug: String
+}
+
+class OptionalWorkflowManifest {
+  schemaVersion: Int
+  workflows: Listing<OptionalWorkflowRecord>
+}
+
+local manifest: OptionalWorkflowManifest = new {
+  schemaVersion = 1
+  workflows = new {
+    for (slug, workflow in catalog.workflows) {
+      when (workflow.optional) {
+        new {
+          id = slug
+          title = workflow.title
+          description = workflow.description
+          commandSlug = workflow.commandSlug
+          skillSlug = workflow.skillSlug
+        }
+      }
+    }
+  }
+}
+
+local jsonRenderer = new JsonRenderer {
+  indent = "  "
+}
+
+rendered = jsonRenderer.renderDocument(manifest)

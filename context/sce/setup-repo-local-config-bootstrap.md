@@ -35,9 +35,19 @@ After config asset installation succeeds for a non-interactive target (`--openco
 - If the config file does not exist, it is bootstrapped first, then the targets are written.
 - `--hooks` only setup does not modify `integrations.target`.
 
+## Optional-workflow selection persistence
+
+The same write also records the run's resolved optional-workflow selection under `integrations.optional_workflows`:
+
+- Precedence: an interactively answered multi-select is the exact selection for the run; otherwise a supplied `--workflow <slug>` list (repeatable) is; when neither is present the persisted `integrations.optional_workflows` is read back and reused, so a repeat `sce setup --claude --non-interactive` never silently uninstalls a previously selected optional workflow. The prompt's pre-checked rows come from the same persisted value (or from `--workflow` when it was supplied), so accepting the prompt unchanged records what a rerun would have kept.
+- The resolved selection filters what is installed, so an unselected optional workflow's command file and skill directory are simply absent from the freshly installed target tree under the existing remove-and-replace policy.
+- A run that resolves to an empty selection records `[]`. Deselecting is therefore expressed by installing without that slug, not by a separate uninstall step.
+- The persisted set is repository-wide, not per target: a `--all` run records one selection covering `.opencode/`, `.claude/`, and `.pi/`.
+- Unknown slugs are rejected during request resolution, before any file or config write.
+
 ## Implementation
 
-- `cli/src/services/setup/mod.rs` exports `bootstrap_repo_local_config(repository_root: &Path) -> Result<()>`, `bootstrap_context_baseline(repository_root: &Path) -> Result<String>`, and `persist_integration_targets(repository_root: &Path, target: SetupTarget) -> Result<()>`.
+- `cli/src/services/setup/mod.rs` exports `bootstrap_repo_local_config(repository_root: &Path) -> Result<()>`, `bootstrap_context_baseline(repository_root: &Path) -> Result<String>`, and `persist_integration_targets(repository_root: &Path, target: SetupTarget, selected_optional_workflows: &[String]) -> Result<()>`, which writes both `integrations.target` and `integrations.optional_workflows`. `run_setup_for_mode` resolves the selection (the selection handed to it, else the persisted value read through the exported `persisted_optional_workflows`, which parses the repo-local file via `parse_file_config`) before installing and persisting it. `cli/src/services/setup/command.rs` resolves the repository root before any prompt so it can seed the interactive prompt from that persisted value, and passes the prompted selection — when the run was interactive — to `run_setup_for_mode` ahead of the request's `--workflow` list.
 - `cli/src/services/local_db/lifecycle.rs` implements `LocalDbLifecycle::setup()` for local DB initialization.
 - `cli/src/services/agent_trace_db/lifecycle.rs` implements `AgentTraceDbLifecycle::setup()` for Agent Trace DB initialization.
 - Repo-local config bootstrap uses `RepoPaths::sce_config_file()` and `RepoPaths::sce_dir()`; context baseline bootstrap uses the shared context accessors including `RepoPaths::context_tmp_gitignore_file()`.

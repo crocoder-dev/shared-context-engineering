@@ -1,6 +1,9 @@
 {
   "$schema": "https://sce.crocoder.dev/config.json",
   "integrations": {
+    "optional_workflows": [
+      "brownfield"
+    ],
     "target": [
       "claude",
       "opencode",

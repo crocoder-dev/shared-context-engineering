@@ -1,7 +1,14 @@
 import "bash-policy-presets.pkl" as bash_policy_presets
+import "workflow-catalog.pkl" as catalog
 import "../deps/org.json_schema/JsonSchema.pkl"
 
 local presetIds = bash_policy_presets.presets.toList().map((preset) -> preset.id).toListing()
+
+local optionalWorkflowIds = catalog.workflows.toMap()
+  .filter((_, workflow) -> workflow.optional)
+  .keys
+  .toList()
+  .toListing()
 
 local mutuallyExclusiveConstraints = bash_policy_presets.mutually_exclusive.toList().map((pair) ->
   new JsonSchema {
@@ -203,6 +210,15 @@ local sceConfigSchema = new JsonSchema {
           items = new JsonSchema {
             type = "string"
             enum = new { "opencode"; "claude"; "pi" }
+          }
+        }
+        ["optional_workflows"] = new JsonSchema {
+          type = "array"
+          description = "Optional workflows selected for installation into the configured integration targets. Only workflows marked optional in the canonical workflow catalog participate; core workflows are always installed."
+          uniqueItems = true
+          items = new JsonSchema {
+            type = "string"
+            enum = optionalWorkflowIds
           }
         }
       }

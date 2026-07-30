@@ -44,7 +44,20 @@ pub enum RequiredHookAsset {
     PostCommit,
 }
 
+/// A workflow that is generated for every target like any other, but whose
+/// assets are installed only when a repository explicitly selects it. The
+/// catalog below is generated from the Pkl workflow catalog at build time.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OptionalWorkflow {
+    pub id: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+    pub command_slug: &'static str,
+    pub skill_slug: &'static str,
+}
+
 include!(concat!(env!("OUT_DIR"), "/setup_embedded_assets.rs"));
+include!(concat!(env!("OUT_DIR"), "/optional_workflows.rs"));
 
 pub fn iter_required_hook_assets() -> std::slice::Iter<'static, EmbeddedAsset> {
     HOOK_EMBEDDED_ASSETS.iter()
@@ -63,47 +76,89 @@ pub fn get_required_hook_asset(hook: RequiredHookAsset) -> Option<&'static Embed
         .find(|asset| asset.relative_path == hook_name)
 }
 
-pub struct EmbeddedAssetSelectionIter {
-    asset_slices: std::vec::IntoIter<&'static [EmbeddedAsset]>,
-    current: std::slice::Iter<'static, EmbeddedAsset>,
-}
-
-impl EmbeddedAssetSelectionIter {
-    fn new(asset_slices: Vec<&'static [EmbeddedAsset]>) -> Self {
-        Self {
-            asset_slices: asset_slices.into_iter(),
-            current: [].iter(),
+fn embedded_assets_for_concrete_target(target: SetupTarget) -> &'static [EmbeddedAsset] {
+    match target {
+        SetupTarget::OpenCode => OPENCODE_EMBEDDED_ASSETS,
+        SetupTarget::Claude => CLAUDE_EMBEDDED_ASSETS,
+        SetupTarget::Pi => PI_EMBEDDED_ASSETS,
+        SetupTarget::All => {
+            unreachable!("meta targets are expanded into concrete targets")
         }
     }
 }
 
-impl Iterator for EmbeddedAssetSelectionIter {
-    type Item = &'static EmbeddedAsset;
+/// The directory names a target uses for workflow commands and workflow skills.
+/// Optional workflow asset membership is derived from these plus the catalog's
+/// slugs rather than from an enumerated file list, so a new optional workflow
+/// needs no Rust change.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WorkflowAssetLayout {
+    command_dir: &'static str,
+    skills_dir: &'static str,
+}
 
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if let Some(asset) = self.current.next() {
-                return Some(asset);
-            }
-            self.current = self.asset_slices.next()?.iter();
+fn workflow_asset_layout(target: SetupTarget) -> WorkflowAssetLayout {
+    match target {
+        SetupTarget::OpenCode => WorkflowAssetLayout {
+            command_dir: default_paths::opencode_asset::OPENCODE_COMMAND_DIR,
+            skills_dir: default_paths::opencode_asset::SKILLS_DIR,
+        },
+        SetupTarget::Claude => WorkflowAssetLayout {
+            command_dir: default_paths::claude_asset::COMMANDS_DIR,
+            skills_dir: default_paths::claude_asset::SKILLS_DIR,
+        },
+        SetupTarget::Pi => WorkflowAssetLayout {
+            command_dir: default_paths::pi_asset::PROMPTS_DIR,
+            skills_dir: default_paths::pi_asset::SKILLS_DIR,
+        },
+        SetupTarget::All => {
+            unreachable!("meta targets are expanded into concrete targets")
         }
     }
 }
 
-pub fn iter_embedded_assets_for_setup_target(target: SetupTarget) -> EmbeddedAssetSelectionIter {
-    let asset_slices = concrete_targets_for(target)
+fn asset_belongs_to_optional_workflow(
+    relative_path: &str,
+    workflow: &OptionalWorkflow,
+    layout: WorkflowAssetLayout,
+) -> bool {
+    let command_path = format!("{}/{}.md", layout.command_dir, workflow.command_slug);
+    let skill_prefix = format!("{}/{}/", layout.skills_dir, workflow.skill_slug);
+
+    relative_path == command_path || relative_path.starts_with(&skill_prefix)
+}
+
+/// Embedded assets for `target`, minus the command and skill assets of every
+/// optional workflow the repository has not selected. Assets that belong to no
+/// optional workflow are always yielded.
+pub fn iter_embedded_assets_for_setup_target_with_selection(
+    target: SetupTarget,
+    selected_optional_workflows: &[impl AsRef<str>],
+) -> std::vec::IntoIter<&'static EmbeddedAsset> {
+    let unselected: Vec<&'static OptionalWorkflow> = OPTIONAL_WORKFLOWS
         .iter()
-        .map(|concrete| match concrete {
-            SetupTarget::OpenCode => OPENCODE_EMBEDDED_ASSETS,
-            SetupTarget::Claude => CLAUDE_EMBEDDED_ASSETS,
-            SetupTarget::Pi => PI_EMBEDDED_ASSETS,
-            SetupTarget::All => {
-                unreachable!("meta targets are expanded into concrete targets")
-            }
+        .filter(|workflow| {
+            !selected_optional_workflows
+                .iter()
+                .any(|selected| selected.as_ref() == workflow.id)
         })
         .collect();
 
-    EmbeddedAssetSelectionIter::new(asset_slices)
+    let mut assets: Vec<&'static EmbeddedAsset> = Vec::new();
+    for concrete in concrete_targets_for(target) {
+        let layout = workflow_asset_layout(*concrete);
+        assets.extend(
+            embedded_assets_for_concrete_target(*concrete)
+                .iter()
+                .filter(|asset| {
+                    !unselected.iter().any(|workflow| {
+                        asset_belongs_to_optional_workflow(asset.relative_path, workflow, layout)
+                    })
+                }),
+        );
+    }
+
+    assets.into_iter()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -112,9 +167,14 @@ pub enum SetupMode {
     NonInteractive(SetupTarget),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SetupDispatch {
-    Proceed(SetupMode),
+    Proceed {
+        mode: SetupMode,
+        /// The optional workflows this run installs. `None` means no selection
+        /// was resolved here, so the persisted selection is reused downstream.
+        optional_workflows: Option<Vec<String>>,
+    },
     Cancelled,
 }
 
@@ -130,6 +190,8 @@ pub struct SetupCliOptions {
     pub hooks: bool,
     pub repo_path: Option<PathBuf>,
     pub bootstrap_context: bool,
+    /// Repeated `--workflow <slug>` values. Empty means the flag was absent.
+    pub workflows: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -138,6 +200,9 @@ pub struct SetupRequest {
     pub install_hooks: bool,
     pub hooks_repo_path: Option<PathBuf>,
     pub context_only: bool,
+    /// The optional workflows this run installs. `None` means no selection was
+    /// supplied, so the persisted `integrations.optional_workflows` is reused.
+    pub optional_workflows: Option<Vec<String>>,
 }
 
 pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
@@ -147,7 +212,19 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
         );
     }
 
+    let optional_workflows = if options.workflows.is_empty() {
+        None
+    } else {
+        Some(validate_optional_workflow_slugs(&options.workflows)?)
+    };
+
     if options.bootstrap_context {
+        if optional_workflows.is_some() {
+            bail!(
+                "Option '--workflow' cannot be used with '--bootstrap-context'. Try: run 'sce setup --bootstrap-context' alone, then install optional workflows with a target run such as 'sce setup --claude --non-interactive --workflow <slug>'."
+            );
+        }
+
         let has_other_setup_options = options.non_interactive
             || options.opencode
             || options.claude
@@ -166,6 +243,7 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
             install_hooks: false,
             hooks_repo_path: None,
             context_only: true,
+            optional_workflows: None,
         });
     }
 
@@ -203,6 +281,12 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
         _ => unreachable!("target count already validated"),
     };
 
+    if config_mode.is_none() && optional_workflows.is_some() {
+        bail!(
+            "Option '--workflow' requires a target flag because a hooks-only run installs no target assets. Try: 'sce setup --claude --non-interactive --workflow <slug>', or drop '--workflow'."
+        );
+    }
+
     let install_hooks = options.hooks || (config_mode == Some(SetupMode::Interactive));
 
     Ok(SetupRequest {
@@ -210,10 +294,53 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
         install_hooks,
         hooks_repo_path: options.repo_path,
         context_only: false,
+        optional_workflows,
     })
 }
 
-pub fn run_setup_for_mode(repository_root: &Path, mode: SetupMode) -> Result<String> {
+/// Validate repeated `--workflow` slugs against the build-generated catalog,
+/// deduping while preserving order. The error lists every available slug so a
+/// new optional workflow needs no Rust change here.
+fn validate_optional_workflow_slugs(raw_slugs: &[String]) -> Result<Vec<String>> {
+    let mut selected: Vec<String> = Vec::new();
+
+    for raw in raw_slugs {
+        let slug = raw.trim();
+        let Some(workflow) = OPTIONAL_WORKFLOWS
+            .iter()
+            .find(|workflow| workflow.id == slug)
+        else {
+            bail!(
+                "Unknown optional workflow '{raw}' for '--workflow'. Available workflows: {}. Try: rerun with one of those slugs, or omit '--workflow' to install no optional workflow.",
+                available_optional_workflow_slugs()
+            );
+        };
+
+        if !selected.iter().any(|id| id == workflow.id) {
+            selected.push(workflow.id.to_string());
+        }
+    }
+
+    Ok(selected)
+}
+
+fn available_optional_workflow_slugs() -> String {
+    if OPTIONAL_WORKFLOWS.is_empty() {
+        return "none".to_string();
+    }
+
+    OPTIONAL_WORKFLOWS
+        .iter()
+        .map(|workflow| workflow.id)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+pub fn run_setup_for_mode(
+    repository_root: &Path,
+    mode: SetupMode,
+    optional_workflows: Option<&[String]>,
+) -> Result<String> {
     let target = match mode {
         SetupMode::Interactive => {
             bail!("Interactive setup mode must be resolved before installation")
@@ -221,22 +348,56 @@ pub fn run_setup_for_mode(repository_root: &Path, mode: SetupMode) -> Result<Str
         SetupMode::NonInteractive(target) => target,
     };
 
-    let outcome = install_embedded_setup_assets(repository_root, target).with_context(|| {
-        format!(
-            "Setup installation failed for {}",
-            setup_target_label(target)
-        )
-    })?;
+    // A supplied selection is the exact selection for this run; without one the
+    // persisted selection is reused so a repeat run does not uninstall it.
+    let selected_optional_workflows = match optional_workflows {
+        Some(selection) => selection.to_vec(),
+        None => persisted_optional_workflows(repository_root),
+    };
 
-    // Persist selected integration targets in repo-local config.
-    persist_integration_targets(repository_root, target).with_context(|| {
-        format!(
-            "Setup assets were installed for {} but failed to update repo-local config",
-            setup_target_label(target)
-        )
-    })?;
+    let outcome =
+        install_embedded_setup_assets(repository_root, target, &selected_optional_workflows)
+            .with_context(|| {
+                format!(
+                    "Setup installation failed for {}",
+                    setup_target_label(target)
+                )
+            })?;
+
+    // Persist selected integration targets and optional workflows in repo-local config.
+    persist_integration_targets(repository_root, target, &selected_optional_workflows)
+        .with_context(|| {
+            format!(
+                "Setup assets were installed for {} but failed to update repo-local config",
+                setup_target_label(target)
+            )
+        })?;
 
     Ok(format_setup_install_success_message(&outcome))
+}
+
+/// The optional workflows recorded in repo-local `.sce/config.json`, or an empty
+/// selection when the file is absent, unreadable, or records none.
+pub fn persisted_optional_workflows(repository_root: &Path) -> Vec<String> {
+    use crate::services::config::schema::parse_file_config;
+    use crate::services::config::ConfigPathSource;
+
+    let config_path = RepoPaths::new(repository_root).sce_config_file();
+
+    let Ok(raw) = fs::read_to_string(&config_path) else {
+        return Vec::new();
+    };
+
+    let Ok(config) =
+        parse_file_config(&raw, &config_path, ConfigPathSource::DefaultDiscoveredLocal)
+    else {
+        return Vec::new();
+    };
+
+    config
+        .integrations
+        .map(|integrations| integrations.value.optional_workflows)
+        .unwrap_or_default()
 }
 
 /// Preflight check that verifies the given directory is inside a git repository.
@@ -481,8 +642,9 @@ pub fn install_required_git_hooks(repository_root: &Path) -> Result<RequiredHook
 pub fn install_embedded_setup_assets(
     repository_root: &Path,
     target: SetupTarget,
+    selected_optional_workflows: &[String],
 ) -> Result<SetupInstallOutcome> {
-    install::install_embedded_setup_assets(repository_root, target)
+    install::install_embedded_setup_assets(repository_root, target, selected_optional_workflows)
 }
 
 pub(crate) fn setup_install_recovery_guidance(
@@ -545,10 +707,15 @@ fn integration_target_id_str(target: SetupTarget) -> &'static str {
 /// Persist a successfully installed setup target into the repo-local config file.
 ///
 /// Reads the existing `.sce/config.json`, merges the new concrete target(s) into
-/// `integrations.target` (deduped, preserving existing unrelated fields),
-/// and writes the file back. Creates the file with the bootstrap payload
-/// if it does not already exist.
-pub fn persist_integration_targets(repository_root: &Path, target: SetupTarget) -> Result<()> {
+/// `integrations.target` (deduped, preserving existing unrelated fields), records
+/// the run's resolved optional-workflow selection in
+/// `integrations.optional_workflows`, and writes the file back. Creates the file
+/// with the bootstrap payload if it does not already exist.
+pub fn persist_integration_targets(
+    repository_root: &Path,
+    target: SetupTarget,
+    selected_optional_workflows: &[String],
+) -> Result<()> {
     let repo_paths = RepoPaths::new(repository_root);
     let config_file = repo_paths.sce_config_file();
 
@@ -598,10 +765,14 @@ pub fn persist_integration_targets(repository_root: &Path, target: SetupTarget) 
         }
     }
 
-    // Write the merged integrations block back.
+    // Write the merged integrations block back. The optional-workflow selection
+    // resolved for this run replaces any previously recorded selection.
     config_obj.insert(
         "integrations".to_string(),
-        json!({ "target": existing_targets }),
+        json!({
+            "target": existing_targets,
+            "optional_workflows": selected_optional_workflows,
+        }),
     );
 
     let updated = serde_json::to_string_pretty(&config).with_context(|| {
@@ -631,7 +802,7 @@ mod install {
 
     use super::{
         cleanup_path_if_exists, concrete_targets_for, hook_install_recovery_guidance,
-        iter_embedded_assets_for_setup_target, iter_required_hook_assets,
+        iter_embedded_assets_for_setup_target_with_selection, iter_required_hook_assets,
         setup_install_recovery_guidance, EmbeddedAsset, RequiredHookInstallResult,
         RequiredHookInstallStatus, RequiredHooksInstallOutcome, SetupInstallOutcome,
         SetupInstallTargetResult, SetupTarget,
@@ -658,10 +829,14 @@ mod install {
     pub(super) fn install_embedded_setup_assets(
         repository_root: &Path,
         target: SetupTarget,
+        selected_optional_workflows: &[String],
     ) -> Result<SetupInstallOutcome> {
-        install_embedded_setup_assets_with_rename(repository_root, target, |from, to| {
-            fs::rename(from, to)
-        })
+        install_embedded_setup_assets_with_rename(
+            repository_root,
+            target,
+            selected_optional_workflows,
+            |from, to| fs::rename(from, to),
+        )
     }
 
     fn install_required_git_hooks_in_resolved_repository<F>(
@@ -984,6 +1159,7 @@ mod install {
     fn install_embedded_setup_assets_with_rename<F>(
         repository_root: &Path,
         target: SetupTarget,
+        selected_optional_workflows: &[String],
         mut rename_fn: F,
     ) -> Result<SetupInstallOutcome>
     where
@@ -996,7 +1172,11 @@ mod install {
         for concrete_target in concrete_targets_for(target) {
             let concrete_target = *concrete_target;
             let assets: Vec<&'static EmbeddedAsset> =
-                iter_embedded_assets_for_setup_target(concrete_target).collect();
+                iter_embedded_assets_for_setup_target_with_selection(
+                    concrete_target,
+                    selected_optional_workflows,
+                )
+                .collect();
             let result = install_assets_for_concrete_target_with_rename(
                 repository_root,
                 concrete_target,
@@ -1185,6 +1365,10 @@ mod install {
 
 pub trait SetupTargetPrompter {
     fn prompt_target(&self) -> Result<SetupDispatch>;
+
+    /// The optional workflows to install, pre-checked from `defaults`.
+    /// `None` means the operator cancelled the prompt.
+    fn prompt_optional_workflows(&self, defaults: &[String]) -> Result<Option<Vec<String>>>;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1193,6 +1377,10 @@ pub struct InquireSetupTargetPrompter;
 impl SetupTargetPrompter for InquireSetupTargetPrompter {
     fn prompt_target(&self) -> Result<SetupDispatch> {
         prompt::prompt_target()
+    }
+
+    fn prompt_optional_workflows(&self, defaults: &[String]) -> Result<Option<Vec<String>>> {
+        prompt::prompt_optional_workflows(defaults)
     }
 }
 
@@ -1229,13 +1417,20 @@ fn setup_prompt_title_with_color_policy(color_enabled: bool) -> String {
 
 mod prompt {
     use anyhow::{bail, Result};
-    use inquire::{InquireError, Select};
+    use inquire::{InquireError, MultiSelect, Select};
 
     use crate::services::style::{
         prompt_label, prompt_label_with_color_policy, prompt_value_with_color_policy,
     };
 
-    use super::{SetupDispatch, SetupMode, SetupPromptTarget, SetupTarget};
+    use super::{OptionalWorkflow, SetupDispatch, SetupMode, SetupPromptTarget, SetupTarget};
+
+    fn proceed(target: SetupTarget) -> SetupDispatch {
+        SetupDispatch::Proceed {
+            mode: SetupMode::NonInteractive(target),
+            optional_workflows: None,
+        }
+    }
 
     pub(super) fn prompt_target() -> Result<SetupDispatch> {
         let options = vec![
@@ -1248,18 +1443,10 @@ mod prompt {
         let selection = Select::new(&setup_prompt_title(), options).prompt();
 
         match selection {
-            Ok(SetupPromptTarget::OpenCode) => {
-                Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(SetupTarget::OpenCode)))
-            }
-            Ok(SetupPromptTarget::Claude) => {
-                Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(SetupTarget::Claude)))
-            }
-            Ok(SetupPromptTarget::Pi) => {
-                Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(SetupTarget::Pi)))
-            }
-            Ok(SetupPromptTarget::All) => {
-                Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(SetupTarget::All)))
-            }
+            Ok(SetupPromptTarget::OpenCode) => Ok(proceed(SetupTarget::OpenCode)),
+            Ok(SetupPromptTarget::Claude) => Ok(proceed(SetupTarget::Claude)),
+            Ok(SetupPromptTarget::Pi) => Ok(proceed(SetupTarget::Pi)),
+            Ok(SetupPromptTarget::All) => Ok(proceed(SetupTarget::All)),
             Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
                 Ok(SetupDispatch::Cancelled)
             }
@@ -1268,6 +1455,109 @@ mod prompt {
             ),
             Err(error) => Err(error.into()),
         }
+    }
+
+    /// The optional workflows to install, pre-checked from `defaults`. `None`
+    /// means the operator cancelled. An empty catalog skips the prompt entirely
+    /// and resolves to an empty selection.
+    pub(super) fn prompt_optional_workflows(defaults: &[String]) -> Result<Option<Vec<String>>> {
+        let Some((rows, default_indices)) =
+            optional_workflow_prompt_inputs(super::OPTIONAL_WORKFLOWS, defaults)
+        else {
+            return Ok(Some(Vec::new()));
+        };
+
+        let selection = MultiSelect::new(&optional_workflow_prompt_title(), rows)
+            .with_default(&default_indices)
+            .prompt();
+
+        match selection {
+            Ok(selected) => Ok(Some(
+                selected
+                    .into_iter()
+                    .map(|row| row.workflow.id.to_string())
+                    .collect(),
+            )),
+            Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => Ok(None),
+            Err(InquireError::NotTTY) => bail!(
+                "Interactive setup requires a TTY. Re-run with '--non-interactive' and one of '--opencode', '--claude', '--pi', or '--all', adding '--workflow <slug>' for each optional workflow to install."
+            ),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// One selectable row per optional workflow, in catalog order.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(super) struct OptionalWorkflowRow {
+        pub(super) workflow: &'static OptionalWorkflow,
+    }
+
+    impl std::fmt::Display for OptionalWorkflowRow {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", optional_workflow_row_label(self.workflow))
+        }
+    }
+
+    /// The prompt's rows and pre-checked indices, or `None` when the catalog
+    /// carries no optional workflow and the prompt is skipped entirely.
+    pub(super) fn optional_workflow_prompt_inputs(
+        catalog: &'static [OptionalWorkflow],
+        defaults: &[String],
+    ) -> Option<(Vec<OptionalWorkflowRow>, Vec<usize>)> {
+        if catalog.is_empty() {
+            return None;
+        }
+
+        Some((
+            optional_workflow_rows(catalog),
+            optional_workflow_default_indices(catalog, defaults),
+        ))
+    }
+
+    pub(super) fn optional_workflow_rows(
+        catalog: &'static [OptionalWorkflow],
+    ) -> Vec<OptionalWorkflowRow> {
+        catalog
+            .iter()
+            .map(|workflow| OptionalWorkflowRow { workflow })
+            .collect()
+    }
+
+    /// Row indices to pre-check, in catalog order. Ids that are not in the
+    /// catalog are ignored so a stale persisted selection cannot panic the
+    /// prompt.
+    pub(super) fn optional_workflow_default_indices(
+        catalog: &'static [OptionalWorkflow],
+        defaults: &[String],
+    ) -> Vec<usize> {
+        catalog
+            .iter()
+            .enumerate()
+            .filter(|(_, workflow)| defaults.iter().any(|id| id == workflow.id))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    pub(super) fn optional_workflow_prompt_title() -> String {
+        prompt_label("Select optional workflows")
+    }
+
+    pub(super) fn optional_workflow_row_label(workflow: &OptionalWorkflow) -> String {
+        optional_workflow_row_label_with_color_policy(
+            workflow,
+            crate::services::style::supports_color(),
+        )
+    }
+
+    pub(super) fn optional_workflow_row_label_with_color_policy(
+        workflow: &OptionalWorkflow,
+        color_enabled: bool,
+    ) -> String {
+        format!(
+            "{} — {}",
+            prompt_value_with_color_policy(workflow.title, color_enabled),
+            workflow.description
+        )
     }
 
     pub(super) fn setup_prompt_title() -> String {
@@ -1301,15 +1591,42 @@ mod prompt {
     }
 }
 
-pub fn resolve_setup_dispatch<P>(mode: SetupMode, prompter: &P) -> Result<SetupDispatch>
+/// Resolve the interactive setup prompts into an installable dispatch.
+///
+/// `optional_workflow_defaults` pre-checks the optional-workflow prompt's rows;
+/// callers pass the repository's persisted selection, or the `--workflow`
+/// selection when one was supplied. A non-interactive mode prompts for nothing
+/// and carries no selection, leaving that resolution to `run_setup_for_mode`.
+pub fn resolve_setup_dispatch<P>(
+    mode: SetupMode,
+    prompter: &P,
+    optional_workflow_defaults: &[String],
+) -> Result<SetupDispatch>
 where
     P: SetupTargetPrompter,
 {
     match mode {
-        SetupMode::Interactive => prompter.prompt_target(),
-        SetupMode::NonInteractive(target) => {
-            Ok(SetupDispatch::Proceed(SetupMode::NonInteractive(target)))
+        SetupMode::Interactive => {
+            let target_dispatch = prompter.prompt_target()?;
+            let SetupDispatch::Proceed { mode, .. } = target_dispatch else {
+                return Ok(SetupDispatch::Cancelled);
+            };
+
+            let Some(optional_workflows) =
+                prompter.prompt_optional_workflows(optional_workflow_defaults)?
+            else {
+                return Ok(SetupDispatch::Cancelled);
+            };
+
+            Ok(SetupDispatch::Proceed {
+                mode,
+                optional_workflows: Some(optional_workflows),
+            })
         }
+        SetupMode::NonInteractive(target) => Ok(SetupDispatch::Proceed {
+            mode: SetupMode::NonInteractive(target),
+            optional_workflows: None,
+        }),
     }
 }
 
@@ -1578,21 +1895,33 @@ mod tests {
         assert_eq!(integration_target_id_str(SetupTarget::Pi), "pi");
     }
 
+    /// Every optional workflow selected, so filtering drops nothing.
+    fn every_optional_workflow() -> Vec<&'static str> {
+        super::OPTIONAL_WORKFLOWS
+            .iter()
+            .map(|workflow| workflow.id)
+            .collect()
+    }
+
     #[test]
     fn iter_embedded_assets_for_all_covers_each_concrete_target() {
-        let all_count = iter_embedded_assets_for_setup_target(SetupTarget::All).count();
-        let concrete_sum = iter_embedded_assets_for_setup_target(SetupTarget::OpenCode).count()
-            + iter_embedded_assets_for_setup_target(SetupTarget::Claude).count()
-            + iter_embedded_assets_for_setup_target(SetupTarget::Pi).count();
+        let selection = every_optional_workflow();
+        let count = |target| {
+            iter_embedded_assets_for_setup_target_with_selection(target, &selection).count()
+        };
 
-        assert!(iter_embedded_assets_for_setup_target(SetupTarget::Pi).count() > 0);
-        assert_eq!(all_count, concrete_sum);
+        let concrete_sum =
+            count(SetupTarget::OpenCode) + count(SetupTarget::Claude) + count(SetupTarget::Pi);
+
+        assert!(count(SetupTarget::Pi) > 0);
+        assert_eq!(count(SetupTarget::All), concrete_sum);
     }
 
     #[test]
     fn embedded_build_payload_contains_generated_targets_and_static_hooks() {
+        let selection = every_optional_workflow();
         let contains = |target, path| {
-            iter_embedded_assets_for_setup_target(target)
+            iter_embedded_assets_for_setup_target_with_selection(target, &selection)
                 .any(|asset| asset.relative_path == path && !asset.bytes.is_empty())
         };
 

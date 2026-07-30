@@ -18,8 +18,8 @@ use serde_json::Value;
 
 use super::policy::{parse_bash_policy_presets, parse_custom_bash_policies, CustomBashPolicyEntry};
 use super::types::{
-    ConfigPathSource, DatabaseRetryConfig, IntegrationTargetId, IntegrationsConfig, LogFileMode,
-    LogFormat, LogLevel,
+    parse_optional_workflow_id, ConfigPathSource, DatabaseRetryConfig, IntegrationTargetId,
+    IntegrationsConfig, LogFileMode, LogFormat, LogLevel,
 };
 use crate::services::resilience::RetryPolicy;
 
@@ -88,6 +88,7 @@ pub(crate) struct ParsedAgentTraceConfigDocument {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub(crate) struct ParsedIntegrationsConfigDocument {
     pub(crate) target: Option<Vec<String>>,
+    pub(crate) optional_workflows: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -182,7 +183,14 @@ pub(crate) type ParsedFilePolicies = (
 pub(crate) fn validate_config_value_against_schema(value: &Value, path: &Path) -> Result<()> {
     let mut errors = config_schema_validator()
         .iter_errors(value)
-        .map(|error| error.to_string())
+        .map(|error| {
+            let location = error.instance_path().to_string();
+            if location.is_empty() {
+                error.to_string()
+            } else {
+                format!("{location}: {error}")
+            }
+        })
         .collect::<Vec<_>>();
 
     if errors.is_empty() {
@@ -661,21 +669,44 @@ fn map_integrations_config(
         integrations_object,
         path,
         Some("integrations"),
-        &["target"],
-        "target",
+        &["target", "optional_workflows"],
+        "target, optional_workflows",
     )?;
 
-    let Some(raw_targets) = typed.and_then(|config| config.target.as_ref()) else {
+    let raw_targets = typed.and_then(|config| config.target.as_ref());
+    let raw_optional_workflows = typed.and_then(|config| config.optional_workflows.as_ref());
+
+    if raw_targets.is_none() && raw_optional_workflows.is_none() {
         return Ok(None);
-    };
+    }
+
+    let source_description = format!("config file '{}'", path.display());
 
     let targets: Vec<IntegrationTargetId> = raw_targets
-        .iter()
-        .map(|raw| IntegrationTargetId::parse(raw, &format!("config file '{}'", path.display())))
-        .collect::<Result<Vec<_>>>()?;
+        .map(|raw_targets| {
+            raw_targets
+                .iter()
+                .map(|raw| IntegrationTargetId::parse(raw, &source_description))
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    let optional_workflows: Vec<String> = raw_optional_workflows
+        .map(|raw_workflows| {
+            raw_workflows
+                .iter()
+                .map(|raw| parse_optional_workflow_id(raw, &source_description))
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
 
     Ok(Some(FileConfigValue {
-        value: IntegrationsConfig { target: targets },
+        value: IntegrationsConfig {
+            target: targets,
+            optional_workflows,
+        },
         source,
     }))
 }

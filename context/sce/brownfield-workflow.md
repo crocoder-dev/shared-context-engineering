@@ -14,6 +14,26 @@ Its catalog record assigns the existing `shared-context-code` OpenCode routing
 role, so the Code agent's derived permission list gains `"sce-brownfield":
 allow` and no third routing role exists.
 
+It is also the only catalog record with `optional = true`. That flag is an
+install-time statement carried out of Pkl through the generated
+`config/optional-workflows.json` manifest; it does not condition generation, so
+`/brownfield` is still generated for all three targets and still counted by the
+generation contract exactly like a core workflow.
+
+What that flag changes is installation: a default `sce setup` run installs no
+`/brownfield` command and no `sce-brownfield` skill package. A repository opts
+in with `sce setup --workflow brownfield`, which installs both and records
+`brownfield` in `integrations.optional_workflows` so later runs preserve the
+choice. `sce doctor` follows the same record: it expects the `/brownfield`
+command and `sce-brownfield` skill files only where that key selects them, and
+reports missing or drifted ones exactly like a core workflow's where it does.
+See [setup local bootstrap](setup-repo-local-config-bootstrap.md), the
+[CLI command surface](../cli/cli-command-surface.md), and the
+[doctor human text contract](doctor-human-text-contract.md). This repository's
+own `.opencode/`, `.claude/`, and `.pi/` mirrors stay opted in on disk, while its
+`.sce/config.json` records no selection, so its own doctor run does not inspect
+them.
+
 Its behavior was authored first as the project-root `.pi/` baseline described in
 [Patterns](../patterns.md) ("Use the project-root `.pi/` workflows as the
 behavioral baseline for canonical workflow packages"), and the canonical

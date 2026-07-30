@@ -1,4 +1,5 @@
 import "../generate.pkl" as generated
+import "../base/workflow-catalog.pkl" as catalog
 import "opencode-content.pkl" as opencode
 import "claude-content.pkl" as claude
 import "pi-content.pkl" as pi
@@ -39,6 +40,7 @@ hidden expectedArtifactPaths = new Mapping {
   ["config/.pi/extensions/sce/index.ts"] = true
 
   ["config/schema/sce-config.schema.json"] = true
+  ["config/optional-workflows.json"] = true
 }
 
 hidden generatedArtifacts = new Mapping {
@@ -216,7 +218,7 @@ local forbiddenWorkflowReferenceTokens = new Listing {
 /// package and the retained non-workflow assets. Stating the total as a literal
 /// makes an unintended inventory change fail here instead of silently becoming
 /// the new expectation.
-local expectedArtifactPathCount = 70
+local expectedArtifactPathCount = 71
 
 local assertExactArtifactPaths = (actual: Mapping) ->
   if (
@@ -319,8 +321,30 @@ local assertOutputNotDuplicated = (documents: Mapping) ->
   ) "generated workflow SKILL.md documents: no output.md layout duplicated"
   else error("generated SKILL.md reproduces a references/output.md fenced layout verbatim")
 
+/// The manifest is the only carrier of optional-workflow identity outside Pkl,
+/// so assert its content against the catalog rather than accepting whatever the
+/// renderer emitted: every optional workflow appears with its catalog title and
+/// slugs, and no core workflow appears at all.
+local assertOptionalWorkflowManifest = (artifacts: Mapping) ->
+  let (text = artifacts["config/optional-workflows.json"])
+    if (
+      text.contains("\"schemaVersion\": 1")
+      && catalog.workflows.toMap().filter((_, workflow) -> workflow.optional).length > 0
+      && catalog.workflows.every((slug, workflow) ->
+        if (workflow.optional)
+          text.contains("\"id\": \"\(slug)\"")
+            && text.contains("\"title\": \"\(workflow.title)\"")
+            && text.contains("\"commandSlug\": \"\(workflow.commandSlug)\"")
+            && text.contains("\"skillSlug\": \"\(workflow.skillSlug)\"")
+        else
+          !text.contains("\"id\": \"\(slug)\"")
+      )
+    ) "generated optional-workflow manifest: matches the catalog's optional workflows"
+    else error("generated optional-workflow manifest does not match the catalog's optional workflows")
+
 contractChecks {
   ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
+  ["optional-workflow-manifest"] = assertOptionalWorkflowManifest.apply(generatedArtifacts)
   ["workflow-references"] = assertWorkflowReferences.apply(workflowDocuments)
   ["decision-invocation"] = assertDecisionWorkflowReferences.apply(compositeWorkflowDocuments)
   ["opencode-decision-permission"] = assertOpenCodeDecisionPermission.apply(opencode.agents)

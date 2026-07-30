@@ -291,9 +291,36 @@ impl IntegrationTargetId {
     }
 }
 
+/// Validate one `integrations.optional_workflows` id against the build-generated
+/// optional-workflow catalog. Ids are not enumerated in Rust, so a workflow
+/// marked optional in the Pkl catalog needs no change here.
+pub(crate) fn parse_optional_workflow_id(raw: &str, source: &str) -> anyhow::Result<String> {
+    if crate::services::setup::OPTIONAL_WORKFLOWS
+        .iter()
+        .any(|workflow| workflow.id == raw)
+    {
+        return Ok(raw.to_string());
+    }
+
+    let available = crate::services::setup::OPTIONAL_WORKFLOWS
+        .iter()
+        .map(|workflow| workflow.id)
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    if available.is_empty() {
+        anyhow::bail!(
+            "Invalid optional workflow '{raw}' from {source}. No optional workflows are available."
+        );
+    }
+
+    anyhow::bail!("Invalid optional workflow '{raw}' from {source}. Valid values: {available}.")
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct IntegrationsConfig {
     pub(crate) target: Vec<IntegrationTargetId>,
+    pub(crate) optional_workflows: Vec<String>,
 }
 
 #[cfg(test)]

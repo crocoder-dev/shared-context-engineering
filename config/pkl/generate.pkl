@@ -3,6 +3,7 @@ import "renderers/claude-content.pkl" as claude
 import "renderers/pi-content.pkl" as pi
 import "renderers/common.pkl" as common
 import "base/sce-config-schema.pkl" as sce_config_schema
+import "base/optional-workflow-manifest.pkl" as optional_workflow_manifest
 import "base/bash-policy-presets.pkl" as bash_policy_presets
 
 local bashPolicyPresetCatalogSource = bash_policy_presets.output.text
@@ -70,6 +71,9 @@ output {
     }
     ["config/schema/sce-config.schema.json"] {
       text = sce_config_schema.rendered
+    }
+    ["config/optional-workflows.json"] {
+      text = optional_workflow_manifest.rendered
     }
   }
 }

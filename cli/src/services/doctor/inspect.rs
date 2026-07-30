@@ -15,7 +15,8 @@ use crate::services::repository_identity::resolve::{
     resolve_repository_identity, RepositoryIdentitySource,
 };
 use crate::services::setup::{
-    iter_embedded_assets_for_setup_target, iter_required_hook_assets, EmbeddedAsset, SetupTarget,
+    iter_embedded_assets_for_setup_target_with_selection, iter_required_hook_assets,
+    persisted_optional_workflows, EmbeddedAsset, SetupTarget,
 };
 
 use super::types::{
@@ -482,20 +483,29 @@ fn inspect_repository_integrations(
     }
     let mut integration_groups = Vec::new();
 
+    // An optional workflow's assets are expected on disk only when repo-local
+    // config records it as selected; an unrecorded selection means not selected.
+    let selected_optional_workflows = persisted_optional_workflows(resolved_root);
+
     for target in &targets {
         match target {
             IntegrationTargetId::Opencode => {
-                let opencode_groups = collect_opencode_integration_groups(resolved_root);
+                let opencode_groups = collect_opencode_integration_groups(
+                    resolved_root,
+                    &selected_optional_workflows,
+                );
                 inspect_opencode_integration_health(resolved_root, &opencode_groups, problems);
                 integration_groups.extend(opencode_groups);
             }
             IntegrationTargetId::Claude => {
-                let claude_groups = collect_claude_integration_groups(resolved_root);
+                let claude_groups =
+                    collect_claude_integration_groups(resolved_root, &selected_optional_workflows);
                 inspect_claude_integration_health(&claude_groups, problems);
                 integration_groups.extend(claude_groups);
             }
             IntegrationTargetId::Pi => {
-                let pi_groups = collect_pi_integration_groups(resolved_root);
+                let pi_groups =
+                    collect_pi_integration_groups(resolved_root, &selected_optional_workflows);
                 inspect_pi_integration_health(&pi_groups, problems);
                 integration_groups.extend(pi_groups);
             }
@@ -1138,12 +1148,18 @@ fn inspect_opencode_asset_presence(
     });
 }
 
-fn collect_opencode_integration_groups(repository_root: &Path) -> Vec<IntegrationGroupHealth> {
+fn collect_opencode_integration_groups(
+    repository_root: &Path,
+    selected_optional_workflows: &[String],
+) -> Vec<IntegrationGroupHealth> {
     let repo_paths = RepoPaths::new(repository_root);
     let opencode_root = repo_paths.opencode_dir();
     let manifest_path = repo_paths.opencode_manifest_file();
-    let embedded_assets =
-        iter_embedded_assets_for_setup_target(SetupTarget::OpenCode).collect::<Vec<_>>();
+    let embedded_assets = iter_embedded_assets_for_setup_target_with_selection(
+        SetupTarget::OpenCode,
+        selected_optional_workflows,
+    )
+    .collect::<Vec<_>>();
     let mut plugin_children = Vec::new();
     let mut agent_children = Vec::new();
     let mut command_children = Vec::new();
@@ -1215,11 +1231,17 @@ fn collect_opencode_integration_groups(repository_root: &Path) -> Vec<Integratio
     ]
 }
 
-fn collect_claude_integration_groups(repository_root: &Path) -> Vec<IntegrationGroupHealth> {
+fn collect_claude_integration_groups(
+    repository_root: &Path,
+    selected_optional_workflows: &[String],
+) -> Vec<IntegrationGroupHealth> {
     let repo_paths = RepoPaths::new(repository_root);
     let claude_root = repo_paths.claude_dir();
-    let embedded_assets =
-        iter_embedded_assets_for_setup_target(SetupTarget::Claude).collect::<Vec<_>>();
+    let embedded_assets = iter_embedded_assets_for_setup_target_with_selection(
+        SetupTarget::Claude,
+        selected_optional_workflows,
+    )
+    .collect::<Vec<_>>();
     let mut plugin_children = Vec::new();
     let mut agent_children = Vec::new();
     let mut command_children = Vec::new();
@@ -1277,11 +1299,17 @@ fn collect_claude_integration_groups(repository_root: &Path) -> Vec<IntegrationG
     ]
 }
 
-fn collect_pi_integration_groups(repository_root: &Path) -> Vec<IntegrationGroupHealth> {
+fn collect_pi_integration_groups(
+    repository_root: &Path,
+    selected_optional_workflows: &[String],
+) -> Vec<IntegrationGroupHealth> {
     let repo_paths = RepoPaths::new(repository_root);
     let pi_root = repo_paths.pi_dir();
-    let embedded_assets =
-        iter_embedded_assets_for_setup_target(SetupTarget::Pi).collect::<Vec<_>>();
+    let embedded_assets = iter_embedded_assets_for_setup_target_with_selection(
+        SetupTarget::Pi,
+        selected_optional_workflows,
+    )
+    .collect::<Vec<_>>();
     let mut prompt_children = Vec::new();
     let mut skill_children = Vec::new();
     let mut extension_children = Vec::new();
@@ -1429,5 +1457,145 @@ fn inspect_hook_content_state(
             });
             HookContentState::Unknown
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{
+        collect_claude_integration_groups, collect_opencode_integration_groups,
+        collect_pi_integration_groups, inspect_claude_integration_health, IntegrationContentState,
+        IntegrationGroupHealth,
+    };
+    use crate::services::setup::OPTIONAL_WORKFLOWS;
+
+    /// The collectors only read file state, so a non-existent root is enough to
+    /// observe which children they expect.
+    fn absent_repository_root() -> PathBuf {
+        PathBuf::from("/nonexistent-sce-doctor-optional-workflow-fixture")
+    }
+
+    fn brownfield_slugs() -> (&'static str, &'static str) {
+        let workflow = OPTIONAL_WORKFLOWS
+            .iter()
+            .find(|workflow| workflow.id == "brownfield")
+            .expect("brownfield is an optional workflow in the embedded catalog");
+        (workflow.command_slug, workflow.skill_slug)
+    }
+
+    fn child_paths(groups: &[IntegrationGroupHealth]) -> Vec<String> {
+        groups
+            .iter()
+            .flat_map(|group| group.children.iter())
+            .map(|child| child.relative_path.clone())
+            .collect()
+    }
+
+    #[test]
+    fn integration_children_exclude_unselected_optional_workflow() {
+        let root = absent_repository_root();
+        let (command_slug, skill_slug) = brownfield_slugs();
+
+        let cases = [
+            (
+                child_paths(&collect_opencode_integration_groups(&root, &[])),
+                format!("command/{command_slug}.md"),
+            ),
+            (
+                child_paths(&collect_claude_integration_groups(&root, &[])),
+                format!("commands/{command_slug}.md"),
+            ),
+            (
+                child_paths(&collect_pi_integration_groups(&root, &[])),
+                format!("prompts/{command_slug}.md"),
+            ),
+        ];
+
+        let skill_prefix = format!("skills/{skill_slug}/");
+        for (paths, command_path) in cases {
+            assert!(
+                !paths.contains(&command_path),
+                "{command_path} still expected"
+            );
+            assert!(
+                !paths.iter().any(|path| path.starts_with(&skill_prefix)),
+                "{skill_prefix} assets still expected"
+            );
+            assert!(
+                paths.iter().any(|path| path.ends_with("validate.md")),
+                "core workflow assets were dropped"
+            );
+        }
+    }
+
+    #[test]
+    fn integration_children_include_selected_optional_workflow() {
+        let root = absent_repository_root();
+        let (command_slug, skill_slug) = brownfield_slugs();
+        let selection = vec![String::from("brownfield")];
+
+        let cases = [
+            (
+                child_paths(&collect_opencode_integration_groups(&root, &selection)),
+                format!("command/{command_slug}.md"),
+            ),
+            (
+                child_paths(&collect_claude_integration_groups(&root, &selection)),
+                format!("commands/{command_slug}.md"),
+            ),
+            (
+                child_paths(&collect_pi_integration_groups(&root, &selection)),
+                format!("prompts/{command_slug}.md"),
+            ),
+        ];
+
+        let skill_prefix = format!("skills/{skill_slug}/");
+        for (paths, command_path) in cases {
+            assert!(paths.contains(&command_path), "{command_path} not expected");
+            assert!(
+                paths.iter().any(|path| path.starts_with(&skill_prefix)),
+                "{skill_prefix} assets not expected"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_file_problems_follow_the_optional_workflow_selection() {
+        let root = absent_repository_root();
+        let (command_slug, _) = brownfield_slugs();
+        let command_path = format!("commands/{command_slug}.md");
+
+        let unselected_groups = collect_claude_integration_groups(&root, &[]);
+        let mut unselected_problems = Vec::new();
+        inspect_claude_integration_health(&unselected_groups, &mut unselected_problems);
+        assert!(
+            !unselected_problems
+                .iter()
+                .any(|problem| problem.summary.contains(command_slug)),
+            "an unselected optional workflow produced a problem"
+        );
+        assert!(
+            !unselected_problems.is_empty(),
+            "core assets are absent, so missing-file problems are still expected"
+        );
+
+        let selection = vec![String::from("brownfield")];
+        let selected_groups = collect_claude_integration_groups(&root, &selection);
+        assert!(selected_groups.iter().any(|group| group
+            .children
+            .iter()
+            .any(|child| child.relative_path == command_path
+                && matches!(child.content_state, IntegrationContentState::Missing))));
+
+        let mut selected_problems = Vec::new();
+        inspect_claude_integration_health(&selected_groups, &mut selected_problems);
+        assert!(
+            selected_problems
+                .iter()
+                .any(|problem| problem.summary.contains(&command_path)),
+            "a selected optional workflow's missing file was not reported"
+        );
     }
 }

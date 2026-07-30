@@ -138,6 +138,7 @@ pub fn default_runtime_command(name: &str) -> Option<RuntimeCommand> {
                     install_hooks: true,
                     hooks_repo_path: None,
                     context_only: false,
+                    optional_workflows: None,
                 },
             },
         )),
