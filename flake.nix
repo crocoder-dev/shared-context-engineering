@@ -136,13 +136,23 @@
         tursoCraneLib = (crane.mkLib pkgs).overrideToolchain (_: tursoToolchain);
 
         workspaceRoot = ./.;
-        generatedConfigFileset = pkgs.lib.fileset.unions [
-          (pkgs.lib.fileset.maybeMissing ./config/.opencode)
-          (pkgs.lib.fileset.maybeMissing ./config/.claude)
-          (pkgs.lib.fileset.maybeMissing ./config/.pi)
-          ./config/schema/sce-config.schema.json
+        cliBuildInputFileset = pkgs.lib.fileset.unions [
+          ./config/pkl
+          ./config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts
+          ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
+          ./config/lib/pi-plugin/sce-pi-extension.ts
           ./config/schema/agent-trace.schema.json
         ];
+        cliGeneratedInputSrc = pkgs.lib.fileset.toSource {
+          root = workspaceRoot;
+          fileset = pkgs.lib.fileset.unions [
+            ./config/pkl
+            ./config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts
+            ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
+            ./config/lib/pi-plugin/sce-pi-extension.ts
+            ./scripts/produce-cli-generated-input.sh
+          ];
+        };
         workspaceSrc = pkgs.lib.fileset.toSource {
           root = workspaceRoot;
           fileset = pkgs.lib.fileset.unions [
@@ -153,7 +163,7 @@
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/patch/fixtures)
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/structured_patch/fixtures)
             (pkgs.lib.fileset.maybeMissing ./cli/migrations)
-            generatedConfigFileset
+            cliBuildInputFileset
             (pkgs.lib.fileset.maybeMissing ./cli/assets/hooks)
           ];
         };
@@ -197,25 +207,19 @@
           ];
         };
 
-        pklParitySrc = pkgs.lib.fileset.toSource {
+        pklGeneratedCheckSrc = pkgs.lib.fileset.toSource {
           root = workspaceRoot;
           fileset = pkgs.lib.fileset.unions [
             ./config/pkl
-            (pkgs.lib.fileset.maybeMissing ./config/.opencode/agent)
-            (pkgs.lib.fileset.maybeMissing ./config/.opencode/command)
-            (pkgs.lib.fileset.maybeMissing ./config/.opencode/skills)
-            (pkgs.lib.fileset.maybeMissing ./config/.opencode/lib/drift-collectors.js)
-            (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/agent)
-            (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/command)
-            (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/skills)
-            (pkgs.lib.fileset.maybeMissing ./config/automated/.opencode/lib/drift-collectors.js)
-            (pkgs.lib.fileset.maybeMissing ./config/.claude/agents)
-            (pkgs.lib.fileset.maybeMissing ./config/.claude/commands)
-            (pkgs.lib.fileset.maybeMissing ./config/.claude/skills)
-            (pkgs.lib.fileset.maybeMissing ./config/schema/sce-config.schema.json)
             ./config/lib/pi-plugin/sce-pi-extension.ts
             ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
             ./config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts
+            (pkgs.lib.fileset.maybeMissing ./config/.opencode)
+            (pkgs.lib.fileset.maybeMissing ./config/.claude)
+            (pkgs.lib.fileset.maybeMissing ./config/.pi)
+            (pkgs.lib.fileset.maybeMissing ./config/schema/sce-config.schema.json)
+            (pkgs.lib.fileset.maybeMissing ./cli/assets/generated)
+            ./scripts/produce-cli-generated-input.sh
           ];
         };
 
@@ -278,21 +282,50 @@
           SCE_GIT_COMMIT = shortGitCommit;
         };
 
-        commonCargoArgs = cargoBaseArgs // {
+        # Produce the canonical Pkl payload before entering any Cargo
+        # derivation. The output is content-addressed by only the producer and
+        # its canonical generator inputs, so native, release, test, and Clippy
+        # builds share one handoff while dependency-only and formatting
+        # derivations remain independent of it.
+        cliGeneratedInput = pkgs.runCommand "sce-cli-generated-input"
+          {
+            src = cliGeneratedInputSrc;
+            nativeBuildInputs = [
+              pkgs.coreutils
+              pkgs.diffutils
+              pkgs.findutils
+              pkgs.pkl
+            ];
+          }
+          ''
+            set -euo pipefail
+
+            cp -r "$src" ./repo
+            chmod -R u+w ./repo
+
+            ${pkgs.bash}/bin/bash \
+              ./repo/scripts/produce-cli-generated-input.sh \
+              ./repo \
+              ./generated-input
+            mv ./generated-input "$out"
+          '';
+
+        cliGeneratedInputArgs = {
+          SCE_CLI_GENERATED_INPUT_DIR = cliGeneratedInput;
+        };
+
+        commonCargoArgs = cargoBaseArgs // cliGeneratedInputArgs // {
           pname = "sce";
           src = workspaceSrc;
 
           postUnpack = ''
-            mkdir -p "$sourceRoot/cli/assets/generated/config"
-            cp -R ${./config/.opencode} "$sourceRoot/cli/assets/generated/config/opencode"
-            cp -R ${./config/.claude} "$sourceRoot/cli/assets/generated/config/claude"
-            cp -R ${./config/.pi} "$sourceRoot/cli/assets/generated/config/pi"
-            mkdir -p "$sourceRoot/cli/assets/generated/config/schema"
-            cp ${./config/schema/sce-config.schema.json} "$sourceRoot/cli/assets/generated/config/schema/sce-config.schema.json"
-            cp ${./config/schema/agent-trace.schema.json} "$sourceRoot/cli/assets/generated/config/schema/agent-trace.schema.json"
-
             cd "$sourceRoot/cli"
             sourceRoot="."
+
+            if command -v pkl >/dev/null 2>&1; then
+              printf 'Pkl must not be available inside CLI Cargo derivations\n' >&2
+              exit 1
+            fi
           '';
         };
 
@@ -459,7 +492,7 @@
           echo "- tsc: $(version_of tsc)"
           echo "- tsserver-lsp: $(version_of typescript-language-server)"
           echo "- rust: $(version_of rustc)"
-          echo "- pkl-generate: nix run .#pkl-generate"
+          echo "- pkl-generate: nix run .#pkl-generate -- <output-dir>"
           echo "- pkl-check-generated: nix run .#pkl-check-generated"
           echo "- release-artifacts: nix run .#release-artifacts -- --help"
           echo "- native-portability-audit: nix run .#native-portability-audit -- --help"
@@ -507,7 +540,15 @@
               repo_root="$(pwd)"
             fi
 
-            exec nix develop "''${repo_root}" -c pkl eval -m "''${repo_root}" "''${repo_root}/config/pkl/generate.pkl"
+            if [ "$#" -ne 1 ]; then
+              printf 'Usage: pkl-generate <output-dir>\n' >&2
+              exit 2
+            fi
+
+            output_dir="$1"
+            mkdir -p "''${output_dir}"
+            output_dir="$(cd "''${output_dir}" && pwd)"
+            exec nix develop "''${repo_root}" -c pkl eval -m "''${output_dir}" "''${repo_root}/config/pkl/generate.pkl"
           '';
         };
 
@@ -1032,6 +1073,7 @@
             pkgs.git
             pkgs.gnutar
             pkgs.gzip
+            pkgs.pkl
             pkgs.python3
           ]
           ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
@@ -1091,6 +1133,7 @@
             export SCE_FLATPAK_COMMIT_MANIFEST_TEMPLATE="${flatpakManifest.commitManifestTemplate}"
             export SCE_FLATPAK_LOCAL_PATH_PLACEHOLDER="${flatpakManifest.localPathPlaceholder}"
             export SCE_FLATPAK_COMMIT_PLACEHOLDER="${flatpakManifest.commitPlaceholder}"
+            export SCE_FLATPAK_FALLBACK_SOURCE_DIRECTORY="${flatpakManifest.fallbackSourceDirectory}"
             export SCE_FLATPAK_STATIC_CHECK="${flatpakStaticCheckApp}/bin/flatpak-static-check"
             export SCE_FLATPAK_VERSION_PARITY_CHECK="${flatpakVersionParityCheckApp}/bin/flatpak-version-parity-check"
             export SCE_FLATPAK_LOCAL_MANIFEST_CHECK="${flatpakLocalManifestCheckApp}/bin/flatpak-local-manifest-check"
@@ -1137,72 +1180,53 @@
             mkdir -p "$out"
           '';
 
-        pklParityCheck =
-          pkgs.runCommand "pkl-parity-check"
+        pklGeneratedCheck =
+          pkgs.runCommand "pkl-generated-check"
             {
               nativeBuildInputs = [
-                pkgs.git
+                pkgs.coreutils
+                pkgs.diffutils
                 pkgs.pkl
               ];
             }
             ''
               set -euo pipefail
 
-              # Copy only the Pkl authoring inputs and generated outputs that
-              # this parity check reads, so unrelated repository changes do not
-              # invalidate the cheap generated-output drift check.
-              cp -r "${pklParitySrc}" ./repo
+              cp -r "${pklGeneratedCheckSrc}" ./repo
               chmod -R u+w ./repo
+              patchShebangs ./repo/scripts/produce-cli-generated-input.sh
               cd ./repo
 
-              export GIT_PAGER=cat
+              export IN_NIX_SHELL=1
+              export SCE_REPO_ROOT="$PWD"
+              ${pkgs.bash}/bin/bash ./config/pkl/check-generated.sh
 
-              tmp_dir="$(mktemp -d)"
-              cleanup() {
-                rm -rf "$tmp_dir"
-              }
-              trap cleanup EXIT
+              mkdir -p "$out"
+            '';
 
-              pkl eval -m "$tmp_dir" config/pkl/generate.pkl >/dev/null
+        cliGeneratedInputCheck =
+          pkgs.runCommand "sce-cli-generated-input-check"
+            {
+              nativeBuildInputs = [ pkgs.coreutils ];
+            }
+            ''
+              set -euo pipefail
 
-              paths=(
-                "config/.opencode/agent"
-                "config/.opencode/command"
-                "config/.opencode/skills"
-                "config/.opencode/lib/drift-collectors.js"
-                "config/automated/.opencode/agent"
-                "config/automated/.opencode/command"
-                "config/automated/.opencode/skills"
-                "config/automated/.opencode/lib/drift-collectors.js"
-                "config/.claude/agents"
-                "config/.claude/commands"
-                "config/.claude/skills"
-                "config/.claude/lib/drift-collectors.js"
-                "config/schema/sce-config.schema.json"
+              test -d "${cliGeneratedInput}/pkl-generated/config/.opencode"
+              test -d "${cliGeneratedInput}/pkl-generated/config/.claude"
+              test -d "${cliGeneratedInput}/pkl-generated/config/.pi"
+
+              (
+                cd "${cliGeneratedInput}"
+                sha256sum -c SHA256SUMS >/dev/null
               )
 
-              stale=0
-              for path in "''${paths[@]}"; do
-                if [ -e "$tmp_dir/$path" ] || [ -e "$path" ]; then
-                  if ! git diff --no-index --exit-code -- "$tmp_dir/$path" "$path" >/dev/null 2>&1; then
-                    stale=1
-                    printf 'Generated output drift detected at %s\n' "$path"
-                    git diff --no-index -- "$tmp_dir/$path" "$path" || true
-                  fi
-                fi
-              done
+              cp -r "${cliGeneratedInputSrc}" ./repo
+              (
+                cd ./repo
+                sha256sum -c "${cliGeneratedInput}/INPUTS.SHA256SUMS" >/dev/null
+              )
 
-              if [[ "$stale" -ne 0 ]]; then
-                cat <<'EOF'
-              Generated files are stale.
-
-              Regenerate with:
-                nix develop -c pkl eval -m . config/pkl/generate.pkl
-              EOF
-                exit 1
-              fi
-
-              printf 'Generated outputs are up to date.\n'
               mkdir -p "$out"
             '';
 
@@ -1492,7 +1516,8 @@
               }
             );
 
-            pkl-parity = pklParityCheck;
+            cli-generated-input = cliGeneratedInputCheck;
+            pkl-generated = pklGeneratedCheck;
 
             npm-bun-tests = npmTests;
             npm-biome-check = npmBiomeCheck;

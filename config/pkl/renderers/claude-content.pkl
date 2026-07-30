@@ -1,60 +1,13 @@
-import "../base/shared-content.pkl" as shared
+import "../base/decision-skill.pkl" as decision
 import "common.pkl" as common
 import "claude-metadata.pkl" as metadata
+import "workflow-composite.pkl" as workflowResults
 
 local missingSceInstallMessage = "sce CLI not found. Install it from https://sce.crocoder.dev/docs/getting-started#install-cli"
 
 local claudeSceHookScriptPath = "$CLAUDE_PROJECT_DIR/.claude/hooks/run-sce-or-show-install-guidance.sh"
 
 local function sceHookCommand(arguments: String): String = "bash \\\"\(claudeSceHookScriptPath)\\\" \(arguments)"
-
-local agentFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.agents) {
-    [unitSlug] = """
----
-name: \(unitSlug)
-description: \(metadata.agentDescriptions[unitSlug])
-model: inherit
-color: \(metadata.agentColors[unitSlug])
-tools: \(metadata.agentTools)
----
-"""
-  }
-}
-
-local agentBodyBySlug = new Mapping {
-  for (unitSlug, unit in shared.agents) {
-    [unitSlug] = if (metadata.agentSystemPreambleBlocks[unitSlug] == "") unit.canonicalBody else """
-\(metadata.agentSystemPreambleBlocks[unitSlug])
-
-\(unit.canonicalBody)
-"""
-  }
-}
-
-local commandFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.commands) {
-    [unitSlug] = """
----
-description: "\(common.commandDescriptions[unitSlug])"
-allowed-tools: \(metadata.commandAllowedTools[unitSlug])
----
-"""
-  }
-}
-
-local skillFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.skills) {
-    [unitSlug] = """
----
-name: \(unitSlug)
-description: |
-  \(metadata.skillDescriptions[unitSlug])
-compatibility: \(metadata.skillCompatibility)
----
-"""
-  }
-}
 
 settings = new common.RenderedTextFile {
   slug = "settings"
@@ -132,35 +85,21 @@ exec "$@"
 """
 }
 
-agents {
-  for (unitSlug, unit in shared.agents) {
-    [unitSlug] = new common.RenderedTargetDocument {
-      slug = unitSlug
-      title = unit.title
-      frontmatter = agentFrontmatterBySlug[unitSlug]
-      body = agentBodyBySlug[unitSlug]
-    }
-  }
-}
-
+/// Claude commands are intentionally thin. Each routes to exactly one composite
+/// workflow skill, which owns all phases, waits, and final response rendering.
 commands {
-  for (unitSlug, unit in shared.commands) {
-    [unitSlug] = new common.RenderedTargetDocument {
-      slug = unitSlug
-      title = unit.title
-      frontmatter = commandFrontmatterBySlug[unitSlug]
-      body = unit.canonicalBody
-    }
+  for (slug, workflow in workflowResults.workflows) {
+    [slug] = workflowResults.renderCommand.apply(workflow, "allowed-tools: \(metadata.commandAllowedTools[slug])\n")
   }
 }
 
-skills {
-  for (unitSlug, unit in shared.skills) {
-    [unitSlug] = new common.RenderedTargetDocument {
-      slug = unitSlug
-      title = unit.title
-      frontmatter = skillFrontmatterBySlug[unitSlug]
-      body = unit.canonicalBody
-    }
+/// Claude has five command-routed workflow packages plus the standalone
+/// decision-writing package used internally during synchronization.
+skillDocuments {
+  for (path, document in workflowResults.skillDocuments.apply("compatibility: claude\n")) {
+    [path] = document
+  }
+  for (path, document in decision.skillDocuments.apply("compatibility: claude\n")) {
+    [path] = document
   }
 }

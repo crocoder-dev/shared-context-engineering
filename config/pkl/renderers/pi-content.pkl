@@ -1,82 +1,24 @@
-import "../base/shared-content.pkl" as shared
-import "common.pkl" as common
-import "pi-metadata.pkl" as metadata
+import "../base/decision-skill.pkl" as decision
+import "workflow-composite.pkl" as workflowResults
 
-local commandFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.commands) {
-    [unitSlug] = """
----
-description: "\(common.commandDescriptions[unitSlug])"
-argument-hint: "\(metadata.commandArgumentHints[unitSlug])"
----
-"""
-  }
-}
-
-local agentPromptFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.agents) {
-    [unitSlug] = """
----
-description: "\(metadata.agentDescriptions[unitSlug])"
-argument-hint: "\(metadata.agentArgumentHints[unitSlug])"
----
-"""
-  }
-}
-
-local agentPromptBodyBySlug = new Mapping {
-  for (unitSlug, unit in shared.agents) {
-    [unitSlug] = """
-Act as the \(unit.title) agent for the rest of this session. Load and follow the `\(metadata.agentSkillReferences[unitSlug])` skill when its workflow applies. Stay within this role's rules below until the task completes.
-
-Input:
-`$ARGUMENTS`
-
-\(unit.canonicalBody)
-"""
-  }
-}
-
-local skillFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.skills) {
-    [unitSlug] = """
----
-name: \(unitSlug)
-description: \(common.skillDescriptions[unitSlug])
----
-"""
-  }
-}
-
-agentPrompts {
-  for (unitSlug, unit in shared.agents) {
-    [unitSlug] = new common.RenderedTargetDocument {
-      slug = unitSlug
-      title = unit.title
-      frontmatter = agentPromptFrontmatterBySlug[unitSlug]
-      body = agentPromptBodyBySlug[unitSlug]
-    }
-  }
-}
-
+/// Pi prompts are intentionally thin. Each routes to exactly one composite
+/// workflow skill, which owns all phases, waits, and final response rendering.
+/// Pi prompts carry no target-specific frontmatter beyond the shared
+/// description and argument hint.
 commands {
-  for (unitSlug, unit in shared.commands) {
-    [unitSlug] = new common.RenderedTargetDocument {
-      slug = unitSlug
-      title = unit.title
-      frontmatter = commandFrontmatterBySlug[unitSlug]
-      body = unit.canonicalBody
-    }
+  for (slug, workflow in workflowResults.workflows) {
+    [slug] = workflowResults.renderCommand.apply(workflow, "")
   }
 }
 
-skills {
-  for (unitSlug, unit in shared.skills) {
-    [unitSlug] = new common.RenderedTargetDocument {
-      slug = unitSlug
-      title = unit.title
-      frontmatter = skillFrontmatterBySlug[unitSlug]
-      body = unit.canonicalBody
-    }
+/// Pi has five prompt-routed workflow packages plus the standalone decision-
+/// writing package used internally during synchronization, with no target-
+/// specific skill frontmatter.
+skillDocuments {
+  for (path, document in workflowResults.skillDocuments.apply("")) {
+    [path] = document
+  }
+  for (path, document in decision.skillDocuments.apply("")) {
+    [path] = document
   }
 }

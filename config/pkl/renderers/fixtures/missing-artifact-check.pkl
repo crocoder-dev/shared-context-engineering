@@ -1,0 +1,15 @@
+import "../generation-contract-check.pkl" as contract
+
+local artifactsWithMissingPath = new Mapping {
+  for (path, text in contract.generatedArtifacts) {
+    when (path != "config/schema/sce-config.schema.json") {
+      [path] = text
+    }
+  }
+}
+
+result = if (
+  artifactsWithMissingPath.length == contract.expectedArtifactPaths.length
+  && contract.expectedArtifactPaths.every((path, _) -> artifactsWithMissingPath.containsKey(path))
+) "negative fixture unexpectedly matched"
+else error("generated artifact inventory does not match the exact expected path contract")

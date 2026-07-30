@@ -1,0 +1,289 @@
+import "../generate.pkl" as generated
+import "opencode-content.pkl" as opencode
+import "claude-content.pkl" as claude
+import "pi-content.pkl" as pi
+
+/// Build the expected inventory from each target's independently checked
+/// document inventory plus the retained non-workflow assets. This deliberately
+/// does not iterate `generate.pkl`'s output assembly.
+hidden expectedArtifactPaths = new Mapping {
+  for (_, document in opencode.agents) {
+    ["config/.opencode/agent/\(document.title).md"] = true
+  }
+  for (slug, _ in opencode.commands) {
+    ["config/.opencode/command/\(slug).md"] = true
+  }
+  for (path, _ in opencode.skillDocuments) {
+    ["config/.opencode/skills/\(path)"] = true
+  }
+  ["config/.opencode/lib/bash-policy-presets.json"] = true
+  ["config/.opencode/plugins/sce-bash-policy.ts"] = true
+  ["config/.opencode/plugins/sce-agent-trace.ts"] = true
+  ["config/.opencode/opencode.json"] = true
+
+  for (slug, _ in claude.commands) {
+    ["config/.claude/commands/\(slug).md"] = true
+  }
+  for (path, _ in claude.skillDocuments) {
+    ["config/.claude/skills/\(path)"] = true
+  }
+  ["config/.claude/settings.json"] = true
+  ["config/.claude/hooks/run-sce-or-show-install-guidance.sh"] = true
+
+  for (slug, _ in pi.commands) {
+    ["config/.pi/prompts/\(slug).md"] = true
+  }
+  for (path, _ in pi.skillDocuments) {
+    ["config/.pi/skills/\(path)"] = true
+  }
+  ["config/.pi/extensions/sce/index.ts"] = true
+
+  ["config/schema/sce-config.schema.json"] = true
+}
+
+hidden generatedArtifacts = new Mapping {
+  for (path, artifact in generated.output.files) {
+    [path] = artifact.text
+  }
+}
+
+hidden workflowDocuments = new Mapping {
+  for (path, document in opencode.skillDocuments) {
+    ["config/.opencode/skills/\(path)"] = document.text
+  }
+  for (path, document in claude.skillDocuments) {
+    ["config/.claude/skills/\(path)"] = document.text
+  }
+  for (path, document in pi.skillDocuments) {
+    ["config/.pi/skills/\(path)"] = document.text
+  }
+}
+
+local decisionSkillDocuments = new Mapping {
+  for (path, text in workflowDocuments) {
+    when (path.contains("/skills/sce-decision/")) {
+      [path] = text
+    }
+  }
+}
+
+local compositeWorkflowDocuments = new Mapping {
+  for (path, text in workflowDocuments) {
+    when (!path.contains("/skills/sce-decision/")) {
+      [path] = text
+    }
+  }
+}
+
+local handoverSkillDocuments = new Mapping {
+  for (path, text in workflowDocuments) {
+    when (path.endsWith("/skills/sce-handover/SKILL.md")) {
+      [path] = text
+    }
+  }
+}
+
+local decisionInvokingWorkflowPaths = new Mapping {
+  for (target in new Listing { ".opencode"; ".claude"; ".pi" }) {
+    ["config/\(target)/skills/sce-next-task/SKILL.md"] = true
+    ["config/\(target)/skills/sce-validate/SKILL.md"] = true
+  }
+}
+
+local expectedDecisionDocumentPaths = new Mapping {
+  for (target in new Listing { ".opencode"; ".claude"; ".pi" }) {
+    ["config/\(target)/skills/sce-decision/SKILL.md"] = true
+    ["config/\(target)/skills/sce-decision/references/adr-template.md"] = true
+  }
+}
+
+local requiredDecisionSkillTokens = new Listing {
+  "qualifying system-wide"
+  "System boundaries or ownership"
+  "Public or cross-domain interfaces"
+  "Data models or persistence"
+  "Compatibility contracts"
+  "Security posture"
+  "Deployment or distribution strategy"
+  "major dependency"
+  "Routine implementation details"
+  "YYYY-MM-DD-<decision-slug>.md"
+  "`Proposed`"
+  "`Accepted`"
+  "`Rejected`"
+  "`Deprecated`"
+  "`Superseded`"
+  "otherwise default"
+  "Never edit an ADR whose status is `Accepted`"
+  "creates a new dated ADR"
+  "exactly one file"
+  "`written`"
+  "`blocked`"
+}
+
+local requiredDecisionWorkflowTokens = new Listing {
+  "Record qualifying architecture decisions"
+  "System boundaries or ownership"
+  "Public or cross-domain interfaces"
+  "Data models or persistence"
+  "Compatibility contracts"
+  "Security posture"
+  "Deployment or distribution strategy"
+  "major dependency"
+  "Routine implementation details"
+  "invoke `sce-decision` once"
+  "Reuse a written ADR path"
+  "returned `adr_path`"
+  "On `blocked`"
+  "successful context synchronization"
+}
+
+local requiredHandoverSkillTokens = new Listing {
+  "selects **writer mode**"
+  "selects **loader mode**"
+  "### Writer path (no arguments)"
+  "### Loader path (one path argument)"
+  "Current Task State"
+  "Decisions Made"
+  "Open Questions / Blockers"
+  "Next Recommended Step"
+  "Writer mode never overwrites an existing handover file"
+  "Loading is read-only"
+  "Never invoke another skill, sibling package, or workflow command"
+}
+
+local requiredDecisionTemplateTokens = new Listing {
+  "## Context"
+  "## Decision"
+  "## Rationale"
+  "## Alternatives considered"
+  "## Compatibility and risks"
+  "## Guardrails"
+  "## Consequences"
+  "## Follow-up"
+  "## References"
+}
+
+local forbiddenWorkflowReferenceTokens = new Listing {
+  "sce-context-load"
+  "sce-plan-authoring"
+  "sce-plan-review"
+  "sce-task-execution"
+  "sce-task-context-sync"
+  "sce-validation"
+  "sce-plan-context-sync"
+  "sce-atomic-commit"
+  "references/context-brief.yaml"
+  "references/authoring-contract.yaml"
+  "references/readiness-contract.yaml"
+  "references/execution-contract.yaml"
+  "references/commit-contract.yaml"
+  "references/implementation-gate.md"
+  "references/plan-summary.md"
+  "references/validation-result.md"
+  "references/sync-report.md"
+  "references/commit-message-style.md"
+}
+
+local assertExactArtifactPaths = (actual: Mapping) ->
+  if (
+    actual.length == expectedArtifactPaths.length
+    && expectedArtifactPaths.every((path, _) -> actual.containsKey(path))
+  ) "generated artifact inventory: exactly \(expectedArtifactPaths.length) paths"
+  else error("generated artifact inventory does not match the exact expected path contract")
+
+local assertWorkflowReferences = (documents: Mapping) ->
+  if (
+    documents.every((_, text) ->
+      forbiddenWorkflowReferenceTokens.every((token) -> !text.contains(token))
+    )
+  ) "generated workflow references: fully internalized"
+  else error("generated workflow document contains a forbidden sibling-package reference or unresolved internalization token")
+
+local assertDecisionWorkflowReferences = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      if (decisionInvokingWorkflowPaths.containsKey(path))
+        requiredDecisionWorkflowTokens.every((token) -> text.contains(token))
+      else
+        !text.contains("`sce-decision`")
+    )
+  ) "generated decision invocation: synchronization-only"
+  else error("generated workflow document violates the synchronization-only sce-decision exception")
+
+local assertOpenCodeDecisionPermission = (agents) ->
+  let (codeAgent = agents["shared-context-code"].rendered)
+    let (planAgent = agents["shared-context-plan"].rendered)
+      if (
+        codeAgent.contains("\"sce-decision\": allow")
+        && !planAgent.contains("\"sce-decision\": allow")
+      ) "OpenCode decision permission: code agent only"
+      else error("OpenCode sce-decision permission must be derived only for the code agent")
+
+local assertDecisionDocumentPaths = (documents: Mapping) ->
+  if (
+    documents.length == expectedDecisionDocumentPaths.length
+    && expectedDecisionDocumentPaths.every((path, _) -> documents.containsKey(path))
+  ) "generated decision package inventory: complete"
+  else error("generated decision package inventory does not match the exact cross-target path contract")
+
+local assertDecisionContent = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      (
+        path.endsWith("/SKILL.md")
+        && requiredDecisionSkillTokens.every((token) -> text.contains(token))
+      ) || (
+        path.endsWith("/references/adr-template.md")
+        && requiredDecisionTemplateTokens.every((token) -> text.contains(token))
+      )
+    )
+  ) "generated decision package content: complete"
+  else error("generated decision package is missing a required ADR rule or template section")
+
+local assertHandoverContent = (documents: Mapping) ->
+  if (
+    documents.length == 3
+    && documents.every((_, text) ->
+      requiredHandoverSkillTokens.every((token) -> text.contains(token))
+    )
+  ) "generated handover package content: covers both modes"
+  else error("generated sce-handover SKILL.md is missing required writer/loader mode content")
+
+/// Extract each fenced code block from `text`, fence markers included, so
+/// callers can test a generated `SKILL.md` for a verbatim copy of a
+/// `references/output.md` layout. Splitting on the triple-backtick fence
+/// yields alternating outside/inside segments starting outside, so the
+/// odd-indexed segments are exactly the fenced bodies.
+hidden fencedBlocksIn = (text: String) ->
+  text.split("```").filterIndexed((index, _) -> index.isOdd).map((block) -> "```\(block)```")
+
+local assertNoBlankLineRuns = (documents: Mapping) ->
+  if (
+    documents.every((_, text) -> !text.contains("\n\n\n"))
+  ) "generated workflow documents: no blank-line runs"
+  else error("generated workflow document contains two or more consecutive blank lines")
+
+local assertOutputNotDuplicated = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      if (!path.endsWith("references/output.md")) true
+      else
+        let (skillPath = path.dropLast("references/output.md".length) + "SKILL.md")
+          let (skillText = documents[skillPath])
+            fencedBlocksIn.apply(text).every((block) -> !skillText.contains(block))
+    )
+  ) "generated workflow SKILL.md documents: no output.md layout duplicated"
+  else error("generated SKILL.md reproduces a references/output.md fenced layout verbatim")
+
+contractChecks {
+  ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
+  ["workflow-references"] = assertWorkflowReferences.apply(workflowDocuments)
+  ["decision-invocation"] = assertDecisionWorkflowReferences.apply(compositeWorkflowDocuments)
+  ["opencode-decision-permission"] = assertOpenCodeDecisionPermission.apply(opencode.agents)
+  ["decision-package-paths"] = assertDecisionDocumentPaths.apply(decisionSkillDocuments)
+  ["decision-package-content"] = assertDecisionContent.apply(decisionSkillDocuments)
+  ["handover-package-content"] = assertHandoverContent.apply(handoverSkillDocuments)
+  ["no-blank-line-runs"] = assertNoBlankLineRuns.apply(workflowDocuments)
+  ["output-dedup"] = assertOutputNotDuplicated.apply(workflowDocuments)
+}

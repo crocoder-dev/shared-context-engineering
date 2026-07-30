@@ -19,8 +19,10 @@ use super::schema::{
 use super::types::{ConfigPathSource, ResolvedOptionalValue, ValueSource};
 use crate::services::style;
 
-const BASH_POLICY_PRESET_CATALOG_JSON: &str =
-    include_str!("../../../assets/generated/config/opencode/lib/bash-policy-presets.json");
+const BASH_POLICY_PRESET_CATALOG_JSON: &str = include_str!(concat!(
+    env!("OUT_DIR"),
+    "/pkl-generated/config/.opencode/lib/bash-policy-presets.json"
+));
 
 static BUILTIN_BASH_POLICY_CATALOG: OnceLock<BuiltinBashPolicyCatalog> = OnceLock::new();
 

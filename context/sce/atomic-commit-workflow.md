@@ -1,58 +1,132 @@
-# Atomic Commit Command + Skill (`/commit`)
+# Atomic Commit Workflow
 
-## Purpose
+Behavior contract for the generated `/commit` workflow.
 
-Define the canonical commit workflow used by generated manual and automated command surfaces.
+## Current surface
 
-## Canonical contract
+Canonical behavior is authored in `config/pkl/base/workflow-commit.pkl` from the
+project-root `.pi/` baseline and generated for OpenCode, Claude, and Pi.
 
-- Command slug: `commit`
-- Command behavior source: `config/pkl/base/shared-content-commit.pkl` (aggregated through `config/pkl/base/shared-content.pkl`)
-- Canonical skill slug: `sce-atomic-commit`
-- Skill behavior source: `config/pkl/base/shared-content-commit.pkl` (aggregated through `config/pkl/base/shared-content.pkl`)
+Every target emits one thin command (Pi: prompt) invoking `sce-commit`. The
+composite package contains only `SKILL.md`, which owns mode routing, staged-diff
+analysis, proposal/commit behavior, and internal statuses, plus
+`references/output.md`, which owns all human-visible prompts and result layouts.
+The commit-message style reference is composed into those two files rather than
+emitted separately.
 
-Naming decision:
-- Canonical skill name is `sce-atomic-commit`.
-- `atomic-commits` is treated as legacy wording and is not the canonical generated skill slug.
+No target emits an `sce-atomic-commit` package or invokes it as a sibling skill;
+each `sce-commit` package embeds the canonical phase behavior directly.
+`sce-atomic-commit` names the canonical authoring module and that internal phase.
 
-## Behavior requirements
+## Modes
 
-- Empty command arguments are supported; the command infers intent from staged changes.
-- Before any proposal, the command must prompt for explicit staging confirmation (`git add <files>` guidance).
-- After staging confirmation, commit guidance must classify staged diff scope (`context/`-only vs mixed `context/` + non-`context/`).
-- Context-file-focused commit reminders are allowed only for `context/`-only staged diffs; mixed staged diffs must not receive default context-file reminders.
-- Command text stays thin and gate-focused; commit grammar and split-aware proposal rules are skill-owned in `sce-atomic-commit`.
-- The manual `sce-atomic-commit` skill body now includes bypass-mode awareness (see the skill's `## Bypass mode` section); when invoked in bypass mode, it relaxes proposal-only, split guidance, context-guidance gate, and plan-citation ambiguity rules. In regular mode, it analyzes staged changes for coherent units and proposes one or more commit messages when staged changes mix unrelated goals; it stays proposal-only and does not create commits automatically.
-- Automated `sce-atomic-commit` produces exactly one commit message for the staged diff and does not branch into multi-commit or split guidance.
-- When staged changes include `context/plans/*.md`, each proposed commit body must cite the affected plan slug(s) and updated task ID(s) (`T0X`); if the staged plan diff is ambiguous, the workflow must stop for clarification rather than inventing references.
-- Output is proposal-only in the manual profile: commit message proposals with optional split guidance, not automatic commits.
-- Output is execute-once in the automated OpenCode profile: generate exactly one commit message, then run `git commit` against the staged diff.
+`/commit` takes an optional argument. Its first whitespace-separated token
+selects the mode; everything else is free-form commit context that refines
+message wording only.
 
-## Oneshot / skip bypass mode
+- `oneshot` or `skip` as the exact first token, compared case-insensitively,
+  selects **bypass mode**. The two aliases are behaviorally identical.
+- Any other first token, or no argument at all, selects **regular mode**.
 
-The manual OpenCode `/commit` command supports an argument-based bypass mode triggered by `/commit oneshot` or `/commit skip` (case-insensitive, first token). This mode is a behavior branch within the existing `commit` command body — it does not add a separate command or alter the automated profile.
+Nothing else selects bypass — not the commit context, not repository state.
 
-When invoked with `oneshot` or `skip`:
+```mermaid
+flowchart TD
+    A["/commit [mode-token] [context]"] --> B{First token is<br/>oneshot or skip?}
+    B -- no --> C[Regular mode]
+    B -- yes --> D[Bypass mode]
 
-- **Staging confirmation skipped:** The command does not prompt for or wait on explicit staging confirmation.
-- **Context-guidance gate skipped:** No `context/`-only vs mixed diff classification is applied, and no context-file reminders are emitted.
-- **Split guidance skipped:** The command does not branch into multi-commit or split guidance, even when staged changes mix unrelated goals.
-- **Plan-citation ambiguity stops skipped:** If staged plan file context is ambiguous, the command makes a best-effort inference or omits the plan citation rather than stopping for clarification.
-- **Single message + auto-commit:** The command produces exactly one commit message via `sce-atomic-commit`, then immediately executes `git commit` with that message.
-- **Empty-stage guard:** If no staged changes exist, the command stops with a clear error and does not attempt a commit.
-- **Commit-failure guard:** If `git commit` fails, the command stops and reports the failure without inventing fallback commits.
+    C --> C1[Stop and prompt for staging confirmation]
+    C1 --> C2[Phase: atomic commit, mode: regular]
+    C2 --> C3[Present proposals + split guidance]
+    C3 --> C4([Stop — never commits])
 
-The `sce-atomic-commit` skill body now includes a dedicated `## Bypass mode` section that aligns with these command-body overrides, ensuring the skill does not conflict with auto-commit, single-message, or best-effort citation behavior in bypass mode.
+    D --> D1{git diff --cached<br/>non-empty?}
+    D1 -- no --> D2([Stop: No staged changes.<br/>Stage changes before commit.])
+    D1 -- yes --> D3[Phase: atomic commit, mode: bypass]
+    D3 --> D4[Exactly one git commit]
+    D4 --> D5([Report hash, or report failure<br/>with no retry or amend])
+```
 
-The regular `/commit` path (no arguments, or non-bypass arguments) is unchanged: it retains the staging confirmation prompt, context-guidance gate, optional split guidance, and plan-citation ambiguity stops per the behavior requirements above.
+## Regular mode
 
-The bypass mode is scoped to the manual OpenCode profile only. The automated OpenCode `/commit` command already produces a single message and auto-executes `git commit` without these guardrails; the bypass argument is not relevant to it.
+Proposal-only. The command stops before invoking the skill and asks the user to
+stage everything they intend to commit, because atomic commits should contain
+only intentionally staged changes. After confirmation, the skill analyzes the
+staged diff and returns one or more messages.
 
-## Generated targets
+When the staged changes pursue unrelated goals, the skill returns one message
+per coherent unit plus the rationale and file grouping for the split. When they
+form one unit, it returns one message and no split guidance.
 
-- OpenCode command: `config/.opencode/command/commit.md`
-- Automated OpenCode command: `config/automated/.opencode/command/commit.md`
-- Claude command: `config/.claude/commands/commit.md`
-- OpenCode skill: `config/.opencode/skills/sce-atomic-commit/SKILL.md`
-- Automated OpenCode skill: `config/automated/.opencode/skills/sce-atomic-commit/SKILL.md`
-- Claude skill: `config/.claude/skills/sce-atomic-commit/SKILL.md`
+The command presents the proposals and stops. It never runs `git commit`; the
+user runs the commits they accept.
+
+## Bypass mode
+
+Single-message, command-committed. The command first checks that staged content
+exists and stops with `No staged changes. Stage changes before commit.` when
+nothing is staged. It then requests exactly one message covering all staged
+files and runs `git commit` once.
+
+On success it reports the commit hash. On failure it reports the failure and
+stops — no retry, no amend, no fallback commit.
+
+Bypass mode relaxes three regular-mode rules: no split proposals, no
+context-file guidance gating, and plan citations are best-effort rather than
+blocking.
+
+## Ownership boundary
+
+The command owns user prompting, mode routing, the staged-content precondition,
+and the single `git commit`. The skill owns everything about what the commit
+says:
+
+- Reading and analyzing the staged diff.
+- Deciding whether staged changes form one coherent unit or several.
+- Choosing scope and writing every subject and body.
+- The plan-citation body rule.
+- Staged-scope classification and context-file guidance gating.
+
+Each rule is stated once by its owner. The skill never commits and never asks
+about staging.
+
+## Staged truth
+
+Staged changes are the only input describing what is being committed. Neither
+document reads unstaged or untracked changes, and neither stages, unstages, or
+otherwise modifies files. Supplied commit context refines wording but never
+overrides the diff and never adds a claim the diff does not support.
+
+## Plan citations
+
+When a commit's staged files include `context/plans/*.md`, its body cites the
+affected plan slug and every updated task ID. Plan slugs and task IDs are never
+invented.
+
+When the staged plan diff does not expose them clearly enough to cite
+faithfully, regular mode blocks and asks for the reference to be stated or
+staged explicitly; bypass mode omits the citation instead of stopping.
+
+## Result contract
+
+The canonical analysis phase reaches exactly one of three results:
+
+- `proposal` — regular mode, one or more messages, optional split rationale and
+  staged-scope classification.
+- `bypass_message` — bypass mode, exactly one message plus the full staged file
+  list.
+- `blocked` — messages cannot be written faithfully. Categories are
+  `no_staged_changes`, `plan_citation_ambiguity`, `unreadable_diff`, and
+  `contradictory_context`.
+
+Every target keeps that status as internal `sce-commit` state and renders only
+the applicable layout from `references/output.md`; no result is serialized
+between packages. Every staged file still belongs to exactly one commit message. The analysis phase never reports a hash;
+only successful bypass-mode `git commit` produces one.
+
+## Related context
+
+- [SCE workflow ownership table](dedup-ownership-table.md)
+- [Plan/Code overlap map](plan-code-overlap-map.md)
+- [Context workflow rules](context-workflow-rules.md)

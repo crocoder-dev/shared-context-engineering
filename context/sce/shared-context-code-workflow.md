@@ -1,81 +1,92 @@
-# Shared Context Code Workflow (`/next-task`)
+# Shared Context Code Workflows (`/next-task`, `/validate`)
 
-## What this agent is for
+## Purpose
 
-The Shared Context Code agent executes exactly one approved plan task from `context/plans/`, validates behavior, and synchronizes `context/` to match current code truth.
+The implementation lifecycle executes at most one reviewed task per `/next-task` invocation, synchronizes durable context only after successful task execution, and runs final plan validation separately through `/validate`. The generated OpenCode Code agent only routes to these commands. Every target embeds each complete lifecycle in `sce-next-task` or `sce-validate`; the phases below are canonical authoring source and internal phases of those skills, not separate generated packages.
 
-Use this agent when you need to:
-- continue implementation from an existing SCE plan
-- run a specific plan task (`T0X`) or the next unchecked task
-- enforce scoped, approval-gated implementation
-- treat context synchronization as a required done gate
+## `/next-task` entrypoint
 
-## Command entrypoint
+`/next-task {plan-name-or-path} [T0X] [approved]`
 
-Canonical command:
+- The plan is required.
+- A task ID is optional and must match `T01`, `T02`, and so on.
+- The exact token `approved` is optional and may be supplied with or without a task ID.
+- Unknown positional tokens are rejected.
 
-`/next-task {plan_name_or_path} {T0X?}`
+## `/next-task` phase ownership
 
-Examples:
-- `/next-task feature-auth T01`
-- `/next-task context/plans/feature-auth.md T03`
-- `/next-task feature-auth`
+Phase names below identify canonical modules in `config/pkl/base/workflow-next-task.pkl` and `workflow-context-sync.pkl`, and the internal phases they compose into.
 
-## Workflow behavior
+1. `sce-plan-review`
+   - Resolves exactly one plan and at most one task.
+   - Selects the requested task or the first incomplete task whose declared dependencies are complete.
+   - Returns `ready`, `blocked`, or `plan_complete`.
+2. `sce-task-execution`
+   - Receives the complete `ready` result.
+   - Always presents the implementation gate before editing.
+   - Waits for confirmation unless the user supplied `approved` to the command.
+   - Implements and verifies exactly one task, then records status and evidence in the plan.
+   - Returns `declined`, `blocked`, `incomplete`, or `complete`.
+3. `sce-task-context-sync`
+   - Runs only from the complete successful execution handoff.
+   - Reconciles one task with durable context and performs the mandatory root-file pass.
+   - Applies the system-wide decision gate before current-state context edits. Routine,
+     local, temporary, and easily reversible choices skip decision writing; each
+     qualifying decision reuses an existing ADR or invokes `sce-decision` once.
+   - A blocked decision handoff blocks synchronization; written or reused ADR paths
+     become synchronization evidence and are available for current-state links.
+   - Returns a Markdown report with `synced`, `no_context_change`, or `blocked`.
+   - Every report variant lists changed files outside `context/` under `Updated files`;
+     task reports omit the impact classification and rendered root-pass checklist
+     without changing synchronization behavior.
+4. Command continuation
+   - Emits exactly one next-task command for the first unchecked task in plan order, or a `/validate` command when all implementation tasks are complete.
+   - Never executes the continuation in the same invocation.
 
-`/next-task` keeps orchestration/gating responsibilities, while detailed per-phase contracts are owned by the three phase skills.
+A context-sync blocker does not undo successful implementation: the task remains complete in the plan, but the workflow stops because durable context is stale. On every target, review, approval, execution, evidence recording, synchronization, and continuation are internal phases of one `sce-next-task` invocation. The sole sibling-skill exception is the synchronization decision gate's bounded invocation of `sce-decision`.
 
-1. Run `sce-plan-review` to resolve plan target, task selection, and readiness.
-2. Apply the plan-review confirmation gate.
-   - Auto-pass only when both plan and task ID are provided and review reports no blockers, ambiguity, or missing acceptance criteria.
-   - Otherwise, resolve open points and require explicit user confirmation.
-3. Run `sce-task-execution`.
-   - Mandatory implementation stop is enforced by the skill before edits.
-   - Scoped implementation, light checks/build-if-fast, and plan status updates are skill-owned.
-4. Run `sce-context-sync` as a mandatory done gate.
-   - Context significance classification and root verify-vs-edit behavior are skill-owned.
-5. Wait for feedback; if in-scope fixes are needed, apply fixes, rerun light checks/build-if-fast, and sync context again.
-6. If this is the final plan task, run `sce-validation`.
-7. If more tasks remain, prompt the next-session command for the next task.
+## `/validate` entrypoint
 
-## Mermaid diagram
+`/validate {plan-name-or-path}`
+
+1. `sce-validation` verifies that implementation tasks are complete, runs the plan's full validation commands and acceptance checks, cleans temporary scaffolding, and writes the Validation Report.
+2. Failed or blocked validation ends the session without repair edits; retry uses `/validate {plan-path}`.
+3. `sce-plan-context-sync` runs only from a successful `Status: validated` handoff, applies the same decision gate before current-state edits, and reconciles the completed plan with durable repository context. ADR paths already written during task synchronization are reused for the same decision.
+
+On every target, those validation and plan-sync phase bodies appear directly inside workflow steps 1 and 2 of one `sce-validate` skill, while the plan-file Validation Report format remains a trailing appendix after the workflow rules. Failed and blocked statuses stop before synchronization exactly as in the canonical flow. Final validation never runs from an individual implementation task.
+
+## Flow
 
 ```mermaid
 flowchart TD
-    A["/next-task {plan} {task?}"] --> B["sce-plan-review"]
-    B --> C{"Ready without issues?"}
-
-    C -- "No" --> D["Resolve blockers/ambiguity/missing acceptance criteria"]
-    D --> E["Ask user: task ready?"]
-    E --> F{"Confirmed?"}
-    F -- "No" --> Z["Stop and wait"]
-    F -- "Yes" --> G["Mandatory implementation stop"]
-
-    C -- "Yes (plan+task and clean review)" --> G
-
-    G --> H["Explain scope, done checks, expected touch scope, approach/trade-offs/risks"]
-    H --> I["Ask: Continue with implementation now?"]
-    I --> J{"User says yes?"}
-    J -- "No" --> Z
-    J -- "Yes" --> K["sce-task-execution (minimal in-scope changes)"]
-
-    K --> L["Light checks/lints and build if light/fast"]
-    L --> M["Update plan task status"]
-    M --> N["sce-context-sync (required)"]
-
-    N --> O{"Feedback needs in-scope fixes?"}
-    O -- "Yes" --> P["Apply fixes + rerun light checks/build-if-fast"]
-    P --> N
-    O -- "No" --> Q{"Final plan task?"}
-    Q -- "Yes" --> R["sce-validation"]
-    Q -- "No" --> S["Prompt next session with /next-task ..."]
-    R --> T["Done"]
-    S --> T
+    A["/next-task {plan} {task?} {approved?}"] --> B["Phase: plan review"]
+    B --> C{"ready?"}
+    C -- "No" --> D["Report blocked or plan_complete"]
+    C -- "Yes" --> E["Phase: task execution gate"]
+    E --> F{"complete?"}
+    F -- "No" --> G["Report declined, blocked, or incomplete"]
+    F -- "Yes" --> H["Phase: task context sync"]
+    H --> Q{"Qualifying system-wide decision?"}
+    Q -- "Yes" --> R["Invoke sce-decision or reuse ADR"]
+    Q -- "No" --> I{"More tasks?"}
+    R --> I
+    I -- "Yes" --> J["Emit next /next-task command"]
+    I -- "No" --> K["Emit /validate command"]
+    K --> L["Phase: validation"]
+    L --> M{"validated?"}
+    M -- "Yes" --> N["Phase: plan context sync"]
+    M -- "No" --> O["Stop and retry /validate later"]
 ```
 
-## Guardrails
+## Target ownership
 
-- One task per session by default unless user explicitly approves multi-task execution.
-- Do not expand scope without explicit approval.
-- Code is the source of truth when context and code disagree.
-- Context sync is required before the task is considered done.
+- OpenCode, Claude, and Pi: thin commands (Pi: prompts) invoking `sce-next-task` or `sce-validate`; each package contains only `SKILL.md` and `references/output.md`.
+- OpenCode adds `entry-skill` and a one-entry `skills` list naming that skill. Its Code routing agent allows `sce-next-task`, `sce-validate`, and `sce-commit`, plus internal `sce-decision` invocation; the Plan agent does not allow `sce-decision`.
+
+## Canonical sources
+
+- `config/pkl/base/workflow-next-task.pkl`
+- `config/pkl/base/workflow-validate.pkl`
+- `config/pkl/base/workflow-context-sync.pkl`
+- Workflow composition: `config/pkl/renderers/workflow-composite.pkl` (shared; Claude and Pi consume it)
+- Behavioral baselines: `.pi/prompts/{next-task,validate}.md`

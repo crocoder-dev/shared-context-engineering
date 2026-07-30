@@ -1,15 +1,9 @@
 ---
-description: "Run `sce-validation` to finish an SCE plan with validation and cleanup"
+description: "Validate one completed SCE plan and synchronize its durable context"
+argument-hint: "<plan-name>"
 allowed-tools: Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash
 ---
 
-Load and follow the `sce-validation` skill.
-
-Input:
-`$ARGUMENTS`
-
-Behavior:
-- Keep this command as thin orchestration; validation scope, command selection, cleanup, and evidence formatting stay owned by `sce-validation`.
-- Run `sce-validation` to execute the full validation phase for the targeted plan or change, including required checks, evidence capture, and cleanup expected by the skill.
-- Let `sce-validation` decide pass/fail status and record any residual risks or unmet criteria.
-- Stop after reporting the validation outcome and the location of any written validation evidence.
+Invoke the `sce-validate` skill exactly once with `$ARGUMENTS`.
+The skill owns the complete workflow, including all waits and same-session resume
+behavior. Do not invoke any phase skill or sequence workflow steps in this command.

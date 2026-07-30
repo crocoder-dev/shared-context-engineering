@@ -1,0 +1,422 @@
+import "../base/workflow-change-to-plan.pkl" as changeToPlan
+import "../base/workflow-next-task.pkl" as nextTask
+import "../base/workflow-validate.pkl" as validate
+import "../base/workflow-commit.pkl" as commit
+import "../base/workflow-handover.pkl" as handover
+import "../base/workflow-catalog.pkl" as catalog
+import "../base/workflow-content.pkl" as model
+
+/// A skill is the unit of durable control flow. Compose the canonical phase
+/// packages into one workflow package instead of asking a command to transport
+/// phase results between sibling skills. Composition is target-neutral: targets
+/// differ only in the frontmatter lines their skills and commands support.
+class CompositeWorkflow {
+  identity: catalog.WorkflowRecord
+  slug: String = identity.commandSlug
+  skillSlug: String = identity.skillSlug
+  title: String = identity.title
+  description: String = identity.description
+  argumentHint: String = identity.argumentHint
+  command: model.WorkflowDocument
+  outputText: String
+  structuredSource: model.StructuredCompositeSource
+}
+
+local phaseNameBySlug = new Mapping {
+  ["sce-context-load"] = "Context load phase"
+  ["sce-plan-authoring"] = "Plan authoring phase"
+  ["sce-plan-review"] = "Plan review phase"
+  ["sce-task-execution"] = "Task execution phase"
+  ["sce-task-context-sync"] = "Task context synchronization phase"
+  ["sce-validation"] = "Validation phase"
+  ["sce-plan-context-sync"] = "Plan context synchronization phase"
+  ["sce-atomic-commit"] = "Atomic commit phase"
+}
+
+local renderStructuredPhase = (document: model.StructuredWorkflowDocument) ->
+  "## Internal phase: \(phaseNameBySlug[document.path])\n\n" + document.render.apply("composite", "").text
+
+local renderStructuredInternalDocument = (document: model.WorkflowDocument) ->
+  "## Internal persisted-document format: \(document.path)\n\n" + document.text
+
+local renderCanonicalWorkflow = (workflow: CompositeWorkflow) ->
+  workflow.structuredSource.command.render.apply("composite", "").text
+
+local siblingSkillRule = (workflow: CompositeWorkflow) ->
+  if (workflow.slug == "next-task" || workflow.slug == "validate")
+    """
+    not inter-skill handoffs. Do not invoke another SCE skill, sibling package, or
+    workflow command except `sce-decision`, and invoke `sce-decision` only from the
+    successful context-synchronization decision gate.
+    """
+  else
+    """
+    not inter-skill handoffs. Do not invoke another SCE skill, sibling package, or
+    workflow command.
+    """
+
+local renderPhases = (workflow: CompositeWorkflow) ->
+  new Listing {
+    for (document in workflow.structuredSource.phases) {
+      renderStructuredPhase.apply(document)
+    }
+  }.join("\n\n")
+
+local renderInternalDocuments = (workflow: CompositeWorkflow) ->
+  new Listing {
+    for (document in workflow.structuredSource.internalDocuments) {
+      renderStructuredInternalDocument.apply(document)
+    }
+  }.join("\n\n")
+
+/// `extraFrontmatterLines` carries the target-specific frontmatter a skill
+/// entrypoint supports. Each line ends with a newline; a target that adds none
+/// passes the empty string.
+/// The workflow's own `## Input`, `## Workflow`, and `## Rules` sit directly
+/// under the skill title, so the document reads top to bottom with no wrapper
+/// section between the preamble and the first instruction. A phase appendix is
+/// emitted only for phases a module still lists; once every phase is stated at
+/// the step that runs it, the listing is empty and no appendix heading renders.
+local renderSkill = (workflow: CompositeWorkflow, extraFrontmatterLines: String) -> new model.WorkflowDocument {
+  path = "SKILL.md"
+  text = new Listing {
+    """
+    ---
+    name: \(workflow.skillSlug)
+    description: >
+      \(workflow.description)
+    \(extraFrontmatterLines)---
+
+    # \(workflow.title)
+
+    ## Purpose
+
+    Own this workflow from input parsing through its terminal user-visible response.
+    Execute the phases below directly and in order. Phase statuses are internal state,
+    \(siblingSkillRule.apply(workflow)) Follow the canonical workflow's steps, gates,
+    and stops exactly as written: never invent, skip, reorder, or merge a step.
+
+    ## User-visible output
+
+    Use `references/output.md` for every gate and terminal response. Render no raw
+    internal state. The reference contains only human-visible Markdown layouts.
+    User-visible output is limited to those layouts: never invent a layout, and never
+    wrap one in an added preamble, commentary, summary, or extra section.
+
+    ## Composite control flow
+
+    Keep phase results as internal state and continue immediately whenever the
+    canonical workflow says to continue. Stop only at a user wait or terminal branch.
+    Approval, clarification, revision, failed-validation repair, and bootstrap waits
+    resume this same skill in the same session. Never expose an internal phase result
+    as the workflow's final response.
+    """
+    renderCanonicalWorkflow.apply(workflow)
+    when (workflow.structuredSource.phases.length > 0) {
+      "## Embedded phase behavior\n\n" + renderPhases.apply(workflow)
+    }
+    when (workflow.structuredSource.internalDocuments.length > 0) {
+      renderInternalDocuments.apply(workflow)
+    }
+  }.join("\n\n")
+}
+
+/// `extraFrontmatterLines` carries the target-specific routing frontmatter a
+/// command supports, under the same newline-terminated convention as
+/// `renderSkill`.
+hidden renderCommand = (workflow: CompositeWorkflow, extraFrontmatterLines: String) -> new model.WorkflowDocument {
+  path = workflow.command.path
+  text = """
+---
+description: "\(workflow.description)"
+argument-hint: "\(workflow.argumentHint)"
+\(extraFrontmatterLines)---
+
+Invoke the `\(workflow.skillSlug)` skill exactly once with `$ARGUMENTS`.
+The skill owns the complete workflow, including all waits and same-session resume
+behavior. Do not invoke any phase skill or sequence workflow steps in this command.
+"""
+}
+
+local CHANGE_OUTPUT = """
+# Change-to-plan output layouts
+
+Use only the applicable layout. Values come from internal workflow state.
+
+## Missing context bootstrap gate
+
+```markdown
+-------------------------------------
+
+# This repository has no durable context.
+
+Bootstrap it, then continue in this session:
+
+`sce setup --bootstrap-context`
+```
+
+## Clarification gate
+
+```markdown
+-------------------------------------
+
+# Clarification needed.
+
+No plan was written.
+
+Answer each question below.\("  ")
+
+## {question-id} · {category}
+
+{question}
+
+Why this blocks planning: {why_blocking}
+```
+
+## Blocked
+
+Present each issue's problem, impact, and required decision. For ambiguity, list
+candidate plan paths and explain that naming one candidate resolves it.
+
+## Ready continuation
+
+```markdown
+-------------------------------------
+
+# Plan {plan-name} is ready.
+
+{total-tasks} {task|tasks} planned.
+
+This plan is a draft. State a correction and it will be updated.
+
+Next up:
+
+{next-task-id} — {next-task-title}
+
+`/next-task {plan-path} {next-task-id}`
+```
+
+For revisions, replace `is ready` with `revised`.
+"""
+
+local NEXT_OUTPUT = """
+# Next-task output layouts
+
+Use only the applicable layout. Values come from internal workflow state.
+
+## Review blocked
+
+Present the selected task, then each issue's problem, impact, and required
+decision. If plan resolution is ambiguous, list candidate paths and
+`/next-task {candidate-path}`. State whether another task remains executable.
+
+## Plan already complete
+
+```markdown
+-------------------------------------
+
+# Implementation tasks are complete.
+
+Run the final validation:
+
+`/validate {plan-path}`
+```
+
+## Declined
+
+```markdown
+You have declined to proceed with this task
+```
+
+## Execution blocked or incomplete
+
+For `blocked`, present the blocker, work completed before it, and the required
+decision or action. For `incomplete`, present completed work, verification
+evidence, remaining work, and the reason it remains incomplete.
+
+## Context synchronization blocked
+
+State that task `{completed-task-id}` was implemented, verified, and recorded;
+report the contradiction or synchronization failure, preserved edits, required
+action, and retry condition. State that durable context is out of date and must
+be synchronized before continuing.
+
+## More tasks remain
+
+```markdown
+-------------------------------------
+
+# Task {completed-task-id} completed.
+
+{completed-tasks} of {total-tasks} tasks complete.
+
+Next up:
+
+{next-task-id} — {next-task-title}
+
+`/next-task {plan-path} {next-task-id}`
+```
+
+## All tasks complete
+
+```markdown
+-------------------------------------
+
+# Task {completed-task-id} completed.
+
+All tasks are complete.
+
+Run the final validation:
+
+`/validate {plan-path}`
+```
+"""
+
+local VALIDATE_OUTPUT = """
+# Validate output layouts
+
+Use only the applicable layout. Values come from internal workflow state.
+
+The `blocked` and `failed` layouts are stated once, under **Validation Result**
+below.
+
+## Context synchronization blocked
+
+State that validation passed and its report is recorded, then report the context
+failure, preserved edits, required action, and retry condition. State that durable
+context remains out of date and synchronization must finish before closure.
+
+## Completion
+
+```markdown
+-------------------------------------
+
+# Plan {plan-name} validated.
+
+All implementation tasks were already complete.
+Final validation passed.
+Durable context is synchronized.
+
+Validation report: {plan-path}
+```
+"""
+
+local COMMIT_OUTPUT = """
+# Commit output layouts
+
+Use only the applicable layout. Values come from staged truth and internal
+workflow state.
+
+## Regular-mode staging gate
+
+```markdown
+Please run `git add <files>` for all changes you want included in this commit.
+Atomic commits should only include intentionally staged changes.
+Confirm once staging is complete.
+```
+
+## No staged changes
+
+```markdown
+No staged changes. Stage changes before commit.
+```
+
+## Regular proposal
+
+For each proposal, present the complete commit message and covered files. When
+more than one commit is proposed, also present the split rationale. Do not claim a
+commit was created.
+
+## Blocked
+
+Present every issue's problem, impact, and required decision. Do not commit.
+
+## Bypass success
+
+```markdown
+Committed {commit-hash}
+```
+
+## Bypass Git failure
+
+Present Git's failure unchanged and stop without retrying.
+"""
+
+local changeWorkflow = new CompositeWorkflow {
+  identity = catalog.workflows["change-to-plan"]
+  command = changeToPlan.workflow.command.document
+  structuredSource = changeToPlan.structuredComposite
+  outputText = CHANGE_OUTPUT + "\n\n" + new Listing {
+    for (document in changeToPlan.structuredComposite.outputDocuments) {
+      document.text
+    }
+  }.join("\n\n")
+}
+
+local nextWorkflow = new CompositeWorkflow {
+  identity = catalog.workflows["next-task"]
+  command = nextTask.workflow.command.document
+  structuredSource = nextTask.structuredComposite
+  outputText = NEXT_OUTPUT + "\n\n" + new Listing {
+    for (document in nextTask.structuredComposite.outputDocuments) {
+      document.text
+    }
+  }.join("\n\n")
+}
+
+local validateWorkflow = new CompositeWorkflow {
+  identity = catalog.workflows["validate"]
+  command = validate.workflow.command.document
+  structuredSource = validate.structuredComposite
+  outputText = VALIDATE_OUTPUT + "\n\n" + new Listing {
+    for (document in validate.structuredComposite.outputDocuments) {
+      document.text
+    }
+  }.join("\n\n")
+}
+
+local commitWorkflow = new CompositeWorkflow {
+  identity = catalog.workflows["commit"]
+  command = commit.workflow.command.document
+  structuredSource = commit.structuredComposite
+  outputText = COMMIT_OUTPUT + "\n\n" + new Listing {
+    for (document in commit.structuredComposite.outputDocuments) {
+      document.text
+    }
+  }.join("\n\n")
+}
+
+/// `sce-handover` invokes no sibling phase and waits for nothing mid-run, so its
+/// base module already exposes one complete, mode-invariant output reference as
+/// its sole `outputDocuments` entry; no additional composite-only header is
+/// needed the way the phase-based workflows above need one.
+local handoverWorkflow = new CompositeWorkflow {
+  identity = catalog.workflows["handover"]
+  command = handover.workflow.command.document
+  structuredSource = handover.structuredComposite
+  outputText = new Listing {
+    for (document in handover.structuredComposite.outputDocuments) {
+      document.text
+    }
+  }.join("\n\n")
+}
+
+workflows = new Mapping {
+  [changeWorkflow.slug] = changeWorkflow
+  [nextWorkflow.slug] = nextWorkflow
+  [validateWorkflow.slug] = validateWorkflow
+  [commitWorkflow.slug] = commitWorkflow
+  [handoverWorkflow.slug] = handoverWorkflow
+}
+
+/// Each target renders the same two documents per workflow package and differs
+/// only in the frontmatter its skill entrypoint carries.
+hidden skillDocuments = (extraSkillFrontmatterLines: String) -> new Mapping {
+  for (_, workflow in workflows) {
+    ["\(workflow.skillSlug)/SKILL.md"] = renderSkill.apply(workflow, extraSkillFrontmatterLines)
+    ["\(workflow.skillSlug)/references/output.md"] = new model.WorkflowDocument {
+      path = "references/output.md"
+      text = workflow.outputText
+    }
+  }
+}

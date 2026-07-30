@@ -1,0 +1,1462 @@
+import "workflow-content.pkl" as model
+
+local contextLoad = model.semanticReference.apply("`sce-context-load`", "the **Context load phase**")
+local contextLoadName = model.semanticReference.apply("sce-context-load", "Context load phase")
+local planAuthoring = model.semanticReference.apply("`sce-plan-authoring`", "the **Plan authoring phase**")
+local planAuthoringName = model.semanticReference.apply("sce-plan-authoring", "Plan authoring phase")
+local planAuthoringUpper = model.semanticReference.apply("`sce-plan-authoring`", "The **Plan authoring phase**")
+local planReview = model.semanticReference.apply("`sce-plan-review`", "the **Plan review phase**")
+local taskExecutionName = model.semanticReference.apply("`sce-task-execution`", "the **Task execution phase**")
+local planTemplate = model.semanticReference.apply(
+  "`references/plan-template.md`",
+  "the **Plan template** section embedded in this file"
+)
+local planSummary = model.semanticReference.apply("`references/plan-summary.md`", "`references/output.md`")
+local invoke = model.semanticReference.apply("Invoke", "Run")
+local invokeLower = model.semanticReference.apply("invoke", "run")
+local invokedSkills = model.semanticReference.apply("invoked skills", "embedded phases")
+local yamlResult = model.semanticReference.apply("YAML result", "internal state")
+local returnLower = model.semanticReference.apply("return", "set internal status")
+local returnUpper = model.semanticReference.apply("Return", "Set internal status")
+local returningContextBrief = model.semanticReference.apply("Returning one structured context brief", "Recording one structured context brief")
+local returningAuthoringResult = model.semanticReference.apply("Returning one structured authoring result", "Recording one structured authoring result")
+local invokeTaskExecution = model.semanticReference.apply("Invoke task execution", "Run task execution")
+local contextLoadHeadings = new model.PhaseHeadings { step = 1 }
+local planAuthoringHeadings = new model.PhaseHeadings { step = 2 }
+local planTemplateHeadings = new model.PhaseHeadings { step = 0 }
+
+/// Contract references. A package owns `references/*.yaml`, so these sentences
+/// resolve there. A composite workflow has no such file and describes its
+/// internal states inline, so the reference would resolve to nothing and is
+/// dropped. Each block-shaped reference owns its surrounding blank lines.
+local contextBriefHandoffSentence = model.semanticReference.apply(
+  """
+
+  The skill must return a result matching its context brief contract.
+
+  """,
+  ""
+)
+local contextBriefBlock = model.semanticReference.apply(
+  """
+
+  Return a result matching:
+
+  `references/context-brief.yaml`
+
+  """,
+  ""
+)
+local contextBriefClause = model.semanticReference.apply(" matching `references/context-brief.yaml`", "")
+local authoringHandoffSentence = model.semanticReference.apply(
+  """
+
+  The skill must return a result matching its authoring contract.
+
+  """,
+  ""
+)
+local authoringContractBlock = model.semanticReference.apply(
+  """
+
+  Return a result matching:
+
+  `references/authoring-contract.yaml`
+
+  """,
+  ""
+)
+local authoringContractClause = model.semanticReference.apply(" matching `references/authoring-contract.yaml`", "")
+local returnExactlyOneStructuredResult = model.semanticReference.apply("Return exactly one structured result", "Set exactly one internal state")
+local returnOnlyStructuredResult = model.semanticReference.apply("Return only the structured result", "Record only the internal state")
+
+/// User-visible layouts. Package mode states each layout at its branch, because a
+/// command file has no sibling `references/output.md`. Composite mode cites the
+/// `output.md` section that owns the layout, and keeps only the field mapping,
+/// branch conditions, and prohibitions that travelled with it.
+local bootstrapLayout = model.semanticReference.apply(
+  """
+  Return:
+
+  ```
+
+  -------------------------------------
+
+  # This repository has no durable context.
+
+  Bootstrap it, then continue in this session:
+
+  `sce setup --bootstrap-context`
+  ```
+  """,
+  """
+  Render the **Missing context bootstrap gate** layout from `references/output.md`.
+  """
+)
+local clarificationLayout = model.semanticReference.apply(
+  """
+  Return:
+
+  ```
+
+  -------------------------------------
+
+  # Clarification needed.
+
+  No plan was written.
+
+  Answer each question below.\("  ")
+
+  ## {question-id} · {category}
+
+  {question}
+
+  Why this blocks planning: {why_blocking}
+  ```
+  """,
+  """
+  Render the **Clarification gate** layout from `references/output.md`.
+  """
+)
+local authoringBlockedBranch = model.semanticReference.apply(
+  """
+  `blocked` -> No plan was written. Present the result as prose. Do not print the raw result. Present:
+
+  - Each issue in `issues`: its problem, its impact, and the decision it requires.
+  - When `candidates` is present, the candidate plan paths, and that naming the intended `{candidate-path}` in the change request resolves the ambiguity.
+
+  Stop.
+  """,
+  """
+  `blocked` -> No plan was written. Render the **Blocked** layout from `references/output.md`, drawing its issues from `issues` and, when `candidates` is present, its candidate paths from `candidates`. Do not print the raw result. Stop.
+  """
+)
+local readyContinuationLayout = model.semanticReference.apply(
+  """
+  Return:
+
+  ```
+
+  -------------------------------------
+
+  # Plan {plan-name} is ready.
+
+  {total-tasks} tasks planned.
+
+  This plan is a draft. State a correction and it will be updated.
+
+  Next up:
+
+  {next-task-id} — {next-task-title}
+
+  `/next-task {plan-path} {next-task-id}`
+  ```
+  """,
+  """
+  Render the **Ready continuation** layout from `references/output.md`.
+  """
+)
+
+/// Canonical `/change-to-plan` workflow command and its self-contained skill
+/// packages. Text mirrors the project-root `.pi/` behavioral baseline; target
+/// renderers consume this model in later workflow-rendering tasks.
+
+local contextLoadPackage = new model.SkillPackage {
+  slug = "sce-context-load"
+  title = "SCE Context Load"
+  documents = model.packageDocuments.apply(new Listing {
+    model.makeDocument.apply("SKILL.md", CONTEXT_SKILL)
+    model.makeDocument.apply("references/context-brief.yaml", CONTEXT_CONTRACT)
+  })
+}
+
+local planAuthoringPackage = new model.SkillPackage {
+  slug = "sce-plan-authoring"
+  title = "SCE Plan Authoring"
+  documents = model.packageDocuments.apply(new Listing {
+    model.makeDocument.apply("SKILL.md", AUTHORING_SKILL)
+    model.makeDocument.apply("references/authoring-contract.yaml", AUTHORING_CONTRACT)
+    model.makeDocument.apply("references/plan-template.md", PLAN_TEMPLATE)
+    model.makeDocument.apply("references/plan-summary.md", PLAN_SUMMARY)
+  })
+}
+
+local commandBanner = model.commandBanner.apply("SCE CHANGE TO PLAN")
+
+local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
+    \(commandBanner.render.apply(mode))## Input
+
+    `$ARGUMENTS` is the change request, in free-form prose.
+
+    - The change request is required.
+    - It may describe a new plan or a change to an existing plan. Do not resolve which one applies; step 2 owns that decision.
+
+    When `$ARGUMENTS` is empty, report that a change request is required, state the expected argument, and stop. Do not infer a change request from the repository state or the conversation.
+
+    Pass the change request to step 2 unmodified. Do not restate, summarize, or pre-scope it.
+
+    Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is the path resolved in step 2 (`plan.path`, or an entry of `candidates`), so every emitted command is directly runnable.
+
+    ## Workflow
+
+    ### 1. Load durable context
+
+    \(invoke.render.apply(mode)) \(contextLoad.render.apply(mode)) with the change request as the focus.
+
+    `context/` is durable AI-first memory describing current state. Load it before planning so the plan starts from recorded truth. Where context and code disagree, the code is the source of truth.
+    \(contextBriefHandoffSentence.render.apply(mode))
+    \(model.inlinePhaseBody.apply(contextSkillBody).render.apply(mode))Branch on `status`:
+
+    `bootstrap_required` -> `context/` does not exist. Do not create it, and do not plan without it. \(bootstrapLayout.render.apply(mode))
+
+    Wait for the user. When they report the command ran, \(invokeLower.render.apply(mode)) \(contextLoad.render.apply(mode)) again and continue in this session. Do not restart planning, and do not ask for the change request again.
+
+    `loaded` -> Continue to the next step.
+
+    Do not read `context/` yourself. Do not repair drift or stale context; the brief reports it and the plan may schedule the repair.
+
+    ### 2. Author the plan
+
+    \(invoke.render.apply(mode)) \(planAuthoring.render.apply(mode)) with the change request and the complete `loaded` brief from \(contextLoad.render.apply(mode)).
+
+    Pass the brief verbatim. Do not restate, summarize, or reinterpret it.
+
+    \(planAuthoringUpper.render.apply(mode)) exclusively owns:
+
+    - Resolving whether the request targets a new or an existing plan.
+    - The clarification gate.
+    - Normalizing the change summary, acceptance criteria, constraints, and non-goals.
+    - Slicing the task stack into one-task/one-atomic-commit units.
+    - Writing `context/plans/{plan_name}.md`.
+
+    Do not duplicate any of it. Do not write or edit the plan file yourself.
+    \(authoringHandoffSentence.render.apply(mode))
+    \(model.inlinePhaseBody.apply(authoringSkillBody).render.apply(mode))Branch on `status`:
+
+    `needs_clarification` -> No plan was written. Present the result as prose. Do not print the raw result. \(clarificationLayout.render.apply(mode))
+
+    Render one `##` block per entry in `questions`, in result order. Use the question's `id`, `category`, `question`, and `why_blocking` fields exactly as returned.
+
+    Do not answer the questions. Do not assume answers. Do not write a plan. Stop and wait.
+
+    \(authoringBlockedBranch.render.apply(mode))
+
+    `plan_ready` -> Continue to the next step.
+
+    ### 3. Determine the continuation
+
+    Render the `plan_ready` result as the summary defined by \(planAuthoring.render.apply(mode)) in \(planSummary.render.apply(mode)). Follow that layout exactly. Do not print the raw result.
+
+    Take the next task from `next_task`. A `plan_ready` result always names one. Do not evaluate its dependencies; \(planReview.render.apply(mode)) checks them when the emitted command runs and returns `blocked` if they are unmet.
+
+    The continuation invites revision. The plan was written from one prose request, so its assumptions are guesses about what the user meant, its scope is one reading of the request, and its task boundaries are the author's judgement. The user has seen none of it until now, and every one of those is cheaper to correct here than after a task has been built on it. A user who does not know revision is on the table will implement a plan they would have changed.
+
+    Write `task` rather than `tasks` when `total_tasks` is 1.
+
+    Offer revision, but do not gate the handoff on it, do not manufacture concerns, and do not ask the user to confirm the plan. When the summary lists open questions, leave them in the summary only — do not restate them in the continuation, do not answer them, and do not block the handoff on them. Blocking questions belong in `needs_clarification` (step 2), not here.
+
+    \(readyContinuationLayout.render.apply(mode))
+
+    Then stop and wait. Do not implement, and do not run the handoff yourself.
+
+    ### 4. Revise the plan on request
+
+    When the user answers clarification questions from step 2, answers open questions listed in the summary, or answers with changes to the plan, revise it in this session. Do not ask them to rerun `/change-to-plan`, and do not ask for the original change request again.
+
+    \(invoke.render.apply(mode)) \(planAuthoring.render.apply(mode)) with their answer or correction and the same `loaded` brief from step 1. The brief still holds; durable context did not change because the user disagreed with a task boundary. Do not reload it.
+
+    An answer that resolves a doubt removes that open question. An answer that does not resolve it leaves the question standing; do not drop it because the user replied to it. If the reply raises a new doubt, the revised plan carries a new open question.
+
+    Pass the correction as written. Do not restate, soften, or pre-scope it. \(planAuthoringUpper.render.apply(mode)) owns resolving it against the existing plan, and owns preserving completed tasks and their evidence.
+
+    Branch on `status` exactly as in step 2. A revision may legitimately return `needs_clarification` or `blocked`.
+
+    On `plan_ready`, render the summary again and the continuation exactly as in step 3, replacing `is ready` with `revised` in the heading.
+
+    Revise as many times as the user asks. Each revision is one invocation of \(planAuthoring.render.apply(mode)) against the same plan.
+
+    When the user signals the plan is good, or asks to begin, return the handoff without re-authoring the plan. Say so plainly if questions are still open: the user may proceed over an unresolved doubt, and that is their call, but do not record it as resolved.
+
+    Stop.
+
+    ## Rules
+
+    - Plan at most one change request per invocation. Revisions to the plan that request produced are part of the same invocation, not a second request.
+    - Always tell the user the plan can be revised, and always name its assumptions as the first thing worth checking.
+    - Do not gate the handoff on open questions listed in the plan summary. Blocking questions return `needs_clarification` before any plan is written. Offering revision is not the same as demanding it, and inventing doubts to justify a review gate is not allowed.
+    - Do not suppress, soften, or answer an open question or clarification question on the user's behalf.
+    - Do not defer the user's revision to a rerun of `/change-to-plan`, and do not defer it to the implementation phase. Revise the plan here.
+    - Do not narrow, expand, or reinterpret a revision the user asked for. Pass it to \(planAuthoring.render.apply(mode)) as written.
+    - Do not duplicate the internal instructions of \(invokedSkills.render.apply(mode)).
+    - Do not plan before durable context is loaded.
+    - Do not bootstrap `context/` yourself. `sce setup --bootstrap-context` owns that.
+    - Do not modify any file under `context/` outside `context/plans/`.
+    - Do not implement any part of the plan.
+    - Do not ask for implementation confirmation.
+    - Do not run task execution, context synchronization, or full-plan validation.
+    - Do not emit a `/validate` command. This workflow always hands off to `/next-task`.
+    - Do not answer the skill's clarification questions on the user's behalf.
+    - Do not execute the continuation returned at the end.
+    - Do not infer success when \(planAuthoring.render.apply(mode)) returns a non-`plan_ready` status.
+    """
+
+local structuredCommand = new model.StructuredWorkflowDocument {
+  path = "change-to-plan.md"
+  frontmatter = new model.WorkflowFrontmatter {
+    lines = (mode: model.WorkflowRenderMode) -> new Listing {
+      "description: \"Run \(contextLoad.render.apply(mode)) -> \(planAuthoring.render.apply(mode)) to turn a change request into a scoped SCE plan\""
+      "argument-hint: \"<describe changes you want to introduce>\""
+    }
+  }
+  body = new model.WorkflowBody {
+    render = (mode: model.WorkflowRenderMode) -> renderCommandBody.apply(mode)
+  }
+}
+
+local COMMAND = structuredCommand.render.apply("package", "").text
+
+local contextSkillIntroduction = model.packageOnlyBlock.apply("""
+    # SCE Context Load
+
+    ## Purpose
+
+    Load the durable context needed to reason about one focus, and no more.
+
+    `context/` is AI-first memory describing current state. This phase turns it into
+    a scoped brief so later phases start from recorded truth instead of rediscovering
+    the repository.
+
+    This phase owns:
+
+    - Confirming `context/` exists.
+    - Reading the context entry points.
+    - Selecting the domain context relevant to the focus.
+    - Reporting focus areas with no durable context.
+    - Reporting context that contradicts the code.
+    - Returning one structured context brief.
+
+    ## Input
+
+    One focus: a change request, a task, or a named area, with optional paths or
+    areas already known to be relevant.
+
+    ## Workflow
+    """)
+
+local renderContextSkillBody = (mode: model.WorkflowRenderMode) -> """
+    \(contextSkillIntroduction.render.apply(mode))\(contextLoadHeadings.stepHeading.apply(mode, 1, "Confirm the context root"))
+
+    When `context/` does not exist, \(returnLower.render.apply(mode)) `bootstrap_required` immediately. Read
+    nothing further.
+
+    Bootstrapping is the workflow's decision, not this phase's.
+
+    \(contextLoadHeadings.stepHeading.apply(mode, 2, "Read the entry points"))
+
+    Read, when present:
+
+    - `context/context-map.md`
+    - `context/overview.md`
+    - `context/glossary.md`
+
+    Read `context/architecture.md` when the focus touches structure, boundaries, or
+    data flow. Read `context/patterns.md` when it touches conventions the change
+    must follow.
+
+    A missing entry point is a gap, not a failure. Record it and continue.
+
+    \(contextLoadHeadings.stepHeading.apply(mode, 3, "Select the relevant domain context"))
+
+    Consult `context/context-map.md` before any broad exploration. The map's
+    annotations name what each domain file owns; use them to select files, rather
+    than globbing or searching `context/`.
+
+    Select only files whose subject overlaps the focus. Follow at most one level of
+    links out of a selected file, and only when the link is needed to understand the
+    focus.
+
+    Do not read every domain file. A brief that includes everything has selected
+    nothing.
+
+    Record focus areas with no matching context file under `gaps`.
+
+    \(contextLoadHeadings.stepHeading.apply(mode, 4, "Check recorded context against the code"))
+
+    For each selected file, spot-check its central claims against the code it
+    describes.
+
+    When context and code diverge, the code is the source of truth. Record the
+    divergence under `drift` with what context says, what the code shows, and the
+    repair the context needs.
+
+    Do not repair it here. Later phases decide whether repair belongs in the current
+    work.
+
+    Keep this proportional: check the claims the focus depends on, not every
+    sentence.
+
+    \(contextLoadHeadings.stepHeading.apply(mode, 5, "Return the brief"))
+
+    \(returnExactlyOneStructuredResult.render.apply(mode)):
+
+    - `loaded`
+    - `bootstrap_required`
+
+    Report facts the workflow can act on. A brief that only lists file
+    paths has moved no knowledge.
+
+    \(returnOnlyStructuredResult.render.apply(mode)). Do not add explanatory prose before or after
+    it.
+
+    \(contextLoadHeadings.section.apply(mode, "Context load boundaries"))
+
+    Do not:
+
+    - Create, update, move, or delete any file under `context/`.
+    - Bootstrap `context/`.
+    - Repair drift or stale context.
+    - Modify application code or tests.
+    - Read the entire `context/` tree by default.
+    - Explore the repository beyond what the focus and the selected context require.
+    - Ask the user questions. Report gaps and drift, and let the workflow decide.
+    - Author a plan, select a task, or implement anything.\(model.packageOnlyBlock.apply("""
+
+    ## Completion
+
+    The phase is complete after:
+
+    - The context root was confirmed, or `bootstrap_required` was returned.
+    - The entry points were read, and the relevant domain context was selected and
+      read.
+    - One valid result\(contextBriefClause.render.apply(mode)) was returned.
+    """).render.apply(mode))
+    """
+
+local contextSkillBody = new model.WorkflowBody {
+  render = (mode: model.WorkflowRenderMode) -> renderContextSkillBody.apply(mode)
+}
+
+local structuredContextSkill = new model.StructuredWorkflowDocument {
+  path = "sce-context-load"
+  frontmatter = new model.WorkflowFrontmatter {
+    lines = (mode: model.WorkflowRenderMode) -> new Listing {
+      "name: \(contextLoadName.render.apply(mode))"
+      "description: >"
+      "  Internal SCE workflow skill that loads the durable context in `context/`"
+      "  relevant to one focus, reports gaps and context-versus-code drift, and returns"
+      "  one \(yamlResult.render.apply(mode)): loaded or bootstrap_required. Use from /change-to-plan and"
+      "  any workflow that needs durable context before acting. Do not modify context,"
+      "  repair drift, plan, or implement."
+    }
+  }
+  body = contextSkillBody
+}
+
+local CONTEXT_SKILL = structuredContextSkill.render.apply("package", "").text
+
+local CONTEXT_CONTRACT = """
+    version: 1
+    name: sce-context-load-result
+
+    description: >
+      Output contract for sce-context-load. The skill returns exactly one YAML
+      document representing loaded or bootstrap_required.
+
+    output_rules:
+      - Return exactly one result variant.
+      - The top-level status must be loaded or bootstrap_required.
+      - Return YAML only, without a Markdown code fence or explanatory prose.
+      - Include only fields belonging to the selected variant.
+      - Omit optional fields that do not apply rather than sending them empty.
+      - Do not return empty strings or null placeholders. An empty list is a valid
+        value for a required list field.
+      - List every file that was read, and no file that was not.
+      - Report key_facts as durable statements the invoking workflow can act on, not
+        as summaries of what a file discusses.
+      - Do not include recommendations about how to plan or implement the focus.
+      - Do not report context edits. This skill never writes.
+
+    variants:
+
+      loaded:
+        meaning: >
+          The context root exists and the context relevant to the focus was read.
+
+        required_fields:
+          - status
+          - context_root
+          - entry_points
+          - domain_context
+          - gaps
+
+        optional_fields:
+          - drift
+
+        field_rules:
+          - List entry_points with the read status of each, including entry points
+            that are absent.
+          - Include a domain_context entry only for a file that was actually read.
+          - Record a gap for any focus area with no durable context, and for any
+            absent entry point.
+          - Include drift only when recorded context contradicts the code. An
+            absence of drift means the checked claims held.
+          - An empty domain_context list is valid when the context root exists but
+            holds nothing relevant to the focus. Record the gap.
+
+        shape:
+          status: loaded
+
+          context_root: string
+
+          entry_points:
+            - path: string
+              read: true | false
+              reason: string
+
+          domain_context:
+            - path: string
+              relevance: string
+              key_facts:
+                - string
+
+          gaps:
+            - area: string
+              detail: string
+
+          drift:
+            - path: string
+              context_says: string
+              code_says: string
+              repair_needed: string
+
+        example:
+          status: loaded
+
+          context_root: context/
+
+          entry_points:
+            - path: context/context-map.md
+              read: true
+            - path: context/overview.md
+              read: true
+            - path: context/glossary.md
+              read: true
+            - path: context/architecture.md
+              read: false
+              reason: The focus does not change structure, boundaries, or data flow.
+
+          domain_context:
+            - path: context/cli/styling-service.md
+              relevance: >
+                Owns the CLI banner rendering the focus changes.
+
+              key_facts:
+                - Color output is gated by a shared supports_color() policy honoring NO_COLOR and TTY detection.
+                - The banner gradient is applied per column by services::style.
+                - owo-colors is the established styling dependency; no theme configuration surface exists.
+
+            - path: context/cli/cli-command-surface.md
+              relevance: >
+                Owns which help surfaces render the banner.
+
+              key_facts:
+                - The top-level banner is shared by sce, sce help, and sce --help.
+                - Command-local help does not render the banner.
+
+          gaps:
+            - area: gradient regression coverage
+              detail: >
+                No durable context records how banner rendering is tested.
+
+          drift:
+            - path: context/cli/styling-service.md
+              context_says: The banner gradient runs right to left in cyan and magenta.
+              code_says: >
+                services::style renders a left-to-right red gradient in the current
+                working tree.
+              repair_needed: >
+                Update the styling context to the implemented gradient direction and
+                endpoints.
+
+      bootstrap_required:
+        meaning: >
+          The context root does not exist, so no durable context could be loaded.
+          Nothing was read and nothing was created.
+
+        required_fields:
+          - status
+          - context_root
+          - reason
+
+        field_rules:
+          - Report context_root as the path that was expected.
+          - Do not create the directory. Bootstrapping is owned by
+            `sce setup --bootstrap-context`, which the user runs.
+
+        shape:
+          status: bootstrap_required
+
+          context_root: string
+
+          reason: string
+
+        example:
+          status: bootstrap_required
+
+          context_root: context/
+
+          reason: >
+            The repository has no context/ directory, so there is no durable memory
+            to load for this focus.
+    """
+
+local authoringSkillIntroduction = model.packageOnlyBlock.apply("""
+    # SCE Plan Authoring
+
+    ## Purpose
+
+    Turn exactly one change request into `context/plans/{plan_name}.md` without
+    inventing material requirements.
+
+    This phase owns:
+
+    - Resolving whether the request targets a new or an existing plan.
+    - Judging whether the change is worth making, and recording the doubt when it
+      is not clear that it is.
+    - Deciding whether the request can be planned safely.
+    - Normalizing the change summary, acceptance criteria, constraints, and
+      non-goals.
+    - Slicing the work into atomic implementation tasks.
+    - Writing the plan file.
+    - Recording one structured authoring result.
+    """)
+
+local authoringInputProvider = model.packageOnlyBlock.apply("""
+    ## Input
+
+    One change request, in free-form prose, and the `loaded` context brief from
+    the context-load phase.
+    """)
+
+local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
+    \(authoringSkillIntroduction.render.apply(mode))Use the document format defined in \(planTemplate.render.apply(mode)).
+    \(authoringContractBlock.render.apply(mode))
+    The workflow renders that result as the summary defined in:
+
+    \(planSummary.render.apply(mode))
+
+    \(authoringInputProvider.render.apply(mode))The change request may name a plan, describe a change to an existing plan, or
+    describe entirely new work. Resolving which applies is this phase's
+    responsibility.
+
+    The context brief is the durable memory this plan starts from. Treat its
+    `key_facts` as recorded current state, its `gaps` as areas with no durable
+    context, and its `drift` as context the code has already outrun.
+
+    When no brief is supplied, load the context named by the change request before
+    authoring, and follow the selection discipline in *Inspect relevant context*.
+
+    Answers the user gave to earlier clarification questions arrive as part of the
+    change request. Incorporate them into the plan.
+
+    A revision of a plan authored earlier in the session also arrives as the change
+    request, and it is usually terse: a task boundary the user disagrees with, an
+    ordering they want changed, work they want added or dropped. Read it against the
+    existing plan, which supplies the scope, criteria, and terminology it omits.
+    Terseness is not ambiguity. Do not \(returnLower.render.apply(mode)) `needs_clarification` for detail the
+    plan already carries; ask only when the revision itself is genuinely undecidable.
+
+    \(model.packageOnlyBlock.apply("## Workflow").render.apply(mode))\(planAuthoringHeadings.stepHeading.apply(mode, 1, "Resolve the plan target"))
+
+    Determine whether the request targets a new plan or an existing plan in
+    `context/plans/`.
+
+    When it targets an existing plan, read that plan before authoring. Preserve its
+    completed tasks, their recorded evidence, its structure, and its terminology.
+
+    When multiple existing plans match and none can be selected safely, return
+    `blocked` with the matching candidates.
+
+    When the request targets a new plan, derive `plan_name` as a short kebab-case
+    slug of the change, and confirm it does not collide with an existing plan.
+
+    Resolve exactly one plan target per invocation.
+
+    \(planAuthoringHeadings.stepHeading.apply(mode, 2, "Challenge the change"))
+
+    Before planning how to build the change, work out whether it is worth building.
+    A plan is a commitment of someone's time; authoring one for work that should not
+    happen is worse than authoring none.
+
+    Interrogate the request:
+
+    - What breaks, or stays broken, if this is never built? If the answer is
+      nothing concrete, say so.
+    - What problem is it actually solving, as opposed to what it proposes to do? A
+      request that names only a solution has not stated a problem.
+    - Does the repository already do this, or most of it? The brief's `key_facts`
+      are the first place to check.
+    - Is there a materially smaller version that gets most of the value? Name it.
+    - What does this cost beyond the tasks: new dependency, new concept in the
+      glossary, a boundary crossed, a surface that now needs maintaining forever?
+    - Does the stated justification survive contact with the code, or does the code
+      show the premise is already false?
+
+    Doubt that survives this is not an implementation detail to be tidied away. It
+    belongs in the plan's `Open questions` and in `open_questions`, in the plain
+    words you would use to a colleague. "Is this worth doing at all, given X?" is a
+    legitimate open question. So is "this looks like it duplicates Y".
+
+    Weigh honestly in both directions. A request that is obviously worth building
+    gets no manufactured doubt: inventing questions to look rigorous is its own
+    failure, and it teaches the user to ignore the section. Most changes are fine.
+    Say nothing when there is nothing to say.
+
+    Keep going regardless. Skepticism shapes the plan and the open questions; it
+    does not withhold the plan. The only value judgment that stops authoring is
+    `no_actionable_work`, when the change is already implemented.
+
+    \(planAuthoringHeadings.stepHeading.apply(mode, 3, "Run the clarification gate"))
+
+    Before writing or updating any plan file, check the request for critical
+    unresolved detail:
+
+    - Scope boundaries and out-of-scope items.
+    - Acceptance criteria and the checks that prove them.
+    - Constraints and non-goals.
+    - Dependency choices, including new libraries or services, versions, and the
+      integration approach.
+    - Domain ambiguity, including unclear business rules, terminology, or ownership.
+    - Architecture concerns, including patterns, interfaces, data flow, migration
+      strategy, and risk tradeoffs.
+    - Task ordering assumptions and prerequisite sequencing.
+
+    \(returnUpper.render.apply(mode)) `needs_clarification` with one to three targeted questions when any of
+    these would materially change the plan. Write no plan file in that case.
+
+    Use repository conventions for ordinary local choices. Do not block on:
+
+    - Naming inferable from surrounding code.
+    - Established formatting or style.
+    - Reversible local implementation details.
+    - Details that do not change scope, acceptance criteria, or task ordering.
+
+    Record those choices under `assumptions`.
+
+    Do not silently invent missing requirements. When the user has explicitly
+    allowed assumptions, record them in the plan's `Assumptions` section instead of
+    asking.
+
+    A justification that does not survive inspection is itself a critical unresolved
+    detail. "For consistency", "to make it cleaner", "we will need it later" name no
+    outcome and prove nothing; ask what the change is actually for before planning
+    around it. Do not treat confident phrasing as evidence.
+
+    \(planAuthoringHeadings.stepHeading.apply(mode, 4, "Inspect relevant context"))
+
+    Start from the context brief. Read code only where the brief leaves the change
+    underspecified:
+
+    - Existing behavior the change affects.
+    - Applicable repository conventions.
+    - Architectural boundaries.
+    - Relevant tests and available verification commands.
+    - Decisions or specifications connected to the change.
+
+    Where the brief reports `drift`, the code is the source of truth. Plan against
+    the code, and schedule the context repair as part of the change when it falls
+    inside scope.
+
+    Where the brief reports `gaps`, the plan may need to establish durable context
+    the repository does not yet have.
+
+    Do not explore the entire repository by default.
+
+    \(planAuthoringHeadings.stepHeading.apply(mode, 5, "Author the acceptance criteria"))
+
+    State how the finished plan is proven, before slicing tasks.
+
+    Each criterion describes observable behavior of the finished system and names
+    the check that proves it. Record repository-wide checks once under
+    `Full validation`, and the durable context the change must be reflected in
+    under `Context sync`.
+
+    `/validate` runs this section after the last task completes. It is the only
+    place a plan says how it is validated.
+
+    \(planAuthoringHeadings.stepHeading.apply(mode, 6, "Author the task stack"))
+
+    Slice the work into sequential tasks `T01..T0N` using the task format and the
+    atomic slicing contract in \(planTemplate.render.apply(mode)).
+
+    Every executable task must be completable and landable as one coherent commit.
+    Split any task that would require multiple independent commits. Convert broad
+    wrappers such as `polish` or `finalize` into specific outcomes with concrete
+    acceptance checks.
+
+    Order tasks so each one's declared dependencies precede it.
+
+    The last task is an ordinary implementation task. Do not author a trailing
+    validation-and-cleanup task, or any task whose only purpose is running the full
+    check suite, verifying durable context, or removing scaffolding.
+
+    Confirm every acceptance criterion is satisfied by at least one task. When one
+    is not, the task stack is incomplete.
+
+    A finished stack always leaves at least one incomplete task, so the workflow
+    can always hand off to `/next-task`. When the request resolves to a
+    plan but produces no incomplete task, because the change is already implemented
+    or already covered by completed tasks, \(returnLower.render.apply(mode)) `blocked` with category
+    `no_actionable_work` instead of writing the plan.
+
+    \(planAuthoringHeadings.stepHeading.apply(mode, 7, "Write the plan"))
+
+    Write `context/plans/{plan_name}.md` using \(planTemplate.render.apply(mode)).
+
+    When updating an existing plan, keep completed tasks and their evidence intact,
+    and append or renumber new tasks without disturbing recorded history.
+
+    \(planAuthoringHeadings.stepHeading.apply(mode, 8, "Return the result"))
+
+    \(returnExactlyOneStructuredResult.render.apply(mode)):
+
+    - `plan_ready`
+    - `needs_clarification`
+    - `blocked`
+
+    \(returnOnlyStructuredResult.render.apply(mode)). Do not add explanatory prose before or after
+    it.
+
+    \(planAuthoringHeadings.section.apply(mode, "Plan authoring tone"))
+
+    Every question and open question this phase writes is read by the user. Write
+    them the way a senior engineer talks in review: direct, specific, and unbothered
+    by the possibility of being unwelcome.
+
+    - Ask about the thing that actually worries you, not a safer neighbouring thing.
+      A question you would not bother asking a colleague is not worth the user's
+      attention either.
+    - State a doubt as a doubt. "I do not think this is worth the two tasks it
+      costs, because X" is useful. "It may be worth considering whether this aligns
+      with broader goals" is noise.
+    - Name the alternative you have in mind. A challenge with no proposal behind it
+      is just friction.
+    - Do not open with praise, do not close with reassurance, and do not apologize
+      for asking. Do not pad a doubt with hedges to make it land more gently.
+    - Be persistent, not repetitive. Ask once, plainly, and let it stand; do not
+      restate the same doubt in three shapes to give it more weight.
+    - Being disagreeable is not the goal. Being easy to agree with is the failure
+      mode. A plan the user waves through without reading has cost them nothing and
+      bought them nothing.
+
+    When the user overrules a doubt, record it and move on. Do not relitigate a
+    decision the user has made, and do not smuggle the objection back in as a
+    constraint, a non-goal, or a task.
+
+    \(planAuthoringHeadings.section.apply(mode, "Plan authoring boundaries"))
+
+    Do not:
+
+    - Ask the user questions directly. \(returnUpper.render.apply(mode)) `needs_clarification` and let the
+      workflow present the questions.
+    - Answer your own clarification questions.
+    - Write a plan file when returning `needs_clarification` or `blocked`.
+    - Implement any task in the plan.
+    - Modify application code or tests.
+    - Modify any file under `context/` outside `context/plans/`. Plan the context
+      repair instead of performing it.
+    - Mark any task complete.
+    - Request implementation confirmation.
+    - \(invokeTaskExecution.render.apply(mode)).
+    - Synchronize context.
+    - Run final validation.
+    - Author a validation, cleanup, or context-verification task. `/validate` owns
+      that phase.
+    - \(returnUpper.render.apply(mode)) `plan_ready` for a plan with no incomplete task.
+    - Create a Git commit.
+    - Author more than one plan.\(model.packageOnlyBlock.apply("""
+
+    ## Completion
+
+    The phase is complete after:
+
+    - One plan target was resolved, or resolution failed and was reported.
+    - The plan file was written, or no file was written because the result is
+      `needs_clarification` or `blocked`.
+    - One valid result\(authoringContractClause.render.apply(mode)) was returned.
+    """).render.apply(mode))
+    """
+
+local authoringSkillBody = new model.WorkflowBody {
+  render = (mode: model.WorkflowRenderMode) -> renderAuthoringSkillBody.apply(mode)
+}
+
+local structuredAuthoringSkill = new model.StructuredWorkflowDocument {
+  path = "sce-plan-authoring"
+  frontmatter = new model.WorkflowFrontmatter {
+    lines = (mode: model.WorkflowRenderMode) -> new Listing {
+      "name: \(planAuthoringName.render.apply(mode))"
+      "description: >"
+      "  Internal SCE workflow skill that turns one change request into a scoped plan"
+      "  in `context/plans/`, sliced into atomic implementation tasks, and returns one"
+      "  \(yamlResult.render.apply(mode)): plan_ready, needs_clarification, or blocked. Use from"
+      "  /change-to-plan. Do not implement plan tasks, request implementation approval,"
+      "  synchronize context, or run final validation."
+    }
+  }
+  body = authoringSkillBody
+}
+
+local AUTHORING_SKILL = structuredAuthoringSkill.render.apply("package", "").text
+
+local AUTHORING_CONTRACT = """
+    version: 1
+    name: sce-plan-authoring-result
+
+    description: >
+      Output contract for sce-plan-authoring. The skill returns exactly one YAML
+      document representing plan_ready, needs_clarification, or blocked.
+
+    output_rules:
+      - Return exactly one result variant.
+      - The top-level status must be plan_ready, needs_clarification, or blocked.
+      - Return YAML only, without a Markdown code fence or explanatory prose.
+      - Include only fields belonging to the selected variant.
+      - Omit optional fields that do not apply rather than sending them empty.
+      - Do not return empty strings or null placeholders. An empty list is a valid
+        value for a required list field.
+      - Report plan.name as the plan file's base name without its extension, and
+        plan.path as the exact written path, so emitted commands are runnable.
+      - Report plan.completed_tasks and plan.total_tasks as they stand in the
+        written plan.
+      - Write a plan file only for plan_ready. needs_clarification and blocked mean
+        nothing was written or modified.
+      - Do not ask the user questions directly. Clarification questions belong in
+        the needs_clarification variant.
+      - Do not report a trailing validation, cleanup, or context-verification task.
+        The written plan states how it is validated in its acceptance criteria, and
+        /validate runs that phase after the last task.
+      - plan_ready always leaves at least one incomplete task and always names
+        next_task. A request that would add no incomplete task is not plan_ready;
+        return blocked with category no_actionable_work.
+      - Do not request implementation confirmation.
+      - Do not include implementation results.
+      - Do not include context synchronization results.
+      - Do not include final validation results.
+
+    variants:
+
+      plan_ready:
+        meaning: >
+          One plan was written or updated and its task stack is ready to enter the
+          review-and-implementation workflow.
+
+        required_fields:
+          - status
+          - plan
+          - summary
+          - tasks
+          - next_task
+          - assumptions
+
+        optional_fields:
+          - open_questions
+
+        field_rules:
+          - Report summary as one or two sentences condensing the plan's Change
+            summary section: what changes, where, and why. It is what the user reads
+            to decide whether the plan understood the request at all.
+          - Write summary as the resulting behavior, not as a list of the tasks. The
+            task list is already carried by tasks.
+          - Set plan.action to created for a new plan file, or updated for an
+            existing one.
+          - List tasks in plan order, including tasks already complete on an
+            updated plan.
+          - Report next_task as the first unchecked task in plan order. It is always
+            present, because plan_ready requires at least one incomplete task.
+          - Include open_questions only for non-blocking questions recorded in the
+            plan. A blocking question requires needs_clarification instead.
+          - Record unresolved doubt about the change's value here: whether it is
+            worth building, whether it duplicates existing behavior, whether a
+            smaller version would do. Such a doubt does not block authoring, and
+            the invoking workflow surfaces it before handing off.
+          - Omit open_questions when there is nothing genuinely unresolved. Do not
+            manufacture a question to appear rigorous. An empty section is the
+            expected outcome for a well-specified change.
+
+        shape:
+          status: plan_ready
+
+          plan:
+            path: string
+            name: string
+            action: created | updated
+            completed_tasks: integer
+            total_tasks: integer
+
+          summary: string
+
+          tasks:
+            - id: string
+              title: string
+              status: todo | done
+
+          next_task:
+            id: string
+            title: string
+
+          assumptions:
+            - string
+
+          open_questions:
+            - string
+
+        example:
+          status: plan_ready
+
+          plan:
+            path: context/plans/authentication.md
+            name: authentication
+            action: created
+            completed_tasks: 0
+            total_tasks: 3
+
+          summary: >
+            Adds password authentication to the HTTP API: a login endpoint that
+            verifies credentials and issues a token, and refresh-token rotation
+            behind it. Registration and password reset are untouched.
+
+          tasks:
+            - id: T01
+              title: Add credential verifier
+              status: todo
+            - id: T02
+              title: Add login endpoint
+              status: todo
+            - id: T03
+              title: Add refresh-token rotation
+              status: todo
+
+          next_task:
+            id: T01
+            title: Add credential verifier
+
+          assumptions:
+            - Use the error-response convention established by existing handlers.
+
+          open_questions:
+            - T03 adds refresh-token rotation, but nothing in the request says a token is ever revoked. Is rotation worth its own task here, or is it being planned because it usually comes with auth?
+
+      needs_clarification:
+        meaning: >
+          A critical detail is unresolved, so no plan was written. The invoking
+          workflow must present the questions and stop.
+
+        required_fields:
+          - status
+          - questions
+
+        optional_fields:
+          - plan_target
+
+        field_rules:
+          - Include one to three questions. Each must be specific, answerable, and
+            blocking.
+          - Include plan_target when the request clearly resolved to one new or
+            existing plan before the gate stopped authoring.
+          - Do not include a plan path unless that plan already exists on disk.
+
+        shape:
+          status: needs_clarification
+
+          plan_target:
+            name: string
+            action: created | updated
+            path: string
+
+          questions:
+            - id: string
+              category: scope | success_criteria | constraints | dependency | domain | architecture | sequencing
+              question: string
+              why_blocking: string
+
+        example:
+          status: needs_clarification
+
+          plan_target:
+            name: authentication
+            action: created
+
+          questions:
+            - id: Q01
+              category: architecture
+
+              question: >
+                Should the new endpoint authenticate via the existing JWT
+                middleware, or is a separate auth flow in scope?
+
+              why_blocking: >
+                The answer changes the task stack, the affected modules, and the
+                security boundary.
+
+            - id: Q02
+              category: scope
+
+              question: >
+                Is database migration rollback a hard requirement, or is
+                forward-only acceptable for this change?
+
+              why_blocking: >
+                Rollback support is a separate atomic task with its own
+                verification.
+
+      blocked:
+        meaning: >
+          The plan target could not be resolved, or the request cannot be planned
+          safely. No plan was written.
+
+        required_fields:
+          - status
+          - issues
+
+        optional_fields:
+          - candidates
+
+        field_rules:
+          - Include candidates only when the request matched more than one existing
+            plan and none could be selected safely.
+          - Use needs_clarification, not blocked, when the request is plannable once
+            the user answers a question.
+          - Use no_actionable_work when the request resolved to a plan but produced
+            no incomplete task, for example because the requested change is already
+            implemented or already covered by completed tasks.
+
+        shape:
+          status: blocked
+
+          candidates:
+            - string
+
+          issues:
+            - id: string
+              category: ambiguous_plan_target | missing_request | conflicting_request | no_actionable_work | other
+              problem: string
+              impact: string
+              decision_required: string
+
+        example:
+          status: blocked
+
+          candidates:
+            - context/plans/authentication.md
+            - context/plans/authentication-refresh.md
+
+          issues:
+            - id: B01
+              category: ambiguous_plan_target
+
+              problem: >
+                The change request matches more than one existing plan and none can
+                be selected safely.
+
+              impact: >
+                Updating the wrong plan would reorder tasks unrelated to the
+                request.
+
+              decision_required: >
+                Name the exact plan path to update, or state that a new plan should
+                be created.
+    """
+
+local renderPlanTemplate = (mode: model.WorkflowRenderMode) -> """
+    \(model.packageOnlyBlock.apply("# SCE Plan Template").render.apply(mode))The document format for `context/plans/{plan_name}.md`. This is the plan file
+    written to disk, not the result returned to the workflow.
+
+    Copy the template below and fill every `{placeholder}`. Omit optional sections
+    entirely rather than writing them empty.
+
+    ---
+
+    \(planTemplateHeadings.section.apply(mode, "Template"))
+
+    ```markdown
+    # Plan: {plan-name}
+
+    ## Change summary
+
+    {One or two paragraphs: what changes, where, and why. State whether this
+    extends existing behavior, replaces it, or preserves work already in progress.}
+
+    ## Acceptance criteria
+
+    How this plan is proven complete. Each criterion is observable and names the
+    check that proves it. `/validate` runs these checks; no task in the stack
+    performs final validation.
+
+    - [ ] AC1: {observable outcome, stated as behavior rather than as work done}
+      - Validate: `{command, assertion, or inspection that proves AC1}`
+    - [ ] AC2: {observable outcome}
+      - Validate: `{command, assertion, or inspection that proves AC2}`
+
+    ### Full validation
+
+    Repository-wide checks `/validate` runs after the last task, regardless of
+    which criterion they map to.
+
+    - `{full check suite command}`
+    - `{generated-output or parity check command, when applicable}`
+
+    ### Context sync
+
+    - {Durable context files that must describe the change once implemented.}
+
+    ## Constraints and non-goals
+
+    - **In scope:** {files, modules, and surfaces this plan may touch}
+    - **Out of scope:** {adjacent work explicitly excluded}
+    - **Constraints:** {dependencies, conventions, compatibility, or policy limits}
+    - **Non-goal:** {tempting generalization this plan deliberately avoids}
+
+    ## Assumptions
+
+    {Include only when the user allowed assumptions, or ordinary local choices were
+    recorded. Remove the section otherwise.}
+
+    - {Assumption, and the convention or decision record it rests on.}
+
+    ## Task stack
+
+    - [ ] T01: `{single intent title}` (status:todo)
+      - Task ID: T01
+      - Goal: {one outcome}
+      - Boundaries (in/out of scope): In — {tight scope}. Out — {excluded work}.
+      - Dependencies: {task IDs, or none}
+      - Done when: {clear acceptance for one coherent change}
+      - Verification notes (commands or checks): {targeted checks for this change}
+
+    - [ ] T02: `{single intent title}` (status:todo)
+      - Task ID: T02
+      - Goal: {one outcome}
+      - Boundaries (in/out of scope): In — {tight scope}. Out — {excluded work}.
+      - Dependencies: T01
+      - Done when: {clear acceptance for one coherent change}
+      - Verification notes (commands or checks): {targeted checks for this change}
+
+    ## Open questions
+
+    {Non-blocking questions only. A question that would change scope, success
+    criteria, or task ordering blocks authoring instead. Write `None.` with a short
+    justification when nothing remains.}
+
+    {Unresolved doubt about the change's value belongs here — whether it is worth
+    building, whether it duplicates behavior the repository already has, whether a
+    smaller version would do. State it plainly and name the alternative. Do not
+    invent one: `None.` is the expected answer for a well-specified change.}
+    ```
+
+    ---
+
+    \(planTemplateHeadings.section.apply(mode, "Filled-in task example"))
+
+    ```markdown
+    - [ ] T02: `Add /auth/refresh endpoint` (status:todo)
+      - Task ID: T02
+      - Goal: Implement a POST `/auth/refresh` endpoint that exchanges a valid refresh token for a new access token.
+      - Boundaries (in/out of scope): In — route handler, token validation logic, response schema. Out — refresh token rotation policy (covered in T03), client-side storage changes.
+      - Dependencies: T01
+      - Done when: `POST /auth/refresh` returns a signed JWT on valid input and 401 on expired or invalid token; targeted tests pass; OpenAPI spec updated.
+      - Verification notes (commands or checks): `pnpm test src/auth/refresh.test.ts`; `curl -X POST localhost:3000/auth/refresh -d '{"token":"..."}' -w "%{http_code}"`.
+    ```
+
+    \(planTemplateHeadings.section.apply(mode, "Acceptance criteria rules"))
+
+    - Acceptance criteria describe the finished system, not the work. Prefer "the
+      endpoint returns 401 on an expired token" over "add expiry handling".
+    - Every criterion carries a `Validate:` line. A criterion nobody can check is
+      not an acceptance criterion.
+    - Prefer a runnable command. Fall back to a named inspection only when no
+      automated check exists, and say exactly what to look at.
+    - List repository-wide checks once under `Full validation` instead of repeating
+      them per criterion.
+    - Task-level `Verification notes` prove one task. Acceptance criteria prove the
+      plan. Keep them distinct: a task's checks are narrow and local, a criterion's
+      check is end-to-end.
+    - The union of the acceptance criteria must cover every success signal in the
+      change request. If a criterion has no task that could satisfy it, the task
+      stack is incomplete.
+
+    \(planTemplateHeadings.section.apply(mode, "Task rules"))
+
+    - Every task is a checkbox line so progress stays machine-readable:
+      `- [ ] T01: {title} (status:todo)`.
+    - Author each executable task as one atomic commit unit by default.
+    - Scope every task so one contributor can complete it and land it as one
+      coherent commit without bundling unrelated changes.
+    - Split any candidate task that would require multiple independent commits, for
+      example a refactor plus a behavior change plus documentation.
+    - Keep broad wrappers such as `polish`, `finalize`, or `misc updates` out of
+      executable tasks. Convert them into specific outcomes with concrete
+      acceptance checks.
+    - Order tasks so each one's declared dependencies precede it.
+
+    \(planTemplateHeadings.section.apply(mode, "No validation task"))
+
+    - The last task in the stack is an ordinary implementation task. Do not author a
+      trailing "validation and cleanup" task.
+    - Final validation, cleanup, and success-criteria verification are run by
+      `/validate` from the `Acceptance criteria` section after the last task
+      completes.
+    - Do not author a task whose only purpose is running the full check suite,
+      verifying durable context, or removing scaffolding.
+    - A task may still create or update durable context when that context is part of
+      the change itself.
+
+    \(planTemplateHeadings.section.apply(mode, "Completion records"))
+
+    When a task completes, \(taskExecutionName.render.apply(mode)) appends its evidence and flips the
+    checkbox and status:
+
+    ```markdown
+    - [x] T01: `{title}` (status:done)
+      - {authored fields, unchanged}
+      - Completed: {YYYY-MM-DD}
+      - Files changed: {paths}
+      - Evidence: {commands run and their outcomes}
+      - Notes: {material deviations or approved assumptions}
+    ```
+
+    `/validate` appends a `## Validation Report` section at the end of the plan.
+    Do not author either while planning.
+
+    \(planTemplateHeadings.section.apply(mode, "Updating an existing plan"))
+
+    - Preserve completed tasks, their `(status:done)` markers, and their recorded
+      evidence verbatim.
+    - Preserve the plan's existing structure and terminology.
+    - Append new tasks after the existing stack. Renumber only when added work must
+      run earlier, and never renumber a completed task.
+    - Add acceptance criteria for newly planned outcomes rather than rewriting
+      criteria already satisfied.
+    """
+
+local PLAN_TEMPLATE = renderPlanTemplate.apply("package")
+
+local PLAN_SUMMARY = """
+    # SCE Plan Summary
+
+    The user-facing summary shown after a plan is written. It is rendered from
+    the `plan_ready` result, immediately before the continuation block.
+
+    This is chat output, not a file. Nothing here is written to the plan.
+
+    ## Layout
+
+    ```
+    # Plan: {plan.name}
+
+    Path: {plan.path}
+
+    ## Summary:
+    {plan summary}
+
+    ## Tasks:
+    1. {task.id} — {task.title}
+    2. {task.id} — {task.title}
+
+    ## Assumptions:
+    - {assumption}
+
+    ## Open questions:
+    - {open question}
+    ```
+
+    ## Field mapping
+
+    Every value comes from the `plan_ready` result. Render nothing the result does
+    not carry.
+
+    - `Plan:` — `plan.name`. Append ` (updated)` when `plan.action` is `updated`.
+      Render nothing extra when it is `created`.
+    - `Path:` — `plan.path`, exactly as returned, so it stays runnable.
+    - `Summary:` — `summary`, as prose. This is the only place the reader learns
+      what the plan actually does, so never omit it and never replace it with a
+      restatement of the task titles.
+    - `Tasks:` — one numbered line per entry in `tasks`, in plan order. Append
+      ` (done)` to any task whose `status` is `done`.
+    - `Assumptions:` — one line per entry in `assumptions`.
+    - `Open questions:` — one line per entry in `open_questions`.
+
+    ## Empty sections
+
+    Never drop a section heading. An absent section reads as an oversight; an
+    explicit `None.` confirms nothing is pending.
+
+    When `assumptions` is empty:
+
+    ```
+    ## Assumptions:
+    - None.
+    ```
+
+    When `open_questions` is absent:
+
+    ```
+    ## Open questions:
+    - None.
+    ```
+
+    ## Rules
+
+    - Render the sections in the order above.
+    - Keep task titles as authored. Do not reword, expand, or re-scope them.
+    - Do not restate goals, boundaries, done checks, or verification notes. The plan
+      file owns task detail; this summary orients the reader.
+    - Do not print the raw result, and do not wrap the summary in a code fence.
+    - Do not add commentary, recommendations, or a next step. The continuation block
+      that follows owns the handoff.
+
+    ## Example
+
+    ```
+    # Plan: red-sce-banner
+
+    Path: context/plans/red-sce-banner.md
+
+    ## Summary:
+    Renders the ASCII-art SCE banner at the top of `sce` help in red instead of the current gradient. Colour-disabled output is unchanged, and no other help surface is affected.
+
+    ## Tasks:
+    1. T01 — Render the SCE banner in red
+
+    ## Assumptions:
+    - "SCE letters" refers to the ASCII-art banner in top-level help.
+    - Red is uniform terminal red when colors are enabled; plain ASCII remains unchanged otherwise.
+
+    ## Open questions:
+    - None.
+    ```
+    """
+
+structuredComposite = new model.StructuredCompositeSource {
+  command = structuredCommand
+  phases = new Listing {}
+  internalDocuments = new Listing {
+    model.makeDocument.apply("Plan template", renderPlanTemplate.apply("composite"))
+  }
+  outputDocuments = new Listing {
+    model.makeDocument.apply("Plan summary", PLAN_SUMMARY)
+  }
+}
+
+workflow = new model.WorkflowPackage {
+  slug = "change-to-plan"
+  command = new model.WorkflowCommand {
+    slug = "change-to-plan"
+    title = "Change to Plan"
+    document = model.makeDocument.apply("change-to-plan.md", COMMAND)
+  }
+  skills = new Mapping {
+    [contextLoadPackage.slug] = contextLoadPackage
+    [planAuthoringPackage.slug] = planAuthoringPackage
+  }
+}

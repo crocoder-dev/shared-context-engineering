@@ -1,11 +1,24 @@
-import "../base/shared-content.pkl" as shared
+import "../base/workflow-catalog.pkl" as catalog
+import "../base/decision-skill.pkl" as decision
 import "common.pkl" as common
 import "opencode-metadata.pkl" as metadata
+import "workflow-composite.pkl" as workflowResults
 
 local generatedOpenCodePluginPathsJson = common.sceGeneratedOpenCodePluginPathsJson
 
+local commandAgentLine = (slug: String) ->
+  let (agentSlug = catalog.workflows[slug].openCodeAgentSlug)
+    "agent: \"\(metadata.agentDisplayNames[agentSlug])\"\n"
+
+/// One command declares one workflow skill as both its entry skill and its whole
+/// skill chain. The skill owns every phase, so there is no sibling package to
+/// hand off to.
+local commandSkillLines = (slug: String) ->
+  let (skillSlug = catalog.workflows[slug].skillSlug)
+    "entry-skill: \"\(skillSlug)\"\nskills:\n  - \"\(skillSlug)\"\n"
+
 local agentFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.agents) {
+  for (unitSlug, _ in metadata.agentDisplayNames) {
     [unitSlug] = """
 ---
 name: "\(metadata.agentDisplayNames[unitSlug])"
@@ -18,107 +31,47 @@ color: "\(metadata.agentColors[unitSlug])"\(metadata.agentBehaviorBlocks[unitSlu
   }
 }
 
-local commandSkillMetadataBlocks = new Mapping {
-  ["next-task"] = """
-entry-skill: "sce-plan-review"
-skills:
-  - "sce-plan-review"
-  - "sce-task-execution"
-  - "sce-context-sync"
-  - "sce-validation"
+local agentBodyBySlug = new Mapping {
+  ["shared-context-plan"] = """
+Route plan creation and revision through `/change-to-plan`.
 """
-  ["change-to-plan"] = """
-entry-skill: "sce-plan-authoring"
-skills:
-  - "sce-plan-authoring"
+  ["shared-context-code"] = """
+Route implementation work through `/next-task` and final plan validation through `/validate`.
 """
-  ["drift-detect"] = """
-entry-skill: "sce-drift-analyzer"
-skills:
-  - "sce-drift-analyzer"
-"""
-  ["fix-drift"] = """
-entry-skill: "sce-drift-fixer"
-skills:
-  - "sce-drift-fixer"
-"""
-  ["handover"] = """
-entry-skill: "sce-handover-writer"
-skills:
-  - "sce-handover-writer"
-"""
-  ["commit"] = """
-entry-skill: "sce-atomic-commit"
-skills:
-  - "sce-atomic-commit"
-"""
-  ["validate"] = """
-entry-skill: "sce-validation"
-skills:
-  - "sce-validation"
-"""
-}
-
-local commandFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.commands) {
-    [unitSlug] = if (commandSkillMetadataBlocks[unitSlug] == null) """
----
-description: "\(common.commandDescriptions[unitSlug])"
-agent: "\(metadata.commandAgents[unitSlug])"
----
-""" else """
----
-description: "\(common.commandDescriptions[unitSlug])"
-agent: "\(metadata.commandAgents[unitSlug])"
-\(commandSkillMetadataBlocks[unitSlug])
----
-"""
-  }
-}
-
-local skillFrontmatterBySlug = new Mapping {
-  for (unitSlug, _ in shared.skills) {
-    [unitSlug] = """
----
-name: \(unitSlug)
-description: |
-  \(metadata.skillDescriptions[unitSlug])
-compatibility: \(metadata.skillCompatibility)
----
-"""
-  }
 }
 
 agents {
-  for (unitSlug, unit in shared.agents) {
+  for (unitSlug, displayName in metadata.agentDisplayNames) {
     [unitSlug] = new common.RenderedTargetDocument {
       slug = unitSlug
-      title = unit.title
+      title = displayName
       frontmatter = agentFrontmatterBySlug[unitSlug]
-      body = unit.canonicalBody
+      body = agentBodyBySlug[unitSlug]
     }
   }
 }
 
+/// OpenCode commands are intentionally thin. Each routes to exactly one composite
+/// workflow skill, which owns all phases, waits, and final response rendering.
 commands {
-  for (unitSlug, unit in shared.commands) {
-    [unitSlug] = new common.RenderedTargetDocument {
-      slug = unitSlug
-      title = unit.title
-      frontmatter = commandFrontmatterBySlug[unitSlug]
-      body = unit.canonicalBody
-    }
+  for (slug, workflow in workflowResults.workflows) {
+    [slug] = workflowResults.renderCommand.apply(
+      workflow,
+      commandAgentLine.apply(slug) + commandSkillLines.apply(slug)
+    )
   }
 }
 
-skills {
-  for (unitSlug, unit in shared.skills) {
-    [unitSlug] = new common.RenderedTargetDocument {
-      slug = unitSlug
-      title = unit.title
-      frontmatter = skillFrontmatterBySlug[unitSlug]
-      body = unit.canonicalBody
-    }
+/// OpenCode has five command-routed workflow packages plus the standalone
+/// decision-writing package used internally during synchronization. Package-
+/// relative paths stay flattened for deterministic generation, and only skill
+/// entrypoints carry OpenCode-supported metadata.
+skillDocuments {
+  for (path, document in workflowResults.skillDocuments.apply("compatibility: \(metadata.skillCompatibility)\n")) {
+    [path] = document
+  }
+  for (path, document in decision.skillDocuments.apply("compatibility: \(metadata.skillCompatibility)\n")) {
+    [path] = document
   }
 }
 

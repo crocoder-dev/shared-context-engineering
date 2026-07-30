@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use crate::{cli_schema, command_surface, services};
 use services::command_registry::{CommandRegistry, RuntimeCommand};
 use services::error::{ClassifiedError, FailureClass};
@@ -222,7 +220,18 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
             non_interactive,
             hooks,
             repo,
-        } => convert_setup_command(opencode, claude, pi, all, non_interactive, hooks, repo),
+            bootstrap_context,
+        } => convert_setup_command(services::setup::SetupCliOptions {
+            help: false,
+            non_interactive,
+            opencode,
+            claude,
+            pi,
+            all,
+            hooks,
+            repo_path: repo,
+            bootstrap_context,
+        }),
         cli_schema::Commands::Doctor { fix, format } => Ok(convert_doctor_command(fix, format)),
         cli_schema::Commands::Hooks { subcommand } => convert_hooks_subcommand(subcommand),
         cli_schema::Commands::Policy { subcommand } => Ok(convert_policy_subcommand(&subcommand)),
@@ -392,27 +401,9 @@ fn convert_config_subcommand(
     }
 }
 
-#[allow(clippy::fn_params_excessive_bools)]
 fn convert_setup_command(
-    opencode: bool,
-    claude: bool,
-    pi: bool,
-    all: bool,
-    non_interactive: bool,
-    hooks: bool,
-    repo: Option<PathBuf>,
+    options: services::setup::SetupCliOptions,
 ) -> Result<RuntimeCommand, ClassifiedError> {
-    let options = services::setup::SetupCliOptions {
-        help: false,
-        non_interactive,
-        opencode,
-        claude,
-        pi,
-        all,
-        hooks,
-        repo_path: repo,
-    };
-
     let request = services::setup::resolve_setup_request(options)
         .map_err(|error| ClassifiedError::validation(error.to_string()))?;
 

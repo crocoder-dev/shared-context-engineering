@@ -14,6 +14,7 @@ let
 
   localPathPlaceholder = "__SCE_LOCAL_REPO_PATH__";
   commitPlaceholder = "__SCE_RELEASE_COMMIT__";
+  fallbackSourceDirectory = "cli-package-fallback";
 
   releaseGitSource = commit: {
     type = "git";
@@ -51,7 +52,6 @@ let
           };
         };
         build-commands = [
-          ''bash ./scripts/prepare-cli-generated-assets.sh "$PWD"''
           "cargo --offline build --release --manifest-path cli/Cargo.toml --bin sce"
           "install -Dm755 cli/target/release/sce /app/bin/sce"
           "install -Dm755 packaging/flatpak/git-host-bridge /app/bin/git"
@@ -59,6 +59,11 @@ let
         ];
         sources = [
           sceSource
+          {
+            type = "dir";
+            path = fallbackSourceDirectory;
+            dest = "cli/package-fallback";
+          }
           {
             type = "file";
             path = "dev.crocoder.sce.metainfo.xml";
@@ -147,5 +152,6 @@ in
     parityCheck
     localPathPlaceholder
     commitPlaceholder
+    fallbackSourceDirectory
     ;
 }

@@ -1,15 +1,8 @@
 ---
-description: "Run `sce-handover-writer` to capture the current task for handoff"
-argument-hint: "[task context]"
+description: "Write a session handover document, or load one for continuation"
+argument-hint: "[context/handovers/<file>.md]"
 ---
 
-Load and follow the `sce-handover-writer` skill.
-
-Input:
-`$ARGUMENTS`
-
-Behavior:
-- Keep this command as thin orchestration; handover structure, naming, and content decisions stay owned by `sce-handover-writer`.
-- Run `sce-handover-writer` to gather current task state, decisions made and rationale, open questions or blockers, and the next recommended step.
-- Let `sce-handover-writer` create the handover in `context/handovers/`, using task-aligned naming such as `context/handovers/{plan_name}-{task_id}-{timestamp}.md` when the inputs support it.
-- If required details are missing, infer only from current repo state, label assumptions clearly, then stop after reporting the exact handover path.
+Invoke the `sce-handover` skill exactly once with `$ARGUMENTS`.
+The skill owns the complete workflow, including all waits and same-session resume
+behavior. Do not invoke any phase skill or sequence workflow steps in this command.

@@ -1,90 +1,70 @@
 # Shared Context Plan Workflow (`/change-to-plan`)
 
-## What this agent is for
+## Purpose
 
-The Shared Context Plan agent prepares or updates one implementation plan in `context/plans/`, keeps task sequencing explicit, and hands off a single approved task for execution.
-
-Use this agent when you need to:
-- start a new SCE plan from a scoped change request
-- update an existing plan with clarified boundaries or acceptance checks
-- stage the next executable task with explicit in/out-of-scope limits
-- produce a clean handoff contract for `/next-task`
+`/change-to-plan` turns one change request into one scoped implementation plan under `context/plans/`. The generated OpenCode Plan agent is only a routing surface. Every target renders the same behavior into the single `sce-change-to-plan` workflow skill; the two phases below are canonical authoring source and internal phases of that skill, not separate generated packages.
 
 ## Command entrypoint
 
-Canonical command:
+`/change-to-plan {change request}`
 
-`/change-to-plan {request_or_plan_target}`
+The request must be non-empty. The workflow does not accept approval or execution flags.
 
-Examples:
-- `/change-to-plan add ci artifact validation`
-- `/change-to-plan context/plans/sce-plan-code-convergence-and-sync-policy.md`
+## Phase ownership
 
-## Workflow behavior
+Phase names below identify canonical modules in `config/pkl/base/workflow-change-to-plan.pkl` and the internal phases they compose into.
 
-1. Resolve target plan intent.
-   - If no plan exists, create one under `context/plans/` with stable task IDs (`T01`, `T02`, ...).
-   - If a plan exists, load and continue it without reordering completed tasks.
-2. Gather and normalize scope.
-   - Capture goal, constraints, non-goals, and success criteria in current-state language.
-3. Break work into atomic tasks.
-   - Define each task with goal, boundaries, done checks, and verification notes.
-   - Enforce one-task/one-atomic-commit slicing: each executable task should land as one coherent commit.
-   - If a task would require multiple independent commits, split it into sequential tasks before approval.
-4. Run clarification gate before plan approval.
-   - If blockers, ambiguity, or missing acceptance criteria exist, stop and ask focused questions.
-   - Do not mark a task ready for implementation until unresolved points are closed.
-5. Publish implementation-ready output contract.
-   - Identify the recommended next task (`T0X`) and provide exact `/next-task {plan_name} {T0X}` handoff command.
-6. Keep plan continuity durable.
-   - Store continuation state in the plan markdown checkboxes/status only.
-   - Do not mutate code/runtime files during plan-authoring work.
+1. `sce-context-load`
+   - Confirms whether `context/` exists.
+   - Loads only durable context relevant to the requested focus.
+   - Reports gaps and context-versus-code drift without editing context.
+   - Returns `loaded` or `bootstrap_required`.
+2. `sce-plan-authoring`
+   - Runs only from a complete `loaded` handoff.
+   - Resolves ambiguity and material decisions before writing.
+   - Creates or updates one plan with stable task IDs, explicit scope, dependencies, done checks, and verification notes.
+   - Returns `plan_ready`, `needs_clarification`, or `blocked`.
 
-## Plan lifecycle policy
+Every target keeps those statuses and their data as internal state inside `sce-change-to-plan` and continues immediately across the phase boundary. No sibling skill handoff and no serialized phase-result contract exists on any target.
 
-- Plans in `context/plans/` are execution artifacts for active implementation work.
-- Completed plans are disposable and are not a durable context source.
-- Do not use completed plan files as long-term history references from core context navigation.
-- Promote durable outcomes into current-state context files (`context/overview.md`, `context/architecture.md`, `context/glossary.md`, and focused workflow docs) or decision records under `context/decisions/`.
+## Bootstrap boundary
 
-## Output contract
+When context loading returns `bootstrap_required`, the workflow stops without creating context and tells the user to run:
 
-- Plan target resolved (`plan_name` and path).
-- Task stack with stable IDs and explicit acceptance checks.
-- Readiness verdict for the selected task:
-  - `ready_for_implementation: yes|no`
-  - if `no`, include issue categories: blockers, ambiguity, missing acceptance criteria.
-- Explicit decisions/questions required from the human before execution.
-- Exact next-session execution command: `/next-task {plan_name} {T0X}`.
+`sce setup --bootstrap-context`
 
-## Mermaid diagram
+After the user reports that bootstrap completed, the waiting workflow re-runs the
+context-load phase and continues with the original request in the same session.
+
+## Planning boundary
+
+- Planning does not implement application or test changes.
+- One invocation authors at most one plan.
+- Every executable task is sliced as one coherent commit unit by default.
+- Durable repository context is read, not synchronized, during planning.
+- A ready plan ends with an exact `/next-task {plan-path} {task-id}` handoff; the workflow does not request implementation approval itself.
+
+## Flow
 
 ```mermaid
 flowchart TD
-    A["/change-to-plan {request_or_plan_target}"] --> B["Resolve plan target"]
-    B --> C{"Existing plan?"}
-
-    C -- "No" --> D["Create plan skeleton in context/plans/"]
-    C -- "Yes" --> E["Load existing plan state"]
-
-    D --> F["Capture goals, constraints, non-goals, success criteria"]
-    E --> F
-
-    F --> G["Define/adjust atomic tasks with T0X IDs"]
-    G --> H["Clarification gate"]
-    H --> I{"Any blockers/ambiguity/missing acceptance criteria?"}
-
-    I -- "Yes" --> J["Ask focused questions and resolve decisions"]
-    J --> H
-
-    I -- "No" --> K["Mark selected task ready_for_implementation: yes"]
-    K --> L["Provide exact handoff: /next-task {plan_name} {T0X}"]
-    L --> M["Wait for user to start implementation session"]
+    A["/change-to-plan {request}"] --> B["Phase: context load"]
+    B --> C{"Context available?"}
+    C -- "No" --> D["Stop: sce setup --bootstrap-context"]
+    C -- "Yes" --> E["Phase: plan authoring"]
+    E --> F{"Authoring result"}
+    F -- "needs_clarification" --> G["Ask only the reported questions"]
+    F -- "blocked" --> H["Report blocker and required action"]
+    F -- "plan_ready" --> I["Emit /next-task handoff"]
 ```
 
-## Guardrails
+## Target ownership
 
-- Planning and execution stay separate: `/change-to-plan` does not implement code changes.
-- One-task execution handoff by default; multi-task execution requires explicit user approval at `/next-task` time.
-- Keep plan files current-state oriented and avoid prose-heavy historical narration.
-- If context and code diverge during planning, treat code as source of truth and queue context repair tasks.
+- OpenCode, Claude, and Pi: one thin command (Pi: prompt) invoking `sce-change-to-plan`; package files are `SKILL.md` and `references/output.md`.
+- OpenCode adds `entry-skill` and a one-entry `skills` list naming that skill, and its Plan routing agent allows exactly `sce-change-to-plan`.
+
+## Canonical sources
+
+- `config/pkl/base/workflow-change-to-plan.pkl`
+- Workflow composition: `config/pkl/renderers/workflow-composite.pkl` (shared by all three targets)
+- Behavioral baseline: `.pi/prompts/change-to-plan.md`

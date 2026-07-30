@@ -129,6 +129,7 @@ pub struct SetupCliOptions {
     pub all: bool,
     pub hooks: bool,
     pub repo_path: Option<PathBuf>,
+    pub bootstrap_context: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -136,6 +137,7 @@ pub struct SetupRequest {
     pub config_mode: Option<SetupMode>,
     pub install_hooks: bool,
     pub hooks_repo_path: Option<PathBuf>,
+    pub context_only: bool,
 }
 
 pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
@@ -143,6 +145,28 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
         bail!(
             "Option '--repo' requires '--hooks'. Try: run 'sce setup --hooks --repo <path>' or remove '--repo'."
         );
+    }
+
+    if options.bootstrap_context {
+        let has_other_setup_options = options.non_interactive
+            || options.opencode
+            || options.claude
+            || options.pi
+            || options.all
+            || options.hooks
+            || options.repo_path.is_some();
+        if has_other_setup_options {
+            bail!(
+                "Option '--bootstrap-context' must be used alone. Try: run 'sce setup --bootstrap-context', or omit it because normal setup paths ensure the context baseline automatically."
+            );
+        }
+
+        return Ok(SetupRequest {
+            config_mode: None,
+            install_hooks: false,
+            hooks_repo_path: None,
+            context_only: true,
+        });
     }
 
     let mut selected_targets = Vec::new();
@@ -185,6 +209,7 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
         config_mode,
         install_hooks,
         hooks_repo_path: options.repo_path,
+        context_only: false,
     })
 }
 
@@ -249,6 +274,86 @@ pub fn bootstrap_repo_local_config(repository_root: &Path) -> Result<()> {
     })?;
 
     Ok(())
+}
+
+const CONTEXT_TMP_GITIGNORE_CONTENT: &str = "*\n!.gitignore\n";
+
+const CONTEXT_OVERVIEW_TEMPLATE: &str = "# Overview\n\n";
+const CONTEXT_ARCHITECTURE_TEMPLATE: &str = "# Architecture\n\n";
+const CONTEXT_PATTERNS_TEMPLATE: &str = "# Patterns\n\n";
+const CONTEXT_GLOSSARY_TEMPLATE: &str = "# Glossary\n\n";
+const CONTEXT_MAP_TEMPLATE: &str = "\
+# Context Map
+
+Primary context files:
+
+- `context/overview.md`
+- `context/architecture.md`
+- `context/patterns.md`
+- `context/glossary.md`
+
+Working areas:
+
+- `context/plans/`
+- `context/handovers/`
+- `context/decisions/`
+- `context/tmp/`
+";
+
+/// Creates the baseline durable-context tree additively.
+///
+/// Missing directories and baseline files are created with neutral templates.
+/// Existing files and directory contents are never overwritten.
+pub fn bootstrap_context_baseline(repository_root: &Path) -> Result<String> {
+    let repo_paths = RepoPaths::new(repository_root);
+
+    ensure_context_directory(&repo_paths.context_dir())?;
+    ensure_context_directory(&repo_paths.context_plans_dir())?;
+    ensure_context_directory(&repo_paths.context_handovers_dir())?;
+    ensure_context_directory(&repo_paths.context_decisions_dir())?;
+    ensure_context_directory(&repo_paths.context_tmp_dir())?;
+
+    ensure_context_file(
+        &repo_paths.context_overview_file(),
+        CONTEXT_OVERVIEW_TEMPLATE,
+    )?;
+    ensure_context_file(
+        &repo_paths.context_architecture_file(),
+        CONTEXT_ARCHITECTURE_TEMPLATE,
+    )?;
+    ensure_context_file(
+        &repo_paths.context_patterns_file(),
+        CONTEXT_PATTERNS_TEMPLATE,
+    )?;
+    ensure_context_file(
+        &repo_paths.context_glossary_file(),
+        CONTEXT_GLOSSARY_TEMPLATE,
+    )?;
+    ensure_context_file(&repo_paths.context_map_file(), CONTEXT_MAP_TEMPLATE)?;
+    ensure_context_file(
+        &repo_paths.context_tmp_gitignore_file(),
+        CONTEXT_TMP_GITIGNORE_CONTENT,
+    )?;
+
+    Ok(success("Context baseline ensured."))
+}
+
+fn ensure_context_directory(path: &Path) -> Result<()> {
+    fs::create_dir_all(path)
+        .with_context(|| format!("Failed to create context directory '{}'", path.display()))
+}
+
+fn ensure_context_file(path: &Path, content: &str) -> Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+
+    if let Some(parent) = path.parent() {
+        ensure_context_directory(parent)?;
+    }
+
+    fs::write(path, content)
+        .with_context(|| format!("Failed to write context baseline file '{}'", path.display()))
 }
 
 fn format_setup_install_success_message(outcome: &SetupInstallOutcome) -> String {
@@ -1215,11 +1320,64 @@ pub fn setup_cancelled_text() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::command_surface;
+    use crate::services::command_registry::CommandRegistry;
+    use crate::services::command_registry::RuntimeCommand;
+    use crate::services::parse::command_runtime::parse_runtime_command;
 
     fn options_with(mutate: impl FnOnce(&mut SetupCliOptions)) -> SetupCliOptions {
         let mut options = SetupCliOptions::default();
         mutate(&mut options);
         options
+    }
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after Unix epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "sce-setup-context-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn init_git_repo(label: &str) -> PathBuf {
+        let repo = unique_temp_dir(label);
+        let output = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&repo)
+            .output()
+            .expect("git init should spawn");
+        assert!(
+            output.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        repo
+    }
+
+    fn assert_baseline_paths_exist(repo: &Path) {
+        let paths = RepoPaths::new(repo);
+        for path in [
+            paths.context_overview_file(),
+            paths.context_architecture_file(),
+            paths.context_patterns_file(),
+            paths.context_glossary_file(),
+            paths.context_map_file(),
+            paths.context_plans_dir(),
+            paths.context_handovers_dir(),
+            paths.context_decisions_dir(),
+            paths.context_tmp_dir(),
+            paths.context_tmp_gitignore_file(),
+        ] {
+            assert!(path.exists(), "expected baseline path {}", path.display());
+        }
     }
 
     #[test]
@@ -1234,6 +1392,7 @@ mod tests {
             request.config_mode,
             Some(SetupMode::NonInteractive(SetupTarget::Pi))
         );
+        assert!(!request.context_only);
     }
 
     #[test]
@@ -1248,6 +1407,32 @@ mod tests {
             request.config_mode,
             Some(SetupMode::NonInteractive(SetupTarget::All))
         );
+        assert!(!request.context_only);
+    }
+
+    #[test]
+    fn resolve_setup_request_accepts_bootstrap_context_alone() {
+        let request = resolve_setup_request(options_with(|options| {
+            options.bootstrap_context = true;
+        }))
+        .expect("bootstrap-context alone should resolve");
+
+        assert!(request.context_only);
+        assert_eq!(request.config_mode, None);
+        assert!(!request.install_hooks);
+        assert_eq!(request.hooks_repo_path, None);
+    }
+
+    #[test]
+    fn resolve_setup_request_rejects_bootstrap_context_with_target() {
+        let error = resolve_setup_request(options_with(|options| {
+            options.bootstrap_context = true;
+            options.opencode = true;
+        }))
+        .expect_err("bootstrap-context with target must be rejected");
+
+        assert!(error.to_string().contains("--bootstrap-context"));
+        assert!(error.to_string().contains("alone"));
     }
 
     #[test]
@@ -1274,6 +1459,113 @@ mod tests {
     }
 
     #[test]
+    fn parser_routes_bootstrap_context_to_context_only_request() {
+        let registry = CommandRegistry::default();
+        let command = parse_runtime_command(
+            [
+                "sce".to_string(),
+                "setup".to_string(),
+                "--bootstrap-context".to_string(),
+            ],
+            &registry,
+            None,
+        )
+        .expect("bootstrap-context should parse");
+
+        match command {
+            RuntimeCommand::Setup(setup_command) => {
+                assert!(setup_command.request.context_only);
+                assert_eq!(setup_command.request.config_mode, None);
+                assert!(!setup_command.request.install_hooks);
+            }
+            _ => panic!("expected Setup command for --bootstrap-context"),
+        }
+    }
+
+    #[test]
+    fn help_documents_bootstrap_context_flag() {
+        let top_level_help = command_surface::help_text();
+        assert!(
+            top_level_help.contains("--bootstrap-context"),
+            "top-level help should document --bootstrap-context"
+        );
+
+        let registry = CommandRegistry::default();
+        let command = parse_runtime_command(
+            ["sce".to_string(), "setup".to_string(), "--help".to_string()],
+            &registry,
+            None,
+        )
+        .expect("setup --help should parse");
+
+        match command {
+            RuntimeCommand::HelpText(help) => {
+                assert!(
+                    help.text.contains("--bootstrap-context"),
+                    "setup --help should document --bootstrap-context:\n{}",
+                    help.text
+                );
+            }
+            _ => panic!("expected HelpText for setup --help"),
+        }
+    }
+
+    #[test]
+    fn bootstrap_context_baseline_creates_expected_paths() {
+        let repo = init_git_repo("create-baseline");
+        let message = bootstrap_context_baseline(&repo).expect("bootstrap should create baseline");
+        assert!(message.contains("Context baseline ensured."));
+        assert_baseline_paths_exist(&repo);
+
+        let paths = RepoPaths::new(&repo);
+        assert!(!paths.opencode_dir().exists());
+        assert!(!paths.claude_dir().exists());
+        assert!(!paths.pi_dir().exists());
+
+        let gitignore = fs::read_to_string(paths.context_tmp_gitignore_file())
+            .expect("tmp gitignore should be readable");
+        assert_eq!(gitignore, CONTEXT_TMP_GITIGNORE_CONTENT);
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn bootstrap_context_baseline_is_additive_and_idempotent() {
+        let repo = init_git_repo("idempotent-baseline");
+        bootstrap_context_baseline(&repo).expect("initial bootstrap");
+
+        let paths = RepoPaths::new(&repo);
+        let sentinel = "SENTINEL_OVERVIEW_CONTENT\n";
+        fs::write(paths.context_overview_file(), sentinel).expect("seed overview sentinel");
+        fs::write(paths.context_map_file(), "SENTINEL_CONTEXT_MAP\n")
+            .expect("seed context-map sentinel");
+        fs::write(paths.context_tmp_gitignore_file(), "SENTINEL_GITIGNORE\n")
+            .expect("seed gitignore sentinel");
+
+        fs::remove_file(paths.context_architecture_file()).expect("remove architecture");
+        fs::remove_dir_all(paths.context_plans_dir()).expect("remove plans");
+
+        bootstrap_context_baseline(&repo).expect("rerun bootstrap");
+
+        assert_eq!(
+            fs::read_to_string(paths.context_overview_file()).expect("read overview"),
+            sentinel
+        );
+        assert_eq!(
+            fs::read_to_string(paths.context_map_file()).expect("read context-map"),
+            "SENTINEL_CONTEXT_MAP\n"
+        );
+        assert_eq!(
+            fs::read_to_string(paths.context_tmp_gitignore_file()).expect("read gitignore"),
+            "SENTINEL_GITIGNORE\n"
+        );
+        assert!(paths.context_architecture_file().exists());
+        assert!(paths.context_plans_dir().is_dir());
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
     fn concrete_targets_for_all_expands_to_three_targets() {
         assert_eq!(
             concrete_targets_for(SetupTarget::All),
@@ -1295,5 +1587,23 @@ mod tests {
 
         assert!(iter_embedded_assets_for_setup_target(SetupTarget::Pi).count() > 0);
         assert_eq!(all_count, concrete_sum);
+    }
+
+    #[test]
+    fn embedded_build_payload_contains_generated_targets_and_static_hooks() {
+        let contains = |target, path| {
+            iter_embedded_assets_for_setup_target(target)
+                .any(|asset| asset.relative_path == path && !asset.bytes.is_empty())
+        };
+
+        assert!(contains(SetupTarget::OpenCode, "command/next-task.md"));
+        assert!(contains(
+            SetupTarget::OpenCode,
+            "lib/bash-policy-presets.json"
+        ));
+        assert!(contains(SetupTarget::Claude, "commands/next-task.md"));
+        assert!(contains(SetupTarget::Pi, "prompts/next-task.md"));
+        assert!(contains(SetupTarget::Pi, "extensions/sce/index.ts"));
+        assert!(iter_required_hook_assets().all(|asset| !asset.bytes.is_empty()));
     }
 }

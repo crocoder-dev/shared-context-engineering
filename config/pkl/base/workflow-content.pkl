@@ -1,0 +1,161 @@
+/// Canonical model for workflow-oriented Markdown generation.
+///
+/// A workflow owns commands and self-contained skill packages. Package document
+/// paths are relative to the skill root, so nested references can be rendered
+/// deterministically for every target without cross-skill dependencies.
+
+class WorkflowDocument {
+  path: String
+  text: String
+}
+
+typealias WorkflowRenderMode = "package"|"composite"
+
+/// A semantic token whose spelling depends on whether a canonical package or
+/// an embedded composite workflow is being rendered.
+class SemanticReference {
+  packageText: String
+  compositeText: String
+
+  hidden render = (mode: WorkflowRenderMode) ->
+    if (mode == "composite") compositeText else packageText
+}
+
+/// Markdown heading marker for a heading level. Heading depth is always
+/// constructed from a level, never written as a literal run of `#` that a later
+/// pass would have to rewrite.
+hidden const headingMarker = (level: Int) -> "#".repeat(level)
+
+/// Heading construction for a phase body. A canonical package renders the phase
+/// as its own document; composite rendering states the same body inside the
+/// numbered workflow step that runs it, so every heading shifts one level deeper
+/// and every phase step is renumbered `{step}.{n}`.
+class PhaseHeadings {
+  /// Workflow step whose instructions this phase body carries in composite mode.
+  step: Int
+
+  /// Heading levels composite rendering adds to every heading below.
+  hidden compositeShift: Int = 1
+
+  hidden shift = (mode: WorkflowRenderMode) -> if (mode == "composite") compositeShift else 0
+
+  /// A top-level section of the phase body: `## Boundaries` as a package
+  /// document, `### Boundaries` inlined beneath its step.
+  hidden section = (mode: WorkflowRenderMode, text: String) ->
+    headingMarker.apply(2 + shift.apply(mode)) + " " + text
+
+  /// A numbered step of the phase body: `### 3. Inspect relevant context` as a
+  /// package document, `#### 1.3 Inspect relevant context` inlined beneath
+  /// workflow step 1.
+  hidden stepHeading = (mode: WorkflowRenderMode, index: Int, text: String) ->
+    if (mode == "composite")
+      headingMarker.apply(3 + compositeShift) + " \(step).\(index) \(text)"
+    else
+      headingMarker.apply(3) + " \(index). \(text)"
+
+  /// A heading nested inside a numbered phase step, such as `#### Glossary`.
+  hidden stepSubsection = (mode: WorkflowRenderMode, text: String) ->
+    headingMarker.apply(4 + shift.apply(mode)) + " " + text
+
+  /// A cross-reference to one of the phase's own steps: `step 3` as a package
+  /// document, `step 1.3` inlined beneath workflow step 1.
+  hidden stepReference = (mode: WorkflowRenderMode, index: Int) ->
+    if (mode == "composite") "step \(step).\(index)" else "step \(index)"
+}
+
+/// Frontmatter is modeled separately so composite rendering can drop it without
+/// parsing or stripping Markdown markers.
+class WorkflowFrontmatter {
+  hidden lines: (WorkflowRenderMode) -> Listing<String>
+
+  hidden render = (mode: WorkflowRenderMode, extraLines: String) ->
+    "---\n" + lines.apply(mode).join("\n") + "\n" + extraLines + "---\n"
+}
+
+/// A body renderer receives semantic render mode before Markdown assembly.
+class WorkflowBody {
+  hidden render: (WorkflowRenderMode) -> String
+}
+
+class StructuredWorkflowDocument {
+  path: String
+  frontmatter: WorkflowFrontmatter
+  body: WorkflowBody
+
+  hidden render = (mode: WorkflowRenderMode, extraFrontmatterLines: String) -> new WorkflowDocument {
+    path = outer.path
+    text = if (mode == "composite")
+      body.render.apply(mode)
+    else
+      frontmatter.render.apply(mode, extraFrontmatterLines) + "\n" + body.render.apply(mode)
+  }
+}
+
+class StructuredCompositeSource {
+  command: StructuredWorkflowDocument
+
+  /// Phase documents still rendered as a trailing appendix. A module that
+  /// states every phase inside the step that runs it lists none, and composite
+  /// rendering then emits no appendix at all.
+  phases: Listing<StructuredWorkflowDocument> = new Listing {}
+
+  internalDocuments: Listing<WorkflowDocument>
+  outputDocuments: Listing<WorkflowDocument>
+}
+
+class WorkflowCommand {
+  slug: String
+  title: String
+  document: WorkflowDocument
+}
+
+class SkillPackage {
+  slug: String
+  title: String
+  documents: Mapping<String, WorkflowDocument>
+
+  skillDocument: WorkflowDocument = documents["SKILL.md"]
+}
+
+class WorkflowPackage {
+  slug: String
+  command: WorkflowCommand
+  skills: Mapping<String, SkillPackage>
+}
+
+hidden makeDocument = (documentPath: String, documentText: String) -> new WorkflowDocument {
+  path = documentPath
+  text = documentText
+}
+
+hidden packageDocuments = (documents: Listing<WorkflowDocument>) -> new Mapping {
+  for (document in documents) {
+    [document.path] = document
+  }
+}
+
+hidden semanticReference = (packageValue: String, compositeValue: String) -> new SemanticReference {
+  packageText = packageValue
+  compositeText = compositeValue
+}
+
+/// A block only package rendering emits, carrying the blank line that separates
+/// it from what follows. Composite rendering emits nothing, so no call site is
+/// left with a stray separator to strip.
+hidden packageOnlyBlock = (blockText: String) -> semanticReference.apply(blockText + "\n\n", "")
+
+/// A block only composite rendering emits, under the same separator convention
+/// as `packageOnlyBlock`.
+hidden compositeOnlyBlock = (blockText: String) -> semanticReference.apply("", blockText + "\n\n")
+
+/// The `SCE <WORKFLOW> $ARGUMENTS` banner a canonical command document opens
+/// with. A composite skill states its input contract under its own `## Input`
+/// heading directly below the skill title, so the banner belongs to package
+/// rendering alone.
+hidden commandBanner = (workflowName: String) -> packageOnlyBlock.apply("\(workflowName) `$ARGUMENTS`")
+
+/// A phase body placed at the workflow step that runs it. A canonical package
+/// renders the phase as its own document, so the step only names it; composite
+/// rendering states the phase's whole body inside the step.
+hidden inlinePhaseBody = (phaseBody: WorkflowBody) ->
+  compositeOnlyBlock.apply(phaseBody.render.apply("composite"))

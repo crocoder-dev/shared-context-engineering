@@ -1,0 +1,60 @@
+/// Target-neutral workflow identity plus the small amount of target routing
+/// metadata that varies by workflow. Content modules and renderers remain
+/// responsible for workflow behavior and output formatting.
+class WorkflowRecord {
+  commandSlug: String
+  skillSlug: String
+  title: String
+  description: String
+  argumentHint: String
+  openCodeAgentSlug: String
+  claudeAllowedTools: String
+}
+
+workflows: Mapping<String, WorkflowRecord> = new Mapping {
+  ["change-to-plan"] = new WorkflowRecord {
+    commandSlug = "change-to-plan"
+    skillSlug = "sce-change-to-plan"
+    title = "SCE Change to Plan"
+    description = "Turn one change request into a scoped SCE plan in one self-contained workflow"
+    argumentHint = "<describe changes you want to introduce>"
+    openCodeAgentSlug = "shared-context-plan"
+    claudeAllowedTools = "Task, Read, Glob, Grep, Edit, Write, Question, Skill"
+  }
+  ["next-task"] = new WorkflowRecord {
+    commandSlug = "next-task"
+    skillSlug = "sce-next-task"
+    title = "SCE Next Task"
+    description = "Review, approve, implement, verify, and synchronize one SCE plan task"
+    argumentHint = "<plan-name> [T0X] [approved]"
+    openCodeAgentSlug = "shared-context-code"
+    claudeAllowedTools = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
+  }
+  ["validate"] = new WorkflowRecord {
+    commandSlug = "validate"
+    skillSlug = "sce-validate"
+    title = "SCE Validate"
+    description = "Validate one completed SCE plan and synchronize its durable context"
+    argumentHint = "<plan-name>"
+    openCodeAgentSlug = "shared-context-code"
+    claudeAllowedTools = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
+  }
+  ["commit"] = new WorkflowRecord {
+    commandSlug = "commit"
+    skillSlug = "sce-commit"
+    title = "SCE Commit"
+    description = "Analyze staged changes and run the regular or explicit bypass commit workflow"
+    argumentHint = "[oneshot|skip] [commit context]"
+    openCodeAgentSlug = "shared-context-code"
+    claudeAllowedTools = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
+  }
+  ["handover"] = new WorkflowRecord {
+    commandSlug = "handover"
+    skillSlug = "sce-handover"
+    title = "SCE Handover"
+    description = "Write a session handover document, or load one for continuation"
+    argumentHint = "[context/handovers/<file>.md]"
+    openCodeAgentSlug = "shared-context-code"
+    claudeAllowedTools = "Read, Glob, Grep, Write, Skill, Bash"
+  }
+}

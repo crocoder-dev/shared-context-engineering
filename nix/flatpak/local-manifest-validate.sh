@@ -56,6 +56,10 @@ if [[ "$manifest" == *"nix build .#sce"* || "$manifest" == *"nix build .#default
   errors+=("local manifest references a Nix-built sce binary")
 fi
 
+if [[ "$manifest" != *"path: cli-package-fallback"* || "$manifest" != *"dest: cli/package-fallback"* ]]; then
+  errors+=("local manifest does not stage the ephemeral package fallback")
+fi
+
 if [[ "$manifest" != *"cargo --offline build --release --manifest-path cli/Cargo.toml --bin sce"* ]]; then
   errors+=("local manifest no longer runs the Flatpak Cargo source build")
 fi

@@ -1,26 +1,35 @@
-# SCE Dedup Ownership Table
+# SCE Workflow Ownership Table
 
 ## Scope and method
 
-- Canonical source of truth: `config/pkl/base/shared-content.pkl`.
-- Generated consumers reviewed: `config/.opencode/{agent,command,skills}/**` and `config/.claude/{agents,commands,skills}/**`.
-- Context references reviewed: `context/sce/plan-code-overlap-map.md` and `context/decisions/2026-03-03-plan-code-agent-separation.md`.
-- Assignment rule: each behavior domain has one canonical owner and one or more reference-only consumers.
+- Canonical workflow sources: `config/pkl/base/workflow-{change-to-plan,next-task,validate,commit}.pkl`.
+- Canonical standalone decision-skill source: `config/pkl/base/decision-skill.pkl`.
+- Shared package model: `config/pkl/base/workflow-content.pkl`.
+- Shared synchronization source: `config/pkl/base/workflow-context-sync.pkl`.
+- Generated consumers: `config/.opencode/**`, `config/.claude/**`, and `config/.pi/**`.
+- Assignment rule: each workflow phase has one canonical module owner; commands and agents only orchestrate or route.
+- Canonical phase modules are authoring inputs to `config/pkl/renderers/workflow-composite.pkl`. No target generates them as packages; each is composed into the workflow skill named in the consumer column.
 
 ## Ownership matrix
 
 | Behavior domain | Canonical owner | Reference-only consumers | Label |
 | --- | --- | --- | --- |
-| Shared baseline doctrine for both SCE roles (core principles, `context/` authority, quality posture) | Shared snippet constants in `config/pkl/base/shared-content.pkl` (`sharedSceCorePrinciplesSection`, `sharedSceContextAuthoritySection`, `sharedSceQualityPosturePrefixBullets`, `sharedSceLongTermQualityBullet`) | `agents["shared-context-plan"].canonicalBody`, `agents["shared-context-code"].canonicalBody`, generated Plan/Code agent files in OpenCode and Claude | dedup/complete |
-| Plan role mission, hard boundaries, startup, and planning procedure | `agents["shared-context-plan"].canonicalBody` in `config/pkl/base/shared-content.pkl` | `config/.opencode/agent/Shared Context Plan.md`, `config/.claude/agents/shared-context-plan.md` | intentional/keep |
-| Code role mission, hard boundaries, one-task execution flow, and feedback loop | `agents["shared-context-code"].canonicalBody` in `config/pkl/base/shared-content.pkl` | `config/.opencode/agent/Shared Context Code.md`, `config/.claude/agents/shared-context-code.md` | intentional/keep |
-| `/next-task` detailed phase contracts | `skills["sce-plan-review"]`, `skills["sce-task-execution"]`, and `skills["sce-context-sync"]` in `config/pkl/base/shared-content.pkl` | `commands["next-task"].canonicalBody`, `config/.opencode/command/next-task.md`, `config/.claude/commands/next-task.md` | dedup/complete |
-| `/change-to-plan` clarification and plan-shape contracts | `skills["sce-plan-authoring"]` in `config/pkl/base/shared-content.pkl` | `commands["change-to-plan"].canonicalBody`, `config/.opencode/command/change-to-plan.md`, `config/.claude/commands/change-to-plan.md` | dedup/complete |
-| `/commit` commit grammar and atomic split guidance | `skills["sce-atomic-commit"]` in `config/pkl/base/shared-content.pkl` | `commands["commit"].canonicalBody`, `config/.opencode/command/commit.md`, `config/.claude/commands/commit.md` | dedup/complete |
-| Skill phase contracts with command-level invocation overlap | Per-skill canonical bodies in `config/pkl/base/shared-content.pkl` | Related command wrappers (`/next-task`, `/change-to-plan`, `/commit`) and generated command docs | intentional/keep (layered ownership) |
+| Context discovery before planning | `sce-context-load` in `workflow-change-to-plan.pkl` | `/change-to-plan`; composed into `sce-change-to-plan` | intentional/keep |
+| Plan authoring, clarification, and task slicing | `sce-plan-authoring` in `workflow-change-to-plan.pkl` | `/change-to-plan`; composed into `sce-change-to-plan`; thin OpenCode Plan agent | intentional/keep |
+| Task resolution and readiness | `sce-plan-review` in `workflow-next-task.pkl` | `/next-task`; composed into `sce-next-task`; thin OpenCode Code agent | intentional/keep |
+| Approval-gated one-task implementation | `sce-task-execution` in `workflow-next-task.pkl` | `/next-task`; composed into `sce-next-task`; thin OpenCode Code agent | intentional/keep |
+| Post-task durable context synchronization | Task instance from `workflow-context-sync.pkl` | `/next-task`; composed into `sce-next-task` | dedup/shared skeleton |
+| Final validation and validation report | `sce-validation` in `workflow-validate.pkl` | `/validate`; composed into `sce-validate`; thin OpenCode Code agent | intentional/keep |
+| Validated-plan durable context synchronization | Plan instance from `workflow-context-sync.pkl` | `/validate`; composed into `sce-validate` | dedup/shared skeleton |
+| Staged-diff analysis and commit-message authoring | `sce-atomic-commit` in `workflow-commit.pkl` | `/commit`; composed into `sce-commit`; thin OpenCode Code agent | intentional/keep |
+| Workflow routing | Four command documents in the workflow modules | Thin OpenCode Plan/Code agents | intentional/keep |
+| Standalone ADR writing contract | `decision-skill.pkl` | Cross-target `sce-decision` packages; successful task/plan synchronization invokes it through the shared decision gate | intentional/keep |
 
-## Guardrails for follow-up tasks
+## Guardrails
 
-- Keep Plan/Code role separation unchanged; dedup is shared-baseline extraction plus thin-command delegation, not role merge.
-- Keep `/next-task`, `/change-to-plan`, and `/commit` command bodies at orchestration/gating scope.
-- Keep detailed acceptance and behavior contracts in skill-owned canonical bodies.
+- Keep Plan and Code routing roles separate without placing workflow doctrine in agent bodies.
+- Keep commands thin: each routes to exactly one workflow skill and owns no phase behavior.
+- Keep task and plan synchronization policy in the one shared Pkl skeleton even though each workflow skill composes its own instance.
+- Keep `sce-decision` as the sole sibling-skill exception: only the decision gate in successful task or plan synchronization may invoke it, once per qualifying decision.
+- Do not reintroduce removed `/handover`, legacy context-sync, or automated-profile Markdown ownership.
+- Do not reintroduce phase skills as a generated surface. Workflow behavior belongs in the canonical modules and installation belongs to the four command-routed workflow packages (see [Atomic commit workflow](atomic-commit-workflow.md) for `/commit`). The standalone `sce-decision` package is a separate internal surface, not a generated phase package or user-facing workflow.

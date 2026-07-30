@@ -1,6 +1,16 @@
 .direnv/
 node_modules/
 cli/target/
+cli/package-fallback/
 integrations/**/target/
 result*
 dist/
+
+# Pkl generator output. Generation is ephemeral (Cargo OUT_DIR); running
+# `pkl eval -m .` from the repo root writes these paths, and
+# config/pkl/check-generated.sh fails if they are ever committed.
+# Deliberately file-scoped: config/schema/agent-trace.schema.json is source.
+config/.opencode/
+config/.claude/
+config/.pi/
+config/schema/sce-config.schema.json
