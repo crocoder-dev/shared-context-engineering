@@ -48,4 +48,13 @@ workflows: Mapping<String, WorkflowRecord> = new Mapping {
     openCodeAgentSlug = "shared-context-code"
     claudeAllowedTools = "Task, Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
   }
+  ["handover"] = new WorkflowRecord {
+    commandSlug = "handover"
+    skillSlug = "sce-handover"
+    title = "SCE Handover"
+    description = "Write a session handover document, or load one for continuation"
+    argumentHint = "[context/handovers/<file>.md]"
+    openCodeAgentSlug = "shared-context-code"
+    claudeAllowedTools = "Read, Glob, Grep, Write, Skill, Bash"
+  }
 }

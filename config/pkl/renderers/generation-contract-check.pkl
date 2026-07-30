@@ -75,6 +75,14 @@ local compositeWorkflowDocuments = new Mapping {
   }
 }
 
+local handoverSkillDocuments = new Mapping {
+  for (path, text in workflowDocuments) {
+    when (path.endsWith("/skills/sce-handover/SKILL.md")) {
+      [path] = text
+    }
+  }
+}
+
 local decisionInvokingWorkflowPaths = new Mapping {
   for (target in new Listing { ".opencode"; ".claude"; ".pi" }) {
     ["config/\(target)/skills/sce-next-task/SKILL.md"] = true
@@ -128,6 +136,20 @@ local requiredDecisionWorkflowTokens = new Listing {
   "returned `adr_path`"
   "On `blocked`"
   "successful context synchronization"
+}
+
+local requiredHandoverSkillTokens = new Listing {
+  "selects **writer mode**"
+  "selects **loader mode**"
+  "### Writer path (no arguments)"
+  "### Loader path (one path argument)"
+  "Current Task State"
+  "Decisions Made"
+  "Open Questions / Blockers"
+  "Next Recommended Step"
+  "Writer mode never overwrites an existing handover file"
+  "Loading is read-only"
+  "Never invoke another skill, sibling package, or workflow command"
 }
 
 local requiredDecisionTemplateTokens = new Listing {
@@ -219,6 +241,15 @@ local assertDecisionContent = (documents: Mapping) ->
   ) "generated decision package content: complete"
   else error("generated decision package is missing a required ADR rule or template section")
 
+local assertHandoverContent = (documents: Mapping) ->
+  if (
+    documents.length == 3
+    && documents.every((_, text) ->
+      requiredHandoverSkillTokens.every((token) -> text.contains(token))
+    )
+  ) "generated handover package content: covers both modes"
+  else error("generated sce-handover SKILL.md is missing required writer/loader mode content")
+
 contractChecks {
   ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
   ["workflow-references"] = assertWorkflowReferences.apply(workflowDocuments)
@@ -226,4 +257,5 @@ contractChecks {
   ["opencode-decision-permission"] = assertOpenCodeDecisionPermission.apply(opencode.agents)
   ["decision-package-paths"] = assertDecisionDocumentPaths.apply(decisionSkillDocuments)
   ["decision-package-content"] = assertDecisionContent.apply(decisionSkillDocuments)
+  ["handover-package-content"] = assertHandoverContent.apply(handoverSkillDocuments)
 }

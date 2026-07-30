@@ -62,7 +62,7 @@ commands {
   }
 }
 
-/// OpenCode has four command-routed workflow packages plus the standalone
+/// OpenCode has five command-routed workflow packages plus the standalone
 /// decision-writing package used internally during synchronization. Package-
 /// relative paths stay flattened for deterministic generation, and only skill
 /// entrypoints carry OpenCode-supported metadata.
