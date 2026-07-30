@@ -18,6 +18,7 @@ local returnOnlyMarkdownReport = workflow.semanticReference.apply("Return only t
 local returnExecutionStyleResult = workflow.semanticReference.apply("Return an execution-style YAML result", "Return an execution-style internal state")
 local markdownResult = workflow.semanticReference.apply("Markdown result", "internal state")
 local returnInternalState = workflow.semanticReference.apply("Return YAML", "Return internal state")
+local decisionSkill = "`sce-decision`"
 local packageOnlyBlock = workflow.packageOnlyBlock
 local compositeOnlyBlock = workflow.compositeOnlyBlock
 
@@ -61,6 +62,49 @@ local skillBody = (role: SyncRole, mode: workflow.WorkflowRenderMode) -> new Lis
 
 local skillText = (role: SyncRole, mode: workflow.WorkflowRenderMode) ->
   role.frontmatter.apply(mode) + "\n\n" + skillBody.apply(role, mode)
+
+local decisionGate = (evidenceSource: String, mode: workflow.WorkflowRenderMode) -> """
+    During this successful synchronization, determine whether the completed change
+    establishes or changes a system-wide important constraint involving one or more
+    of:
+
+    - System boundaries or ownership.
+    - Public or cross-domain interfaces.
+    - Data models or persistence.
+    - Compatibility contracts.
+    - Security posture.
+    - Deployment or distribution strategy.
+    - A major dependency.
+    - A similarly durable constraint that is costly or risky to reverse.
+
+    Routine implementation details, local refactors, naming and formatting choices,
+    temporary experiments, and easily reversible choices do not qualify. Do not
+    invoke a decision skill for them.
+
+    Use the discovered context, existing decision records, and this evidence:
+
+    - \(evidenceSource).
+
+    Identify each qualifying decision, then handle qualifying decisions in
+    deterministic order:
+
+    1. Reuse a written ADR path already returned during this plan when it records the
+       same decision.
+    2. Otherwise invoke \(decisionSkill) once with exactly one structured decision
+       request containing the decision, qualifying evidence, plan and task references,
+       related context and ADR paths, and any user-requested status.
+    3. On `written`, retain the returned `adr_path` as synchronization evidence and
+       make it available for current-state context links before synchronization
+       completes. Reuse is valid evidence; do not create a duplicate ADR.
+    4. On `blocked`, stop before current-state context edits and return a `blocked`
+       synchronization report carrying the decision-writing problem, impact, required
+       action, and retry condition.
+
+    Invoke \(decisionSkill) only here, after a successful execution or validation
+    handoff and during context synchronization. Do not invoke it from a non-success
+    branch or for any non-decision purpose. When no decision qualifies, continue
+    without invoking it and record that outcome in synchronization evidence.
+    """
 
 local taskFrontmatterLines = (mode: workflow.WorkflowRenderMode) -> new Listing {
   "name: \(taskContextSyncName.render.apply(mode))"
@@ -248,7 +292,11 @@ local taskRoleData = new SyncRole {
     If the reported classification is inconsistent with the actual change, use the
     verified classification and explain the difference in the report.
 
-    \(outer.headings.stepHeading.apply(mode, 5, "Synchronize context"))
+    \(outer.headings.stepHeading.apply(mode, 5, "Record qualifying architecture decisions"))
+
+    \(decisionGate.apply("execution and done-check evidence", mode))
+
+    \(outer.headings.stepHeading.apply(mode, 6, "Synchronize context"))
 
     Make the smallest coherent documentation change that preserves repository truth.
 
@@ -304,12 +352,14 @@ local taskRoleData = new SyncRole {
     When detail outgrows a shared file, migrate it into `context/{domain}/`, leave a
     concise pointer behind, and link the new file from `context/context-map.md`.
 
-    \(outer.headings.stepHeading.apply(mode, 6, "Verify synchronization"))
+    \(outer.headings.stepHeading.apply(mode, 7, "Verify synchronization"))
 
     After edits, verify:
 
     - Every changed context file accurately reflects the completed implementation.
     - No edited statement contradicts the code, plan, or execution evidence.
+    - Every qualifying decision has one written or reused ADR path in the report,
+      and the report states when no decision qualified.
     - Every file in the mandatory root pass was read and confirmed against code
       truth, whether or not it was edited.
     - Each feature implemented by the task has a durable canonical description
@@ -331,7 +381,7 @@ local taskRoleData = new SyncRole {
     material contradiction, preserve safe edits when appropriate and return a
     `blocked` report.
 
-    \(outer.headings.stepHeading.apply(mode, 7, "Return the Markdown report"))
+    \(outer.headings.stepHeading.apply(mode, 8, "Return the Markdown report"))
 
     \(returnExactlyOneReportStatus.render.apply(mode)):
 
@@ -366,6 +416,8 @@ local taskRoleData = new SyncRole {
     - Create the context root. `sce setup --bootstrap-context` owns that.
     - Narrate changed files as documentation. Feature existence is the only reason
       to document a change that introduced no other durable knowledge.
+    - Invoke any sibling skill except `sce-decision`, or invoke `sce-decision`
+      outside the decision gate in successful context synchronization.
     - Delete a context file that has uncommitted changes.
     - \(returnExecutionStyleResult.render.apply(mode)).
     """
@@ -378,6 +430,8 @@ local taskRoleData = new SyncRole {
     - The context root was confirmed, or a `blocked` report named
       `sce setup --bootstrap-context` as the required action.
     - The mandatory root pass was run.
+    - The decision gate recorded every qualifying ADR path, found no qualifying
+      decision, or returned a synchronization blocker.
     - Applicable durable context was synchronized and verified, no context change
       was warranted, or a synchronization blocker was reported.
     - One Markdown report matching `references/sync-report.md` was returned.
@@ -576,7 +630,11 @@ local planRoleData = new SyncRole {
     If the reported classification is inconsistent with the actual change, use the
     verified classification and explain the difference in the report.
 
-    \(outer.headings.stepHeading.apply(mode, 5, "Synchronize context"))
+    \(outer.headings.stepHeading.apply(mode, 5, "Record qualifying architecture decisions"))
+
+    \(decisionGate.apply("acceptance-criteria and validation evidence", mode))
+
+    \(outer.headings.stepHeading.apply(mode, 6, "Synchronize context"))
 
     Make the smallest coherent documentation change that preserves repository truth.
 
@@ -629,12 +687,14 @@ local planRoleData = new SyncRole {
     When detail outgrows a shared file, migrate it into `context/{domain}/`, leave a
     concise pointer behind, and link the new file from `context/context-map.md`.
 
-    \(outer.headings.stepHeading.apply(mode, 6, "Verify synchronization"))
+    \(outer.headings.stepHeading.apply(mode, 7, "Verify synchronization"))
 
     After edits, verify:
 
     - Every changed context file accurately reflects the finished implementation.
     - No edited statement contradicts the code, plan, or validation evidence.
+    - Every qualifying decision has one written or reused ADR path in the report,
+      and the report states when no decision qualified.
     - Every file in the mandatory root pass was read and confirmed against code
       truth, whether or not it was edited.
     - Every plan `Context sync` requirement is met.
@@ -657,7 +717,7 @@ local planRoleData = new SyncRole {
     material contradiction, preserve safe edits when appropriate and return a
     `blocked` report.
 
-    \(outer.headings.stepHeading.apply(mode, 7, "Return the Markdown report"))
+    \(outer.headings.stepHeading.apply(mode, 8, "Return the Markdown report"))
 
     \(returnExactlyOneReportStatus.render.apply(mode)):
 
@@ -689,6 +749,8 @@ local planRoleData = new SyncRole {
     - Create the context root. `sce setup --bootstrap-context` owns that.
     - Narrate changed files as documentation. Feature existence is the only reason
       to document a change that introduced no other durable knowledge.
+    - Invoke any sibling skill except `sce-decision`, or invoke `sce-decision`
+      outside the decision gate in successful context synchronization.
     - Delete a context file that has uncommitted changes.
     - \(returnInternalState.render.apply(mode)).
     """
@@ -702,6 +764,8 @@ local planRoleData = new SyncRole {
       `sce setup --bootstrap-context` as the required action.
     - The mandatory root pass was run.
     - Plan context requirements were checked.
+    - The decision gate recorded every qualifying ADR path, found no qualifying
+      decision, or returned a synchronization blocker.
     - Applicable durable context was synchronized and verified, no context change
       was warranted, or a synchronization blocker was reported.
     - One Markdown report matching \(syncReport.render.apply(mode)) was returned.
@@ -737,6 +801,11 @@ local syncedReport = (role: SyncReportRole, mode: workflow.WorkflowRenderMode) -
 
     - `{context file}` — {concise description of the durable truth updated}
 
+    ## Architecture decisions
+
+    - `{written or reused ADR path}` — {decision and status}
+    - None qualified.
+
     \(role.syncedVerification.apply(mode))
     - {File hygiene: line counts, relative links, diagrams where structure is complex.}
     - {Documentation, link, or formatting checks that were run, when applicable.}
@@ -761,6 +830,11 @@ local noContextChangeReport = (role: SyncReportRole, mode: workflow.WorkflowRend
 
     - `{context file or area}` — {what was checked and why it remains accurate}
 
+    ## Architecture decisions
+
+    - `{reused ADR path}` — {decision and status}
+    - None qualified.
+
     \(role.noContextChangeVerification.apply(mode))
     """
 
@@ -782,6 +856,11 @@ local blockedReport = (role: SyncReportRole, mode: workflow.WorkflowRenderMode) 
 
     - {List safe context edits preserved, or state `No context files were changed.`}
 
+    ## Architecture decisions
+
+    - `{ADR path written or reused before the blocker}` — {decision and status}
+    - None written or reused before the blocker.
+
     ## Retry condition
 
     \(role.retryCondition.apply(mode))
@@ -791,6 +870,10 @@ local reportRules = (role: SyncReportRole, mode: workflow.WorkflowRenderMode) ->
     ## Report rules
 
     - Name exact context files when they were changed or reviewed.
+    - Under **Architecture decisions**, list every ADR path written or reused during
+      the decision gate. In a successful report, state `None qualified.` when the
+      gate skipped invocation. In a blocked report, state
+      `None written or reused before the blocker.` when applicable.
     \(role.rules.apply(mode))
     """
 

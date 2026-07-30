@@ -7,6 +7,9 @@ local workflowSkillPermissionLines = (agentSlug: String) ->
         "    \"\(workflow.skillSlug)\": allow"
       }
     }
+    when (agentSlug == "shared-context-code") {
+      "    \"sce-decision\": allow"
+    }
   }).join("\n")
 
 agentDescriptions = new Mapping {

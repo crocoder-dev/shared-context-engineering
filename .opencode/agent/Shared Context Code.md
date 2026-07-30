@@ -26,6 +26,7 @@ permission:
     "sce-next-task": allow
     "sce-validate": allow
     "sce-commit": allow
+    "sce-decision": allow
 ---
 
 Route implementation work through `/next-task` and final plan validation through `/validate`.

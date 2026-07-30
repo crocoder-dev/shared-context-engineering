@@ -59,6 +59,89 @@ hidden workflowDocuments = new Mapping {
   }
 }
 
+local decisionSkillDocuments = new Mapping {
+  for (path, text in workflowDocuments) {
+    when (path.contains("/skills/sce-decision/")) {
+      [path] = text
+    }
+  }
+}
+
+local compositeWorkflowDocuments = new Mapping {
+  for (path, text in workflowDocuments) {
+    when (!path.contains("/skills/sce-decision/")) {
+      [path] = text
+    }
+  }
+}
+
+local decisionInvokingWorkflowPaths = new Mapping {
+  for (target in new Listing { ".opencode"; ".claude"; ".pi" }) {
+    ["config/\(target)/skills/sce-next-task/SKILL.md"] = true
+    ["config/\(target)/skills/sce-validate/SKILL.md"] = true
+  }
+}
+
+local expectedDecisionDocumentPaths = new Mapping {
+  for (target in new Listing { ".opencode"; ".claude"; ".pi" }) {
+    ["config/\(target)/skills/sce-decision/SKILL.md"] = true
+    ["config/\(target)/skills/sce-decision/references/adr-template.md"] = true
+  }
+}
+
+local requiredDecisionSkillTokens = new Listing {
+  "qualifying system-wide"
+  "System boundaries or ownership"
+  "Public or cross-domain interfaces"
+  "Data models or persistence"
+  "Compatibility contracts"
+  "Security posture"
+  "Deployment or distribution strategy"
+  "major dependency"
+  "Routine implementation details"
+  "YYYY-MM-DD-<decision-slug>.md"
+  "`Proposed`"
+  "`Accepted`"
+  "`Rejected`"
+  "`Deprecated`"
+  "`Superseded`"
+  "otherwise default"
+  "Never edit an ADR whose status is `Accepted`"
+  "creates a new dated ADR"
+  "exactly one file"
+  "`written`"
+  "`blocked`"
+}
+
+local requiredDecisionWorkflowTokens = new Listing {
+  "Record qualifying architecture decisions"
+  "System boundaries or ownership"
+  "Public or cross-domain interfaces"
+  "Data models or persistence"
+  "Compatibility contracts"
+  "Security posture"
+  "Deployment or distribution strategy"
+  "major dependency"
+  "Routine implementation details"
+  "invoke `sce-decision` once"
+  "Reuse a written ADR path"
+  "returned `adr_path`"
+  "On `blocked`"
+  "successful context synchronization"
+}
+
+local requiredDecisionTemplateTokens = new Listing {
+  "## Context"
+  "## Decision"
+  "## Rationale"
+  "## Alternatives considered"
+  "## Compatibility and risks"
+  "## Guardrails"
+  "## Consequences"
+  "## Follow-up"
+  "## References"
+}
+
 local forbiddenWorkflowReferenceTokens = new Listing {
   "sce-context-load"
   "sce-plan-authoring"
@@ -95,7 +178,52 @@ local assertWorkflowReferences = (documents: Mapping) ->
   ) "generated workflow references: fully internalized"
   else error("generated workflow document contains a forbidden sibling-package reference or unresolved internalization token")
 
+local assertDecisionWorkflowReferences = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      if (decisionInvokingWorkflowPaths.containsKey(path))
+        requiredDecisionWorkflowTokens.every((token) -> text.contains(token))
+      else
+        !text.contains("`sce-decision`")
+    )
+  ) "generated decision invocation: synchronization-only"
+  else error("generated workflow document violates the synchronization-only sce-decision exception")
+
+local assertOpenCodeDecisionPermission = (agents) ->
+  let (codeAgent = agents["shared-context-code"].rendered)
+    let (planAgent = agents["shared-context-plan"].rendered)
+      if (
+        codeAgent.contains("\"sce-decision\": allow")
+        && !planAgent.contains("\"sce-decision\": allow")
+      ) "OpenCode decision permission: code agent only"
+      else error("OpenCode sce-decision permission must be derived only for the code agent")
+
+local assertDecisionDocumentPaths = (documents: Mapping) ->
+  if (
+    documents.length == expectedDecisionDocumentPaths.length
+    && expectedDecisionDocumentPaths.every((path, _) -> documents.containsKey(path))
+  ) "generated decision package inventory: complete"
+  else error("generated decision package inventory does not match the exact cross-target path contract")
+
+local assertDecisionContent = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      (
+        path.endsWith("/SKILL.md")
+        && requiredDecisionSkillTokens.every((token) -> text.contains(token))
+      ) || (
+        path.endsWith("/references/adr-template.md")
+        && requiredDecisionTemplateTokens.every((token) -> text.contains(token))
+      )
+    )
+  ) "generated decision package content: complete"
+  else error("generated decision package is missing a required ADR rule or template section")
+
 contractChecks {
   ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
   ["workflow-references"] = assertWorkflowReferences.apply(workflowDocuments)
+  ["decision-invocation"] = assertDecisionWorkflowReferences.apply(compositeWorkflowDocuments)
+  ["opencode-decision-permission"] = assertOpenCodeDecisionPermission.apply(opencode.agents)
+  ["decision-package-paths"] = assertDecisionDocumentPaths.apply(decisionSkillDocuments)
+  ["decision-package-content"] = assertDecisionContent.apply(decisionSkillDocuments)
 }

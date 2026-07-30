@@ -1,3 +1,4 @@
+import "../base/decision-skill.pkl" as decision
 import "workflow-composite.pkl" as workflowResults
 
 /// Pi prompts are intentionally thin. Each routes to exactly one composite
@@ -10,12 +11,14 @@ commands {
   }
 }
 
-/// Pi has four workflow packages, each with exactly SKILL.md and one
-/// references/output.md presentation contract, and no target-specific skill
-/// frontmatter. Package-relative document paths stay flattened for
-/// deterministic generation while retaining each skill's directory layout.
+/// Pi has four prompt-routed workflow packages plus the standalone decision-
+/// writing package used internally during synchronization, with no target-
+/// specific skill frontmatter.
 skillDocuments {
   for (path, document in workflowResults.skillDocuments.apply("")) {
+    [path] = document
+  }
+  for (path, document in decision.skillDocuments.apply("")) {
     [path] = document
   }
 }

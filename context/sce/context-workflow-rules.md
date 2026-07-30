@@ -113,6 +113,30 @@ validation evidence remains recorded, but the workflow stops because durable
 context is out of date and must be reconciled before continuing or closing the
 plan.
 
+### Architecture-decision gate
+
+After impact discovery and before current-state context edits, both successful
+synchronization roles test whether the change establishes or changes a system-wide
+constraint involving boundaries or ownership, public or cross-domain interfaces,
+data or persistence, compatibility, security, deployment/distribution, a major
+dependency, or another durable and costly-to-reverse constraint. Routine local
+implementation choices, refactors, temporary experiments, and easily reversible
+choices do not qualify.
+
+For each qualifying decision, synchronization reuses an ADR that already records
+the same choice or invokes the standalone `sce-decision` skill with one decision.
+The skill writes one dated ADR per decision, allows only `Proposed`, `Accepted`,
+`Rejected`, `Deprecated`, or `Superseded`, and defaults to `Accepted` unless the
+request names another allowed status. Accepted ADRs are immutable: corrections,
+reversals, and replacements create a new dated ADR that references and supersedes
+the accepted record.
+
+A written-or-reused ADR path becomes synchronization evidence and is available for
+current-state links. A blocked decision handoff blocks synchronization before
+current-state edits. This is the sole allowed sibling-skill invocation; failed or
+blocked validation and declined, blocked, or incomplete task execution never reach
+it.
+
 ### Mandatory synchronization pass
 
 Every task and plan synchronization verifies these files against code truth,
@@ -135,7 +159,9 @@ makes the smallest coherent documentation change:
   ownership, or terminology changes.
 
 Every pass also accounts for feature existence, adds glossary entries for new
-domain language, and verifies relative links and line limits. Task reports list
+domain language, and verifies relative links and line limits. Every report records
+written or reused ADR paths, or states that no decision qualified; blocked reports
+preserve paths produced before the blocker. Task reports list
 the execution handoff's changed files outside `context/` under `Updated files`;
 they do not render impact classification or the root-pass checklist, although
 task synchronization still uses the classification and performs the mandatory
