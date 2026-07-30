@@ -1,0 +1,23 @@
+import "../generation-contract-check.pkl" as contract
+
+local skillPath = "config/.opencode/skills/sce-next-task/SKILL.md"
+local outputPath = "config/.opencode/skills/sce-next-task/references/output.md"
+
+local duplicatedLayout = contract.fencedBlocksIn.apply(contract.workflowDocuments[outputPath])[0]
+
+local documentsWithDuplicatedLayout = new Mapping {
+  for (path, text in contract.workflowDocuments) {
+    [path] = if (path == skillPath) "\(text)\n\n\(duplicatedLayout)" else text
+  }
+}
+
+result = if (
+  documentsWithDuplicatedLayout.every((path, text) ->
+    if (!path.endsWith("references/output.md")) true
+    else
+      let (correspondingSkillPath = path.dropLast("references/output.md".length) + "SKILL.md")
+        let (skillText = documentsWithDuplicatedLayout[correspondingSkillPath])
+          contract.fencedBlocksIn.apply(text).every((block) -> !skillText.contains(block))
+  )
+) "negative fixture unexpectedly contained no duplicated layout"
+else error("generated SKILL.md reproduces a references/output.md fenced layout verbatim")

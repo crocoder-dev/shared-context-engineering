@@ -196,8 +196,6 @@ Do not:
 - Return a internal state.
 - Run plan context synchronization. The workflow owns that step.
 
-
-
 Branch on the report's `Status:`.
 
 `blocked` -> Do not run context synchronization. Print the blocked Markdown
@@ -232,8 +230,6 @@ owns reading the plan path, required context paths, validation evidence, and
 reported context impact out of it.
 
 Do not restate, summarize, or reconstruct any part of the validation result.
-
-
 
 Task-level context sync may already have run after individual tasks. This phase
 is the plan-level final pass: it starts from the plan's `Context sync`
@@ -540,8 +536,6 @@ Do not:
   outside the decision gate in successful context synchronization.
 - Delete a context file that has uncommitted changes.
 - Return internal state.
-
-
 
 Branch on the synchronization result.
 

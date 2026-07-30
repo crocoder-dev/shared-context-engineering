@@ -127,7 +127,6 @@ Do not:
 - Ask the user questions. Report gaps and drift, and let the workflow decide.
 - Author a plan, select a task, or implement anything.
 
-
 Branch on `status`:
 
 `bootstrap_required` -> `context/` does not exist. Do not create it, and do not plan without it. Render the **Missing context bootstrap gate** layout from `references/output.md`.
@@ -390,7 +389,6 @@ Do not:
 - Set internal status `plan_ready` for a plan with no incomplete task.
 - Create a Git commit.
 - Author more than one plan.
-
 
 Branch on `status`:
 

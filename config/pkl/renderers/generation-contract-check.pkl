@@ -250,6 +250,32 @@ local assertHandoverContent = (documents: Mapping) ->
   ) "generated handover package content: covers both modes"
   else error("generated sce-handover SKILL.md is missing required writer/loader mode content")
 
+/// Extract each fenced code block from `text`, fence markers included, so
+/// callers can test a generated `SKILL.md` for a verbatim copy of a
+/// `references/output.md` layout. Splitting on the triple-backtick fence
+/// yields alternating outside/inside segments starting outside, so the
+/// odd-indexed segments are exactly the fenced bodies.
+hidden fencedBlocksIn = (text: String) ->
+  text.split("```").filterIndexed((index, _) -> index.isOdd).map((block) -> "```\(block)```")
+
+local assertNoBlankLineRuns = (documents: Mapping) ->
+  if (
+    documents.every((_, text) -> !text.contains("\n\n\n"))
+  ) "generated workflow documents: no blank-line runs"
+  else error("generated workflow document contains two or more consecutive blank lines")
+
+local assertOutputNotDuplicated = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      if (!path.endsWith("references/output.md")) true
+      else
+        let (skillPath = path.dropLast("references/output.md".length) + "SKILL.md")
+          let (skillText = documents[skillPath])
+            fencedBlocksIn.apply(text).every((block) -> !skillText.contains(block))
+    )
+  ) "generated workflow SKILL.md documents: no output.md layout duplicated"
+  else error("generated SKILL.md reproduces a references/output.md fenced layout verbatim")
+
 contractChecks {
   ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
   ["workflow-references"] = assertWorkflowReferences.apply(workflowDocuments)
@@ -258,4 +284,6 @@ contractChecks {
   ["decision-package-paths"] = assertDecisionDocumentPaths.apply(decisionSkillDocuments)
   ["decision-package-content"] = assertDecisionContent.apply(decisionSkillDocuments)
   ["handover-package-content"] = assertHandoverContent.apply(handoverSkillDocuments)
+  ["no-blank-line-runs"] = assertNoBlankLineRuns.apply(workflowDocuments)
+  ["output-dedup"] = assertOutputNotDuplicated.apply(workflowDocuments)
 }

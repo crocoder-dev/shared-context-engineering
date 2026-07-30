@@ -282,8 +282,7 @@ local renderAtomicCommitSkillBody = (mode: model.WorkflowRenderMode) -> """
     ## Input
 
     A mode (`regular` or `bypass`) and optional commit context, in free-form prose.
-    """).render.apply(mode))
-    The mode is supplied by the workflow from an explicit user-supplied token.
+    """).render.apply(mode))The mode is supplied by the workflow from an explicit user-supplied token.
     Never infer it, and never switch modes mid-analysis.
 
     Commit context refines wording only. The staged diff decides what the change
@@ -393,9 +392,8 @@ local renderAtomicCommitSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Invent plan slugs, task IDs, or issue references.
     - Mention `context/` synchronization activity in a commit message.
     - Claim a message was committed.
-    - Run plan, task, or validation workflows.
+    - Run plan, task, or validation workflows.\(model.packageOnlyBlock.apply("""
 
-    \(model.packageOnlyBlock.apply("""
     ## Completion
 
     The skill is complete after:

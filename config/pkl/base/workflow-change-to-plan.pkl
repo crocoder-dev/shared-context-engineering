@@ -419,8 +419,7 @@ local renderContextSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Read the entire `context/` tree by default.
     - Explore the repository beyond what the focus and the selected context require.
     - Ask the user questions. Report gaps and drift, and let the workflow decide.
-    - Author a plan, select a task, or implement anything.
-    \(model.packageOnlyBlock.apply("""
+    - Author a plan, select a task, or implement anything.\(model.packageOnlyBlock.apply("""
 
     ## Completion
 
@@ -875,8 +874,7 @@ local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
       that phase.
     - \(returnUpper.render.apply(mode)) `plan_ready` for a plan with no incomplete task.
     - Create a Git commit.
-    - Author more than one plan.
-    \(model.packageOnlyBlock.apply("""
+    - Author more than one plan.\(model.packageOnlyBlock.apply("""
 
     ## Completion
 

@@ -90,6 +90,12 @@ expect_pkl_fixture_failure \
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/forbidden-workflow-reference-check.pkl" \
   "generated workflow document contains a forbidden sibling-package reference or unresolved internalization token"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/blank-line-run-check.pkl" \
+  "generated workflow document contains two or more consecutive blank lines"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/output-dedup-check.pkl" \
+  "generated SKILL.md reproduces a references/output.md fenced layout verbatim"
 
 "$producer" "$repo_root" "$generated_input_root"
 generated_root="$generated_input_root/pkl-generated"
