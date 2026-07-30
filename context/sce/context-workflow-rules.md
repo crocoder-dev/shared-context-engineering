@@ -13,8 +13,9 @@ The workflow lifecycle is described in
 
 ## Bootstrap boundary
 
-When `sce-context-load` reports that `context/` is absent, the active workflow
-stops. It does not create durable context. The user bootstraps it with:
+When `sce-context-load` reports that `context/` is absent — or when
+`/brownfield` finds it absent in its own pre-investigation check — the active
+workflow stops. It does not create durable context. The user bootstraps it with:
 
 `sce setup --bootstrap-context`
 
@@ -67,6 +68,12 @@ continues with the original request.
 
 - Context-maintenance phases may create, edit, move, rename, or delete files
   under `context/`.
+- `/brownfield` is the only other authorized writer of durable context, under a
+  narrower boundary: additive by default (missing files and missing domains
+  only), rewrite authority only when its literal `rebuild` token was passed, and
+  no deletion in either mode. It never touches `context/plans/`,
+  `context/handovers/`, `context/decisions/`, or `context/tmp/`. See
+  [Brownfield workflow](brownfield-workflow.md).
 - New top-level context domains may be created when durable knowledge needs one.
 - Do not delete a context file with uncommitted changes.
 - Planning reads durable context but does not modify it outside an authored plan.
@@ -89,6 +96,11 @@ continues with the original request.
   genuinely cross-cutting feature.
 
 ## Synchronization lifecycle
+
+Ongoing context maintenance is owned by the two synchronization phases below.
+`/brownfield` writes durable context outside this lifecycle, but only as a
+cold-start and gap-fill reconstruction; it is not a drift-repair or maintenance
+path and never substitutes for synchronization.
 
 Synchronization is split by lifecycle boundary. Both phases share the canonical
 rules in `config/pkl/base/workflow-context-sync.pkl`, but receive different
@@ -176,3 +188,4 @@ not rerun final validation.
 - `config/pkl/base/workflow-next-task.pkl`
 - `config/pkl/base/workflow-validate.pkl`
 - `config/pkl/base/workflow-context-sync.pkl`
+- `config/pkl/base/workflow-brownfield.pkl`

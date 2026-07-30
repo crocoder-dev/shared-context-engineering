@@ -57,4 +57,13 @@ workflows: Mapping<String, WorkflowRecord> = new Mapping {
     openCodeAgentSlug = "shared-context-code"
     claudeAllowedTools = "Read, Glob, Grep, Write, Skill, Bash"
   }
+  ["brownfield"] = new WorkflowRecord {
+    commandSlug = "brownfield"
+    skillSlug = "sce-brownfield"
+    title = "SCE Brownfield"
+    description = "Reconstruct durable context from an existing repository's own evidence"
+    argumentHint = "[rebuild] [path ...]"
+    openCodeAgentSlug = "shared-context-code"
+    claudeAllowedTools = "Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
+  }
 }

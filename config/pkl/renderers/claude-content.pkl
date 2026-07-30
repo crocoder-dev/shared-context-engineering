@@ -93,7 +93,7 @@ commands {
   }
 }
 
-/// Claude has five command-routed workflow packages plus the standalone
+/// Claude has six command-routed workflow packages plus the standalone
 /// decision-writing package used internally during synchronization.
 skillDocuments {
   for (path, document in workflowResults.skillDocuments.apply("compatibility: claude\n")) {

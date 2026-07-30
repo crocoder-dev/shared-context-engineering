@@ -83,6 +83,14 @@ local handoverSkillDocuments = new Mapping {
   }
 }
 
+local brownfieldSkillDocuments = new Mapping {
+  for (path, text in workflowDocuments) {
+    when (path.endsWith("/skills/sce-brownfield/SKILL.md")) {
+      [path] = text
+    }
+  }
+}
+
 local decisionInvokingWorkflowPaths = new Mapping {
   for (target in new Listing { ".opencode"; ".claude"; ".pi" }) {
     ["config/\(target)/skills/sce-next-task/SKILL.md"] = true
@@ -152,6 +160,25 @@ local requiredHandoverSkillTokens = new Listing {
   "Never invoke another skill, sibling package, or workflow command"
 }
 
+/// The five behaviors `/brownfield` cannot lose without becoming a different
+/// workflow: the terminal bootstrap gate, the explicit documentation sweep, the
+/// blocking confidence threshold, always-disclosed contradictions, and
+/// additive-by-default writing with `rebuild` as the sole rewrite path.
+local requiredBrownfieldSkillTokens = new Listing {
+  "### 1. Confirm the context root"
+  "**Missing context bootstrap gate**"
+  "Never create the `context/` root"
+  "#### 2.3 Discover documentation explicitly"
+  "This workflow performs no network access."
+  "### 3. Score every important fact"
+  "Any important fact scoring below `50` blocks."
+  "### 5. Resolve and disclose contradictions"
+  "Every material contradiction is disclosed in the report with its classification"
+  "Writes are additive by default."
+  "Never overwrite, truncate, move, rename, or delete an existing context file."
+  "When the literal `rebuild` token was supplied, rewrite authority extends to"
+}
+
 local requiredDecisionTemplateTokens = new Listing {
   "## Context"
   "## Decision"
@@ -185,11 +212,18 @@ local forbiddenWorkflowReferenceTokens = new Listing {
   "references/commit-message-style.md"
 }
 
+/// Six cross-target workflow packages at nine artifacts each, plus the decision
+/// package and the retained non-workflow assets. Stating the total as a literal
+/// makes an unintended inventory change fail here instead of silently becoming
+/// the new expectation.
+local expectedArtifactPathCount = 70
+
 local assertExactArtifactPaths = (actual: Mapping) ->
   if (
-    actual.length == expectedArtifactPaths.length
+    expectedArtifactPaths.length == expectedArtifactPathCount
+    && actual.length == expectedArtifactPaths.length
     && expectedArtifactPaths.every((path, _) -> actual.containsKey(path))
-  ) "generated artifact inventory: exactly \(expectedArtifactPaths.length) paths"
+  ) "generated artifact inventory: exactly \(expectedArtifactPathCount) paths"
   else error("generated artifact inventory does not match the exact expected path contract")
 
 local assertWorkflowReferences = (documents: Mapping) ->
@@ -250,6 +284,15 @@ local assertHandoverContent = (documents: Mapping) ->
   ) "generated handover package content: covers both modes"
   else error("generated sce-handover SKILL.md is missing required writer/loader mode content")
 
+local assertBrownfieldContent = (documents: Mapping) ->
+  if (
+    documents.length == 3
+    && documents.every((_, text) ->
+      requiredBrownfieldSkillTokens.every((token) -> text.contains(token))
+    )
+  ) "generated brownfield package content: covers gate, evidence, confidence, contradictions, writes"
+  else error("generated sce-brownfield SKILL.md is missing a required bootstrap, documentation, confidence, contradiction, or write-mode rule")
+
 /// Extract each fenced code block from `text`, fence markers included, so
 /// callers can test a generated `SKILL.md` for a verbatim copy of a
 /// `references/output.md` layout. Splitting on the triple-backtick fence
@@ -284,6 +327,7 @@ contractChecks {
   ["decision-package-paths"] = assertDecisionDocumentPaths.apply(decisionSkillDocuments)
   ["decision-package-content"] = assertDecisionContent.apply(decisionSkillDocuments)
   ["handover-package-content"] = assertHandoverContent.apply(handoverSkillDocuments)
+  ["brownfield-package-content"] = assertBrownfieldContent.apply(brownfieldSkillDocuments)
   ["no-blank-line-runs"] = assertNoBlankLineRuns.apply(workflowDocuments)
   ["output-dedup"] = assertOutputNotDuplicated.apply(workflowDocuments)
 }
