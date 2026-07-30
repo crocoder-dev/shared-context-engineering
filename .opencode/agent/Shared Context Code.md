@@ -27,6 +27,7 @@ permission:
     "sce-validate": allow
     "sce-commit": allow
     "sce-handover": allow
+    "sce-brownfield": allow
     "sce-decision": allow
 ---
 

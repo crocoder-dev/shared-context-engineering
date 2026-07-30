@@ -89,5 +89,6 @@ next step — loading only surfaces guidance.
 
 - [Context workflow rules](context-workflow-rules.md)
 - `context/plans/handover-workflow.md` (source plan)
-- `context/architecture.md` (canonical workflow catalog, composite renderer, and generation-contract inventory covering all five workflows)
+- `context/architecture.md` (canonical workflow catalog, composite renderer, and generation-contract inventory covering all six workflows)
+- [Brownfield workflow](brownfield-workflow.md) (the other phase-free, self-contained workflow)
 - `context/decisions/2026-07-30-restore-handover-cross-target-workflow.md` (restores this workflow as the fifth catalog-registered cross-target workflow)

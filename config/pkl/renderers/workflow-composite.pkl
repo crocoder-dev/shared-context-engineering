@@ -3,6 +3,7 @@ import "../base/workflow-next-task.pkl" as nextTask
 import "../base/workflow-validate.pkl" as validate
 import "../base/workflow-commit.pkl" as commit
 import "../base/workflow-handover.pkl" as handover
+import "../base/workflow-brownfield.pkl" as brownfield
 import "../base/workflow-catalog.pkl" as catalog
 import "../base/workflow-content.pkl" as model
 
@@ -401,12 +402,30 @@ local handoverWorkflow = new CompositeWorkflow {
   }.join("\n\n")
 }
 
+/// `sce-brownfield` is the second phase-free self-contained workflow, so like
+/// `sce-handover` its base module already exposes one complete output reference
+/// as its sole `outputDocuments` entry. It does wait mid-run, at the blocking
+/// clarification gate, but the shared composite preamble's control-flow
+/// paragraph already states that waits resume the same skill in the same
+/// session, so no composite-only header is needed here either.
+local brownfieldWorkflow = new CompositeWorkflow {
+  identity = catalog.workflows["brownfield"]
+  command = brownfield.workflow.command.document
+  structuredSource = brownfield.structuredComposite
+  outputText = new Listing {
+    for (document in brownfield.structuredComposite.outputDocuments) {
+      document.text
+    }
+  }.join("\n\n")
+}
+
 workflows = new Mapping {
   [changeWorkflow.slug] = changeWorkflow
   [nextWorkflow.slug] = nextWorkflow
   [validateWorkflow.slug] = validateWorkflow
   [commitWorkflow.slug] = commitWorkflow
   [handoverWorkflow.slug] = handoverWorkflow
+  [brownfieldWorkflow.slug] = brownfieldWorkflow
 }
 
 /// Each target renders the same two documents per workflow package and differs
