@@ -30,6 +30,11 @@ Phase names below identify canonical modules in `config/pkl/base/workflow-next-t
 3. `sce-task-context-sync`
    - Runs only from the complete successful execution handoff.
    - Reconciles one task with durable context and performs the mandatory root-file pass.
+   - Applies the system-wide decision gate before current-state context edits. Routine,
+     local, temporary, and easily reversible choices skip decision writing; each
+     qualifying decision reuses an existing ADR or invokes `sce-decision` once.
+   - A blocked decision handoff blocks synchronization; written or reused ADR paths
+     become synchronization evidence and are available for current-state links.
    - Returns a Markdown report with `synced`, `no_context_change`, or `blocked`.
    - Every report variant lists changed files outside `context/` under `Updated files`;
      task reports omit the impact classification and rendered root-pass checklist
@@ -38,7 +43,7 @@ Phase names below identify canonical modules in `config/pkl/base/workflow-next-t
    - Emits exactly one next-task command for the first unchecked task in plan order, or a `/validate` command when all implementation tasks are complete.
    - Never executes the continuation in the same invocation.
 
-A context-sync blocker does not undo successful implementation: the task remains complete in the plan, but the workflow stops because durable context is stale. On every target, review, approval, execution, evidence recording, synchronization, and continuation are internal phases of one `sce-next-task` invocation rather than sibling skill calls.
+A context-sync blocker does not undo successful implementation: the task remains complete in the plan, but the workflow stops because durable context is stale. On every target, review, approval, execution, evidence recording, synchronization, and continuation are internal phases of one `sce-next-task` invocation. The sole sibling-skill exception is the synchronization decision gate's bounded invocation of `sce-decision`.
 
 ## `/validate` entrypoint
 
@@ -46,7 +51,7 @@ A context-sync blocker does not undo successful implementation: the task remains
 
 1. `sce-validation` verifies that implementation tasks are complete, runs the plan's full validation commands and acceptance checks, cleans temporary scaffolding, and writes the Validation Report.
 2. Failed or blocked validation ends the session without repair edits; retry uses `/validate {plan-path}`.
-3. `sce-plan-context-sync` runs only from a successful `Status: validated` handoff and reconciles the completed plan with durable repository context.
+3. `sce-plan-context-sync` runs only from a successful `Status: validated` handoff, applies the same decision gate before current-state edits, and reconciles the completed plan with durable repository context. ADR paths already written during task synchronization are reused for the same decision.
 
 On every target, those validation and plan-sync phase bodies appear directly inside workflow steps 1 and 2 of one `sce-validate` skill, while the plan-file Validation Report format remains a trailing appendix after the workflow rules. Failed and blocked statuses stop before synchronization exactly as in the canonical flow. Final validation never runs from an individual implementation task.
 
@@ -61,7 +66,10 @@ flowchart TD
     E --> F{"complete?"}
     F -- "No" --> G["Report declined, blocked, or incomplete"]
     F -- "Yes" --> H["Phase: task context sync"]
-    H --> I{"More tasks?"}
+    H --> Q{"Qualifying system-wide decision?"}
+    Q -- "Yes" --> R["Invoke sce-decision or reuse ADR"]
+    Q -- "No" --> I{"More tasks?"}
+    R --> I
     I -- "Yes" --> J["Emit next /next-task command"]
     I -- "No" --> K["Emit /validate command"]
     K --> L["Phase: validation"]
@@ -73,7 +81,7 @@ flowchart TD
 ## Target ownership
 
 - OpenCode, Claude, and Pi: thin commands (Pi: prompts) invoking `sce-next-task` or `sce-validate`; each package contains only `SKILL.md` and `references/output.md`.
-- OpenCode adds `entry-skill` and a one-entry `skills` list naming that skill, and its Code routing agent allows exactly `sce-next-task`, `sce-validate`, and `sce-commit`.
+- OpenCode adds `entry-skill` and a one-entry `skills` list naming that skill. Its Code routing agent allows `sce-next-task`, `sce-validate`, and `sce-commit`, plus internal `sce-decision` invocation; the Plan agent does not allow `sce-decision`.
 
 ## Canonical sources
 

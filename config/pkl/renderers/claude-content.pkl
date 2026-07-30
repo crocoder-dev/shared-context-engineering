@@ -1,3 +1,4 @@
+import "../base/decision-skill.pkl" as decision
 import "common.pkl" as common
 import "claude-metadata.pkl" as metadata
 import "workflow-composite.pkl" as workflowResults
@@ -92,10 +93,13 @@ commands {
   }
 }
 
-/// Claude has four workflow packages, each with exactly SKILL.md and one
-/// references/output.md presentation contract.
+/// Claude has four command-routed workflow packages plus the standalone
+/// decision-writing package used internally during synchronization.
 skillDocuments {
   for (path, document in workflowResults.skillDocuments.apply("compatibility: claude\n")) {
+    [path] = document
+  }
+  for (path, document in decision.skillDocuments.apply("compatibility: claude\n")) {
     [path] = document
   }
 }

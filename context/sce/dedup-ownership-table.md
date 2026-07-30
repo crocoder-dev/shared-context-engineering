@@ -3,6 +3,7 @@
 ## Scope and method
 
 - Canonical workflow sources: `config/pkl/base/workflow-{change-to-plan,next-task,validate,commit}.pkl`.
+- Canonical standalone decision-skill source: `config/pkl/base/decision-skill.pkl`.
 - Shared package model: `config/pkl/base/workflow-content.pkl`.
 - Shared synchronization source: `config/pkl/base/workflow-context-sync.pkl`.
 - Generated consumers: `config/.opencode/**`, `config/.claude/**`, and `config/.pi/**`.
@@ -22,11 +23,13 @@
 | Validated-plan durable context synchronization | Plan instance from `workflow-context-sync.pkl` | `/validate`; composed into `sce-validate` | dedup/shared skeleton |
 | Staged-diff analysis and commit-message authoring | `sce-atomic-commit` in `workflow-commit.pkl` | `/commit`; composed into `sce-commit`; thin OpenCode Code agent | intentional/keep |
 | Workflow routing | Four command documents in the workflow modules | Thin OpenCode Plan/Code agents | intentional/keep |
+| Standalone ADR writing contract | `decision-skill.pkl` | Cross-target `sce-decision` packages; successful task/plan synchronization invokes it through the shared decision gate | intentional/keep |
 
 ## Guardrails
 
 - Keep Plan and Code routing roles separate without placing workflow doctrine in agent bodies.
 - Keep commands thin: each routes to exactly one workflow skill and owns no phase behavior.
 - Keep task and plan synchronization policy in the one shared Pkl skeleton even though each workflow skill composes its own instance.
+- Keep `sce-decision` as the sole sibling-skill exception: only the decision gate in successful task or plan synchronization may invoke it, once per qualifying decision.
 - Do not reintroduce removed `/handover`, legacy context-sync, or automated-profile Markdown ownership.
-- Do not reintroduce phase skills as a generated surface. Behavior belongs in the canonical modules; installation belongs to the four workflow packages (see [Atomic commit workflow](atomic-commit-workflow.md) for `/commit`).
+- Do not reintroduce phase skills as a generated surface. Workflow behavior belongs in the canonical modules and installation belongs to the four command-routed workflow packages (see [Atomic commit workflow](atomic-commit-workflow.md) for `/commit`). The standalone `sce-decision` package is a separate internal surface, not a generated phase package or user-facing workflow.

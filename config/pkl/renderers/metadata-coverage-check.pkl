@@ -21,13 +21,16 @@ local expectedWorkflowSkillByCommand = new Mapping {
 }
 
 /// A collapsed target renders each workflow as one package with one entrypoint
-/// and one user-visible Markdown output reference. Exact coverage rejects stale
-/// phase packages and any additional package-local references.
-local expectedWorkflowSkillDocumentPaths = new Mapping {
+/// and one user-visible Markdown output reference. The standalone decision
+/// package has no command and carries its ADR template as its sole reference.
+/// Exact coverage rejects stale phase packages and unexpected references.
+local expectedSkillDocumentPaths = new Mapping {
   for (_, workflow in catalog.workflows) {
     ["\(workflow.skillSlug)/SKILL.md"] = true
     ["\(workflow.skillSlug)/references/output.md"] = true
   }
+  ["sce-decision/SKILL.md"] = true
+  ["sce-decision/references/adr-template.md"] = true
 }
 
 local opencodeAgents = new Mapping {
@@ -79,6 +82,7 @@ local assertCommandRoute = (target: String, slug: String, document: String) ->
   let (expectedInvocation = "Invoke the `\(expectedWorkflowSkillByCommand[slug])` skill exactly once")
     if (
       document.contains(expectedInvocation)
+      && !document.contains("`sce-decision`")
       && expectedWorkflowSkillByCommand.every((otherSlug, skillSlug) ->
         otherSlug == slug || !document.contains("`\(skillSlug)`")
       )
@@ -88,17 +92,17 @@ local assertCommandRoute = (target: String, slug: String, document: String) ->
 inventoryChecks {
   ["opencode-agents"] = assertExactKeys.apply(opencodeAgents, expectedAgentSlugs, "OpenCode agent")
   ["opencode-commands"] = assertExactKeys.apply(opencodeCommands, expectedCommandSlugs, "OpenCode command")
-  ["opencode-skill-documents"] = assertExactKeys.apply(opencodeSkillDocuments, expectedWorkflowSkillDocumentPaths, "OpenCode skill document")
+  ["opencode-skill-documents"] = assertExactKeys.apply(opencodeSkillDocuments, expectedSkillDocumentPaths, "OpenCode skill document")
   for (slug, document in opencodeCommands) {
     ["opencode-command-route-\(slug)"] = assertCommandRoute.apply("OpenCode", slug, document.text)
   }
   ["claude-commands"] = assertExactKeys.apply(claudeCommands, expectedCommandSlugs, "Claude command")
-  ["claude-skill-documents"] = assertExactKeys.apply(claudeSkillDocuments, expectedWorkflowSkillDocumentPaths, "Claude skill document")
+  ["claude-skill-documents"] = assertExactKeys.apply(claudeSkillDocuments, expectedSkillDocumentPaths, "Claude skill document")
   for (slug, document in claudeCommands) {
     ["claude-command-route-\(slug)"] = assertCommandRoute.apply("Claude", slug, document.text)
   }
   ["pi-commands"] = assertExactKeys.apply(piCommands, expectedCommandSlugs, "Pi command")
-  ["pi-skill-documents"] = assertExactKeys.apply(piSkillDocuments, expectedWorkflowSkillDocumentPaths, "Pi skill document")
+  ["pi-skill-documents"] = assertExactKeys.apply(piSkillDocuments, expectedSkillDocumentPaths, "Pi skill document")
   for (slug, document in piCommands) {
     ["pi-command-route-\(slug)"] = assertCommandRoute.apply("Pi", slug, document.text)
   }

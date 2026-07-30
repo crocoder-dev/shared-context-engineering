@@ -41,6 +41,19 @@ local renderStructuredInternalDocument = (document: model.WorkflowDocument) ->
 local renderCanonicalWorkflow = (workflow: CompositeWorkflow) ->
   workflow.structuredSource.command.render.apply("composite", "").text
 
+local siblingSkillRule = (workflow: CompositeWorkflow) ->
+  if (workflow.slug == "next-task" || workflow.slug == "validate")
+    """
+    not inter-skill handoffs. Do not invoke another SCE skill, sibling package, or
+    workflow command except `sce-decision`, and invoke `sce-decision` only from the
+    successful context-synchronization decision gate.
+    """
+  else
+    """
+    not inter-skill handoffs. Do not invoke another SCE skill, sibling package, or
+    workflow command.
+    """
+
 local renderPhases = (workflow: CompositeWorkflow) ->
   new Listing {
     for (document in workflow.structuredSource.phases) {
@@ -79,9 +92,8 @@ local renderSkill = (workflow: CompositeWorkflow, extraFrontmatterLines: String)
 
     Own this workflow from input parsing through its terminal user-visible response.
     Execute the phases below directly and in order. Phase statuses are internal state,
-    not inter-skill handoffs. Do not invoke another SCE skill, sibling package, or
-    workflow command. Follow the canonical workflow's steps, gates, and stops exactly
-    as written: never invent, skip, reorder, or merge a step.
+    \(siblingSkillRule.apply(workflow)) Follow the canonical workflow's steps, gates,
+    and stops exactly as written: never invent, skip, reorder, or merge a step.
 
     ## User-visible output
 

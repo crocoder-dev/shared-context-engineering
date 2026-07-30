@@ -1,4 +1,5 @@
 import "../base/workflow-catalog.pkl" as catalog
+import "../base/decision-skill.pkl" as decision
 import "common.pkl" as common
 import "opencode-metadata.pkl" as metadata
 import "workflow-composite.pkl" as workflowResults
@@ -61,13 +62,15 @@ commands {
   }
 }
 
-/// OpenCode has four workflow packages, each with exactly SKILL.md and one
-/// references/output.md presentation contract. Package-relative document paths
-/// stay flattened for deterministic generation while retaining each skill's
-/// self-contained directory layout, and only the entrypoint carries
-/// OpenCode-supported metadata.
+/// OpenCode has four command-routed workflow packages plus the standalone
+/// decision-writing package used internally during synchronization. Package-
+/// relative paths stay flattened for deterministic generation, and only skill
+/// entrypoints carry OpenCode-supported metadata.
 skillDocuments {
   for (path, document in workflowResults.skillDocuments.apply("compatibility: \(metadata.skillCompatibility)\n")) {
+    [path] = document
+  }
+  for (path, document in decision.skillDocuments.apply("compatibility: \(metadata.skillCompatibility)\n")) {
     [path] = document
   }
 }

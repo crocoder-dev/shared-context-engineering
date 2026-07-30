@@ -250,6 +250,11 @@ constraint required plan-level synchronization after validation.}
 
 - `{context file}` — {concise description of the durable truth updated}
 
+## Architecture decisions
+
+- `{written or reused ADR path}` — {decision and status}
+- None qualified.
+
 ## Root pass
 
 - `context/overview.md` — {verified | edited | absent}
@@ -298,6 +303,11 @@ knowledge requiring an update, or why existing context already matched.}
 
 - `{context file or area}` — {what was checked and why it remains accurate}
 
+## Architecture decisions
+
+- `{reused ADR path}` — {decision and status}
+- None qualified.
+
 ## Root pass
 
 - `context/overview.md` — {verified | absent}
@@ -333,6 +343,11 @@ knowledge requiring an update, or why existing context already matched.}
 
 - {List safe context edits preserved, or state `No context files were changed.`}
 
+## Architecture decisions
+
+- `{ADR path written or reused before the blocker}` — {decision and status}
+- None written or reused before the blocker.
+
 ## Retry condition
 
 {State the concrete condition under which plan context synchronization should
@@ -341,6 +356,10 @@ run again.}
 ## Report rules
 
 - Name exact context files when they were changed or reviewed.
+- Under **Architecture decisions**, list every ADR path written or reused during
+  the decision gate. In a successful report, state `None qualified.` when the
+  gate skipped invocation. In a blocked report, state
+  `None written or reused before the blocker.` when applicable.
 - Report every file in the root pass, including any that is absent.
 - Report the missing context root as `blocked`, with `sce setup
   --bootstrap-context` as the required action and the existence of `context/` as

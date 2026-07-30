@@ -209,6 +209,8 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     
     - Validate at most one plan per invocation.
     - Do not duplicate the internal instructions of \(invokedSkills.render.apply(mode)).
+    - The only permitted sibling-skill invocation is `sce-decision`, and only the
+      successful context-synchronization decision gate may invoke it.
     - Do not run final validation when implementation tasks remain; \(validation.render.apply(mode))
       returns `blocked`, and this workflow stops.
     - \(invoke.render.apply(mode)) \(planContextSync.render.apply(mode)) only when \(validation.render.apply(mode)) returned

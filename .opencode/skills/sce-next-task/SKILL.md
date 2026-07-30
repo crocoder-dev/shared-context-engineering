@@ -12,8 +12,9 @@ compatibility: opencode
 Own this workflow from input parsing through its terminal user-visible response.
 Execute the phases below directly and in order. Phase statuses are internal state,
 not inter-skill handoffs. Do not invoke another SCE skill, sibling package, or
-workflow command. Follow the canonical workflow's steps, gates, and stops exactly
-as written: never invent, skip, reorder, or merge a step.
+workflow command except `sce-decision`, and invoke `sce-decision` only from the
+successful context-synchronization decision gate. Follow the canonical workflow's steps, gates,
+and stops exactly as written: never invent, skip, reorder, or merge a step.
 
 ## User-visible output
 
@@ -542,7 +543,50 @@ repository-wide behavior, architecture, or terminology impact, is `domain` or
 If the reported classification is inconsistent with the actual change, use the
 verified classification and explain the difference in the report.
 
-#### 3.5 Synchronize context
+#### 3.5 Record qualifying architecture decisions
+
+During this successful synchronization, determine whether the completed change
+establishes or changes a system-wide important constraint involving one or more
+of:
+
+- System boundaries or ownership.
+- Public or cross-domain interfaces.
+- Data models or persistence.
+- Compatibility contracts.
+- Security posture.
+- Deployment or distribution strategy.
+- A major dependency.
+- A similarly durable constraint that is costly or risky to reverse.
+
+Routine implementation details, local refactors, naming and formatting choices,
+temporary experiments, and easily reversible choices do not qualify. Do not
+invoke a decision skill for them.
+
+Use the discovered context, existing decision records, and this evidence:
+
+- execution and done-check evidence.
+
+Identify each qualifying decision, then handle qualifying decisions in
+deterministic order:
+
+1. Reuse a written ADR path already returned during this plan when it records the
+   same decision.
+2. Otherwise invoke `sce-decision` once with exactly one structured decision
+   request containing the decision, qualifying evidence, plan and task references,
+   related context and ADR paths, and any user-requested status.
+3. On `written`, retain the returned `adr_path` as synchronization evidence and
+   make it available for current-state context links before synchronization
+   completes. Reuse is valid evidence; do not create a duplicate ADR.
+4. On `blocked`, stop before current-state context edits and return a `blocked`
+   synchronization report carrying the decision-writing problem, impact, required
+   action, and retry condition.
+
+Invoke `sce-decision` only here, after a successful execution or validation
+handoff and during context synchronization. Do not invoke it from a non-success
+branch or for any non-decision purpose. When no decision qualifies, continue
+without invoking it and record that outcome in synchronization evidence.
+
+#### 3.6 Synchronize context
 
 Make the smallest coherent documentation change that preserves repository truth.
 
@@ -598,12 +642,14 @@ Every context file this phase writes must satisfy:
 When detail outgrows a shared file, migrate it into `context/{domain}/`, leave a
 concise pointer behind, and link the new file from `context/context-map.md`.
 
-#### 3.6 Verify synchronization
+#### 3.7 Verify synchronization
 
 After edits, verify:
 
 - Every changed context file accurately reflects the completed implementation.
 - No edited statement contradicts the code, plan, or execution evidence.
+- Every qualifying decision has one written or reused ADR path in the report,
+  and the report states when no decision qualified.
 - Every file in the mandatory root pass was read and confirmed against code
   truth, whether or not it was edited.
 - Each feature implemented by the task has a durable canonical description
@@ -625,7 +671,7 @@ If synchronization cannot be completed without inventing facts or resolving a
 material contradiction, preserve safe edits when appropriate and return a
 `blocked` report.
 
-#### 3.7 Return the Markdown report
+#### 3.8 Return the Markdown report
 
 Set exactly one report status:
 
@@ -659,6 +705,8 @@ Do not:
 - Create the context root. `sce setup --bootstrap-context` owns that.
 - Narrate changed files as documentation. Feature existence is the only reason
   to document a change that introduced no other durable knowledge.
+- Invoke any sibling skill except `sce-decision`, or invoke `sce-decision`
+  outside the decision gate in successful context synchronization.
 - Delete a context file that has uncommitted changes.
 - Return an execution-style internal state.
 
@@ -691,6 +739,8 @@ Stop.
 - Execute at most one plan task per invocation.
 - Review at most one task.
 - Do not duplicate the internal instructions of embedded phases.
+- The only permitted sibling-skill invocation is `sce-decision`, and only the
+  successful context-synchronization decision gate may invoke it.
 - Do not ask for implementation confirmation outside "Task execution phase".
 - Do not run full-plan validation.
 - Do not mark the plan complete.

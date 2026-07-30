@@ -342,6 +342,8 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     - Execute at most one plan task per invocation.
     - Review at most one task.
     - Do not duplicate the internal instructions of \(invokedSkills.render.apply(mode)).
+    - The only permitted sibling-skill invocation is `sce-decision`, and only the
+      successful context-synchronization decision gate may invoke it.
     - Do not ask for implementation confirmation outside "\(taskExecutionName.render.apply(mode))".
     - Do not run full-plan validation.
     - Do not mark the plan complete.

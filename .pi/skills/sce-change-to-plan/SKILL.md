@@ -11,8 +11,8 @@ description: >
 Own this workflow from input parsing through its terminal user-visible response.
 Execute the phases below directly and in order. Phase statuses are internal state,
 not inter-skill handoffs. Do not invoke another SCE skill, sibling package, or
-workflow command. Follow the canonical workflow's steps, gates, and stops exactly
-as written: never invent, skip, reorder, or merge a step.
+workflow command. Follow the canonical workflow's steps, gates,
+and stops exactly as written: never invent, skip, reorder, or merge a step.
 
 ## User-visible output
 
