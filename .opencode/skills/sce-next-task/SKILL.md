@@ -22,13 +22,17 @@ internal state. The reference contains only human-visible Markdown layouts.
 User-visible output is limited to those layouts: never invent a layout, and never
 wrap one in an added preamble, commentary, summary, or extra section.
 
-## Canonical workflow
+## Composite control flow
 
-SCE NEXT TASK `$ARGUMENTS`
+Keep phase results as internal state and continue immediately whenever the
+canonical workflow says to continue. Stop only at a user wait or terminal branch.
+Approval, clarification, revision, failed-validation repair, and bootstrap waits
+resume this same skill in the same session. Never expose an internal phase result
+as the workflow's final response.
 
 ## Input
 
-Parse `$ARGUMENTS` into three positional parts before invoking any skill:
+Parse `$ARGUMENTS` into three positional parts before invoking any phase:
 
 <plan-name-or-path> [task-id] [auto-approve]
 
@@ -40,9 +44,9 @@ Resolve `auto-approve` even when `task-id` is absent.
 
 A token matching neither a task ID nor `approved` is an error. Report the unrecognized token and the expected arguments, and stop. Do not guess its meaning.
 
-Pass each part only to the phase that owns it. Do not forward the raw `$ARGUMENTS` string to a skill.
+Pass each part only to the phase that owns it. Do not forward the raw `$ARGUMENTS` string to a phase.
 
-Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is the path resolved by the **Plan review phase** (`plan.path`, or an entry of `candidates`), so every emitted command is directly runnable.
+Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is the path resolved in step 1 (`plan.path`, or an entry of `candidates`), so every emitted command is directly runnable.
 
 ## Workflow
 
@@ -52,118 +56,7 @@ Run the **Plan review phase** with the parsed `plan-name-or-path` and, when pres
 
 Do not pass the `auto-approve` token to the **Plan review phase**.
 
-Branch on `status`:
-
-`blocked` -> Do not run implementation. Render the **Review blocked** layout from `references/output.md`. When `candidates` is present the plan could not be resolved, and each entry is a candidate path for `/next-task {candidate-path}`. `executable_tasks_remaining` true means another task remains executable and `/next-task {plan-path} {task-id}` selects one; false means no task in the plan can proceed until the plan is updated. Do not print the raw result. Stop.
-
-`plan_complete` -> Render the **Plan already complete** layout from `references/output.md`. Stop.
-
-`ready` -> Pass the complete readiness result to the **Task execution phase**.
-
-Do not reconstruct, summarize, or reinterpret the reviewed task before passing it.
-
-### 2. Execute the task
-
-Run the **Task execution phase** with the complete `ready` result from the **Plan review phase**.
-
-Branch on `auto-approve`:
-
-`approved` -> Also pass the `approve` flag. the **Task execution phase** then shows its implementation gate as a summary and proceeds without asking.
-
-else -> Do not pass the `approve` flag. the **Task execution phase** shows its implementation gate and waits for the user's decision.
-
-the **Task execution phase** exclusively owns:
-
-- Presenting the implementation summary.
-- Requesting implementation confirmation.
-- Implementing the task.
-- Running task-level verification.
-- Updating the task status and evidence.
-
-Do not present an additional implementation confirmation.
-
-Branch on the execution result.
-
-`declined` -> Render the **Declined** layout from `references/output.md`. Do not run context synchronization. Stop.
-
-`blocked` -> Render the **Execution blocked or incomplete** layout from `references/output.md`. Do not run context synchronization. Stop.
-
-`incomplete` -> Render the same **Execution blocked or incomplete** layout. Do not run context synchronization. Do not select another task. Stop.
-
-`complete` -> continue to the next step.
-
-### 3. Synchronize context
-
-Run the **Task context synchronization phase** with the complete `complete` result returned by the **Task execution phase**.
-
-Pass that result verbatim. It is the authoritative handoff, and the **Task context synchronization phase** owns reading the plan, task, changed files, verification evidence, and reported context impact out of it.
-
-Do not restate, summarize, or reconstruct any part of the execution result.
-
-Branch on the synchronization result.
-
-`blocked` -> The task itself succeeded and is already marked complete in the plan. Render the **Context synchronization blocked** layout from `references/output.md`. Nothing records the skipped synchronization, so it is lost once this session ends.
-
-Do not select another task. Stop.
-
-`synced` | `no_context_change` -> Print out the report the **Task context synchronization phase** returned. Continue to the next step.
-
-### 4. Determine the continuation
-
-Use `plan.completed_tasks` and `plan.total_tasks` from the execution result to determine which continuation applies.
-
-Do not execute another task. Return exactly one continuation.
-
-If incomplete tasks remain, read the plan and name the first unchecked task in plan order. Do not evaluate its dependencies; the **Plan review phase** checks them when the emitted command runs and returns `blocked` if they are unmet.
-
-Render the **More tasks remain** layout from `references/output.md`.
-
-If all tasks are completed, render the **All tasks complete** layout instead.
-
-Stop.
-
-## Rules
-
-- Execute at most one plan task per invocation.
-- Review at most one task.
-- Do not duplicate the internal instructions of embedded phases.
-- Do not ask for implementation confirmation outside "Task execution phase".
-- Do not run full-plan validation.
-- Do not mark the plan complete.
-- Do not execute the continuation returned at the end.
-- Do not infer success when an embedded phase returns a non-success status.
-- Preserve completed work and evidence when a later phase fails.
-
-## Embedded phase behavior
-
-## Internal phase: Plan review phase
-
-# SCE Plan Review
-
-## Purpose
-
-Resolve exactly one task from an SCE plan (located in `context/plans/`) and
-determine whether it can enter the implementation phase without inventing
-material requirements.
-
-This skill owns:
-
-- Resolving one plan.
-- Selecting at most one task.
-- Inspecting the context needed to judge readiness.
-- Determining readiness.
-- Recording one structured readiness result.
-
-## Input
-
-The invoking workflow provides:
-
-- A plan name or path.
-- An optional task ID.
-
-## Workflow
-
-### 1. Resolve the plan
+#### 1.1 Resolve the plan
 
 Resolve the supplied plan name or path to exactly one existing plan.
 
@@ -174,7 +67,7 @@ the matching candidates.
 
 Read the selected plan before exploring the repository.
 
-### 2. Resolve one task
+#### 1.2 Resolve one task
 
 When a task ID is supplied, select that task.
 
@@ -188,7 +81,7 @@ executed.
 
 Review at most one task per invocation.
 
-### 3. Inspect relevant context
+#### 1.3 Inspect relevant context
 
 Start with the task and the files it directly references.
 
@@ -206,7 +99,7 @@ architecture, shared terminology, or cross-domain interfaces.
 
 Do not explore the entire repository by default.
 
-### 4. Determine readiness
+#### 1.4 Determine readiness
 
 A task is `ready` when:
 
@@ -239,7 +132,7 @@ Set internal status `blocked` when a missing decision materially affects:
 - Destructive or difficult-to-reverse behavior.
 - The evidence needed to prove completion.
 
-### 5. Return the result
+#### 1.5 Return the result
 
 Set exactly one internal state:
 
@@ -250,7 +143,7 @@ Set exactly one internal state:
 Record only the internal state. Do not add explanatory prose before or after
 it.
 
-## Boundaries
+### Plan review boundaries
 
 Do not:
 
@@ -264,46 +157,42 @@ Do not:
 - Run final validation.
 - Review more than one task.
 
-## Completion
 
-The skill is complete after:
 
-- One plan was resolved.
-- At most one task was resolved.
-- One valid readiness result was returned.
+Branch on `status`:
 
-## Internal phase: Task execution phase
+`blocked` -> Do not run implementation. Render the **Review blocked** layout from `references/output.md`. When `candidates` is present the plan could not be resolved, and each entry is a candidate path for `/next-task {candidate-path}`. `executable_tasks_remaining` true means another task remains executable and `/next-task {plan-path} {task-id}` selects one; false means no task in the plan can proceed until the plan is updated. Do not print the raw result. Stop.
 
-# SCE Task Execution
+`plan_complete` -> Render the **Plan already complete** layout from `references/output.md`. Stop.
 
-## Purpose
+`ready` -> Pass the complete readiness result to the **Task execution phase**.
 
-Execute exactly one reviewed SCE plan task (located in `context/plans/`).
+Do not reconstruct, summarize, or reinterpret the reviewed task before passing it.
 
-This skill owns:
+### 2. Execute the task
 
-- Showing the implementation gate at the start of every invocation.
-- Receiving the user's approval or rejection, or accepting approval
-  pre-supplied by the invoking workflow.
-- Implementing one approved task.
+Run the **Task execution phase** with the complete `ready` result from the **Plan review phase**.
+
+Branch on `auto-approve`:
+
+`approved` -> Also pass the `approve` flag. The **Task execution phase** then shows its implementation gate as a summary and proceeds without asking.
+
+else -> Do not pass the `approve` flag. The **Task execution phase** shows its implementation gate and waits for the user's decision.
+
+The **Task execution phase** exclusively owns:
+
+- Presenting the implementation summary.
+- Requesting implementation confirmation.
+- Implementing the task.
 - Running task-level verification.
-- Updating that task and its evidence in the plan.
-- Recording one terminal internal state.
+- Updating the task status and evidence.
 
-Use the gate defined in:
+Do not present an additional implementation confirmation.
 
-`references/output.md`
-
-## Input
-
-The invoking workflow provides:
-
-- The complete `ready` result from the **Plan review phase**.
-- An optional `approve` flag.
 
 The `approve` flag means the user pre-approved this task when invoking the
 workflow. It suppresses the approval question and the wait. It never suppresses
-the gate. Only the invoking workflow may set it, and only from an explicit
+the gate. Only the workflow entrypoint may set it, and only from an explicit
 user-supplied approval token. Never infer it.
 
 The readiness result must identify:
@@ -320,9 +209,7 @@ If required handoff information is absent or stale, still show the gate using
 what is known, clearly identify the handoff problem, and do not edit files.
 After the user responds, set internal status `blocked`.
 
-## Workflow
-
-### 1. Validate the handoff without editing
+#### 2.1 Validate the handoff without editing
 
 Confirm that:
 
@@ -335,15 +222,15 @@ Confirm that:
 
 Do not reconstruct missing material requirements.
 
-### 2. Always show the implementation gate
+#### 2.2 Always show the implementation gate
 
-At the start of the skill, before any file modification, present the task using
+At the start of the phase, before any file modification, present the task using
 `references/output.md`.
 
 The gate must be shown even when:
 
 - The task appears straightforward.
-- The invoking workflow believes approval was already implied.
+- The workflow believes approval was already implied.
 - The handoff is stale or incomplete.
 - The user is likely to approve.
 
@@ -356,9 +243,9 @@ Stop and wait for the user's answer. Do not return internal state, and make no f
 modifications, until the user has answered.
 
 When the `approve` flag is supplied, show the gate as a summary, omit the
-approval question, do not wait, and continue at *Prepare the implementation*.
+approval question, do not wait, and continue at step 2.4.
 
-### 3. Handle the user's decision
+#### 2.3 Handle the user's decision
 
 Skip this step when the `approve` flag was supplied.
 
@@ -374,7 +261,7 @@ Treat constraints supplied with approval as part of the approved task boundary.
 If those constraints materially contradict the reviewed task, set internal status `blocked`
 before editing.
 
-### 4. Prepare the implementation
+#### 2.4 Prepare the implementation
 
 Before editing:
 
@@ -388,7 +275,7 @@ Do not create a second plan.
 
 Do not broaden the reviewed task.
 
-### 5. Implement one task
+#### 2.5 Implement one task
 
 Make the minimum coherent changes required to satisfy the task goal and done
 checks.
@@ -407,7 +294,7 @@ Stop when implementation requires:
 When stopped, preserve completed in-scope work unless retaining it would leave
 the repository unsafe or invalid.
 
-### 6. Verify the task
+#### 2.6 Verify the task
 
 Run the narrowest authoritative checks that demonstrate the done checks.
 
@@ -435,7 +322,7 @@ When a check fails:
 
 Never report a check as passed unless it ran successfully.
 
-### 7. Update the plan
+#### 2.7 Update the plan
 
 Only after successful implementation and task-level verification:
 
@@ -448,7 +335,7 @@ Only after successful implementation and task-level verification:
 Do not mark the task complete when returning `declined`, `blocked`, or
 `incomplete`.
 
-### 8. Determine the terminal status
+#### 2.8 Determine the terminal status
 
 Set internal status `complete` when the task was implemented, verified, and marked complete
 in the plan with evidence.
@@ -465,16 +352,16 @@ Set internal status `blocked` for every other non-successful outcome, including:
 - Material blocker.
 - A verification failure that cannot be resolved in scope.
 
-Do not determine whether the plan is complete. The invoking `/next-task`
-workflow owns that decision after context synchronization.
+Do not determine whether the plan is complete. The `/next-task` workflow owns
+that decision after context synchronization.
 
-### 9. Return internal state
+#### 2.9 Return internal state
 
-After the skill reaches a terminal state, set exactly one internal state.
+After the phase reaches a terminal state, set exactly one internal state.
 
 Record only the internal state. Do not add explanatory prose before or after it.
 
-## Boundaries
+### Task execution boundaries
 
 Do not:
 
@@ -492,42 +379,27 @@ Do not:
 - Modify unrelated files.
 - Claim verification that was not performed.
 
-## Completion
 
-The skill is complete after:
 
-- The implementation gate was shown.
-- The user approved or rejected the task, or approval was pre-supplied.
-- At most one task was executed.
-- One valid terminal internal state was returned.
+Branch on the execution result.
 
-## Internal phase: Task context synchronization phase
+`declined` -> Render the **Declined** layout from `references/output.md`. Do not run context synchronization. Stop.
 
-# SCE Task Context Sync
+`blocked` -> Render the **Execution blocked or incomplete** layout from `references/output.md`. Do not run context synchronization. Stop.
 
-## Purpose
+`incomplete` -> Render the same **Execution blocked or incomplete** layout. Do not run context synchronization. Do not select another task. Stop.
 
-Reconcile one completed task with the repository's durable context and return a
-Markdown report.
+`complete` -> continue to the next step.
 
-This skill owns:
+### 3. Synchronize context
 
-- Validating the execution handoff.
-- Confirming the context root exists.
-- Discovering the context affected by one completed task.
-- Deciding whether durable context changed.
-- Editing and verifying the affected context files.
-- Recording one Markdown synchronization report.
+Run the **Task context synchronization phase** with the complete `complete` result returned by the **Task execution phase**.
 
-Use the report format in:
+Pass that result verbatim. It is the authoritative handoff, and the **Task context synchronization phase** owns reading the plan, task, changed files, verification evidence, and reported context impact out of it.
 
-`references/output.md`
+Do not restate, summarize, or reconstruct any part of the execution result.
 
-## Input
 
-The invoking workflow provides:
-
-- The complete result returned by the **Task execution phase**.
 
 The execution result must have:
 
@@ -544,14 +416,12 @@ Treat the execution result as the authoritative handoff for:
 - Done-check evidence.
 - Reported context impact.
 
-This skill must not be run for `declined`, `blocked`, or `incomplete`
+This phase must not be run for `declined`, `blocked`, or `incomplete`
 execution results.
 
 Do not reconstruct a missing execution result from conversation history.
 
-## Workflow
-
-### 1. Validate the execution handoff
+#### 3.1 Validate the execution handoff
 
 Confirm that:
 
@@ -566,7 +436,7 @@ Confirm that:
 If the handoff is missing required information or is internally contradictory,
 do not modify context. Return a `blocked` Markdown report.
 
-### 2. Confirm the context root
+#### 3.2 Confirm the context root
 
 When `context/` does not exist, there is no durable memory to synchronize.
 Do not create it, and do not write context files outside it.
@@ -578,9 +448,9 @@ Return a `blocked` report whose required action is:
 State that the task itself is complete and recorded in the plan, and that
 synchronization should run again once the context root exists.
 
-Bootstrapping is the user's action, not this skill's.
+Bootstrapping is the user's action, not this phase's.
 
-### 3. Discover applicable context
+#### 3.3 Discover applicable context
 
 Start with the execution result:
 
@@ -607,7 +477,7 @@ Do not scan or rewrite the entire `context/` tree by default.
 Do not create a new context file when an existing authoritative file can be
 updated coherently.
 
-#### The mandatory root pass
+##### The mandatory root pass
 
 Every invocation verifies these five files against code truth, whatever the
 reported classification is:
@@ -629,7 +499,7 @@ done while one of them is unchecked.
 Do not create a new context file when an existing authoritative file can be
 updated coherently.
 
-### 4. Determine whether durable context changed
+#### 3.4 Determine whether durable context changed
 
 Use the reported context impact as a strong hint, then verify it against the
 implementation and existing context.
@@ -672,7 +542,7 @@ repository-wide behavior, architecture, or terminology impact, is `domain` or
 If the reported classification is inconsistent with the actual change, use the
 verified classification and explain the difference in the report.
 
-### 5. Synchronize context
+#### 3.5 Synchronize context
 
 Make the smallest coherent documentation change that preserves repository truth.
 
@@ -692,7 +562,7 @@ Create a new context file only when:
 - No existing file owns it coherently.
 - The new file has a clear place in the context map.
 
-#### Feature existence
+##### Feature existence
 
 Every feature the completed task implemented must have at least one durable
 canonical description discoverable from `context/`, in a domain file under
@@ -707,15 +577,15 @@ This is the one case where documentation is warranted by the change itself
 rather than by a gap in durable knowledge. It is not license to narrate the
 diff: describe what the feature is and how it behaves, not what was edited.
 
-#### Glossary
+##### Glossary
 
 Add a `context/glossary.md` entry for any domain language the task introduced.
 New terminology is durable knowledge whatever the classification is: a `domain`
 change that names a new concept still earns its glossary entry.
 
-#### File hygiene
+##### File hygiene
 
-Every context file this skill writes must satisfy:
+Every context file this phase writes must satisfy:
 
 - One topic per file.
 - At most 250 lines. When an edit would push a file past 250 lines, split it
@@ -728,7 +598,7 @@ Every context file this skill writes must satisfy:
 When detail outgrows a shared file, migrate it into `context/{domain}/`, leave a
 concise pointer behind, and link the new file from `context/context-map.md`.
 
-### 6. Verify synchronization
+#### 3.6 Verify synchronization
 
 After edits, verify:
 
@@ -755,7 +625,7 @@ If synchronization cannot be completed without inventing facts or resolving a
 material contradiction, preserve safe edits when appropriate and return a
 `blocked` report.
 
-### 7. Return the Markdown report
+#### 3.7 Return the Markdown report
 
 Set exactly one report status:
 
@@ -770,10 +640,10 @@ context could not be synchronized safely.
 Record only the Markdown report. Do not add explanatory prose before or after
 it.
 
-Do not determine whether the plan is complete. The invoking `/next-task`
-workflow owns that decision after context synchronization.
+Do not determine whether the plan is complete. The `/next-task` workflow owns
+that decision after context synchronization.
 
-## Boundaries
+### Task context synchronization boundaries
 
 Do not:
 
@@ -792,23 +662,38 @@ Do not:
 - Delete a context file that has uncommitted changes.
 - Return an execution-style internal state.
 
-## Completion
-
-The skill is complete after:
-
-- The context root was confirmed, or a `blocked` report named
-  `sce setup --bootstrap-context` as the required action.
-- The mandatory root pass was run.
-- Applicable durable context was synchronized and verified, no context change
-  was warranted, or a synchronization blocker was reported.
-- One Markdown report matching `references/output.md` was returned.
 
 
+Branch on the synchronization result.
 
-## Composite control flow
+`blocked` -> The task itself succeeded and is already marked complete in the plan. Render the **Context synchronization blocked** layout from `references/output.md`. Nothing records the skipped synchronization, so it is lost once this session ends.
 
-Keep phase results as internal state and continue immediately whenever the
-canonical workflow says to continue. Stop only at a user wait or terminal branch.
-Approval, clarification, revision, failed-validation repair, and bootstrap waits
-resume this same skill in the same session. Never expose an internal phase result
-as the workflow's final response.
+Do not select another task. Stop.
+
+`synced` | `no_context_change` -> Print out the report the **Task context synchronization phase** returned. Continue to the next step.
+
+### 4. Determine the continuation
+
+Use `plan.completed_tasks` and `plan.total_tasks` from the execution result to determine which continuation applies.
+
+Do not execute another task. Return exactly one continuation.
+
+If incomplete tasks remain, read the plan and name the first unchecked task in plan order. Do not evaluate its dependencies; the **Plan review phase** checks them when the emitted command runs and returns `blocked` if they are unmet.
+
+Render the **More tasks remain** layout from `references/output.md`.
+
+If all tasks are completed, render the **All tasks complete** layout instead.
+
+Stop.
+
+## Rules
+
+- Execute at most one plan task per invocation.
+- Review at most one task.
+- Do not duplicate the internal instructions of embedded phases.
+- Do not ask for implementation confirmation outside "Task execution phase".
+- Do not run full-plan validation.
+- Do not mark the plan complete.
+- Do not execute the continuation returned at the end.
+- Do not infer success when an embedded phase returns a non-success status.
+- Preserve completed work and evidence when a later phase fails.

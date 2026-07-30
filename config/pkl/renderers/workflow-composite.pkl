@@ -58,50 +58,54 @@ local renderInternalDocuments = (workflow: CompositeWorkflow) ->
 /// `extraFrontmatterLines` carries the target-specific frontmatter a skill
 /// entrypoint supports. Each line ends with a newline; a target that adds none
 /// passes the empty string.
+/// The workflow's own `## Input`, `## Workflow`, and `## Rules` sit directly
+/// under the skill title, so the document reads top to bottom with no wrapper
+/// section between the preamble and the first instruction. A phase appendix is
+/// emitted only for phases a module still lists; once every phase is stated at
+/// the step that runs it, the listing is empty and no appendix heading renders.
 local renderSkill = (workflow: CompositeWorkflow, extraFrontmatterLines: String) -> new model.WorkflowDocument {
   path = "SKILL.md"
-  text = """
----
-name: \(workflow.skillSlug)
-description: >
-  \(workflow.description)
-\(extraFrontmatterLines)---
+  text = new Listing {
+    """
+    ---
+    name: \(workflow.skillSlug)
+    description: >
+      \(workflow.description)
+    \(extraFrontmatterLines)---
 
-# \(workflow.title)
+    # \(workflow.title)
 
-## Purpose
+    ## Purpose
 
-Own this workflow from input parsing through its terminal user-visible response.
-Execute the phases below directly and in order. Phase statuses are internal state,
-not inter-skill handoffs. Do not invoke another SCE skill, sibling package, or
-workflow command. Follow the canonical workflow's steps, gates, and stops exactly
-as written: never invent, skip, reorder, or merge a step.
+    Own this workflow from input parsing through its terminal user-visible response.
+    Execute the phases below directly and in order. Phase statuses are internal state,
+    not inter-skill handoffs. Do not invoke another SCE skill, sibling package, or
+    workflow command. Follow the canonical workflow's steps, gates, and stops exactly
+    as written: never invent, skip, reorder, or merge a step.
 
-## User-visible output
+    ## User-visible output
 
-Use `references/output.md` for every gate and terminal response. Render no raw
-internal state. The reference contains only human-visible Markdown layouts.
-User-visible output is limited to those layouts: never invent a layout, and never
-wrap one in an added preamble, commentary, summary, or extra section.
+    Use `references/output.md` for every gate and terminal response. Render no raw
+    internal state. The reference contains only human-visible Markdown layouts.
+    User-visible output is limited to those layouts: never invent a layout, and never
+    wrap one in an added preamble, commentary, summary, or extra section.
 
-## Canonical workflow
+    ## Composite control flow
 
-\(renderCanonicalWorkflow.apply(workflow))
-
-## Embedded phase behavior
-
-\(renderPhases.apply(workflow))
-
-\(renderInternalDocuments.apply(workflow))
-
-## Composite control flow
-
-Keep phase results as internal state and continue immediately whenever the
-canonical workflow says to continue. Stop only at a user wait or terminal branch.
-Approval, clarification, revision, failed-validation repair, and bootstrap waits
-resume this same skill in the same session. Never expose an internal phase result
-as the workflow's final response.
-"""
+    Keep phase results as internal state and continue immediately whenever the
+    canonical workflow says to continue. Stop only at a user wait or terminal branch.
+    Approval, clarification, revision, failed-validation repair, and bootstrap waits
+    resume this same skill in the same session. Never expose an internal phase result
+    as the workflow's final response.
+    """
+    renderCanonicalWorkflow.apply(workflow)
+    when (workflow.structuredSource.phases.length > 0) {
+      "## Embedded phase behavior\n\n" + renderPhases.apply(workflow)
+    }
+    when (workflow.structuredSource.internalDocuments.length > 0) {
+      renderInternalDocuments.apply(workflow)
+    }
+  }.join("\n\n")
 }
 
 /// `extraFrontmatterLines` carries the target-specific routing frontmatter a

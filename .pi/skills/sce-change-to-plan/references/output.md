@@ -59,9 +59,8 @@ For revisions, replace `is ready` with `revised`.
 
 # SCE Plan Summary
 
-The user-facing summary shown after a plan is written. The invoking workflow
-renders it from the `plan_ready` result, immediately before the continuation
-block.
+The user-facing summary shown after a plan is written. It is rendered from
+the `plan_ready` result, immediately before the continuation block.
 
 This is chat output, not a file. Nothing here is written to the plan.
 

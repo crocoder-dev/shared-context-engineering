@@ -18,6 +18,8 @@ local returnOnlyMarkdownReport = workflow.semanticReference.apply("Return only t
 local returnExecutionStyleResult = workflow.semanticReference.apply("Return an execution-style YAML result", "Return an execution-style internal state")
 local markdownResult = workflow.semanticReference.apply("Markdown result", "internal state")
 local returnInternalState = workflow.semanticReference.apply("Return YAML", "Return internal state")
+local packageOnlyBlock = workflow.packageOnlyBlock
+local compositeOnlyBlock = workflow.compositeOnlyBlock
 
 /// One canonical source for both context-sync packages. Named SKILL and report
 /// sections preserve semantic ordering while role data owns lifecycle-specific
@@ -39,6 +41,7 @@ class SyncReportRole {
 class SyncRole {
   slug: String
   title: String
+  headings: workflow.PhaseHeadings
   frontmatter: (workflow.WorkflowRenderMode) -> String
   purpose: (workflow.WorkflowRenderMode) -> String
   input: (workflow.WorkflowRenderMode) -> String
@@ -73,9 +76,11 @@ local taskFrontmatterLines = (mode: workflow.WorkflowRenderMode) -> new Listing 
 local taskRoleData = new SyncRole {
   slug = "sce-task-context-sync"
   title = "SCE Task Context Sync"
+  headings = new workflow.PhaseHeadings { step = 3 }
   frontmatter = (mode: workflow.WorkflowRenderMode) ->
     "---\n" + taskFrontmatterLines.apply(mode).join("\n") + "\n---"
-  purpose = (mode: workflow.WorkflowRenderMode) -> """
+  purpose = (mode: workflow.WorkflowRenderMode) ->
+    packageOnlyBlock.apply("""
     # SCE Task Context Sync
 
     ## Purpose
@@ -83,27 +88,25 @@ local taskRoleData = new SyncRole {
     Reconcile one completed task with the repository's durable context and return a
     Markdown report.
 
-    This skill owns:
+    This phase owns:
 
     - Validating the execution handoff.
     - Confirming the context root exists.
     - Discovering the context affected by one completed task.
     - Deciding whether durable context changed.
     - Editing and verifying the affected context files.
-    - \(returningReport.render.apply(mode)).
+    - Recording one Markdown synchronization report.
 
     Use the report format in:
 
-    \(syncReport.render.apply(mode))
-    """
+    `references/sync-report.md`
+    """).render.apply(mode)
   input = (mode: workflow.WorkflowRenderMode) -> """
+    \(packageOnlyBlock.apply("""
     ## Input
 
-    The invoking workflow provides:
-
-    - The complete result returned by \(taskExecution.render.apply(mode)).
-
-    The execution result must have:
+    The complete result returned by the task-execution phase.
+    """).render.apply(mode))The execution result must have:
 
     ```\(yamlFence.render.apply(mode))
     status: complete
@@ -118,15 +121,13 @@ local taskRoleData = new SyncRole {
     - Done-check evidence.
     - Reported context impact.
 
-    This skill must not be \(invokedFor.render.apply(mode)) `declined`, `blocked`, or `incomplete`
+    This phase must not be \(invokedFor.render.apply(mode)) `declined`, `blocked`, or `incomplete`
     execution results.
 
     Do not reconstruct a missing execution result from conversation history.
     """
   workflow = (mode: workflow.WorkflowRenderMode) -> """
-    ## Workflow
-
-    ### 1. Validate the execution handoff
+    \(packageOnlyBlock.apply("## Workflow").render.apply(mode))\(outer.headings.stepHeading.apply(mode, 1, "Validate the execution handoff"))
 
     Confirm that:
 
@@ -141,7 +142,7 @@ local taskRoleData = new SyncRole {
     If the handoff is missing required information or is internally contradictory,
     do not modify context. Return a `blocked` Markdown report.
 
-    ### 2. Confirm the context root
+    \(outer.headings.stepHeading.apply(mode, 2, "Confirm the context root"))
 
     When `context/` does not exist, there is no durable memory to synchronize.
     Do not create it, and do not write context files outside it.
@@ -153,9 +154,9 @@ local taskRoleData = new SyncRole {
     State that the task itself is complete and recorded in the plan, and that
     synchronization should run again once the context root exists.
 
-    Bootstrapping is the user's action, not this skill's.
+    Bootstrapping is the user's action, not this phase's.
 
-    ### 3. Discover applicable context
+    \(outer.headings.stepHeading.apply(mode, 3, "Discover applicable context"))
 
     Start with the execution result:
 
@@ -182,7 +183,7 @@ local taskRoleData = new SyncRole {
     Do not create a new context file when an existing authoritative file can be
     updated coherently.
 
-    #### The mandatory root pass
+    \(outer.headings.stepSubsection.apply(mode, "The mandatory root pass"))
 
     Every invocation verifies these five files against code truth, whatever the
     reported classification is:
@@ -204,7 +205,7 @@ local taskRoleData = new SyncRole {
     Do not create a new context file when an existing authoritative file can be
     updated coherently.
 
-    ### 4. Determine whether durable context changed
+    \(outer.headings.stepHeading.apply(mode, 4, "Determine whether durable context changed"))
 
     Use the reported context impact as a strong hint, then verify it against the
     implementation and existing context.
@@ -247,7 +248,7 @@ local taskRoleData = new SyncRole {
     If the reported classification is inconsistent with the actual change, use the
     verified classification and explain the difference in the report.
 
-    ### 5. Synchronize context
+    \(outer.headings.stepHeading.apply(mode, 5, "Synchronize context"))
 
     Make the smallest coherent documentation change that preserves repository truth.
 
@@ -267,7 +268,7 @@ local taskRoleData = new SyncRole {
     - No existing file owns it coherently.
     - The new file has a clear place in the context map.
 
-    #### Feature existence
+    \(outer.headings.stepSubsection.apply(mode, "Feature existence"))
 
     Every feature the completed task implemented must have at least one durable
     canonical description discoverable from `context/`, in a domain file under
@@ -282,15 +283,15 @@ local taskRoleData = new SyncRole {
     rather than by a gap in durable knowledge. It is not license to narrate the
     diff: describe what the feature is and how it behaves, not what was edited.
 
-    #### Glossary
+    \(outer.headings.stepSubsection.apply(mode, "Glossary"))
 
     Add a `context/glossary.md` entry for any domain language the task introduced.
     New terminology is durable knowledge whatever the classification is: a `domain`
     change that names a new concept still earns its glossary entry.
 
-    #### File hygiene
+    \(outer.headings.stepSubsection.apply(mode, "File hygiene"))
 
-    Every context file this skill writes must satisfy:
+    Every context file this phase writes must satisfy:
 
     - One topic per file.
     - At most 250 lines. When an edit would push a file past 250 lines, split it
@@ -303,7 +304,7 @@ local taskRoleData = new SyncRole {
     When detail outgrows a shared file, migrate it into `context/{domain}/`, leave a
     concise pointer behind, and link the new file from `context/context-map.md`.
 
-    ### 6. Verify synchronization
+    \(outer.headings.stepHeading.apply(mode, 6, "Verify synchronization"))
 
     After edits, verify:
 
@@ -330,7 +331,7 @@ local taskRoleData = new SyncRole {
     material contradiction, preserve safe edits when appropriate and return a
     `blocked` report.
 
-    ### 7. Return the Markdown report
+    \(outer.headings.stepHeading.apply(mode, 7, "Return the Markdown report"))
 
     \(returnExactlyOneReportStatus.render.apply(mode)):
 
@@ -345,11 +346,11 @@ local taskRoleData = new SyncRole {
     \(returnOnlyMarkdownReport.render.apply(mode)). Do not add explanatory prose before or after
     it.
 
-    Do not determine whether the plan is complete. The invoking `/next-task`
-    workflow owns that decision after context synchronization.
+    Do not determine whether the plan is complete. The `/next-task` workflow owns
+    that decision after context synchronization.
     """
   boundaries = (mode: workflow.WorkflowRenderMode) -> """
-    ## Boundaries
+    \(outer.headings.section.apply(mode, "Task context synchronization boundaries"))
 
     Do not:
 
@@ -368,18 +369,19 @@ local taskRoleData = new SyncRole {
     - Delete a context file that has uncommitted changes.
     - \(returnExecutionStyleResult.render.apply(mode)).
     """
-  completion = (mode: workflow.WorkflowRenderMode) -> """
+  completion = (mode: workflow.WorkflowRenderMode) ->
+    packageOnlyBlock.apply("""
     ## Completion
 
-    The skill is complete after:
+    The phase is complete after:
 
     - The context root was confirmed, or a `blocked` report named
       `sce setup --bootstrap-context` as the required action.
     - The mandatory root pass was run.
     - Applicable durable context was synchronized and verified, no context change
       was warranted, or a synchronization blocker was reported.
-    - One Markdown report matching \(syncReport.render.apply(mode)) was returned.
-    """
+    - One Markdown report matching `references/sync-report.md` was returned.
+    """).render.apply(mode)
 }
 
 local planFrontmatterLines = (mode: workflow.WorkflowRenderMode) -> new Listing {
@@ -395,9 +397,11 @@ local planFrontmatterLines = (mode: workflow.WorkflowRenderMode) -> new Listing 
 local planRoleData = new SyncRole {
   slug = "sce-plan-context-sync"
   title = "SCE Plan Context Sync"
+  headings = new workflow.PhaseHeadings { step = 2 }
   frontmatter = (mode: workflow.WorkflowRenderMode) ->
     "---\n" + planFrontmatterLines.apply(mode).join("\n") + "\n---"
-  purpose = (mode: workflow.WorkflowRenderMode) -> """
+  purpose = (mode: workflow.WorkflowRenderMode) ->
+    packageOnlyBlock.apply("""
     # SCE Plan Context Sync
 
     ## Purpose
@@ -405,7 +409,7 @@ local planRoleData = new SyncRole {
     Reconcile one fully validated plan with the repository's durable context and
     return a Markdown report.
 
-    This skill owns:
+    This phase owns:
 
     - Validating the validation handoff.
     - Confirming the context root exists.
@@ -418,18 +422,20 @@ local planRoleData = new SyncRole {
 
     \(syncReport.render.apply(mode))
 
-    Task-level context sync may already have run after individual tasks. This skill
+    Task-level context sync may already have run after individual tasks. This phase
     is the plan-level final pass: it starts from the plan's `Context sync`
     requirements and the validated implementation, and closes gaps that remain.
-    """
+    """).render.apply(mode)
   input = (mode: workflow.WorkflowRenderMode) -> """
+    \(compositeOnlyBlock.apply("""
+    Task-level context sync may already have run after individual tasks. This phase
+    is the plan-level final pass: it starts from the plan's `Context sync`
+    requirements and the validated implementation, and closes gaps that remain.
+    """).render.apply(mode))\(packageOnlyBlock.apply("""
     ## Input
 
-    The invoking workflow provides:
-
-    - The complete \(markdownResult.render.apply(mode)) returned by \(validation.render.apply(mode)).
-
-    The validation result must report:
+    The complete Markdown result returned by the validation phase.
+    """).render.apply(mode))The validation result must report:
 
     ```markdown
     **Status:** validated
@@ -444,16 +450,14 @@ local planRoleData = new SyncRole {
     - Scaffolding removals.
     - Reported context impact, required context paths, and affected areas.
 
-    This skill must not be \(invokedFor.render.apply(mode)) `failed` or `blocked` validation results.
+    This phase must not be \(invokedFor.render.apply(mode)) `failed` or `blocked` validation results.
     Those are not success states. Same rule as \(taskContextSync.render.apply(mode)): context sync
     runs only after a successful prior phase.
 
     Do not reconstruct a missing validation result from conversation history.
     """
   workflow = (mode: workflow.WorkflowRenderMode) -> """
-    ## Workflow
-
-    ### 1. Validate the validation handoff
+    \(packageOnlyBlock.apply("## Workflow").render.apply(mode))\(outer.headings.stepHeading.apply(mode, 1, "Validate the validation handoff"))
 
     Confirm that:
 
@@ -466,7 +470,7 @@ local planRoleData = new SyncRole {
     If the handoff is missing required information or is internally contradictory,
     do not modify context. Return a `blocked` Markdown report.
 
-    ### 2. Confirm the context root
+    \(outer.headings.stepHeading.apply(mode, 2, "Confirm the context root"))
 
     When `context/` does not exist, there is no durable memory to synchronize.
     Do not create it, and do not write context files outside it.
@@ -478,9 +482,9 @@ local planRoleData = new SyncRole {
     State that validation itself succeeded and is recorded in the plan, and that
     plan context synchronization should run again once the context root exists.
 
-    Bootstrapping is the user's action, not this skill's.
+    Bootstrapping is the user's action, not this phase's.
 
-    ### 3. Discover applicable context
+    \(outer.headings.stepHeading.apply(mode, 3, "Discover applicable context"))
 
     Start with the validated \(markdownResult.render.apply(mode)):
 
@@ -508,7 +512,7 @@ local planRoleData = new SyncRole {
     Do not create a new context file when an existing authoritative file can be
     updated coherently.
 
-    #### The mandatory root pass
+    \(outer.headings.stepSubsection.apply(mode, "The mandatory root pass"))
 
     Every invocation verifies these five files against code truth, whatever the
     reported classification is:
@@ -527,13 +531,13 @@ local planRoleData = new SyncRole {
     Report each of the five as verified or edited. Never declare synchronization
     done while one of them is unchecked.
 
-    #### Plan context requirements
+    \(outer.headings.stepSubsection.apply(mode, "Plan context requirements"))
 
     Every path or statement listed under the plan's `Context sync` section must be
     accounted for in the report as already accurate or updated. A requirement the
     finished code still does not satisfy is a blocker, not a note.
 
-    ### 4. Determine whether durable context changed
+    \(outer.headings.stepHeading.apply(mode, 4, "Determine whether durable context changed"))
 
     Use the reported context impact as a strong hint, then verify it against the
     finished implementation and existing context.
@@ -572,7 +576,7 @@ local planRoleData = new SyncRole {
     If the reported classification is inconsistent with the actual change, use the
     verified classification and explain the difference in the report.
 
-    ### 5. Synchronize context
+    \(outer.headings.stepHeading.apply(mode, 5, "Synchronize context"))
 
     Make the smallest coherent documentation change that preserves repository truth.
 
@@ -592,7 +596,7 @@ local planRoleData = new SyncRole {
     - No existing file owns it coherently.
     - The new file has a clear place in the context map.
 
-    #### Feature existence
+    \(outer.headings.stepSubsection.apply(mode, "Feature existence"))
 
     Every feature the finished plan implemented must have at least one durable
     canonical description discoverable from `context/`, in a domain file under
@@ -605,14 +609,14 @@ local planRoleData = new SyncRole {
     This is not license to narrate the diff: describe what the feature is and how
     it behaves, not what was edited during the plan.
 
-    #### Glossary
+    \(outer.headings.stepSubsection.apply(mode, "Glossary"))
 
     Add a `context/glossary.md` entry for any domain language the plan introduced.
     New terminology is durable knowledge whatever the classification is.
 
-    #### File hygiene
+    \(outer.headings.stepSubsection.apply(mode, "File hygiene"))
 
-    Every context file this skill writes must satisfy:
+    Every context file this phase writes must satisfy:
 
     - One topic per file.
     - At most 250 lines. When an edit would push a file past 250 lines, split it
@@ -625,7 +629,7 @@ local planRoleData = new SyncRole {
     When detail outgrows a shared file, migrate it into `context/{domain}/`, leave a
     concise pointer behind, and link the new file from `context/context-map.md`.
 
-    ### 6. Verify synchronization
+    \(outer.headings.stepHeading.apply(mode, 6, "Verify synchronization"))
 
     After edits, verify:
 
@@ -653,7 +657,7 @@ local planRoleData = new SyncRole {
     material contradiction, preserve safe edits when appropriate and return a
     `blocked` report.
 
-    ### 7. Return the Markdown report
+    \(outer.headings.stepHeading.apply(mode, 7, "Return the Markdown report"))
 
     \(returnExactlyOneReportStatus.render.apply(mode)):
 
@@ -669,7 +673,7 @@ local planRoleData = new SyncRole {
     it.
     """
   boundaries = (mode: workflow.WorkflowRenderMode) -> """
-    ## Boundaries
+    \(outer.headings.section.apply(mode, "Plan context synchronization boundaries"))
 
     Do not:
 
@@ -688,10 +692,11 @@ local planRoleData = new SyncRole {
     - Delete a context file that has uncommitted changes.
     - \(returnInternalState.render.apply(mode)).
     """
-  completion = (mode: workflow.WorkflowRenderMode) -> """
+  completion = (mode: workflow.WorkflowRenderMode) ->
+    packageOnlyBlock.apply("""
     ## Completion
 
-    The skill is complete after:
+    The phase is complete after:
 
     - The context root was confirmed, or a `blocked` report named
       `sce setup --bootstrap-context` as the required action.
@@ -700,7 +705,7 @@ local planRoleData = new SyncRole {
     - Applicable durable context was synchronized and verified, no context change
       was warranted, or a synchronization blocker was reported.
     - One Markdown report matching \(syncReport.render.apply(mode)) was returned.
-    """
+    """).render.apply(mode)
 }
 
 local reportIntroduction = (role: SyncReportRole, mode: workflow.WorkflowRenderMode) -> """
@@ -738,7 +743,7 @@ local syncedReport = (role: SyncReportRole, mode: workflow.WorkflowRenderMode) -
 
     ## Notes
 
-    {Include only non-blocking information the invoking workflow should retain.
+    {Include only non-blocking information worth retaining.
     Omit this section when unnecessary.}
     """
 
@@ -976,8 +981,8 @@ local planReport = new SyncReportRole {
 local planOutputReportRole = (planReport) {
   inputStatus = (mode: workflow.WorkflowRenderMode) -> """
     The input validation status is always `validated` and does not need to be
-    repeated as a separate workflow state. This skill is not run for `failed`
-    or `blocked` validation results.
+    repeated as a separate workflow state. This report is not produced for
+    `failed` or `blocked` validation results.
     """
 }
 
@@ -989,26 +994,30 @@ local planRole = (planRoleData) {
   report = planReport
 }
 
+hidden taskSkillBody = new workflow.WorkflowBody {
+  render = (mode: workflow.WorkflowRenderMode) -> skillBody.apply(taskRole, mode)
+}
+
 hidden taskStructuredSkill = new workflow.StructuredWorkflowDocument {
   path = taskRole.slug
   frontmatter = new workflow.WorkflowFrontmatter {
     lines = (mode: workflow.WorkflowRenderMode) -> taskFrontmatterLines.apply(mode)
   }
-  body = new workflow.WorkflowBody {
-    render = (mode: workflow.WorkflowRenderMode) -> skillBody.apply(taskRole, mode)
-  }
+  body = taskSkillBody
 }
 
 hidden taskOutputReport = reportText.apply(taskRole.report, "package")
+
+hidden planSkillBody = new workflow.WorkflowBody {
+  render = (mode: workflow.WorkflowRenderMode) -> skillBody.apply(planRole, mode)
+}
 
 hidden planStructuredSkill = new workflow.StructuredWorkflowDocument {
   path = planRole.slug
   frontmatter = new workflow.WorkflowFrontmatter {
     lines = (mode: workflow.WorkflowRenderMode) -> planFrontmatterLines.apply(mode)
   }
-  body = new workflow.WorkflowBody {
-    render = (mode: workflow.WorkflowRenderMode) -> skillBody.apply(planRole, mode)
-  }
+  body = planSkillBody
 }
 
 hidden planOutputReport = reportText.apply(planOutputReportRole, "package")

@@ -4,6 +4,7 @@ local contextLoad = model.semanticReference.apply("`sce-context-load`", "the **C
 local contextLoadName = model.semanticReference.apply("sce-context-load", "Context load phase")
 local planAuthoring = model.semanticReference.apply("`sce-plan-authoring`", "the **Plan authoring phase**")
 local planAuthoringName = model.semanticReference.apply("sce-plan-authoring", "Plan authoring phase")
+local planAuthoringUpper = model.semanticReference.apply("`sce-plan-authoring`", "The **Plan authoring phase**")
 local planReview = model.semanticReference.apply("`sce-plan-review`", "the **Plan review phase**")
 local taskExecutionName = model.semanticReference.apply("`sce-task-execution`", "the **Task execution phase**")
 local planTemplate = model.semanticReference.apply(
@@ -20,6 +21,9 @@ local returnUpper = model.semanticReference.apply("Return", "Set internal status
 local returningContextBrief = model.semanticReference.apply("Returning one structured context brief", "Recording one structured context brief")
 local returningAuthoringResult = model.semanticReference.apply("Returning one structured authoring result", "Recording one structured authoring result")
 local invokeTaskExecution = model.semanticReference.apply("Invoke task execution", "Run task execution")
+local contextLoadHeadings = new model.PhaseHeadings { step = 1 }
+local planAuthoringHeadings = new model.PhaseHeadings { step = 2 }
+local planTemplateHeadings = new model.PhaseHeadings { step = 0 }
 
 /// Contract references. A package owns `references/*.yaml`, so these sentences
 /// resolve there. A composite workflow has no such file and describes its
@@ -177,21 +181,21 @@ local planAuthoringPackage = new model.SkillPackage {
   })
 }
 
-local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
-    SCE CHANGE TO PLAN `$ARGUMENTS`
+local commandBanner = model.commandBanner.apply("SCE CHANGE TO PLAN")
 
-    ## Input
+local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
+    \(commandBanner.render.apply(mode))## Input
 
     `$ARGUMENTS` is the change request, in free-form prose.
 
     - The change request is required.
-    - It may describe a new plan or a change to an existing plan. Do not resolve which one applies; \(planAuthoring.render.apply(mode)) owns that decision.
+    - It may describe a new plan or a change to an existing plan. Do not resolve which one applies; step 2 owns that decision.
 
     When `$ARGUMENTS` is empty, report that a change request is required, state the expected argument, and stop. Do not infer a change request from the repository state or the conversation.
 
-    Pass the change request to \(planAuthoring.render.apply(mode)) unmodified. Do not restate, summarize, or pre-scope it.
+    Pass the change request to step 2 unmodified. Do not restate, summarize, or pre-scope it.
 
-    Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is the path resolved by \(planAuthoring.render.apply(mode)) (`plan.path`, or an entry of `candidates`), so every emitted command is directly runnable.
+    Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is the path resolved in step 2 (`plan.path`, or an entry of `candidates`), so every emitted command is directly runnable.
 
     ## Workflow
 
@@ -201,7 +205,7 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
 
     `context/` is durable AI-first memory describing current state. Load it before planning so the plan starts from recorded truth. Where context and code disagree, the code is the source of truth.
     \(contextBriefHandoffSentence.render.apply(mode))
-    Branch on `status`:
+    \(model.inlinePhaseBody.apply(contextSkillBody).render.apply(mode))Branch on `status`:
 
     `bootstrap_required` -> `context/` does not exist. Do not create it, and do not plan without it. \(bootstrapLayout.render.apply(mode))
 
@@ -217,7 +221,7 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
 
     Pass the brief verbatim. Do not restate, summarize, or reinterpret it.
 
-    \(planAuthoring.render.apply(mode)) exclusively owns:
+    \(planAuthoringUpper.render.apply(mode)) exclusively owns:
 
     - Resolving whether the request targets a new or an existing plan.
     - The clarification gate.
@@ -227,7 +231,7 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
 
     Do not duplicate any of it. Do not write or edit the plan file yourself.
     \(authoringHandoffSentence.render.apply(mode))
-    Branch on `status`:
+    \(model.inlinePhaseBody.apply(authoringSkillBody).render.apply(mode))Branch on `status`:
 
     `needs_clarification` -> No plan was written. Present the result as prose. Do not print the raw result. \(clarificationLayout.render.apply(mode))
 
@@ -263,7 +267,7 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
 
     An answer that resolves a doubt removes that open question. An answer that does not resolve it leaves the question standing; do not drop it because the user replied to it. If the reply raises a new doubt, the revised plan carries a new open question.
 
-    Pass the correction as written. Do not restate, soften, or pre-scope it. \(planAuthoring.render.apply(mode)) owns resolving it against the existing plan, and owns preserving completed tasks and their evidence.
+    Pass the correction as written. Do not restate, soften, or pre-scope it. \(planAuthoringUpper.render.apply(mode)) owns resolving it against the existing plan, and owns preserving completed tasks and their evidence.
 
     Branch on `status` exactly as in step 2. A revision may legitimately return `needs_clarification` or `blocked`.
 
@@ -311,43 +315,43 @@ local structuredCommand = new model.StructuredWorkflowDocument {
 
 local COMMAND = structuredCommand.render.apply("package", "").text
 
-local renderContextSkillBody = (mode: model.WorkflowRenderMode) -> """
+local contextSkillIntroduction = model.packageOnlyBlock.apply("""
     # SCE Context Load
 
     ## Purpose
 
     Load the durable context needed to reason about one focus, and no more.
 
-    `context/` is AI-first memory describing current state. This skill turns it into
+    `context/` is AI-first memory describing current state. This phase turns it into
     a scoped brief so later phases start from recorded truth instead of rediscovering
     the repository.
 
-    This skill owns:
+    This phase owns:
 
     - Confirming `context/` exists.
     - Reading the context entry points.
     - Selecting the domain context relevant to the focus.
     - Reporting focus areas with no durable context.
     - Reporting context that contradicts the code.
-    - \(returningContextBrief.render.apply(mode)).
-    \(contextBriefBlock.render.apply(mode))
+    - Returning one structured context brief.
+
     ## Input
 
-    The invoking workflow provides:
-
-    - One focus: a change request, a task, or a named area.
-    - Optionally, paths or areas already known to be relevant.
+    One focus: a change request, a task, or a named area, with optional paths or
+    areas already known to be relevant.
 
     ## Workflow
+    """)
 
-    ### 1. Confirm the context root
+local renderContextSkillBody = (mode: model.WorkflowRenderMode) -> """
+    \(contextSkillIntroduction.render.apply(mode))\(contextLoadHeadings.stepHeading.apply(mode, 1, "Confirm the context root"))
 
     When `context/` does not exist, \(returnLower.render.apply(mode)) `bootstrap_required` immediately. Read
     nothing further.
 
-    Bootstrapping is the invoking workflow's decision, not this skill's.
+    Bootstrapping is the workflow's decision, not this phase's.
 
-    ### 2. Read the entry points
+    \(contextLoadHeadings.stepHeading.apply(mode, 2, "Read the entry points"))
 
     Read, when present:
 
@@ -361,7 +365,7 @@ local renderContextSkillBody = (mode: model.WorkflowRenderMode) -> """
 
     A missing entry point is a gap, not a failure. Record it and continue.
 
-    ### 3. Select the relevant domain context
+    \(contextLoadHeadings.stepHeading.apply(mode, 3, "Select the relevant domain context"))
 
     Consult `context/context-map.md` before any broad exploration. The map's
     annotations name what each domain file owns; use them to select files, rather
@@ -376,7 +380,7 @@ local renderContextSkillBody = (mode: model.WorkflowRenderMode) -> """
 
     Record focus areas with no matching context file under `gaps`.
 
-    ### 4. Check recorded context against the code
+    \(contextLoadHeadings.stepHeading.apply(mode, 4, "Check recorded context against the code"))
 
     For each selected file, spot-check its central claims against the code it
     describes.
@@ -391,20 +395,20 @@ local renderContextSkillBody = (mode: model.WorkflowRenderMode) -> """
     Keep this proportional: check the claims the focus depends on, not every
     sentence.
 
-    ### 5. Return the brief
+    \(contextLoadHeadings.stepHeading.apply(mode, 5, "Return the brief"))
 
     \(returnExactlyOneStructuredResult.render.apply(mode)):
 
     - `loaded`
     - `bootstrap_required`
 
-    Report facts the invoking workflow can act on. A brief that only lists file
+    Report facts the workflow can act on. A brief that only lists file
     paths has moved no knowledge.
 
     \(returnOnlyStructuredResult.render.apply(mode)). Do not add explanatory prose before or after
     it.
 
-    ## Boundaries
+    \(contextLoadHeadings.section.apply(mode, "Context load boundaries"))
 
     Do not:
 
@@ -414,19 +418,24 @@ local renderContextSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Modify application code or tests.
     - Read the entire `context/` tree by default.
     - Explore the repository beyond what the focus and the selected context require.
-    - Ask the user questions. Report gaps and drift, and let the invoking workflow
-      decide.
+    - Ask the user questions. Report gaps and drift, and let the workflow decide.
     - Author a plan, select a task, or implement anything.
+    \(model.packageOnlyBlock.apply("""
 
     ## Completion
 
-    The skill is complete after:
+    The phase is complete after:
 
     - The context root was confirmed, or `bootstrap_required` was returned.
     - The entry points were read, and the relevant domain context was selected and
       read.
     - One valid result\(contextBriefClause.render.apply(mode)) was returned.
+    """).render.apply(mode))
     """
+
+local contextSkillBody = new model.WorkflowBody {
+  render = (mode: model.WorkflowRenderMode) -> renderContextSkillBody.apply(mode)
+}
 
 local structuredContextSkill = new model.StructuredWorkflowDocument {
   path = "sce-context-load"
@@ -441,9 +450,7 @@ local structuredContextSkill = new model.StructuredWorkflowDocument {
       "  repair drift, plan, or implement."
     }
   }
-  body = new model.WorkflowBody {
-    render = (mode: model.WorkflowRenderMode) -> renderContextSkillBody.apply(mode)
-  }
+  body = contextSkillBody
 }
 
 local CONTEXT_SKILL = structuredContextSkill.render.apply("package", "").text
@@ -604,7 +611,7 @@ local CONTEXT_CONTRACT = """
             to load for this focus.
     """
 
-local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
+local authoringSkillIntroduction = model.packageOnlyBlock.apply("""
     # SCE Plan Authoring
 
     ## Purpose
@@ -612,7 +619,7 @@ local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
     Turn exactly one change request into `context/plans/{plan_name}.md` without
     inventing material requirements.
 
-    This skill owns:
+    This phase owns:
 
     - Resolving whether the request targets a new or an existing plan.
     - Judging whether the change is worth making, and recording the doubt when it
@@ -622,25 +629,25 @@ local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
       non-goals.
     - Slicing the work into atomic implementation tasks.
     - Writing the plan file.
-    - \(returningAuthoringResult.render.apply(mode)).
+    - Recording one structured authoring result.
+    """)
 
-    Use the document format defined in:
+local authoringInputProvider = model.packageOnlyBlock.apply("""
+    ## Input
 
-    \(planTemplate.render.apply(mode))
+    One change request, in free-form prose, and the `loaded` context brief from
+    the context-load phase.
+    """)
+
+local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
+    \(authoringSkillIntroduction.render.apply(mode))Use the document format defined in \(planTemplate.render.apply(mode)).
     \(authoringContractBlock.render.apply(mode))
-    The invoking workflow renders that result as the summary defined in:
+    The workflow renders that result as the summary defined in:
 
     \(planSummary.render.apply(mode))
 
-    ## Input
-
-    The invoking workflow provides:
-
-    - One change request, in free-form prose.
-    - The `loaded` context brief from \(contextLoad.render.apply(mode)).
-
-    The change request may name a plan, describe a change to an existing plan, or
-    describe entirely new work. Resolving which applies is this skill's
+    \(authoringInputProvider.render.apply(mode))The change request may name a plan, describe a change to an existing plan, or
+    describe entirely new work. Resolving which applies is this phase's
     responsibility.
 
     The context brief is the durable memory this plan starts from. Treat its
@@ -660,9 +667,7 @@ local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
     Terseness is not ambiguity. Do not \(returnLower.render.apply(mode)) `needs_clarification` for detail the
     plan already carries; ask only when the revision itself is genuinely undecidable.
 
-    ## Workflow
-
-    ### 1. Resolve the plan target
+    \(model.packageOnlyBlock.apply("## Workflow").render.apply(mode))\(planAuthoringHeadings.stepHeading.apply(mode, 1, "Resolve the plan target"))
 
     Determine whether the request targets a new plan or an existing plan in
     `context/plans/`.
@@ -678,7 +683,7 @@ local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
 
     Resolve exactly one plan target per invocation.
 
-    ### 2. Challenge the change
+    \(planAuthoringHeadings.stepHeading.apply(mode, 2, "Challenge the change"))
 
     Before planning how to build the change, work out whether it is worth building.
     A plan is a commitment of someone's time; authoring one for work that should not
@@ -712,7 +717,7 @@ local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
     does not withhold the plan. The only value judgment that stops authoring is
     `no_actionable_work`, when the change is already implemented.
 
-    ### 3. Run the clarification gate
+    \(planAuthoringHeadings.stepHeading.apply(mode, 3, "Run the clarification gate"))
 
     Before writing or updating any plan file, check the request for critical
     unresolved detail:
@@ -748,7 +753,7 @@ local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
     outcome and prove nothing; ask what the change is actually for before planning
     around it. Do not treat confident phrasing as evidence.
 
-    ### 4. Inspect relevant context
+    \(planAuthoringHeadings.stepHeading.apply(mode, 4, "Inspect relevant context"))
 
     Start from the context brief. Read code only where the brief leaves the change
     underspecified:
@@ -768,7 +773,7 @@ local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
 
     Do not explore the entire repository by default.
 
-    ### 5. Author the acceptance criteria
+    \(planAuthoringHeadings.stepHeading.apply(mode, 5, "Author the acceptance criteria"))
 
     State how the finished plan is proven, before slicing tasks.
 
@@ -780,7 +785,7 @@ local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
     `/validate` runs this section after the last task completes. It is the only
     place a plan says how it is validated.
 
-    ### 6. Author the task stack
+    \(planAuthoringHeadings.stepHeading.apply(mode, 6, "Author the task stack"))
 
     Slice the work into sequential tasks `T01..T0N` using the task format and the
     atomic slicing contract in \(planTemplate.render.apply(mode)).
@@ -799,20 +804,20 @@ local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
     Confirm every acceptance criterion is satisfied by at least one task. When one
     is not, the task stack is incomplete.
 
-    A finished stack always leaves at least one incomplete task, so the invoking
-    workflow can always hand off to `/next-task`. When the request resolves to a
+    A finished stack always leaves at least one incomplete task, so the workflow
+    can always hand off to `/next-task`. When the request resolves to a
     plan but produces no incomplete task, because the change is already implemented
     or already covered by completed tasks, \(returnLower.render.apply(mode)) `blocked` with category
     `no_actionable_work` instead of writing the plan.
 
-    ### 7. Write the plan
+    \(planAuthoringHeadings.stepHeading.apply(mode, 7, "Write the plan"))
 
     Write `context/plans/{plan_name}.md` using \(planTemplate.render.apply(mode)).
 
     When updating an existing plan, keep completed tasks and their evidence intact,
     and append or renumber new tasks without disturbing recorded history.
 
-    ### 8. Return the result
+    \(planAuthoringHeadings.stepHeading.apply(mode, 8, "Return the result"))
 
     \(returnExactlyOneStructuredResult.render.apply(mode)):
 
@@ -823,9 +828,9 @@ local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
     \(returnOnlyStructuredResult.render.apply(mode)). Do not add explanatory prose before or after
     it.
 
-    ## Tone
+    \(planAuthoringHeadings.section.apply(mode, "Plan authoring tone"))
 
-    Every question and open question this skill writes is read by the user. Write
+    Every question and open question this phase writes is read by the user. Write
     them the way a senior engineer talks in review: direct, specific, and unbothered
     by the possibility of being unwelcome.
 
@@ -849,12 +854,12 @@ local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
     decision the user has made, and do not smuggle the objection back in as a
     constraint, a non-goal, or a task.
 
-    ## Boundaries
+    \(planAuthoringHeadings.section.apply(mode, "Plan authoring boundaries"))
 
     Do not:
 
     - Ask the user questions directly. \(returnUpper.render.apply(mode)) `needs_clarification` and let the
-      invoking workflow present the questions.
+      workflow present the questions.
     - Answer your own clarification questions.
     - Write a plan file when returning `needs_clarification` or `blocked`.
     - Implement any task in the plan.
@@ -871,16 +876,22 @@ local renderAuthoringSkillBody = (mode: model.WorkflowRenderMode) -> """
     - \(returnUpper.render.apply(mode)) `plan_ready` for a plan with no incomplete task.
     - Create a Git commit.
     - Author more than one plan.
+    \(model.packageOnlyBlock.apply("""
 
     ## Completion
 
-    The skill is complete after:
+    The phase is complete after:
 
     - One plan target was resolved, or resolution failed and was reported.
     - The plan file was written, or no file was written because the result is
       `needs_clarification` or `blocked`.
     - One valid result\(authoringContractClause.render.apply(mode)) was returned.
+    """).render.apply(mode))
     """
+
+local authoringSkillBody = new model.WorkflowBody {
+  render = (mode: model.WorkflowRenderMode) -> renderAuthoringSkillBody.apply(mode)
+}
 
 local structuredAuthoringSkill = new model.StructuredWorkflowDocument {
   path = "sce-plan-authoring"
@@ -895,9 +906,7 @@ local structuredAuthoringSkill = new model.StructuredWorkflowDocument {
       "  synchronize context, or run final validation."
     }
   }
-  body = new model.WorkflowBody {
-    render = (mode: model.WorkflowRenderMode) -> renderAuthoringSkillBody.apply(mode)
-  }
+  body = authoringSkillBody
 }
 
 local AUTHORING_SKILL = structuredAuthoringSkill.render.apply("package", "").text
@@ -1162,17 +1171,15 @@ local AUTHORING_CONTRACT = """
     """
 
 local renderPlanTemplate = (mode: model.WorkflowRenderMode) -> """
-    # SCE Plan Template
-
-    The document format for `context/plans/{plan_name}.md`. This is the plan file
-    written to disk, not the result returned to the invoking workflow.
+    \(model.packageOnlyBlock.apply("# SCE Plan Template").render.apply(mode))The document format for `context/plans/{plan_name}.md`. This is the plan file
+    written to disk, not the result returned to the workflow.
 
     Copy the template below and fill every `{placeholder}`. Omit optional sections
     entirely rather than writing them empty.
 
     ---
 
-    ## Template
+    \(planTemplateHeadings.section.apply(mode, "Template"))
 
     ```markdown
     # Plan: {plan-name}
@@ -1251,7 +1258,7 @@ local renderPlanTemplate = (mode: model.WorkflowRenderMode) -> """
 
     ---
 
-    ## Filled-in task example
+    \(planTemplateHeadings.section.apply(mode, "Filled-in task example"))
 
     ```markdown
     - [ ] T02: `Add /auth/refresh endpoint` (status:todo)
@@ -1263,7 +1270,7 @@ local renderPlanTemplate = (mode: model.WorkflowRenderMode) -> """
       - Verification notes (commands or checks): `pnpm test src/auth/refresh.test.ts`; `curl -X POST localhost:3000/auth/refresh -d '{"token":"..."}' -w "%{http_code}"`.
     ```
 
-    ## Acceptance criteria rules
+    \(planTemplateHeadings.section.apply(mode, "Acceptance criteria rules"))
 
     - Acceptance criteria describe the finished system, not the work. Prefer "the
       endpoint returns 401 on an expired token" over "add expiry handling".
@@ -1280,7 +1287,7 @@ local renderPlanTemplate = (mode: model.WorkflowRenderMode) -> """
       change request. If a criterion has no task that could satisfy it, the task
       stack is incomplete.
 
-    ## Task rules
+    \(planTemplateHeadings.section.apply(mode, "Task rules"))
 
     - Every task is a checkbox line so progress stays machine-readable:
       `- [ ] T01: {title} (status:todo)`.
@@ -1294,7 +1301,7 @@ local renderPlanTemplate = (mode: model.WorkflowRenderMode) -> """
       acceptance checks.
     - Order tasks so each one's declared dependencies precede it.
 
-    ## No validation task
+    \(planTemplateHeadings.section.apply(mode, "No validation task"))
 
     - The last task in the stack is an ordinary implementation task. Do not author a
       trailing "validation and cleanup" task.
@@ -1306,9 +1313,9 @@ local renderPlanTemplate = (mode: model.WorkflowRenderMode) -> """
     - A task may still create or update durable context when that context is part of
       the change itself.
 
-    ## Completion records
+    \(planTemplateHeadings.section.apply(mode, "Completion records"))
 
-    \(taskExecutionName.render.apply(mode)) appends evidence to a task when it completes, and flips the
+    When a task completes, \(taskExecutionName.render.apply(mode)) appends its evidence and flips the
     checkbox and status:
 
     ```markdown
@@ -1323,7 +1330,7 @@ local renderPlanTemplate = (mode: model.WorkflowRenderMode) -> """
     `/validate` appends a `## Validation Report` section at the end of the plan.
     Do not author either while planning.
 
-    ## Updating an existing plan
+    \(planTemplateHeadings.section.apply(mode, "Updating an existing plan"))
 
     - Preserve completed tasks, their `(status:done)` markers, and their recorded
       evidence verbatim.
@@ -1339,9 +1346,8 @@ local PLAN_TEMPLATE = renderPlanTemplate.apply("package")
 local PLAN_SUMMARY = """
     # SCE Plan Summary
 
-    The user-facing summary shown after a plan is written. The invoking workflow
-    renders it from the `plan_ready` result, immediately before the continuation
-    block.
+    The user-facing summary shown after a plan is written. It is rendered from
+    the `plan_ready` result, immediately before the continuation block.
 
     This is chat output, not a file. Nothing here is written to the plan.
 
@@ -1435,10 +1441,7 @@ local PLAN_SUMMARY = """
 
 structuredComposite = new model.StructuredCompositeSource {
   command = structuredCommand
-  phases = new Listing {
-    structuredContextSkill
-    structuredAuthoringSkill
-  }
+  phases = new Listing {}
   internalDocuments = new Listing {
     model.makeDocument.apply("Plan template", renderPlanTemplate.apply("composite"))
   }

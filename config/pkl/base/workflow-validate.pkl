@@ -2,6 +2,7 @@ import "workflow-content.pkl" as model
 import "workflow-context-sync.pkl" as contextSync
 
 local validation = model.semanticReference.apply("`sce-validation`", "the **Validation phase**")
+local validationUpper = model.semanticReference.apply("`sce-validation`", "The **Validation phase**")
 local validationName = model.semanticReference.apply("sce-validation", "Validation phase")
 local planContextSync = model.semanticReference.apply("`sce-plan-context-sync`", "the **Plan context synchronization phase**")
 local validationResult = model.semanticReference.apply("`references/validation-result.md`", "`references/output.md`")
@@ -44,6 +45,8 @@ local returnUpper = model.semanticReference.apply("Return", "Set internal status
 local returnYamlResult = model.semanticReference.apply("Return a YAML result", "Return a internal state")
 local yaml = model.semanticReference.apply("YAML", "internal state")
 local invokePlanContextSync = model.semanticReference.apply("Invoke plan context sync", "Run plan context synchronization")
+local validationHeadings = new model.PhaseHeadings { step = 1 }
+local validationReportHeadings = new model.PhaseHeadings { step = 0 }
 
 /// User-visible layouts. Package mode states each layout at its branch, because a
 /// command file has no sibling `references/output.md`. Composite mode cites the
@@ -107,10 +110,10 @@ local validationPackage = new model.SkillPackage {
   })
 }
 
+local commandBanner = model.commandBanner.apply("SCE VALIDATE")
+
 local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
-    SCE VALIDATE `$ARGUMENTS`
-    
-    ## Input
+    \(commandBanner.render.apply(mode))## Input
     
     `$ARGUMENTS` is the plan name or plan path.
     
@@ -135,7 +138,7 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     
     \(invoke.render.apply(mode)) \(validation.render.apply(mode)) with the plan name or path.
     
-    \(validation.render.apply(mode)) exclusively owns:
+    \(validationUpper.render.apply(mode)) exclusively owns:
     
     - Resolving one plan.
     - Confirming every implementation task is complete.
@@ -146,7 +149,7 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     
     Do not duplicate any of it. Do not write the Validation Report yourself.
     
-    \(validationResultHandoff.render.apply(mode))
+    \(model.inlinePhaseBody.apply(validationSkillBody).render.apply(mode))\(validationResultHandoff.render.apply(mode))
     
     `blocked` -> Do not \(invokeLower.render.apply(mode)) context synchronization. Print the blocked Markdown
     report as returned. Do not rephrase it into a different layout. Stop.
@@ -162,8 +165,7 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     Do not start the repair work in this workflow unless the user explicitly asks
     to continue here; the default is that the handoff can leave this session.
     
-    `validated` -> Pass the complete validated Markdown result to
-    \(planContextSync.render.apply(mode)).
+    `validated` -> Pass the complete validated Markdown result to \(planContextSync.render.apply(mode)).
     
     Do not reconstruct, summarize, or reinterpret the validation result before
     passing it.
@@ -176,20 +178,20 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     Do not \(invokeLower.render.apply(mode)) \(planContextSync.render.apply(mode)) for `failed` or `blocked`. Those are not
     success states.
     
-    Pass the validated result verbatim. It is the authoritative handoff, and
-    \(planContextSync.render.apply(mode)) owns reading the plan path, required context paths,
-    validation evidence, and reported context impact out of it.
+    Pass the validated result verbatim. It is the authoritative handoff, and \(planContextSync.render.apply(mode))
+    owns reading the plan path, required context paths, validation evidence, and
+    reported context impact out of it.
     
     Do not restate, summarize, or reconstruct any part of the validation result.
     
-    Branch on the synchronization result.
+    \(model.inlinePhaseBody.apply(contextSync.planSkillBody).render.apply(mode))Branch on the synchronization result.
     
     \(syncBlockedBranch.render.apply(mode))
     
     Stop.
     
-    `synced` | `no_context_change` -> Print out the report
-    \(planContextSync.render.apply(mode)) returned. Continue to the next step.
+    `synced` | `no_context_change` -> Print out the report returned by \(planContextSync.render.apply(mode)).
+    Continue to the next step.
     
     ### 3. Report completion
     
@@ -240,6 +242,7 @@ local structuredCommand = new model.StructuredWorkflowDocument {
 local COMMAND = structuredCommand.render.apply("package", "").text
 
 local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
+    \(model.packageOnlyBlock.apply("""
     # SCE Validation
     
     ## Purpose
@@ -248,7 +251,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     validation bar, then record the evidence on the plan and return one Markdown
     result.
     
-    This skill owns:
+    This phase owns:
     
     - Resolving one plan.
     - Confirming every implementation task is complete.
@@ -267,18 +270,13 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     \(validationReport.render.apply(mode))
     
-    Context synchronization is not this skill's job. The invoking `/validate`
+    Context synchronization is not this phase's job. The invoking `/validate`
     workflow runs \(planContextSync.render.apply(mode)) only after a `validated` result.
     
     ## Input
     
-    The invoking workflow provides:
-    
-    - A plan name or path.
-    
-    ## Workflow
-    
-    ### 1. Resolve the plan
+    A plan name or path.
+    """).render.apply(mode))\(model.packageOnlyBlock.apply("## Workflow").render.apply(mode))\(validationHeadings.stepHeading.apply(mode, 1, "Resolve the plan"))
     
     Resolve the supplied plan name or path to exactly one existing plan under
     `context/plans/`.
@@ -290,7 +288,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     Read the selected plan before exploring the repository.
     
-    ### 2. Confirm implementation is finished
+    \(validationHeadings.stepHeading.apply(mode, 2, "Confirm implementation is finished"))
     
     \(returnUpper.render.apply(mode)) `blocked` with incomplete tasks listed when any implementation task
     remains incomplete.
@@ -298,7 +296,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     Final validation measures finished work. Do not run the full suite against a
     partial stack, and do not complete remaining tasks here.
     
-    ### 3. Read the validation contract from the plan
+    \(validationHeadings.stepHeading.apply(mode, 3, "Read the validation contract from the plan"))
     
     From the plan, collect:
     
@@ -313,7 +311,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     and format commands only when `Full validation` is absent, and record that
     fallback under notes on a `validated` or `failed` result.
     
-    ### 4. Remove temporary scaffolding
+    \(validationHeadings.stepHeading.apply(mode, 4, "Remove temporary scaffolding"))
     
     Before or while running checks, remove temporary scaffolding introduced during
     the change when it is clearly throwaway:
@@ -326,7 +324,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     Record every removed path. When nothing temporary remains, report `None.`
     
-    ### 5. Run full validation and acceptance checks
+    \(validationHeadings.stepHeading.apply(mode, 5, "Run full validation and acceptance checks"))
     
     Run the plan's `Full validation` commands.
     
@@ -345,7 +343,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     Do not run task-by-task implementation work for incomplete tasks. That belongs
     to `/next-task`.
     
-    ### 6. Update the plan
+    \(validationHeadings.stepHeading.apply(mode, 6, "Update the plan"))
     
     For `validated` and `failed` outcomes:
     
@@ -359,7 +357,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     For `blocked`, leave the plan file unchanged.
     
-    ### 7. Determine context impact for the handoff
+    \(validationHeadings.stepHeading.apply(mode, 7, "Determine context impact for the handoff"))
     
     On `validated` only, classify the durable context impact of the finished plan
     so \(planContextSync.render.apply(mode)) can start from the plan's own requirements:
@@ -374,7 +372,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     On `failed` or `blocked`, omit context impact; context sync will not run.
     
-    ### 8. Return the \(markdownResult.render.apply(mode))
+    \(validationHeadings.stepHeading.apply(mode, 8, "Return the \(markdownResult.render.apply(mode))"))
     
     \(returnExactlyOneMarkdownResult.render.apply(mode)):
     
@@ -389,7 +387,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     \(returnOnlyMarkdownReport.render.apply(mode)). Do not add explanatory prose before or after
     it. Do not return \(yaml.render.apply(mode)).
     
-    ## Boundaries
+    \(validationHeadings.section.apply(mode, "Validation boundaries"))
     
     Do not:
     
@@ -407,16 +405,22 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     - \(returnYamlResult.render.apply(mode)).
     - \(invokePlanContextSync.render.apply(mode)). The workflow owns that step.
     
+    \(model.packageOnlyBlock.apply("""
     ## Completion
     
-    The skill is complete after:
+    The phase is complete after:
     
     - One plan was resolved, or resolution failed and was reported.
     - Implementation completeness was checked.
     - Validation ran to a terminal state, or a blocker prevented it.
     - One valid \(markdownResult.render.apply(mode)) matching \(validationResult.render.apply(mode)) was
       returned.
+    """).render.apply(mode))
     """
+
+local validationSkillBody = new model.WorkflowBody {
+  render = (mode: model.WorkflowRenderMode) -> renderValidationSkillBody.apply(mode)
+}
 
 local structuredValidationSkill = new model.StructuredWorkflowDocument {
   path = "sce-validation"
@@ -434,27 +438,23 @@ local structuredValidationSkill = new model.StructuredWorkflowDocument {
       "  remaining plan tasks, create commits, or select another task."
     }
   }
-  body = new model.WorkflowBody {
-    render = (mode: model.WorkflowRenderMode) -> renderValidationSkillBody.apply(mode)
-  }
+  body = validationSkillBody
 }
 
 local VALIDATION_SKILL = structuredValidationSkill.render.apply("package", "").text
 
 local renderValidationReport = (mode: model.WorkflowRenderMode) -> """
-    # Plan-file Validation Report
-    
-    The Markdown section \(validation.render.apply(mode)) appends to the plan file when returning
+    \(model.packageOnlyBlock.apply("# Plan-file Validation Report").render.apply(mode))The Markdown section \(validation.render.apply(mode)) appends to the plan file when returning
     `validated` or `failed`. Write it at the end of `context/plans/{plan_name}.md`
     under exactly one `## Validation Report` heading.
     
     This is plan-file content. The result returned to the workflow is defined
     separately in \(validationResult.render.apply(mode)).
     
-    Do not author this section while planning. Only `/validate` through
-    \(validation.render.apply(mode)) writes it.
+    Do not author this section while planning. Only `/validate` through \(validation.render.apply(mode))
+    writes it.
     
-    ## Layout
+    \(validationReportHeadings.section.apply(mode, "Layout"))
     
     ```markdown
     ## Validation Report
@@ -496,7 +496,7 @@ local renderValidationReport = (mode: model.WorkflowRenderMode) -> """
     `/validate {plan path}`
     ```
     
-    ## Rules
+    \(validationReportHeadings.section.apply(mode, "Rules"))
     
     - Use **Status:** `validated` only when every acceptance criterion is met and
       every required full-validation command passed.
@@ -585,7 +585,7 @@ local renderValidationResult = (mode: model.WorkflowRenderMode) -> """
     
     ## Notes
     
-    {Include only non-blocking information the invoking workflow should retain.
+    {Include only non-blocking information worth retaining.
     Omit this section when unnecessary.}
     
     ---
@@ -721,10 +721,7 @@ local VALIDATION_RESULT = renderValidationResult.apply("package")
 
 structuredComposite = new model.StructuredCompositeSource {
   command = structuredCommand
-  phases = new Listing {
-    structuredValidationSkill
-    contextSync.planStructuredSkill
-  }
+  phases = new Listing {}
   internalDocuments = new Listing {
     model.makeDocument.apply("Plan-file validation report", renderValidationReport.apply("composite"))
   }

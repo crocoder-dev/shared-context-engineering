@@ -182,7 +182,7 @@ as a separate workflow state.
 
 ## Notes
 
-{Include only non-blocking information the invoking workflow should retain.
+{Include only non-blocking information worth retaining.
 Omit this section when unnecessary.}
 
 ---
