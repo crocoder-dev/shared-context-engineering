@@ -5,6 +5,7 @@ local planReview = model.semanticReference.apply("`sce-plan-review`", "the **Pla
 local planReviewName = model.semanticReference.apply("sce-plan-review", "Plan review phase")
 local taskExecution = model.semanticReference.apply("`sce-task-execution`", "the **Task execution phase**")
 local taskExecutionName = model.semanticReference.apply("sce-task-execution", "Task execution phase")
+local taskExecutionUpper = model.semanticReference.apply("`sce-task-execution`", "The **Task execution phase**")
 local taskContextSync = model.semanticReference.apply("`sce-task-context-sync`", "the **Task context synchronization phase**")
 local implementationGate = model.semanticReference.apply("`references/implementation-gate.md`", "`references/output.md`")
 local invoke = model.semanticReference.apply("Invoke", "Run")
@@ -23,6 +24,8 @@ local returnExactlyOneYamlDocument = model.semanticReference.apply("return exact
 local returnOnlyYamlDocument = model.semanticReference.apply("Return only the YAML document", "Record only the internal state")
 local returningReadinessResult = model.semanticReference.apply("Returning one structured readiness result", "Recording one structured readiness result")
 local invokeTaskExecution = model.semanticReference.apply("Invoke task execution", "Run task execution")
+local planReviewHeadings = new model.PhaseHeadings { step = 1 }
+local taskExecutionHeadings = new model.PhaseHeadings { step = 2 }
 
 /// Contract references. A package owns `references/*-contract.yaml`, so these
 /// sentences resolve there. A composite workflow has no such file and describes
@@ -239,12 +242,12 @@ local taskExecutionPackage = new model.SkillPackage {
   })
 }
 
+local commandBanner = model.commandBanner.apply("SCE NEXT TASK")
+
 local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
-    SCE NEXT TASK `$ARGUMENTS`
+    \(commandBanner.render.apply(mode))## Input
     
-    ## Input
-    
-    Parse `$ARGUMENTS` into three positional parts before invoking any skill:
+    Parse `$ARGUMENTS` into three positional parts before invoking any phase:
     
     <plan-name-or-path> [task-id] [auto-approve]
     
@@ -256,9 +259,9 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     
     A token matching neither a task ID nor `approved` is an error. Report the unrecognized token and the expected arguments, and stop. Do not guess its meaning.
     
-    Pass each part only to the phase that owns it. Do not forward the raw `$ARGUMENTS` string to a skill.
+    Pass each part only to the phase that owns it. Do not forward the raw `$ARGUMENTS` string to a phase.
     
-    Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is the path resolved by \(planReview.render.apply(mode)) (`plan.path`, or an entry of `candidates`), so every emitted command is directly runnable.
+    Every `{plan-path}` and `{candidate-path}` emitted anywhere in this workflow is the path resolved in step 1 (`plan.path`, or an entry of `candidates`), so every emitted command is directly runnable.
     
     ## Workflow
     
@@ -268,7 +271,7 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     
     Do not pass the `auto-approve` token to \(planReview.render.apply(mode)).
     \(readinessHandoffSentence.render.apply(mode))
-    Branch on `status`:
+    \(model.inlinePhaseBody.apply(reviewSkillBody).render.apply(mode))Branch on `status`:
     
     \(reviewBlockedBranch.render.apply(mode))
 
@@ -284,11 +287,11 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     
     Branch on `auto-approve`:
     
-    `approved` -> Also pass the `approve` flag. \(taskExecution.render.apply(mode)) then shows its implementation gate as a summary and proceeds without asking.
+    `approved` -> Also pass the `approve` flag. \(taskExecutionUpper.render.apply(mode)) then shows its implementation gate as a summary and proceeds without asking.
     
-    else -> Do not pass the `approve` flag. \(taskExecution.render.apply(mode)) shows its implementation gate and waits for the user's decision.
+    else -> Do not pass the `approve` flag. \(taskExecutionUpper.render.apply(mode)) shows its implementation gate and waits for the user's decision.
     
-    \(taskExecution.render.apply(mode)) exclusively owns:
+    \(taskExecutionUpper.render.apply(mode)) exclusively owns:
     
     - Presenting the implementation summary.
     - Requesting implementation confirmation.
@@ -298,7 +301,7 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     
     Do not present an additional implementation confirmation.
     
-    Branch on the execution result.
+    \(model.inlinePhaseBody.apply(executionSkillBody).render.apply(mode))Branch on the execution result.
     
     \(declinedBranch.render.apply(mode))
 
@@ -314,7 +317,7 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     
     Do not restate, summarize, or reconstruct any part of the execution result.
     
-    Branch on the synchronization result.
+    \(model.inlinePhaseBody.apply(contextSync.taskSkillBody).render.apply(mode))Branch on the synchronization result.
     
     \(syncBlockedBranch.render.apply(mode))
 
@@ -362,33 +365,30 @@ local structuredCommand = new model.StructuredWorkflowDocument {
 
 local COMMAND = structuredCommand.render.apply("package", "").text
 
-local renderReviewSkillBody = (mode: model.WorkflowRenderMode) -> """
+local reviewSkillIntroduction = model.packageOnlyBlock.apply("""
     # SCE Plan Review
-    
+
     ## Purpose
-    
+
     Resolve exactly one task from an SCE plan (located in `context/plans/`) and
     determine whether it can enter the implementation phase without inventing
     material requirements.
-    
-    This skill owns:
-    
+
+    This phase owns:
+
     - Resolving one plan.
     - Selecting at most one task.
     - Inspecting the context needed to judge readiness.
     - Determining readiness.
-    - \(returningReadinessResult.render.apply(mode)).
-    \(readinessContractBlock.render.apply(mode))
+    - Returning one structured readiness result.
+
     ## Input
-    
-    The invoking workflow provides:
-    
-    - A plan name or path.
-    - An optional task ID.
-    
-    ## Workflow
-    
-    ### 1. Resolve the plan
+
+    A plan name or path and an optional task ID.
+    """)
+
+local renderReviewSkillBody = (mode: model.WorkflowRenderMode) -> """
+    \(reviewSkillIntroduction.render.apply(mode))\(readinessContractBlock.render.apply(mode))\(model.packageOnlyBlock.apply("## Workflow").render.apply(mode))\(planReviewHeadings.stepHeading.apply(mode, 1, "Resolve the plan"))
     
     Resolve the supplied plan name or path to exactly one existing plan.
     
@@ -399,7 +399,7 @@ local renderReviewSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     Read the selected plan before exploring the repository.
     
-    ### 2. Resolve one task
+    \(planReviewHeadings.stepHeading.apply(mode, 2, "Resolve one task"))
     
     When a task ID is supplied, select that task.
     
@@ -413,7 +413,7 @@ local renderReviewSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     Review at most one task per invocation.
     
-    ### 3. Inspect relevant context
+    \(planReviewHeadings.stepHeading.apply(mode, 3, "Inspect relevant context"))
     
     Start with the task and the files it directly references.
     
@@ -431,7 +431,7 @@ local renderReviewSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     Do not explore the entire repository by default.
     
-    ### 4. Determine readiness
+    \(planReviewHeadings.stepHeading.apply(mode, 4, "Determine readiness"))
     
     A task is `ready` when:
     
@@ -464,7 +464,7 @@ local renderReviewSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Destructive or difficult-to-reverse behavior.
     - The evidence needed to prove completion.
     
-    ### 5. Return the result
+    \(planReviewHeadings.stepHeading.apply(mode, 5, "Return the result"))
     
     \(returnExactlyOneStructuredResult.render.apply(mode)):
     
@@ -475,7 +475,7 @@ local renderReviewSkillBody = (mode: model.WorkflowRenderMode) -> """
     \(returnOnlyStructuredResult.render.apply(mode)). Do not add explanatory prose before or after
     it.
     
-    ## Boundaries
+    \(planReviewHeadings.section.apply(mode, "Plan review boundaries"))
     
     Do not:
     
@@ -489,14 +489,20 @@ local renderReviewSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Run final validation.
     - Review more than one task.
     
+    \(model.packageOnlyBlock.apply("""
     ## Completion
-    
-    The skill is complete after:
-    
+
+    The phase is complete after:
+
     - One plan was resolved.
     - At most one task was resolved.
     \(readinessCompletionBullet.render.apply(mode))
+    """).render.apply(mode))
     """
+
+local reviewSkillBody = new model.WorkflowBody {
+  render = (mode: model.WorkflowRenderMode) -> renderReviewSkillBody.apply(mode)
+}
 
 local structuredReviewSkill = new model.StructuredWorkflowDocument {
   path = "sce-plan-review"
@@ -511,9 +517,7 @@ local structuredReviewSkill = new model.StructuredWorkflowDocument {
       "  context, or run final validation."
     }
   }
-  body = new model.WorkflowBody {
-    render = (mode: model.WorkflowRenderMode) -> renderReviewSkillBody.apply(mode)
-  }
+  body = reviewSkillBody
 }
 
 local REVIEW_SKILL = structuredReviewSkill.render.apply("package", "").text
@@ -767,37 +771,38 @@ local READINESS_CONTRACT = """
             total_tasks: 5
     """
 
-local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
+local executionSkillIntroduction = model.packageOnlyBlock.apply("""
     # SCE Task Execution
-    
+
     ## Purpose
-    
+
     Execute exactly one reviewed SCE plan task (located in `context/plans/`).
-    
-    This skill owns:
-    
+
+    This phase owns:
+
     - Showing the implementation gate at the start of every invocation.
     - Receiving the user's approval or rejection, or accepting approval
-      pre-supplied by the invoking workflow.
+      pre-supplied by the workflow.
     - Implementing one approved task.
     - Running task-level verification.
     - Updating that task and its evidence in the plan.
-    - \(returningTerminalResult.render.apply(mode)).
-    
+    - Recording one terminal internal state.
+
     Use the gate defined in:
-    
-    \(implementationGate.render.apply(mode))
-    \(executionContractBlock.render.apply(mode))
+
+    `references/implementation-gate.md`
+
     ## Input
-    
-    The invoking workflow provides:
-    
-    - The complete `ready` result from \(planReview.render.apply(mode)).
-    - An optional `approve` flag.
-    
+
+    The complete `ready` result from the plan-review phase and an optional
+    `approve` flag.
+    """)
+
+local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
+    \(executionSkillIntroduction.render.apply(mode))\(executionContractBlock.render.apply(mode))
     The `approve` flag means the user pre-approved this task when invoking the
     workflow. It suppresses the approval question and the wait. It never suppresses
-    the gate. Only the invoking workflow may set it, and only from an explicit
+    the gate. Only the workflow entrypoint may set it, and only from an explicit
     user-supplied approval token. Never infer it.
     
     The readiness result must identify:
@@ -814,9 +819,7 @@ local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     what is known, clearly identify the handoff problem, and do not edit files.
     After the user responds, \(returnLower.render.apply(mode)) `blocked`.
     
-    ## Workflow
-    
-    ### 1. Validate the handoff without editing
+    \(model.packageOnlyBlock.apply("## Workflow").render.apply(mode))\(taskExecutionHeadings.stepHeading.apply(mode, 1, "Validate the handoff without editing"))
     
     Confirm that:
     
@@ -829,15 +832,15 @@ local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     Do not reconstruct missing material requirements.
     
-    ### 2. Always show the implementation gate
+    \(taskExecutionHeadings.stepHeading.apply(mode, 2, "Always show the implementation gate"))
     
-    At the start of the skill, before any file modification, present the task using
+    At the start of the phase, before any file modification, present the task using
     \(implementationGate.render.apply(mode)).
     
     The gate must be shown even when:
     
     - The task appears straightforward.
-    - The invoking workflow believes approval was already implied.
+    - The workflow believes approval was already implied.
     - The handoff is stale or incomplete.
     - The user is likely to approve.
     
@@ -850,9 +853,9 @@ local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     modifications, until the user has answered.
     
     When the `approve` flag is supplied, show the gate as a summary, omit the
-    approval question, do not wait, and continue at *Prepare the implementation*.
+    approval question, do not wait, and continue at \(taskExecutionHeadings.stepReference.apply(mode, 4)).
     
-    ### 3. Handle the user's decision
+    \(taskExecutionHeadings.stepHeading.apply(mode, 3, "Handle the user's decision"))
     
     Skip this step when the `approve` flag was supplied.
     
@@ -868,7 +871,7 @@ local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     If those constraints materially contradict the reviewed task, \(returnLower.render.apply(mode)) `blocked`
     before editing.
     
-    ### 4. Prepare the implementation
+    \(taskExecutionHeadings.stepHeading.apply(mode, 4, "Prepare the implementation"))
     
     Before editing:
     
@@ -882,7 +885,7 @@ local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     Do not broaden the reviewed task.
     
-    ### 5. Implement one task
+    \(taskExecutionHeadings.stepHeading.apply(mode, 5, "Implement one task"))
     
     Make the minimum coherent changes required to satisfy the task goal and done
     checks.
@@ -901,7 +904,7 @@ local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     When stopped, preserve completed in-scope work unless retaining it would leave
     the repository unsafe or invalid.
     
-    ### 6. Verify the task
+    \(taskExecutionHeadings.stepHeading.apply(mode, 6, "Verify the task"))
     
     Run the narrowest authoritative checks that demonstrate the done checks.
     
@@ -929,7 +932,7 @@ local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     Never report a check as passed unless it ran successfully.
     
-    ### 7. Update the plan
+    \(taskExecutionHeadings.stepHeading.apply(mode, 7, "Update the plan"))
     
     Only after successful implementation and task-level verification:
     
@@ -942,7 +945,7 @@ local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     Do not mark the task complete when returning `declined`, `blocked`, or
     `incomplete`.
     
-    ### 8. Determine the terminal status
+    \(taskExecutionHeadings.stepHeading.apply(mode, 8, "Determine the terminal status"))
     
     \(returnUpper.render.apply(mode)) `complete` when the task was implemented, verified, and marked complete
     in the plan with evidence.
@@ -959,16 +962,16 @@ local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Material blocker.
     - A verification failure that cannot be resolved in scope.
     \(blockerCategorySentence.render.apply(mode))
-    Do not determine whether the plan is complete. The invoking `/next-task`
-    workflow owns that decision after context synchronization.
+    Do not determine whether the plan is complete. The `/next-task` workflow owns
+    that decision after context synchronization.
     
-    ### 9. \(returnYaml.render.apply(mode))
+    \(taskExecutionHeadings.stepHeading.apply(mode, 9, returnYaml.render.apply(mode)))
     
-    After the skill reaches a terminal state, \(returnExactlyOneYamlDocument.render.apply(mode))\(executionContractClause.render.apply(mode)).
+    After the phase reaches a terminal state, \(returnExactlyOneYamlDocument.render.apply(mode))\(executionContractClause.render.apply(mode)).
     
     \(returnOnlyYamlDocument.render.apply(mode)). Do not add explanatory prose before or after it.
     
-    ## Boundaries
+    \(taskExecutionHeadings.section.apply(mode, "Task execution boundaries"))
     
     Do not:
     
@@ -986,15 +989,21 @@ local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Modify unrelated files.
     - Claim verification that was not performed.
     
+    \(model.packageOnlyBlock.apply("""
     ## Completion
-    
-    The skill is complete after:
-    
+
+    The phase is complete after:
+
     - The implementation gate was shown.
     - The user approved or rejected the task, or approval was pre-supplied.
     - At most one task was executed.
     \(executionCompletionBullet.render.apply(mode))
+    """).render.apply(mode))
     """
+
+local executionSkillBody = new model.WorkflowBody {
+  render = (mode: model.WorkflowRenderMode) -> renderExecutionSkillBody.apply(mode)
+}
 
 local structuredExecutionSkill = new model.StructuredWorkflowDocument {
   path = "sce-task-execution"
@@ -1011,9 +1020,7 @@ local structuredExecutionSkill = new model.StructuredWorkflowDocument {
       "  expand task scope."
     }
   }
-  body = new model.WorkflowBody {
-    render = (mode: model.WorkflowRenderMode) -> renderExecutionSkillBody.apply(mode)
-  }
+  body = executionSkillBody
 }
 
 local EXECUTION_SKILL = structuredExecutionSkill.render.apply("package", "").text
@@ -1403,11 +1410,7 @@ local IMPLEMENTATION_GATE = renderImplementationGate.apply("package")
 
 structuredComposite = new model.StructuredCompositeSource {
   command = structuredCommand
-  phases = new Listing {
-    structuredReviewSkill
-    structuredExecutionSkill
-    contextSync.taskStructuredSkill
-  }
+  phases = new Listing {}
   internalDocuments = new Listing {}
   outputDocuments = new Listing {
     model.makeDocument.apply("Implementation gate", renderImplementationGate.apply("composite"))

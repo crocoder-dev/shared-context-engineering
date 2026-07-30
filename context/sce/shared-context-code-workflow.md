@@ -48,7 +48,7 @@ A context-sync blocker does not undo successful implementation: the task remains
 2. Failed or blocked validation ends the session without repair edits; retry uses `/validate {plan-path}`.
 3. `sce-plan-context-sync` runs only from a successful `Status: validated` handoff and reconciles the completed plan with durable repository context.
 
-On every target, those validation and plan-sync phases execute inside one `sce-validate` skill; failed and blocked statuses stop before synchronization exactly as in the canonical flow. Final validation never runs from an individual implementation task.
+On every target, those validation and plan-sync phase bodies appear directly inside workflow steps 1 and 2 of one `sce-validate` skill, while the plan-file Validation Report format remains a trailing appendix after the workflow rules. Failed and blocked statuses stop before synchronization exactly as in the canonical flow. Final validation never runs from an individual implementation task.
 
 ## Flow
 

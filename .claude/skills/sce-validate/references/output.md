@@ -81,7 +81,7 @@ carries the validation phase's result into the workflow's own branches.
 
 ## Notes
 
-{Include only non-blocking information the invoking workflow should retain.
+{Include only non-blocking information worth retaining.
 Omit this section when unnecessary.}
 
 ---
@@ -224,8 +224,8 @@ The `Status` value must be exactly one of:
 - `blocked`
 
 The input validation status is always `validated` and does not need to be
-repeated as a separate workflow state. This skill is not run for `failed`
-or `blocked` validation results.
+repeated as a separate workflow state. This report is not produced for
+`failed` or `blocked` validation results.
 
 ## Synced variant
 
@@ -270,7 +270,7 @@ constraint required plan-level synchronization after validation.}
 
 ## Notes
 
-{Include only non-blocking information the invoking workflow should retain.
+{Include only non-blocking information worth retaining.
 Omit this section when unnecessary.}
 
 ---

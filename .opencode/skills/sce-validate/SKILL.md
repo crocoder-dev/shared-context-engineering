@@ -22,9 +22,13 @@ internal state. The reference contains only human-visible Markdown layouts.
 User-visible output is limited to those layouts: never invent a layout, and never
 wrap one in an added preamble, commentary, summary, or extra section.
 
-## Canonical workflow
+## Composite control flow
 
-SCE VALIDATE `$ARGUMENTS`
+Keep phase results as internal state and continue immediately whenever the
+canonical workflow says to continue. Stop only at a user wait or terminal branch.
+Approval, clarification, revision, failed-validation repair, and bootstrap waits
+resume this same skill in the same session. Never expose an internal phase result
+as the workflow's final response.
 
 ## Input
 
@@ -51,7 +55,7 @@ candidate path), so every emitted command is directly runnable.
 
 Run the **Validation phase** with the plan name or path.
 
-the **Validation phase** exclusively owns:
+The **Validation phase** exclusively owns:
 
 - Resolving one plan.
 - Confirming every implementation task is complete.
@@ -62,129 +66,7 @@ the **Validation phase** exclusively owns:
 
 Do not duplicate any of it. Do not write the Validation Report yourself.
 
-Branch on the report's `Status:`.
-
-`blocked` -> Do not run context synchronization. Print the blocked Markdown
-report as returned. Do not rephrase it into a different layout. Stop.
-
-`failed` -> Do not run context synchronization. Print the failed Markdown
-report as returned. It is already a session handoff: self-contained, actionable,
-and ending with `/validate {plan-path}` after repairs.
-
-Do not rewrite it into a shorter summary. Do not drop the retry command. Do not
-add an alternate continuation that replaces `/validate`.
-
-Stop. Do not mark the plan finished. Do not continue to context synchronization.
-Do not start the repair work in this workflow unless the user explicitly asks
-to continue here; the default is that the handoff can leave this session.
-
-`validated` -> Pass the complete validated Markdown result to
-the **Plan context synchronization phase**.
-
-Do not reconstruct, summarize, or reinterpret the validation result before
-passing it.
-
-### 2. Synchronize plan context
-
-Run the **Plan context synchronization phase** only with a `Status: validated` Markdown result
-from the **Validation phase**.
-
-Do not run the **Plan context synchronization phase** for `failed` or `blocked`. Those are not
-success states.
-
-Pass the validated result verbatim. It is the authoritative handoff, and
-the **Plan context synchronization phase** owns reading the plan path, required context paths,
-validation evidence, and reported context impact out of it.
-
-Do not restate, summarize, or reconstruct any part of the validation result.
-
-Branch on the synchronization result.
-
-`blocked` -> Validation itself succeeded and is already recorded in the plan.
-Render the **Context synchronization blocked** layout from
-`references/output.md`. Nothing records the skipped synchronization, so it is
-lost once this session ends.
-
-Stop.
-
-`synced` | `no_context_change` -> Print out the report
-the **Plan context synchronization phase** returned. Continue to the next step.
-
-### 3. Report completion
-
-Return exactly one completion block. Do not start another workflow.
-
-Render the **Completion** layout from `references/output.md`.
-
-When the synchronization status was `no_context_change`, keep the same
-completion block. "Synchronized" here means the final context pass finished
-successfully, including the case where no edit was warranted.
-
-Stop.
-
-## Rules
-
-- Validate at most one plan per invocation.
-- Do not duplicate the internal instructions of embedded phases.
-- Do not run final validation when implementation tasks remain; the **Validation phase**
-  returns `blocked`, and this workflow stops.
-- Run the **Plan context synchronization phase** only when the **Validation phase** returned
-  `Status: validated`. Do not run it for `failed` or `blocked`.
-- On `failed`, print the handoff Markdown as returned and stop. Preserve the
-  retry `/validate {plan-path}` instruction. Do not synchronize context.
-- Do not implement remaining plan tasks from this workflow unless the user
-  explicitly continues in-session after a failed handoff.
-- Do not create a Git commit or push changes.
-- Do not mark the plan archived or delete the plan.
-- Do not execute a follow-up `/next-task`, `/change-to-plan`, or `/validate`
-  yourself.
-- Do not infer success when an embedded phase returns a non-success status.
-- Preserve validation evidence already written to the plan when context
-  synchronization fails.
-
-## Embedded phase behavior
-
-## Internal phase: Validation phase
-
-# SCE Validation
-
-## Purpose
-
-Prove that one finished SCE plan meets its acceptance criteria and repository
-validation bar, then record the evidence on the plan and return one Markdown
-result.
-
-This skill owns:
-
-- Resolving one plan.
-- Confirming every implementation task is complete.
-- Running the plan's full validation commands and each acceptance criterion
-  check.
-- Removing temporary scaffolding introduced by the change.
-- Writing the Validation Report into the plan.
-- Marking acceptance criteria against the evidence.
-- Recording one Markdown validation result.
-
-Return a result matching:
-
-`references/output.md`
-
-Write plan-file evidence matching:
-
-the **Plan-file validation report** section embedded in this file
-
-Context synchronization is not this skill's job. The invoking `/validate`
-workflow runs the **Plan context synchronization phase** only after a `validated` result.
-
-## Input
-
-The invoking workflow provides:
-
-- A plan name or path.
-
-## Workflow
-
-### 1. Resolve the plan
+#### 1.1 Resolve the plan
 
 Resolve the supplied plan name or path to exactly one existing plan under
 `context/plans/`.
@@ -196,7 +78,7 @@ with the matching candidates.
 
 Read the selected plan before exploring the repository.
 
-### 2. Confirm implementation is finished
+#### 1.2 Confirm implementation is finished
 
 Set internal status `blocked` with incomplete tasks listed when any implementation task
 remains incomplete.
@@ -204,7 +86,7 @@ remains incomplete.
 Final validation measures finished work. Do not run the full suite against a
 partial stack, and do not complete remaining tasks here.
 
-### 3. Read the validation contract from the plan
+#### 1.3 Read the validation contract from the plan
 
 From the plan, collect:
 
@@ -219,7 +101,7 @@ Prefer the plan's authored checks. Fall back to repository-primary test, lint,
 and format commands only when `Full validation` is absent, and record that
 fallback under notes on a `validated` or `failed` result.
 
-### 4. Remove temporary scaffolding
+#### 1.4 Remove temporary scaffolding
 
 Before or while running checks, remove temporary scaffolding introduced during
 the change when it is clearly throwaway:
@@ -232,7 +114,7 @@ Do not delete durable product code, tests, configuration, or context files.
 
 Record every removed path. When nothing temporary remains, report `None.`
 
-### 5. Run full validation and acceptance checks
+#### 1.5 Run full validation and acceptance checks
 
 Run the plan's `Full validation` commands.
 
@@ -251,7 +133,7 @@ inspection confirmed the criterion.
 Do not run task-by-task implementation work for incomplete tasks. That belongs
 to `/next-task`.
 
-### 6. Update the plan
+#### 1.6 Update the plan
 
 For `validated` and `failed` outcomes:
 
@@ -265,7 +147,7 @@ Do not reopen completed tasks, rewrite task evidence, or change the task stack.
 
 For `blocked`, leave the plan file unchanged.
 
-### 7. Determine context impact for the handoff
+#### 1.7 Determine context impact for the handoff
 
 On `validated` only, classify the durable context impact of the finished plan
 so the **Plan context synchronization phase** can start from the plan's own requirements:
@@ -280,7 +162,7 @@ Do not edit context files here.
 
 On `failed` or `blocked`, omit context impact; context sync will not run.
 
-### 8. Return the internal state
+#### 1.8 Return the internal state
 
 Set exactly one internal state:
 
@@ -295,7 +177,7 @@ Set exactly one internal state:
 Record only the Markdown report. Do not add explanatory prose before or after
 it. Do not return internal state.
 
-## Boundaries
+### Validation boundaries
 
 Do not:
 
@@ -313,47 +195,48 @@ Do not:
 - Return a internal state.
 - Run plan context synchronization. The workflow owns that step.
 
-## Completion
 
-The skill is complete after:
 
-- One plan was resolved, or resolution failed and was reported.
-- Implementation completeness was checked.
-- Validation ran to a terminal state, or a blocker prevented it.
-- One valid internal state matching `references/output.md` was
-  returned.
+Branch on the report's `Status:`.
 
-## Internal phase: Plan context synchronization phase
+`blocked` -> Do not run context synchronization. Print the blocked Markdown
+report as returned. Do not rephrase it into a different layout. Stop.
 
-# SCE Plan Context Sync
+`failed` -> Do not run context synchronization. Print the failed Markdown
+report as returned. It is already a session handoff: self-contained, actionable,
+and ending with `/validate {plan-path}` after repairs.
 
-## Purpose
+Do not rewrite it into a shorter summary. Do not drop the retry command. Do not
+add an alternate continuation that replaces `/validate`.
 
-Reconcile one fully validated plan with the repository's durable context and
-return a Markdown report.
+Stop. Do not mark the plan finished. Do not continue to context synchronization.
+Do not start the repair work in this workflow unless the user explicitly asks
+to continue here; the default is that the handoff can leave this session.
 
-This skill owns:
+`validated` -> Pass the complete validated Markdown result to the **Plan context synchronization phase**.
 
-- Validating the validation handoff.
-- Confirming the context root exists.
-- Discovering the context required by the finished plan.
-- Deciding whether durable context changed.
-- Editing and verifying the affected context files.
-- Recording one Markdown synchronization report.
+Do not reconstruct, summarize, or reinterpret the validation result before
+passing it.
 
-Use the report format in:
+### 2. Synchronize plan context
 
-`references/output.md`
+Run the **Plan context synchronization phase** only with a `Status: validated` Markdown result
+from the **Validation phase**.
 
-Task-level context sync may already have run after individual tasks. This skill
+Do not run the **Plan context synchronization phase** for `failed` or `blocked`. Those are not
+success states.
+
+Pass the validated result verbatim. It is the authoritative handoff, and the **Plan context synchronization phase**
+owns reading the plan path, required context paths, validation evidence, and
+reported context impact out of it.
+
+Do not restate, summarize, or reconstruct any part of the validation result.
+
+
+
+Task-level context sync may already have run after individual tasks. This phase
 is the plan-level final pass: it starts from the plan's `Context sync`
 requirements and the validated implementation, and closes gaps that remain.
-
-## Input
-
-The invoking workflow provides:
-
-- The complete internal state returned by the **Validation phase**.
 
 The validation result must report:
 
@@ -370,15 +253,13 @@ Treat that Markdown as the authoritative handoff for:
 - Scaffolding removals.
 - Reported context impact, required context paths, and affected areas.
 
-This skill must not be run for `failed` or `blocked` validation results.
+This phase must not be run for `failed` or `blocked` validation results.
 Those are not success states. Same rule as the **Task context synchronization phase**: context sync
 runs only after a successful prior phase.
 
 Do not reconstruct a missing validation result from conversation history.
 
-## Workflow
-
-### 1. Validate the validation handoff
+#### 2.1 Validate the validation handoff
 
 Confirm that:
 
@@ -391,7 +272,7 @@ Confirm that:
 If the handoff is missing required information or is internally contradictory,
 do not modify context. Return a `blocked` Markdown report.
 
-### 2. Confirm the context root
+#### 2.2 Confirm the context root
 
 When `context/` does not exist, there is no durable memory to synchronize.
 Do not create it, and do not write context files outside it.
@@ -403,9 +284,9 @@ Return a `blocked` report whose required action is:
 State that validation itself succeeded and is recorded in the plan, and that
 plan context synchronization should run again once the context root exists.
 
-Bootstrapping is the user's action, not this skill's.
+Bootstrapping is the user's action, not this phase's.
 
-### 3. Discover applicable context
+#### 2.3 Discover applicable context
 
 Start with the validated internal state:
 
@@ -433,7 +314,7 @@ Do not scan or rewrite the entire `context/` tree by default.
 Do not create a new context file when an existing authoritative file can be
 updated coherently.
 
-#### The mandatory root pass
+##### The mandatory root pass
 
 Every invocation verifies these five files against code truth, whatever the
 reported classification is:
@@ -452,13 +333,13 @@ report rather than creating it to satisfy the pass.
 Report each of the five as verified or edited. Never declare synchronization
 done while one of them is unchecked.
 
-#### Plan context requirements
+##### Plan context requirements
 
 Every path or statement listed under the plan's `Context sync` section must be
 accounted for in the report as already accurate or updated. A requirement the
 finished code still does not satisfy is a blocker, not a note.
 
-### 4. Determine whether durable context changed
+#### 2.4 Determine whether durable context changed
 
 Use the reported context impact as a strong hint, then verify it against the
 finished implementation and existing context.
@@ -497,7 +378,7 @@ sync requirements.
 If the reported classification is inconsistent with the actual change, use the
 verified classification and explain the difference in the report.
 
-### 5. Synchronize context
+#### 2.5 Synchronize context
 
 Make the smallest coherent documentation change that preserves repository truth.
 
@@ -517,7 +398,7 @@ Create a new context file only when:
 - No existing file owns it coherently.
 - The new file has a clear place in the context map.
 
-#### Feature existence
+##### Feature existence
 
 Every feature the finished plan implemented must have at least one durable
 canonical description discoverable from `context/`, in a domain file under
@@ -530,14 +411,14 @@ description. Prefer a small, precise domain file over overloading
 This is not license to narrate the diff: describe what the feature is and how
 it behaves, not what was edited during the plan.
 
-#### Glossary
+##### Glossary
 
 Add a `context/glossary.md` entry for any domain language the plan introduced.
 New terminology is durable knowledge whatever the classification is.
 
-#### File hygiene
+##### File hygiene
 
-Every context file this skill writes must satisfy:
+Every context file this phase writes must satisfy:
 
 - One topic per file.
 - At most 250 lines. When an edit would push a file past 250 lines, split it
@@ -550,7 +431,7 @@ Every context file this skill writes must satisfy:
 When detail outgrows a shared file, migrate it into `context/{domain}/`, leave a
 concise pointer behind, and link the new file from `context/context-map.md`.
 
-### 6. Verify synchronization
+#### 2.6 Verify synchronization
 
 After edits, verify:
 
@@ -578,7 +459,7 @@ If synchronization cannot be completed without inventing facts or resolving a
 material contradiction, preserve safe edits when appropriate and return a
 `blocked` report.
 
-### 7. Return the Markdown report
+#### 2.7 Return the Markdown report
 
 Set exactly one report status:
 
@@ -593,7 +474,7 @@ context could not be synchronized safely.
 Record only the Markdown report. Do not add explanatory prose before or after
 it.
 
-## Boundaries
+### Plan context synchronization boundaries
 
 Do not:
 
@@ -612,21 +493,53 @@ Do not:
 - Delete a context file that has uncommitted changes.
 - Return internal state.
 
-## Completion
 
-The skill is complete after:
 
-- The context root was confirmed, or a `blocked` report named
-  `sce setup --bootstrap-context` as the required action.
-- The mandatory root pass was run.
-- Plan context requirements were checked.
-- Applicable durable context was synchronized and verified, no context change
-  was warranted, or a synchronization blocker was reported.
-- One Markdown report matching `references/output.md` was returned.
+Branch on the synchronization result.
+
+`blocked` -> Validation itself succeeded and is already recorded in the plan.
+Render the **Context synchronization blocked** layout from
+`references/output.md`. Nothing records the skipped synchronization, so it is
+lost once this session ends.
+
+Stop.
+
+`synced` | `no_context_change` -> Print out the report returned by the **Plan context synchronization phase**.
+Continue to the next step.
+
+### 3. Report completion
+
+Return exactly one completion block. Do not start another workflow.
+
+Render the **Completion** layout from `references/output.md`.
+
+When the synchronization status was `no_context_change`, keep the same
+completion block. "Synchronized" here means the final context pass finished
+successfully, including the case where no edit was warranted.
+
+Stop.
+
+## Rules
+
+- Validate at most one plan per invocation.
+- Do not duplicate the internal instructions of embedded phases.
+- Do not run final validation when implementation tasks remain; the **Validation phase**
+  returns `blocked`, and this workflow stops.
+- Run the **Plan context synchronization phase** only when the **Validation phase** returned
+  `Status: validated`. Do not run it for `failed` or `blocked`.
+- On `failed`, print the handoff Markdown as returned and stop. Preserve the
+  retry `/validate {plan-path}` instruction. Do not synchronize context.
+- Do not implement remaining plan tasks from this workflow unless the user
+  explicitly continues in-session after a failed handoff.
+- Do not create a Git commit or push changes.
+- Do not mark the plan archived or delete the plan.
+- Do not execute a follow-up `/next-task`, `/change-to-plan`, or `/validate`
+  yourself.
+- Do not infer success when an embedded phase returns a non-success status.
+- Preserve validation evidence already written to the plan when context
+  synchronization fails.
 
 ## Internal persisted-document format: Plan-file validation report
-
-# Plan-file Validation Report
 
 The Markdown section the **Validation phase** appends to the plan file when returning
 `validated` or `failed`. Write it at the end of `context/plans/{plan_name}.md`
@@ -635,10 +548,10 @@ under exactly one `## Validation Report` heading.
 This is plan-file content. The result returned to the workflow is defined
 separately in `references/output.md`.
 
-Do not author this section while planning. Only `/validate` through
-the **Validation phase** writes it.
+Do not author this section while planning. Only `/validate` through the **Validation phase**
+writes it.
 
-## Layout
+### Layout
 
 ```markdown
 ## Validation Report
@@ -680,7 +593,7 @@ After repairs, rerun:
 `/validate {plan path}`
 ```
 
-## Rules
+### Rules
 
 - Use **Status:** `validated` only when every acceptance criterion is met and
   every required full-validation command passed.
@@ -710,11 +623,3 @@ After repairs, rerun:
 - Do not rewrite task evidence or reopen completed tasks.
 - When a previous `## Validation Report` already exists, replace it with the new
   one rather than stacking duplicates.
-
-## Composite control flow
-
-Keep phase results as internal state and continue immediately whenever the
-canonical workflow says to continue. Stop only at a user wait or terminal branch.
-Approval, clarification, revision, failed-validation repair, and bootstrap waits
-resume this same skill in the same session. Never expose an internal phase result
-as the workflow's final response.
