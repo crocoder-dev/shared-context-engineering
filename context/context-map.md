@@ -24,6 +24,7 @@ Feature/domain context:
 - `context/sce/cli-observability-contract.md` (implemented config-backed runtime observability contract for the flat logging config-file shape with env-over-config fallback, concrete logger/telemetry runtime behavior plus logger and object-safe telemetry trait boundaries, AppContext observability wiring, generic `RunOutcome<L: Logger>` final rendering, runtime-classified repeated telemetry action protection, operator-facing `sce config show` observability reporting, and the trimmed `sce config validate` status-only validation surface)
 - `context/sce/shared-context-code-workflow.md`
 - `context/sce/shared-context-plan-workflow.md` (canonical `/change-to-plan` workflow, clarification/readiness gate contract, and one-task/one-atomic-commit task-slicing policy)
+- `context/sce/project-overview-html-skill.md` (current `sce-project-overview-html` skill contract for rendering `context/` Markdown memory into a disposable self-contained HTML overview at `context/tmp/project-overview.html`)
 - `context/sce/plan-code-overlap-map.md` (T01 overlap matrix for Shared Context Plan/Code, related commands, and core skill ownership/dedup targets)
 - `context/sce/dedup-ownership-table.md` (current-state canonical owner-vs-consumer matrix for shared SCE behavior domains and thin-command ownership boundaries)
 

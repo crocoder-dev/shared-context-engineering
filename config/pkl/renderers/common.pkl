@@ -43,5 +43,6 @@ skillDescriptions = new Mapping {
   ["sce-task-execution"] = "Use when user wants to Execute one approved task with explicit scope, evidence, and status updates."
   ["sce-atomic-commit"] = "Write atomic, repo-style git commits from a change summary or diff. Use when preparing commit messages, splitting work into coherent commits, or reviewing whether a commit is too broad."
   ["sce-validation"] = "Use when user wants to Run final plan validation and cleanup with evidence capture."
+  ["sce-project-overview-html"] = "Use when the user wants a project overview as HTML, a readable project summary page, a shareable project walkthrough, or to visualize the context memory as a single document."
 }
 

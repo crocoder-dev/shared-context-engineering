@@ -69,6 +69,7 @@ permission:
     "sce-context-sync": allow
     "sce-validation": allow
     "sce-atomic-commit": allow
+    "sce-project-overview-html": allow
 """
 }
 
@@ -90,6 +91,7 @@ skillDescriptions = new Mapping {
   ["sce-task-execution"] = "Executes a single planned implementation task with a mandatory approval gate, scope guardrails, and evidence capture. Use when a user wants to implement, run, or execute a specific task from a project plan — such as coding a feature, applying a patch, or making targeted file changes — while enforcing explicit scope boundaries, a pre-implementation confirmation prompt, test/lint verification, and status tracking in context/plans/{plan_id}.md."
   ["sce-atomic-commit"] = "Write atomic, repo-style git commits from a change summary or diff. Use when preparing commit messages, splitting work into coherent commits, or reviewing whether a commit is too broad."
   ["sce-validation"] = "Runs the final validation phase of a project plan by executing the full test suite, lint and format checks, removing temporary scaffolding, and writing a structured validation report with command outputs and success-criteria evidence to `context/plans/{plan_name}.md`. Use when the user wants to verify a completed implementation, confirm all success criteria are met, wrap up a plan, finalize a feature or fix, or sign off on a change before closing it out."
+  ["sce-project-overview-html"] = "Generates a single self-contained HTML document from the project's `context/` Markdown files so a human reader can quickly understand the project and how it works. Embeds Mermaid.js (client-side, CDN) so existing Mermaid diagrams in context render in-browser, and includes inline CSS for a clean, readable layout. Output is written to `context/tmp/project-overview.html` (disposable, gitignored). Use when the user wants a project overview as HTML, a readable project summary page, a shareable project walkthrough, or to visualize the context memory as a single document."
 }
 
 skillCompatibility = "opencode"
