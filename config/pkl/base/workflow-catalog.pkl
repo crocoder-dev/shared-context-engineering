@@ -9,6 +9,11 @@ class WorkflowRecord {
   argumentHint: String
   openCodeAgentSlug: String
   claudeAllowedTools: String
+
+  /// An optional workflow is generated for every target like any other, but is
+  /// installed only when a repository explicitly selects it. Core workflows
+  /// leave this at `false`.
+  optional: Boolean = false
 }
 
 workflows: Mapping<String, WorkflowRecord> = new Mapping {
@@ -65,5 +70,6 @@ workflows: Mapping<String, WorkflowRecord> = new Mapping {
     argumentHint = "[rebuild] [path ...]"
     openCodeAgentSlug = "shared-context-code"
     claudeAllowedTools = "Read, Glob, Grep, Edit, Write, Question, Skill, Bash"
+    optional = true
   }
 }

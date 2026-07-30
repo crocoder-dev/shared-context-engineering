@@ -65,6 +65,8 @@ Human text output renders group rows only for the resolved targets:
 - `Pi skills`
 - `Pi extensions`
 
+Within a resolved target, the required inventory is additionally scoped to the repository's optional-workflow selection. The doctor reads `integrations.optional_workflows` from `.sce/config.json`; an absent, unreadable, or key-less file means nothing is selected. There is no directory-detection fallback for optional workflows. An unselected optional workflow's command file and skill subtree are not part of the required inventory, so no child row and no missing-file problem is produced for them. A selected optional workflow's assets are required inventory like any core workflow's, keeping `[MISS]` and content-mismatch `[FAIL]` detection unchanged. Files belonging to a previously selected but now unselected optional workflow are not reported as stray; the doctor simply stops expecting them. See [setup local bootstrap](setup-repo-local-config-bootstrap.md).
+
 Integration checks for this contract inspect installed repo-root artifacts only.
 They validate file presence and content hashes against embedded OpenCode, Claude, and Pi setup assets.
 Generated `config/.opencode/**`, `config/.claude/**`, and `config/.pi/**` trees are out of scope for doctor integration checks in this change stream.

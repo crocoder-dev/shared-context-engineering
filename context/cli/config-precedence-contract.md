@@ -61,6 +61,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - The canonical JSON Schema for both global and repo-local `sce/config.json` files is authored in `config/pkl/base/sce-config-schema.pkl` and generated beneath `OUT_DIR/pkl-generated/config/schema/sce-config.schema.json` for repository builds.
 - `cli/src/services/config/schema.rs` embeds that `OUT_DIR` artifact at compile time as `SCE_CONFIG_SCHEMA_JSON`; packaged builds receive the same path from their validated fallback.
 - `sce config validate` and `sce doctor` both validate config-file structure against that shared generated schema before applying Rust-owned semantic checks such as duplicate custom `argv_prefix` detection and redundancy warnings.
+- Each reported schema-validation error is prefixed with the failing value's JSON-pointer location when it has one (for example `/integrations/optional_workflows/0: "nonesuch" is not one of "brownfield"`), so a rejected value names the key it came from; root-level errors keep their unprefixed text. Errors remain sorted and joined with ` | `.
 - After schema validation, `cli/src/services/config/schema.rs` deserializes top-level and nested config structure (`policies`, `policies.bash`, `policies.attribution_hooks`) into typed serde DTOs and applies focused Rust-owned mapping helpers for enum conversion and source attribution; policy-specific semantic checks are owned by `cli/src/services/config/policy.rs`.
 - The canonical top-level schema declaration `"$schema": "https://sce.crocoder.dev/config.json"` is a supported config key for both explicit and discovered `sce/config.json` files, including command-startup paths like `sce version` and other config-loading commands that parse config before normal command dispatch.
 - Startup/runtime config resolution now degrades gracefully only for default-discovered files: invalid discovered files are skipped and reported via collected `validation_errors`, while explicit `--config` / `SCE_CONFIG_FILE` targets still fail immediately on the same parse or validation errors.
@@ -80,10 +81,13 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `agent_trace.repository_id` must be a non-empty string when present.
 - `agent_trace.repository_remote` must be a non-empty string when present; the generated schema documents default `origin`.
 
-- `integrations` must be an object when present and currently allows only `target`.
+- `integrations` must be an object when present and currently allows `target` and `optional_workflows`; either key alone yields a parsed `IntegrationsConfig` with the other defaulting to empty.
 - `integrations.target` must be an array of unique canonical target IDs when present.
 - Supported target ID values: `opencode`, `claude`, `pi`.
 - Unknown target IDs fail schema validation.
+- `integrations.optional_workflows` must be an array of unique optional-workflow IDs when present; it records which optional workflows a repository has opted into. Its enum is derived in `config/pkl/base/sce-config-schema.pkl` from the workflow catalog's `optional` records rather than hand-listed, so marking a workflow optional in Pkl extends the accepted values with no Rust or schema edit. Currently the only accepted value is `brownfield`.
+- Unknown optional-workflow IDs and duplicate entries fail schema validation. Rust-side mapping validates each ID a second time against the embedded optional-workflow catalog (`parse_optional_workflow_id` in `cli/src/services/config/types.rs`), reporting the catalog's available IDs.
+- `sce setup` writes this key: it records the selection resolved for the run and reads the stored value back when `--workflow` is absent, which is the only consumer of the key today. See [setup local bootstrap](../sce/setup-repo-local-config-bootstrap.md).
 
 - `policies` must be an object when present and currently allows `attribution_hooks`, `database_retry`, and `bash`.
 - `policies.attribution_hooks` must be an object when present and currently allows `enabled`; the generated schema documents default `true`, and explicit `enabled: false` remains a valid opt-out alongside the runtime `SCE_ATTRIBUTION_HOOKS_DISABLED` environment opt-out.

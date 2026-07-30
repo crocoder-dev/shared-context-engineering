@@ -13,21 +13,6 @@ pub struct SetupCommand {
 
 impl SetupCommand {
     pub fn execute<C: ContextWithRepoRoot>(&self, context: &C) -> Result<String, ClassifiedError> {
-        let setup_dispatch = if self.request.context_only {
-            None
-        } else if let Some(mode) = self.request.config_mode {
-            match setup::resolve_setup_dispatch(mode, &setup::InquireSetupTargetPrompter)
-                .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?
-            {
-                setup::SetupDispatch::Proceed(resolved_mode) => Some(resolved_mode),
-                setup::SetupDispatch::Cancelled => {
-                    return Ok(setup::setup_cancelled_text());
-                }
-            }
-        } else {
-            None
-        };
-
         let setup_start_path = match &self.request.hooks_repo_path {
             Some(path) => path.clone(),
             None => std::env::current_dir()
@@ -35,8 +20,39 @@ impl SetupCommand {
                 .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?,
         };
 
+        // The repository root is resolved before any prompt so the interactive
+        // optional-workflow prompt can pre-check the persisted selection.
         let repository_root = setup::ensure_git_repository(&setup_start_path)
             .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
+
+        let setup_dispatch = if self.request.context_only {
+            None
+        } else if let Some(mode) = self.request.config_mode {
+            // A supplied `--workflow` selection seeds the prompt; otherwise the
+            // repository's persisted selection does.
+            let optional_workflow_defaults = match &self.request.optional_workflows {
+                Some(selection) => selection.clone(),
+                None => setup::persisted_optional_workflows(&repository_root),
+            };
+
+            match setup::resolve_setup_dispatch(
+                mode,
+                &setup::InquireSetupTargetPrompter,
+                &optional_workflow_defaults,
+            )
+            .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?
+            {
+                setup::SetupDispatch::Proceed {
+                    mode: resolved_mode,
+                    optional_workflows,
+                } => Some((resolved_mode, optional_workflows)),
+                setup::SetupDispatch::Cancelled => {
+                    return Ok(setup::setup_cancelled_text());
+                }
+            }
+        } else {
+            None
+        };
 
         let mut sections = Vec::new();
 
@@ -71,9 +87,16 @@ impl SetupCommand {
         }
 
         // Handle config target installation (OpenCode/Claude assets).
-        if let Some(resolved_mode) = setup_dispatch {
-            let setup_message = setup::run_setup_for_mode(&repository_root, resolved_mode)
-                .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
+        if let Some((resolved_mode, prompted_optional_workflows)) = setup_dispatch {
+            // A prompted selection is authoritative for the run; without one the
+            // `--workflow` selection (or, absent that, the persisted one) applies.
+            let optional_workflows = prompted_optional_workflows
+                .as_deref()
+                .or(self.request.optional_workflows.as_deref());
+
+            let setup_message =
+                setup::run_setup_for_mode(&repository_root, resolved_mode, optional_workflows)
+                    .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
             sections.push(setup_message);
         }
 

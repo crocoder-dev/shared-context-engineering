@@ -191,6 +191,10 @@ pub enum Commands {
         /// Create the baseline durable-context tree without installing integrations
         #[arg(long)]
         bootstrap_context: bool,
+
+        /// Install an optional workflow by slug; repeat for several (default: none)
+        #[arg(long = "workflow", value_name = "SLUG")]
+        workflow: Vec<String>,
     },
 
     #[command(about = DOCTOR_CLAP_ABOUT, hide = !DOCTOR_SHOW_IN_TOP_LEVEL_HELP)]

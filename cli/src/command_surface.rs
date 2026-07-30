@@ -90,6 +90,7 @@ const HELP_SECTIONS: &[HelpSection] = &[
             HelpSectionBodyLine::Text("  sce setup --opencode --non-interactive --hooks"),
             HelpSectionBodyLine::Text("  sce setup --hooks --repo ../demo-repo"),
             HelpSectionBodyLine::Text("  sce setup --bootstrap-context"),
+            HelpSectionBodyLine::Text("  sce setup --claude --non-interactive --workflow brownfield"),
             HelpSectionBodyLine::Text("  sce doctor --format json"),
             HelpSectionBodyLine::Text("  sce doctor --fix"),
             HelpSectionBodyLine::Text("  sce version --format json"),
