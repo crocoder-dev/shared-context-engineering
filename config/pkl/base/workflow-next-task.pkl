@@ -489,9 +489,8 @@ local renderReviewSkillBody = (mode: model.WorkflowRenderMode) -> """
     - \(invokeTaskExecution.render.apply(mode)).
     - Synchronize context.
     - Run final validation.
-    - Review more than one task.
-    
-    \(model.packageOnlyBlock.apply("""
+    - Review more than one task.\(model.packageOnlyBlock.apply("""
+
     ## Completion
 
     The phase is complete after:
@@ -801,8 +800,7 @@ local executionSkillIntroduction = model.packageOnlyBlock.apply("""
     """)
 
 local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
-    \(executionSkillIntroduction.render.apply(mode))\(executionContractBlock.render.apply(mode))
-    The `approve` flag means the user pre-approved this task when invoking the
+    \(executionSkillIntroduction.render.apply(mode))\(executionContractBlock.render.apply(mode))The `approve` flag means the user pre-approved this task when invoking the
     workflow. It suppresses the approval question and the wait. It never suppresses
     the gate. Only the workflow entrypoint may set it, and only from an explicit
     user-supplied approval token. Never infer it.
@@ -989,9 +987,8 @@ local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Create a Git commit.
     - Push changes.
     - Modify unrelated files.
-    - Claim verification that was not performed.
-    
-    \(model.packageOnlyBlock.apply("""
+    - Claim verification that was not performed.\(model.packageOnlyBlock.apply("""
+
     ## Completion
 
     The phase is complete after:

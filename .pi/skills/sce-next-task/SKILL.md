@@ -157,8 +157,6 @@ Do not:
 - Run final validation.
 - Review more than one task.
 
-
-
 Branch on `status`:
 
 `blocked` -> Do not run implementation. Render the **Review blocked** layout from `references/output.md`. When `candidates` is present the plan could not be resolved, and each entry is a candidate path for `/next-task {candidate-path}`. `executable_tasks_remaining` true means another task remains executable and `/next-task {plan-path} {task-id}` selects one; false means no task in the plan can proceed until the plan is updated. Do not print the raw result. Stop.
@@ -188,7 +186,6 @@ The **Task execution phase** exclusively owns:
 - Updating the task status and evidence.
 
 Do not present an additional implementation confirmation.
-
 
 The `approve` flag means the user pre-approved this task when invoking the
 workflow. It suppresses the approval question and the wait. It never suppresses
@@ -379,8 +376,6 @@ Do not:
 - Modify unrelated files.
 - Claim verification that was not performed.
 
-
-
 Branch on the execution result.
 
 `declined` -> Render the **Declined** layout from `references/output.md`. Do not run context synchronization. Stop.
@@ -398,8 +393,6 @@ Run the **Task context synchronization phase** with the complete `complete` resu
 Pass that result verbatim. It is the authoritative handoff, and the **Task context synchronization phase** owns reading the plan, task, changed files, verification evidence, and reported context impact out of it.
 
 Do not restate, summarize, or reconstruct any part of the execution result.
-
-
 
 The execution result must have:
 
@@ -708,8 +701,6 @@ Do not:
   outside the decision gate in successful context synchronization.
 - Delete a context file that has uncommitted changes.
 - Return an execution-style internal state.
-
-
 
 Branch on the synchronization result.
 

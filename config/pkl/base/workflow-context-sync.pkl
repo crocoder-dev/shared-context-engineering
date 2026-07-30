@@ -58,7 +58,7 @@ local skillBody = (role: SyncRole, mode: workflow.WorkflowRenderMode) -> new Lis
   role.workflow.apply(mode)
   role.boundaries.apply(mode)
   role.completion.apply(mode)
-}.join("\n\n")
+}.toList().filter((section) -> !section.isEmpty).join("\n\n")
 
 local skillText = (role: SyncRole, mode: workflow.WorkflowRenderMode) ->
   role.frontmatter.apply(mode) + "\n\n" + skillBody.apply(role, mode)

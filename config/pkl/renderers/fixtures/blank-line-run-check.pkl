@@ -1,0 +1,14 @@
+import "../generation-contract-check.pkl" as contract
+
+local documentsWithBlankLineRun = new Mapping {
+  for (path, text in contract.workflowDocuments) {
+    [path] = if (path == "config/.opencode/skills/sce-next-task/SKILL.md")
+      "\(text)\n\n\nExtra trailing content."
+    else text
+  }
+}
+
+result = if (
+  documentsWithBlankLineRun.every((_, text) -> !text.contains("\n\n\n"))
+) "negative fixture unexpectedly contained no blank-line run"
+else error("generated workflow document contains two or more consecutive blank lines")

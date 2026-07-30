@@ -83,7 +83,6 @@ The **Atomic commit phase** exclusively owns:
 
 Do not duplicate any of it. Do not write commit messages yourself.
 
-
 The mode is supplied by the workflow from an explicit user-supplied token.
 Never infer it, and never switch modes mid-analysis.
 
@@ -195,8 +194,6 @@ Do not:
 - Mention `context/` synchronization activity in a commit message.
 - Claim a message was committed.
 - Run plan, task, or validation workflows.
-
-
 
 Branch on `status`:
 

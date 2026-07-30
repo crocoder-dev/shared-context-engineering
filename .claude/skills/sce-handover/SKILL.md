@@ -160,8 +160,6 @@ guidance is the entire loader contract.
 - Never create the `context/` root; `sce setup --bootstrap-context` owns that.
 - Do not begin, plan, or automate the loaded handover's recommended next step.
 
-
-
 ## Internal persisted-document format: Handover document
 
 The Markdown document writer mode creates under

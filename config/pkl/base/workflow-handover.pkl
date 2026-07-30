@@ -224,9 +224,7 @@ local renderSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Never treat a file outside `context/handovers/`, or a non-Markdown file, as a
       loadable handover.
     - Never create the `context/` root; `sce setup --bootstrap-context` owns that.
-    - Do not begin, plan, or automate the loaded handover's recommended next step.
-
-    \(persistedFormatInline.render.apply(mode))
+    - Do not begin, plan, or automate the loaded handover's recommended next step.\(persistedFormatInline.render.apply(mode))
     """
 
 local structuredCommand = new model.StructuredWorkflowDocument {

@@ -405,9 +405,8 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Invent acceptance criteria the plan does not state.
     - Claim verification that was not performed.
     - \(returnYamlResult.render.apply(mode)).
-    - \(invokePlanContextSync.render.apply(mode)). The workflow owns that step.
-    
-    \(model.packageOnlyBlock.apply("""
+    - \(invokePlanContextSync.render.apply(mode)). The workflow owns that step.\(model.packageOnlyBlock.apply("""
+
     ## Completion
     
     The phase is complete after:
