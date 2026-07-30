@@ -26,6 +26,7 @@ permission:
     "sce-next-task": allow
     "sce-validate": allow
     "sce-commit": allow
+    "sce-handover": allow
     "sce-decision": allow
 ---
 

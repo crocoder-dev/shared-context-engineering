@@ -2,6 +2,7 @@ import "../base/workflow-change-to-plan.pkl" as changeToPlan
 import "../base/workflow-next-task.pkl" as nextTask
 import "../base/workflow-validate.pkl" as validate
 import "../base/workflow-commit.pkl" as commit
+import "../base/workflow-handover.pkl" as handover
 import "../base/workflow-catalog.pkl" as catalog
 import "../base/workflow-content.pkl" as model
 
@@ -385,11 +386,27 @@ local commitWorkflow = new CompositeWorkflow {
   }.join("\n\n")
 }
 
+/// `sce-handover` invokes no sibling phase and waits for nothing mid-run, so its
+/// base module already exposes one complete, mode-invariant output reference as
+/// its sole `outputDocuments` entry; no additional composite-only header is
+/// needed the way the phase-based workflows above need one.
+local handoverWorkflow = new CompositeWorkflow {
+  identity = catalog.workflows["handover"]
+  command = handover.workflow.command.document
+  structuredSource = handover.structuredComposite
+  outputText = new Listing {
+    for (document in handover.structuredComposite.outputDocuments) {
+      document.text
+    }
+  }.join("\n\n")
+}
+
 workflows = new Mapping {
   [changeWorkflow.slug] = changeWorkflow
   [nextWorkflow.slug] = nextWorkflow
   [validateWorkflow.slug] = validateWorkflow
   [commitWorkflow.slug] = commitWorkflow
+  [handoverWorkflow.slug] = handoverWorkflow
 }
 
 /// Each target renders the same two documents per workflow package and differs
