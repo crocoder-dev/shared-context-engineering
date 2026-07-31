@@ -182,6 +182,6 @@
 - Tests that require filesystem I/O, git repository operations, or database connections belong in integration tests, not unit tests.
 - When a unit test needs filesystem, git, or database behavior that is not safe for `nix flake check`, delete it from the unit-test suite and reintroduce that coverage later as an integration test instead of keeping ignored tests in-tree.
 - Pure unit tests should test in-memory logic, parsing, validation, and data transformations without external dependencies.
-- The `TestTempDir` helper and similar filesystem fixtures should only be used in integration tests, not unit tests.
+- Temporary-directory helpers and similar filesystem fixtures should only be used in integration tests, not unit tests.
 - In-memory database tests (e.g., `LocalDatabaseTarget::InMemory`) are acceptable for unit tests since they don't touch the filesystem.
 - When adding new tests, prefer mocking/faking external dependencies over creating real filesystem or database state.

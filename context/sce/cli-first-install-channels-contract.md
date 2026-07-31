@@ -1,6 +1,6 @@
 # SCE CLI Install Channel Contract
 
-This file captures the current install/distribution contract for the `sce` CLI. It began with the first-wave `Nix`/`Cargo`/`npm` channel contract from `context/plans/sce-cli-first-install-channels.md` task `T01`; the current active model also approves Flatpak as an official source-built channel through `context/plans/nix-orchestrated-flatpak.md` task `T01` and approves GitHub Release Flatpak source-manifest assets through `context/plans/flatpak-github-release-assets.md` task `T01`.
+This file captures the current install/distribution contract for the `sce` CLI. It began as the first-wave `Nix`/`Cargo`/`npm` channel contract; the current active model also approves Flatpak as an official source-built channel and approves GitHub Release Flatpak source-manifest assets.
 
 ## Canonical naming
 

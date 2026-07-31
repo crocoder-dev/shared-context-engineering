@@ -1,6 +1,6 @@
 # SCE CLI npm Distribution Contract
 
-This file captures the implemented npm distribution slice from `context/plans/sce-cli-first-install-channels.md` task `T04`.
+This file captures the implemented npm distribution slice of the `sce` CLI install-channel contract.
 
 ## Package surface
 

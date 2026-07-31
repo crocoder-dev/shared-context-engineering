@@ -241,7 +241,6 @@ For a non-matching command, enforcement must allow the bash tool to continue nor
 
 ## Related files
 - `context/sce/bash-policy-satisfied-by-wrapper-exemption.md` (full `satisfied_by` matching model)
-- `context/plans/bash-tool-policy-enforcement.md`
 - `context/plans/claude-bash-policy-rust-hook.md`
 - `context/cli/config-precedence-contract.md`
 - `config/pkl/base/bash-policy-presets.pkl`, `config/pkl/generate.pkl`

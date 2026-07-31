@@ -13,7 +13,6 @@ Operator onboarding currently comes from `sce --help`, command-local `--help` ou
 - Turso adapters: `cli/src/services/auth_db/mod.rs`, `cli/src/services/local_db/mod.rs`, `cli/src/services/agent_trace_db/mod.rs`, and shared infrastructure in `cli/src/services/db/mod.rs`
 - Service domains: `cli/src/services/{agent_trace,agent_trace_db,auth,auth_command,auth_db,checkout,completion,config,db,default_paths,hooks,local_db,observability,output_format,resilience,security,setup,style,token_storage,version}` plus the split doctor module at `cli/src/services/doctor/{mod,command,inspect,render,fixes,types}.rs`; service-owned `command.rs` files own command payload structs for help/version/completion/auth/config/setup/doctor/hooks, and `cli/src/services/command_registry.rs` owns the static `RuntimeCommand` enum that dispatches them
 - Service lifecycle: `cli/src/services/lifecycle.rs` defines lifecycle-owned health/setup result types, the `ServiceLifecycle` trait with `diagnose`, `fix`, and `setup` methods for concrete providers, and the static `LifecycleProvider` enum used by `doctor`/`setup` to dispatch across `config`, `local_db`, `auth_db`, `agent_trace_db`, and `hooks` without boxed provider aggregation
-- Shared test temp-path helper: `cli/src/test_support.rs` (`TestTempDir`, test-only module)
 
 ## Onboarding documentation
 
@@ -136,7 +135,6 @@ A user-invocable `sync` command is not wired in the current CLI surface; local D
 - `cli/src/services/auth.rs` tests cover WorkOS device/token payload shape parsing, RFC 8628 device and refresh grant constant wiring, terminal OAuth error mapping with `Try:` guidance, polling decision handling for `authorization_pending`/`slow_down`/terminal outcomes, token-expiry evaluation, and refresh-token re-login guidance for terminal refresh errors.
 - `cli/src/services/auth_command/mod.rs` tests cover auth subcommand dispatch, login/logout/status text-or-JSON report shapes (including canonical credentials-file path reporting), `Try:` guidance preservation, and runtime-I/O readiness for the login flow.
 - `cli/src/services/setup/mod.rs` tests also verify embedded-manifest completeness against runtime `config/` trees, deterministic sorted path normalization, and target-scoped iterator behavior (`OpenCode`, `Claude`, `Both`); sandbox-sensitive filesystem install coverage has been removed from the unit-test slice for later integration-test coverage.
-- `cli/src/services/setup/mod.rs` and `cli/src/services/local_db/mod.rs` now share temporary path setup through `crate::test_support::TestTempDir` to keep filesystem test fixtures consistent and cleanup deterministic.
 - `cli/src/services/doctor/` unit coverage is intentionally limited to flake-safe output-shape assertions; filesystem, git, and real repair-flow coverage is deferred to future integration tests so `nix flake check` stays sandbox-safe.
 
 ## Dependency baseline

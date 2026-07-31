@@ -38,4 +38,3 @@
 
 - `context/sce/agent-trace-post-commit-dual-write.md`
 - `context/sce/agent-trace-rewrite-trace-transformation.md`
-- `context/plans/agent-trace-attribution-no-git-wrapper.md`

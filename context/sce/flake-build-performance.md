@@ -41,9 +41,7 @@ rebuilt while fetched sources, toolchains, and dependency closures remained
 available; it does not mean an empty Nix store. Warm timings include evaluation
 and cached-output lookup.
 
-The detailed session record is retained in
-`context/tmp/flake-speedup-benchmarks.md`; the durable results are summarized
-here.
+The durable results are summarized here.
 
 ## Before and after
 
