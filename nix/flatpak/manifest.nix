@@ -49,6 +49,10 @@ let
           build-args = [ "--share=network" ];
           env = {
             CARGO_HOME = "/run/build/sce/cargo";
+            # The sandbox compiles a full repository checkout without Pkl, so
+            # build.rs must consume the staged cli/package-fallback payload
+            # instead of demanding a pre-generated handoff directory.
+            SCE_CLI_PACKAGE_FALLBACK = "1";
           };
         };
         build-commands = [

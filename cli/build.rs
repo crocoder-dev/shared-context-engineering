@@ -12,6 +12,7 @@ const PKL_OUTPUT_DIR: &str = "pkl-generated";
 const STATIC_OUTPUT_DIR: &str = "static";
 const MIGRATIONS_ROOT: &str = "migrations";
 const GENERATED_INPUT_ENV: &str = "SCE_CLI_GENERATED_INPUT_DIR";
+const PACKAGE_FALLBACK_ENV: &str = "SCE_CLI_PACKAGE_FALLBACK";
 const GENERATED_INPUT_INVENTORY: &str = "SHA256SUMS";
 const CANONICAL_INPUT_INVENTORY: &str = "INPUTS.SHA256SUMS";
 const PACKAGE_FALLBACK_DIR: &str = "package-fallback";
@@ -69,9 +70,17 @@ fn prepare_build_artifacts() -> io::Result<()> {
 
     if repository_sources_available(repository_root) {
         println!("cargo:rerun-if-env-changed={GENERATED_INPUT_ENV}");
-        let generated_input_root = generated_input_root(env::var_os(GENERATED_INPUT_ENV))?;
-        stage_generated_input(repository_root, &generated_input_root, &out_dir)?;
-        stage_static_inputs(repository_root, &manifest_dir, &out_dir)?;
+        println!("cargo:rerun-if-env-changed={PACKAGE_FALLBACK_ENV}");
+        // Sandboxed source builds (Flatpak) compile a full repository checkout
+        // without Pkl, so they stage the packaging fallback and opt into it
+        // explicitly. Every other repository build must supply the handoff.
+        if package_fallback_requested(env::var_os(PACKAGE_FALLBACK_ENV))? {
+            stage_packaged_fallback(&manifest_dir, &out_dir)?;
+        } else {
+            let generated_input_root = generated_input_root(env::var_os(GENERATED_INPUT_ENV))?;
+            stage_generated_input(repository_root, &generated_input_root, &out_dir)?;
+            stage_static_inputs(repository_root, &manifest_dir, &out_dir)?;
+        }
     } else {
         stage_packaged_fallback(&manifest_dir, &out_dir)?;
     }
@@ -86,10 +95,26 @@ fn repository_sources_available(repository_root: &Path) -> bool {
         && repository_root.join("config/lib").is_dir()
 }
 
+fn package_fallback_requested(value: Option<OsString>) -> io::Result<bool> {
+    let Some(value) = value else {
+        return Ok(false);
+    };
+    let value = value
+        .to_str()
+        .ok_or_else(|| invalid_data(&format!("{PACKAGE_FALLBACK_ENV} must be valid UTF-8")))?;
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "0" | "false" => Ok(false),
+        "1" | "true" => Ok(true),
+        other => Err(invalid_data(&format!(
+            "{PACKAGE_FALLBACK_ENV} must be '1', 'true', '0', or 'false'; got '{other}'"
+        ))),
+    }
+}
+
 fn generated_input_root(value: Option<OsString>) -> io::Result<PathBuf> {
     let value = value.ok_or_else(|| {
         invalid_data(&format!(
-            "repository builds require a pre-generated Pkl payload. Set {GENERATED_INPUT_ENV} to a generated-input directory containing {PKL_OUTPUT_DIR}/, {GENERATED_INPUT_INVENTORY}, and {CANONICAL_INPUT_INVENTORY}"
+            "repository builds require a pre-generated Pkl payload. Set {GENERATED_INPUT_ENV} to a generated-input directory containing {PKL_OUTPUT_DIR}/, {GENERATED_INPUT_INVENTORY}, and {CANONICAL_INPUT_INVENTORY}, or set {PACKAGE_FALLBACK_ENV}=1 for Pkl-free sandboxed source builds that stage {PACKAGE_FALLBACK_DIR}/"
         ))
     })?;
     if value.is_empty() {
@@ -740,9 +765,9 @@ mod tests {
     };
 
     use super::{
-        generated_input_root, inventory_for_paths, stage_generated_input,
-        CANONICAL_GENERATOR_INPUTS, CANONICAL_INPUT_INVENTORY, GENERATED_INPUT_INVENTORY,
-        PKL_OUTPUT_DIR,
+        generated_input_root, inventory_for_paths, package_fallback_requested,
+        stage_generated_input, CANONICAL_GENERATOR_INPUTS, CANONICAL_INPUT_INVENTORY,
+        GENERATED_INPUT_INVENTORY, PKL_OUTPUT_DIR,
     };
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
@@ -839,7 +864,27 @@ mod tests {
         assert!(error
             .to_string()
             .contains("repository builds require a pre-generated Pkl payload"));
+        assert!(error.to_string().contains("SCE_CLI_PACKAGE_FALLBACK=1"));
         assert!(generated_input_root(Some(OsString::from(""))).is_err());
+    }
+
+    #[test]
+    fn package_fallback_opt_in_is_explicit() {
+        assert!(!package_fallback_requested(None).expect("absent value is not an opt-in"));
+        for unset in ["", "0", "false", "FALSE"] {
+            assert!(!package_fallback_requested(Some(OsString::from(unset)))
+                .expect("negative value is not an opt-in"));
+        }
+        for set in ["1", "true", "True"] {
+            assert!(package_fallback_requested(Some(OsString::from(set)))
+                .expect("positive value is an opt-in"));
+        }
+
+        let error = package_fallback_requested(Some(OsString::from("yes")))
+            .expect_err("unrecognized value must fail");
+        assert!(error
+            .to_string()
+            .contains("SCE_CLI_PACKAGE_FALLBACK must be"));
     }
 
     #[test]

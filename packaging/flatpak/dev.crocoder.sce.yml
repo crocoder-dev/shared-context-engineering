@@ -17,6 +17,7 @@ modules:
     - --share=network
     env:
       CARGO_HOME: /run/build/sce/cargo
+      SCE_CLI_PACKAGE_FALLBACK: '1'
   buildsystem: simple
   name: sce
   sources:

@@ -60,6 +60,7 @@ require_contains "command: sce" "manifest command is not sce"
 require_contains "org.freedesktop.Sdk.Extension.rust-stable" "Rust SDK extension is missing"
 require_contains "path: cli-package-fallback" "ephemeral package-fallback source is missing"
 require_contains "dest: cli/package-fallback" "package-fallback source destination is missing"
+require_contains "SCE_CLI_PACKAGE_FALLBACK" "package-fallback build-mode opt-in is missing"
 require_contains "cargo --offline build --release --manifest-path cli/Cargo.toml --bin sce" "offline Cargo source-build command is missing"
 
 if [[ "$manifest" == *"prepare-cli-generated-assets.sh"* ]]; then

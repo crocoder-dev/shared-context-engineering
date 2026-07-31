@@ -26,7 +26,7 @@ Implementation conventions for the source-built `dev.crocoder.sce` Flatpak chann
 ## Local and release builds
 
 - For local builds, preserve the release-source manifest plus local-checkout override model produced by the same Nix manifest function.
-- Flatpak's sandbox does not provide Pkl. Before generating a local or release manifest, `sce-flatpak.sh` runs the canonical package-fallback preparer on the host/Nix side into a temporary `cli-package-fallback/` support directory. The manifest declares that directory as a `type: dir` source with destination `cli/package-fallback`; sandboxed Cargo then validates and copies it into `OUT_DIR`.
+- Flatpak's sandbox does not provide Pkl. Before generating a local or release manifest, `sce-flatpak.sh` runs the canonical package-fallback preparer on the host/Nix side into a temporary `cli-package-fallback/` support directory. The manifest declares that directory as a `type: dir` source with destination `cli/package-fallback`, and its module `build-options.env` sets `SCE_CLI_PACKAGE_FALLBACK=1` so `build.rs` selects the fallback instead of demanding a generated-input handoff it cannot produce from the checked-out canonical sources; sandboxed Cargo then validates and copies it into `OUT_DIR`. `static-validate.sh` asserts that opt-in alongside the fallback source entries.
 - Keep default-flake validation static/AppStream-only, deterministic, and offline; full `flatpak-builder` source builds are invoked only through `release-flatpak-bundle` (CI) or `sce-flatpak <subcommand>` (developer opt-in).
 
 ## Release assets
