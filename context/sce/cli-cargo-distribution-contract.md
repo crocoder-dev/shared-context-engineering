@@ -1,6 +1,6 @@
 # SCE CLI Cargo Distribution Contract
 
-This file captures the implemented Cargo distribution slice from `context/plans/sce-cli-first-install-channels.md` task `T06`.
+This file captures the implemented Cargo distribution slice of the `sce` CLI install-channel contract.
 
 ## Package posture
 
