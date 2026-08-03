@@ -9,6 +9,7 @@ use crate::services::style::{label, success, value};
 use crate::services::{default_paths, default_paths::RepoPaths};
 
 pub mod command;
+pub(crate) mod config_merge;
 
 /// Canonical JSON payload for a newly bootstrapped repo-local `.sce/config.json`.
 /// Contains only the `$schema` declaration pointing to the SCE config JSON Schema.
@@ -647,6 +648,18 @@ pub fn install_embedded_setup_assets(
     install::install_embedded_setup_assets(repository_root, target, selected_optional_workflows)
 }
 
+/// Repairs a single merge-target asset (`.claude/settings.json` or
+/// `.opencode/opencode.json`) by reinstalling just that asset through the same
+/// per-asset merge-install path `sce setup` uses, so `sce doctor --fix` can
+/// restore a drifted SCE fragment without touching any other asset.
+pub(crate) fn repair_merge_target_asset(
+    repository_root: &Path,
+    target: SetupTarget,
+    relative_path: &str,
+) -> Result<()> {
+    install::repair_merge_target_asset(repository_root, target, relative_path)
+}
+
 pub(crate) fn setup_install_recovery_guidance(
     target: SetupTarget,
     destination_root: &Path,
@@ -800,13 +813,16 @@ mod install {
     use crate::services::default_paths::InstallTargetPaths;
     use crate::services::security::{ensure_directory_is_writable, redact_sensitive_text};
 
+    use super::config_merge;
     use super::{
-        cleanup_path_if_exists, concrete_targets_for, hook_install_recovery_guidance,
-        iter_embedded_assets_for_setup_target_with_selection, iter_required_hook_assets,
-        setup_install_recovery_guidance, EmbeddedAsset, RequiredHookInstallResult,
-        RequiredHookInstallStatus, RequiredHooksInstallOutcome, SetupInstallOutcome,
-        SetupInstallTargetResult, SetupTarget,
+        cleanup_path_if_exists, concrete_targets_for, embedded_assets_for_concrete_target,
+        hook_install_recovery_guidance, iter_embedded_assets_for_setup_target_with_selection,
+        iter_required_hook_assets, setup_install_recovery_guidance, EmbeddedAsset,
+        RequiredHookInstallResult, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
+        SetupInstallOutcome, SetupInstallTargetResult, SetupTarget,
     };
+    use crate::services::default_paths;
+    use crate::services::default_paths::claude_asset;
 
     pub(super) fn prepare_setup_hooks_repository(repository_root: &Path) -> Result<PathBuf> {
         let normalized_repository_root = normalize_user_repository_path(repository_root)?;
@@ -837,6 +853,31 @@ mod install {
             selected_optional_workflows,
             |from, to| fs::rename(from, to),
         )
+    }
+
+    pub(super) fn repair_merge_target_asset(
+        repository_root: &Path,
+        target: SetupTarget,
+        relative_path: &str,
+    ) -> Result<()> {
+        let asset = embedded_assets_for_concrete_target(target)
+            .iter()
+            .find(|asset| asset.relative_path == relative_path)
+            .with_context(|| {
+                format!("No embedded asset named '{relative_path}' for target {target:?}")
+            })?;
+
+        let install_targets = InstallTargetPaths::new(repository_root);
+        let destination_root = match target {
+            SetupTarget::OpenCode => install_targets.opencode_target_dir(),
+            SetupTarget::Claude => install_targets.claude_target_dir(),
+            SetupTarget::Pi => install_targets.pi_target_dir(),
+            SetupTarget::All => unreachable!("meta targets are expanded into concrete targets"),
+        };
+
+        install_single_asset_with_rename(target, &destination_root, asset, &mut |from, to| {
+            fs::rename(from, to)
+        })
     }
 
     fn install_required_git_hooks_in_resolved_repository<F>(
@@ -1156,7 +1197,7 @@ mod install {
         Ok(metadata.is_file())
     }
 
-    fn install_embedded_setup_assets_with_rename<F>(
+    pub(super) fn install_embedded_setup_assets_with_rename<F>(
         repository_root: &Path,
         target: SetupTarget,
         selected_optional_workflows: &[String],
@@ -1207,38 +1248,221 @@ mod install {
                 unreachable!("meta targets are expanded into concrete targets")
             }
         };
-        let staging_root = create_staging_root(repository_root, target)?;
 
-        if let Err(error) = write_assets_to_staging(&staging_root, assets) {
-            cleanup_path_if_exists(&staging_root);
-            return Err(error);
+        for asset in assets {
+            install_single_asset_with_rename(target, &destination_root, asset, rename_fn)?;
         }
 
-        if destination_root.exists() {
-            remove_existing_install_target(&destination_root).with_context(|| {
-                format!(
-                    "Failed to replace existing setup target '{}' without creating a backup",
-                    destination_root.display()
-                )
-            })?;
-        }
-
-        if let Err(error) = rename_fn(&staging_root, &destination_root).with_context(|| {
-            format!(
-                "Failed to swap staged install '{}' into destination '{}'",
-                staging_root.display(),
-                destination_root.display()
-            )
-        }) {
-            cleanup_path_if_exists(&staging_root);
-            return Err(error.context(setup_install_recovery_guidance(target, &destination_root)));
-        }
+        prune_stale_assets_for_concrete_target(&destination_root, target, assets)?;
 
         Ok(SetupInstallTargetResult {
             target,
             destination_root,
             installed_file_count: assets.len(),
         })
+    }
+
+    /// Deletes every catalog asset for `target` that this run did not install
+    /// (deselected, or dropped by a newer catalog), then removes any SCE-owned
+    /// skill directory left empty by that deletion. A directory still holding a
+    /// user file fails to remove and is left in place.
+    fn prune_stale_assets_for_concrete_target(
+        destination_root: &Path,
+        target: SetupTarget,
+        installed_assets: &[&'static EmbeddedAsset],
+    ) -> Result<()> {
+        let installed_paths: std::collections::HashSet<&'static str> = installed_assets
+            .iter()
+            .map(|asset| asset.relative_path)
+            .collect();
+
+        for asset in embedded_assets_for_concrete_target(target) {
+            if installed_paths.contains(asset.relative_path) {
+                continue;
+            }
+
+            let destination = destination_root.join(asset.relative_path);
+            if !destination.is_file() {
+                continue;
+            }
+
+            fs::remove_file(&destination).with_context(|| {
+                format!(
+                    "Failed to prune unselected setup asset '{}'",
+                    destination.display()
+                )
+            })?;
+
+            remove_empty_ancestor_directories(destination_root, &destination);
+        }
+
+        Ok(())
+    }
+
+    /// Removes now-empty parent directories of a pruned file, walking upward
+    /// until reaching `destination_root` or a directory that still has content
+    /// (removal fails and stops the walk).
+    fn remove_empty_ancestor_directories(destination_root: &Path, removed_file: &Path) {
+        let mut current = removed_file.parent();
+        while let Some(directory) = current {
+            if directory == destination_root || !directory.starts_with(destination_root) {
+                break;
+            }
+            if fs::remove_dir(directory).is_err() {
+                break;
+            }
+            current = directory.parent();
+        }
+    }
+
+    /// True for the one asset the Claude install path merges into an existing
+    /// document instead of overwriting: `.claude/settings.json`.
+    fn is_claude_settings_merge_target(target: SetupTarget, relative_path: &str) -> bool {
+        target == SetupTarget::Claude && relative_path == claude_asset::SETTINGS_FILE
+    }
+
+    /// True for the one asset the `OpenCode` install path merges into an existing
+    /// document instead of overwriting: `.opencode/opencode.json`.
+    fn is_opencode_config_merge_target(target: SetupTarget, relative_path: &str) -> bool {
+        target == SetupTarget::OpenCode
+            && relative_path == default_paths::repo_file::OPENCODE_MANIFEST
+    }
+
+    fn install_single_asset_with_rename<F>(
+        target: SetupTarget,
+        destination_root: &Path,
+        asset: &'static EmbeddedAsset,
+        rename_fn: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(&Path, &Path) -> io::Result<()>,
+    {
+        validate_embedded_relative_path(asset.relative_path)?;
+        let destination = destination_root.join(asset.relative_path);
+        let parent = destination
+            .parent()
+            .context("Embedded asset destination should have a parent directory")?;
+
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "Failed to create parent directory '{}' for setup asset",
+                parent.display()
+            )
+        })?;
+
+        if destination.is_dir() {
+            bail!(
+                "Setup asset destination '{}' is an existing directory, not a file. Try: remove or rename the directory and rerun 'sce setup'.",
+                destination.display()
+            );
+        }
+
+        let install_bytes: Vec<u8> = if is_claude_settings_merge_target(target, asset.relative_path)
+        {
+            let existing_bytes = if destination.is_file() {
+                Some(fs::read(&destination).with_context(|| {
+                    format!(
+                        "Failed to read existing setup asset '{}' for merge",
+                        destination.display()
+                    )
+                })?)
+            } else {
+                None
+            };
+            config_merge::merge_or_create_claude_settings(
+                existing_bytes.as_deref(),
+                asset.bytes,
+                &destination.display().to_string(),
+            )?
+        } else if is_opencode_config_merge_target(target, asset.relative_path) {
+            let existing_bytes = if destination.is_file() {
+                Some(fs::read(&destination).with_context(|| {
+                    format!(
+                        "Failed to read existing setup asset '{}' for merge",
+                        destination.display()
+                    )
+                })?)
+            } else {
+                None
+            };
+            config_merge::merge_or_create_opencode_config(
+                existing_bytes.as_deref(),
+                asset.bytes,
+                &destination.display().to_string(),
+            )?
+        } else {
+            asset.bytes.to_vec()
+        };
+
+        let staging_path = create_asset_staging_path(parent, asset.relative_path)?;
+        if let Err(error) = fs::write(&staging_path, &install_bytes).with_context(|| {
+            format!(
+                "Failed to write staged embedded asset '{}'",
+                staging_path.display()
+            )
+        }) {
+            cleanup_path_if_exists(&staging_path);
+            return Err(error);
+        }
+
+        if destination.exists() {
+            if let Err(error) = fs::remove_file(&destination).with_context(|| {
+                format!(
+                    "Failed to replace existing setup asset '{}' without creating a backup",
+                    destination.display()
+                )
+            }) {
+                cleanup_path_if_exists(&staging_path);
+                return Err(error);
+            }
+        }
+
+        if let Err(error) = rename_fn(&staging_path, &destination).with_context(|| {
+            format!(
+                "Failed to install staged asset '{}' into destination '{}'",
+                staging_path.display(),
+                destination.display()
+            )
+        }) {
+            cleanup_path_if_exists(&staging_path);
+            return Err(error.context(setup_install_recovery_guidance(target, &destination)));
+        }
+
+        Ok(())
+    }
+
+    fn create_asset_staging_path(parent: &Path, relative_path: &str) -> Result<PathBuf> {
+        let epoch_nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("System clock is before UNIX_EPOCH")?
+            .as_nanos();
+        let sanitized_name = relative_path.replace(['/', '\\'], "-");
+
+        for attempt in 0..1000_u16 {
+            let candidate = parent.join(format!(
+                ".sce-setup-staging-{sanitized_name}-{epoch_nanos}-{}-{attempt}",
+                std::process::id()
+            ));
+
+            match fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&candidate)
+            {
+                Ok(_) => return Ok(candidate),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("Failed to allocate staging file '{}'", candidate.display())
+                    });
+                }
+            }
+        }
+
+        bail!(
+            "Could not allocate a unique staging file under '{}'",
+            parent.display()
+        )
     }
 
     fn remove_existing_install_target(destination_root: &Path) -> Result<()> {
@@ -1268,35 +1492,6 @@ mod install {
         Ok(())
     }
 
-    fn write_assets_to_staging(
-        staging_root: &Path,
-        assets: &[&'static EmbeddedAsset],
-    ) -> Result<()> {
-        for asset in assets {
-            validate_embedded_relative_path(asset.relative_path)?;
-            let destination = staging_root.join(asset.relative_path);
-            let parent = destination
-                .parent()
-                .context("Embedded asset destination should have a parent directory")?;
-
-            fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "Failed to create staged parent directory '{}'",
-                    parent.display()
-                )
-            })?;
-
-            fs::write(&destination, asset.bytes).with_context(|| {
-                format!(
-                    "Failed to write staged embedded asset '{}'",
-                    destination.display()
-                )
-            })?;
-        }
-
-        Ok(())
-    }
-
     fn validate_embedded_relative_path(relative_path: &str) -> Result<()> {
         let path = Path::new(relative_path);
 
@@ -1314,52 +1509,6 @@ mod install {
         }
 
         Ok(())
-    }
-
-    fn create_staging_root(repository_root: &Path, target: SetupTarget) -> Result<PathBuf> {
-        let install_targets = InstallTargetPaths::new(repository_root);
-        let target_dir = match target {
-            SetupTarget::OpenCode => install_targets.opencode_target_dir(),
-            SetupTarget::Claude => install_targets.claude_target_dir(),
-            SetupTarget::Pi => install_targets.pi_target_dir(),
-            SetupTarget::All => {
-                unreachable!("meta targets are expanded into concrete targets")
-            }
-        };
-        let target_label = target_dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .context("Setup target directory should have a valid UTF-8 file name")?
-            .trim_start_matches('.');
-        let epoch_nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("System clock is before UNIX_EPOCH")?
-            .as_nanos();
-
-        for attempt in 0..1000_u16 {
-            let candidate = repository_root.join(format!(
-                ".sce-setup-staging-{target_label}-{epoch_nanos}-{}-{attempt}",
-                std::process::id()
-            ));
-
-            match fs::create_dir(&candidate) {
-                Ok(()) => return Ok(candidate),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => {
-                    return Err(error).with_context(|| {
-                        format!(
-                            "Failed to create staging directory '{}'",
-                            candidate.display()
-                        )
-                    });
-                }
-            }
-        }
-
-        bail!(
-            "Could not allocate a unique staging directory under '{}'",
-            repository_root.display()
-        )
     }
 }
 
@@ -1934,5 +2083,323 @@ mod tests {
         assert!(contains(SetupTarget::Pi, "prompts/next-task.md"));
         assert!(contains(SetupTarget::Pi, "extensions/sce/index.ts"));
         assert!(iter_required_hook_assets().all(|asset| !asset.bytes.is_empty()));
+    }
+
+    #[test]
+    fn install_preserves_user_owned_files_and_writes_sce_assets() {
+        let repo = init_git_repo("install-preserves-user-files");
+        let claude_dir = default_paths::InstallTargetPaths::new(&repo).claude_target_dir();
+
+        fs::create_dir_all(claude_dir.join("skills/my-own-skill")).expect("create user skill dir");
+        fs::create_dir_all(claude_dir.join("commands")).expect("create commands dir");
+
+        fs::write(claude_dir.join("MY_NOTES.md"), "top level user notes\n")
+            .expect("seed top-level user file");
+        fs::write(
+            claude_dir.join("skills/my-own-skill/SKILL.md"),
+            "user skill content\n",
+        )
+        .expect("seed user skill file");
+        fs::write(
+            claude_dir.join("commands/my-command.md"),
+            "user command content\n",
+        )
+        .expect("seed user command file");
+
+        let selection: Vec<String> = every_optional_workflow()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+
+        install_embedded_setup_assets(&repo, SetupTarget::Claude, &selection)
+            .expect("install should succeed");
+
+        assert_eq!(
+            fs::read_to_string(claude_dir.join("MY_NOTES.md")).expect("read top-level user file"),
+            "top level user notes\n"
+        );
+        assert_eq!(
+            fs::read_to_string(claude_dir.join("skills/my-own-skill/SKILL.md"))
+                .expect("read user skill file"),
+            "user skill content\n"
+        );
+        assert_eq!(
+            fs::read_to_string(claude_dir.join("commands/my-command.md"))
+                .expect("read user command file"),
+            "user command content\n"
+        );
+
+        let expected_next_task_bytes =
+            iter_embedded_assets_for_setup_target_with_selection(SetupTarget::Claude, &selection)
+                .find(|asset| asset.relative_path == "commands/next-task.md")
+                .expect("next-task asset should be in the catalog")
+                .bytes;
+        assert_eq!(
+            fs::read(claude_dir.join("commands/next-task.md")).expect("read installed sce asset"),
+            expected_next_task_bytes
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn install_merges_into_existing_claude_settings_json_and_stays_idempotent() {
+        let repo = init_git_repo("install-merges-claude-settings");
+        let claude_dir = default_paths::InstallTargetPaths::new(&repo).claude_target_dir();
+
+        fs::create_dir_all(&claude_dir).expect("create claude dir");
+        fs::write(
+            claude_dir.join("settings.json"),
+            serde_json::to_string_pretty(&json!({
+                "permissions": {"allow": ["Bash(git *)"]},
+                "env": {"FOO": "bar"},
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [{"type": "command", "command": "echo user-hook"}]
+                        }
+                    ]
+                }
+            }))
+            .expect("serialize seeded settings"),
+        )
+        .expect("seed existing settings.json");
+
+        let selection: Vec<String> = every_optional_workflow()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+
+        install_embedded_setup_assets(&repo, SetupTarget::Claude, &selection)
+            .expect("first install should succeed");
+
+        let after_first =
+            fs::read_to_string(claude_dir.join("settings.json")).expect("read merged settings");
+        let merged: serde_json::Value =
+            serde_json::from_str(&after_first).expect("merged settings should be valid JSON");
+
+        assert_eq!(merged["permissions"]["allow"][0], "Bash(git *)");
+        assert_eq!(merged["env"]["FOO"], "bar");
+        let pre_tool_use = merged["hooks"]["PreToolUse"]
+            .as_array()
+            .expect("PreToolUse should be an array");
+        assert!(pre_tool_use
+            .iter()
+            .any(|entry| entry["hooks"][0]["command"] == "echo user-hook"));
+        assert!(pre_tool_use
+            .iter()
+            .any(|entry| entry["hooks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|hook| hook["command"]
+                    .as_str()
+                    .unwrap()
+                    .contains("run-sce-or-show-install-guidance.sh"))));
+
+        install_embedded_setup_assets(&repo, SetupTarget::Claude, &selection)
+            .expect("second install should succeed");
+
+        let after_second =
+            fs::read_to_string(claude_dir.join("settings.json")).expect("read re-merged settings");
+        assert_eq!(
+            after_first, after_second,
+            "two consecutive installs should merge to byte-identical output"
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn install_merges_into_existing_opencode_config_json_and_stays_idempotent() {
+        let repo = init_git_repo("install-merges-opencode-config");
+        let opencode_dir = default_paths::InstallTargetPaths::new(&repo).opencode_target_dir();
+
+        fs::create_dir_all(&opencode_dir).expect("create opencode dir");
+        fs::write(
+            opencode_dir.join("opencode.json"),
+            serde_json::to_string_pretty(&json!({
+                "model": "anthropic/claude",
+                "mcp": {"my-server": {"command": "my-server"}},
+                "plugin": ["./plugins/my-plugin.ts", "./plugins/sce-old-feature.ts"]
+            }))
+            .expect("serialize seeded opencode config"),
+        )
+        .expect("seed existing opencode.json");
+
+        let selection: Vec<String> = every_optional_workflow()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+
+        install_embedded_setup_assets(&repo, SetupTarget::OpenCode, &selection)
+            .expect("first install should succeed");
+
+        let after_first = fs::read_to_string(opencode_dir.join("opencode.json"))
+            .expect("read merged opencode config");
+        let merged: serde_json::Value = serde_json::from_str(&after_first)
+            .expect("merged opencode config should be valid JSON");
+
+        assert_eq!(merged["model"], "anthropic/claude");
+        assert_eq!(merged["mcp"]["my-server"]["command"], "my-server");
+
+        let plugin = merged["plugin"]
+            .as_array()
+            .expect("plugin should be an array");
+        assert!(plugin.contains(&json!("./plugins/my-plugin.ts")));
+        assert!(plugin.contains(&json!("./plugins/sce-bash-policy.ts")));
+        assert!(plugin.contains(&json!("./plugins/sce-agent-trace.ts")));
+        assert!(!plugin.contains(&json!("./plugins/sce-old-feature.ts")));
+
+        install_embedded_setup_assets(&repo, SetupTarget::OpenCode, &selection)
+            .expect("second install should succeed");
+
+        let after_second = fs::read_to_string(opencode_dir.join("opencode.json"))
+            .expect("read re-merged opencode config");
+        assert_eq!(
+            after_first, after_second,
+            "two consecutive installs should merge to byte-identical output"
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn reinstall_with_empty_selection_prunes_deselected_workflow_without_touching_sibling_skill() {
+        let repo = init_git_repo("install-prunes-deselected-workflow");
+        let claude_dir = default_paths::InstallTargetPaths::new(&repo).claude_target_dir();
+
+        let brownfield_selection = vec!["brownfield".to_string()];
+        install_embedded_setup_assets(&repo, SetupTarget::Claude, &brownfield_selection)
+            .expect("initial install with brownfield selected should succeed");
+
+        let brownfield_command = claude_dir.join("commands/brownfield.md");
+        let brownfield_skill_dir = claude_dir.join("skills/sce-brownfield");
+        assert!(
+            brownfield_command.is_file(),
+            "brownfield command should be installed"
+        );
+        assert!(
+            brownfield_skill_dir.is_dir(),
+            "brownfield skill dir should be installed"
+        );
+
+        fs::create_dir_all(claude_dir.join("skills/my-skill")).expect("create user skill dir");
+        fs::write(
+            claude_dir.join("skills/my-skill/SKILL.md"),
+            "sibling user skill\n",
+        )
+        .expect("seed sibling user skill file");
+
+        install_embedded_setup_assets(&repo, SetupTarget::Claude, &[])
+            .expect("reinstall with empty selection should succeed");
+
+        assert!(
+            !brownfield_command.exists(),
+            "deselected workflow command should be pruned"
+        );
+        assert!(
+            !brownfield_skill_dir.exists(),
+            "deselected workflow skill dir should be pruned entirely once empty"
+        );
+        assert_eq!(
+            fs::read_to_string(claude_dir.join("skills/my-skill/SKILL.md"))
+                .expect("read sibling user skill file"),
+            "sibling user skill\n"
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn reinstall_with_empty_selection_keeps_pruned_skill_dir_holding_a_user_file() {
+        let repo = init_git_repo("install-prunes-but-keeps-user-file");
+        let claude_dir = default_paths::InstallTargetPaths::new(&repo).claude_target_dir();
+
+        let brownfield_selection = vec!["brownfield".to_string()];
+        install_embedded_setup_assets(&repo, SetupTarget::Claude, &brownfield_selection)
+            .expect("initial install with brownfield selected should succeed");
+
+        let brownfield_skill_dir = claude_dir.join("skills/sce-brownfield");
+        fs::write(
+            brownfield_skill_dir.join("MY_OVERRIDE.md"),
+            "user file inside sce skill dir\n",
+        )
+        .expect("seed user file inside sce-owned skill dir");
+
+        install_embedded_setup_assets(&repo, SetupTarget::Claude, &[])
+            .expect("reinstall with empty selection should succeed");
+
+        assert!(
+            !brownfield_skill_dir.join("SKILL.md").exists(),
+            "deselected workflow skill file should be pruned"
+        );
+        assert!(
+            brownfield_skill_dir.is_dir(),
+            "sce-owned skill dir should survive because it still holds a user file"
+        );
+        assert_eq!(
+            fs::read_to_string(brownfield_skill_dir.join("MY_OVERRIDE.md"))
+                .expect("read user file inside pruned skill dir"),
+            "user file inside sce skill dir\n"
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn install_cleans_up_staging_and_reports_asset_path_on_rename_failure() {
+        let repo = init_git_repo("install-rename-failure");
+        let selection: Vec<String> = every_optional_workflow()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+
+        let claude_dir = default_paths::InstallTargetPaths::new(&repo).claude_target_dir();
+        let failing_destination = claude_dir.join("commands/next-task.md");
+
+        let result = install::install_embedded_setup_assets_with_rename(
+            &repo,
+            SetupTarget::Claude,
+            &selection,
+            |from, to| {
+                if to == failing_destination {
+                    Err(std::io::Error::other("simulated rename failure"))
+                } else {
+                    fs::rename(from, to)
+                }
+            },
+        );
+
+        let error = result.expect_err("rename failure should surface as an error");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(&failing_destination.display().to_string()),
+            "error should name the failing asset path: {message}"
+        );
+        assert!(
+            message.contains("does not create backups"),
+            "error should include recovery guidance: {message}"
+        );
+
+        let commands_staging_dir = claude_dir.join("commands");
+        if commands_staging_dir.exists() {
+            let leftover_staging_files = fs::read_dir(&commands_staging_dir)
+                .expect("read commands staging dir")
+                .filter_map(Result::ok)
+                .any(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".sce-setup-staging-")
+                });
+            assert!(
+                !leftover_staging_files,
+                "staging artifact for the failed asset should be cleaned up"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&repo);
     }
 }

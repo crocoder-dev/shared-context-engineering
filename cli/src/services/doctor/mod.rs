@@ -21,7 +21,7 @@ pub(crate) mod types;
 pub mod command;
 
 use fixes::build_manual_fix_results;
-use inspect::build_report_with_lifecycle_problems;
+use inspect::{build_report_with_lifecycle_problems, repair_merge_target_configs};
 use render::render_report;
 use types::{
     DoctorFixResultRecord, DoctorProblem, FixResult, HookDoctorReport, ProblemCategory,
@@ -129,6 +129,7 @@ fn execute_doctor_with_lifecycle_providers(
     }
 
     let mut fix_results = fix_lifecycle_providers(context, &providers, &initial_problems);
+    fix_results.extend(repair_merge_target_configs(repository_root));
     let final_problems = diagnose_lifecycle_providers(context, &providers);
     let final_doctor_problems = final_problems
         .into_iter()

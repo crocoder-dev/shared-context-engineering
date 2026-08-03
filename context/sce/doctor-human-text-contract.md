@@ -68,7 +68,7 @@ Human text output renders group rows only for the resolved targets:
 Within a resolved target, the required inventory is additionally scoped to the repository's optional-workflow selection. The doctor reads `integrations.optional_workflows` from `.sce/config.json`; an absent, unreadable, or key-less file means nothing is selected. There is no directory-detection fallback for optional workflows. An unselected optional workflow's command file and skill subtree are not part of the required inventory, so no child row and no missing-file problem is produced for them. A selected optional workflow's assets are required inventory like any core workflow's, keeping `[MISS]` and content-mismatch `[FAIL]` detection unchanged. Files belonging to a previously selected but now unselected optional workflow are not reported as stray; the doctor simply stops expecting them. See [setup local bootstrap](setup-repo-local-config-bootstrap.md).
 
 Integration checks for this contract inspect installed repo-root artifacts only.
-They validate file presence and content hashes against embedded OpenCode, Claude, and Pi setup assets.
+They validate file presence and content against embedded OpenCode, Claude, and Pi setup assets: byte-exact `sha256` for every asset except the two JSON configs `sce setup` installs by merge (`.claude/settings.json`, `.opencode/opencode.json`), which instead validate that the file's SCE-owned fragment matches the embedded catalog — a file that also carries extra user keys, permissions, or plugins still renders `[PASS]` as long as that fragment is current (see [non-destructive setup install merge seam](setup-no-backup-policy-seam.md)).
 Generated `config/.opencode/**`, `config/.claude/**`, and `config/.pi/**` trees are out of scope for doctor integration checks in this change stream.
 
 Claude installed assets are grouped by repo-root `.claude/` relative path:
@@ -99,7 +99,8 @@ Integration child rows render as `[STATUS] relative/path (absolute/path)` in tex
 ## Non-goals for this contract slice
 
 - no JSON output shape or semantic changes
-- no `sce doctor --fix` behavior changes
 - no Claude plugin registry or preset-catalog checks
+
+These non-goals scoped the original text-contract slice only. A later plan (`non-destructive-setup-install` task `T05`) added `sce doctor --fix` behavior for the two merge-target JSON configs: when their SCE-owned fragment is missing or stale, `--fix` reinstalls just that one asset through the same per-asset merge-install path `sce setup` uses, leaving every other asset and every user key untouched. The status vocabulary and section order above are unchanged by that addition.
 
 See also: [doctor operator contract](agent-trace-hook-doctor.md), [CLI command surface](../cli/cli-command-surface.md).

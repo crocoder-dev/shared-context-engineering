@@ -1,27 +1,28 @@
-# Setup remove-and-replace install policy
+# Setup non-destructive per-asset install policy
 
-`cli/src/services/setup/mod.rs` uses a unified remove-and-replace policy for all setup-managed write flows. There is no backup creation or backup-based rollback.
+`cli/src/services/setup/mod.rs` installs every setup-managed file at file granularity: stage, remove the exact destination file if one exists, then swap the staged content into place. There is no backup creation or backup-based rollback, and setup-managed installs never remove an integration target directory as a whole. This per-file stage/swap choreography is shared by config install, required-hook install, and merge-target install; it is the JSON merge targets described below whose staged *content* differs from the embedded asset's bytes.
 
 ## Current state
 
-- Both config install (`.opencode`/`.claude`) and required hook install use the same remove-and-replace choreography:
-  1. Write canonical content to a unique staging file.
-  2. Remove the existing target (if present) directly.
-  3. Swap the staged content into the final target path.
-  4. On swap failure, clean the staging artifact and return deterministic recovery guidance (recover from version control if needed).
-- No `.backup` artifacts are created during any setup write flow.
-- No backup-based rollback is attempted on swap failure.
-- Recovery guidance is generic (not git-specific wording): "Setup does not create backups. Recover '<path>' from version control if needed."
-
-## Implemented behavior
-
-- Config install removes the existing target directory before swapping staged content. On swap failure, it cleans the staging artifact and returns recovery guidance.
-- Required hook install removes the existing hook file before swapping staged content. On swap failure, it cleans the staging artifact and returns recovery guidance.
-- Success output reports target, file count, and per-hook status (`installed`/`updated`/`skipped`) without any backup-related lines.
+- Config install (`.opencode`/`.claude`/`.pi`, `install_embedded_setup_assets` / `install_assets_for_concrete_target_with_rename`) writes every embedded asset to its own path under the target directory, creating parent directories as needed:
+  1. Write the asset's canonical content to a unique staging file next to its final destination.
+  2. If a file already exists at that exact destination path, remove only that file. If a directory exists there instead, fail with an actionable error instead of deleting it.
+  3. Swap the staged content into the final destination.
+  4. On swap failure, clean the staging artifact and return deterministic recovery guidance naming that asset's destination path (recover from version control if needed).
+- Setup never removes an integration target directory (`.opencode`, `.claude`, `.pi`) as a whole, and never touches a path it did not author. Files a repository placed inside an SCE-owned target directory — at the top level or nested inside an SCE-owned subdirectory such as `skills/` or `commands/` — survive a setup run untouched.
+- Required hook install (`install_required_git_hooks`) uses the same per-file stage/remove-if-present/swap choreography for each hook file; this predates and is unaffected by the config-install change above.
+- After the per-asset install loop, config install prunes stale SCE-owned paths: `prune_stale_assets_for_concrete_target` diffs the full embedded-asset catalog for the concrete target against the assets this run actually installed, and deletes every catalog path present in the former but not the latter (deselected optional-workflow files, or an asset a newer catalog renamed or dropped). Each successful deletion is followed by `remove_empty_ancestor_directories`, which removes now-empty parent directories upward until it reaches the target root or hits a directory that still holds something (a directory holding a user file fails to remove and is left in place, so a user file nested inside an SCE-owned skill directory survives even though the SCE file next to it is pruned). Pruning is stateless and catalog-derived — no install manifest is persisted — so it only ever considers paths the compiled-in catalog still names.
+- No `.backup` artifacts are created during any setup write flow, and no backup-based rollback is attempted on swap failure.
+- Recovery guidance is generic (not git-specific wording): "Setup ... does not create backups. Recover '<path>' from version control if needed."
+- Two config assets are merge targets instead of verbatim-content assets: `.claude/settings.json` for the Claude target, and `.opencode/opencode.json` for the OpenCode target. `install_single_asset_with_rename` detects each (`is_claude_settings_merge_target`, `is_opencode_config_merge_target`) and, before staging, computes the bytes to stage from `cli/src/services/setup/config_merge.rs` rather than writing the embedded asset's bytes directly. Both merge functions return the generated document verbatim when no existing file is present; otherwise each parses the existing file as JSON (a parse failure is a hard error naming the file's path, and nothing is written) and merges the generated document into it, preserving every other top-level key untouched:
+  - `merge_or_create_claude_settings`: `$schema` and, event-by-event, every hook entry whose command contains the marker `run-sce-or-show-install-guidance.sh` are SCE-owned and replaced from the generated document; every hook entry or event key the generated document does not declare is preserved untouched.
+  - `merge_or_create_opencode_config`: `$schema` is SCE-owned and replaced from the generated document; the `plugin` array is merged as a set — any existing entry whose path starts with `./plugins/sce-` is dropped (structural ownership, so a plugin path an older or renamed catalog once installed is still recognized and pruned even after the current generated document stops declaring it), then the generated document's `plugin` entries are appended.
+  The merged bytes then flow through the same stage/remove-if-present/swap choreography as every other asset, so this is a content-computation seam layered on the shared install policy, not a different write path.
+- `sce doctor --fix` reuses this same per-asset install path for the two merge targets rather than running its own repair logic: `crate::services::setup::repair_merge_target_asset` looks up the one embedded asset by relative path and reinstalls only it through `install_single_asset_with_rename`, so a drifted `.claude/settings.json` or `.opencode/opencode.json` is repaired by merge — every other installed asset and every user key is left untouched. `sce doctor` (diagnose or fix) tells a merge target's drift apart from a legitimately extended file by SCE-fragment equality (`config_merge::claude_settings_fragment_is_current`, `config_merge::opencode_config_fragment_is_current`) instead of the byte-exact `sha256` check every other integration asset uses (see [doctor human text contract](doctor-human-text-contract.md)).
 
 ## Scope boundary
 
-- This file captures the unified remove-and-replace install policy and its use by both config-install and required-hook install flows.
-- Future setup-managed write flows should follow the same remove-and-replace pattern instead of introducing backup creation.
+- This file captures the non-destructive, per-file install policy shared by config-install and required-hook install flows, including the merge-target content-computation seam for `.claude/settings.json`.
+- Future setup-managed write flows should follow the same per-file stage/remove-if-present/swap pattern instead of introducing backup creation or whole-directory replacement. A future merge target computes its staged content the same way `.claude/settings.json` does, ahead of the shared stage/swap step.
 
 See also: [../overview.md](../overview.md), [../context-map.md](../context-map.md), [setup-githooks-install-flow.md](setup-githooks-install-flow.md)
