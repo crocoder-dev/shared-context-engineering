@@ -1409,6 +1409,13 @@ local IMPLEMENTATION_GATE = renderImplementationGate.apply("package")
 
 structuredComposite = new model.StructuredCompositeSource {
   command = structuredCommand
+  compositeSkillBody = model.nextTaskSkillBody
+  referenceDocuments = new Listing {
+    model.makeDocument.apply("references/plan-review.md", model.nextTaskPlanReview)
+    model.makeDocument.apply("references/task-execution.md", model.nextTaskTaskExecution)
+    model.makeDocument.apply("references/context-sync.md", model.nextTaskContextSync)
+    model.makeDocument.apply("references/output.md", model.nextTaskOutput)
+  }
   phases = new Listing {}
   internalDocuments = new Listing {}
   outputDocuments = new Listing {

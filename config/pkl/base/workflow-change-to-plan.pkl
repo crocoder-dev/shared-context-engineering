@@ -1439,6 +1439,13 @@ local PLAN_SUMMARY = """
 
 structuredComposite = new model.StructuredCompositeSource {
   command = structuredCommand
+  compositeSkillBody = model.changeToPlanSkillBody
+  referenceDocuments = new Listing {
+    model.makeDocument.apply("references/context-load.md", model.changeToPlanContextLoad)
+    model.makeDocument.apply("references/plan-authoring.md", model.changeToPlanPlanAuthoring)
+    model.makeDocument.apply("references/plan-template.md", model.changeToPlanPlanTemplate)
+    model.makeDocument.apply("references/output.md", model.changeToPlanOutput)
+  }
   phases = new Listing {}
   internalDocuments = new Listing {
     model.makeDocument.apply("Plan template", renderPlanTemplate.apply("composite"))

@@ -722,6 +722,13 @@ local VALIDATION_RESULT = renderValidationResult.apply("package")
 
 structuredComposite = new model.StructuredCompositeSource {
   command = structuredCommand
+  compositeSkillBody = model.validateSkillBody
+  referenceDocuments = new Listing {
+    model.makeDocument.apply("references/validation.md", model.validateValidation)
+    model.makeDocument.apply("references/context-sync.md", model.validateContextSync)
+    model.makeDocument.apply("references/validation-report.md", model.validateValidationReport)
+    model.makeDocument.apply("references/output.md", model.validateOutput)
+  }
   phases = new Listing {}
   internalDocuments = new Listing {
     model.makeDocument.apply("Plan-file validation report", renderValidationReport.apply("composite"))

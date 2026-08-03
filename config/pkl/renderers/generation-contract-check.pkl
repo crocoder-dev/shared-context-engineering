@@ -93,12 +93,17 @@ local brownfieldSkillDocuments = new Mapping {
   }
 }
 
-local decisionInvokingWorkflowPaths = new Mapping {
-  for (target in new Listing { ".opencode"; ".claude"; ".pi" }) {
-    ["config/\(target)/skills/sce-next-task/SKILL.md"] = true
-    ["config/\(target)/skills/sce-validate/SKILL.md"] = true
-  }
-}
+local isDecisionInvokingWorkflowDocument = (path: String) ->
+  path.contains("/skills/sce-next-task/") || path.contains("/skills/sce-validate/")
+
+local decisionWorkflowText = (documents: Mapping, workflowSlug: String) ->
+  new Listing {
+    for (path, text in documents) {
+      when (path.contains("/skills/\(workflowSlug)/")) {
+        text
+      }
+    }
+  }.join("\n")
 
 local expectedDecisionDocumentPaths = new Mapping {
   for (target in new Listing { ".opencode"; ".claude"; ".pi" }) {
@@ -181,6 +186,31 @@ local requiredBrownfieldSkillTokens = new Listing {
   "When the literal `rebuild` token was supplied, rewrite authority extends to"
 }
 
+local requiredPhaseReferencesBySkill = new Mapping {
+  ["sce-change-to-plan"] = new Listing {
+    "references/context-load.md"
+    "references/plan-authoring.md"
+    "references/plan-template.md"
+    "references/output.md"
+  }
+  ["sce-next-task"] = new Listing {
+    "references/plan-review.md"
+    "references/task-execution.md"
+    "references/context-sync.md"
+    "references/output.md"
+  }
+  ["sce-validate"] = new Listing {
+    "references/validation.md"
+    "references/context-sync.md"
+    "references/validation-report.md"
+    "references/output.md"
+  }
+  ["sce-commit"] = new Listing {
+    "references/atomic-commit.md"
+    "references/output.md"
+  }
+}
+
 local requiredDecisionTemplateTokens = new Listing {
   "## Context"
   "## Decision"
@@ -214,11 +244,11 @@ local forbiddenWorkflowReferenceTokens = new Listing {
   "references/commit-message-style.md"
 }
 
-/// Six cross-target workflow packages at nine artifacts each, plus the decision
-/// package and the retained non-workflow assets. Stating the total as a literal
-/// makes an unintended inventory change fail here instead of silently becoming
-/// the new expectation.
-local expectedArtifactPathCount = 71
+/// Six cross-target workflow packages, with package-local phase references on
+/// the four phase-based workflows, plus the decision package and retained
+/// non-workflow assets. Stating the total as a literal makes an unintended
+/// inventory change fail here instead of silently becoming the new expectation.
+local expectedArtifactPathCount = 101
 
 local assertExactArtifactPaths = (actual: Mapping) ->
   if (
@@ -239,10 +269,11 @@ local assertWorkflowReferences = (documents: Mapping) ->
 local assertDecisionWorkflowReferences = (documents: Mapping) ->
   if (
     documents.every((path, text) ->
-      if (decisionInvokingWorkflowPaths.containsKey(path))
-        requiredDecisionWorkflowTokens.every((token) -> text.contains(token))
-      else
-        !text.contains("`sce-decision`")
+      isDecisionInvokingWorkflowDocument.apply(path) || !text.contains("`sce-decision`")
+    )
+    && requiredDecisionWorkflowTokens.every((token) ->
+      decisionWorkflowText.apply(documents, "sce-next-task").contains(token)
+      && decisionWorkflowText.apply(documents, "sce-validate").contains(token)
     )
   ) "generated decision invocation: synchronization-only"
   else error("generated workflow document violates the synchronization-only sce-decision exception")
@@ -262,6 +293,21 @@ local assertDecisionDocumentPaths = (documents: Mapping) ->
     && expectedDecisionDocumentPaths.every((path, _) -> documents.containsKey(path))
   ) "generated decision package inventory: complete"
   else error("generated decision package inventory does not match the exact cross-target path contract")
+
+hidden assertPhaseReferenceContract = (documents: Mapping) ->
+  if (
+    new Listing { ".opencode"; ".claude"; ".pi" }.every((target) ->
+      requiredPhaseReferencesBySkill.every((skillSlug, references) ->
+        let (skillPath = "config/\(target)/skills/\(skillSlug)/SKILL.md")
+          documents.containsKey(skillPath)
+          && references.every((referencePath) ->
+            documents.containsKey("config/\(target)/skills/\(skillSlug)/\(referencePath)")
+            && documents[skillPath].contains("`\(referencePath)`")
+          )
+      )
+    )
+  ) "generated phase references: complete and resolvable"
+  else error("generated workflow package has a missing or unresolved phase reference")
 
 local assertDecisionContent = (documents: Mapping) ->
   if (
@@ -346,6 +392,7 @@ contractChecks {
   ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
   ["optional-workflow-manifest"] = assertOptionalWorkflowManifest.apply(generatedArtifacts)
   ["workflow-references"] = assertWorkflowReferences.apply(workflowDocuments)
+  ["phase-reference-contract"] = assertPhaseReferenceContract.apply(workflowDocuments)
   ["decision-invocation"] = assertDecisionWorkflowReferences.apply(compositeWorkflowDocuments)
   ["opencode-decision-permission"] = assertOpenCodeDecisionPermission.apply(opencode.agents)
   ["decision-package-paths"] = assertDecisionDocumentPaths.apply(decisionSkillDocuments)
