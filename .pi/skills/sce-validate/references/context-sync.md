@@ -1,0 +1,306 @@
+# Plan context synchronization phase
+
+Run this phase for step 2 of the workflow, and only with a `Status: validated`
+Markdown result from the validation phase. It is the plan-level final context
+pass: it starts from the plan's `Context sync` requirements and the validated
+implementation, and closes gaps that remain after any task-level syncs already
+ran.
+
+Do not run this phase for `failed` or `blocked`. Those are not success states.
+Same rule as the task context synchronization phase: context sync runs only after
+a successful prior phase.
+
+Pass the validated result verbatim. It is the authoritative handoff, and this
+phase owns reading the plan path, required context paths, validation evidence,
+and reported context impact out of it.
+
+Do not restate, summarize, or reconstruct any part of the validation result. Do
+not reconstruct a missing validation result from conversation history.
+
+Treat that Markdown as the authoritative handoff for:
+
+- The resolved plan path.
+- Validation commands and outcomes.
+- Acceptance-criteria evidence.
+- Scaffolding removals.
+- Reported context impact, required context paths, and affected areas.
+
+## 2.1 Validate the validation handoff
+
+Confirm that:
+
+- `Status:` is exactly `validated`.
+- `Plan:` names an existing plan path.
+- Acceptance-criteria evidence is present and every criterion is met.
+- Commands run are present.
+- A context-impact classification is present.
+
+If the handoff is missing required information or is internally contradictory, do
+not modify context. Return a `blocked` Markdown report.
+
+## 2.2 Confirm the context root
+
+When `context/` does not exist, there is no durable memory to synchronize. Do not
+create it, and do not write context files outside it.
+
+Return a `blocked` report whose required action is:
+
+`sce setup --bootstrap-context`
+
+State that validation itself succeeded and is recorded in the plan, and that plan
+context synchronization should run again once the context root exists.
+
+Bootstrapping is the user's action, not this phase's.
+
+## 2.3 Discover applicable context
+
+Start with the validated internal state:
+
+- **Context impact** classification, required context, and affected areas.
+- Acceptance-criteria evidence.
+- Commands run.
+
+Then read the plan's `Context sync` section and inspect existing repository
+context in this order when present:
+
+1. Paths named by the plan's `Context sync` section
+2. `context/context-map.md`
+3. Context files for the affected domain or subsystem
+4. `context/overview.md`
+5. `context/architecture.md`
+6. `context/glossary.md`
+7. `context/patterns.md`
+8. Operational, product, or decision records directly related to the finished
+   change
+
+Use the context map and existing links to locate authoritative files.
+
+Do not scan or rewrite the entire `context/` tree by default.
+
+Do not create a new context file when an existing authoritative file can be
+updated coherently.
+
+### The mandatory root pass
+
+Every invocation verifies these five files against code truth, whatever the
+reported classification is:
+
+- `context/overview.md`
+- `context/architecture.md`
+- `context/glossary.md`
+- `context/patterns.md`
+- `context/context-map.md`
+
+Verifying is not editing. A classification that warrants no root edit still
+requires reading each of these and confirming it is not contradicted by the
+finished implementation. A file that is absent is a gap; record it in the report
+rather than creating it to satisfy the pass.
+
+Report each of the five as verified or edited. Never declare synchronization done
+while one of them is unchecked.
+
+### Plan context requirements
+
+Every path or statement listed under the plan's `Context sync` section must be
+accounted for in the report as already accurate or updated. A requirement the
+finished code still does not satisfy is a blocker, not a note.
+
+## 2.4 Determine whether durable context changed
+
+Use the reported context impact as a strong hint, then verify it against the
+finished implementation and existing context.
+
+Durable context includes non-obvious repository knowledge such as:
+
+- User-visible or externally observable behavior.
+- Architecture, boundaries, ownership, and dependency direction.
+- Public interfaces, data contracts, and persistence behavior.
+- Operational procedures and important failure modes.
+- Security or privacy behavior.
+- Shared terminology.
+- Intentional limitations and meaningful design decisions.
+
+Do not document:
+
+- Details already obvious from the implementation.
+- Temporary debugging information.
+- A file-by-file narration of the change.
+- Test output that belongs only in validation evidence.
+- Speculation or future work not established by the finished plan.
+- Generic engineering practices.
+
+Interpret impact classifications as follows. Each governs which files are
+*edited*; none of them waives the mandatory root pass or the plan's Context sync
+requirements.
+
+- `none`: Make no edits beyond any correction the root pass or unmet plan context
+  requirement turns up.
+- `local`: Update the nearest existing authoritative context only when the new
+  behavior is not reliably discoverable from code.
+- `domain`: Update affected domain context and the context map when its links or
+  summaries changed.
+- `root`: Update the relevant root context and any affected domain context.
+
+If the reported classification is inconsistent with the actual change, use the
+verified classification and explain the difference in the report.
+
+## 2.5 Record qualifying architecture decisions
+
+During this successful synchronization, determine whether the completed change
+establishes or changes a system-wide important constraint involving one or more
+of:
+
+- System boundaries or ownership.
+- Public or cross-domain interfaces.
+- Data models or persistence.
+- Compatibility contracts.
+- Security posture.
+- Deployment or distribution strategy.
+- A major dependency.
+- A similarly durable constraint that is costly or risky to reverse.
+
+Routine implementation details, local refactors, naming and formatting choices,
+temporary experiments, and easily reversible choices do not qualify. Do not
+invoke a decision skill for them.
+
+Use the discovered context, existing decision records, and this evidence:
+
+- acceptance-criteria and validation evidence.
+
+Identify each qualifying decision, then handle qualifying decisions in
+deterministic order:
+
+1. Reuse a written ADR path already returned during this plan when it records the
+   same decision.
+2. Otherwise invoke `sce-decision` once with exactly one structured decision
+   request containing the decision, qualifying evidence, plan and task references,
+   related context and ADR paths, and any user-requested status.
+3. On `written`, retain the returned `adr_path` as synchronization evidence and
+   make it available for current-state context links before synchronization
+   completes. Reuse is valid evidence; do not create a duplicate ADR.
+4. On `blocked`, stop before current-state context edits and return a `blocked`
+   synchronization report carrying the decision-writing problem, impact, required
+   action, and retry condition.
+
+Invoke `sce-decision` only here, after a successful execution or validation
+handoff and during context synchronization. Do not invoke it from a non-success
+branch or for any non-decision purpose. When no decision qualifies, continue
+without invoking it and record that outcome in synchronization evidence.
+
+## 2.6 Synchronize context
+
+Make the smallest coherent documentation change that preserves repository truth.
+
+When editing context:
+
+- Describe the resulting behavior, not the validation session.
+- Preserve repository terminology and document structure.
+- Remove or correct statements contradicted by the finished implementation.
+- Update cross-references when files are added, moved, renamed, or superseded.
+- Keep one authoritative statement for each durable fact.
+- Avoid copying the validation result verbatim into context files.
+- Do not change application code, tests, or plan validation evidence.
+
+Create a new context file only when:
+
+- The knowledge is durable and non-obvious.
+- No existing file owns it coherently.
+- The new file has a clear place in the context map.
+
+### Feature existence
+
+Every feature the finished plan implemented must have at least one durable
+canonical description discoverable from `context/`, in a domain file under
+`context/{domain}/` or in `context/overview.md` for a cross-cutting feature.
+
+When the plan delivered a feature no context file describes, add that
+description. Prefer a small, precise domain file over overloading `overview.md`
+with detail.
+
+This is not license to narrate the diff: describe what the feature is and how it
+behaves, not what was edited during the plan.
+
+### Glossary
+
+Add a `context/glossary.md` entry for any domain language the plan introduced.
+New terminology is durable knowledge whatever the classification is.
+
+### File hygiene
+
+Every context file this phase writes must satisfy:
+
+- One topic per file.
+- At most 250 lines. When an edit would push a file past 250 lines, split it into
+  focused files and link them rather than letting it grow.
+- Relative paths in every link to another context file.
+- A Mermaid diagram where structure, boundaries, or flows are complex enough that
+  prose alone would not carry them.
+- Concrete code examples only where they clarify non-trivial behavior.
+
+When detail outgrows a shared file, migrate it into `context/{domain}/`, leave a
+concise pointer behind, and link the new file from `context/context-map.md`.
+
+## 2.7 Verify synchronization
+
+After edits, verify:
+
+- Every changed context file accurately reflects the finished implementation.
+- No edited statement contradicts the code, plan, or validation evidence.
+- Every qualifying decision has one written or reused ADR path in the report, and
+  the report states when no decision qualified.
+- Every file in the mandatory root pass was read and confirmed against code
+  truth, whether or not it was edited.
+- Every plan `Context sync` requirement is met.
+- Each feature implemented by the plan has a durable canonical description
+  reachable from `context/`.
+- Every changed file is at or below 250 lines, covers one topic, and links other
+  context files by relative path.
+- Diagrams are present where structure, boundaries, or flows are complex.
+- Links and referenced paths resolve when practical to check.
+- New context files are reachable from the context map or another authoritative
+  index.
+- Root context remains concise and delegates details to domain files.
+- Unrelated context was not changed.
+
+Use focused documentation, link, or formatting checks when available.
+
+Do not rerun full-plan validation.
+
+If synchronization cannot be completed without inventing facts or resolving a
+material contradiction, preserve safe edits when appropriate and return a
+`blocked` report.
+
+## 2.8 Return the Markdown report
+
+Set exactly one report status:
+
+- `synced`
+- `no_context_change`
+- `blocked`
+
+`synced` means context files were updated and verified. `no_context_change` means
+existing context was checked and no edit was warranted. `blocked` means context
+could not be synchronized safely.
+
+Record only the Markdown report. Do not add explanatory prose before or after it.
+
+## Plan context synchronization boundaries
+
+Do not:
+
+- Accept a validation result whose status is not `validated`.
+- Accept `failed` or `blocked` validation results.
+- Implement or modify application code.
+- Modify tests.
+- Change task completion status, acceptance-criteria marks, or the Validation
+  Report.
+- Rerun full-plan validation.
+- Select or execute an implementation task.
+- Create a Git commit or push changes.
+- Create the context root. `sce setup --bootstrap-context` owns that.
+- Narrate changed files as documentation. Feature existence is the only reason to
+  document a change that introduced no other durable knowledge.
+- Invoke any sibling skill except `sce-decision`, or invoke `sce-decision`
+  outside the decision gate in successful context synchronization.
+- Delete a context file that has uncommitted changes.
+- Return internal state.

@@ -8,11 +8,11 @@ Canonical behavior is authored in `config/pkl/base/workflow-commit.pkl` from the
 project-root `.pi/` baseline and generated for OpenCode, Claude, and Pi.
 
 Every target emits one thin command (Pi: prompt) invoking `sce-commit`. The
-composite package contains only `SKILL.md`, which owns mode routing, staged-diff
-analysis, proposal/commit behavior, and internal statuses, plus
-`references/output.md`, which owns all human-visible prompts and result layouts.
-The commit-message style reference is composed into those two files rather than
-emitted separately.
+package contains `SKILL.md`, which owns mode routing, proposal/commit control
+flow, and internal statuses; `references/atomic-commit.md`, which owns staged-diff
+analysis and message construction; and `references/output.md`, which owns all
+human-visible prompts, result layouts, and commit-message style rules. The phase
+reference is read only after the selected path clears its pre-phase gate.
 
 No target emits an `sce-atomic-commit` package or invokes it as a sibling skill;
 each `sce-commit` package embeds the canonical phase behavior directly.

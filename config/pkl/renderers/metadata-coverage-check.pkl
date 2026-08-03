@@ -20,14 +20,42 @@ local expectedWorkflowSkillByCommand = new Mapping {
   }
 }
 
-/// A collapsed target renders each workflow as one package with one entrypoint
-/// and one user-visible Markdown output reference. The standalone decision
-/// package has no command and carries its ADR template as its sole reference.
-/// Exact coverage rejects stale phase packages and unexpected references.
+/// Phase-based workflows render package-local phase references. Phase-free
+/// workflows retain only output.md, and the standalone decision package retains
+/// only its ADR template. Exact coverage rejects stale or missing references.
+local phaseReferencePathsByWorkflow = new Mapping {
+  ["change-to-plan"] = new Listing {
+    "references/context-load.md"
+    "references/plan-authoring.md"
+    "references/plan-template.md"
+    "references/output.md"
+  }
+  ["next-task"] = new Listing {
+    "references/plan-review.md"
+    "references/task-execution.md"
+    "references/context-sync.md"
+    "references/output.md"
+  }
+  ["validate"] = new Listing {
+    "references/validation.md"
+    "references/context-sync.md"
+    "references/validation-report.md"
+    "references/output.md"
+  }
+  ["commit"] = new Listing {
+    "references/atomic-commit.md"
+    "references/output.md"
+  }
+  ["handover"] = new Listing { "references/output.md" }
+  ["brownfield"] = new Listing { "references/output.md" }
+}
+
 local expectedSkillDocumentPaths = new Mapping {
-  for (_, workflow in catalog.workflows) {
+  for (slug, workflow in catalog.workflows) {
     ["\(workflow.skillSlug)/SKILL.md"] = true
-    ["\(workflow.skillSlug)/references/output.md"] = true
+    for (path in phaseReferencePathsByWorkflow[slug]) {
+      ["\(workflow.skillSlug)/\(path)"] = true
+    }
   }
   ["sce-decision/SKILL.md"] = true
   ["sce-decision/references/adr-template.md"] = true

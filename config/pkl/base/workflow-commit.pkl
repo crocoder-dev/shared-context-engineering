@@ -703,6 +703,11 @@ local COMMIT_MESSAGE_STYLE = renderCommitMessageStyle.apply("package")
 
 structuredComposite = new model.StructuredCompositeSource {
   command = structuredCommand
+  compositeSkillBody = model.commitSkillBody
+  referenceDocuments = new Listing {
+    model.makeDocument.apply("references/atomic-commit.md", model.commitAtomicCommit)
+    model.makeDocument.apply("references/output.md", model.commitOutput)
+  }
   phases = new Listing {}
   internalDocuments = new Listing {}
   outputDocuments = new Listing {

@@ -36,9 +36,9 @@ The `Status` value must be exactly one of:
 - `failed`
 - `blocked`
 
-The plan-file `## Validation Report` section is written separately using the
-**Plan-file validation report** section embedded in this file. This layout
-carries the validation phase's result into the workflow's own branches.
+The plan-file `## Validation Report` section is written separately using
+`references/validation-report.md`. This layout carries the validation phase's
+result into the workflow's own branches.
 
 ## Validated variant
 

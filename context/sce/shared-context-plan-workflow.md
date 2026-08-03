@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`/change-to-plan` turns one change request into one scoped implementation plan under `context/plans/`. The generated OpenCode Plan agent is only a routing surface. Every target renders the same behavior into the single `sce-change-to-plan` workflow skill; the two phases below are canonical authoring source and internal phases of that skill, not separate generated packages.
+`/change-to-plan` turns one change request into one scoped implementation plan under `context/plans/`. The generated OpenCode Plan agent is only a routing surface. Every target renders the same behavior into the single `sce-change-to-plan` workflow skill. `SKILL.md` owns ordering, branching, and same-session waits; package-local `context-load.md` and `plan-authoring.md` references own the two phases below, and `plan-template.md` owns the persisted plan format. They are not separate generated skill packages.
 
 ## Command entrypoint
 
@@ -60,7 +60,8 @@ flowchart TD
 
 ## Target ownership
 
-- OpenCode, Claude, and Pi: one thin command (Pi: prompt) invoking `sce-change-to-plan`; package files are `SKILL.md` and `references/output.md`.
+- OpenCode, Claude, and Pi: one thin command (Pi: prompt) invoking `sce-change-to-plan`; package files are `SKILL.md`, `references/context-load.md`, `references/plan-authoring.md`, `references/plan-template.md`, and `references/output.md`.
+- `SKILL.md` reads the applicable phase reference before running that phase; a bootstrap stop never loads plan authoring.
 - OpenCode adds `entry-skill` and a one-entry `skills` list naming that skill, and its Plan routing agent allows exactly `sce-change-to-plan`.
 
 ## Canonical sources
