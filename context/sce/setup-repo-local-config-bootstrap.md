@@ -40,7 +40,7 @@ After config asset installation succeeds for a non-interactive target (`--openco
 The same write also records the run's resolved optional-workflow selection under `integrations.optional_workflows`:
 
 - Precedence: an interactively answered multi-select is the exact selection for the run; otherwise a supplied `--workflow <slug>` list (repeatable) is; when neither is present the persisted `integrations.optional_workflows` is read back and reused, so a repeat `sce setup --claude --non-interactive` never silently uninstalls a previously selected optional workflow. The prompt's pre-checked rows come from the same persisted value (or from `--workflow` when it was supplied), so accepting the prompt unchanged records what a rerun would have kept.
-- The resolved selection filters what is installed, so an unselected optional workflow's command file and skill directory are simply absent from the freshly installed target tree under the existing remove-and-replace policy.
+- The resolved selection filters what is installed, and catalog-derived pruning (see [setup-no-backup-policy-seam.md](setup-no-backup-policy-seam.md)) removes an unselected optional workflow's command file and skill directory left behind by an earlier run, so deselection is effective on both a first-time install and a later reinstall.
 - A run that resolves to an empty selection records `[]`. Deselecting is therefore expressed by installing without that slug, not by a separate uninstall step.
 - The persisted set is repository-wide, not per target: a `--all` run records one selection covering `.opencode/`, `.claude/`, and `.pi/`.
 - Unknown slugs are rejected during request resolution, before any file or config write.

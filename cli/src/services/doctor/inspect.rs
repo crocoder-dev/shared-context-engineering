@@ -15,18 +15,18 @@ use crate::services::repository_identity::resolve::{
     resolve_repository_identity, RepositoryIdentitySource,
 };
 use crate::services::setup::{
-    iter_embedded_assets_for_setup_target_with_selection, iter_required_hook_assets,
-    persisted_optional_workflows, EmbeddedAsset, SetupTarget,
+    config_merge, iter_embedded_assets_for_setup_target_with_selection, iter_required_hook_assets,
+    persisted_optional_workflows, repair_merge_target_asset, EmbeddedAsset, SetupTarget,
 };
 
 use super::types::{
-    AgentTraceDbHealth, CheckoutIdentityHealth, DoctorProblem, FileLocationHealth,
-    GlobalStateHealth, HookContentState, HookDoctorReport, HookFileHealth, HookPathSource,
-    IntegrationChildHealth, IntegrationContentState, IntegrationGroupHealth, ProblemCategory,
-    ProblemFixability, ProblemKind, ProblemSeverity, Readiness, CLAUDE_AGENTS_LABEL,
-    CLAUDE_COMMANDS_LABEL, CLAUDE_PLUGINS_LABEL, CLAUDE_SKILLS_LABEL, OPENCODE_AGENTS_LABEL,
-    OPENCODE_COMMANDS_LABEL, OPENCODE_PLUGINS_LABEL, OPENCODE_SKILLS_LABEL, PI_EXTENSIONS_LABEL,
-    PI_PROMPTS_LABEL, PI_SKILLS_LABEL,
+    AgentTraceDbHealth, CheckoutIdentityHealth, DoctorFixResultRecord, DoctorProblem,
+    FileLocationHealth, FixResult, GlobalStateHealth, HookContentState, HookDoctorReport,
+    HookFileHealth, HookPathSource, IntegrationChildHealth, IntegrationContentState,
+    IntegrationGroupHealth, ProblemCategory, ProblemFixability, ProblemKind, ProblemSeverity,
+    Readiness, CLAUDE_AGENTS_LABEL, CLAUDE_COMMANDS_LABEL, CLAUDE_PLUGINS_LABEL,
+    CLAUDE_SKILLS_LABEL, OPENCODE_AGENTS_LABEL, OPENCODE_COMMANDS_LABEL, OPENCODE_PLUGINS_LABEL,
+    OPENCODE_SKILLS_LABEL, PI_EXTENSIONS_LABEL, PI_PROMPTS_LABEL, PI_SKILLS_LABEL,
 };
 use super::{is_executable, DoctorDependencies, DoctorMode, REQUIRED_HOOKS};
 
@@ -513,6 +513,81 @@ fn inspect_repository_integrations(
     }
 
     integration_groups
+}
+
+/// Repairs each merge-target asset (`.claude/settings.json`,
+/// `.opencode/opencode.json`) whose SCE-owned fragment is currently missing or
+/// stale, by reinstalling just that asset through the same merge-install path
+/// `sce setup` uses. Assets whose fragment is already current are left
+/// untouched, and a fully missing integration is left to the existing
+/// "reinstall assets" guidance rather than being created here.
+pub(super) fn repair_merge_target_configs(repository_root: &Path) -> Vec<DoctorFixResultRecord> {
+    let targets = resolve_doctor_integration_targets(repository_root);
+    let selected_optional_workflows = persisted_optional_workflows(repository_root);
+    let mut results = Vec::new();
+
+    if targets.contains(&IntegrationTargetId::Claude) {
+        let claude_groups =
+            collect_claude_integration_groups(repository_root, &selected_optional_workflows);
+        if let Some(result) = repair_merge_target_if_mismatched(
+            repository_root,
+            SetupTarget::Claude,
+            claude_asset::SETTINGS_FILE,
+            &claude_groups,
+        ) {
+            results.push(result);
+        }
+    }
+
+    if targets.contains(&IntegrationTargetId::Opencode) {
+        let opencode_groups =
+            collect_opencode_integration_groups(repository_root, &selected_optional_workflows);
+        if let Some(result) = repair_merge_target_if_mismatched(
+            repository_root,
+            SetupTarget::OpenCode,
+            OPENCODE_CONFIG_RELATIVE_PATH,
+            &opencode_groups,
+        ) {
+            results.push(result);
+        }
+    }
+
+    results
+}
+
+fn repair_merge_target_if_mismatched(
+    repository_root: &Path,
+    target: SetupTarget,
+    relative_path: &str,
+    groups: &[IntegrationGroupHealth],
+) -> Option<DoctorFixResultRecord> {
+    let is_mismatched = groups
+        .iter()
+        .flat_map(|group| &group.children)
+        .any(|child| {
+            child.relative_path == relative_path
+                && matches!(child.content_state, IntegrationContentState::Mismatch)
+        });
+    if !is_mismatched {
+        return None;
+    }
+
+    Some(
+        match repair_merge_target_asset(repository_root, target, relative_path) {
+            Ok(()) => DoctorFixResultRecord {
+                category: ProblemCategory::RepoAssets,
+                outcome: FixResult::Fixed,
+                detail: format!("Merged canonical SCE fragments into '{relative_path}'."),
+            },
+            Err(error) => DoctorFixResultRecord {
+                category: ProblemCategory::RepoAssets,
+                outcome: FixResult::Failed,
+                detail: format!(
+                    "Failed to merge canonical SCE fragments into '{relative_path}': {error}"
+                ),
+            },
+        },
+    )
 }
 
 #[allow(dead_code)]
@@ -1167,18 +1242,24 @@ fn collect_opencode_integration_groups(
 
     let manifest_child = embedded_assets
         .iter()
-        .find(|asset| asset.relative_path == "opencode.json")
+        .find(|asset| asset.relative_path == OPENCODE_CONFIG_RELATIVE_PATH)
         .map_or_else(
             || build_integration_child_presence_only("opencode.json", &manifest_path),
-            |asset| build_integration_child_from_asset(&opencode_root, asset),
+            |asset| {
+                build_integration_child_from_asset(
+                    &opencode_root,
+                    asset,
+                    Some(&MergeTargetAsset::OpenCodeConfig),
+                )
+            },
         );
     plugin_children.push(manifest_child);
 
     for asset in embedded_assets {
-        if asset.relative_path == "opencode.json" {
+        if asset.relative_path == OPENCODE_CONFIG_RELATIVE_PATH {
             continue;
         }
-        let child = build_integration_child_from_asset(&opencode_root, asset);
+        let child = build_integration_child_from_asset(&opencode_root, asset, None);
 
         if child
             .relative_path
@@ -1248,7 +1329,12 @@ fn collect_claude_integration_groups(
     let mut skill_children = Vec::new();
 
     for asset in embedded_assets {
-        let child = build_integration_child_from_asset(&claude_root, asset);
+        let merge_target = if asset.relative_path == claude_asset::SETTINGS_FILE {
+            Some(&MergeTargetAsset::ClaudeSettings)
+        } else {
+            None
+        };
+        let child = build_integration_child_from_asset(&claude_root, asset, merge_target);
 
         if child.relative_path == claude_asset::SETTINGS_FILE
             || child
@@ -1315,7 +1401,7 @@ fn collect_pi_integration_groups(
     let mut extension_children = Vec::new();
 
     for asset in embedded_assets {
-        let child = build_integration_child_from_asset(&pi_root, asset);
+        let child = build_integration_child_from_asset(&pi_root, asset, None);
 
         if child
             .relative_path
@@ -1359,16 +1445,67 @@ fn sort_integration_children(children: &mut [IntegrationChildHealth]) {
     children.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
 }
 
+/// The relative path of the `OpenCode` merge-target asset within `.opencode/`.
+const OPENCODE_CONFIG_RELATIVE_PATH: &str = "opencode.json";
+
+/// Identifies the two setup assets that are installed by JSON merge
+/// (`config_merge`) rather than whole-file replacement, and therefore need
+/// SCE-fragment-based content inspection instead of byte-exact `sha256`.
+enum MergeTargetAsset {
+    ClaudeSettings,
+    OpenCodeConfig,
+}
+
 fn build_integration_child_from_asset(
     integration_root: &Path,
     asset: &EmbeddedAsset,
+    merge_target: Option<&MergeTargetAsset>,
 ) -> IntegrationChildHealth {
     let path = integration_root.join(asset.relative_path);
-    let content_state = inspect_integration_asset_state(&path, &asset.sha256);
+    let content_state = match merge_target {
+        Some(MergeTargetAsset::ClaudeSettings) => inspect_merge_target_asset_state(
+            &path,
+            asset.bytes,
+            config_merge::claude_settings_fragment_is_current,
+        ),
+        Some(MergeTargetAsset::OpenCodeConfig) => inspect_merge_target_asset_state(
+            &path,
+            asset.bytes,
+            config_merge::opencode_config_fragment_is_current,
+        ),
+        None => inspect_integration_asset_state(&path, &asset.sha256),
+    };
     IntegrationChildHealth {
         relative_path: asset.relative_path.to_string(),
         path,
         content_state,
+    }
+}
+
+/// Content state for a merge-target asset: `Match` when the existing file
+/// already carries a current, complete copy of the SCE-owned fragment
+/// alongside whatever else it holds; `Mismatch` when that fragment is absent
+/// or stale, or when the existing file cannot be parsed as JSON (a merge
+/// cannot succeed either way, so both drift and hard-error surface the same
+/// remediation: reinstall/`sce doctor --fix`).
+fn inspect_merge_target_asset_state(
+    path: &Path,
+    generated_bytes: &[u8],
+    fragment_is_current: fn(&[u8], &[u8]) -> anyhow::Result<bool>,
+) -> IntegrationContentState {
+    if !path_is_file(path) {
+        return IntegrationContentState::Missing;
+    }
+
+    match fs::read(path) {
+        Ok(existing_bytes) => {
+            if fragment_is_current(&existing_bytes, generated_bytes).unwrap_or(false) {
+                IntegrationContentState::Match
+            } else {
+                IntegrationContentState::Mismatch
+            }
+        }
+        Err(error) => IntegrationContentState::ReadFailed(error.to_string()),
     }
 }
 
@@ -1597,5 +1734,212 @@ mod tests {
                 .any(|problem| problem.summary.contains(&command_path)),
             "a selected optional workflow's missing file was not reported"
         );
+    }
+
+    fn unique_temp_repository_root(label: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after Unix epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "sce-doctor-merge-target-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp repository root");
+        dir
+    }
+
+    fn embedded_claude_settings_bytes() -> &'static [u8] {
+        crate::services::setup::iter_embedded_assets_for_setup_target_with_selection(
+            crate::services::setup::SetupTarget::Claude,
+            &[] as &[String],
+        )
+        .find(|asset| {
+            asset.relative_path == crate::services::default_paths::claude_asset::SETTINGS_FILE
+        })
+        .expect("embedded Claude catalog carries settings.json")
+        .bytes
+    }
+
+    fn embedded_opencode_config_bytes() -> &'static [u8] {
+        crate::services::setup::iter_embedded_assets_for_setup_target_with_selection(
+            crate::services::setup::SetupTarget::OpenCode,
+            &[] as &[String],
+        )
+        .find(|asset| asset.relative_path == "opencode.json")
+        .expect("embedded OpenCode catalog carries opencode.json")
+        .bytes
+    }
+
+    #[test]
+    fn claude_settings_reports_match_despite_extra_user_permissions() {
+        let root = unique_temp_repository_root("claude-pass");
+        let claude_dir = root.join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+
+        let generated_bytes = embedded_claude_settings_bytes();
+        let installed_bytes =
+            crate::services::setup::config_merge::merge_or_create_claude_settings(
+                None,
+                generated_bytes,
+                "settings.json",
+            )
+            .unwrap();
+        let mut installed: serde_json::Value = serde_json::from_slice(&installed_bytes).unwrap();
+        installed["permissions"] = serde_json::json!({"allow": ["Bash(git *)"]});
+        std::fs::write(
+            claude_dir.join("settings.json"),
+            serde_json::to_vec_pretty(&installed).unwrap(),
+        )
+        .unwrap();
+
+        let groups = collect_claude_integration_groups(&root, &[]);
+        let settings_child = groups
+            .iter()
+            .flat_map(|group| &group.children)
+            .find(|child| child.relative_path == "settings.json")
+            .expect("settings.json child present");
+        assert!(matches!(
+            settings_child.content_state,
+            IntegrationContentState::Match
+        ));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn claude_settings_reports_mismatch_when_sce_hook_entry_deleted_then_fix_repairs_it() {
+        let root = unique_temp_repository_root("claude-fix");
+        let claude_dir = root.join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+
+        let generated_bytes = embedded_claude_settings_bytes();
+        let installed_bytes =
+            crate::services::setup::config_merge::merge_or_create_claude_settings(
+                None,
+                generated_bytes,
+                "settings.json",
+            )
+            .unwrap();
+        let mut drifted: serde_json::Value = serde_json::from_slice(&installed_bytes).unwrap();
+        drifted["permissions"] = serde_json::json!({"allow": ["Bash(git *)"]});
+        // Drop every hook event's entries to simulate a deleted SCE hook entry.
+        for (_, entries) in drifted["hooks"].as_object_mut().unwrap() {
+            *entries = serde_json::json!([]);
+        }
+        let settings_path = claude_dir.join("settings.json");
+        std::fs::write(&settings_path, serde_json::to_vec_pretty(&drifted).unwrap()).unwrap();
+
+        let groups = collect_claude_integration_groups(&root, &[]);
+        let settings_child = groups
+            .iter()
+            .flat_map(|group| &group.children)
+            .find(|child| child.relative_path == "settings.json")
+            .expect("settings.json child present");
+        assert!(matches!(
+            settings_child.content_state,
+            IntegrationContentState::Mismatch
+        ));
+
+        let fix_results = super::repair_merge_target_configs(&root);
+        assert!(
+            fix_results
+                .iter()
+                .any(|result| matches!(result.outcome, super::FixResult::Fixed)),
+            "expected the drifted settings.json to be repaired"
+        );
+
+        let repaired: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+        assert_eq!(repaired["permissions"]["allow"][0], "Bash(git *)");
+
+        let groups_after_fix = collect_claude_integration_groups(&root, &[]);
+        let settings_child_after_fix = groups_after_fix
+            .iter()
+            .flat_map(|group| &group.children)
+            .find(|child| child.relative_path == "settings.json")
+            .expect("settings.json child present");
+        assert!(matches!(
+            settings_child_after_fix.content_state,
+            IntegrationContentState::Match
+        ));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn opencode_config_reports_match_despite_extra_user_plugin_then_drift_and_fix() {
+        let root = unique_temp_repository_root("opencode-fix");
+        let opencode_dir = root.join(".opencode");
+        std::fs::create_dir_all(&opencode_dir).unwrap();
+
+        let generated_bytes = embedded_opencode_config_bytes();
+        let installed_bytes =
+            crate::services::setup::config_merge::merge_or_create_opencode_config(
+                None,
+                generated_bytes,
+                "opencode.json",
+            )
+            .unwrap();
+        let mut installed: serde_json::Value = serde_json::from_slice(&installed_bytes).unwrap();
+        installed["model"] = serde_json::json!("anthropic/claude");
+        installed["plugin"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, serde_json::json!("./plugins/my-plugin.ts"));
+        let manifest_path = opencode_dir.join("opencode.json");
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&installed).unwrap(),
+        )
+        .unwrap();
+
+        let groups = collect_opencode_integration_groups(&root, &[]);
+        let manifest_child = groups
+            .iter()
+            .flat_map(|group| &group.children)
+            .find(|child| child.relative_path == "opencode.json")
+            .expect("opencode.json child present");
+        assert!(matches!(
+            manifest_child.content_state,
+            IntegrationContentState::Match
+        ));
+
+        // Drop the plugin array entirely to simulate a stale/removed SCE registration.
+        installed["plugin"] = serde_json::json!(["./plugins/my-plugin.ts"]);
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&installed).unwrap(),
+        )
+        .unwrap();
+
+        let drifted_groups = collect_opencode_integration_groups(&root, &[]);
+        let drifted_child = drifted_groups
+            .iter()
+            .flat_map(|group| &group.children)
+            .find(|child| child.relative_path == "opencode.json")
+            .expect("opencode.json child present");
+        assert!(matches!(
+            drifted_child.content_state,
+            IntegrationContentState::Mismatch
+        ));
+
+        let fix_results = super::repair_merge_target_configs(&root);
+        assert!(
+            fix_results
+                .iter()
+                .any(|result| matches!(result.outcome, super::FixResult::Fixed)),
+            "expected the drifted opencode.json to be repaired"
+        );
+
+        let repaired: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        assert_eq!(repaired["model"], "anthropic/claude");
+        let plugin = repaired["plugin"].as_array().unwrap();
+        assert!(plugin.contains(&serde_json::json!("./plugins/my-plugin.ts")));
+        assert!(plugin.contains(&serde_json::json!("./plugins/sce-bash-policy.ts")));
+        assert!(plugin.contains(&serde_json::json!("./plugins/sce-agent-trace.ts")));
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }
