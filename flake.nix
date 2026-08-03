@@ -196,6 +196,16 @@
           ];
         };
 
+        cliArchitectureCheckSrc = pkgs.lib.fileset.toSource {
+          root = workspaceRoot;
+          fileset = pkgs.lib.fileset.unions [
+            ./scripts/check-cli-architecture.sh
+            ./scripts/test-check-cli-architecture.sh
+            ./cli/src/domain
+            ./cli/src/application
+          ];
+        };
+
         flatpakPackagingSrc = pkgs.lib.fileset.toSource {
           root = workspaceRoot;
           fileset = pkgs.lib.fileset.unions [
@@ -1341,6 +1351,23 @@
               mkdir -p "$out"
             '';
 
+        cliArchitectureCheck =
+          pkgs.runCommand "cli-architecture-check"
+            { }
+            ''
+              set -euo pipefail
+
+              cp -r "${cliArchitectureCheckSrc}" ./repo
+              chmod -R u+w ./repo
+              patchShebangs ./repo/scripts
+              cd ./repo
+
+              bash ./scripts/check-cli-architecture.sh
+              bash ./scripts/test-check-cli-architecture.sh
+
+              mkdir -p "$out"
+            '';
+
         nativePortabilityAuditCheck =
           pkgs.runCommand "native-portability-audit-check"
             { }
@@ -1529,6 +1556,7 @@
 
             workflow-actionlint = workflowActionlintCheck;
             native-portability-audit = nativePortabilityAuditCheck;
+            cli-architecture = cliArchitectureCheck;
           }
           // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
             flatpak-static-validation = flatpakStaticValidationCheck;

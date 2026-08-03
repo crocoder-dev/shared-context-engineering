@@ -85,7 +85,7 @@ The setup command parser/dispatch now also supports composable setup+hooks runs 
 
 - Generate a temporary preview: `nix run .#pkl-generate -- "$(mktemp -d)"`
 - Verify deterministic ephemeral outputs and forbidden repository paths: `nix run .#pkl-check-generated`
-- Run repository flake checks (CLI tests, clippy, fmt, `pkl-generated`, workflow-actionlint): `nix flake check`
+- Run repository flake checks (CLI tests, clippy, fmt, `pkl-generated`, workflow-actionlint, cli-architecture): `nix flake check`
 
 Lightweight post-task verification baseline (required after each completed task): run `nix run .#pkl-check-generated` and `nix flake check`.
 

@@ -37,7 +37,7 @@ Current target renderer helper modules:
 - `config/pkl/generator-inputs.txt` (machine-readable repository-relative declaration of canonical Pkl and referenced plugin/extension inputs)
 - `scripts/produce-cli-generated-input.sh` (canonical generated-input producer for input discovery, two-pass evaluation, determinism and input-mutation checks, exact payload/input inventories, atomic publication, and temporary-state cleanup; consumed by the repository Cargo wrapper, generated-output check, package-fallback preparation, and Nix `cliGeneratedInput` derivation)
 - `config/pkl/check-generated.sh` (dev-shell integration check that delegates deterministic generation and inventories to the producer while retaining metadata/contract fixtures, required outputs, forbidden repository generated paths, and the stray repository-local `config/pkl/rendered` evaluation artifact)
-- `nix flake check` / `checks.<system>.{cli-tests,cli-clippy,cli-fmt,pkl-generated,npm-bun-tests,npm-biome-check,npm-biome-format,config-lib-bun-tests,config-lib-biome-check,config-lib-biome-format,workflow-actionlint}` plus Linux-only `flatpak-static-validation`, `cargo-sources-parity`, and `flatpak-manifest-parity` (root-flake checks for CLI behavior, ephemeral Pkl generation, JS validation, workflow linting, and lightweight Flatpak validation)
+- `nix flake check` / `checks.<system>.{cli-tests,cli-clippy,cli-fmt,pkl-generated,npm-bun-tests,npm-biome-check,npm-biome-format,config-lib-bun-tests,config-lib-biome-check,config-lib-biome-format,workflow-actionlint,cli-architecture}` plus Linux-only `flatpak-static-validation`, `cargo-sources-parity`, and `flatpak-manifest-parity` (root-flake checks for CLI behavior, ephemeral Pkl generation, JS validation, workflow linting, the CLI internal-layer dependency check, and lightweight Flatpak validation)
 - `config-lib-bun-tests` executes from `config/lib/` while using a repo-shaped copied source subset that also includes `cli/src/services/structured_patch/fixtures` for Claude agent-trace golden fixture coverage (fully Rust-owned; the Claude TypeScript Bun test was removed in T07).
 
 The scaffold provides stable canonical content-unit identifiers and reusable target-agnostic text primitives for all planned authored generated classes (agents, commands, skills, shared runtime assets, OpenCode plugin entrypoints, the Pi extension entrypoint, generated OpenCode package manifests, and generated Claude project settings).
@@ -81,6 +81,91 @@ See `context/decisions/2026-07-27-workflow-oriented-pkl-generation.md` for the c
 
 The repository includes a new placeholder Rust binary crate at `cli/`.
 
+## CLI internal hexagonal architecture
+
+The `sce` CLI stays one Cargo package (`cli/`, binary `sce`); there is no
+plan to split it into multiple crates. Hexagonal architecture here is a
+*module-boundary and dependency-direction* discipline enforced inside that
+one package, not a statement about crate count. `cli/src/{domain,
+application, adapters}/` are crate-private (`mod`, not `pub`) module trees
+introduced as an explicit skeleton; `cli/src/composition.rs` is the
+composition root. Every one of these is currently doc-comment-only or a thin
+delegator — no command, service, or domain logic has moved out of
+`cli/src/services/**` yet.
+
+Layer ownership:
+
+- `cli/src/domain/` — pure business types and rules. No dependency on
+  `crate::adapters`, `crate::application`, `crate::composition`,
+  `crate::services`, or any infrastructure crate/module (CLI parsing,
+  database, HTTP, process/filesystem/env access).
+- `cli/src/application/` (`error.rs`, `ports/`, `use_cases/`) — use cases and
+  the ports they depend on, orchestrating the domain. May depend on
+  `crate::domain`. Must not depend on `crate::adapters`,
+  `crate::composition`, `crate::services`, or infrastructure crates/modules.
+- `cli/src/adapters/inbound/` (currently `cli/`) — entrypoints that drive the
+  application layer (e.g. a future CLI-parsing adapter invoking use cases).
+- `cli/src/adapters/outbound/` — implementations of application-owned ports
+  (storage, network, and other infrastructure integrations).
+- `cli/src/composition.rs` — the composition root. `composition::run` is the
+  sole entrypoint `main.rs` calls; it wires concrete adapters to application
+  ports. During this transitional phase it delegates unchanged to the legacy
+  `app::run` runtime.
+
+Adapters depend inward on ports the application layer owns: an outbound
+adapter implements a trait defined under `cli/src/application/ports/`, and
+the application layer never depends on a concrete adapter type. `adapters`
+and `composition` may transitionally depend on `crate::services` (the
+existing command/runtime implementation); `domain` and `application` may
+never depend on `crate::services` under any circumstance — that restriction
+is permanent, not just for this phase.
+
+`cli/src/services/**` (`app.rs`, `cli_schema.rs`, `command_surface.rs`, and
+everything under `cli/src/services/`) is the CLI's existing implementation
+and remains the runtime behavior owner. It is a temporary compatibility
+namespace from the hexagonal skeleton's point of view: new domain and
+application code must never depend on it, and its logic is expected to move
+into `domain`/`application`/`adapters` over time, not to gain new
+dependents.
+
+Migration proceeds through vertical slices rather than a big-bang rewrite:
+one command or capability at a time gets domain types, application use
+cases/ports, and adapters carved out of `services`, with `composition::run`
+progressively wiring more of the CLI through the new layers while
+unconverted commands keep flowing through `app::run`. No slice migration is
+in scope for this skeleton phase.
+
+```mermaid
+flowchart LR
+    subgraph adapters["adapters"]
+        inbound["inbound (cli/)"]
+        outbound["outbound"]
+    end
+    application["application (ports, use_cases, error)"]
+    domain["domain"]
+    composition["composition (composition root)"]
+    services["services (temporary, transitional)"]
+
+    inbound --> application
+    outbound --> application
+    application --> domain
+    composition --> adapters
+    composition --> services
+    adapters -. transitional .-> services
+```
+
+A deterministic, network-free shell script,
+`scripts/check-cli-architecture.sh`, enforces the permanent `domain` and
+`application` restrictions by scanning `cli/src/domain/**/*.rs` and
+`cli/src/application/**/*.rs` for forbidden imports (`clap`, `turso`,
+`reqwest`, `inquire`, `keyring_core`, `std::fs`, `std::process`, plus
+`std::env` and `crate::application` for `domain` only, and
+`crate::adapters`/`crate::composition`/`crate::services` for both); it does
+not enforce rules on `adapters` or `composition`, which may transitionally
+depend on `services`. `scripts/test-check-cli-architecture.sh` proves the
+check against fixture trees, and `nix flake check` runs both scripts through
+the `cli-architecture` check.
+
 ## CLI install/distribution boundary
 
 - The current implemented binary install/distribution surface for the `sce` CLI includes repo-flake Nix, Cargo, and npm; `Homebrew` is deferred from the active implementation stage.
@@ -100,7 +185,7 @@ The repository includes a new placeholder Rust binary crate at `cli/`.
 - Downstream registry publication is now implemented in dedicated workflows: `.github/workflows/publish-crates.yml` publishes the checked-in crate version from a published release or manual dispatch after `.version`/tag/Cargo parity checks and requires semver prerelease metadata when a publish run is marked prerelease; `.github/workflows/publish-npm.yml` publishes the checked-in npm package version from a published release or manual dispatch after `.version`/tag/npm parity checks plus verification of the canonical `sce-v<version>-npm.tgz` GitHub release asset, using the `next` npm dist-tag instead of `latest` for prerelease versions or prerelease-marked runs.
 - The npm distribution implementation lives under `npm/`: `package.json` defines the `sce` package surface, `bin/sce.js` launches the package-local native binary, `lib/install.js` resolves the current package version against the release manifest, verifies `sce-v<version>-release-manifest.json.sig` with the bundled public key before trusting manifest contents, and then installs the checksum-verified native archive for supported macOS/Linux targets, while `test/platform.test.js` and `test/install.test.js` cover platform selection plus signed-manifest installer behavior.
 
-- `cli/src/main.rs` is the executable entrypoint (`sce`) and delegates to `app::run`.
+- `cli/src/main.rs` is the executable entrypoint (`sce`) and delegates to `composition::run`, which in turn delegates to `app::run` unchanged. `cli/src/composition.rs` is the CLI's composition root; `cli/src/domain/`, `cli/src/application/`, and `cli/src/adapters/` are new crate-private, module-doc-only internal layer skeletons with no behavior yet (see the planned CLI internal hexagonal architecture section for the full dependency-direction rules once populated).
 - `cli/src/cli_schema.rs` defines the clap-based CLI schema using derive macros for all top-level commands and subcommands, including the `trace db shell <uuid-or-alias>` surface, and renders command-local help text for the `auth` command tree (`auth`, `auth login`, `auth logout`, `auth status`).
 - `cli/src/app.rs` provides the clap-based argument dispatch loop with deterministic help/setup execution, bare-command help routing for `sce auth` and `sce config`, centralized stream routing (`stdout` success payloads, `stderr` redacted diagnostics), stable class-based exit-code mapping (`2` parse, `3` validation, `4` runtime, `5` dependency), and stable class-based stderr diagnostic codes (`SCE-ERR-PARSE`, `SCE-ERR-VALIDATION`, `SCE-ERR-RUNTIME`, `SCE-ERR-DEPENDENCY`) with default `Try:` remediation injection when missing.
 - The app runtime now moves through explicit startup phases in `cli/src/app.rs`: dependency bootstrapping (`perform_dependency_check`), startup context construction (`build_startup_context`), runtime initialization (`initialize_runtime`), command parse/execute inside telemetry subscriber context (`run_command_lifecycle`, `parse_command_phase` plus `services::app_support::execute_command_phase`), and final output rendering through `services::app_support::render_run_outcome`. `AppRuntime` owns the concrete production logger, no-op telemetry runtime, filesystem ops, git ops, static `CommandRegistry`, and startup-diagnostic state across those phases; `RunOutcome<L>` carries final render data with an optional generic logger implementing `services::observability::traits::Logger`, so render support can log classified errors without production-logger type coupling. If a telemetry implementation attempts to invoke the command action more than once, dispatch returns a runtime-classified error instead of panicking or reusing consumed arguments.
