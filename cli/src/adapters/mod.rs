@@ -4,5 +4,5 @@
 //! `crate::services`. See `context/architecture.md` for the full
 //! dependency-direction rules.
 
-mod inbound;
-mod outbound;
+pub(crate) mod inbound;
+pub(crate) mod outbound;

@@ -26,7 +26,7 @@
 - `.claude/`
 - `.pi/`
 - `.git/`, `.git/hooks/`, `.git/COMMIT_EDITMSG`
-- `context/`, `context/plans/`, `context/decisions/`, `context/handovers/`, `context/tmp/`, `context/tmp/.gitignore` via `RepoPaths::context_tmp_gitignore_file()`
+- `context/`, `context/plans/`, `context/decisions/`, `context/handovers/`, `context/tmp/`, `context/tmp/.gitignore` — no longer `RepoPaths` accessors; the canonical manifest is `ContextBaseline::sce_default()` (`cli/src/domain/context/baseline.rs`), and `FilesystemContextStore` (`cli/src/adapters/outbound/filesystem/context_store.rs`) builds these paths by joining `repository_root` with the manifest's own relative paths (see `../architecture.md`'s "CLI internal hexagonal architecture")
 
 ### Install paths
 

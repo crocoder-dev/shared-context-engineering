@@ -437,84 +437,30 @@ pub fn bootstrap_repo_local_config(repository_root: &Path) -> Result<()> {
     Ok(())
 }
 
-const CONTEXT_TMP_GITIGNORE_CONTENT: &str = "*\n!.gitignore\n";
-
-const CONTEXT_OVERVIEW_TEMPLATE: &str = "# Overview\n\n";
-const CONTEXT_ARCHITECTURE_TEMPLATE: &str = "# Architecture\n\n";
-const CONTEXT_PATTERNS_TEMPLATE: &str = "# Patterns\n\n";
-const CONTEXT_GLOSSARY_TEMPLATE: &str = "# Glossary\n\n";
-const CONTEXT_MAP_TEMPLATE: &str = "\
-# Context Map
-
-Primary context files:
-
-- `context/overview.md`
-- `context/architecture.md`
-- `context/patterns.md`
-- `context/glossary.md`
-
-Working areas:
-
-- `context/plans/`
-- `context/handovers/`
-- `context/decisions/`
-- `context/tmp/`
-";
-
 /// Creates the baseline durable-context tree additively.
 ///
 /// Missing directories and baseline files are created with neutral templates.
 /// Existing files and directory contents are never overwritten.
 pub fn bootstrap_context_baseline(repository_root: &Path) -> Result<String> {
-    let repo_paths = RepoPaths::new(repository_root);
+    use crate::adapters::inbound::cli::setup::render_context_baseline_report;
+    use crate::adapters::outbound::filesystem::context_store::FilesystemContextStore;
+    use crate::application::use_cases::ensure_context_baseline::{
+        EnsureContextBaseline, EnsureContextBaselineRequest,
+    };
 
-    ensure_context_directory(&repo_paths.context_dir())?;
-    ensure_context_directory(&repo_paths.context_plans_dir())?;
-    ensure_context_directory(&repo_paths.context_handovers_dir())?;
-    ensure_context_directory(&repo_paths.context_decisions_dir())?;
-    ensure_context_directory(&repo_paths.context_tmp_dir())?;
+    let use_case = EnsureContextBaseline::new(FilesystemContextStore);
+    let report = use_case
+        .execute(EnsureContextBaselineRequest {
+            repository_root: repository_root.to_path_buf(),
+        })
+        .with_context(|| {
+            format!(
+                "Failed to ensure context baseline for '{}'",
+                repository_root.display()
+            )
+        })?;
 
-    ensure_context_file(
-        &repo_paths.context_overview_file(),
-        CONTEXT_OVERVIEW_TEMPLATE,
-    )?;
-    ensure_context_file(
-        &repo_paths.context_architecture_file(),
-        CONTEXT_ARCHITECTURE_TEMPLATE,
-    )?;
-    ensure_context_file(
-        &repo_paths.context_patterns_file(),
-        CONTEXT_PATTERNS_TEMPLATE,
-    )?;
-    ensure_context_file(
-        &repo_paths.context_glossary_file(),
-        CONTEXT_GLOSSARY_TEMPLATE,
-    )?;
-    ensure_context_file(&repo_paths.context_map_file(), CONTEXT_MAP_TEMPLATE)?;
-    ensure_context_file(
-        &repo_paths.context_tmp_gitignore_file(),
-        CONTEXT_TMP_GITIGNORE_CONTENT,
-    )?;
-
-    Ok(success("Context baseline ensured."))
-}
-
-fn ensure_context_directory(path: &Path) -> Result<()> {
-    fs::create_dir_all(path)
-        .with_context(|| format!("Failed to create context directory '{}'", path.display()))
-}
-
-fn ensure_context_file(path: &Path, content: &str) -> Result<()> {
-    if path.exists() {
-        return Ok(());
-    }
-
-    if let Some(parent) = path.parent() {
-        ensure_context_directory(parent)?;
-    }
-
-    fs::write(path, content)
-        .with_context(|| format!("Failed to write context baseline file '{}'", path.display()))
+    Ok(render_context_baseline_report(&report))
 }
 
 fn format_setup_install_success_message(outcome: &SetupInstallOutcome) -> String {
@@ -1680,19 +1626,19 @@ mod tests {
     }
 
     fn assert_baseline_paths_exist(repo: &Path) {
-        let paths = RepoPaths::new(repo);
-        for path in [
-            paths.context_overview_file(),
-            paths.context_architecture_file(),
-            paths.context_patterns_file(),
-            paths.context_glossary_file(),
-            paths.context_map_file(),
-            paths.context_plans_dir(),
-            paths.context_handovers_dir(),
-            paths.context_decisions_dir(),
-            paths.context_tmp_dir(),
-            paths.context_tmp_gitignore_file(),
+        for relative_path in [
+            "context/overview.md",
+            "context/architecture.md",
+            "context/patterns.md",
+            "context/glossary.md",
+            "context/context-map.md",
+            "context/plans",
+            "context/handovers",
+            "context/decisions",
+            "context/tmp",
+            "context/tmp/.gitignore",
         ] {
+            let path = repo.join(relative_path);
             assert!(path.exists(), "expected baseline path {}", path.display());
         }
     }
@@ -1839,9 +1785,9 @@ mod tests {
         assert!(!paths.claude_dir().exists());
         assert!(!paths.pi_dir().exists());
 
-        let gitignore = fs::read_to_string(paths.context_tmp_gitignore_file())
+        let gitignore = fs::read_to_string(repo.join("context/tmp/.gitignore"))
             .expect("tmp gitignore should be readable");
-        assert_eq!(gitignore, CONTEXT_TMP_GITIGNORE_CONTENT);
+        assert_eq!(gitignore, "*\n!.gitignore\n");
 
         let _ = fs::remove_dir_all(&repo);
     }
@@ -1851,33 +1797,36 @@ mod tests {
         let repo = init_git_repo("idempotent-baseline");
         bootstrap_context_baseline(&repo).expect("initial bootstrap");
 
-        let paths = RepoPaths::new(&repo);
-        let sentinel = "SENTINEL_OVERVIEW_CONTENT\n";
-        fs::write(paths.context_overview_file(), sentinel).expect("seed overview sentinel");
-        fs::write(paths.context_map_file(), "SENTINEL_CONTEXT_MAP\n")
-            .expect("seed context-map sentinel");
-        fs::write(paths.context_tmp_gitignore_file(), "SENTINEL_GITIGNORE\n")
-            .expect("seed gitignore sentinel");
+        let overview_file = repo.join("context/overview.md");
+        let context_map_file = repo.join("context/context-map.md");
+        let tmp_gitignore_file = repo.join("context/tmp/.gitignore");
+        let architecture_file = repo.join("context/architecture.md");
+        let plans_dir = repo.join("context/plans");
 
-        fs::remove_file(paths.context_architecture_file()).expect("remove architecture");
-        fs::remove_dir_all(paths.context_plans_dir()).expect("remove plans");
+        let sentinel = "SENTINEL_OVERVIEW_CONTENT\n";
+        fs::write(&overview_file, sentinel).expect("seed overview sentinel");
+        fs::write(&context_map_file, "SENTINEL_CONTEXT_MAP\n").expect("seed context-map sentinel");
+        fs::write(&tmp_gitignore_file, "SENTINEL_GITIGNORE\n").expect("seed gitignore sentinel");
+
+        fs::remove_file(&architecture_file).expect("remove architecture");
+        fs::remove_dir_all(&plans_dir).expect("remove plans");
 
         bootstrap_context_baseline(&repo).expect("rerun bootstrap");
 
         assert_eq!(
-            fs::read_to_string(paths.context_overview_file()).expect("read overview"),
+            fs::read_to_string(&overview_file).expect("read overview"),
             sentinel
         );
         assert_eq!(
-            fs::read_to_string(paths.context_map_file()).expect("read context-map"),
+            fs::read_to_string(&context_map_file).expect("read context-map"),
             "SENTINEL_CONTEXT_MAP\n"
         );
         assert_eq!(
-            fs::read_to_string(paths.context_tmp_gitignore_file()).expect("read gitignore"),
+            fs::read_to_string(&tmp_gitignore_file).expect("read gitignore"),
             "SENTINEL_GITIGNORE\n"
         );
-        assert!(paths.context_architecture_file().exists());
-        assert!(paths.context_plans_dir().is_dir());
+        assert!(architecture_file.exists());
+        assert!(plans_dir.is_dir());
 
         let _ = fs::remove_dir_all(&repo);
     }

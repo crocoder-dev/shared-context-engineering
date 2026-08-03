@@ -4,3 +4,5 @@
 //! `crate::composition`, `crate::services`, or any infrastructure crate
 //! (CLI parsing, database, HTTP, process/filesystem/env access). See
 //! `context/architecture.md` for the full dependency-direction rules.
+
+pub(crate) mod context;

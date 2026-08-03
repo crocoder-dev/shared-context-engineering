@@ -393,21 +393,7 @@ pub(crate) mod pi_asset {
     pub const EXTENSIONS_DIR: &str = "extensions";
 }
 
-pub(crate) mod context_dir {
-    pub const CONTEXT_ROOT: &str = "context";
-    pub const PLANS: &str = "plans";
-    pub const DECISIONS: &str = "decisions";
-    pub const HANDOVERS: &str = "handovers";
-    pub const TMP: &str = "tmp";
-}
-
 pub(crate) mod context_file {
-    pub const OVERVIEW: &str = "overview.md";
-    pub const ARCHITECTURE: &str = "architecture.md";
-    pub const GLOSSARY: &str = "glossary.md";
-    pub const PATTERNS: &str = "patterns.md";
-    pub const CONTEXT_MAP: &str = "context-map.md";
-    pub const TMP_GITIGNORE: &str = ".gitignore";
     pub const SKILL_DEFINITION: &str = "SKILL.md";
 }
 
@@ -465,50 +451,6 @@ impl RepoPaths {
 
     pub(crate) fn git_commit_editmsg(&self) -> PathBuf {
         self.git_dir().join(repo_file::GIT_COMMIT_EDITMSG)
-    }
-
-    pub(crate) fn context_dir(&self) -> PathBuf {
-        self.root.join(context_dir::CONTEXT_ROOT)
-    }
-
-    pub(crate) fn context_plans_dir(&self) -> PathBuf {
-        self.context_dir().join(context_dir::PLANS)
-    }
-
-    pub(crate) fn context_decisions_dir(&self) -> PathBuf {
-        self.context_dir().join(context_dir::DECISIONS)
-    }
-
-    pub(crate) fn context_handovers_dir(&self) -> PathBuf {
-        self.context_dir().join(context_dir::HANDOVERS)
-    }
-
-    pub(crate) fn context_tmp_dir(&self) -> PathBuf {
-        self.context_dir().join(context_dir::TMP)
-    }
-
-    pub(crate) fn context_overview_file(&self) -> PathBuf {
-        self.context_dir().join(context_file::OVERVIEW)
-    }
-
-    pub(crate) fn context_architecture_file(&self) -> PathBuf {
-        self.context_dir().join(context_file::ARCHITECTURE)
-    }
-
-    pub(crate) fn context_glossary_file(&self) -> PathBuf {
-        self.context_dir().join(context_file::GLOSSARY)
-    }
-
-    pub(crate) fn context_patterns_file(&self) -> PathBuf {
-        self.context_dir().join(context_file::PATTERNS)
-    }
-
-    pub(crate) fn context_map_file(&self) -> PathBuf {
-        self.context_dir().join(context_file::CONTEXT_MAP)
-    }
-
-    pub(crate) fn context_tmp_gitignore_file(&self) -> PathBuf {
-        self.context_tmp_dir().join(context_file::TMP_GITIGNORE)
     }
 }
 

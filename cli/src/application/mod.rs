@@ -7,5 +7,5 @@
 //! rules.
 
 mod error;
-mod ports;
-mod use_cases;
+pub(crate) mod ports;
+pub(crate) mod use_cases;

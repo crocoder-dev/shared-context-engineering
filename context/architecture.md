@@ -132,8 +132,25 @@ Migration proceeds through vertical slices rather than a big-bang rewrite:
 one command or capability at a time gets domain types, application use
 cases/ports, and adapters carved out of `services`, with `composition::run`
 progressively wiring more of the CLI through the new layers while
-unconverted commands keep flowing through `app::run`. No slice migration is
-in scope for this skeleton phase.
+unconverted commands keep flowing through `app::run`.
+
+The first landed slice is `sce setup`'s durable-context baseline bootstrap:
+`cli/src/domain/context/baseline.rs` defines the `ContextBaseline` manifest,
+`cli/src/application/ports/context_store.rs` and
+`cli/src/application/use_cases/ensure_context_baseline.rs` define the
+`ContextStore` port and `EnsureContextBaseline` use case, and
+`cli/src/adapters/outbound/filesystem/context_store.rs` implements
+`ContextStore` against the filesystem. `services::setup::bootstrap_context_baseline`
+is now a compatibility facade: it constructs the filesystem adapter, runs the
+use case, and renders the result through
+`cli/src/adapters/inbound/cli/setup.rs`'s `render_context_baseline_report`,
+so both `sce setup --bootstrap-context` and every normal successful `sce
+setup` run — which already shared this one call site — pick up the layered
+implementation with unchanged output. `composition::run` is not yet wired
+through this slice; `setup`'s command parsing, prompts, and lifecycle
+providers still flow through `app::run`/`services::setup` unchanged. See
+`context/sce/setup-repo-local-config-bootstrap.md` for the full behavior
+contract this slice preserves.
 
 ```mermaid
 flowchart LR
