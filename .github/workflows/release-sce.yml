@@ -220,7 +220,7 @@ jobs:
           ref: ${{ needs.resolve-release.outputs.tag }}
 
       - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@d96678350ffd6a456235832eb11e1c491589b7bb # v3.21.8
+        uses: DeterminateSystems/determinate-nix-action@61cbfe2efc2d4e7a8a6d56967c3c1058e846c858 # v3.21.9
 
       - name: Download CLI release artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
