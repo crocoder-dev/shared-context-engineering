@@ -1407,14 +1407,629 @@ local renderImplementationGate = (mode: model.WorkflowRenderMode) -> """
 
 local IMPLEMENTATION_GATE = renderImplementationGate.apply("package")
 
+nextTaskPlanReviewReference = """
+# Plan review phase
+
+Run this phase for step 1 of the workflow. It resolves one plan, selects one
+task, and decides whether that task can be implemented right now. It reads; it
+never writes.
+
+Inputs: the parsed `plan-name-or-path`, and `task-id` when present. The
+`auto-approve` token is not passed here and has no meaning in this phase.
+
+## 1.1 Resolve the plan
+
+Resolve the supplied plan name or path to exactly one existing plan.
+
+When no plan can be found, set internal status `blocked`.
+
+When multiple plans match and none can be selected safely, set internal status
+`blocked` with the matching candidates.
+
+Read the selected plan before exploring the repository.
+
+## 1.2 Resolve one task
+
+When a task ID is supplied, select that task.
+
+Otherwise, select the first incomplete task in plan order whose declared
+dependencies are complete.
+
+Set internal status `plan_complete` when no incomplete tasks remain.
+
+Set internal status `blocked` when incomplete tasks remain but none can currently
+be executed.
+
+Review at most one task per invocation.
+
+## 1.3 Inspect relevant context
+
+Start with the task and the files it directly references.
+
+Inspect only what is needed to understand:
+
+- Existing behavior.
+- Applicable repository conventions.
+- Architectural boundaries.
+- Relevant tests.
+- Available verification commands.
+- Decisions or specifications connected to the task.
+
+Load root context only when the task affects repository-wide behavior,
+architecture, shared terminology, or cross-domain interfaces.
+
+Do not explore the entire repository by default.
+
+## 1.4 Determine readiness
+
+A task is `ready` when:
+
+- Its goal is clear.
+- Its scope is sufficiently bounded.
+- Its dependencies are complete.
+- Its done checks are observable.
+- A credible verification method exists.
+- No unresolved decision would materially change the implementation.
+
+Use repository conventions for ordinary local choices.
+
+Do not block on:
+
+- Naming inferable from surrounding code.
+- Established formatting or style.
+- Reversible local implementation details.
+- Details that do not change observable behavior or scope.
+
+Record these choices under `assumptions`.
+
+Set internal status `blocked` when a missing decision materially affects:
+
+- User-visible behavior.
+- Public interfaces.
+- Architecture or ownership boundaries.
+- Data shape or persistence.
+- Security or privacy.
+- External dependencies.
+- Destructive or difficult-to-reverse behavior.
+- The evidence needed to prove completion.
+
+## 1.5 Return the result
+
+Set exactly one internal state:
+
+- `ready`
+- `blocked`
+- `plan_complete`
+
+Record only the internal state. Do not add explanatory prose before or after it.
+
+A `ready` result must identify:
+
+- One resolved plan.
+- Exactly one incomplete task.
+- The task goal and scope boundaries.
+- Done checks.
+- Verification expectations.
+- Relevant files and context.
+- Review assumptions.
+
+Step 2 consumes this result verbatim, so anything the execution phase needs has
+to be present here.
+
+## Plan review boundaries
+
+Do not:
+
+- Modify application code.
+- Modify tests.
+- Update the plan.
+- Mark the task complete.
+- Request implementation confirmation.
+- Run task execution.
+- Synchronize context.
+- Run final validation.
+- Review more than one task.
+"""
+
+nextTaskTaskExecutionReference = """
+# Task execution phase
+
+Run this phase for step 2 of the workflow. It is the only phase that writes
+application code, and the only one that asks the user for anything.
+
+Input: the complete `ready` result from the plan review phase, plus the `approve`
+flag when the user pre-approved this invocation.
+
+This phase exclusively owns:
+
+- Presenting the implementation summary.
+- Requesting implementation confirmation.
+- Implementing the task.
+- Running task-level verification.
+- Updating the task status and evidence.
+
+Do not present an additional implementation confirmation anywhere else.
+
+The `approve` flag means the user pre-approved this task when invoking the
+workflow. It suppresses the approval question and the wait. It never suppresses
+the gate. Only the workflow entrypoint may set it, and only from an explicit
+user-supplied approval token. Never infer it.
+
+If required handoff information is absent or stale, still show the gate using
+what is known, clearly identify the handoff problem, and do not edit files. After
+the user responds, set internal status `blocked`.
+
+## 2.1 Validate the handoff without editing
+
+Confirm that:
+
+- The readiness status is `ready`.
+- Exactly one task is present.
+- The plan file exists.
+- The selected task is still incomplete.
+- The task has not materially changed since review.
+- Declared dependencies remain complete.
+
+Do not reconstruct missing material requirements.
+
+## 2.2 Always show the implementation gate
+
+At the start of the phase, before any file modification, present the task using
+`references/output.md`.
+
+The gate must be shown even when:
+
+- The task appears straightforward.
+- The workflow believes approval was already implied.
+- The handoff is stale or incomplete.
+- The user is likely to approve.
+
+When the `approve` flag is absent, end the gate with exactly one approval
+question:
+
+`Continue with implementation now? (yes/no)`
+
+Stop and wait for the user's answer. Do not return internal state, and make no
+file modifications, until the user has answered.
+
+When the `approve` flag is supplied, show the gate as a summary, omit the
+approval question, do not wait, and continue at step 2.4.
+
+## 2.3 Handle the user's decision
+
+Skip this step when the `approve` flag was supplied.
+
+When the user rejects or cancels, do not modify files and set internal status
+`declined`.
+
+When the user does not clearly approve, do not modify files. Ask the same
+approval question once more only when the response is genuinely ambiguous.
+Otherwise set internal status `blocked`.
+
+When the user approves, continue with implementation.
+
+Treat constraints supplied with approval as part of the approved task boundary.
+If those constraints materially contradict the reviewed task, set internal status
+`blocked` before editing.
+
+## 2.4 Prepare the implementation
+
+Before editing:
+
+- Read the relevant files supplied by plan review.
+- Inspect nearby code and tests when needed.
+- Identify the smallest coherent change satisfying the task.
+- Follow surrounding naming, structure, error handling, and test style.
+- Preserve unrelated behavior.
+
+Do not create a second plan.
+
+Do not broaden the reviewed task.
+
+## 2.5 Implement one task
+
+Make the minimum coherent changes required to satisfy the task goal and done
+checks.
+
+Use judgment for ordinary, reversible local implementation choices.
+
+Stop when implementation requires:
+
+- Material scope expansion.
+- A new external dependency not authorized by the task.
+- A public-interface decision not established by the plan.
+- A destructive or difficult-to-reverse operation.
+- An unresolved security, privacy, or data decision.
+- Contradicting the reviewed task or repository architecture.
+
+When stopped, preserve completed in-scope work unless retaining it would leave
+the repository unsafe or invalid.
+
+## 2.6 Verify the task
+
+Run the narrowest authoritative checks that demonstrate the done checks.
+
+Start with verification supplied by the readiness result. Add nearby or directly
+relevant checks only when needed.
+
+Verification may include:
+
+- Targeted tests.
+- Type checking for affected code.
+- Linting affected files.
+- Formatting checks.
+- A focused build or compile step.
+- Direct behavioral inspection when no automated check exists.
+
+Do not run final plan validation unless the task itself explicitly requires it.
+
+When a check fails:
+
+- Determine whether the task caused the failure.
+- Fix it when the correction remains in scope.
+- Rerun the relevant check.
+- Set internal status `incomplete` when a done check remains unsatisfied, or
+  `blocked` when completing it requires an unapproved decision or scope
+  expansion.
+
+Never report a check as passed unless it ran successfully.
+
+## 2.7 Update the plan
+
+Only after successful implementation and task-level verification:
+
+- Mark only the selected task complete.
+- Record concise implementation evidence.
+- Record verification commands and outcomes.
+- Record material deviations or approved assumptions.
+- Preserve the plan's existing structure and terminology.
+
+Do not mark the task complete when returning `declined`, `blocked`, or
+`incomplete`.
+
+## 2.8 Determine the terminal status
+
+Set internal status `complete` when the task was implemented, verified, and
+marked complete in the plan with evidence.
+
+Set internal status `incomplete` when in-scope work was completed but one or more
+done checks remain unsatisfied.
+
+Set internal status `declined` when the user rejected implementation.
+
+Set internal status `blocked` for every other non-successful outcome, including:
+
+- Missing approval.
+- Stale or invalid handoff.
+- Material blocker.
+- A verification failure that cannot be resolved in scope.
+
+Do not determine whether the plan is complete. The `/next-task` workflow owns
+that decision after context synchronization.
+
+## 2.9 Return internal state
+
+After the phase reaches a terminal state, set exactly one internal state.
+
+Record only the internal state. Do not add explanatory prose before or after it.
+
+A `complete` result is the authoritative handoff into step 3, which reads the
+plan, completed task, changed files, implementation summary, verification
+evidence, done-check evidence, and context-impact classification out of it. Step
+3 is forbidden from reconstructing any of that, so it has to be present here.
+
+## Task execution boundaries
+
+Do not:
+
+- Edit before approval, whether explicit or pre-supplied.
+- Execute more than one task.
+- Select or execute the next task.
+- Skip the implementation gate.
+- Ask for multiple approval gates for the same unchanged task.
+- Expand scope without authorization.
+- Synchronize durable context.
+- Run final plan validation.
+- Determine whether the plan is complete.
+- Create a Git commit.
+- Push changes.
+- Modify unrelated files.
+- Claim verification that was not performed.
+"""
+
+nextTaskOutputReference = """
+# Next-task output layouts
+
+Use only the applicable layout. Values come from internal workflow state.
+
+## Review blocked
+
+Present the selected task, then each issue's problem, impact, and required
+decision. If plan resolution is ambiguous, list candidate paths and
+`/next-task {candidate-path}`. State whether another task remains executable.
+
+## Plan already complete
+
+```markdown
+-------------------------------------
+
+# Implementation tasks are complete.
+
+Run the final validation:
+
+`/validate {plan-path}`
+```
+
+## Declined
+
+```markdown
+You have declined to proceed with this task
+```
+
+## Execution blocked or incomplete
+
+For `blocked`, present the blocker, work completed before it, and the required
+decision or action. For `incomplete`, present completed work, verification
+evidence, remaining work, and the reason it remains incomplete.
+
+## Context synchronization blocked
+
+State that task `{completed-task-id}` was implemented, verified, and recorded;
+report the contradiction or synchronization failure, preserved edits, required
+action, and retry condition. State that durable context is out of date and must
+be synchronized before continuing.
+
+## More tasks remain
+
+```markdown
+-------------------------------------
+
+# Task {completed-task-id} completed.
+
+{completed-tasks} of {total-tasks} tasks complete.
+
+Next up:
+
+{next-task-id} — {next-task-title}
+
+`/next-task {plan-path} {next-task-id}`
+```
+
+## All tasks complete
+
+```markdown
+-------------------------------------
+
+# Task {completed-task-id} completed.
+
+All tasks are complete.
+
+Run the final validation:
+
+`/validate {plan-path}`
+```
+
+# Implementation gate
+
+Always show this gate at the start of the **Task execution phase**, before editing any
+file.
+
+The gate is user-facing prose. It is never serialized into a YAML result. This
+file is the only authority for the gate's content and order.
+
+## Format
+
+# `{task.id} - {task.title} - {plan.name}`
+
+## Goal
+
+{task.goal}
+
+## In scope
+
+- {task.in_scope}
+
+## Out of scope
+
+- {task.out_of_scope}
+
+## Done when
+
+- {task.done_checks}
+
+## Expected changes
+
+- List confirmed files or areas expected to change.
+- Label uncertain entries as likely rather than confirmed.
+
+## Approach
+
+Describe the smallest coherent implementation approach in 2–5 steps.
+
+## Assumptions
+
+- Include material assumptions returned by plan review.
+- Omit this section when there are no assumptions.
+
+## Risks or trade-offs
+
+- Include only risks relevant to approving this task.
+- Omit this section when there are no meaningful risks.
+
+## Verification
+
+- {task.verification}
+
+When the `approve` flag is absent, end with exactly:
+
+`Continue with implementation now? (yes/no)`
+
+When the `approve` flag is supplied, omit the question and end after
+**Verification**.
+
+## Rules
+
+- Show the gate exactly once for an unchanged task.
+- Do not modify files before approval.
+- Do not add requirements absent from the reviewed task.
+- Do not present multiple competing approaches unless a material decision is
+  required.
+- Do not emit YAML while waiting for the user's answer. Stop after the gate and
+  wait.
+- If the handoff is stale or incomplete, show the known task information and
+  identify the problem under **Risks or trade-offs**.
+
+# Context Sync Report
+
+Return only one completed Markdown report using the applicable variant below.
+Do not include unused sections, placeholders, YAML, or a fenced code block.
+
+The `Status` value must be exactly one of:
+
+- `synced`
+- `no_context_change`
+- `blocked`
+
+The input execution status is always `complete` and does not need to be repeated
+as a separate workflow state.
+
+## Synced variant
+
+# Context Sync Report
+
+**Status:** synced\("  ")
+**Plan:** `{plan path}`\("  ")
+**Task:** `{task id} — {task title}`
+
+## Updated files
+
+- {List each changed file from the execution handoff except paths under
+  `context/`; state `None.` when no files remain.}
+
+## Updated context
+
+- `{context file}` — {concise description of the durable truth updated}
+
+## Architecture decisions
+
+- `{written or reused ADR path}` — {decision and status}
+- None qualified.
+
+## Feature existence
+
+- `{feature}` — `{context file that canonically describes it}`
+
+## Verification
+
+- {How the edited context was checked against implementation and execution evidence.}
+- {File hygiene: line counts, relative links, diagrams where structure is complex.}
+- {Documentation, link, or formatting checks that were run, when applicable.}
+
+## Notes
+
+{Include only non-blocking information worth retaining.
+Omit this section when unnecessary.}
+
+---
+
+## No-context-change variant
+
+# Context Sync Report
+
+**Status:** no_context_change\("  ")
+**Plan:** `{plan path}`\("  ")
+**Task:** `{task id} — {task title}`
+
+## Updated files
+
+- {List each changed file from the execution handoff except paths under
+  `context/`; state `None.` when no files remain.}
+
+## Synchronization result
+
+{Explain why the completed implementation did not introduce durable,
+non-obvious repository knowledge requiring an update.}
+
+## Context reviewed
+
+- `{context file or area}` — {what was checked and why it remains accurate}
+
+## Architecture decisions
+
+- `{reused ADR path}` — {decision and status}
+- None qualified.
+
+## Feature existence
+
+- `{feature}` — `{context file that canonically describes it}`, already present.
+
+## Verification
+
+- {How existing context was compared with implementation and execution evidence.}
+
+---
+
+## Blocked variant
+
+# Context Sync Report
+
+**Status:** blocked\("  ")
+**Plan:** `{plan path}`\("  ")
+**Task:** `{task id} — {task title}`
+
+## Updated files
+
+- {List each changed file from the execution handoff except paths under
+  `context/`; state `None.` when no files remain.}
+
+## Blocker
+
+**Problem:** {specific synchronization blocker}\("  ")
+**Impact:** {why context cannot be made authoritative safely}\("  ")
+**Required action:** {decision or correction required}
+
+## Context changes
+
+- {List safe context edits preserved, or state `No context files were changed.`}
+
+## Architecture decisions
+
+- `{ADR path written or reused before the blocker}` — {decision and status}
+- None written or reused before the blocker.
+
+## Retry condition
+
+{State the concrete condition under which context synchronization should run
+again.}
+
+## Report rules
+
+- Name exact context files when they were changed or reviewed.
+- Under **Architecture decisions**, list every ADR path written or reused during
+  the decision gate. In a successful report, state `None qualified.` when the
+  gate skipped invocation. In a blocked report, state
+  `None written or reused before the blocker.` when applicable.
+- Under **Updated files**, list every changed file from the execution handoff
+  except paths under `context/`.
+- Report the missing context root as `blocked`, with `sce setup
+  --bootstrap-context` as the required action and the existence of `context/` as
+  the retry condition.
+- Omit **Feature existence** only when the task implemented no feature.
+- Describe durable truth, not implementation-session chronology.
+- Keep evidence concise and factual.
+- Do not claim final validation passed.
+- Do not determine whether the plan is complete.
+- Do not recommend a next implementation task.
+"""
+
 structuredComposite = new model.StructuredCompositeSource {
   command = structuredCommand
   compositeSkillBody = model.nextTaskSkillBody
   referenceDocuments = new Listing {
-    model.makeDocument.apply("references/plan-review.md", model.nextTaskPlanReview)
-    model.makeDocument.apply("references/task-execution.md", model.nextTaskTaskExecution)
-    model.makeDocument.apply("references/context-sync.md", model.nextTaskContextSync)
-    model.makeDocument.apply("references/output.md", model.nextTaskOutput)
+    model.makeDocument.apply("references/plan-review.md", nextTaskPlanReviewReference)
+    model.makeDocument.apply("references/task-execution.md", nextTaskTaskExecutionReference)
+    model.makeDocument.apply("references/context-sync.md", contextSync.taskReference)
+    model.makeDocument.apply("references/output.md", nextTaskOutputReference)
   }
   phases = new Listing {}
   internalDocuments = new Listing {}

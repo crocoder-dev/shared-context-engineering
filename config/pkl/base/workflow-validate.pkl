@@ -724,10 +724,10 @@ structuredComposite = new model.StructuredCompositeSource {
   command = structuredCommand
   compositeSkillBody = model.validateSkillBody
   referenceDocuments = new Listing {
-    model.makeDocument.apply("references/validation.md", model.validateValidation)
-    model.makeDocument.apply("references/context-sync.md", model.validateContextSync)
-    model.makeDocument.apply("references/validation-report.md", model.validateValidationReport)
-    model.makeDocument.apply("references/output.md", model.validateOutput)
+    model.makeDocument.apply("references/validation.md", renderValidationSkillBody.apply("package"))
+    model.makeDocument.apply("references/context-sync.md", contextSync.planSkillBody.render.apply("package"))
+    model.makeDocument.apply("references/validation-report.md", VALIDATION_REPORT)
+    model.makeDocument.apply("references/output.md", VALIDATION_RESULT)
   }
   phases = new Listing {}
   internalDocuments = new Listing {

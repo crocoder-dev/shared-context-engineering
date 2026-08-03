@@ -150,252 +150,32 @@ behavior. Do not invoke any phase skill or sequence workflow steps in this comma
 """
 }
 
-local CHANGE_OUTPUT = """
-# Change-to-plan output layouts
-
-Use only the applicable layout. Values come from internal workflow state.
-
-## Missing context bootstrap gate
-
-```markdown
--------------------------------------
-
-# This repository has no durable context.
-
-Bootstrap it, then continue in this session:
-
-`sce setup --bootstrap-context`
-```
-
-## Clarification gate
-
-```markdown
--------------------------------------
-
-# Clarification needed.
-
-No plan was written.
-
-Answer each question below.\("  ")
-
-## {question-id} · {category}
-
-{question}
-
-Why this blocks planning: {why_blocking}
-```
-
-## Blocked
-
-Present each issue's problem, impact, and required decision. For ambiguity, list
-candidate plan paths and explain that naming one candidate resolves it.
-
-## Ready continuation
-
-```markdown
--------------------------------------
-
-# Plan {plan-name} is ready.
-
-{total-tasks} {task|tasks} planned.
-
-This plan is a draft. State a correction and it will be updated.
-
-Next up:
-
-{next-task-id} — {next-task-title}
-
-`/next-task {plan-path} {next-task-id}`
-```
-
-For revisions, replace `is ready` with `revised`.
-"""
-
-local NEXT_OUTPUT = """
-# Next-task output layouts
-
-Use only the applicable layout. Values come from internal workflow state.
-
-## Review blocked
-
-Present the selected task, then each issue's problem, impact, and required
-decision. If plan resolution is ambiguous, list candidate paths and
-`/next-task {candidate-path}`. State whether another task remains executable.
-
-## Plan already complete
-
-```markdown
--------------------------------------
-
-# Implementation tasks are complete.
-
-Run the final validation:
-
-`/validate {plan-path}`
-```
-
-## Declined
-
-```markdown
-You have declined to proceed with this task
-```
-
-## Execution blocked or incomplete
-
-For `blocked`, present the blocker, work completed before it, and the required
-decision or action. For `incomplete`, present completed work, verification
-evidence, remaining work, and the reason it remains incomplete.
-
-## Context synchronization blocked
-
-State that task `{completed-task-id}` was implemented, verified, and recorded;
-report the contradiction or synchronization failure, preserved edits, required
-action, and retry condition. State that durable context is out of date and must
-be synchronized before continuing.
-
-## More tasks remain
-
-```markdown
--------------------------------------
-
-# Task {completed-task-id} completed.
-
-{completed-tasks} of {total-tasks} tasks complete.
-
-Next up:
-
-{next-task-id} — {next-task-title}
-
-`/next-task {plan-path} {next-task-id}`
-```
-
-## All tasks complete
-
-```markdown
--------------------------------------
-
-# Task {completed-task-id} completed.
-
-All tasks are complete.
-
-Run the final validation:
-
-`/validate {plan-path}`
-```
-"""
-
-local VALIDATE_OUTPUT = """
-# Validate output layouts
-
-Use only the applicable layout. Values come from internal workflow state.
-
-The `blocked` and `failed` layouts are stated once, under **Validation Result**
-below.
-
-## Context synchronization blocked
-
-State that validation passed and its report is recorded, then report the context
-failure, preserved edits, required action, and retry condition. State that durable
-context remains out of date and synchronization must finish before closure.
-
-## Completion
-
-```markdown
--------------------------------------
-
-# Plan {plan-name} validated.
-
-All implementation tasks were already complete.
-Final validation passed.
-Durable context is synchronized.
-
-Validation report: {plan-path}
-```
-"""
-
-local COMMIT_OUTPUT = """
-# Commit output layouts
-
-Use only the applicable layout. Values come from staged truth and internal
-workflow state.
-
-## Regular-mode staging gate
-
-```markdown
-Please run `git add <files>` for all changes you want included in this commit.
-Atomic commits should only include intentionally staged changes.
-Confirm once staging is complete.
-```
-
-## No staged changes
-
-```markdown
-No staged changes. Stage changes before commit.
-```
-
-## Regular proposal
-
-For each proposal, present the complete commit message and covered files. When
-more than one commit is proposed, also present the split rationale. Do not claim a
-commit was created.
-
-## Blocked
-
-Present every issue's problem, impact, and required decision. Do not commit.
-
-## Bypass success
-
-```markdown
-Committed {commit-hash}
-```
-
-## Bypass Git failure
-
-Present Git's failure unchanged and stop without retrying.
-"""
-
 local changeWorkflow = new CompositeWorkflow {
   identity = catalog.workflows["change-to-plan"]
   command = changeToPlan.workflow.command.document
   structuredSource = changeToPlan.structuredComposite
-  outputText = CHANGE_OUTPUT + "\n\n" + new Listing {
-    for (document in changeToPlan.structuredComposite.outputDocuments) {
-      document.text
-    }
-  }.join("\n\n")
+  outputText = changeToPlan.structuredComposite.referenceDocuments[3].text
 }
 
 local nextWorkflow = new CompositeWorkflow {
   identity = catalog.workflows["next-task"]
   command = nextTask.workflow.command.document
   structuredSource = nextTask.structuredComposite
-  outputText = NEXT_OUTPUT + "\n\n" + new Listing {
-    for (document in nextTask.structuredComposite.outputDocuments) {
-      document.text
-    }
-  }.join("\n\n")
+  outputText = ""
 }
 
 local validateWorkflow = new CompositeWorkflow {
   identity = catalog.workflows["validate"]
   command = validate.workflow.command.document
   structuredSource = validate.structuredComposite
-  outputText = VALIDATE_OUTPUT + "\n\n" + new Listing {
-    for (document in validate.structuredComposite.outputDocuments) {
-      document.text
-    }
-  }.join("\n\n")
+  outputText = ""
 }
 
 local commitWorkflow = new CompositeWorkflow {
   identity = catalog.workflows["commit"]
   command = commit.workflow.command.document
   structuredSource = commit.structuredComposite
-  outputText = COMMIT_OUTPUT + "\n\n" + new Listing {
-    for (document in commit.structuredComposite.outputDocuments) {
-      document.text
-    }
-  }.join("\n\n")
+  outputText = ""
 }
 
 /// `sce-handover` invokes no sibling phase and waits for nothing mid-run, so its
