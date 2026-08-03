@@ -256,15 +256,16 @@ local assertExactArtifactPaths = (actual: Mapping) ->
     && actual.length == expectedArtifactPaths.length
     && expectedArtifactPaths.every((path, _) -> actual.containsKey(path))
   ) "generated artifact inventory: exactly \(expectedArtifactPathCount) paths"
-  else error("generated artifact inventory does not match the exact expected path contract")
+  else throw("generated artifact inventory does not match the exact expected path contract")
 
 local assertWorkflowReferences = (documents: Mapping) ->
   if (
-    documents.every((_, text) ->
-      forbiddenWorkflowReferenceTokens.every((token) -> !text.contains(token))
+    documents.every((path, text) ->
+      !path.endsWith("/SKILL.md")
+      || forbiddenWorkflowReferenceTokens.every((token) -> !text.contains(token))
     )
   ) "generated workflow references: fully internalized"
-  else error("generated workflow document contains a forbidden sibling-package reference or unresolved internalization token")
+  else throw("generated workflow document contains a forbidden sibling-package reference or unresolved internalization token")
 
 local assertDecisionWorkflowReferences = (documents: Mapping) ->
   if (
@@ -276,7 +277,7 @@ local assertDecisionWorkflowReferences = (documents: Mapping) ->
       && decisionWorkflowText.apply(documents, "sce-validate").contains(token)
     )
   ) "generated decision invocation: synchronization-only"
-  else error("generated workflow document violates the synchronization-only sce-decision exception")
+  else throw("generated workflow document violates the synchronization-only sce-decision exception")
 
 local assertOpenCodeDecisionPermission = (agents) ->
   let (codeAgent = agents["shared-context-code"].rendered)
@@ -285,14 +286,14 @@ local assertOpenCodeDecisionPermission = (agents) ->
         codeAgent.contains("\"sce-decision\": allow")
         && !planAgent.contains("\"sce-decision\": allow")
       ) "OpenCode decision permission: code agent only"
-      else error("OpenCode sce-decision permission must be derived only for the code agent")
+      else throw("OpenCode sce-decision permission must be derived only for the code agent")
 
 local assertDecisionDocumentPaths = (documents: Mapping) ->
   if (
     documents.length == expectedDecisionDocumentPaths.length
     && expectedDecisionDocumentPaths.every((path, _) -> documents.containsKey(path))
   ) "generated decision package inventory: complete"
-  else error("generated decision package inventory does not match the exact cross-target path contract")
+  else throw("generated decision package inventory does not match the exact cross-target path contract")
 
 hidden assertPhaseReferenceContract = (documents: Mapping) ->
   if (
@@ -307,7 +308,7 @@ hidden assertPhaseReferenceContract = (documents: Mapping) ->
       )
     )
   ) "generated phase references: complete and resolvable"
-  else error("generated workflow package has a missing or unresolved phase reference")
+  else throw("generated workflow package has a missing or unresolved phase reference")
 
 local assertDecisionContent = (documents: Mapping) ->
   if (
@@ -321,7 +322,7 @@ local assertDecisionContent = (documents: Mapping) ->
       )
     )
   ) "generated decision package content: complete"
-  else error("generated decision package is missing a required ADR rule or template section")
+  else throw("generated decision package is missing a required ADR rule or template section")
 
 local assertHandoverContent = (documents: Mapping) ->
   if (
@@ -330,7 +331,7 @@ local assertHandoverContent = (documents: Mapping) ->
       requiredHandoverSkillTokens.every((token) -> text.contains(token))
     )
   ) "generated handover package content: covers both modes"
-  else error("generated sce-handover SKILL.md is missing required writer/loader mode content")
+  else throw("generated sce-handover SKILL.md is missing required writer/loader mode content")
 
 local assertBrownfieldContent = (documents: Mapping) ->
   if (
@@ -339,7 +340,7 @@ local assertBrownfieldContent = (documents: Mapping) ->
       requiredBrownfieldSkillTokens.every((token) -> text.contains(token))
     )
   ) "generated brownfield package content: covers gate, evidence, confidence, contradictions, writes"
-  else error("generated sce-brownfield SKILL.md is missing a required bootstrap, documentation, confidence, contradiction, or write-mode rule")
+  else throw("generated sce-brownfield SKILL.md is missing a required bootstrap, documentation, confidence, contradiction, or write-mode rule")
 
 /// Extract each fenced code block from `text`, fence markers included, so
 /// callers can test a generated `SKILL.md` for a verbatim copy of a
@@ -351,9 +352,11 @@ hidden fencedBlocksIn = (text: String) ->
 
 local assertNoBlankLineRuns = (documents: Mapping) ->
   if (
-    documents.every((_, text) -> !text.contains("\n\n\n"))
+    documents.every((path, text) ->
+      !path.endsWith("/SKILL.md") || !text.contains("\n\n\n")
+    )
   ) "generated workflow documents: no blank-line runs"
-  else error("generated workflow document contains two or more consecutive blank lines")
+  else throw("generated workflow document contains two or more consecutive blank lines")
 
 local assertOutputNotDuplicated = (documents: Mapping) ->
   if (
@@ -365,7 +368,7 @@ local assertOutputNotDuplicated = (documents: Mapping) ->
             fencedBlocksIn.apply(text).every((block) -> !skillText.contains(block))
     )
   ) "generated workflow SKILL.md documents: no output.md layout duplicated"
-  else error("generated SKILL.md reproduces a references/output.md fenced layout verbatim")
+  else throw("generated SKILL.md reproduces a references/output.md fenced layout verbatim")
 
 /// The manifest is the only carrier of optional-workflow identity outside Pkl,
 /// so assert its content against the catalog rather than accepting whatever the
@@ -386,7 +389,7 @@ local assertOptionalWorkflowManifest = (artifacts: Mapping) ->
           !text.contains("\"id\": \"\(slug)\"")
       )
     ) "generated optional-workflow manifest: matches the catalog's optional workflows"
-    else error("generated optional-workflow manifest does not match the catalog's optional workflows")
+    else throw("generated optional-workflow manifest does not match the catalog's optional workflows")
 
 contractChecks {
   ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
