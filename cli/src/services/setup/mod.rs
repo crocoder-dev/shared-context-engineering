@@ -590,7 +590,55 @@ pub fn install_embedded_setup_assets(
     target: SetupTarget,
     selected_optional_workflows: &[String],
 ) -> Result<SetupInstallOutcome> {
-    install::install_embedded_setup_assets(repository_root, target, selected_optional_workflows)
+    use crate::adapters::outbound::assets::embedded_integration_assets::EmbeddedIntegrationAssetCatalog;
+    use crate::adapters::outbound::filesystem::integration_installer::FilesystemIntegrationInstaller;
+    use crate::application::use_cases::install_integration_assets::{
+        InstallIntegrationAssets, InstallIntegrationAssetsError,
+    };
+    use crate::domain::integration::{IntegrationTarget, IntegrationTargetSelection};
+
+    let selection = match target {
+        SetupTarget::OpenCode => IntegrationTargetSelection::One(IntegrationTarget::OpenCode),
+        SetupTarget::Claude => IntegrationTargetSelection::One(IntegrationTarget::Claude),
+        SetupTarget::Pi => IntegrationTargetSelection::One(IntegrationTarget::Pi),
+        SetupTarget::All => IntegrationTargetSelection::All,
+    };
+
+    let use_case = InstallIntegrationAssets::new(
+        EmbeddedIntegrationAssetCatalog,
+        FilesystemIntegrationInstaller,
+    );
+
+    let report = use_case
+        .execute(repository_root, selection, selected_optional_workflows)
+        .map_err(|error| match error {
+            InstallIntegrationAssetsError::Catalog(never) => match never {},
+            InstallIntegrationAssetsError::Installer(error) => error,
+        })?;
+
+    let target_results = report
+        .targets
+        .into_iter()
+        .map(|installed| SetupInstallTargetResult {
+            target: setup_target_for_integration_target(installed.target),
+            destination_root: installed.destination_root,
+            installed_file_count: installed.installed_file_count,
+        })
+        .collect();
+
+    Ok(SetupInstallOutcome { target_results })
+}
+
+fn setup_target_for_integration_target(
+    target: crate::domain::integration::IntegrationTarget,
+) -> SetupTarget {
+    use crate::domain::integration::IntegrationTarget;
+
+    match target {
+        IntegrationTarget::OpenCode => SetupTarget::OpenCode,
+        IntegrationTarget::Claude => SetupTarget::Claude,
+        IntegrationTarget::Pi => SetupTarget::Pi,
+    }
 }
 
 pub(crate) fn setup_install_recovery_guidance(
@@ -743,15 +791,12 @@ mod install {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use crate::services::default_paths::InstallTargetPaths;
     use crate::services::security::{ensure_directory_is_writable, redact_sensitive_text};
 
     use super::{
-        cleanup_path_if_exists, concrete_targets_for, hook_install_recovery_guidance,
-        iter_embedded_assets_for_setup_target_with_selection, iter_required_hook_assets,
-        setup_install_recovery_guidance, EmbeddedAsset, RequiredHookInstallResult,
-        RequiredHookInstallStatus, RequiredHooksInstallOutcome, SetupInstallOutcome,
-        SetupInstallTargetResult, SetupTarget,
+        cleanup_path_if_exists, hook_install_recovery_guidance, iter_required_hook_assets,
+        EmbeddedAsset, RequiredHookInstallResult, RequiredHookInstallStatus,
+        RequiredHooksInstallOutcome,
     };
 
     pub(super) fn prepare_setup_hooks_repository(repository_root: &Path) -> Result<PathBuf> {
@@ -770,19 +815,6 @@ mod install {
         install_required_git_hooks_in_resolved_repository(&resolved_repository_root, |from, to| {
             fs::rename(from, to)
         })
-    }
-
-    pub(super) fn install_embedded_setup_assets(
-        repository_root: &Path,
-        target: SetupTarget,
-        selected_optional_workflows: &[String],
-    ) -> Result<SetupInstallOutcome> {
-        install_embedded_setup_assets_with_rename(
-            repository_root,
-            target,
-            selected_optional_workflows,
-            |from, to| fs::rename(from, to),
-        )
     }
 
     fn install_required_git_hooks_in_resolved_repository<F>(
@@ -827,7 +859,7 @@ mod install {
     where
         F: FnMut(&Path, &Path) -> io::Result<()>,
     {
-        validate_embedded_relative_path(hook_asset.relative_path)?;
+        validate_hook_relative_path(hook_asset.relative_path)?;
 
         let hook_path = hooks_directory.join(hook_asset.relative_path);
         let existing_metadata = fs::metadata(&hook_path).ok();
@@ -881,7 +913,7 @@ mod install {
             });
         }
 
-        remove_existing_install_target(&hook_path).with_context(|| {
+        remove_existing_hook_target(&hook_path).with_context(|| {
             format!(
                 "Failed to replace existing hook '{}' without creating a backup",
                 hook_path.display()
@@ -1102,92 +1134,7 @@ mod install {
         Ok(metadata.is_file())
     }
 
-    fn install_embedded_setup_assets_with_rename<F>(
-        repository_root: &Path,
-        target: SetupTarget,
-        selected_optional_workflows: &[String],
-        mut rename_fn: F,
-    ) -> Result<SetupInstallOutcome>
-    where
-        F: FnMut(&Path, &Path) -> io::Result<()>,
-    {
-        ensure_directory_is_writable(repository_root, "setup repository root")?;
-
-        let mut target_results = Vec::new();
-
-        for concrete_target in concrete_targets_for(target) {
-            let concrete_target = *concrete_target;
-            let assets: Vec<&'static EmbeddedAsset> =
-                iter_embedded_assets_for_setup_target_with_selection(
-                    concrete_target,
-                    selected_optional_workflows,
-                )
-                .collect();
-            let result = install_assets_for_concrete_target_with_rename(
-                repository_root,
-                concrete_target,
-                &assets,
-                &mut rename_fn,
-            )?;
-            target_results.push(result);
-        }
-
-        Ok(SetupInstallOutcome { target_results })
-    }
-
-    fn install_assets_for_concrete_target_with_rename<F>(
-        repository_root: &Path,
-        target: SetupTarget,
-        assets: &[&'static EmbeddedAsset],
-        rename_fn: &mut F,
-    ) -> Result<SetupInstallTargetResult>
-    where
-        F: FnMut(&Path, &Path) -> io::Result<()>,
-    {
-        let install_targets = InstallTargetPaths::new(repository_root);
-        let destination_root = match target {
-            SetupTarget::OpenCode => install_targets.opencode_target_dir(),
-            SetupTarget::Claude => install_targets.claude_target_dir(),
-            SetupTarget::Pi => install_targets.pi_target_dir(),
-            SetupTarget::All => {
-                unreachable!("meta targets are expanded into concrete targets")
-            }
-        };
-        let staging_root = create_staging_root(repository_root, target)?;
-
-        if let Err(error) = write_assets_to_staging(&staging_root, assets) {
-            cleanup_path_if_exists(&staging_root);
-            return Err(error);
-        }
-
-        if destination_root.exists() {
-            remove_existing_install_target(&destination_root).with_context(|| {
-                format!(
-                    "Failed to replace existing setup target '{}' without creating a backup",
-                    destination_root.display()
-                )
-            })?;
-        }
-
-        if let Err(error) = rename_fn(&staging_root, &destination_root).with_context(|| {
-            format!(
-                "Failed to swap staged install '{}' into destination '{}'",
-                staging_root.display(),
-                destination_root.display()
-            )
-        }) {
-            cleanup_path_if_exists(&staging_root);
-            return Err(error.context(setup_install_recovery_guidance(target, &destination_root)));
-        }
-
-        Ok(SetupInstallTargetResult {
-            target,
-            destination_root,
-            installed_file_count: assets.len(),
-        })
-    }
-
-    fn remove_existing_install_target(destination_root: &Path) -> Result<()> {
+    fn remove_existing_hook_target(destination_root: &Path) -> Result<()> {
         let metadata = fs::metadata(destination_root).with_context(|| {
             format!(
                 "Failed to inspect existing setup target '{}'",
@@ -1214,36 +1161,7 @@ mod install {
         Ok(())
     }
 
-    fn write_assets_to_staging(
-        staging_root: &Path,
-        assets: &[&'static EmbeddedAsset],
-    ) -> Result<()> {
-        for asset in assets {
-            validate_embedded_relative_path(asset.relative_path)?;
-            let destination = staging_root.join(asset.relative_path);
-            let parent = destination
-                .parent()
-                .context("Embedded asset destination should have a parent directory")?;
-
-            fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "Failed to create staged parent directory '{}'",
-                    parent.display()
-                )
-            })?;
-
-            fs::write(&destination, asset.bytes).with_context(|| {
-                format!(
-                    "Failed to write staged embedded asset '{}'",
-                    destination.display()
-                )
-            })?;
-        }
-
-        Ok(())
-    }
-
-    fn validate_embedded_relative_path(relative_path: &str) -> Result<()> {
+    fn validate_hook_relative_path(relative_path: &str) -> Result<()> {
         let path = Path::new(relative_path);
 
         if path.is_absolute() {
@@ -1260,52 +1178,6 @@ mod install {
         }
 
         Ok(())
-    }
-
-    fn create_staging_root(repository_root: &Path, target: SetupTarget) -> Result<PathBuf> {
-        let install_targets = InstallTargetPaths::new(repository_root);
-        let target_dir = match target {
-            SetupTarget::OpenCode => install_targets.opencode_target_dir(),
-            SetupTarget::Claude => install_targets.claude_target_dir(),
-            SetupTarget::Pi => install_targets.pi_target_dir(),
-            SetupTarget::All => {
-                unreachable!("meta targets are expanded into concrete targets")
-            }
-        };
-        let target_label = target_dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .context("Setup target directory should have a valid UTF-8 file name")?
-            .trim_start_matches('.');
-        let epoch_nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("System clock is before UNIX_EPOCH")?
-            .as_nanos();
-
-        for attempt in 0..1000_u16 {
-            let candidate = repository_root.join(format!(
-                ".sce-setup-staging-{target_label}-{epoch_nanos}-{}-{attempt}",
-                std::process::id()
-            ));
-
-            match fs::create_dir(&candidate) {
-                Ok(()) => return Ok(candidate),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => {
-                    return Err(error).with_context(|| {
-                        format!(
-                            "Failed to create staging directory '{}'",
-                            candidate.display()
-                        )
-                    });
-                }
-            }
-        }
-
-        bail!(
-            "Could not allocate a unique staging directory under '{}'",
-            repository_root.display()
-        )
     }
 }
 

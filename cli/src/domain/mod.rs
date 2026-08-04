@@ -6,3 +6,4 @@
 //! `context/architecture.md` for the full dependency-direction rules.
 
 pub(crate) mod context;
+pub(crate) mod integration;
