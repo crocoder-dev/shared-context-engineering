@@ -22,6 +22,8 @@ pub(crate) struct InstalledIntegrationTarget {
 pub(crate) trait IntegrationInstaller {
     type Error;
 
+    fn preflight(&self, repository_root: &Path) -> Result<(), Self::Error>;
+
     fn install(
         &self,
         repository_root: &Path,

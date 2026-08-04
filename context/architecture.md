@@ -156,12 +156,16 @@ The second landed slice is `sce setup`'s embedded integration-asset
 installation. `cli/src/domain/integration/{target,asset}.rs` defines
 `IntegrationTarget` (`OpenCode`/`Claude`/`Pi`), `IntegrationTargetSelection`
 (`One(IntegrationTarget)` / `All`, with `targets()` expanding `All` into
-`[OpenCode, Claude, Pi]`), and `IntegrationAsset`.
+`[OpenCode, Claude, Pi]`), and `IntegrationAsset`, whose
+`bytes: Cow<'static, [u8]>` representation lets embedded assets remain
+zero-copy while allowing other catalogs to provide owned content.
 `cli/src/application/ports/{integration_asset_catalog,integration_installer}.rs`
-define the `IntegrationAssetCatalog` and `IntegrationInstaller` ports, and
-`cli/src/application/use_cases/install_integration_assets.rs`'s
-`InstallIntegrationAssets` use case expands a selection into concrete targets
-and calls both ports once per target, short-circuiting on the first error.
+define the `IntegrationAssetCatalog` and `IntegrationInstaller` ports. The
+installer port exposes a request-level `preflight(&Path)` that runs once
+before installation. `cli/src/application/use_cases/install_integration_assets.rs`'s
+`InstallIntegrationAssets` use case performs that preflight for the repository
+request, then expands a selection into concrete targets and calls both ports
+once per target, short-circuiting on the first error.
 `cli/src/adapters/outbound/assets/embedded_integration_assets.rs`'s
 `EmbeddedIntegrationAssetCatalog` implements the catalog port by delegating to
 `services::setup::iter_embedded_assets_for_setup_target_with_selection`, and

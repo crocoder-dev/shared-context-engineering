@@ -2,6 +2,7 @@
 //! adapter wrapping the existing generated embedded-asset catalog in
 //! `services::setup`.
 
+use std::borrow::Cow;
 use std::convert::Infallible;
 
 use crate::application::ports::integration_asset_catalog::IntegrationAssetCatalog;
@@ -35,7 +36,7 @@ impl IntegrationAssetCatalog for EmbeddedIntegrationAssetCatalog {
         )
         .map(|asset| IntegrationAsset {
             relative_path: asset.relative_path.to_string(),
-            bytes: asset.bytes,
+            bytes: Cow::Borrowed(asset.bytes),
         })
         .collect();
 
@@ -62,7 +63,7 @@ mod tests {
             )
             .map(|asset| IntegrationAsset {
                 relative_path: asset.relative_path.to_string(),
-                bytes: asset.bytes,
+                bytes: Cow::Borrowed(asset.bytes),
             })
             .collect();
 
@@ -87,7 +88,7 @@ mod tests {
                 )
                 .map(|asset| IntegrationAsset {
                     relative_path: asset.relative_path.to_string(),
-                    bytes: asset.bytes,
+                    bytes: Cow::Borrowed(asset.bytes),
                 })
                 .collect();
 

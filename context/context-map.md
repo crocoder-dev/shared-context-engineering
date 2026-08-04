@@ -106,3 +106,4 @@ Recent decision records:
 - `context/decisions/2026-03-09-migrate-lexopt-to-clap.md` (CLI argument parsing migration from lexopt to clap derive macros)
 - `context/decisions/2026-03-25-first-install-channels.md` (approved first-wave install/distribution scope for `sce`, canonical naming, and Nix-owned build policy)
 - `context/decisions/2026-07-17-retire-legacy-agent-trace-db.md` (retire the checkout-scoped Agent Trace DB surface; `RepositoryAgentTraceDb` is the sole adapter, no `sce trace --legacy`, no global/checkout fallback path; pre-migration on-disk files are never touched and no longer inspectable via the CLI)
+- `context/decisions/2026-08-04-setup-integration-asset-hexagonal-slice.md` (routes setup integration-asset installation through application ports and outbound adapters while preserving the compatibility facade and legacy setup behavior)

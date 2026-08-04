@@ -43,6 +43,10 @@ impl<C: IntegrationAssetCatalog, I: IntegrationInstaller> InstallIntegrationAsse
         optional_workflows: &[String],
     ) -> Result<InstallIntegrationAssetsReport, InstallIntegrationAssetsError<C::Error, I::Error>>
     {
+        self.installer
+            .preflight(repository_root)
+            .map_err(InstallIntegrationAssetsError::Installer)?;
+
         let mut targets = Vec::new();
 
         for &target in selection.targets() {
@@ -95,18 +99,28 @@ mod tests {
 
             Ok(vec![IntegrationAsset {
                 relative_path: "file.txt".to_string(),
-                bytes: b"content",
+                bytes: std::borrow::Cow::Borrowed(b"content"),
             }])
         }
     }
 
     #[derive(Default)]
     struct FakeInstaller {
-        calls: RefCell<Vec<(PathBuf, IntegrationTarget, Vec<IntegrationAsset>)>>,
+        preflight_calls: RefCell<Vec<PathBuf>>,
+        install_calls: RefCell<Vec<(PathBuf, IntegrationTarget, Vec<IntegrationAsset>)>>,
+        preflight_error: Option<&'static str>,
     }
 
     impl IntegrationInstaller for FakeInstaller {
         type Error = &'static str;
+
+        fn preflight(&self, repository_root: &Path) -> Result<(), Self::Error> {
+            self.preflight_calls
+                .borrow_mut()
+                .push(repository_root.to_path_buf());
+
+            self.preflight_error.map_or(Ok(()), Err)
+        }
 
         fn install(
             &self,
@@ -114,9 +128,11 @@ mod tests {
             target: IntegrationTarget,
             assets: &[IntegrationAsset],
         ) -> Result<InstalledIntegrationTarget, Self::Error> {
-            self.calls
-                .borrow_mut()
-                .push((repository_root.to_path_buf(), target, assets.to_vec()));
+            self.install_calls.borrow_mut().push((
+                repository_root.to_path_buf(),
+                target,
+                assets.to_vec(),
+            ));
 
             Ok(InstalledIntegrationTarget {
                 target,
@@ -150,7 +166,13 @@ mod tests {
         assert_eq!(catalog_calls[0].0, IntegrationTarget::Claude);
         assert_eq!(catalog_calls[0].1, optional_workflows);
 
-        let installer_calls = use_case.installer.calls.borrow();
+        let preflight_calls = use_case.installer.preflight_calls.borrow();
+        assert_eq!(
+            preflight_calls.as_slice(),
+            std::slice::from_ref(&repository_root),
+        );
+
+        let installer_calls = use_case.installer.install_calls.borrow();
         assert_eq!(installer_calls.len(), 1);
         assert_eq!(installer_calls[0].0, repository_root);
         assert_eq!(installer_calls[0].1, IntegrationTarget::Claude);
@@ -181,7 +203,13 @@ mod tests {
             ]
         );
 
-        let installer_calls = use_case.installer.calls.borrow();
+        let preflight_calls = use_case.installer.preflight_calls.borrow();
+        assert_eq!(
+            preflight_calls.as_slice(),
+            std::slice::from_ref(&repository_root),
+        );
+
+        let installer_calls = use_case.installer.install_calls.borrow();
         let installer_order: Vec<IntegrationTarget> = installer_calls
             .iter()
             .map(|(_, target, _)| *target)
@@ -221,11 +249,36 @@ mod tests {
             vec![IntegrationTarget::OpenCode, IntegrationTarget::Claude]
         );
 
-        let installer_calls = use_case.installer.calls.borrow();
+        let installer_calls = use_case.installer.install_calls.borrow();
         let installer_order: Vec<IntegrationTarget> = installer_calls
             .iter()
             .map(|(_, target, _)| *target)
             .collect();
         assert_eq!(installer_order, vec![IntegrationTarget::OpenCode]);
+    }
+
+    #[test]
+    fn preflight_error_prevents_catalog_and_install_calls() {
+        let catalog = FakeCatalog::default();
+        let installer = FakeInstaller {
+            preflight_calls: RefCell::new(Vec::new()),
+            install_calls: RefCell::new(Vec::new()),
+            preflight_error: Some("preflight failed"),
+        };
+        let use_case = InstallIntegrationAssets::new(catalog, installer);
+        let repository_root = PathBuf::from("/repo");
+
+        let result = use_case.execute(&repository_root, IntegrationTargetSelection::All, &[]);
+
+        assert!(matches!(
+            result,
+            Err(InstallIntegrationAssetsError::Installer("preflight failed"))
+        ));
+        assert_eq!(
+            use_case.installer.preflight_calls.borrow().as_slice(),
+            [repository_root]
+        );
+        assert!(use_case.catalog.calls.borrow().is_empty());
+        assert!(use_case.installer.install_calls.borrow().is_empty());
     }
 }

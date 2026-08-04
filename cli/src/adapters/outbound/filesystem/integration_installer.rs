@@ -44,6 +44,10 @@ pub(crate) struct FilesystemIntegrationInstaller;
 impl IntegrationInstaller for FilesystemIntegrationInstaller {
     type Error = anyhow::Error;
 
+    fn preflight(&self, repository_root: &Path) -> Result<()> {
+        ensure_directory_is_writable(repository_root, "setup repository root")
+    }
+
     fn install(
         &self,
         repository_root: &Path,
@@ -65,8 +69,6 @@ fn install_with_rename<F>(
 where
     F: FnMut(&Path, &Path) -> io::Result<()>,
 {
-    ensure_directory_is_writable(repository_root, "setup repository root")?;
-
     let destination_root = destination_root_for(repository_root, target);
     let staging_root = create_staging_root(repository_root, target)?;
 
@@ -147,7 +149,7 @@ fn write_assets_to_staging(staging_root: &Path, assets: &[IntegrationAsset]) -> 
             )
         })?;
 
-        fs::write(&destination, asset.bytes).with_context(|| {
+        fs::write(&destination, asset.bytes.as_ref()).with_context(|| {
             format!(
                 "Failed to write staged embedded asset '{}'",
                 destination.display()
@@ -236,7 +238,7 @@ mod tests {
     fn asset(relative_path: &str, bytes: &'static [u8]) -> IntegrationAsset {
         IntegrationAsset {
             relative_path: relative_path.to_string(),
-            bytes,
+            bytes: std::borrow::Cow::Borrowed(bytes),
         }
     }
 
@@ -269,6 +271,27 @@ mod tests {
     }
 
     #[test]
+    fn owned_asset_bytes_reach_the_installer_unchanged() {
+        let repo = unique_temp_dir("owned-bytes");
+        let assets = vec![IntegrationAsset {
+            relative_path: "owned/asset.bin".to_string(),
+            bytes: std::borrow::Cow::Owned(vec![1, 2, 3]),
+        }];
+
+        let installed = FilesystemIntegrationInstaller
+            .install(&repo, IntegrationTarget::Claude, &assets)
+            .expect("install should succeed");
+
+        assert_eq!(
+            fs::read(installed.destination_root.join("owned/asset.bin"))
+                .expect("read installed asset"),
+            vec![1, 2, 3]
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
     fn install_rejects_absolute_and_parent_component_paths() {
         let repo = unique_temp_dir("invalid-path");
 
@@ -282,6 +305,33 @@ mod tests {
             assert!(error.to_string().contains(invalid_path));
             assert!(!InstallTargetPaths::new(&repo).pi_target_dir().exists());
         }
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn install_cleans_up_staging_after_write_failure() {
+        let repo = unique_temp_dir("write-failure");
+        let assets = vec![
+            asset("collision", b"file"),
+            asset("collision/child.txt", b"child"),
+        ];
+
+        FilesystemIntegrationInstaller
+            .install(&repo, IntegrationTarget::Claude, &assets)
+            .expect_err("conflicting asset paths should fail during staging");
+        assert!(!InstallTargetPaths::new(&repo).claude_target_dir().exists());
+
+        let leftover_staging = fs::read_dir(&repo)
+            .expect("read repo root")
+            .filter_map(std::result::Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".sce-setup-staging-")
+            });
+        assert!(!leftover_staging, "staging directory should be cleaned up");
 
         let _ = fs::remove_dir_all(&repo);
     }

@@ -1461,6 +1461,7 @@ mod tests {
     use crate::command_surface;
     use crate::services::command_registry::CommandRegistry;
     use crate::services::command_registry::RuntimeCommand;
+    use crate::services::default_paths::InstallTargetPaths;
     use crate::services::parse::command_runtime::parse_runtime_command;
 
     fn options_with(mutate: impl FnOnce(&mut SetupCliOptions)) -> SetupCliOptions {
@@ -1717,10 +1718,10 @@ mod tests {
     }
 
     /// Every optional workflow selected, so filtering drops nothing.
-    fn every_optional_workflow() -> Vec<&'static str> {
+    fn every_optional_workflow() -> Vec<String> {
         super::OPTIONAL_WORKFLOWS
             .iter()
-            .map(|workflow| workflow.id)
+            .map(|workflow| workflow.id.to_string())
             .collect()
     }
 
@@ -1755,5 +1756,138 @@ mod tests {
         assert!(contains(SetupTarget::Pi, "prompts/next-task.md"));
         assert!(contains(SetupTarget::Pi, "extensions/sce/index.ts"));
         assert!(iter_required_hook_assets().all(|asset| !asset.bytes.is_empty()));
+    }
+
+    #[test]
+    fn facade_installs_every_target_with_expected_files() {
+        let cases = [
+            (
+                SetupTarget::OpenCode,
+                vec![(SetupTarget::OpenCode, "command/next-task.md")],
+            ),
+            (
+                SetupTarget::Claude,
+                vec![(SetupTarget::Claude, "commands/next-task.md")],
+            ),
+            (
+                SetupTarget::Pi,
+                vec![(SetupTarget::Pi, "prompts/next-task.md")],
+            ),
+            (
+                SetupTarget::All,
+                vec![
+                    (SetupTarget::OpenCode, "command/next-task.md"),
+                    (SetupTarget::Claude, "commands/next-task.md"),
+                    (SetupTarget::Pi, "prompts/next-task.md"),
+                ],
+            ),
+        ];
+        let selection = every_optional_workflow();
+
+        for (requested_target, expected_targets) in cases {
+            let repo = unique_temp_dir("facade-all-targets");
+            let outcome = install_embedded_setup_assets(&repo, requested_target, &selection)
+                .expect("facade installation should succeed");
+
+            assert_eq!(outcome.target_results.len(), expected_targets.len());
+            for ((expected_target, representative_path), result) in
+                expected_targets.iter().zip(&outcome.target_results)
+            {
+                assert_eq!(result.target, *expected_target);
+                assert_eq!(
+                    result.installed_file_count,
+                    iter_embedded_assets_for_setup_target_with_selection(
+                        *expected_target,
+                        &selection,
+                    )
+                    .count()
+                );
+                assert!(result.destination_root.is_dir());
+                assert!(
+                    result.destination_root.join(representative_path).is_file(),
+                    "expected representative asset for {:?} at {}",
+                    expected_target,
+                    result.destination_root.join(representative_path).display()
+                );
+
+                let expected_root = match expected_target {
+                    SetupTarget::OpenCode => InstallTargetPaths::new(&repo).opencode_target_dir(),
+                    SetupTarget::Claude => InstallTargetPaths::new(&repo).claude_target_dir(),
+                    SetupTarget::Pi => InstallTargetPaths::new(&repo).pi_target_dir(),
+                    SetupTarget::All => unreachable!("facade results are concrete targets"),
+                };
+                assert_eq!(result.destination_root, expected_root);
+            }
+
+            let _ = fs::remove_dir_all(&repo);
+        }
+    }
+
+    #[test]
+    fn facade_preserves_optional_workflow_selection() {
+        if OPTIONAL_WORKFLOWS.is_empty() {
+            // There is no optional workflow to filter in this generated catalog.
+            return;
+        }
+
+        let workflow = &OPTIONAL_WORKFLOWS[0];
+        let target = SetupTarget::Claude;
+        let layout = workflow_asset_layout(target);
+        let command_path = format!("{}/{}.md", layout.command_dir, workflow.command_slug);
+        let skill_path = format!("{}/{}/SKILL.md", layout.skills_dir, workflow.skill_slug);
+        let selected = vec![workflow.id.to_string()];
+        let unchanged_path =
+            iter_embedded_assets_for_setup_target_with_selection(target, &[] as &[String])
+                .next()
+                .expect("an unconditionally installed asset should exist")
+                .relative_path;
+        let repo = unique_temp_dir("facade-optional-workflow");
+        let destination = InstallTargetPaths::new(&repo).claude_target_dir();
+
+        install_embedded_setup_assets(&repo, target, &[])
+            .expect("installation without optional workflow should succeed");
+        assert!(!destination.join(&command_path).exists());
+        assert!(!destination.join(&skill_path).exists());
+        assert!(destination.join(unchanged_path).is_file());
+
+        install_embedded_setup_assets(&repo, target, &selected)
+            .expect("installation with optional workflow should succeed");
+        assert!(destination.join(&command_path).is_file());
+        assert!(destination.join(&skill_path).is_file());
+        assert!(destination.join(unchanged_path).is_file());
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn facade_replaces_target_without_backup() {
+        let repo = unique_temp_dir("facade-replace-target");
+        let target = SetupTarget::Claude;
+        let selection = every_optional_workflow();
+        let destination = InstallTargetPaths::new(&repo).claude_target_dir();
+
+        install_embedded_setup_assets(&repo, target, &selection)
+            .expect("initial facade installation should succeed");
+        let sentinel = destination.join("sentinel.txt");
+        fs::write(&sentinel, b"must be removed").expect("write sentinel");
+
+        install_embedded_setup_assets(&repo, target, &selection)
+            .expect("replacement facade installation should succeed");
+
+        assert!(!sentinel.exists());
+        assert!(destination.join("commands/next-task.md").is_file());
+        let backup_directory_exists = fs::read_dir(&repo)
+            .expect("read repository root")
+            .filter_map(std::result::Result::ok)
+            .any(|entry| {
+                entry.file_type().is_ok_and(|file_type| file_type.is_dir())
+                    && entry.file_name().to_string_lossy().contains("backup")
+            });
+        assert!(
+            !backup_directory_exists,
+            "replacement must not create a backup"
+        );
+
+        let _ = fs::remove_dir_all(&repo);
     }
 }
