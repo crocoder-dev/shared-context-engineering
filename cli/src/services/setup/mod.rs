@@ -1,23 +1,24 @@
 use anyhow::{bail, Context, Result};
-use serde_json::json;
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 
+use crate::adapters::outbound::filesystem::integration_config_repository::FilesystemIntegrationConfigRepository;
+use crate::application::use_cases::ensure_repo_config::{
+    EnsureRepoConfig, EnsureRepoConfigRequest,
+};
+use crate::application::use_cases::load_persisted_optional_workflows::{
+    LoadPersistedOptionalWorkflows, LoadPersistedOptionalWorkflowsRequest,
+};
+use crate::application::use_cases::record_integration_installation::{
+    RecordIntegrationInstallation, RecordIntegrationInstallationRequest,
+};
+use crate::domain::integration::{IntegrationTarget, IntegrationTargetSelection};
+use crate::services::default_paths;
 use crate::services::style::{label, success, value};
-use crate::services::{default_paths, default_paths::RepoPaths};
 
 pub mod command;
-
-/// Canonical JSON payload for a newly bootstrapped repo-local `.sce/config.json`.
-/// Contains only the `$schema` declaration pointing to the SCE config JSON Schema.
-fn repo_local_config_bootstrap_payload() -> String {
-    format!(
-        "{{\n  \"$schema\": \"{}/config.json\"\n}}\n",
-        crate::services::agent_trace::SCE_WEB_BASE_URL
-    )
-}
 
 pub const NAME: &str = "setup";
 
@@ -379,24 +380,12 @@ pub fn run_setup_for_mode(
 /// The optional workflows recorded in repo-local `.sce/config.json`, or an empty
 /// selection when the file is absent, unreadable, or records none.
 pub fn persisted_optional_workflows(repository_root: &Path) -> Vec<String> {
-    use crate::services::config::schema::parse_file_config;
-    use crate::services::config::ConfigPathSource;
+    let use_case = LoadPersistedOptionalWorkflows::new(FilesystemIntegrationConfigRepository);
 
-    let config_path = RepoPaths::new(repository_root).sce_config_file();
-
-    let Ok(raw) = fs::read_to_string(&config_path) else {
-        return Vec::new();
-    };
-
-    let Ok(config) =
-        parse_file_config(&raw, &config_path, ConfigPathSource::DefaultDiscoveredLocal)
-    else {
-        return Vec::new();
-    };
-
-    config
-        .integrations
-        .map(|integrations| integrations.value.optional_workflows)
+    use_case
+        .execute(&LoadPersistedOptionalWorkflowsRequest {
+            repository_root: repository_root.to_path_buf(),
+        })
         .unwrap_or_default()
 }
 
@@ -412,29 +401,11 @@ pub fn ensure_git_repository(directory: &Path) -> Result<PathBuf> {
 /// Creates the `.sce/` parent directory as needed, then writes the canonical
 /// schema-only JSON payload. If the file already exists, it is left untouched.
 pub fn bootstrap_repo_local_config(repository_root: &Path) -> Result<()> {
-    let repo_paths = RepoPaths::new(repository_root);
-    let config_file = repo_paths.sce_config_file();
+    let use_case = EnsureRepoConfig::new(FilesystemIntegrationConfigRepository);
 
-    if config_file.exists() {
-        return Ok(());
-    }
-
-    let sce_dir = repo_paths.sce_dir();
-    fs::create_dir_all(&sce_dir).with_context(|| {
-        format!(
-            "Failed to create repo-local config directory '{}'",
-            sce_dir.display()
-        )
-    })?;
-
-    fs::write(&config_file, repo_local_config_bootstrap_payload()).with_context(|| {
-        format!(
-            "Failed to write repo-local config file '{}'",
-            config_file.display()
-        )
-    })?;
-
-    Ok(())
+    use_case.execute(&EnsureRepoConfigRequest {
+        repository_root: repository_root.to_path_buf(),
+    })
 }
 
 /// Creates the baseline durable-context tree additively.
@@ -595,14 +566,8 @@ pub fn install_embedded_setup_assets(
     use crate::application::use_cases::install_integration_assets::{
         InstallIntegrationAssets, InstallIntegrationAssetsError,
     };
-    use crate::domain::integration::{IntegrationTarget, IntegrationTargetSelection};
 
-    let selection = match target {
-        SetupTarget::OpenCode => IntegrationTargetSelection::One(IntegrationTarget::OpenCode),
-        SetupTarget::Claude => IntegrationTargetSelection::One(IntegrationTarget::Claude),
-        SetupTarget::Pi => IntegrationTargetSelection::One(IntegrationTarget::Pi),
-        SetupTarget::All => IntegrationTargetSelection::All,
-    };
+    let selection = integration_target_selection_for(target);
 
     let use_case = InstallIntegrationAssets::new(
         EmbeddedIntegrationAssetCatalog,
@@ -629,11 +594,7 @@ pub fn install_embedded_setup_assets(
     Ok(SetupInstallOutcome { target_results })
 }
 
-fn setup_target_for_integration_target(
-    target: crate::domain::integration::IntegrationTarget,
-) -> SetupTarget {
-    use crate::domain::integration::IntegrationTarget;
-
+fn setup_target_for_integration_target(target: IntegrationTarget) -> SetupTarget {
     match target {
         IntegrationTarget::OpenCode => SetupTarget::OpenCode,
         IntegrationTarget::Claude => SetupTarget::Claude,
@@ -685,16 +646,14 @@ pub(crate) fn concrete_targets_for(target: SetupTarget) -> &'static [SetupTarget
     }
 }
 
-/// Convert a concrete [`SetupTarget`] (not `All`) to its canonical
-/// `integrations.target` string representation.
-fn integration_target_id_str(target: SetupTarget) -> &'static str {
+/// Convert a [`SetupTarget`] to the domain [`IntegrationTargetSelection`] it
+/// represents, expanding `All` into every concrete target.
+fn integration_target_selection_for(target: SetupTarget) -> IntegrationTargetSelection {
     match target {
-        SetupTarget::OpenCode => "opencode",
-        SetupTarget::Claude => "claude",
-        SetupTarget::Pi => "pi",
-        SetupTarget::All => {
-            unreachable!("integration_target_id_str must not be called with meta targets")
-        }
+        SetupTarget::OpenCode => IntegrationTargetSelection::One(IntegrationTarget::OpenCode),
+        SetupTarget::Claude => IntegrationTargetSelection::One(IntegrationTarget::Claude),
+        SetupTarget::Pi => IntegrationTargetSelection::One(IntegrationTarget::Pi),
+        SetupTarget::All => IntegrationTargetSelection::All,
     }
 }
 
@@ -710,76 +669,13 @@ pub fn persist_integration_targets(
     target: SetupTarget,
     selected_optional_workflows: &[String],
 ) -> Result<()> {
-    let repo_paths = RepoPaths::new(repository_root);
-    let config_file = repo_paths.sce_config_file();
+    let use_case = RecordIntegrationInstallation::new(FilesystemIntegrationConfigRepository);
 
-    // Read existing config or start with bootstrap payload.
-    let raw = if config_file.exists() {
-        fs::read_to_string(&config_file)
-            .with_context(|| format!("Failed to read config file '{}'", config_file.display()))?
-    } else {
-        bootstrap_repo_local_config(repository_root)?;
-        fs::read_to_string(&config_file)
-            .with_context(|| format!("Failed to read config file '{}'", config_file.display()))?
-    };
-
-    let mut config: serde_json::Value = serde_json::from_str(&raw).with_context(|| {
-        format!(
-            "Config file '{}' must contain valid JSON.",
-            config_file.display()
-        )
-    })?;
-
-    let config_obj = config.as_object_mut().with_context(|| {
-        format!(
-            "Config file '{}' must contain a top-level JSON object.",
-            config_file.display()
-        )
-    })?;
-
-    // Collect existing integration target values, if any.
-    let mut existing_targets: Vec<String> = config_obj
-        .get("integrations")
-        .and_then(|i| i.get("target"))
-        .and_then(|t| t.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    // Add new concrete targets (expanding All), deduping as we go.
-    let new_targets = concrete_targets_for(target);
-    for concrete in new_targets {
-        let id_str = integration_target_id_str(*concrete);
-        let id_owned = id_str.to_string();
-        if !existing_targets.contains(&id_owned) {
-            existing_targets.push(id_owned);
-        }
-    }
-
-    // Write the merged integrations block back. The optional-workflow selection
-    // resolved for this run replaces any previously recorded selection.
-    config_obj.insert(
-        "integrations".to_string(),
-        json!({
-            "target": existing_targets,
-            "optional_workflows": selected_optional_workflows,
-        }),
-    );
-
-    let updated = serde_json::to_string_pretty(&config).with_context(|| {
-        format!(
-            "Failed to serialize updated config for '{}'",
-            config_file.display()
-        )
-    })? + "\n";
-
-    fs::write(&config_file, updated)
-        .with_context(|| format!("Failed to write config file '{}'", config_file.display()))?;
-
-    Ok(())
+    use_case.execute(&RecordIntegrationInstallationRequest {
+        repository_root: repository_root.to_path_buf(),
+        selection: integration_target_selection_for(target),
+        optional_workflows: selected_optional_workflows.to_vec(),
+    })
 }
 
 mod install {
@@ -1461,7 +1357,7 @@ mod tests {
     use crate::command_surface;
     use crate::services::command_registry::CommandRegistry;
     use crate::services::command_registry::RuntimeCommand;
-    use crate::services::default_paths::InstallTargetPaths;
+    use crate::services::default_paths::{InstallTargetPaths, RepoPaths};
     use crate::services::parse::command_runtime::parse_runtime_command;
 
     fn options_with(mutate: impl FnOnce(&mut SetupCliOptions)) -> SetupCliOptions {
@@ -1712,11 +1608,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn integration_target_id_str_maps_pi() {
-        assert_eq!(integration_target_id_str(SetupTarget::Pi), "pi");
-    }
-
     /// Every optional workflow selected, so filtering drops nothing.
     fn every_optional_workflow() -> Vec<String> {
         super::OPTIONAL_WORKFLOWS
@@ -1889,5 +1780,137 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn bootstrap_repo_local_config_facade_creates_a_missing_config() {
+        let repo = unique_temp_dir("bootstrap-facade-missing");
+
+        bootstrap_repo_local_config(&repo).expect("bootstrap should succeed");
+
+        let config_file = RepoPaths::new(&repo).sce_config_file();
+        assert!(config_file.exists());
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn persisted_optional_workflows_facade_returns_the_recorded_selection() {
+        let repo = unique_temp_dir("persisted-workflows-present");
+        let config_file = RepoPaths::new(&repo).sce_config_file();
+        fs::create_dir_all(config_file.parent().unwrap()).expect("seed sce dir");
+        fs::write(
+            &config_file,
+            "{\"integrations\": {\"optional_workflows\": [\"research\"]}}\n",
+        )
+        .expect("seed config");
+
+        assert_eq!(
+            persisted_optional_workflows(&repo),
+            vec!["research".to_string()]
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn persisted_optional_workflows_facade_returns_an_empty_selection_when_config_is_missing() {
+        let repo = unique_temp_dir("persisted-workflows-missing");
+
+        assert!(persisted_optional_workflows(&repo).is_empty());
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn persisted_optional_workflows_facade_returns_an_empty_selection_when_config_is_invalid() {
+        let repo = unique_temp_dir("persisted-workflows-invalid");
+        let config_file = RepoPaths::new(&repo).sce_config_file();
+        fs::create_dir_all(config_file.parent().unwrap()).expect("seed sce dir");
+        fs::write(&config_file, "not json").expect("seed invalid config");
+
+        assert!(persisted_optional_workflows(&repo).is_empty());
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn persist_integration_targets_facade_preserves_unrelated_fields_and_records_all_targets() {
+        use serde_json::json;
+
+        let repo = unique_temp_dir("persist-facade-all");
+        let config_file = RepoPaths::new(&repo).sce_config_file();
+        fs::create_dir_all(config_file.parent().unwrap()).expect("seed sce dir");
+        fs::write(&config_file, "{\"custom\": \"value\"}\n").expect("seed config");
+
+        persist_integration_targets(&repo, SetupTarget::All, &[]).expect("persist should succeed");
+
+        let document: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&config_file).expect("read config"))
+                .expect("valid json");
+        assert_eq!(document["custom"], json!("value"));
+        assert_eq!(
+            document["integrations"]["target"],
+            json!(["opencode", "claude", "pi"])
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn run_setup_for_mode_installs_then_persists_configuration_after_a_successful_install() {
+        use serde_json::json;
+
+        let repo = unique_temp_dir("run-setup-success");
+        let optional_workflows = vec!["research".to_string()];
+
+        let message = run_setup_for_mode(
+            &repo,
+            SetupMode::NonInteractive(SetupTarget::Claude),
+            Some(&optional_workflows),
+        )
+        .expect("run_setup_for_mode should succeed");
+        assert!(message.contains("Setup completed successfully."));
+
+        let config_file = RepoPaths::new(&repo).sce_config_file();
+        let document: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&config_file).expect("read config"))
+                .expect("valid json");
+        assert_eq!(document["integrations"]["target"], json!(["claude"]));
+        assert_eq!(
+            document["integrations"]["optional_workflows"],
+            json!(["research"])
+        );
+
+        let destination = InstallTargetPaths::new(&repo).claude_target_dir();
+        assert!(destination.join("commands/next-task.md").is_file());
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn run_setup_for_mode_leaves_no_recorded_target_when_installation_fails() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after Unix epoch")
+            .as_nanos();
+        let repository_root = std::env::temp_dir().join(format!(
+            "sce-setup-context-run-setup-install-fails-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::write(&repository_root, b"not a directory")
+            .expect("seed a non-directory repository root");
+
+        let result = run_setup_for_mode(
+            &repository_root,
+            SetupMode::NonInteractive(SetupTarget::Claude),
+            Some(&[]),
+        );
+
+        assert!(result.is_err());
+        let config_file = RepoPaths::new(&repository_root).sce_config_file();
+        assert!(!config_file.exists());
+
+        let _ = fs::remove_file(&repository_root);
     }
 }

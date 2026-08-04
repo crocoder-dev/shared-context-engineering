@@ -281,7 +281,6 @@ None. The change request fully specifies the domain model, port shapes, adapter 
 ### Residual risks
 
 - None identified.
-- Full validation remains incomplete until the Clippy diagnostics are repaired.
 
 ### Retry
 

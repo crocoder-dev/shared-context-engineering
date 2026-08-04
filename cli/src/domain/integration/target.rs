@@ -2,7 +2,6 @@
 
 /// A concrete integration target an outbound adapter may install assets for.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)] // consumed starting with the IntegrationAssetCatalog/IntegrationInstaller ports (T02)
 pub(crate) enum IntegrationTarget {
     OpenCode,
     Claude,
@@ -15,6 +14,18 @@ const ALL_TARGETS: [IntegrationTarget; 3] = [
     IntegrationTarget::Pi,
 ];
 
+impl IntegrationTarget {
+    /// The canonical `integrations.target` identifier persisted for this
+    /// target in repo-local `.sce/config.json`.
+    pub(crate) fn config_id(self) -> &'static str {
+        match self {
+            Self::OpenCode => "opencode",
+            Self::Claude => "claude",
+            Self::Pi => "pi",
+        }
+    }
+}
+
 /// A caller's target selection: a single target, or all of them.
 ///
 /// `All` is expanded into concrete `IntegrationTarget` values via
@@ -22,7 +33,6 @@ const ALL_TARGETS: [IntegrationTarget; 3] = [
 /// invoked, so no outbound adapter is ever called with a meta value
 /// representing "all targets".
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)] // consumed starting with the IntegrationAssetCatalog/IntegrationInstaller ports (T02)
 pub(crate) enum IntegrationTargetSelection {
     One(IntegrationTarget),
     All,
@@ -33,7 +43,6 @@ impl IntegrationTargetSelection {
     ///
     /// `One` yields the single wrapped target; `All` yields
     /// `[OpenCode, Claude, Pi]` in that order.
-    #[allow(dead_code)] // consumed starting with the InstallIntegrationAssets use case (T03)
     pub(crate) fn targets(&self) -> &[IntegrationTarget] {
         match self {
             Self::One(target) => std::slice::from_ref(target),
@@ -65,5 +74,12 @@ mod tests {
                 IntegrationTarget::Pi,
             ]
         );
+    }
+
+    #[test]
+    fn config_id_maps_each_concrete_target() {
+        assert_eq!(IntegrationTarget::OpenCode.config_id(), "opencode");
+        assert_eq!(IntegrationTarget::Claude.config_id(), "claude");
+        assert_eq!(IntegrationTarget::Pi.config_id(), "pi");
     }
 }
