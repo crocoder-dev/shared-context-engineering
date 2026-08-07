@@ -23,7 +23,7 @@
 
 - Workflow commands own only routing to one workflow skill.
 - Workflow skills own phase ordering, status branching, gates, edits, verification, and result/report formats.
-- Thin OpenCode agents own only role-to-command routing and target permissions; their skill allowlists name exactly the four workflow slugs.
+- Thin OpenCode agents own only role-to-command routing and target permissions; their ordered skill permissions allow ordinary non-SCE helpers, deny arbitrary `sce-*` skills, and allow only catalog-derived owned workflow slugs, with the Code-only synchronization exception for `sce-decision`.
 - Claude and Pi do not receive generated agents.
 - Each workflow package carries exactly one reference file, `references/output.md`, so it remains self-contained without cross-package dependencies.
 - The removed grouped shared-content catalog and automated OpenCode profile have no current owner or consumer.

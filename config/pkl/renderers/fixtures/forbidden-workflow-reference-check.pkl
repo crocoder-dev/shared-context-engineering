@@ -11,4 +11,4 @@ local documentsWithForbiddenReference = new Mapping {
 result = if (
   documentsWithForbiddenReference.every((_, text) -> !text.contains("sce-plan-review"))
 ) "negative fixture unexpectedly contained no forbidden reference"
-else error("generated workflow document contains a forbidden sibling-package reference or unresolved internalization token")
+else throw("generated workflow document contains a forbidden sibling-package reference or unresolved internalization token")

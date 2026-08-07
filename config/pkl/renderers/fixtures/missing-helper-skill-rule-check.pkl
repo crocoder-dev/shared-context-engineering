@@ -1,0 +1,23 @@
+import "../generation-contract-check.pkl" as contract
+
+local documentsWithoutHelperRule = new Mapping {
+  for (path, text in contract.workflowDocuments) {
+    [path] = if (path == "config/.claude/skills/sce-validate/SKILL.md")
+      "missing helper rule"
+    else text
+  }
+}
+
+result = if (
+  documentsWithoutHelperRule.every((path, text) ->
+    !path.endsWith("/SKILL.md")
+    || path.contains("/skills/sce-decision/")
+    || (
+      text.contains("Relevant non-SCE skills may be used as helper capabilities during the active step.")
+      && text.contains("They are not workflow handoffs: when a helper returns, control returns to the active")
+      && text.contains("step. Helper use must preserve the canonical phase order, gates, waits, writes,")
+      && text.contains("validation, stops, and terminal user-visible output.")
+    )
+  )
+) "negative fixture unexpectedly contained the helper rule in every workflow"
+else throw("generated workflow skill is missing the required helper-skill composition rule")

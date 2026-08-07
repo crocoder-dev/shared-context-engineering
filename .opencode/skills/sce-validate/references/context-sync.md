@@ -1,21 +1,39 @@
-# Plan context synchronization phase
+# SCE Plan Context Sync
 
-Run this phase for step 2 of the workflow, and only with a `Status: validated`
-Markdown result from the validation phase. It is the plan-level final context
-pass: it starts from the plan's `Context sync` requirements and the validated
-implementation, and closes gaps that remain after any task-level syncs already
-ran.
+## Purpose
 
-Do not run this phase for `failed` or `blocked`. Those are not success states.
-Same rule as the task context synchronization phase: context sync runs only after
-a successful prior phase.
+Reconcile one fully validated plan with the repository's durable context and
+return a Markdown report.
 
-Pass the validated result verbatim. It is the authoritative handoff, and this
-phase owns reading the plan path, required context paths, validation evidence,
-and reported context impact out of it.
+This phase owns:
 
-Do not restate, summarize, or reconstruct any part of the validation result. Do
-not reconstruct a missing validation result from conversation history.
+- Validating the validation handoff.
+- Confirming the context root exists.
+- Discovering the context required by the finished plan.
+- Deciding whether durable context changed.
+- Editing and verifying the affected context files.
+- Returning one Markdown synchronization report.
+
+Use the report format in:
+
+`references/sync-report.md`
+
+Task-level context sync may already have run after individual tasks. This phase
+is the plan-level final pass: it starts from the plan's `Context sync`
+requirements and the validated implementation, and closes gaps that remain.
+
+
+
+## Input
+
+The complete Markdown result returned by the validation phase.
+
+The validation result must report:
+
+```markdown
+**Status:** validated
+**Plan:** {plan path}
+```
 
 Treat that Markdown as the authoritative handoff for:
 
@@ -25,7 +43,15 @@ Treat that Markdown as the authoritative handoff for:
 - Scaffolding removals.
 - Reported context impact, required context paths, and affected areas.
 
-## 2.1 Validate the validation handoff
+This phase must not be invoked for `failed` or `blocked` validation results.
+Those are not success states. Same rule as `sce-task-context-sync`: context sync
+runs only after a successful prior phase.
+
+Do not reconstruct a missing validation result from conversation history.
+
+## Workflow
+
+### 1. Validate the validation handoff
 
 Confirm that:
 
@@ -35,26 +61,26 @@ Confirm that:
 - Commands run are present.
 - A context-impact classification is present.
 
-If the handoff is missing required information or is internally contradictory, do
-not modify context. Return a `blocked` Markdown report.
+If the handoff is missing required information or is internally contradictory,
+do not modify context. Return a `blocked` Markdown report.
 
-## 2.2 Confirm the context root
+### 2. Confirm the context root
 
-When `context/` does not exist, there is no durable memory to synchronize. Do not
-create it, and do not write context files outside it.
+When `context/` does not exist, there is no durable memory to synchronize.
+Do not create it, and do not write context files outside it.
 
 Return a `blocked` report whose required action is:
 
 `sce setup --bootstrap-context`
 
-State that validation itself succeeded and is recorded in the plan, and that plan
-context synchronization should run again once the context root exists.
+State that validation itself succeeded and is recorded in the plan, and that
+plan context synchronization should run again once the context root exists.
 
 Bootstrapping is the user's action, not this phase's.
 
-## 2.3 Discover applicable context
+### 3. Discover applicable context
 
-Start with the validated internal state:
+Start with the validated Markdown result:
 
 - **Context impact** classification, required context, and affected areas.
 - Acceptance-criteria evidence.
@@ -80,7 +106,7 @@ Do not scan or rewrite the entire `context/` tree by default.
 Do not create a new context file when an existing authoritative file can be
 updated coherently.
 
-### The mandatory root pass
+#### The mandatory root pass
 
 Every invocation verifies these five files against code truth, whatever the
 reported classification is:
@@ -93,19 +119,19 @@ reported classification is:
 
 Verifying is not editing. A classification that warrants no root edit still
 requires reading each of these and confirming it is not contradicted by the
-finished implementation. A file that is absent is a gap; record it in the report
-rather than creating it to satisfy the pass.
+finished implementation. A file that is absent is a gap; record it in the
+report rather than creating it to satisfy the pass.
 
-Report each of the five as verified or edited. Never declare synchronization done
-while one of them is unchecked.
+Report each of the five as verified or edited. Never declare synchronization
+done while one of them is unchecked.
 
-### Plan context requirements
+#### Plan context requirements
 
 Every path or statement listed under the plan's `Context sync` section must be
 accounted for in the report as already accurate or updated. A requirement the
 finished code still does not satisfy is a blocker, not a note.
 
-## 2.4 Determine whether durable context changed
+### 4. Determine whether durable context changed
 
 Use the reported context impact as a strong hint, then verify it against the
 finished implementation and existing context.
@@ -130,11 +156,11 @@ Do not document:
 - Generic engineering practices.
 
 Interpret impact classifications as follows. Each governs which files are
-*edited*; none of them waives the mandatory root pass or the plan's Context sync
-requirements.
+*edited*; none of them waives the mandatory root pass or the plan's Context
+sync requirements.
 
-- `none`: Make no edits beyond any correction the root pass or unmet plan context
-  requirement turns up.
+- `none`: Make no edits beyond any correction the root pass or unmet plan
+  context requirement turns up.
 - `local`: Update the nearest existing authoritative context only when the new
   behavior is not reliably discoverable from code.
 - `domain`: Update affected domain context and the context map when its links or
@@ -144,7 +170,7 @@ requirements.
 If the reported classification is inconsistent with the actual change, use the
 verified classification and explain the difference in the report.
 
-## 2.5 Record qualifying architecture decisions
+### 5. Record qualifying architecture decisions
 
 During this successful synchronization, determine whether the completed change
 establishes or changes a system-wide important constraint involving one or more
@@ -187,7 +213,7 @@ handoff and during context synchronization. Do not invoke it from a non-success
 branch or for any non-decision purpose. When no decision qualifies, continue
 without invoking it and record that outcome in synchronization evidence.
 
-## 2.6 Synchronize context
+### 6. Synchronize context
 
 Make the smallest coherent documentation change that preserves repository truth.
 
@@ -207,47 +233,47 @@ Create a new context file only when:
 - No existing file owns it coherently.
 - The new file has a clear place in the context map.
 
-### Feature existence
+#### Feature existence
 
 Every feature the finished plan implemented must have at least one durable
 canonical description discoverable from `context/`, in a domain file under
 `context/{domain}/` or in `context/overview.md` for a cross-cutting feature.
 
 When the plan delivered a feature no context file describes, add that
-description. Prefer a small, precise domain file over overloading `overview.md`
-with detail.
+description. Prefer a small, precise domain file over overloading
+`overview.md` with detail.
 
-This is not license to narrate the diff: describe what the feature is and how it
-behaves, not what was edited during the plan.
+This is not license to narrate the diff: describe what the feature is and how
+it behaves, not what was edited during the plan.
 
-### Glossary
+#### Glossary
 
 Add a `context/glossary.md` entry for any domain language the plan introduced.
 New terminology is durable knowledge whatever the classification is.
 
-### File hygiene
+#### File hygiene
 
 Every context file this phase writes must satisfy:
 
 - One topic per file.
-- At most 250 lines. When an edit would push a file past 250 lines, split it into
-  focused files and link them rather than letting it grow.
+- At most 250 lines. When an edit would push a file past 250 lines, split it
+  into focused files and link them rather than letting it grow.
 - Relative paths in every link to another context file.
-- A Mermaid diagram where structure, boundaries, or flows are complex enough that
-  prose alone would not carry them.
+- A Mermaid diagram where structure, boundaries, or flows are complex enough
+  that prose alone would not carry them.
 - Concrete code examples only where they clarify non-trivial behavior.
 
 When detail outgrows a shared file, migrate it into `context/{domain}/`, leave a
 concise pointer behind, and link the new file from `context/context-map.md`.
 
-## 2.7 Verify synchronization
+### 7. Verify synchronization
 
 After edits, verify:
 
 - Every changed context file accurately reflects the finished implementation.
 - No edited statement contradicts the code, plan, or validation evidence.
-- Every qualifying decision has one written or reused ADR path in the report, and
-  the report states when no decision qualified.
+- Every qualifying decision has one written or reused ADR path in the report,
+  and the report states when no decision qualified.
 - Every file in the mandatory root pass was read and confirmed against code
   truth, whether or not it was edited.
 - Every plan `Context sync` requirement is met.
@@ -270,19 +296,20 @@ If synchronization cannot be completed without inventing facts or resolving a
 material contradiction, preserve safe edits when appropriate and return a
 `blocked` report.
 
-## 2.8 Return the Markdown report
+### 8. Return the Markdown report
 
-Set exactly one report status:
+Return exactly one report status:
 
 - `synced`
 - `no_context_change`
 - `blocked`
 
-`synced` means context files were updated and verified. `no_context_change` means
-existing context was checked and no edit was warranted. `blocked` means context
-could not be synchronized safely.
+`synced` means context files were updated and verified. `no_context_change`
+means existing context was checked and no edit was warranted. `blocked` means
+context could not be synchronized safely.
 
-Record only the Markdown report. Do not add explanatory prose before or after it.
+Return only the Markdown report. Do not add explanatory prose before or after
+it.
 
 ## Plan context synchronization boundaries
 
@@ -298,9 +325,26 @@ Do not:
 - Select or execute an implementation task.
 - Create a Git commit or push changes.
 - Create the context root. `sce setup --bootstrap-context` owns that.
-- Narrate changed files as documentation. Feature existence is the only reason to
-  document a change that introduced no other durable knowledge.
-- Invoke any sibling skill except `sce-decision`, or invoke `sce-decision`
-  outside the decision gate in successful context synchronization.
+- Narrate changed files as documentation. Feature existence is the only reason
+  to document a change that introduced no other durable knowledge.
+- Invoke any sibling SCE skill, sibling SCE package, or SCE workflow command
+  except `sce-decision`, or invoke `sce-decision` outside the decision gate in
+  successful context synchronization.
 - Delete a context file that has uncommitted changes.
-- Return internal state.
+- Return YAML.
+
+## Completion
+
+The phase is complete after:
+
+- The context root was confirmed, or a `blocked` report named
+  `sce setup --bootstrap-context` as the required action.
+- The mandatory root pass was run.
+- Plan context requirements were checked.
+- The decision gate recorded every qualifying ADR path, found no qualifying
+  decision, or returned a synchronization blocker.
+- Applicable durable context was synchronized and verified, no context change
+  was warranted, or a synchronization blocker was reported.
+- One Markdown report matching `references/sync-report.md` was returned.
+
+

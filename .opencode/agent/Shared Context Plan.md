@@ -22,7 +22,8 @@ permission:
   lsp: allow
   doom_loop: ask
   skill:
-    "*": ask
+    "*": allow
+    "sce-*": deny
     "sce-change-to-plan": allow
 ---
 

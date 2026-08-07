@@ -10,8 +10,8 @@ description: >
 
 Own this workflow from input parsing through its terminal user-visible response.
 Execute the phases below directly and in order. Phase statuses are internal state,
-not inter-skill handoffs. Do not invoke another SCE skill, sibling package, or
-workflow command. Follow the canonical workflow's steps, gates,
+not inter-SCE workflow handoffs. Do not invoke another SCE skill, sibling SCE
+package, or SCE workflow command. Follow the canonical workflow's steps, gates,
 and stops exactly as written: never invent, skip, reorder, or merge a step.
 
 ## User-visible output
@@ -28,6 +28,11 @@ canonical workflow says to continue. Stop only at a user wait or terminal branch
 Approval, clarification, revision, failed-validation repair, and bootstrap waits
 resume this same skill in the same session. Never expose an internal phase result
 as the workflow's final response.
+
+Relevant non-SCE skills may be used as helper capabilities during the active step.
+They are not workflow handoffs: when a helper returns, control returns to the active
+step. Helper use must preserve the canonical phase order, gates, waits, writes,
+validation, stops, and terminal user-visible output.
 
 This workflow reconstructs durable `context/` memory for a repository that has
 none, or that has gaps. It is a cold-start and gap-fill tool, not a recurring
@@ -327,7 +332,7 @@ gaps, and the audit outcome. Stop.
 - Never write a fact scoring below `50` as truth.
 - Never resolve a material contradiction without disclosing it.
 - Never write a confidence score, hash, timestamp, or date under `context/`.
-- Never invoke another skill, sibling package, or workflow command.
+- Never invoke another SCE skill, sibling SCE package, or SCE workflow command.
 - Never synchronize context, validate a plan, select or execute a task, or create
   a Git commit.
 - Never treat this workflow as recurring context maintenance.

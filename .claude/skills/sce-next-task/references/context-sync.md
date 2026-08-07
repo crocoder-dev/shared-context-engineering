@@ -310,7 +310,8 @@ Do not:
 - Create the context root. `sce setup --bootstrap-context` owns that.
 - Narrate changed files as documentation. Feature existence is the only reason to
   document a change that introduced no other durable knowledge.
-- Invoke any sibling skill except `sce-decision`, or invoke `sce-decision`
-  outside the decision gate in successful context synchronization.
+- Invoke any sibling SCE skill, sibling SCE package, or SCE workflow command
+  except `sce-decision`, or invoke `sce-decision` outside the decision gate in
+  successful context synchronization.
 - Delete a context file that has uncommitted changes.
 - Return an execution-style internal state.

@@ -20,4 +20,4 @@ result = if (
           contract.fencedBlocksIn.apply(text).every((block) -> !skillText.contains(block))
   )
 ) "negative fixture unexpectedly contained no duplicated layout"
-else error("generated SKILL.md reproduces a references/output.md fenced layout verbatim")
+else throw("generated SKILL.md reproduces a references/output.md fenced layout verbatim")

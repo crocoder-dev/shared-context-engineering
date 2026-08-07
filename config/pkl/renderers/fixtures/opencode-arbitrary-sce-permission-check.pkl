@@ -1,0 +1,23 @@
+import "../generation-contract-check.pkl" as contract
+
+local renderedWithArbitraryPermission = """
+skill:
+    "*": allow
+    "sce-*": deny
+    "sce-next-task": allow
+    "sce-validate": allow
+    "sce-commit": allow
+    "sce-handover": allow
+    "sce-brownfield": allow
+    "sce-decision": allow
+    "sce-arbitrary": allow
+---
+"""
+
+result = if (
+  contract.assertOpenCodeSkillPermissionText.apply(
+    renderedWithArbitraryPermission,
+    "shared-context-code"
+  )
+) "negative fixture unexpectedly accepted an arbitrary SCE permission"
+else throw("OpenCode skill permissions must reject arbitrary SCE permissions")

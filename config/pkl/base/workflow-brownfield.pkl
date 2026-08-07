@@ -39,8 +39,8 @@ local titleAndPurpose = model.semanticReference.apply(
 
   Own this workflow from input parsing through its terminal user-visible response.
   Execute the phases below directly and in order. Phase statuses are internal state,
-  not inter-skill handoffs. Do not invoke another SCE skill, sibling package, or
-  workflow command. Follow the canonical workflow's steps, gates,
+  not inter-SCE workflow handoffs. Do not invoke another SCE skill, sibling SCE
+  package, or SCE workflow command. Follow the canonical workflow's steps, gates,
   and stops exactly as written: never invent, skip, reorder, or merge a step.
 
   \(scopeStatement)
@@ -58,6 +58,8 @@ local titleAndPurpose = model.semanticReference.apply(
   canonical workflow says to continue. Stop only at a user wait or terminal branch.
   Clarification and bootstrap waits resume this same skill in the same session.
   Never expose an internal phase result as the workflow's final response.
+
+  \(model.helperSkillCompositionRule)
   """ + "\n\n",
   scopeStatement + "\n\n"
 )
@@ -356,7 +358,7 @@ local renderSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Never write a fact scoring below `50` as truth.
     - Never resolve a material contradiction without disclosing it.
     - Never write a confidence score, hash, timestamp, or date under `context/`.
-    - Never invoke another skill, sibling package, or workflow command.
+    - Never invoke another SCE skill, sibling SCE package, or SCE workflow command.
     - Never synchronize context, validate a plan, select or execute a task, or create
       a Git commit.
     - Never treat this workflow as recurring context maintenance.

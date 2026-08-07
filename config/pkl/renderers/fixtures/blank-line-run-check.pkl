@@ -11,4 +11,4 @@ local documentsWithBlankLineRun = new Mapping {
 result = if (
   documentsWithBlankLineRun.every((_, text) -> !text.contains("\n\n\n"))
 ) "negative fixture unexpectedly contained no blank-line run"
-else error("generated workflow document contains two or more consecutive blank lines")
+else throw("generated workflow document contains two or more consecutive blank lines")

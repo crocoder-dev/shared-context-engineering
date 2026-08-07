@@ -43,7 +43,7 @@ Phase names below identify canonical modules in `config/pkl/base/workflow-next-t
    - Emits exactly one next-task command for the first unchecked task in plan order, or a `/validate` command when all implementation tasks are complete.
    - Never executes the continuation in the same invocation.
 
-A context-sync blocker does not undo successful implementation: the task remains complete in the plan, but the workflow stops because durable context is stale. On every target, review, approval, execution, evidence recording, synchronization, and continuation are internal phases of one `sce-next-task` invocation. The sole sibling-skill exception is the synchronization decision gate's bounded invocation of `sce-decision`.
+A context-sync blocker does not undo successful implementation: the task remains complete in the plan, but the workflow stops because durable context is stale. On every target, review, approval, execution, evidence recording, synchronization, and continuation are internal phases of one `sce-next-task` invocation. Relevant non-SCE skills may assist inside an active step only as helpers that return control to that step; the sole SCE sibling-skill exception is the synchronization decision gate's bounded invocation of `sce-decision`.
 
 ## `/validate` entrypoint
 
@@ -53,7 +53,7 @@ A context-sync blocker does not undo successful implementation: the task remains
 2. Failed or blocked validation ends the session without repair edits; retry uses `/validate {plan-path}`.
 3. `sce-plan-context-sync` runs only from a successful `Status: validated` handoff, applies the same decision gate before current-state edits, and reconciles the completed plan with durable repository context. ADR paths already written during task synchronization are reused for the same decision.
 
-On every target, `sce-validate/SKILL.md` dispatches workflow steps 1 and 2 through `references/validation.md` and `references/context-sync.md`, while `references/validation-report.md` owns the plan-file Validation Report format. Failed and blocked statuses stop before synchronization exactly as in the canonical flow. Final validation never runs from an individual implementation task.
+On every target, `sce-validate/SKILL.md` dispatches workflow steps 1 and 2 through `references/validation.md` and `references/context-sync.md`, while `references/validation-report.md` owns the plan-file Validation Report format. Failed and blocked statuses stop before synchronization exactly as in the canonical flow. Final validation never runs from an individual implementation task. Non-SCE helper skills, when relevant, return control to the active validation or synchronization step without changing its workflow invariants.
 
 ## Flow
 
@@ -83,7 +83,7 @@ flowchart TD
 - OpenCode, Claude, and Pi: thin commands (Pi: prompts) invoking `sce-next-task` or `sce-validate`.
 - `sce-next-task` packages contain `SKILL.md`, `references/{plan-review,task-execution,context-sync,output}.md`.
 - `sce-validate` packages contain `SKILL.md`, `references/{validation,context-sync,validation-report,output}.md`.
-- OpenCode adds `entry-skill` and a one-entry `skills` list naming that skill. Its Code routing agent allows `sce-next-task`, `sce-validate`, and `sce-commit`, plus internal `sce-decision` invocation; the Plan agent does not allow `sce-decision`.
+- OpenCode adds `entry-skill` and a one-entry `skills` list naming that skill. Its Plan and Code routing agents allow ordinary non-SCE skills by default, deny arbitrary `sce-*` skills, and then allow only catalog-owned workflows: Plan allows `sce-change-to-plan`; Code allows `sce-next-task`, `sce-validate`, `sce-commit`, `sce-handover`, and `sce-brownfield`, plus the synchronization-only `sce-decision` exception.
 
 ## Canonical sources
 

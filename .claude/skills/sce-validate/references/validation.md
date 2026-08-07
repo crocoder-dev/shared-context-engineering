@@ -1,42 +1,60 @@
-# Validation phase
+# SCE Validation
 
-Run this phase for step 1 of the workflow. It resolves one plan, confirms the
-implementation is finished, runs the plan's checks, and records what it found.
+## Purpose
 
-Input: the plan name or path, unmodified.
+Prove that one finished SCE plan meets its acceptance criteria and repository
+validation bar, then record the evidence on the plan and return one Markdown
+result.
 
-This phase exclusively owns:
+This phase owns:
 
 - Resolving one plan.
 - Confirming every implementation task is complete.
-- Running full validation and acceptance-criteria checks.
-- Removing temporary scaffolding.
+- Running the plan's full validation commands and each acceptance criterion
+  check.
+- Removing temporary scaffolding introduced by the change.
 - Writing the Validation Report into the plan.
+- Marking acceptance criteria against the evidence.
 - Returning one Markdown validation result.
 
-Do not duplicate any of it elsewhere in the workflow.
+Return a result matching:
 
-## 1.1 Resolve the plan
+`references/validation-result.md`
+
+Write plan-file evidence matching:
+
+`references/validation-report.md`
+
+Context synchronization is not this phase's job. The invoking `/validate`
+workflow runs `sce-plan-context-sync` only after a `validated` result.
+
+## Input
+
+A plan name or path.
+
+## Workflow
+
+### 1. Resolve the plan
 
 Resolve the supplied plan name or path to exactly one existing plan under
 `context/plans/`.
 
-When no plan can be found, set internal status `blocked`.
+When no plan can be found, return `blocked`.
 
-When multiple plans match and none can be selected safely, set internal status
-`blocked` with the matching candidates.
+When multiple plans match and none can be selected safely, return `blocked`
+with the matching candidates.
 
 Read the selected plan before exploring the repository.
 
-## 1.2 Confirm implementation is finished
+### 2. Confirm implementation is finished
 
-Set internal status `blocked` with incomplete tasks listed when any
-implementation task remains incomplete.
+Return `blocked` with incomplete tasks listed when any implementation task
+remains incomplete.
 
 Final validation measures finished work. Do not run the full suite against a
 partial stack, and do not complete remaining tasks here.
 
-## 1.3 Read the validation contract from the plan
+### 3. Read the validation contract from the plan
 
 From the plan, collect:
 
@@ -44,15 +62,14 @@ From the plan, collect:
 - The `Full validation` command list.
 - The `Context sync` requirements, for the context-impact handoff only.
 
-Set internal status `blocked` when the plan has no usable acceptance criteria, or
-when no validation commands can be determined from the plan or repository
-conventions.
+Return `blocked` when the plan has no usable acceptance criteria, or when no
+validation commands can be determined from the plan or repository conventions.
 
 Prefer the plan's authored checks. Fall back to repository-primary test, lint,
 and format commands only when `Full validation` is absent, and record that
 fallback under notes on a `validated` or `failed` result.
 
-## 1.4 Remove temporary scaffolding
+### 4. Remove temporary scaffolding
 
 Before or while running checks, remove temporary scaffolding introduced during
 the change when it is clearly throwaway:
@@ -65,7 +82,7 @@ Do not delete durable product code, tests, configuration, or context files.
 
 Record every removed path. When nothing temporary remains, report `None.`
 
-## 1.5 Run full validation and acceptance checks
+### 5. Run full validation and acceptance checks
 
 Run the plan's `Full validation` commands.
 
@@ -81,16 +98,16 @@ not this skill.
 Never report a check as passed unless it ran successfully or the authorized
 inspection confirmed the criterion.
 
-Do not run task-by-task implementation work for incomplete tasks. That belongs to
-`/next-task`.
+Do not run task-by-task implementation work for incomplete tasks. That belongs
+to `/next-task`.
 
-## 1.6 Update the plan
+### 6. Update the plan
 
 For `validated` and `failed` outcomes:
 
 - Mark each acceptance criterion checkbox to match the evidence.
 - Append or replace the plan's `## Validation Report` section using
-  `references/validation-report.md`. Read that file before writing the section.
+  `references/validation-report.md`.
 - When status is `failed`, the plan-file report must include the retry command
   `/validate {plan path}`.
 
@@ -98,11 +115,10 @@ Do not reopen completed tasks, rewrite task evidence, or change the task stack.
 
 For `blocked`, leave the plan file unchanged.
 
-## 1.7 Determine context impact for the handoff
+### 7. Determine context impact for the handoff
 
-On `validated` only, classify the durable context impact of the finished plan so
-the **Plan context synchronization phase** can start from the plan's own
-requirements:
+On `validated` only, classify the durable context impact of the finished plan
+so `sce-plan-context-sync` can start from the plan's own requirements:
 
 - Start from the plan's `Context sync` section.
 - Inspect what the completed implementation actually changed when needed.
@@ -114,33 +130,20 @@ Do not edit context files here.
 
 On `failed` or `blocked`, omit context impact; context sync will not run.
 
-## 1.8 Return the internal state
+### 8. Return the Markdown result
 
-Set exactly one internal state:
+Return exactly one Markdown result:
 
 - `validated` when every acceptance criterion is met, required full validation
   passed, and the Validation Report was written.
 - `failed` when evidence was captured but required checks or criteria remain
-  unsatisfied. Shape it as a session handoff per `references/output.md`, ending
-  recommended work with `/validate {plan path}`.
+  unsatisfied. Shape it as a session handoff per
+  `references/validation-result.md`, ending recommended work with
+  `/validate {plan path}`.
 - `blocked` when validation cannot proceed safely.
 
-Record only the Markdown report. Do not add explanatory prose before or after it.
-Do not return internal state.
-
-A `validated` result is the authoritative handoff into step 2, which reads the
-plan path, required context paths, validation evidence, and reported context
-impact out of it. It must report:
-
-```markdown
-**Status:** validated
-**Plan:** {plan path}
-```
-
-and must carry the resolved plan path, validation commands and outcomes,
-acceptance-criteria evidence, scaffolding removals, and the reported context
-impact with required context paths and affected areas. Step 2 is forbidden from
-reconstructing any of that, so it has to be present here.
+Return only the Markdown report. Do not add explanatory prose before or after
+it. Do not return YAML.
 
 ## Validation boundaries
 
@@ -157,5 +160,16 @@ Do not:
 - Create a Git commit or push changes.
 - Invent acceptance criteria the plan does not state.
 - Claim verification that was not performed.
-- Return a internal state.
-- Run plan context synchronization. The workflow owns that step.
+- Return a YAML result.
+- Invoke plan context sync. The workflow owns that step.
+## Completion
+
+The phase is complete after:
+
+- One plan was resolved, or resolution failed and was reported.
+- Implementation completeness was checked.
+- Validation ran to a terminal state, or a blocker prevented it.
+- One valid Markdown result matching `references/validation-result.md` was
+  returned.
+
+

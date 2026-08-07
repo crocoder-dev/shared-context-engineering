@@ -96,6 +96,18 @@ expect_pkl_fixture_failure \
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/output-dedup-check.pkl" \
   "generated SKILL.md reproduces a references/output.md fenced layout verbatim"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/unscoped-skill-prohibition-check.pkl" \
+  "generated workflow skill contains an unscoped skill prohibition"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/missing-helper-skill-rule-check.pkl" \
+  "generated workflow skill is missing the required helper-skill composition rule"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/opencode-arbitrary-sce-permission-check.pkl" \
+  "OpenCode skill permissions must reject arbitrary SCE permissions"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/opencode-skill-permission-order-check.pkl" \
+  "OpenCode skill permissions must preserve the wildcard, deny, and explicit-allow order"
 
 "$producer" "$repo_root" "$generated_input_root"
 generated_root="$generated_input_root/pkl-generated"
