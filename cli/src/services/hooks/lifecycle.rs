@@ -11,7 +11,7 @@ use crate::services::lifecycle::{
     RequiredHooksInstallOutcome, ServiceLifecycle, SetupOutcome,
 };
 use crate::services::setup::{
-    install_required_git_hooks, iter_required_hook_assets,
+    hook_merge, install_required_git_hooks, iter_required_hook_assets,
     RequiredHookInstallStatus as SetupRequiredHookInstallStatus,
     RequiredHooksInstallOutcome as SetupRequiredHooksInstallOutcome,
 };
@@ -298,10 +298,9 @@ fn inspect_hook_content_state(
 
     match fs::read(hook_path) {
         Ok(bytes) => {
-            if bytes == expected_hook.bytes {
-                HookContentState::Current
-            } else {
-                HookContentState::Stale
+            match hook_merge::merge_or_create_hook(Some(&bytes), expected_hook.bytes, hook_name) {
+                Ok(merge) if merge.bytes == bytes => HookContentState::Current,
+                Ok(_) | Err(_) => HookContentState::Stale,
             }
         }
         Err(error) => {
@@ -375,6 +374,7 @@ fn required_hooks_outcome_from_setup(
                             RequiredHookInstallStatus::Skipped
                         }
                     },
+                    unreachable_block_advisory: result.unreachable_block_advisory,
                 },
             )
             .collect(),

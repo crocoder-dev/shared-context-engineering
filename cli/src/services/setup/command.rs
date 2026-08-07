@@ -123,6 +123,7 @@ fn setup_required_hooks_outcome_from_lifecycle(
                     RequiredHookInstallStatus::Updated => setup::RequiredHookInstallStatus::Updated,
                     RequiredHookInstallStatus::Skipped => setup::RequiredHookInstallStatus::Skipped,
                 },
+                unreachable_block_advisory: result.unreachable_block_advisory,
             })
             .collect(),
     }

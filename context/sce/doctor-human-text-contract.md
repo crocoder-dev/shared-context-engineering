@@ -71,6 +71,8 @@ Integration checks for this contract inspect installed repo-root artifacts only.
 They validate file presence and content against embedded OpenCode, Claude, and Pi setup assets: byte-exact `sha256` for every asset except the two JSON configs `sce setup` installs by merge (`.claude/settings.json`, `.opencode/opencode.json`), which instead validate that the file's SCE-owned fragment matches the embedded catalog — a file that also carries extra user keys, permissions, or plugins still renders `[PASS]` as long as that fragment is current (see [non-destructive setup install merge seam](setup-no-backup-policy-seam.md)).
 Generated `config/.opencode/**`, `config/.claude/**`, and `config/.pi/**` trees are out of scope for doctor integration checks in this change stream.
 
+Required git hooks (`Git Hooks` section) are a third merge-target family with the same fragment-currency rule: a hook is `[PASS]` when merging the canonical template into its on-disk bytes is a no-op, whether or not foreign content (a hand-written hook, husky, lefthook) sits around the SCE managed block — not byte-exact equality against the canonical hook (see [git hooks install contract](setup-githooks-install-contract.md)).
+
 Claude installed assets are grouped by repo-root `.claude/` relative path:
 
 - `settings.json` and `hooks/**` -> `ClaudeCode plugins` (including `hooks/run-sce-or-show-install-guidance.sh`)

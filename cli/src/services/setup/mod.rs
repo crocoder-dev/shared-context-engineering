@@ -10,6 +10,7 @@ use crate::services::{default_paths, default_paths::RepoPaths};
 
 pub mod command;
 pub(crate) mod config_merge;
+pub(crate) mod hook_merge;
 
 /// Canonical JSON payload for a newly bootstrapped repo-local `.sce/config.json`.
 /// Contains only the `$schema` declaration pointing to the SCE config JSON Schema.
@@ -581,6 +582,14 @@ pub fn format_required_hook_install_success_message(
             value("at"),
             value(&format!("'{}'", result.hook_path.display()))
         ));
+
+        if result.unreachable_block_advisory {
+            lines.push(format!(
+                "  {} '{}' ends with 'exec'/'exit' before the SCE managed block, so the block will not run. Move it above that line.",
+                label("Advisory:"),
+                result.hook_name
+            ));
+        }
     }
 
     lines.join("\n")
@@ -627,6 +636,9 @@ pub struct RequiredHookInstallResult {
     pub hook_name: String,
     pub hook_path: PathBuf,
     pub status: RequiredHookInstallStatus,
+    /// True when the hook's foreign content ends in a zero-indent `exec` or
+    /// `exit`, so the appended SCE managed block would never run.
+    pub unreachable_block_advisory: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -814,6 +826,7 @@ mod install {
     use crate::services::security::{ensure_directory_is_writable, redact_sensitive_text};
 
     use super::config_merge;
+    use super::hook_merge;
     use super::{
         cleanup_path_if_exists, concrete_targets_for, embedded_assets_for_concrete_target,
         hook_install_recovery_guidance, iter_embedded_assets_for_setup_target_with_selection,
@@ -836,10 +849,18 @@ mod install {
     pub(super) fn install_required_git_hooks(
         repository_root: &Path,
     ) -> Result<RequiredHooksInstallOutcome> {
+        install_required_git_hooks_with_rename(repository_root, |from, to| fs::rename(from, to))
+    }
+
+    pub(super) fn install_required_git_hooks_with_rename<F>(
+        repository_root: &Path,
+        rename_fn: F,
+    ) -> Result<RequiredHooksInstallOutcome>
+    where
+        F: FnMut(&Path, &Path) -> io::Result<()>,
+    {
         let resolved_repository_root = prepare_setup_hooks_repository(repository_root)?;
-        install_required_git_hooks_in_resolved_repository(&resolved_repository_root, |from, to| {
-            fs::rename(from, to)
-        })
+        install_required_git_hooks_in_resolved_repository(&resolved_repository_root, rename_fn)
     }
 
     pub(super) fn install_embedded_setup_assets(
@@ -927,77 +948,79 @@ mod install {
         let hook_path = hooks_directory.join(hook_asset.relative_path);
         let existing_metadata = fs::metadata(&hook_path).ok();
 
-        if existing_metadata
+        let existing_bytes = if existing_metadata
             .as_ref()
             .is_some_and(std::fs::Metadata::is_file)
         {
-            let existing_bytes = fs::read(&hook_path).with_context(|| {
+            Some(fs::read(&hook_path).with_context(|| {
                 format!("Failed to read existing hook '{}'", hook_path.display())
-            })?;
-            let executable = is_executable_file(&hook_path)?;
-
-            if existing_bytes == hook_asset.bytes && executable {
-                return Ok(RequiredHookInstallResult {
-                    hook_name: hook_asset.relative_path.to_string(),
-                    hook_path,
-                    status: RequiredHookInstallStatus::Skipped,
-                });
-            }
+            })?)
         } else if existing_metadata.is_some() {
             bail!(
                 "Existing hook target '{}' is not a file",
                 hook_path.display()
             );
+        } else {
+            None
+        };
+
+        let merge = hook_merge::merge_or_create_hook(
+            existing_bytes.as_deref(),
+            hook_asset.bytes,
+            hook_asset.relative_path,
+        )?;
+
+        if let Some(existing_bytes) = existing_bytes.as_deref() {
+            let executable = is_executable_file(&hook_path)?;
+            if merge.bytes == existing_bytes && executable {
+                return Ok(RequiredHookInstallResult {
+                    hook_name: hook_asset.relative_path.to_string(),
+                    hook_path,
+                    status: RequiredHookInstallStatus::Skipped,
+                    unreachable_block_advisory: merge.unreachable_block_advisory,
+                });
+            }
         }
+
+        let had_existing_hook = existing_metadata.is_some();
 
         let hook_staging_path =
             create_hook_staging_path(hooks_directory, hook_asset.relative_path)?;
-        if let Err(error) = write_hook_payload_to_staging(&hook_staging_path, hook_asset.bytes) {
+        if let Err(error) = write_hook_payload_to_staging(&hook_staging_path, &merge.bytes) {
             cleanup_path_if_exists(&hook_staging_path);
             return Err(error);
         }
 
-        if existing_metadata.is_none() {
-            if let Err(error) = rename_fn(&hook_staging_path, &hook_path).with_context(|| {
-                format!(
-                    "Failed to install required hook '{}' at '{}'",
-                    hook_asset.relative_path,
-                    hook_path.display()
-                )
-            }) {
-                cleanup_path_if_exists(&hook_staging_path);
-                return Err(error);
-            }
-
-            return Ok(RequiredHookInstallResult {
-                hook_name: hook_asset.relative_path.to_string(),
-                hook_path,
-                status: RequiredHookInstallStatus::Installed,
-            });
-        }
-
-        remove_existing_install_target(&hook_path).with_context(|| {
-            format!(
-                "Failed to replace existing hook '{}' without creating a backup",
-                hook_path.display()
-            )
-        })?;
-
+        let action = if had_existing_hook {
+            "update"
+        } else {
+            "install"
+        };
         if let Err(error) = rename_fn(&hook_staging_path, &hook_path).with_context(|| {
             format!(
-                "Failed to update required hook '{}' at '{}'",
+                "Failed to {action} required hook '{}' at '{}'",
                 hook_asset.relative_path,
                 hook_path.display()
             )
         }) {
             cleanup_path_if_exists(&hook_staging_path);
-            return Err(error.context(hook_install_recovery_guidance(&hook_path)));
+            let error = if had_existing_hook {
+                error.context(hook_install_recovery_guidance(&hook_path))
+            } else {
+                error
+            };
+            return Err(error);
         }
 
         Ok(RequiredHookInstallResult {
             hook_name: hook_asset.relative_path.to_string(),
             hook_path,
-            status: RequiredHookInstallStatus::Updated,
+            status: if had_existing_hook {
+                RequiredHookInstallStatus::Updated
+            } else {
+                RequiredHookInstallStatus::Installed
+            },
+            unreachable_block_advisory: merge.unreachable_block_advisory,
         })
     }
 
@@ -1405,18 +1428,6 @@ mod install {
             return Err(error);
         }
 
-        if destination.exists() {
-            if let Err(error) = fs::remove_file(&destination).with_context(|| {
-                format!(
-                    "Failed to replace existing setup asset '{}' without creating a backup",
-                    destination.display()
-                )
-            }) {
-                cleanup_path_if_exists(&staging_path);
-                return Err(error);
-            }
-        }
-
         if let Err(error) = rename_fn(&staging_path, &destination).with_context(|| {
             format!(
                 "Failed to install staged asset '{}' into destination '{}'",
@@ -1463,33 +1474,6 @@ mod install {
             "Could not allocate a unique staging file under '{}'",
             parent.display()
         )
-    }
-
-    fn remove_existing_install_target(destination_root: &Path) -> Result<()> {
-        let metadata = fs::metadata(destination_root).with_context(|| {
-            format!(
-                "Failed to inspect existing setup target '{}'",
-                destination_root.display()
-            )
-        })?;
-
-        if metadata.is_dir() {
-            fs::remove_dir_all(destination_root).with_context(|| {
-                format!(
-                    "Failed to remove existing setup target directory '{}'",
-                    destination_root.display()
-                )
-            })?;
-        } else {
-            fs::remove_file(destination_root).with_context(|| {
-                format!(
-                    "Failed to remove existing setup target file '{}'",
-                    destination_root.display()
-                )
-            })?;
-        }
-
-        Ok(())
     }
 
     fn validate_embedded_relative_path(relative_path: &str) -> Result<()> {
@@ -2359,6 +2343,10 @@ mod tests {
         let claude_dir = default_paths::InstallTargetPaths::new(&repo).claude_target_dir();
         let failing_destination = claude_dir.join("commands/next-task.md");
 
+        fs::create_dir_all(claude_dir.join("commands")).expect("create commands dir");
+        let prior_content = b"prior next-task content\n";
+        fs::write(&failing_destination, prior_content).expect("seed prior next-task content");
+
         let result = install::install_embedded_setup_assets_with_rename(
             &repo,
             SetupTarget::Claude,
@@ -2383,6 +2371,12 @@ mod tests {
             "error should include recovery guidance: {message}"
         );
 
+        assert_eq!(
+            fs::read(&failing_destination).expect("read failing destination after rename failure"),
+            prior_content,
+            "prior content at the failing destination should survive a rename failure"
+        );
+
         let commands_staging_dir = claude_dir.join("commands");
         if commands_staging_dir.exists() {
             let leftover_staging_files = fs::read_dir(&commands_staging_dir)
@@ -2399,6 +2393,331 @@ mod tests {
                 "staging artifact for the failed asset should be cleaned up"
             );
         }
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn hook_install_leaves_prior_hook_intact_on_rename_failure() {
+        let repo = init_git_repo("hook-install-rename-failure");
+
+        let initial_outcome = install::install_required_git_hooks(&repo)
+            .expect("initial hook install should succeed");
+        let pre_commit_result = initial_outcome
+            .hook_results
+            .iter()
+            .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
+            .expect("pre-commit hook should be installed");
+        let pre_commit_path = pre_commit_result.hook_path.clone();
+
+        let prior_hook_bytes = b"#!/bin/sh\necho prior pre-commit\n".to_vec();
+        fs::write(&pre_commit_path, &prior_hook_bytes).expect("seed prior pre-commit hook");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&pre_commit_path, fs::Permissions::from_mode(0o755))
+                .expect("mark prior pre-commit hook executable");
+        }
+        let prior_mode = fs::metadata(&pre_commit_path)
+            .expect("stat prior pre-commit hook")
+            .permissions();
+
+        let result = install::install_required_git_hooks_with_rename(&repo, |from, to| {
+            if to == pre_commit_path {
+                Err(std::io::Error::other("simulated rename failure"))
+            } else {
+                fs::rename(from, to)
+            }
+        });
+
+        let error = result.expect_err("rename failure should surface as an error");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(&pre_commit_path.display().to_string()),
+            "error should name the failing hook path: {message}"
+        );
+
+        assert_eq!(
+            fs::read(&pre_commit_path).expect("read pre-commit hook after rename failure"),
+            prior_hook_bytes,
+            "prior hook content should survive a rename failure"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode_after = fs::metadata(&pre_commit_path)
+                .expect("stat pre-commit hook after rename failure")
+                .permissions();
+            assert_eq!(
+                mode_after.mode() & 0o777,
+                prior_mode.mode() & 0o777,
+                "prior hook executable mode should survive a rename failure"
+            );
+        }
+
+        let hooks_staging_dir = pre_commit_path
+            .parent()
+            .expect("pre-commit hook should have a parent directory");
+        let leftover_staging_files = fs::read_dir(hooks_staging_dir)
+            .expect("read hooks staging dir")
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".sce-hook-staging-")
+            });
+        assert!(
+            !leftover_staging_files,
+            "staging artifact for the failed hook should be cleaned up"
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn foreign_pre_commit_hook_keeps_its_content_and_gains_the_sce_block() {
+        let repo = init_git_repo("hook-install-foreign-append");
+
+        let initial_outcome = install::install_required_git_hooks(&repo)
+            .expect("initial hook install should succeed");
+        let pre_commit_path = initial_outcome
+            .hook_results
+            .iter()
+            .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
+            .expect("pre-commit hook should be installed")
+            .hook_path
+            .clone();
+
+        let foreign_bytes = b"#!/bin/sh\necho husky-style-guard\n".to_vec();
+        fs::write(&pre_commit_path, &foreign_bytes).expect("seed foreign pre-commit hook");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&pre_commit_path, fs::Permissions::from_mode(0o755))
+                .expect("mark foreign pre-commit hook executable");
+        }
+
+        let outcome = install::install_required_git_hooks(&repo)
+            .expect("hook install over a foreign hook should succeed");
+        let result = outcome
+            .hook_results
+            .iter()
+            .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
+            .expect("pre-commit hook result should be present");
+
+        assert_eq!(result.status, RequiredHookInstallStatus::Updated);
+        assert!(!result.unreachable_block_advisory);
+
+        let installed_bytes = fs::read(&pre_commit_path).expect("read installed pre-commit hook");
+        assert!(
+            installed_bytes.starts_with(&foreign_bytes),
+            "foreign hook content should survive as an exact prefix"
+        );
+        let installed_text = String::from_utf8(installed_bytes).expect("hook should be utf8");
+        assert!(installed_text.contains(hook_merge::MANAGED_BLOCK_START));
+        assert!(installed_text.contains(hook_merge::MANAGED_BLOCK_END));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&pre_commit_path)
+                .expect("stat installed pre-commit hook")
+                .permissions()
+                .mode();
+            assert_ne!(mode & 0o111, 0, "installed hook should remain executable");
+        }
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn rerunning_hook_install_is_idempotent_for_block_only_and_foreign_plus_block_shapes() {
+        let repo = init_git_repo("hook-install-idempotent");
+
+        let first_outcome =
+            install::install_required_git_hooks(&repo).expect("first hook install should succeed");
+        let pre_commit_result = first_outcome
+            .hook_results
+            .iter()
+            .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
+            .expect("pre-commit hook should be installed");
+        assert_eq!(
+            pre_commit_result.status,
+            RequiredHookInstallStatus::Installed
+        );
+
+        let second_outcome =
+            install::install_required_git_hooks(&repo).expect("second hook install should succeed");
+        let second_pre_commit = second_outcome
+            .hook_results
+            .iter()
+            .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
+            .expect("pre-commit hook result should be present");
+        assert_eq!(second_pre_commit.status, RequiredHookInstallStatus::Skipped);
+        assert_eq!(
+            fs::read(&second_pre_commit.hook_path).expect("read block-only pre-commit hook"),
+            fs::read(&pre_commit_result.hook_path).expect("read initial pre-commit hook"),
+            "block-only hook bytes should be unchanged across reruns"
+        );
+
+        let commit_msg_result = first_outcome
+            .hook_results
+            .iter()
+            .find(|result| result.hook_name == default_paths::hook_dir::COMMIT_MSG)
+            .expect("commit-msg hook should be installed");
+        let commit_msg_path = commit_msg_result.hook_path.clone();
+        let foreign_prefix = b"#!/bin/sh\necho foreign-commit-msg-guard\n".to_vec();
+        fs::write(&commit_msg_path, &foreign_prefix).expect("seed foreign commit-msg hook");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&commit_msg_path, fs::Permissions::from_mode(0o755))
+                .expect("mark foreign commit-msg hook executable");
+        }
+
+        let appended_outcome = install::install_required_git_hooks(&repo)
+            .expect("hook install appending to foreign commit-msg hook should succeed");
+        let appended_result = appended_outcome
+            .hook_results
+            .iter()
+            .find(|result| result.hook_name == default_paths::hook_dir::COMMIT_MSG)
+            .expect("commit-msg hook result should be present");
+        assert_eq!(appended_result.status, RequiredHookInstallStatus::Updated);
+        let appended_bytes = fs::read(&commit_msg_path).expect("read appended commit-msg hook");
+
+        let rerun_outcome = install::install_required_git_hooks(&repo)
+            .expect("rerunning hook install over foreign-plus-block hook should succeed");
+        let rerun_result = rerun_outcome
+            .hook_results
+            .iter()
+            .find(|result| result.hook_name == default_paths::hook_dir::COMMIT_MSG)
+            .expect("commit-msg hook result should be present");
+        assert_eq!(rerun_result.status, RequiredHookInstallStatus::Skipped);
+        assert_eq!(
+            fs::read(&commit_msg_path).expect("read commit-msg hook after rerun"),
+            appended_bytes,
+            "foreign-plus-block hook bytes should be unchanged across reruns"
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn legacy_pre_marker_hook_upgrades_to_the_managed_block_form() {
+        let repo = init_git_repo("hook-install-legacy-upgrade");
+
+        let initial_outcome = install::install_required_git_hooks(&repo)
+            .expect("initial hook install should succeed");
+        let pre_commit_path = initial_outcome
+            .hook_results
+            .iter()
+            .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
+            .expect("pre-commit hook should be installed")
+            .hook_path
+            .clone();
+        let canonical_bytes = fs::read(&pre_commit_path).expect("read canonical pre-commit hook");
+
+        let legacy_bytes = b"#!/bin/sh\nset -eu\nif ! command -v sce >/dev/null 2>&1; then\n  echo 'Install: https://sce.crocoder.dev/docs/getting-started#install-cli'\n  exit 0\nfi\nexec sce hooks pre-commit \"$@\"\n".to_vec();
+        fs::write(&pre_commit_path, &legacy_bytes).expect("seed legacy pre-commit hook");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&pre_commit_path, fs::Permissions::from_mode(0o755))
+                .expect("mark legacy pre-commit hook executable");
+        }
+
+        let outcome = install::install_required_git_hooks(&repo)
+            .expect("hook install upgrading a legacy hook should succeed");
+        let result = outcome
+            .hook_results
+            .iter()
+            .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
+            .expect("pre-commit hook result should be present");
+
+        assert_eq!(result.status, RequiredHookInstallStatus::Updated);
+        assert_eq!(
+            fs::read(&pre_commit_path).expect("read upgraded pre-commit hook"),
+            canonical_bytes,
+            "a legacy pre-marker hook should upgrade to the canonical marker form"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&pre_commit_path)
+                .expect("stat upgraded pre-commit hook")
+                .permissions()
+                .mode();
+            assert_ne!(mode & 0o111, 0, "upgraded hook should remain executable");
+        }
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn foreign_hook_ending_in_exec_installs_the_block_and_reports_the_advisory() {
+        let repo = init_git_repo("hook-install-unreachable-advisory");
+
+        let initial_outcome = install::install_required_git_hooks(&repo)
+            .expect("initial hook install should succeed");
+        let pre_commit_path = initial_outcome
+            .hook_results
+            .iter()
+            .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
+            .expect("pre-commit hook should be installed")
+            .hook_path
+            .clone();
+        let commit_msg_path = initial_outcome
+            .hook_results
+            .iter()
+            .find(|result| result.hook_name == default_paths::hook_dir::COMMIT_MSG)
+            .expect("commit-msg hook should be installed")
+            .hook_path
+            .clone();
+
+        let unreachable_foreign = b"#!/bin/sh\nexec some-other-tool \"$@\"\n".to_vec();
+        fs::write(&pre_commit_path, &unreachable_foreign).expect("seed unreachable foreign hook");
+        let ordinary_foreign = b"#!/bin/sh\necho foreign-commit-msg-guard\n".to_vec();
+        fs::write(&commit_msg_path, &ordinary_foreign).expect("seed ordinary foreign hook");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&pre_commit_path, fs::Permissions::from_mode(0o755))
+                .expect("mark unreachable foreign hook executable");
+            fs::set_permissions(&commit_msg_path, fs::Permissions::from_mode(0o755))
+                .expect("mark ordinary foreign hook executable");
+        }
+
+        let outcome = install::install_required_git_hooks(&repo)
+            .expect("hook install over foreign hooks should succeed");
+
+        let pre_commit_result = outcome
+            .hook_results
+            .iter()
+            .find(|result| result.hook_name == default_paths::hook_dir::PRE_COMMIT)
+            .expect("pre-commit hook result should be present");
+        assert_eq!(pre_commit_result.status, RequiredHookInstallStatus::Updated);
+        assert!(
+            pre_commit_result.unreachable_block_advisory,
+            "a hook ending in a zero-indent exec should report the advisory"
+        );
+        assert!(
+            fs::read(&pre_commit_path)
+                .expect("read pre-commit hook")
+                .starts_with(&unreachable_foreign),
+            "the block should still be installed even though it is unreachable"
+        );
+
+        let commit_msg_result = outcome
+            .hook_results
+            .iter()
+            .find(|result| result.hook_name == default_paths::hook_dir::COMMIT_MSG)
+            .expect("commit-msg hook result should be present");
+        assert!(
+            !commit_msg_result.unreachable_block_advisory,
+            "a hook ending in an ordinary command should not report the advisory"
+        );
 
         let _ = fs::remove_dir_all(&repo);
     }

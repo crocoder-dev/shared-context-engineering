@@ -1,8 +1,7 @@
 #!/bin/sh
 set -eu
 
-remote_url="$(git remote get-url origin 2>/dev/null || true)"
-
+# >>> sce managed block (do not edit) >>>
 if ! command -v sce >/dev/null 2>&1; then
   # sce brand colors — only emit ANSI when stderr is a real terminal
   if [ -t 2 ]; then
@@ -27,8 +26,13 @@ if ! command -v sce >/dev/null 2>&1; then
   exit 0
 fi
 
-if [ -n "$remote_url" ]; then
-  exec sce hooks post-commit --vcs git --remote-url "$remote_url" "$@"
-fi
+remote_url="$(git remote get-url origin 2>/dev/null || true)"
 
-exec sce hooks post-commit --vcs git "$@"
+if [ -n "$remote_url" ]; then
+  sce hooks post-commit --vcs git --remote-url "$remote_url" "$@"
+else
+  sce hooks post-commit --vcs git "$@"
+fi
+status=$?
+exit "$status"
+# <<< sce managed block <<<

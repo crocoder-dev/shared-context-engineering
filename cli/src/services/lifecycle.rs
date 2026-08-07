@@ -103,6 +103,7 @@ pub struct RequiredHookInstallResult {
     pub hook_name: String,
     pub hook_path: PathBuf,
     pub status: RequiredHookInstallStatus,
+    pub unreachable_block_advisory: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

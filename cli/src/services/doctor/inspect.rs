@@ -15,8 +15,9 @@ use crate::services::repository_identity::resolve::{
     resolve_repository_identity, RepositoryIdentitySource,
 };
 use crate::services::setup::{
-    config_merge, iter_embedded_assets_for_setup_target_with_selection, iter_required_hook_assets,
-    persisted_optional_workflows, repair_merge_target_asset, EmbeddedAsset, SetupTarget,
+    config_merge, hook_merge, iter_embedded_assets_for_setup_target_with_selection,
+    iter_required_hook_assets, persisted_optional_workflows, repair_merge_target_asset,
+    EmbeddedAsset, SetupTarget,
 };
 
 use super::types::{
@@ -318,14 +319,25 @@ fn inspect_hook_content_state_without_problem(
     };
 
     match fs::read(hook_path) {
-        Ok(bytes) => {
-            if bytes == expected_hook.bytes {
-                HookContentState::Current
-            } else {
-                HookContentState::Stale
-            }
-        }
+        Ok(bytes) => hook_managed_block_content_state(hook_name, &bytes, expected_hook.bytes),
         Err(_) => HookContentState::Unknown,
+    }
+}
+
+/// Classifies a hook's on-disk bytes against the canonical template by SCE
+/// managed-block currency (merging the canonical block into `bytes` is a
+/// no-op) rather than whole-file equality, so foreign content a repository
+/// has appended around the block does not read as drift. An unbalanced or
+/// partial managed block is also reported `Stale`, since it needs the same
+/// `--fix` repair as a drifted one.
+fn hook_managed_block_content_state(
+    hook_name: &str,
+    bytes: &[u8],
+    canonical: &[u8],
+) -> HookContentState {
+    match hook_merge::merge_or_create_hook(Some(bytes), canonical, hook_name) {
+        Ok(merge) if merge.bytes == bytes => HookContentState::Current,
+        Ok(_) | Err(_) => HookContentState::Stale,
     }
 }
 
@@ -1568,13 +1580,7 @@ fn inspect_hook_content_state(
     };
 
     match fs::read(hook_path) {
-        Ok(bytes) => {
-            if bytes == expected_hook.bytes {
-                HookContentState::Current
-            } else {
-                HookContentState::Stale
-            }
-        }
+        Ok(bytes) => hook_managed_block_content_state(hook_name, &bytes, expected_hook.bytes),
         Err(error) => {
             problems.push(DoctorProblem {
                 kind: ProblemKind::HookReadFailed,
@@ -1602,8 +1608,9 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        collect_claude_integration_groups, collect_opencode_integration_groups,
-        collect_pi_integration_groups, inspect_claude_integration_health, IntegrationContentState,
+        collect_claude_integration_groups, collect_hook_file_health,
+        collect_opencode_integration_groups, collect_pi_integration_groups,
+        inspect_claude_integration_health, HookContentState, IntegrationContentState,
         IntegrationGroupHealth,
     };
     use crate::services::setup::OPTIONAL_WORKFLOWS;
@@ -1941,5 +1948,151 @@ mod tests {
         assert!(plugin.contains(&serde_json::json!("./plugins/sce-agent-trace.ts")));
 
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn canonical_pre_commit_bytes() -> &'static [u8] {
+        crate::services::setup::iter_required_hook_assets()
+            .find(|asset| asset.relative_path == "pre-commit")
+            .expect("embedded catalog carries pre-commit")
+            .bytes
+    }
+
+    #[cfg(unix)]
+    fn mark_executable(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+            .expect("mark hook executable");
+    }
+
+    #[test]
+    fn hook_with_foreign_content_and_current_block_reports_current() {
+        let dir = unique_temp_repository_root("hook-foreign-current");
+        let foreign_prefix = b"#!/bin/sh\necho husky-style-guard\n".to_vec();
+        let merge = crate::services::setup::hook_merge::merge_or_create_hook(
+            Some(&foreign_prefix),
+            canonical_pre_commit_bytes(),
+            "pre-commit",
+        )
+        .expect("merge over foreign hook should succeed");
+
+        let hook_path = dir.join("pre-commit");
+        std::fs::write(&hook_path, &merge.bytes).expect("write foreign-plus-block hook");
+        #[cfg(unix)]
+        mark_executable(&hook_path);
+
+        let health = collect_hook_file_health(&dir);
+        let pre_commit = health
+            .iter()
+            .find(|hook| hook.name == "pre-commit")
+            .expect("pre-commit health present");
+        assert_eq!(pre_commit.content_state, HookContentState::Current);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hook_with_drifted_managed_block_reports_stale() {
+        let dir = unique_temp_repository_root("hook-drifted-stale");
+        let canonical_text =
+            String::from_utf8(canonical_pre_commit_bytes().to_vec()).expect("hook is utf8");
+        let drifted_text = canonical_text.replace(
+            "sce hooks pre-commit \"$@\"",
+            "sce hooks pre-commit \"$@\" # drifted",
+        );
+        assert_ne!(
+            drifted_text, canonical_text,
+            "drift fixture should actually differ from canonical"
+        );
+
+        let hook_path = dir.join("pre-commit");
+        std::fs::write(&hook_path, drifted_text.as_bytes()).expect("write drifted hook");
+        #[cfg(unix)]
+        mark_executable(&hook_path);
+
+        let health = collect_hook_file_health(&dir);
+        let pre_commit = health
+            .iter()
+            .find(|hook| hook.name == "pre-commit")
+            .expect("pre-commit health present");
+        assert_eq!(pre_commit.content_state, HookContentState::Stale);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn init_git_repo(label: &str) -> PathBuf {
+        let repo = unique_temp_repository_root(label);
+        let output = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&repo)
+            .output()
+            .expect("git init should spawn");
+        assert!(
+            output.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        repo
+    }
+
+    #[test]
+    fn fix_repairs_drifted_hook_content_while_preserving_foreign_content() {
+        let repo = init_git_repo("hook-fix-repair");
+
+        let initial_outcome = crate::services::setup::install_required_git_hooks(&repo)
+            .expect("initial hook install should succeed");
+        let pre_commit_path = initial_outcome
+            .hook_results
+            .iter()
+            .find(|result| result.hook_name == "pre-commit")
+            .expect("pre-commit hook installed")
+            .hook_path
+            .clone();
+        let hooks_directory = pre_commit_path
+            .parent()
+            .expect("hook path has a parent directory")
+            .to_path_buf();
+
+        let foreign_prefix = b"#!/bin/sh\necho husky-style-guard\n".to_vec();
+        let foreign_plus_block = crate::services::setup::hook_merge::merge_or_create_hook(
+            Some(&foreign_prefix),
+            canonical_pre_commit_bytes(),
+            "pre-commit",
+        )
+        .expect("merge over foreign hook should succeed");
+        let drifted_text = String::from_utf8(foreign_plus_block.bytes.clone())
+            .expect("hook is utf8")
+            .replace(
+                "sce hooks pre-commit \"$@\"",
+                "sce hooks pre-commit \"$@\" # drifted",
+            );
+        std::fs::write(&pre_commit_path, drifted_text.as_bytes())
+            .expect("seed foreign-plus-drifted-block hook");
+        #[cfg(unix)]
+        mark_executable(&pre_commit_path);
+
+        let health_before = collect_hook_file_health(&hooks_directory);
+        let pre_commit_before = health_before
+            .iter()
+            .find(|hook| hook.name == "pre-commit")
+            .expect("pre-commit health present");
+        assert_eq!(pre_commit_before.content_state, HookContentState::Stale);
+
+        crate::services::setup::install_required_git_hooks(&repo)
+            .expect("'--fix' repair reuses the canonical setup hook installation");
+
+        let repaired_bytes = std::fs::read(&pre_commit_path).expect("read repaired hook");
+        assert!(
+            repaired_bytes.starts_with(&foreign_prefix),
+            "foreign content should survive the repair"
+        );
+
+        let health_after = collect_hook_file_health(&hooks_directory);
+        let pre_commit_after = health_after
+            .iter()
+            .find(|hook| hook.name == "pre-commit")
+            .expect("pre-commit health present");
+        assert_eq!(pre_commit_after.content_state, HookContentState::Current);
+
+        std::fs::remove_dir_all(&repo).ok();
     }
 }
