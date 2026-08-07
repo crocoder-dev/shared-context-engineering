@@ -43,17 +43,17 @@ local renderStructuredInternalDocument = (document: model.WorkflowDocument) ->
 local renderCanonicalWorkflow = (workflow: CompositeWorkflow) ->
   workflow.structuredSource.command.render.apply("composite", "").text
 
-local siblingSkillRule = (workflow: CompositeWorkflow) ->
+local siblingSceWorkflowRule = (workflow: CompositeWorkflow) ->
   if (workflow.slug == "next-task" || workflow.slug == "validate")
     """
-    not inter-skill handoffs. Do not invoke another SCE skill, sibling package, or
-    workflow command except `sce-decision`, and invoke `sce-decision` only from the
-    successful context-synchronization decision gate.
+    not inter-SCE workflow handoffs. Do not invoke another SCE skill, sibling SCE
+    package, or SCE workflow command except `sce-decision`, and invoke `sce-decision`
+    only from the successful context-synchronization decision gate.
     """
   else
     """
-    not inter-skill handoffs. Do not invoke another SCE skill, sibling package, or
-    workflow command.
+    not inter-SCE workflow handoffs. Do not invoke another SCE skill, sibling SCE
+    package, or SCE workflow command.
     """
 
 local renderPhases = (workflow: CompositeWorkflow) ->
@@ -105,7 +105,7 @@ local renderSkill = (workflow: CompositeWorkflow, extraFrontmatterLines: String)
 
       Own this workflow from input parsing through its terminal user-visible response.
       Execute the phases below directly and in order. Phase statuses are internal state,
-      \(siblingSkillRule.apply(workflow)) Follow the canonical workflow's steps, gates,
+      \(siblingSceWorkflowRule.apply(workflow)) Follow the canonical workflow's steps, gates,
       and stops exactly as written: never invent, skip, reorder, or merge a step.
 
       ## User-visible output
@@ -122,6 +122,8 @@ local renderSkill = (workflow: CompositeWorkflow, extraFrontmatterLines: String)
       Approval, clarification, revision, failed-validation repair, and bootstrap waits
       resume this same skill in the same session. Never expose an internal phase result
       as the workflow's final response.
+
+      \(model.helperSkillCompositionRule)
       """
       renderCanonicalWorkflow.apply(workflow)
       when (workflow.structuredSource.phases.length > 0) {

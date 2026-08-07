@@ -1,14 +1,14 @@
-# Internal persisted-document format: Plan-file validation report
+# Plan-file Validation Report
 
-The Markdown section the **Validation phase** appends to the plan file when
-returning `validated` or `failed`. Write it at the end of
-`context/plans/{plan_name}.md` under exactly one `## Validation Report` heading.
+The Markdown section `sce-validation` appends to the plan file when returning
+`validated` or `failed`. Write it at the end of `context/plans/{plan_name}.md`
+under exactly one `## Validation Report` heading.
 
 This is plan-file content. The result returned to the workflow is defined
-separately in `references/output.md`.
+separately in `references/validation-result.md`.
 
-Do not author this section while planning. Only `/validate` through the
-**Validation phase** writes it.
+Do not author this section while planning. Only `/validate` through `sce-validation`
+writes it.
 
 ## Layout
 
@@ -58,14 +58,14 @@ After repairs, rerun:
   every required full-validation command passed.
 - Use **Status:** `failed` when evidence was captured but required checks or
   criteria remain unsatisfied.
-- List every command that ran under **Commands run**, including ones that failed.
-  Do not invent exit codes or outcomes.
+- List every command that ran under **Commands run**, including ones that
+  failed. Do not invent exit codes or outcomes.
 - Prefer the plan's `Full validation` commands and each criterion's `Validate:`
   line over rediscovering project defaults. Fall back to repository conventions
   only when the plan omits them.
 - Mark each acceptance criterion checkbox in the plan's `## Acceptance criteria`
-  section to match the evidence. Do not mark a criterion met unless the check ran
-  successfully or the inspection named by `Validate:` confirms it.
+  section to match the evidence. Do not mark a criterion met unless the check
+  ran successfully or the inspection named by `Validate:` confirms it.
 - Under **Scaffolding removed**, list only temporary debug code, intermediate
   artifacts, or throwaway files introduced during the change. Write `None.` when
   nothing temporary remained.

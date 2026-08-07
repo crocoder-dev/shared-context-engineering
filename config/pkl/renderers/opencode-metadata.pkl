@@ -53,7 +53,8 @@ permission:
   lsp: allow
   doom_loop: ask
   skill:
-    "*": ask
+    "*": allow
+    "sce-*": deny
 \(workflowSkillPermissionLines.apply("shared-context-plan"))
 """
   ["shared-context-code"] = """
@@ -76,7 +77,8 @@ permission:
   lsp: allow
   doom_loop: ask
   skill:
-    "*": ask
+    "*": allow
+    "sce-*": deny
 \(workflowSkillPermissionLines.apply("shared-context-code"))
 """
 }

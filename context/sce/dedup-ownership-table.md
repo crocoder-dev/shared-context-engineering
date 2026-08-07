@@ -30,6 +30,6 @@
 - Keep Plan and Code routing roles separate without placing workflow doctrine in agent bodies.
 - Keep commands thin: each routes to exactly one workflow skill and owns no phase behavior.
 - Keep task and plan synchronization policy in the one shared Pkl skeleton even though each workflow skill composes its own instance.
-- Keep `sce-decision` as the sole sibling-skill exception: only the decision gate in successful task or plan synchronization may invoke it, once per qualifying decision.
+- Keep SCE workflow control flow inside the owning workflow skill. Relevant non-SCE skills may assist as in-step helpers that return control to the active step; `sce-decision` remains the sole SCE sibling-skill exception, usable only from successful task or plan synchronization's decision gate, once per qualifying decision.
 - Do not reintroduce removed `/handover`, legacy context-sync, or automated-profile Markdown ownership.
 - Do not reintroduce phase skills as a generated surface. Workflow behavior belongs in the canonical modules and installation belongs to the four command-routed workflow packages (see [Atomic commit workflow](atomic-commit-workflow.md) for `/commit`). The standalone `sce-decision` package is a separate internal surface, not a generated phase package or user-facing workflow.

@@ -1,0 +1,22 @@
+import "../generation-contract-check.pkl" as contract
+
+local renderedWithWrongOrder = """
+skill:
+    "sce-*": deny
+    "*": allow
+    "sce-next-task": allow
+    "sce-validate": allow
+    "sce-commit": allow
+    "sce-handover": allow
+    "sce-brownfield": allow
+    "sce-decision": allow
+---
+"""
+
+result = if (
+  contract.assertOpenCodeSkillPermissionText.apply(
+    renderedWithWrongOrder,
+    "shared-context-code"
+  )
+) "negative fixture unexpectedly accepted the wrong OpenCode permission order"
+else throw("OpenCode skill permissions must preserve the wildcard, deny, and explicit-allow order")

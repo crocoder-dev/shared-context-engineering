@@ -11,8 +11,8 @@ compatibility: claude
 
 Own this workflow from input parsing through its terminal user-visible response.
 Execute the phases below directly and in order. Phase statuses are internal state,
-not inter-skill handoffs. Do not invoke another SCE skill, sibling package, or
-workflow command. Follow the canonical workflow's steps, gates,
+not inter-SCE workflow handoffs. Do not invoke another SCE skill, sibling SCE
+package, or SCE workflow command. Follow the canonical workflow's steps, gates,
 and stops exactly as written: never invent, skip, reorder, or merge a step.
 
 ## Phase reference
@@ -40,6 +40,11 @@ canonical workflow says to continue. Stop only at a user wait or terminal branch
 Approval, clarification, revision, failed-validation repair, and bootstrap waits
 resume this same skill in the same session. Never expose an internal phase result
 as the workflow's final response.
+
+Relevant non-SCE skills may be used as helper capabilities during the active step.
+They are not workflow handoffs: when a helper returns, control returns to the active
+step. Helper use must preserve the canonical phase order, gates, waits, writes,
+validation, stops, and terminal user-visible output.
 
 ## Input
 

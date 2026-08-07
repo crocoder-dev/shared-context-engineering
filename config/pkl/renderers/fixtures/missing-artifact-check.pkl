@@ -12,4 +12,4 @@ result = if (
   artifactsWithMissingPath.length == contract.expectedArtifactPaths.length
   && contract.expectedArtifactPaths.every((path, _) -> artifactsWithMissingPath.containsKey(path))
 ) "negative fixture unexpectedly matched"
-else error("generated artifact inventory does not match the exact expected path contract")
+else throw("generated artifact inventory does not match the exact expected path contract")

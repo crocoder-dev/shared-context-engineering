@@ -1,0 +1,18 @@
+import "../generation-contract-check.pkl" as contract
+
+local documentsWithUnscopedProhibition = new Mapping {
+  for (path, text in contract.workflowDocuments) {
+    [path] = if (path == "config/.opencode/skills/sce-next-task/SKILL.md")
+      "\(text)\nNever invoke another skill, sibling package, or workflow command."
+    else text
+  }
+}
+
+result = if (
+  documentsWithUnscopedProhibition.every((path, text) ->
+    !path.endsWith("/SKILL.md")
+    || path.contains("/skills/sce-decision/")
+    || !text.contains("Never invoke another skill")
+  )
+) "negative fixture unexpectedly contained no unscoped prohibition"
+else throw("generated workflow skill contains an unscoped skill prohibition")

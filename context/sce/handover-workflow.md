@@ -26,8 +26,9 @@ Purpose text.
 
 The package contains only `SKILL.md`, which owns mode routing, writer and
 loader behavior, and internal statuses, plus `references/output.md`, which
-owns every human-visible layout. No sibling skill or workflow command is
-invoked.
+owns every human-visible layout. No SCE sibling skill, package, or workflow
+command is invoked as a workflow handoff; relevant non-SCE helpers may assist
+inside the active step and return control to it.
 
 ## Modes
 

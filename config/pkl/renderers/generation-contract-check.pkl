@@ -164,7 +164,27 @@ local requiredHandoverSkillTokens = new Listing {
   "Next Recommended Step"
   "Writer mode never overwrites an existing handover file"
   "Loading is read-only"
-  "Never invoke another skill, sibling package, or workflow command"
+  "Never invoke another SCE skill, sibling SCE package, or SCE workflow command"
+}
+
+local requiredHelperSkillCompositionTokens = new Listing {
+  "Relevant non-SCE skills may be used as helper capabilities during the active step."
+  "They are not workflow handoffs: when a helper returns, control returns to the active"
+  "step. Helper use must preserve the canonical phase order, gates, waits, writes,"
+  "validation, stops, and terminal user-visible output."
+}
+
+local requiredScopedWorkflowTokens = new Listing {
+  "not inter-SCE workflow handoffs."
+  "Do not invoke another SCE skill, sibling SCE"
+  "SCE workflow command"
+}
+
+local forbiddenUnscopedWorkflowTokens = new Listing {
+  "Never invoke another skill"
+  "Do not invoke another skill"
+  "never invoke another skill"
+  "not inter-skill handoffs"
 }
 
 /// The five behaviors `/brownfield` cannot lose without becoming a different
@@ -279,6 +299,31 @@ local assertDecisionWorkflowReferences = (documents: Mapping) ->
   ) "generated decision invocation: synchronization-only"
   else throw("generated workflow document violates the synchronization-only sce-decision exception")
 
+local expectedOpenCodeSkillPermission = (agentSlug: String) ->
+  let (ownedWorkflowLines = (new Listing {
+    for (_, workflow in catalog.workflows) {
+      when (workflow.openCodeAgentSlug == agentSlug) {
+        "    \"\(workflow.skillSlug)\": allow"
+      }
+    }
+  }).join("\n"))
+    "    \"*\": allow\n"
+    + "    \"sce-*\": deny\n"
+    + ownedWorkflowLines
+    + if (agentSlug == "shared-context-code") "\n    \"sce-decision\": allow" else ""
+
+hidden assertOpenCodeSkillPermissionText = (rendered: String, agentSlug: String) ->
+  rendered.split("skill:\n")[1].split("\n---")[0]
+    == expectedOpenCodeSkillPermission.apply(agentSlug)
+
+local assertOpenCodeSkillPermissions = (agents) ->
+  if (
+    new Listing { "shared-context-plan"; "shared-context-code" }.every((agentSlug) ->
+      assertOpenCodeSkillPermissionText.apply(agents[agentSlug].rendered, agentSlug)
+    )
+  ) "OpenCode skill permissions: ordered and catalog-derived"
+  else throw("OpenCode skill permissions must allow non-SCE skills, deny arbitrary SCE skills, and list only ordered catalog-owned workflows")
+
 local assertOpenCodeDecisionPermission = (agents) ->
   let (codeAgent = agents["shared-context-code"].rendered)
     let (planAgent = agents["shared-context-plan"].rendered)
@@ -287,6 +332,27 @@ local assertOpenCodeDecisionPermission = (agents) ->
         && !planAgent.contains("\"sce-decision\": allow")
       ) "OpenCode decision permission: code agent only"
       else throw("OpenCode sce-decision permission must be derived only for the code agent")
+
+local assertWorkflowHelperComposition = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      !path.endsWith("/SKILL.md")
+      || requiredHelperSkillCompositionTokens.every((token) -> text.contains(token))
+    )
+  ) "generated workflow helper composition: complete"
+  else throw("generated workflow skill is missing the required helper-skill composition rule")
+
+local assertScopedWorkflowProhibitions = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      !path.endsWith("/SKILL.md")
+      || (
+        requiredScopedWorkflowTokens.every((token) -> text.contains(token))
+        && forbiddenUnscopedWorkflowTokens.every((token) -> !text.contains(token))
+      )
+    )
+  ) "generated workflow prohibitions: SCE-scoped"
+  else throw("generated workflow skill contains an unscoped skill prohibition")
 
 local assertDecisionDocumentPaths = (documents: Mapping) ->
   if (
@@ -395,8 +461,11 @@ contractChecks {
   ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
   ["optional-workflow-manifest"] = assertOptionalWorkflowManifest.apply(generatedArtifacts)
   ["workflow-references"] = assertWorkflowReferences.apply(workflowDocuments)
+  ["workflow-helper-composition"] = assertWorkflowHelperComposition.apply(compositeWorkflowDocuments)
+  ["workflow-prohibition-scope"] = assertScopedWorkflowProhibitions.apply(compositeWorkflowDocuments)
   ["phase-reference-contract"] = assertPhaseReferenceContract.apply(workflowDocuments)
   ["decision-invocation"] = assertDecisionWorkflowReferences.apply(compositeWorkflowDocuments)
+  ["opencode-skill-permissions"] = assertOpenCodeSkillPermissions.apply(opencode.agents)
   ["opencode-decision-permission"] = assertOpenCodeDecisionPermission.apply(opencode.agents)
   ["decision-package-paths"] = assertDecisionDocumentPaths.apply(decisionSkillDocuments)
   ["decision-package-content"] = assertDecisionContent.apply(decisionSkillDocuments)

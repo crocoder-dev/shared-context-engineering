@@ -29,8 +29,8 @@ local titleAndPurpose = model.packageOnlyBlock.apply("""
     user-visible response. This is a two-mode, single-pass workflow: writer mode
     captures the current session and repository state as one durable handover
     document; loader mode reads back an existing handover for continuation in
-    another session. Neither mode invokes another skill, sibling package, or
-    workflow command, and neither mode waits for user input mid-run.
+    another session. Neither mode invokes another SCE skill, sibling SCE package, or
+    SCE workflow command, and neither mode waits for user input mid-run.
 
     ## User-visible output
 
@@ -38,6 +38,8 @@ local titleAndPurpose = model.packageOnlyBlock.apply("""
     state. The reference contains only human-visible Markdown layouts.
     User-visible output is limited to those layouts: never invent a layout, and
     never wrap one in an added preamble, commentary, summary, or extra section.
+
+    \(model.helperSkillCompositionRule)
     """)
 
 local renderPersistedFormatBody = """
@@ -220,7 +222,7 @@ local renderSkillBody = (mode: model.WorkflowRenderMode) -> """
       one handover document it writes.
     - Loader mode never edits a file, writes a new file, or changes plan or task
       state.
-    - Never invoke another skill, sibling package, or workflow command.
+    - Never invoke another SCE skill, sibling SCE package, or SCE workflow command.
     - Never treat a file outside `context/handovers/`, or a non-Markdown file, as a
       loadable handover.
     - Never create the `context/` root; `sce setup --bootstrap-context` owns that.

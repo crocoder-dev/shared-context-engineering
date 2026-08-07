@@ -104,6 +104,7 @@ Recent decision records:
 - `context/decisions/2026-07-29-cross-target-workflow-skill-packages.md` (accepted history for the cross-target four-workflow single-skill model; its exact two-file phase-based package inventory is superseded, while single-skill control flow and internal phase state remain in force)
 - `context/decisions/2026-08-03-package-local-phase-reference-workflow-packages.md` (supersedes the two-file clause for phase-based workflow packages: `SKILL.md` retains control flow while package-local references own phase instructions and persisted-document formats on all three targets)
 - `context/decisions/2026-07-30-synchronization-scoped-decision-writing.md` (accepted standalone `sce-decision` package, synchronization-only sibling invocation, decision threshold, default status, and immutable accepted-ADR policy)
+- `context/decisions/2026-08-07-sce-workflow-helper-composition.md` (accepted SCE workflow ownership boundary: non-SCE in-step helpers return control to the active step, while arbitrary SCE workflow chaining remains prohibited)
 - `context/decisions/2026-07-27-ephemeral-pkl-build-generation.md` (removes committed generated targets; establishes pre-Cargo generation, validated copying into Cargo `OUT_DIR`, and crates.io/Flatpak packaging fallbacks)
 - `context/decisions/2026-03-09-migrate-lexopt-to-clap.md` (CLI argument parsing migration from lexopt to clap derive macros)
 - `context/decisions/2026-03-25-first-install-channels.md` (approved first-wave install/distribution scope for `sce`, canonical naming, and Nix-owned build policy)
