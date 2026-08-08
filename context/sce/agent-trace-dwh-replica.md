@@ -8,7 +8,7 @@
 
 1. Derives the sibling `.bridge-lock` path from `local_path` (the same suffix convention as `agent_trace_dwh_bridge_lock_path_for_repository`, see [../cli/default-path-catalog.md](../cli/default-path-catalog.md)) and acquires a `BridgeLock` **before** any Turso access. A concurrently held lock fails the whole call with `AgentTraceDwhReplicaError::Lock` before a Turso Sync builder, the local file, or the network is ever touched.
 2. Opens the local file through `turso::sync::Builder::new_remote(local_path).with_remote_url(..).with_auth_token(..)`, never calling `.experimental_multiprocess_wal(true)` — that flag is reserved for the source capture database this replica never opens.
-3. Wraps the resulting connection into `AgentTraceDwhDb` via a narrow `TursoDb::from_connection(conn, runtime)` seam (see [shared-turso-db.md](shared-turso-db.md)) and calls `AgentTraceDwhDb::ensure_dwh_schema_ready()`. This check is non-mutating: a missing or incompatible remote schema fails as `AgentTraceDwhReplicaError::SchemaNotReady` without this code ever running local DWH migrations or provisioning a competing schema.
+3. Wraps the resulting connection into `AgentTraceDwhDb` via a narrow `TursoDb::from_connection(conn, runtime)` seam (see [shared-turso-db.md](shared-turso-db.md)) and classifies its schema state via `AgentTraceDwhDb::classify_schema_state()` (see [agent-trace-dwh-db.md](agent-trace-dwh-db.md)). A `Ready` schema is left untouched. A genuinely `Empty` schema is initialized locally with `AgentTraceDwhDb::run_migrations()` and published with a single `push()`, narrowly recovering from a push conflict with one best-effort `pull()` plus a readiness re-verification (the *original* push failure is returned unless that re-verification now reports ready, in which case another initializer is treated as having won the race). An `Incompatible` schema — an unrelated schema, a partial DWH schema, or a migration ledger with unexpected entries — fails the whole call as `AgentTraceDwhReplicaError::IncompatibleSchema`, without repairing or partially completing it.
 
 The returned `AgentTraceDwhReplica` owns both the `BridgeLock` and the `AgentTraceDwhDb` connection for its lifetime; dropping it releases the lock. `AgentTraceDwhReplica::db()` exposes lock-lifetime-bound SQL access through the same `AgentTraceDwhDb` the replica opened — no second connection is created.
 
@@ -18,7 +18,7 @@ The returned `AgentTraceDwhReplica` owns both the `BridgeLock` and the `AgentTra
 
 ## Credential-safe errors
 
-`AgentTraceDwhReplicaError` (`Lock`, `Runtime`, `Open`, `SchemaNotReady`, `Pull`, `Push`) never includes the caller-supplied auth token. Every message that could echo SDK/network error text is passed through a `redact_token` helper that replaces every occurrence of the token with `<redacted>` before the error is constructed.
+`AgentTraceDwhReplicaError` (`Lock`, `Runtime`, `Open`, `SchemaInspection`, `IncompatibleSchema`, `SchemaInitialization`, `SchemaPublication`, `ReadinessVerification`, `Pull`, `Push`) never includes the caller-supplied auth token. Every message that could echo SDK/network error text is passed through a `redact_token` helper that replaces every occurrence of the token with `<redacted>` before the error is constructed.
 
 ## Observed Turso Sync SDK behavior
 

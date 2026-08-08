@@ -50,12 +50,83 @@ impl DbSpec for AgentTraceDwhDbSpec {
 /// Agent Trace DWH Turso database adapter.
 pub type AgentTraceDwhDb = TursoDb<AgentTraceDwhDbSpec>;
 
+/// Classification of a DWH database's schema state, distinguishing a
+/// genuinely empty database (safe to auto-initialize) from an existing but
+/// incompatible one (never safe to repair or overwrite).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentTraceDwhSchemaState {
+    /// The DWH migration baseline and every embedded migration are applied.
+    Ready,
+    /// No `__sce_migrations` table, none of the seven DWH contract tables,
+    /// and no other user-defined table exist. Safe to initialize locally.
+    Empty,
+    /// The database holds table(s) but its schema does not match a ready DWH
+    /// schema — an unrelated schema, a partial DWH schema, or a migration
+    /// ledger with unexpected entries. Never safe to repair automatically.
+    Incompatible(String),
+}
+
 impl AgentTraceDwhDb {
     /// Verify that the DWH schema baseline already exists and every embedded
     /// migration has been applied. Non-mutating.
     pub fn ensure_dwh_schema_ready(&self) -> Result<()> {
         TursoDb::ensure_schema_ready(self, AGENT_TRACE_DWH_SETUP_GUIDANCE)
     }
+
+    /// Classify this database's DWH schema state without mutating it.
+    ///
+    /// Built on [`TursoDb::migration_metadata_problems`] plus a direct
+    /// `sqlite_master` scan for any user-defined table (the seven DWH
+    /// contract tables, `__sce_migrations` itself, or anything unrelated).
+    /// Turso Sync's own internal bookkeeping tables (observed on a freshly
+    /// bootstrapped, otherwise-empty Turso Sync remote/replica: change-data-
+    /// capture tables named `turso_cdc`/`turso_cdc_version` and internal
+    /// sequence/autoincrement tables prefixed `__turso_internal`) are
+    /// excluded from this scan, since they exist even on a database with no
+    /// user-defined schema and do not indicate prior DWH initialization.
+    /// Returns [`AgentTraceDwhSchemaState::Empty`] only when no such
+    /// user-defined table exists at all; returns
+    /// [`AgentTraceDwhSchemaState::Incompatible`] for every other
+    /// non-ready case, so callers never mistake a partially-initialized or
+    /// unrelated schema for a blank slate.
+    pub fn classify_schema_state(&self) -> Result<AgentTraceDwhSchemaState> {
+        let problems = self.migration_metadata_problems()?;
+
+        if problems.is_empty() {
+            return Ok(AgentTraceDwhSchemaState::Ready);
+        }
+
+        let existing_tables: Vec<String> = self
+            .query_map(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name ASC",
+                (),
+                |row| row.get::<String>(0).map_err(Into::into),
+            )?
+            .into_iter()
+            .filter(|name| !is_turso_sync_internal_table(name))
+            .collect();
+
+        if existing_tables.is_empty() {
+            return Ok(AgentTraceDwhSchemaState::Empty);
+        }
+
+        Ok(AgentTraceDwhSchemaState::Incompatible(format!(
+            "found existing table(s) [{}] but schema is not ready: {}",
+            existing_tables.join(", "),
+            problems.join(", ")
+        )))
+    }
+}
+
+/// Whether `table_name` is one of Turso Sync's own internal bookkeeping
+/// tables rather than user-defined schema.
+///
+/// A freshly bootstrapped Turso Sync database carries these even when no
+/// application schema has ever been created on it, so
+/// [`AgentTraceDwhDb::classify_schema_state`] must not treat their presence
+/// as evidence of prior (partial) DWH initialization.
+fn is_turso_sync_internal_table(table_name: &str) -> bool {
+    table_name.starts_with("turso_cdc") || table_name.starts_with("__turso_internal")
 }
 
 #[cfg(test)]
@@ -532,5 +603,106 @@ mod tests {
         let error = AgentTraceDwhDbSpec::db_path()
             .expect_err("DWH DBs must not have a canonical spec path");
         assert!(error.to_string().contains("explicit-path"));
+    }
+
+    #[test]
+    fn fresh_database_with_no_tables_classifies_as_empty() {
+        let db_path = unique_test_db_path("classify-empty");
+        let db = AgentTraceDwhDb::open_without_migrations_at(&db_path)
+            .expect("DWH DB should open without running migrations");
+
+        assert_eq!(
+            db.classify_schema_state()
+                .expect("classification should succeed"),
+            AgentTraceDwhSchemaState::Empty
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn fully_migrated_database_classifies_as_ready() {
+        let db_path = unique_test_db_path("classify-ready");
+        let db = AgentTraceDwhDb::new_at(&db_path).expect("DWH DB should open");
+
+        assert_eq!(
+            db.classify_schema_state()
+                .expect("classification should succeed"),
+            AgentTraceDwhSchemaState::Ready
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn database_with_only_an_unrelated_table_classifies_as_incompatible() {
+        let db_path = unique_test_db_path("classify-unrelated");
+        let db = AgentTraceDwhDb::open_without_migrations_at(&db_path)
+            .expect("DWH DB should open without running migrations");
+        db.execute("CREATE TABLE unrelated_table (id INTEGER PRIMARY KEY)", ())
+            .expect("unrelated table creation should succeed");
+
+        match db
+            .classify_schema_state()
+            .expect("classification should succeed")
+        {
+            AgentTraceDwhSchemaState::Incompatible(reason) => {
+                assert!(reason.contains("unrelated_table"), "reason: {reason}");
+            }
+            other => panic!("expected Incompatible, got {other:?}"),
+        }
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn database_with_a_partial_contract_table_and_no_ledger_classifies_as_incompatible() {
+        let db_path = unique_test_db_path("classify-partial");
+        let db = AgentTraceDwhDb::open_without_migrations_at(&db_path)
+            .expect("DWH DB should open without running migrations");
+        db.execute(
+            "CREATE TABLE repositories (repository_id TEXT PRIMARY KEY)",
+            (),
+        )
+        .expect("partial contract table creation should succeed");
+
+        match db
+            .classify_schema_state()
+            .expect("classification should succeed")
+        {
+            AgentTraceDwhSchemaState::Incompatible(reason) => {
+                assert!(reason.contains("repositories"), "reason: {reason}");
+                assert!(
+                    reason.contains("missing migration metadata table"),
+                    "reason: {reason}"
+                );
+            }
+            other => panic!("expected Incompatible, got {other:?}"),
+        }
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn database_with_an_unexpected_ledger_entry_classifies_as_incompatible() {
+        let db_path = unique_test_db_path("classify-unexpected-ledger");
+        let db = AgentTraceDwhDb::new_at(&db_path).expect("DWH DB should open");
+        db.execute(
+            "INSERT INTO __sce_migrations (id) VALUES ('999_unknown_migration')",
+            (),
+        )
+        .expect("unexpected ledger entry insert should succeed");
+
+        match db
+            .classify_schema_state()
+            .expect("classification should succeed")
+        {
+            AgentTraceDwhSchemaState::Incompatible(reason) => {
+                assert!(reason.contains("999_unknown_migration"), "reason: {reason}");
+            }
+            other => panic!("expected Incompatible, got {other:?}"),
+        }
+
+        remove_test_db(&db_path);
     }
 }

@@ -4,16 +4,19 @@
 //! codebase. It acquires the [`BridgeLock`] before touching the network or
 //! the local replica file, opens the local `agent-trace-sync.db` file
 //! against a caller-supplied remote using Turso's `sync` feature, and
-//! verifies (without provisioning) that the bootstrapped database already
-//! satisfies the Agent Trace DWH migration contract via
-//! [`AgentTraceDwhDb::ensure_dwh_schema_ready`]. It never enables
-//! `experimental_multiprocess_wal`: that flag is reserved for the
-//! multiprocess-WAL source capture database, which this replica never opens.
+//! classifies the bootstrapped database's schema via
+//! [`AgentTraceDwhDb::classify_schema_state`]. A `Ready` schema is left
+//! unchanged; a genuinely `Empty` schema is initialized locally with
+//! [`AgentTraceDwhDb::run_migrations`] and published to the remote; an
+//! `Incompatible` schema fails loudly and is never repaired or partially
+//! completed. It never enables `experimental_multiprocess_wal`: that flag is
+//! reserved for the multiprocess-WAL source capture database, which this
+//! replica never opens.
 
 use std::{fmt, path::Path, path::PathBuf};
 
 use crate::services::{
-    agent_trace_dwh_db::AgentTraceDwhDb,
+    agent_trace_dwh_db::{AgentTraceDwhDb, AgentTraceDwhSchemaState},
     agent_trace_dwh_replica::lock::{BridgeLock, BridgeLockError},
 };
 
@@ -69,9 +72,17 @@ impl AgentTraceDwhReplica {
     /// non-blockingly, so a concurrent owner is rejected before any Turso
     /// Sync builder, local file, or network access happens. A missing local
     /// file is bootstrapped from the remote using Turso Sync's normal
-    /// `bootstrap_if_empty` behavior. Once open, the bootstrapped database
-    /// must already satisfy [`AgentTraceDwhDb::ensure_dwh_schema_ready`]:
-    /// this call never runs local DWH migrations.
+    /// `bootstrap_if_empty` behavior.
+    ///
+    /// Once open, the bootstrapped database's schema is classified via
+    /// [`AgentTraceDwhDb::classify_schema_state`] and handled accordingly:
+    /// a [`AgentTraceDwhSchemaState::Ready`] schema is left untouched; a
+    /// [`AgentTraceDwhSchemaState::Empty`] schema is initialized locally with
+    /// [`AgentTraceDwhDb::run_migrations`] and published with a single
+    /// `push()` (narrowly recovering from a push conflict with one `pull()`
+    /// plus re-verification); a
+    /// [`AgentTraceDwhSchemaState::Incompatible`] schema fails loudly and is
+    /// never repaired or partially completed.
     pub fn open(config: AgentTraceDwhReplicaConfig) -> Result<Self, AgentTraceDwhReplicaError> {
         let AgentTraceDwhReplicaConfig {
             local_path,
@@ -119,11 +130,26 @@ impl AgentTraceDwhReplica {
 
         let db = AgentTraceDwhDb::from_connection(conn, runtime);
 
-        db.ensure_dwh_schema_ready().map_err(|error| {
-            AgentTraceDwhReplicaError::SchemaNotReady {
+        let schema_state = db.classify_schema_state().map_err(|error| {
+            AgentTraceDwhReplicaError::SchemaInspection {
                 message: redact_token(&error, &auth_token),
             }
         })?;
+
+        match schema_state {
+            AgentTraceDwhSchemaState::Ready => {}
+            AgentTraceDwhSchemaState::Empty => {
+                initialize_empty_schema(&db, &sync_db, &auth_token)?;
+            }
+            AgentTraceDwhSchemaState::Incompatible(reason) => {
+                return Err(AgentTraceDwhReplicaError::IncompatibleSchema {
+                    message: format!(
+                        "{reason} (automatic initialization is only allowed for a genuinely \
+                         empty remote/replica)"
+                    ),
+                });
+            }
+        }
 
         Ok(Self { lock, sync_db, db })
     }
@@ -157,6 +183,44 @@ impl AgentTraceDwhReplica {
                 message: error.to_string(),
             })
     }
+}
+
+/// Initialize a genuinely [`AgentTraceDwhSchemaState::Empty`] replica by
+/// running the DWH migration baseline locally and publishing it to the
+/// remote.
+///
+/// On a push failure, this makes exactly one narrow recovery attempt: pull
+/// whatever the remote now holds (best-effort; a pull failure here does not
+/// change the outcome) and re-check readiness. If the schema is `Ready`
+/// afterward, another initializer must have won the race and published first,
+/// so this is treated as success. Otherwise the *original* push failure is
+/// returned — never a swallowed or generic error.
+fn initialize_empty_schema(
+    db: &AgentTraceDwhDb,
+    sync_db: &turso::sync::Database,
+    auth_token: &str,
+) -> Result<(), AgentTraceDwhReplicaError> {
+    db.run_migrations()
+        .map_err(|error| AgentTraceDwhReplicaError::SchemaInitialization {
+            message: redact_token(&error, auth_token),
+        })?;
+
+    if let Err(push_error) = db.block_on(sync_db.push()) {
+        let _ = db.block_on(sync_db.pull());
+
+        if !matches!(db.ensure_dwh_schema_ready(), Ok(())) {
+            return Err(AgentTraceDwhReplicaError::SchemaPublication {
+                message: redact_token(&push_error, auth_token),
+            });
+        }
+
+        return Ok(());
+    }
+
+    db.ensure_dwh_schema_ready()
+        .map_err(|error| AgentTraceDwhReplicaError::ReadinessVerification {
+            message: redact_token(&error, auth_token),
+        })
 }
 
 /// Derive the bridge-lock path for an explicit replica path: the replica
@@ -199,8 +263,22 @@ pub enum AgentTraceDwhReplicaError {
         local_path: PathBuf,
         message: String,
     },
-    /// The database opened, but its DWH schema is missing or incomplete.
-    SchemaNotReady { message: String },
+    /// Classifying the opened database's schema state failed.
+    SchemaInspection { message: String },
+    /// The schema is neither ready nor genuinely empty — an unrelated
+    /// schema, a partial DWH schema, or a migration ledger with unexpected
+    /// entries. Never repaired or partially completed automatically.
+    IncompatibleSchema { message: String },
+    /// Running the local DWH migration baseline on a genuinely empty schema
+    /// failed.
+    SchemaInitialization { message: String },
+    /// Publishing a locally initialized empty schema to the remote failed,
+    /// including after the narrow one-`pull()`-and-re-verify recovery
+    /// attempt.
+    SchemaPublication { message: String },
+    /// The schema still failed readiness verification after a local
+    /// initialization and successful publish.
+    ReadinessVerification { message: String },
     /// Pulling remote changes failed.
     Pull { message: String },
     /// Pushing local changes failed.
@@ -225,8 +303,35 @@ impl fmt::Display for AgentTraceDwhReplicaError {
                 "failed to open Agent Trace DWH replica at {}: {message}",
                 local_path.display()
             ),
-            Self::SchemaNotReady { message } => {
-                write!(f, "Agent Trace DWH replica schema is not ready: {message}")
+            Self::SchemaInspection { message } => {
+                write!(
+                    f,
+                    "failed to classify Agent Trace DWH replica schema state: {message}"
+                )
+            }
+            Self::IncompatibleSchema { message } => {
+                write!(
+                    f,
+                    "Agent Trace DWH replica schema is incompatible: {message}"
+                )
+            }
+            Self::SchemaInitialization { message } => {
+                write!(
+                    f,
+                    "failed to initialize Agent Trace DWH replica schema: {message}"
+                )
+            }
+            Self::SchemaPublication { message } => {
+                write!(
+                    f,
+                    "failed to publish Agent Trace DWH replica schema: {message}"
+                )
+            }
+            Self::ReadinessVerification { message } => {
+                write!(
+                    f,
+                    "Agent Trace DWH replica schema is still not ready after initialization: {message}"
+                )
             }
             Self::Pull { message } => write!(f, "Agent Trace DWH replica pull failed: {message}"),
             Self::Push { message } => write!(f, "Agent Trace DWH replica push failed: {message}"),
@@ -240,7 +345,11 @@ impl std::error::Error for AgentTraceDwhReplicaError {
             Self::Lock(error) => Some(error),
             Self::Runtime { source } => Some(source),
             Self::Open { .. }
-            | Self::SchemaNotReady { .. }
+            | Self::SchemaInspection { .. }
+            | Self::IncompatibleSchema { .. }
+            | Self::SchemaInitialization { .. }
+            | Self::SchemaPublication { .. }
+            | Self::ReadinessVerification { .. }
             | Self::Pull { .. }
             | Self::Push { .. } => None,
         }
@@ -338,6 +447,7 @@ mod integration_tests {
     };
 
     use super::*;
+    use crate::services::{agent_trace_dwh_db::AgentTraceDwhDbSpec, db::DbSpec};
 
     fn unique_test_replica_path(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -434,9 +544,12 @@ mod integration_tests {
 
     /// Publish the real Agent Trace DWH migration baseline to `remote_url`
     /// through a disposable local sync connection, so replicas opened
-    /// against it afterward observe a genuinely ready DWH schema. This is
-    /// the "prepared DWH remote" the plan's acceptance criteria assume.
-    fn prepare_remote_with_dwh_schema(remote_url: &str) {
+    /// against it afterward observe a genuinely ready DWH schema without
+    /// `open()` itself needing to initialize anything. Used only for the
+    /// already-`Ready`/unchanged-on-open case: the main fresh-bootstrap
+    /// coverage instead starts from a truly empty remote and lets `open()`
+    /// initialize and publish it itself.
+    fn prepare_remote_with_ready_dwh_schema(remote_url: &str) {
         let local_path = unique_test_replica_path("prep-dwh-schema");
         let runtime = build_test_runtime();
         let local_path_str = local_path.to_str().unwrap().to_string();
@@ -503,17 +616,20 @@ mod integration_tests {
         ids
     }
 
-    /// Covers AC3–AC5: fresh bootstrap, lock-before-open rejection of a
-    /// concurrent owner, independent pull/push visibility in both
-    /// directions, and reconstruction of remote data after local deletion.
+    /// Covers AC3–AC5 plus T05's empty-remote auto-initialization: a truly
+    /// empty remote (no prior schema preparation) is initialized and
+    /// published by `open()` itself, lock-before-open rejects a concurrent
+    /// owner, independent pull/push visibility works in both directions, and
+    /// local deletion reconstructs remote data.
     fn assert_bootstrap_lock_and_pull_push(
         tursodb_path: &Path,
         repository_id: &str,
         sentinel_token: &str,
     ) {
-        // --- AC4: fresh bootstrap against a prepared DWH remote succeeds. ---
+        // --- T05: `open()` against a truly empty remote (nothing published
+        // to it yet) auto-initializes and publishes the DWH schema itself,
+        // without any prior `prepare_remote_with_*` call. ---
         let server = LocalSyncServer::spawn(tursodb_path);
-        prepare_remote_with_dwh_schema(&server.url);
 
         let path_a = unique_test_replica_path("peer-a");
         let replica_a = AgentTraceDwhReplica::open(AgentTraceDwhReplicaConfig {
@@ -521,10 +637,18 @@ mod integration_tests {
             database_url: server.url.clone(),
             auth_token: sentinel_token.to_string(),
         })
-        .expect("bootstrap against a prepared DWH remote should succeed");
+        .expect("opening a truly empty remote should auto-initialize and publish the DWH schema");
         assert!(
             path_a.is_file(),
             "bootstrap should create the local replica file"
+        );
+        assert_eq!(
+            replica_a
+                .db()
+                .classify_schema_state()
+                .expect("schema classification should succeed after auto-initialization"),
+            AgentTraceDwhSchemaState::Ready,
+            "the schema replica_a initialized locally should classify as Ready"
         );
 
         // --- AC3: a concurrent open against the same local path is rejected
@@ -540,8 +664,11 @@ mod integration_tests {
             AgentTraceDwhReplicaError::Lock(_)
         ));
 
-        // Peer replica opened before any writes exist, to prove pull (not
-        // just fresh bootstrap) makes independently published data visible.
+        // Peer replica opened before any domain writes exist, to prove both
+        // that a second independent fresh replica observes replica_a's
+        // published schema as Ready (without re-running migrations) and that
+        // pull (not just fresh bootstrap) makes independently published data
+        // visible.
         let path_b = unique_test_replica_path("peer-b");
         let replica_b = AgentTraceDwhReplica::open(AgentTraceDwhReplicaConfig {
             local_path: path_b.clone(),
@@ -549,56 +676,20 @@ mod integration_tests {
             auth_token: sentinel_token.to_string(),
         })
         .expect("second independent peer should bootstrap against the same remote");
+        assert_eq!(
+            replica_b
+                .db()
+                .classify_schema_state()
+                .expect("schema classification should succeed for the second peer"),
+            AgentTraceDwhSchemaState::Ready,
+            "a second fresh replica should observe replica_a's published schema as Ready"
+        );
         assert!(
             source_instance_ids(replica_b.db(), repository_id).is_empty(),
             "peer should start with no rows for this repository"
         );
 
-        // --- AC5: push from one peer becomes visible to another peer via pull. ---
-        replica_a
-            .db()
-            .execute(
-                "INSERT INTO repositories (repository_id) VALUES (?1) ON CONFLICT (repository_id) DO NOTHING",
-                (repository_id,),
-            )
-            .expect("repository dimension insert should succeed");
-        replica_a
-            .db()
-            .execute(
-                "INSERT INTO source_instances (repository_id, source_instance_id) VALUES (?1, ?2)",
-                (repository_id, "instance-a"),
-            )
-            .expect("source instance insert should succeed");
-        replica_a
-            .push()
-            .expect("push from replica_a should succeed");
-
-        replica_b.pull().expect("pull on replica_b should succeed");
-        assert_eq!(
-            source_instance_ids(replica_b.db(), repository_id),
-            vec![String::from("instance-a")],
-            "replica_b should observe replica_a's independently published write"
-        );
-
-        // --- AC5 (other direction): push from replica_b becomes visible to
-        // replica_a via pull. ---
-        replica_b
-            .db()
-            .execute(
-                "INSERT INTO source_instances (repository_id, source_instance_id) VALUES (?1, ?2)",
-                (repository_id, "instance-b"),
-            )
-            .expect("second source instance insert should succeed");
-        replica_b
-            .push()
-            .expect("push from replica_b should succeed");
-
-        replica_a.pull().expect("pull on replica_a should succeed");
-        assert_eq!(
-            source_instance_ids(replica_a.db(), repository_id),
-            vec![String::from("instance-a"), String::from("instance-b")],
-            "replica_a should observe replica_b's independently published write"
-        );
+        assert_bidirectional_pull_push(&replica_a, &replica_b, repository_id);
 
         // --- AC5: deleting the local replica plus Turso sidecars, then
         // reopening fresh, reconstructs all previously published data. ---
@@ -624,6 +715,57 @@ mod integration_tests {
         drop(server);
     }
 
+    /// Covers AC5: a push from one peer becomes visible to another peer only
+    /// after `pull()`, in both directions.
+    fn assert_bidirectional_pull_push(
+        replica_a: &AgentTraceDwhReplica,
+        replica_b: &AgentTraceDwhReplica,
+        repository_id: &str,
+    ) {
+        replica_a
+            .db()
+            .execute(
+                "INSERT INTO repositories (repository_id) VALUES (?1) ON CONFLICT (repository_id) DO NOTHING",
+                (repository_id,),
+            )
+            .expect("repository dimension insert should succeed");
+        replica_a
+            .db()
+            .execute(
+                "INSERT INTO source_instances (repository_id, source_instance_id) VALUES (?1, ?2)",
+                (repository_id, "instance-a"),
+            )
+            .expect("source instance insert should succeed");
+        replica_a
+            .push()
+            .expect("push from replica_a should succeed");
+
+        replica_b.pull().expect("pull on replica_b should succeed");
+        assert_eq!(
+            source_instance_ids(replica_b.db(), repository_id),
+            vec![String::from("instance-a")],
+            "replica_b should observe replica_a's independently published write"
+        );
+
+        replica_b
+            .db()
+            .execute(
+                "INSERT INTO source_instances (repository_id, source_instance_id) VALUES (?1, ?2)",
+                (repository_id, "instance-b"),
+            )
+            .expect("second source instance insert should succeed");
+        replica_b
+            .push()
+            .expect("push from replica_b should succeed");
+
+        replica_a.pull().expect("pull on replica_a should succeed");
+        assert_eq!(
+            source_instance_ids(replica_a.db(), repository_id),
+            vec![String::from("instance-a"), String::from("instance-b")],
+            "replica_a should observe replica_b's independently published write"
+        );
+    }
+
     /// Covers AC4's negative case: a remote whose bootstrapped schema is not
     /// the DWH schema is reported as not ready, without locally provisioning
     /// a competing schema, and the error never contains the auth token.
@@ -640,15 +782,76 @@ mod integration_tests {
         .expect_err("bootstrapping a non-DWH remote should fail schema readiness");
         assert!(matches!(
             schema_error,
-            AgentTraceDwhReplicaError::SchemaNotReady { .. }
+            AgentTraceDwhReplicaError::IncompatibleSchema { .. }
         ));
         let schema_error_message = schema_error.to_string();
         assert!(
             !schema_error_message.contains(sentinel_token),
-            "schema-not-ready error must not contain the auth token: {schema_error_message}"
+            "incompatible-schema error must not contain the auth token: {schema_error_message}"
         );
 
         remove_test_replica(&path_incompatible);
+    }
+
+    /// Covers T05's unchanged-on-open case: an already-`Ready` remote opens
+    /// without `open()` running any migration or performing any push merely
+    /// because it was called, and the applied-migration ledger is identical
+    /// (not duplicated) whether observed by the remote's own preparation
+    /// connection or by a freshly opened replica.
+    fn assert_ready_remote_opens_unchanged(tursodb_path: &Path, sentinel_token: &str) {
+        let server = LocalSyncServer::spawn(tursodb_path);
+        prepare_remote_with_ready_dwh_schema(&server.url);
+
+        let expected_migration_count = AgentTraceDwhDbSpec::migrations().len();
+
+        let path = unique_test_replica_path("already-ready");
+        let replica = AgentTraceDwhReplica::open(AgentTraceDwhReplicaConfig {
+            local_path: path.clone(),
+            database_url: server.url.clone(),
+            auth_token: sentinel_token.to_string(),
+        })
+        .expect("opening an already-ready remote should succeed without initializing anything");
+        assert_eq!(
+            replica
+                .db()
+                .classify_schema_state()
+                .expect("schema classification should succeed"),
+            AgentTraceDwhSchemaState::Ready,
+        );
+        assert_eq!(
+            applied_migration_count(replica.db()),
+            expected_migration_count,
+            "opening an already-ready remote must not duplicate or rerun any migration"
+        );
+        drop(replica);
+        remove_test_replica(&path);
+
+        // A second independent replica against the same already-ready remote
+        // must observe the exact same, unchanged migration ledger.
+        let path_again = unique_test_replica_path("already-ready-again");
+        let replica_again = AgentTraceDwhReplica::open(AgentTraceDwhReplicaConfig {
+            local_path: path_again.clone(),
+            database_url: server.url.clone(),
+            auth_token: sentinel_token.to_string(),
+        })
+        .expect("reopening the same already-ready remote should succeed unchanged");
+        assert_eq!(
+            applied_migration_count(replica_again.db()),
+            expected_migration_count,
+            "a second open against the same already-ready remote must not duplicate any migration"
+        );
+
+        drop(replica_again);
+        remove_test_replica(&path_again);
+        drop(server);
+    }
+
+    fn applied_migration_count(db: &AgentTraceDwhDb) -> usize {
+        db.query_map("SELECT id FROM __sce_migrations", (), |row| {
+            row.get::<String>(0).map_err(Into::into)
+        })
+        .expect("applied-migration query should succeed")
+        .len()
     }
 
     #[test]
@@ -668,6 +871,7 @@ mod integration_tests {
         let sentinel_token = "sentinel-integration-auth-token-must-not-leak";
 
         assert_bootstrap_lock_and_pull_push(&tursodb_path, repository_id, sentinel_token);
+        assert_ready_remote_opens_unchanged(&tursodb_path, sentinel_token);
         assert_incompatible_schema_is_rejected(&tursodb_path, sentinel_token);
     }
 }
