@@ -23,6 +23,7 @@ pub mod db;
 pub mod default_paths;
 pub mod doctor;
 pub mod error;
+pub(crate) mod etl;
 pub mod help;
 pub mod hooks;
 pub mod lifecycle;

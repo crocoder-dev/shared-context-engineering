@@ -6,7 +6,7 @@
 //! fact/watermark loading. Source snapshots end before hashing or destination
 //! work, and destination facts plus progress share one transaction.
 
-use std::{fmt::Write, thread};
+use std::fmt::Write;
 
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
@@ -15,7 +15,11 @@ use crate::services::agent_trace_dwh_db::AgentTraceDwhDb;
 use crate::services::agent_trace_dwh_replica::AgentTraceDwhReplica;
 
 use crate::services::{
-    agent_trace_db::repository::RepositoryAgentTraceDb, resilience::RetryPolicy,
+    agent_trace_db::repository::RepositoryAgentTraceDb,
+    etl::{
+        is_transient_source_contention, read_watermark, run_with_source_contention_retry,
+        upsert_watermark, validate_batch_size, TableBatchStats, SOURCE_CONTENTION_RETRY_POLICY,
+    },
 };
 
 /// One immutable Agent Trace row copied out of the repository source
@@ -39,17 +43,6 @@ WHERE id > ?1
 ORDER BY id ASC
 LIMIT ?2";
 
-/// Bounded backoff for source extraction contention retries. Contention on a
-/// short, non-blocking read transaction is expected to be rare and
-/// self-clearing, so the budget stays small relative to the connection-open
-/// retry policy in `crate::services::db`.
-const SOURCE_CONTENTION_RETRY_POLICY: RetryPolicy = RetryPolicy {
-    max_attempts: 5,
-    timeout_ms: 1_000,
-    initial_backoff_ms: 25,
-    max_backoff_ms: 200,
-};
-
 /// Extract one bounded, ordered batch of `agent_traces` rows with `id`
 /// greater than `watermark`, up to `batch_size` rows, from a short consistent
 /// read transaction.
@@ -69,10 +62,7 @@ pub fn extract_agent_trace_batch(
     watermark: i64,
     batch_size: u32,
 ) -> Result<Vec<SourceAgentTrace>> {
-    anyhow::ensure!(
-        batch_size > 0,
-        "agent trace extraction batch_size must be greater than zero"
-    );
+    validate_batch_size(batch_size, "agent trace extraction")?;
 
     run_with_source_contention_retry(
         |_attempt| {
@@ -86,45 +76,6 @@ pub fn extract_agent_trace_batch(
         },
         || db.rollback_best_effort(),
     )
-}
-
-/// Run `operation` with bounded retry limited to transient source contention.
-///
-/// `before_retry` runs before every retried attempt (not before the first),
-/// so callers can issue a best-effort rollback ahead of the next `BEGIN`.
-/// Extracted as its own function so the retry/classification behavior is
-/// unit-testable without a real database.
-fn run_with_source_contention_retry<T>(
-    mut operation: impl FnMut(u32) -> Result<T>,
-    mut before_retry: impl FnMut(),
-) -> Result<T> {
-    let mut attempt = 1;
-
-    loop {
-        match operation(attempt) {
-            Ok(value) => return Ok(value),
-            Err(error) => {
-                let attempts_remain = attempt < SOURCE_CONTENTION_RETRY_POLICY.max_attempts;
-                if !attempts_remain || !is_transient_source_contention(&error) {
-                    return Err(error);
-                }
-
-                before_retry();
-                thread::sleep(SOURCE_CONTENTION_RETRY_POLICY.backoff_for_attempt(attempt + 1));
-                attempt += 1;
-            }
-        }
-    }
-}
-
-/// Recognize transient source contention worth retrying: Turso's typed `Busy`
-/// error (whose message is the `SQLite` "database is locked" text) and the
-/// narrow "table is locked" textual form used when typed classification is
-/// unavailable. Every other error, including genuine extraction/mapping
-/// failures, is not retried.
-fn is_transient_source_contention(error: &anyhow::Error) -> bool {
-    let message = error.to_string().to_lowercase();
-    message.contains("database is locked") || message.contains("table is locked")
 }
 
 fn source_agent_trace_from_row(row: &turso::Row) -> Result<SourceAgentTrace> {
@@ -240,7 +191,10 @@ fn load_transformed_agent_trace_batch_with_failure(
         txn.execute("INSERT INTO repositories (repository_id) VALUES (?1) ON CONFLICT (repository_id) DO NOTHING", (repository_id,))?;
         txn.execute("INSERT INTO source_instances (repository_id, source_instance_id) VALUES (?1, ?2) ON CONFLICT (repository_id, source_instance_id) DO NOTHING", (repository_id, source_instance_id))?;
 
-        let mut stats = AgentTraceBatchStats { watermark: last_row.source_row_id, ..Default::default() };
+        let mut stats = TableBatchStats {
+            watermark: last_row.source_row_id,
+            ..Default::default()
+        };
         for (index, row) in rows.iter().enumerate() {
             let existing = txn.query_map(
                 "SELECT trace_json_sha256 FROM agent_traces WHERE repository_id = ?1 AND agent_trace_id = ?2",
@@ -261,8 +215,18 @@ fn load_transformed_agent_trace_batch_with_failure(
             }
         }
 
-        txn.execute("INSERT INTO etl_watermarks (repository_id, source_instance_id, source_table, last_extracted_source_row_id) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (repository_id, source_instance_id, source_table) DO UPDATE SET last_extracted_source_row_id = excluded.last_extracted_source_row_id, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", (repository_id, source_instance_id, AGENT_TRACES_SOURCE_TABLE, last_row.source_row_id))?;
-        Ok(stats)
+        upsert_watermark(
+            txn,
+            repository_id,
+            source_instance_id,
+            AGENT_TRACES_SOURCE_TABLE,
+            last_row.source_row_id,
+        )?;
+        Ok(AgentTraceBatchStats {
+            inserted: stats.inserted,
+            already_present: stats.already_present,
+            watermark: stats.watermark,
+        })
     })
 }
 
@@ -286,10 +250,7 @@ impl Default for AgentTraceEtl {
 impl AgentTraceEtl {
     /// Create an ETL runner with the requested bounded source batch size.
     pub fn with_batch_size(batch_size: u32) -> Result<Self> {
-        anyhow::ensure!(
-            batch_size > 0,
-            "agent trace ETL batch_size must be greater than zero"
-        );
+        validate_batch_size(batch_size, "agent trace ETL")?;
         Ok(Self { batch_size })
     }
 
@@ -383,7 +344,12 @@ pub fn read_agent_trace_watermark(
     repository_id: &str,
     source_instance_id: &str,
 ) -> Result<i64> {
-    db.query_map("SELECT COALESCE(last_extracted_source_row_id, 0) FROM etl_watermarks WHERE repository_id = ?1 AND source_instance_id = ?2 AND source_table = ?3", (repository_id, source_instance_id, AGENT_TRACES_SOURCE_TABLE), |row| row.get::<i64>(0).map_err(Into::into))?.into_iter().next().map_or(Ok(0), Ok)
+    read_watermark(
+        db,
+        repository_id,
+        source_instance_id,
+        AGENT_TRACES_SOURCE_TABLE,
+    )
 }
 
 #[cfg(test)]
