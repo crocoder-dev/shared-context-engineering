@@ -1,12 +1,14 @@
 # Agent Trace ETL
 
-`cli/src/services/agent_trace_etl/mod.rs` is the incremental bridge between the repository-scoped, multiprocess-WAL `agent-trace.db` source (see [agent-trace-db.md](agent-trace-db.md)) and the Agent Trace DWH replica destination (see [agent-trace-dwh-replica.md](agent-trace-dwh-replica.md), [agent-trace-dwh-db.md](agent-trace-dwh-db.md)). Not yet wired into `AgentTraceDwhReplica`, CLI, or lifecycle; this document currently covers only `agent_traces` source extraction.
+`cli/src/services/agent_trace_etl/mod.rs` is the incremental bridge between the repository-scoped, multiprocess-WAL `agent-trace.db` source (see [agent-trace-db.md](agent-trace-db.md)) and the Agent Trace DWH replica destination (see [agent-trace-dwh-replica.md](agent-trace-dwh-replica.md), [agent-trace-dwh-db.md](agent-trace-dwh-db.md)). Not yet wired into `AgentTraceDwhReplica`, CLI, or lifecycle; the current slice covers `agent_traces` extraction, deterministic transformation, and atomic destination loading.
 
-## Current scope: source extraction only
+## Current scope: extraction and atomic destination loading
 
-`extract_agent_trace_batch(db: &RepositoryAgentTraceDb, watermark: i64, batch_size: u32) -> Result<Vec<SourceAgentTrace>>` extracts one bounded, ordered batch of `agent_traces` rows with `id > watermark`, up to `batch_size` rows (`ORDER BY id ASC LIMIT`), copied into owned `SourceAgentTrace` values (`id`, `commit_id`, `commit_time_ms`, `trace_json`, `agent_trace_id`, `url`, nullable `remote_url`) with no transformation or hashing. Rejects `batch_size == 0`.
+`extract_agent_trace_batch(db: &RepositoryAgentTraceDb, watermark: i64, batch_size: u32) -> Result<Vec<SourceAgentTrace>>` extracts one bounded, ordered batch of `agent_traces` rows with `id > watermark`, up to `batch_size` rows (`ORDER BY id ASC LIMIT`), copied into owned `SourceAgentTrace` values (`id`, `commit_id`, `commit_time_ms`, `trace_json`, `agent_trace_id`, `url`, nullable `remote_url`). Rejects `batch_size == 0`.
 
-Not yet implemented: transformation/hashing, destination loading, watermark read/advance, and the public multi-batch run loop — later tasks in the `incremental-agent-trace-etl-transactional-watermarks` plan.
+`transform_agent_trace` preserves `trace_json` exactly and stores lowercase hexadecimal SHA-256 of its UTF-8 bytes in `TransformedAgentTrace`. `load_agent_trace_batch` uses one DWH `BEGIN IMMEDIATE` transaction to ensure repository/source dimensions, insert missing `(repository_id, agent_trace_id)` facts, accept equal-hash replays, reject unequal-hash integrity conflicts with both hashes, and upsert the `(repository_id, source_instance_id, agent_traces)` watermark only after all rows are inserted or verified. An absent watermark reads as zero. Facts, dimensions, and watermark roll back together on any failure; the test-only failure seam proves this atomicity.
+
+The public multi-batch run loop, replica orchestration, credentials, transport synchronization, and non-Agent-Trace facts remain deferred to later tasks.
 
 ## Non-blocking read transaction
 

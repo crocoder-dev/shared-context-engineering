@@ -1,6 +1,6 @@
 # Agent Trace DWH Database (Destination Schema)
 
-The Agent Trace DWH is a separate, append-oriented destination schema for a future ETL consumer of repository-scoped Agent Trace data. It is a distinct database boundary from the repository-scoped `agent-trace.db` source schema (see [agent-trace-db.md](agent-trace-db.md)): the DWH is never written by hooks, `sce trace`, or any live capture path, and this repository does not yet extract, transform, hash, or sync into it.
+The Agent Trace DWH is a separate, append-oriented destination schema for the Agent Trace ETL consumer of repository-scoped Agent Trace data. It is a distinct database boundary from the repository-scoped `agent-trace.db` source schema (see [agent-trace-db.md](agent-trace-db.md)): the DWH is never written by hooks, `sce trace`, or any live capture path. The current ETL slice transforms and atomically loads only `agent_traces`; the multi-batch run loop and sync orchestration remain deferred.
 
 ## Adapter
 
@@ -32,6 +32,6 @@ Two different uniqueness scopes are used, chosen by whether the source identity 
 
 ## Data preservation and hashing
 
-`message_parts.text` and `agent_traces.trace_json` store complete source text/JSON verbatim, with no truncation or normalization columns. Source event timestamps (`generated_at_unix_ms`, `commit_time_ms`, `time_ms`) are preserved as integer milliseconds, matching the source schema; only DWH-local metadata timestamps (`first_seen_at`, `updated_at`, `ingested_at`) use the shared UTC text default `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`. Integrity hash columns (`message_parts.text_sha256`, `agent_traces.trace_json_sha256`, `code_changes.patch_sha256`) exist as storage for a future hashing implementation; this schema does not compute or populate them.
+`message_parts.text` and `agent_traces.trace_json` store complete source text/JSON verbatim, with no truncation or normalization columns. Source event timestamps (`generated_at_unix_ms`, `commit_time_ms`, `time_ms`) are preserved as integer milliseconds, matching the source schema; only DWH-local metadata timestamps (`first_seen_at`, `updated_at`, `ingested_at`) use the shared UTC text default `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`. Integrity hash columns (`message_parts.text_sha256`, `agent_traces.trace_json_sha256`, `code_changes.patch_sha256`) are schema storage; the `agent_traces` ETL slice computes and populates the lowercase SHA-256 of exact source JSON bytes, while other table hashes remain future work.
 
 See also: [agent-trace-db.md](agent-trace-db.md), [agent-trace-dwh-replica.md](agent-trace-dwh-replica.md), [shared-turso-db.md](shared-turso-db.md), [../context-map.md](../context-map.md)

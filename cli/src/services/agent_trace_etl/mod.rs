@@ -1,17 +1,17 @@
 //! Agent Trace ETL: the incremental bridge from the repository-scoped
 //! `agent-trace.db` source to the Agent Trace DWH replica destination.
 //!
-//! This module currently owns short, non-blocking source extraction for the
-//! `agent_traces` table: bounded, ordered batches copied into owned
-//! [`SourceAgentTrace`] values from a consistent read snapshot that never
-//! reserves the source database's write lock, so concurrent hook writers are
-//! never blocked. Only typed/transient Turso `Busy` or database-locked
-//! contention is retried; every other extraction error fails immediately.
-//! Transformation, hashing, and destination loading are out of scope here.
+//! This module owns the incremental `agent_traces` ETL bridge: short source
+//! extraction followed by deterministic transformation and atomic destination
+//! fact/watermark loading. Source snapshots end before hashing or destination
+//! work, and destination facts plus progress share one transaction.
 
 use std::thread;
 
 use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
+
+use crate::services::agent_trace_dwh_db::AgentTraceDwhDb;
 
 use crate::services::{
     agent_trace_db::repository::RepositoryAgentTraceDb, resilience::RetryPolicy,
@@ -146,6 +146,126 @@ fn source_agent_trace_from_row(row: &turso::Row) -> Result<SourceAgentTrace> {
             .get(6)
             .context("failed to read agent_traces.remote_url")?,
     })
+}
+
+/// The source-table key used by the Agent Trace watermark.
+pub const AGENT_TRACES_SOURCE_TABLE: &str = "agent_traces";
+
+/// Agent Trace values after deterministic, destination-independent transformation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransformedAgentTrace {
+    pub source_row_id: i64,
+    pub agent_trace_id: String,
+    pub commit_id: String,
+    pub commit_time_ms: i64,
+    pub trace_json: String,
+    pub trace_json_sha256: String,
+    pub url: String,
+    pub remote_url: Option<String>,
+}
+
+/// Counts returned by one atomic destination batch load.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AgentTraceBatchStats {
+    pub inserted: u64,
+    pub already_present: u64,
+    pub watermark: i64,
+}
+
+/// Transform an extracted row without changing its JSON bytes.
+pub fn transform_agent_trace(source: &SourceAgentTrace) -> TransformedAgentTrace {
+    let digest = Sha256::digest(source.trace_json.as_bytes());
+    let trace_json_sha256 = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+
+    TransformedAgentTrace {
+        source_row_id: source.id,
+        agent_trace_id: source.agent_trace_id.clone(),
+        commit_id: source.commit_id.clone(),
+        commit_time_ms: source.commit_time_ms,
+        trace_json: source.trace_json.clone(),
+        trace_json_sha256,
+        url: source.url.clone(),
+        remote_url: source.remote_url.clone(),
+    }
+}
+
+/// Load one extracted batch atomically into the DWH database.
+pub fn load_agent_trace_batch(
+    db: &AgentTraceDwhDb,
+    repository_id: &str,
+    source_instance_id: &str,
+    source_rows: &[SourceAgentTrace],
+) -> Result<AgentTraceBatchStats> {
+    let transformed = source_rows
+        .iter()
+        .map(transform_agent_trace)
+        .collect::<Vec<_>>();
+    load_transformed_agent_trace_batch(db, repository_id, source_instance_id, &transformed)
+}
+
+fn load_transformed_agent_trace_batch(
+    db: &AgentTraceDwhDb,
+    repository_id: &str,
+    source_instance_id: &str,
+    rows: &[TransformedAgentTrace],
+) -> Result<AgentTraceBatchStats> {
+    load_transformed_agent_trace_batch_with_failure(
+        db,
+        repository_id,
+        source_instance_id,
+        rows,
+        None,
+    )
+}
+
+fn load_transformed_agent_trace_batch_with_failure(
+    db: &AgentTraceDwhDb,
+    repository_id: &str,
+    source_instance_id: &str,
+    rows: &[TransformedAgentTrace],
+    fail_after_row: Option<usize>,
+) -> Result<AgentTraceBatchStats> {
+    let Some(last_row) = rows.last() else {
+        return Ok(AgentTraceBatchStats::default());
+    };
+
+    db.transaction(|txn| {
+        txn.execute("INSERT INTO repositories (repository_id) VALUES (?1) ON CONFLICT (repository_id) DO NOTHING", (repository_id,))?;
+        txn.execute("INSERT INTO source_instances (repository_id, source_instance_id) VALUES (?1, ?2) ON CONFLICT (repository_id, source_instance_id) DO NOTHING", (repository_id, source_instance_id))?;
+
+        let mut stats = AgentTraceBatchStats { watermark: last_row.source_row_id, ..Default::default() };
+        for (index, row) in rows.iter().enumerate() {
+            let existing = txn.query_map(
+                "SELECT trace_json_sha256 FROM agent_traces WHERE repository_id = ?1 AND agent_trace_id = ?2",
+                (repository_id, row.agent_trace_id.as_str()),
+                |db_row| db_row.get::<String>(0).map_err(Into::into),
+            )?;
+            if let Some(existing_hash) = existing.into_iter().next() {
+                if existing_hash != row.trace_json_sha256 {
+                    anyhow::bail!("Agent Trace integrity conflict for repository {repository_id}, trace {}: existing hash {existing_hash}, incoming hash {}", row.agent_trace_id, row.trace_json_sha256);
+                }
+                stats.already_present += 1;
+            } else {
+                txn.execute("INSERT INTO agent_traces (repository_id, source_instance_id, agent_trace_id, commit_id, commit_time_ms, trace_json, trace_json_sha256, url, remote_url) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)", (repository_id, source_instance_id, row.agent_trace_id.as_str(), row.commit_id.as_str(), row.commit_time_ms, row.trace_json.as_str(), row.trace_json_sha256.as_str(), row.url.as_str(), row.remote_url.as_deref()))?;
+                stats.inserted += 1;
+            }
+            if fail_after_row == Some(index + 1) {
+                anyhow::bail!("injected Agent Trace destination failure after row {}", index + 1);
+            }
+        }
+
+        txn.execute("INSERT INTO etl_watermarks (repository_id, source_instance_id, source_table, last_extracted_source_row_id) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (repository_id, source_instance_id, source_table) DO UPDATE SET last_extracted_source_row_id = excluded.last_extracted_source_row_id, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", (repository_id, source_instance_id, AGENT_TRACES_SOURCE_TABLE, last_row.source_row_id))?;
+        Ok(stats)
+    })
+}
+
+/// Read the persisted Agent Trace watermark, treating an absent row as zero.
+pub fn read_agent_trace_watermark(
+    db: &AgentTraceDwhDb,
+    repository_id: &str,
+    source_instance_id: &str,
+) -> Result<i64> {
+    db.query_map("SELECT COALESCE(last_extracted_source_row_id, 0) FROM etl_watermarks WHERE repository_id = ?1 AND source_instance_id = ?2 AND source_table = ?3", (repository_id, source_instance_id, AGENT_TRACES_SOURCE_TABLE), |row| row.get::<i64>(0).map_err(Into::into))?.into_iter().next().map_or(Ok(0), Ok)
 }
 
 #[cfg(test)]
@@ -429,5 +549,119 @@ mod agent_trace_etl_source_tests {
         assert!(error.to_string().contains("batch_size"));
 
         remove_test_db(&db_path);
+    }
+}
+
+#[cfg(test)]
+mod agent_trace_etl_destination_tests {
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::*;
+
+    fn unique_dwh_path(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!(
+                "sce-agent-trace-etl-destination-{label}-{}-{nonce}",
+                std::process::id()
+            ))
+            .join("agent-trace-dwh.db")
+    }
+
+    fn source_row(id: i64, trace_id: &str, json: &str) -> SourceAgentTrace {
+        SourceAgentTrace {
+            id,
+            commit_id: format!("commit-{id}"),
+            commit_time_ms: id * 1_000,
+            trace_json: json.to_string(),
+            agent_trace_id: trace_id.to_string(),
+            url: format!("https://example.test/{trace_id}"),
+            remote_url: None,
+        }
+    }
+
+    fn clean(path: &PathBuf) {
+        if let Some(parent) = path.parent() {
+            fs::remove_dir_all(parent).unwrap();
+        }
+    }
+
+    #[test]
+    fn agent_trace_etl_transform_preserves_json_and_uses_lowercase_sha256() {
+        let row = source_row(7, "trace-7", "{\"Value\": [1, true]}");
+        let transformed = transform_agent_trace(&row);
+        assert_eq!(transformed.trace_json, row.trace_json);
+        assert_eq!(
+            transformed.trace_json_sha256,
+            "dcc5db0adda83d2629c1e64435d4ff2d67a01f18f23ae83a23998f0b5be96cd5"
+        );
+        assert_eq!(transformed.remote_url, None);
+    }
+
+    #[test]
+    fn agent_trace_etl_atomic_load_replays_and_advances_watermark() {
+        let path = unique_dwh_path("replay");
+        let db = AgentTraceDwhDb::new_at(&path).unwrap();
+        let rows = vec![
+            source_row(3, "trace-3", "{}"),
+            source_row(4, "trace-4", "[]"),
+        ];
+        let first = load_agent_trace_batch(&db, "repo-a", "instance-a", &rows).unwrap();
+        assert_eq!(first.inserted, 2);
+        assert_eq!(
+            read_agent_trace_watermark(&db, "repo-a", "instance-a").unwrap(),
+            4
+        );
+        let second = load_agent_trace_batch(&db, "repo-a", "instance-a", &rows).unwrap();
+        assert_eq!(second.already_present, 2);
+        assert_eq!(
+            db.query_map("SELECT COUNT(*) FROM agent_traces", (), |row| row
+                .get::<i64>(0)
+                .map_err(Into::into))
+                .unwrap(),
+            vec![2]
+        );
+        clean(&path);
+    }
+
+    #[test]
+    fn agent_trace_etl_atomic_failure_rolls_back_facts_dimensions_and_watermark() {
+        let path = unique_dwh_path("rollback");
+        let db = AgentTraceDwhDb::new_at(&path).unwrap();
+        let rows = vec![
+            transform_agent_trace(&source_row(1, "trace-1", "{}")),
+            transform_agent_trace(&source_row(2, "trace-2", "[]")),
+        ];
+        let error = load_transformed_agent_trace_batch_with_failure(
+            &db,
+            "repo-a",
+            "instance-a",
+            &rows,
+            Some(1),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("injected"));
+        for table in [
+            "repositories",
+            "source_instances",
+            "agent_traces",
+            "etl_watermarks",
+        ] {
+            assert_eq!(
+                db.query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |row| row
+                    .get::<i64>(0)
+                    .map_err(Into::into))
+                    .unwrap(),
+                vec![0]
+            );
+        }
+        clean(&path);
     }
 }
