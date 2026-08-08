@@ -419,9 +419,33 @@ impl<M: DbSpec> TursoDb<M> {
     /// failure, triggers a best-effort `ROLLBACK` before the original error is
     /// returned. No `turso::Transaction` value is exposed to the caller.
     pub fn transaction<T>(&self, f: impl FnOnce(&TursoTransaction<M>) -> Result<T>) -> Result<T> {
+        self.run_transaction("BEGIN IMMEDIATE", f)
+    }
+
+    /// Run one closure inside a non-blocking read transaction on this
+    /// connection.
+    ///
+    /// Issues a plain `BEGIN` (not `BEGIN IMMEDIATE`), so the transaction never
+    /// reserves the database's write lock and concurrent writers on other
+    /// connections are not blocked while it is open. Otherwise behaves exactly
+    /// like [`TursoDb::transaction`]: commits only when `f` returns `Ok`, and
+    /// any closure error or commit failure triggers a best-effort `ROLLBACK`.
+    /// Intended for callers that only read, such as source extraction.
+    pub fn read_transaction<T>(
+        &self,
+        f: impl FnOnce(&TursoTransaction<M>) -> Result<T>,
+    ) -> Result<T> {
+        self.run_transaction("BEGIN", f)
+    }
+
+    fn run_transaction<T>(
+        &self,
+        begin_sql: &str,
+        f: impl FnOnce(&TursoTransaction<M>) -> Result<T>,
+    ) -> Result<T> {
         self.core
             .runtime
-            .block_on(async { self.core.conn.execute("BEGIN IMMEDIATE", ()).await })
+            .block_on(async { self.core.conn.execute(begin_sql, ()).await })
             .map_err(|e| anyhow::anyhow!("{} failed to begin transaction: {e}", M::db_name()))?;
 
         let txn = TursoTransaction { core: &self.core };
@@ -451,8 +475,11 @@ impl<M: DbSpec> TursoDb<M> {
     ///
     /// Rollback failures are not surfaced: the transaction's own error already
     /// explains the failure, and a database left without an open transaction
-    /// (the common rollback-failure case) is not itself a problem.
-    fn rollback_best_effort(&self) {
+    /// (the common rollback-failure case) is not itself a problem. Also used by
+    /// callers that retry a whole transaction attempt (e.g. source extraction
+    /// contention retries) to clear a stale failed transaction before issuing a
+    /// new `BEGIN`.
+    pub(crate) fn rollback_best_effort(&self) {
         let _ = self
             .core
             .runtime

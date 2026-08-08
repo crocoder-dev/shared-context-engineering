@@ -17,7 +17,7 @@ impl RetryPolicy {
         Duration::from_millis(self.timeout_ms)
     }
 
-    fn backoff_for_attempt(self, attempt: u32) -> Duration {
+    pub(crate) fn backoff_for_attempt(self, attempt: u32) -> Duration {
         if attempt <= 1 {
             return Duration::from_millis(0);
         }
