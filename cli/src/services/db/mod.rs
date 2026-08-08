@@ -613,6 +613,31 @@ impl<M: DbSpec> TursoDb<M> {
         )
     }
 
+    /// Wrap an already-open connection and the runtime that opened it as a
+    /// `TursoDb`, without opening a new connection or running migrations.
+    ///
+    /// For callers that open a connection through a non-local-path builder
+    /// (e.g. Turso Sync) and want to reuse this adapter's synchronous SQL
+    /// surface and schema-readiness checks. Migrations are never run here:
+    /// callers needing local schema initialization use `new`/`new_at`.
+    pub(crate) fn from_connection(
+        conn: turso::Connection,
+        runtime: tokio::runtime::Runtime,
+    ) -> Self {
+        Self {
+            core: TursoConnectionCore::new(conn, runtime),
+        }
+    }
+
+    /// Run a future to completion on the runtime backing this connection.
+    ///
+    /// Exposed so callers holding a companion handle opened alongside this
+    /// connection (e.g. a Turso Sync `Database` used for pull/push) can drive
+    /// it without owning a second runtime.
+    pub(crate) fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+        self.core.runtime.block_on(future)
+    }
+
     /// Check migration metadata for problems that would prevent safe hook
     /// runtime access.
     ///

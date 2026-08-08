@@ -6,7 +6,7 @@ The Agent Trace DWH is a separate, append-oriented destination schema for a futu
 
 `cli/src/services/agent_trace_dwh_db/mod.rs` defines:
 
-- `AgentTraceDwhDbSpec: DbSpec` — like `RepositoryAgentTraceDbSpec`, `db_path()` bails; the DWH has no canonical spec path yet because this schema explicitly excludes a local sync database and provisioning. Callers use the explicit-path `TursoDb` constructors. `db_config_key()` reuses `"agent_trace_db"` rather than adding new retry configuration surface. `migrations()` returns the build-time generated `generated_migrations::AGENT_TRACE_DWH_MIGRATIONS`, discovered from `cli/migrations/agent-trace-dwh/` the same way as every other `DbSpec` (see [shared-turso-db.md](shared-turso-db.md)).
+- `AgentTraceDwhDbSpec: DbSpec` — like `RepositoryAgentTraceDbSpec`, `db_path()` bails: this adapter still has no canonical spec path and callers must use the explicit-path `TursoDb` constructors. A canonical local sync replica now exists as a *separate* boundary — `AgentTraceDwhReplica` (see [agent-trace-dwh-replica.md](agent-trace-dwh-replica.md)) — which opens a `AgentTraceDwhDb` over a Turso Sync connection rather than through this spec's own constructors. `db_config_key()` reuses `"agent_trace_db"` rather than adding new retry configuration surface. `migrations()` returns the build-time generated `generated_migrations::AGENT_TRACE_DWH_MIGRATIONS`, discovered from `cli/migrations/agent-trace-dwh/` the same way as every other `DbSpec` (see [shared-turso-db.md](shared-turso-db.md)).
 - `pub type AgentTraceDwhDb = TursoDb<AgentTraceDwhDbSpec>` — a fourth concrete `TursoDb` wrapper alongside `LocalDb`, `AuthDb`, and `RepositoryAgentTraceDb`.
 - `AgentTraceDwhDb::ensure_dwh_schema_ready()` — non-mutating readiness check delegating to the shared `TursoDb::ensure_schema_ready()`.
 
@@ -33,4 +33,4 @@ Two different uniqueness scopes are used, chosen by whether the source identity 
 
 `message_parts.text` and `agent_traces.trace_json` store complete source text/JSON verbatim, with no truncation or normalization columns. Source event timestamps (`generated_at_unix_ms`, `commit_time_ms`, `time_ms`) are preserved as integer milliseconds, matching the source schema; only DWH-local metadata timestamps (`first_seen_at`, `updated_at`, `ingested_at`) use the shared UTC text default `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`. Integrity hash columns (`message_parts.text_sha256`, `agent_traces.trace_json_sha256`, `code_changes.patch_sha256`) exist as storage for a future hashing implementation; this schema does not compute or populate them.
 
-See also: [agent-trace-db.md](agent-trace-db.md), [shared-turso-db.md](shared-turso-db.md), [../context-map.md](../context-map.md)
+See also: [agent-trace-db.md](agent-trace-db.md), [agent-trace-dwh-replica.md](agent-trace-dwh-replica.md), [shared-turso-db.md](shared-turso-db.md), [../context-map.md](../context-map.md)
