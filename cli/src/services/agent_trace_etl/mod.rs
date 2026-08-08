@@ -6,12 +6,13 @@
 //! fact/watermark loading. Source snapshots end before hashing or destination
 //! work, and destination facts plus progress share one transaction.
 
-use std::thread;
+use std::{fmt::Write, thread};
 
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
 use crate::services::agent_trace_dwh_db::AgentTraceDwhDb;
+use crate::services::agent_trace_dwh_replica::AgentTraceDwhReplica;
 
 use crate::services::{
     agent_trace_db::repository::RepositoryAgentTraceDb, resilience::RetryPolicy,
@@ -117,7 +118,7 @@ fn run_with_source_contention_retry<T>(
 }
 
 /// Recognize transient source contention worth retrying: Turso's typed `Busy`
-/// error (whose message is the SQLite "database is locked" text) and the
+/// error (whose message is the `SQLite` "database is locked" text) and the
 /// narrow "table is locked" textual form used when typed classification is
 /// unavailable. Every other error, including genuine extraction/mapping
 /// failures, is not retried.
@@ -175,7 +176,13 @@ pub struct AgentTraceBatchStats {
 /// Transform an extracted row without changing its JSON bytes.
 pub fn transform_agent_trace(source: &SourceAgentTrace) -> TransformedAgentTrace {
     let digest = Sha256::digest(source.trace_json.as_bytes());
-    let trace_json_sha256 = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    let trace_json_sha256 = digest.iter().fold(
+        String::with_capacity(digest.len() * 2),
+        |mut output, byte| {
+            write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
+            output
+        },
+    );
 
     TransformedAgentTrace {
         source_row_id: source.id,
@@ -257,6 +264,117 @@ fn load_transformed_agent_trace_batch_with_failure(
         txn.execute("INSERT INTO etl_watermarks (repository_id, source_instance_id, source_table, last_extracted_source_row_id) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (repository_id, source_instance_id, source_table) DO UPDATE SET last_extracted_source_row_id = excluded.last_extracted_source_row_id, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", (repository_id, source_instance_id, AGENT_TRACES_SOURCE_TABLE, last_row.source_row_id))?;
         Ok(stats)
     })
+}
+
+/// Default number of source rows processed by one ETL batch.
+pub const DEFAULT_AGENT_TRACE_ETL_BATCH_SIZE: u32 = 500;
+
+/// Configuration for the incremental Agent Trace ETL bridge.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AgentTraceEtl {
+    batch_size: u32,
+}
+
+impl Default for AgentTraceEtl {
+    fn default() -> Self {
+        Self {
+            batch_size: DEFAULT_AGENT_TRACE_ETL_BATCH_SIZE,
+        }
+    }
+}
+
+impl AgentTraceEtl {
+    /// Create an ETL runner with the requested bounded source batch size.
+    pub fn with_batch_size(batch_size: u32) -> Result<Self> {
+        anyhow::ensure!(
+            batch_size > 0,
+            "agent trace ETL batch_size must be greater than zero"
+        );
+        Ok(Self { batch_size })
+    }
+
+    /// Return the configured source batch size.
+    pub fn batch_size(self) -> u32 {
+        self.batch_size
+    }
+
+    /// Run the `agent_traces` ETL bridge for one repository lineage.
+    ///
+    /// The source is supplied already open and metadata is verified before
+    /// extraction. Destination work goes through the lock-owning replica's
+    /// database surface; this method deliberately does not pull, push, read
+    /// credentials, or depend on CLI orchestration.
+    pub fn run(
+        self,
+        repository_id: &str,
+        source: &RepositoryAgentTraceDb,
+        replica: &AgentTraceDwhReplica,
+    ) -> Result<AgentTraceEtlStats> {
+        let metadata = source
+            .verify_or_initialize_repository_metadata(repository_id)
+            .context("failed to verify Agent Trace source metadata")?;
+        run_with_destination(
+            self,
+            repository_id,
+            &metadata.source_instance_id,
+            source,
+            replica.db(),
+        )
+    }
+}
+
+/// Summary of one complete incremental Agent Trace ETL run.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AgentTraceEtlStats {
+    pub extracted: u64,
+    pub inserted: u64,
+    pub already_present: u64,
+    pub batches: u64,
+    pub before_watermark: i64,
+    pub after_watermark: i64,
+}
+
+fn run_with_destination(
+    config: AgentTraceEtl,
+    repository_id: &str,
+    source_instance_id: &str,
+    source: &RepositoryAgentTraceDb,
+    destination: &AgentTraceDwhDb,
+) -> Result<AgentTraceEtlStats> {
+    let before_watermark =
+        read_agent_trace_watermark(destination, repository_id, source_instance_id)?;
+    let mut watermark = before_watermark;
+    let mut stats = AgentTraceEtlStats {
+        before_watermark,
+        after_watermark: before_watermark,
+        ..Default::default()
+    };
+
+    loop {
+        let rows = extract_agent_trace_batch(source, watermark, config.batch_size)?;
+        if rows.is_empty() {
+            break;
+        }
+
+        let batch = load_agent_trace_batch(destination, repository_id, source_instance_id, &rows)?;
+        watermark = batch.watermark;
+        stats.extracted += rows.len() as u64;
+        stats.inserted += batch.inserted;
+        stats.already_present += batch.already_present;
+        stats.batches += 1;
+        stats.after_watermark = watermark;
+    }
+
+    Ok(stats)
+}
+
+/// Run the default-sized Agent Trace ETL bridge through an open replica.
+pub fn run_agent_trace_etl(
+    repository_id: &str,
+    source: &RepositoryAgentTraceDb,
+    replica: &AgentTraceDwhReplica,
+) -> Result<AgentTraceEtlStats> {
+    AgentTraceEtl::default().run(repository_id, source, replica)
 }
 
 /// Read the persisted Agent Trace watermark, treating an absent row as zero.
@@ -556,11 +674,12 @@ mod agent_trace_etl_source_tests {
 mod agent_trace_etl_destination_tests {
     use std::{
         fs,
-        path::PathBuf,
+        path::{Path, PathBuf},
         time::{SystemTime, UNIX_EPOCH},
     };
 
     use super::*;
+    use crate::services::agent_trace_db::{repository::RepositoryAgentTraceDb, AgentTraceInsert};
 
     fn unique_dwh_path(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -587,10 +706,115 @@ mod agent_trace_etl_destination_tests {
         }
     }
 
-    fn clean(path: &PathBuf) {
+    fn clean(path: &Path) {
         if let Some(parent) = path.parent() {
             fs::remove_dir_all(parent).unwrap();
         }
+    }
+
+    fn unique_source_path(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!(
+                "sce-agent-trace-etl-run-{label}-{}-{nonce}",
+                std::process::id()
+            ))
+            .join("agent-trace.db")
+    }
+
+    fn insert_source_trace(db: &RepositoryAgentTraceDb, id: &str, json: &str) {
+        db.insert_agent_trace(AgentTraceInsert {
+            commit_id: id,
+            commit_time_ms: 1_000,
+            trace_json: json,
+            agent_trace_id: id,
+            url: "https://example.test/trace",
+            remote_url: "",
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn agent_trace_etl_run_batches_growth_and_noop_reruns() {
+        let source_path = unique_source_path("growth");
+        let dwh_path = unique_dwh_path("growth");
+        let source = RepositoryAgentTraceDb::new_at(&source_path).unwrap();
+        let destination = AgentTraceDwhDb::new_at(&dwh_path).unwrap();
+        insert_source_trace(&source, "trace-1", "{}");
+        insert_source_trace(&source, "trace-2", "[]");
+        insert_source_trace(&source, "trace-3", "{\"ok\":true}");
+
+        let metadata = source
+            .verify_or_initialize_repository_metadata("repo-a")
+            .unwrap();
+        let config = AgentTraceEtl::with_batch_size(2).unwrap();
+        let first = run_with_destination(
+            config,
+            "repo-a",
+            &metadata.source_instance_id,
+            &source,
+            &destination,
+        )
+        .unwrap();
+        assert_eq!(first.extracted, 3);
+        assert_eq!(first.inserted, 3);
+        assert_eq!(first.batches, 2);
+        assert_eq!(first.before_watermark, 0);
+        assert_eq!(first.after_watermark, 3);
+
+        let second = run_with_destination(
+            config,
+            "repo-a",
+            &metadata.source_instance_id,
+            &source,
+            &destination,
+        )
+        .unwrap();
+        assert_eq!(second.extracted, 0);
+        assert_eq!(second.batches, 0);
+        assert_eq!(second.before_watermark, 3);
+        assert_eq!(second.after_watermark, 3);
+
+        clean(&source_path);
+        clean(&dwh_path);
+    }
+
+    #[test]
+    fn failed_batch_leaves_watermark_behind_for_complete_replay() {
+        let dwh_path = unique_dwh_path("replay-after-failure");
+        let db = AgentTraceDwhDb::new_at(&dwh_path).unwrap();
+        let rows = vec![
+            transform_agent_trace(&source_row(1, "trace-1", "{}")),
+            transform_agent_trace(&source_row(2, "trace-2", "[]")),
+        ];
+        load_transformed_agent_trace_batch_with_failure(
+            &db,
+            "repo-a",
+            "instance-a",
+            &rows,
+            Some(1),
+        )
+        .unwrap_err();
+        assert_eq!(
+            read_agent_trace_watermark(&db, "repo-a", "instance-a").unwrap(),
+            0
+        );
+        let replay = load_agent_trace_batch(
+            &db,
+            "repo-a",
+            "instance-a",
+            &[
+                source_row(1, "trace-1", "{}"),
+                source_row(2, "trace-2", "[]"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(replay.inserted, 2);
+        assert_eq!(replay.watermark, 2);
+        clean(&dwh_path);
     }
 
     #[test]

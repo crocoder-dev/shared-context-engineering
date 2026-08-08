@@ -1,6 +1,6 @@
 # Agent Trace DWH Database (Destination Schema)
 
-The Agent Trace DWH is a separate, append-oriented destination schema for the Agent Trace ETL consumer of repository-scoped Agent Trace data. It is a distinct database boundary from the repository-scoped `agent-trace.db` source schema (see [agent-trace-db.md](agent-trace-db.md)): the DWH is never written by hooks, `sce trace`, or any live capture path. The current ETL slice transforms and atomically loads only `agent_traces`; the multi-batch run loop and sync orchestration remain deferred.
+The Agent Trace DWH is a separate, append-oriented destination schema for the Agent Trace ETL consumer of repository-scoped Agent Trace data. It is a distinct database boundary from the repository-scoped `agent-trace.db` source schema (see [agent-trace-db.md](agent-trace-db.md)): the DWH is never written by hooks, `sce trace`, or any live capture path. The current ETL slice transforms and atomically loads only `agent_traces` through the multi-batch `AgentTraceEtl` run loop; transport synchronization remains a separate caller concern.
 
 ## Adapter
 
@@ -11,7 +11,7 @@ The Agent Trace DWH is a separate, append-oriented destination schema for the Ag
 - `AgentTraceDwhDb::ensure_dwh_schema_ready()` — non-mutating readiness check delegating to the shared `TursoDb::ensure_schema_ready()`.
 - `AgentTraceDwhDb::classify_schema_state()` — non-mutating `AgentTraceDwhSchemaState` classification (`Ready`, `Empty`, `Incompatible(String)`) built on `TursoDb::migration_metadata_problems()` plus a `sqlite_master` scan for any user-defined table. `Empty` requires no `__sce_migrations` table and no other user-defined table at all (including the seven DWH contract tables); every other non-ready case — an unrelated schema, a partial DWH schema, or a migration ledger with unexpected entries — classifies `Incompatible`. The `sqlite_master` scan excludes Turso Sync's own internal bookkeeping tables (`turso_cdc`, `turso_cdc_version`, and any table prefixed `__turso_internal`), which a freshly bootstrapped Turso Sync database carries even before any user-defined schema exists; without this exclusion a genuinely empty Turso Sync remote/replica would misclassify as `Incompatible`. `AgentTraceDwhReplica::open()` drives its empty-remote auto-initialization state machine directly off this classification (see [agent-trace-dwh-replica.md](agent-trace-dwh-replica.md)).
 
-The module is not registered with any lifecycle provider, doctor/setup flow, or CLI command; it is `#[allow(dead_code)]` at the `cli/src/services/mod.rs` registration until an ETL consumer exists.
+The module is not registered with any lifecycle provider, doctor/setup flow, or CLI command; it remains `#[allow(dead_code)]` at the `cli/src/services/mod.rs` registration because the ETL API is a CLI-independent service boundary.
 
 ## Schema
 

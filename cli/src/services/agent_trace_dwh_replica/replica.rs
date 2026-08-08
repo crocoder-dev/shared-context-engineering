@@ -16,8 +16,10 @@
 use std::{fmt, path::Path, path::PathBuf};
 
 use crate::services::{
+    agent_trace_db::repository::RepositoryAgentTraceDb,
     agent_trace_dwh_db::{AgentTraceDwhDb, AgentTraceDwhSchemaState},
     agent_trace_dwh_replica::lock::{BridgeLock, BridgeLockError},
+    agent_trace_etl::{AgentTraceEtl, AgentTraceEtlStats},
 };
 
 /// Explicit caller-supplied configuration for opening an
@@ -161,6 +163,17 @@ impl AgentTraceDwhReplica {
     /// connection is created.
     pub fn db(&self) -> &AgentTraceDwhDb {
         &self.db
+    }
+
+    /// Run the incremental Agent Trace ETL while this replica owns its bridge
+    /// lock. Pull/push and credential handling remain explicit caller work.
+    pub fn run_agent_trace_etl(
+        &self,
+        repository_id: &str,
+        source: &RepositoryAgentTraceDb,
+        etl: AgentTraceEtl,
+    ) -> anyhow::Result<AgentTraceEtlStats> {
+        etl.run(repository_id, source, self)
     }
 
     /// Pull remote changes into the local replica.

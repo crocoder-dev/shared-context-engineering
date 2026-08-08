@@ -1,6 +1,6 @@
 # Agent Trace DWH Turso Sync Replica
 
-`AgentTraceDwhReplica` is the sole owner of a Turso Sync connection to a repository's `agent-trace-sync.db` — a disposable, single-owner local database distinct from both the multiprocess-WAL source `agent-trace.db` (see [agent-trace-db.md](agent-trace-db.md)) and the `Agent Trace DWH`'s own explicit-path adapter (see [agent-trace-dwh-db.md](agent-trace-dwh-db.md)). It is the boundary a future ETL bridge process will use to pull from and push to the remote Agent Trace DWH; this repository does not yet run ETL, credential discovery/persistence, or any background sync against it.
+`AgentTraceDwhReplica` is the sole owner of a Turso Sync connection to a repository's `agent-trace-sync.db` — a disposable, single-owner local database distinct from both the multiprocess-WAL source `agent-trace.db` (see [agent-trace-db.md](agent-trace-db.md)) and the `Agent Trace DWH`'s own explicit-path adapter (see [agent-trace-dwh-db.md](agent-trace-dwh-db.md)). It is the boundary used by the CLI-independent `AgentTraceEtl` bridge for local fact/watermark loading; ETL never performs pull/push, credential discovery/persistence, or background sync.
 
 ## Ownership and lock-before-open
 
@@ -43,8 +43,10 @@ Observed real-SDK behavior (recorded across repeated runs, including with tempor
 - The `sync` Cargo feature (`turso = { version = "0.7.0", features = ["sync"] }`) is additive and required no Turso version change from the pinned `0.7.0`.
 - The local `tursodb` binary available via `nix develop .#database` supports `--sync-server <addr>` and speaks the same `/v2/pipeline` HTTP protocol as Turso Cloud, so it serves as a disposable local remote for integration tests without any external network dependency.
 
-## Not yet implemented
+## ETL separation
 
-ETL extraction/transformation/hashing, watermark reads or advancement, source-busy retry, control-plane/provisioning calls, OAuth or credential discovery/persistence, token rotation, any CLI command, lifecycle/setup/doctor/hook wiring, automatic/background sync, archive/retention behavior, and partial sync all remain out of scope for this boundary.
+`AgentTraceDwhReplica::run_agent_trace_etl()` accepts an already-open repository source and an `AgentTraceEtl` configuration, then delegates while retaining the replica's bridge-lock ownership. The ETL verifies source metadata, extracts short bounded read snapshots, and commits facts plus per-lineage watermarks locally. Pull/push remain explicit operations owned by the caller and are never invoked by ETL.
+
+Control-plane/provisioning calls, OAuth or credential discovery/persistence, token rotation, CLI/lifecycle/setup/doctor/hook wiring, automatic/background sync, archive/retention behavior, and partial sync remain out of scope for this boundary.
 
 See also: [agent-trace-dwh-db.md](agent-trace-dwh-db.md), [agent-trace-db.md](agent-trace-db.md), [shared-turso-db.md](shared-turso-db.md), [../cli/default-path-catalog.md](../cli/default-path-catalog.md), [../glossary.md](../glossary.md), [../context-map.md](../context-map.md), and the accepted decision at [../decisions/2026-08-08-agent-trace-dwh-empty-remote-auto-initialization.md](../decisions/2026-08-08-agent-trace-dwh-empty-remote-auto-initialization.md) (superseding [../decisions/2026-08-08-agent-trace-dwh-turso-sync-replica-ownership.md](../decisions/2026-08-08-agent-trace-dwh-turso-sync-replica-ownership.md))
