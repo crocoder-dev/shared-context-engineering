@@ -418,8 +418,7 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
             if row.payload_type == PAYLOAD_TYPE_PATCH {
                 error
                     .downcast_ref::<ParseError>()
-                    .map(skipped_diff_trace_patch_reason)
-                    .unwrap_or_else(|| error.to_string())
+                    .map_or_else(|| error.to_string(), skipped_diff_trace_patch_reason)
             } else {
                 error.to_string()
             }

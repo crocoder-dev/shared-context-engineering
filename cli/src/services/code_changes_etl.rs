@@ -68,6 +68,20 @@ pub struct TransformedCodeChange {
     pub patch_sha256: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StoredCodeChange {
+    session_id: String,
+    time_ms: i64,
+    model_id: Option<String>,
+    tool_name: String,
+    tool_version: Option<String>,
+    payload_type: String,
+    files_changed: i64,
+    lines_added: i64,
+    lines_removed: i64,
+    patch_sha256: String,
+}
+
 /// Counts returned by one atomically loaded code-change batch.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CodeChangesBatchStats {
@@ -306,42 +320,24 @@ fn load_transformed_code_change_batch_with_failure(
         };
 
         for (index, row) in rows.iter().enumerate() {
-            let existing = txn.query_map(
-                "SELECT session_id, time_ms, model_id, tool_name, tool_version, payload_type,
-                        files_changed, lines_added, lines_removed, patch_sha256
-                 FROM code_changes
-                 WHERE repository_id = ?1 AND source_instance_id = ?2
-                   AND source_diff_trace_id = ?3",
-                (repository_id, source_instance_id, row.source_row_id),
-                |db_row| {
-                    Ok((
-                        db_row.get::<String>(0)?,
-                        db_row.get::<i64>(1)?,
-                        db_row.get::<Option<String>>(2)?,
-                        db_row.get::<String>(3)?,
-                        db_row.get::<Option<String>>(4)?,
-                        db_row.get::<String>(5)?,
-                        db_row.get::<i64>(6)?,
-                        db_row.get::<i64>(7)?,
-                        db_row.get::<i64>(8)?,
-                        db_row.get::<String>(9)?,
-                    ))
-                },
-            )?;
+            let existing = existing_code_change(txn, repository_id, source_instance_id, row.source_row_id)?;
 
             if let Some(existing) = existing.into_iter().next() {
-                let incoming = (
-                    row.session_id.clone(),
-                    row.time_ms,
-                    row.model_id.clone(),
-                    row.tool_name.clone().expect("tool_name validated before transaction"),
-                    row.tool_version.clone(),
-                    row.payload_type.clone(),
-                    row.files_changed,
-                    row.lines_added,
-                    row.lines_removed,
-                    row.patch_sha256.clone(),
-                );
+                let incoming = StoredCodeChange {
+                    session_id: row.session_id.clone(),
+                    time_ms: row.time_ms,
+                    model_id: row.model_id.clone(),
+                    tool_name: row
+                        .tool_name
+                        .clone()
+                        .expect("tool_name validated before transaction"),
+                    tool_version: row.tool_version.clone(),
+                    payload_type: row.payload_type.clone(),
+                    files_changed: row.files_changed,
+                    lines_added: row.lines_added,
+                    lines_removed: row.lines_removed,
+                    patch_sha256: row.patch_sha256.clone(),
+                };
                 if existing != incoming {
                     bail!(
                         "code change integrity conflict for repository {repository_id}, source instance {source_instance_id}, source diff trace {}",
@@ -399,6 +395,37 @@ fn load_transformed_code_change_batch_with_failure(
             watermark: stats.watermark,
         })
     })
+}
+
+fn existing_code_change(
+    txn: &TursoTransaction<'_, crate::services::agent_trace_dwh_db::AgentTraceDwhDbSpec>,
+    repository_id: &str,
+    source_instance_id: &str,
+    source_row_id: i64,
+) -> Result<Option<StoredCodeChange>> {
+    let existing = txn.query_map(
+        "SELECT session_id, time_ms, model_id, tool_name, tool_version, payload_type,
+                files_changed, lines_added, lines_removed, patch_sha256
+         FROM code_changes
+         WHERE repository_id = ?1 AND source_instance_id = ?2
+           AND source_diff_trace_id = ?3",
+        (repository_id, source_instance_id, source_row_id),
+        |db_row| {
+            Ok(StoredCodeChange {
+                session_id: db_row.get(0)?,
+                time_ms: db_row.get(1)?,
+                model_id: db_row.get(2)?,
+                tool_name: db_row.get(3)?,
+                tool_version: db_row.get(4)?,
+                payload_type: db_row.get(5)?,
+                files_changed: db_row.get(6)?,
+                lines_added: db_row.get(7)?,
+                lines_removed: db_row.get(8)?,
+                patch_sha256: db_row.get(9)?,
+            })
+        },
+    )?;
+    Ok(existing.into_iter().next())
 }
 
 fn ensure_lineage(

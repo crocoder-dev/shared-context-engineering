@@ -10,29 +10,29 @@ This extends the completed source identity, DWH schema, single-owner replica, Ag
 
 How this plan is proven complete. Each criterion is observable and names the check that proves it. `/validate` runs these checks; no task in the stack performs final validation.
 
-- [ ] AC1: `CodeChangesEtl` exposes a CLI-independent API consistent with the existing table runners, accepts an open repository source and lock-owning `AgentTraceDwhReplica`, obtains `source_instance_id` from repository metadata, uses `diff_traces` as its independent source table, reports extracted/inserted/already-present/batch and before/after watermark stats, and never calls `pull()` or `push()` or acquires credentials.
+- [x] AC1: `CodeChangesEtl` exposes a CLI-independent API consistent with the existing table runners, accepts an open repository source and lock-owning `AgentTraceDwhReplica`, obtains `source_instance_id` from repository metadata, uses `diff_traces` as its independent source table, reports extracted/inserted/already-present/batch and before/after watermark stats, and never calls `pull()` or `push()` or acquires credentials.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_etl_api`; inspect the runner and replica call paths.
-- [ ] AC2: Source extraction uses exactly `id, time_ms, session_id, patch, model_id, tool_name, tool_version, payload_type` with `id > watermark ORDER BY id ASC LIMIT batch_size`, treats a missing watermark as zero, never queries `MAX(id)` or uses timestamps for progress, validates positive batch sizes, and processes all rows through bounded ordered batches.
+- [x] AC2: Source extraction uses exactly `id, time_ms, session_id, patch, model_id, tool_name, tool_version, payload_type` with `id > watermark ORDER BY id ASC LIMIT batch_size`, treats a missing watermark as zero, never queries `MAX(id)` or uses timestamps for progress, validates positive batch sizes, and processes all rows through bounded ordered batches.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_etl_extraction`.
-- [ ] AC3: Each source batch is copied into owned `SourceDiffTrace` values in a short plain read transaction, commits/releases the source snapshot before parsing, hashing, metric derivation, or destination work, retries only existing transient Busy/database-locked contention with the shared bounded retry/rollback mechanics, and permits concurrent source writers to continue.
+- [x] AC3: Each source batch is copied into owned `SourceDiffTrace` values in a short plain read transaction, commits/releases the source snapshot before parsing, hashing, metric derivation, or destination work, retries only existing transient Busy/database-locked contention with the shared bounded retry/rollback mechanics, and permits concurrent source writers to continue.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_etl_source`.
-- [ ] AC4: `patch` payloads and currently supported `structured` payloads both normalize through one canonical parsing/derivation path into `ParsedPatch`; existing best-effort recent-diff processing may continue to classify malformed rows as skipped, while strict DWH transformation returns an error for malformed, unsupported, or future payload types and never silently treats them as unified patches.
+- [x] AC4: `patch` payloads and currently supported `structured` payloads both normalize through one canonical parsing/derivation path into `ParsedPatch`; existing best-effort recent-diff processing may continue to classify malformed rows as skipped, while strict DWH transformation returns an error for malformed, unsupported, or future payload types and never silently treats them as unified patches.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml patch_payload_normalization`; inspect shared parser callers for preserved best-effort behavior.
-- [ ] AC5: DWH transformation preserves source metadata (`session_id`, `time_ms`, nullable `model_id`, `tool_name`, nullable `tool_version`, and `payload_type`), retains the source-level `model_id` without deriving a replacement from parsed hunks, derives `files_changed` from `ParsedPatch.files`, derives `lines_added` by counting normalized touched lines with `TouchedLineKind::Added`, derives `lines_removed` by counting normalized touched lines with `TouchedLineKind::Removed` across every file and hunk, and rejects count conversions that cannot be represented by the destination schema.
+- [x] AC5: DWH transformation preserves source metadata (`session_id`, `time_ms`, nullable `model_id`, `tool_name`, nullable `tool_version`, and `payload_type`), retains the source-level `model_id` without deriving a replacement from parsed hunks, derives `files_changed` from `ParsedPatch.files`, derives `lines_added` by counting normalized touched lines with `TouchedLineKind::Added`, derives `lines_removed` by counting normalized touched lines with `TouchedLineKind::Removed` across every file and hunk, and rejects count conversions that cannot be represented by the destination schema.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_metrics`.
-- [ ] AC6: `patch_sha256` is lowercase hexadecimal SHA-256 of the exact UTF-8 bytes of the original `diff_traces.patch` value for both payload types; normalization never changes the bytes used for hashing.
+- [x] AC6: `patch_sha256` is lowercase hexadecimal SHA-256 of the exact UTF-8 bytes of the original `diff_traces.patch` value for both payload types; normalization never changes the bytes used for hashing.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_hash`.
-- [ ] AC7: Destination identity is exactly `(repository_id, source_instance_id, source_diff_trace_id)`. A missing identity inserts one `code_changes` row with all required lineage, source metadata, and derived fields; an identical existing row increments `already_present`; any synchronized or derived mismatch returns an integrity error and leaves the existing row unchanged without using silent conflict-ignore or overwrite behavior.
+- [x] AC7: Destination identity is exactly `(repository_id, source_instance_id, source_diff_trace_id)`. A missing identity inserts one `code_changes` row with all required lineage, source metadata, and derived fields; an identical existing row increments `already_present`; any synchronized or derived mismatch returns an integrity error and leaves the existing row unchanged without using silent conflict-ignore or overwrite behavior.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_identity`.
-- [ ] AC8: Each batch commits repository/source lineage, code-change inserts or verifications, and the `diff_traces` watermark in one destination transaction; transformation failure occurs before destination transaction creation, and any injected destination failure or integrity conflict rolls back all facts, dimensions, and watermark changes so the full batch can be replayed.
+- [x] AC8: Each batch commits repository/source lineage, code-change inserts or verifications, and the `diff_traces` watermark in one destination transaction; transformation failure occurs before destination transaction creation, and any injected destination failure or integrity conflict rolls back all facts, dimensions, and watermark changes so the full batch can be replayed.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_atomic`.
-- [ ] AC9: Tests prove normal unified patches, valid structured payloads, multiple files, additions/removals including modified/new/deleted files where practical, initial IDs `1..=3`, no-op reruns, growth with IDs `4` and `5`, batch size `2` over five rows, watermark-behind idempotent replay, conflicts, malformed patch/structured/future payload failures, and no watermark advancement past a failed row.
+- [x] AC9: Tests prove normal unified patches, valid structured payloads, multiple files, additions/removals including modified/new/deleted files where practical, initial IDs `1..=3`, no-op reruns, growth with IDs `4` and `5`, batch size `2` over five rows, watermark-behind idempotent replay, conflicts, malformed patch/structured/future payload failures, and no watermark advancement past a failed row.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_etl`.
-- [ ] AC10: Session-level joins remain the only supported conversation relationship: every DWH code-change row preserves `session_id`, code changes can be queried alongside messages/message parts for the same session, no `message_id` is added or inferred, and documentation states that captured data proves only session membership, not causality to an individual message.
+- [x] AC10: Session-level joins remain the only supported conversation relationship: every DWH code-change row preserves `session_id`, code changes can be queried alongside messages/message parts for the same session, no `message_id` is added or inferred, and documentation states that captured data proves only session membership, not causality to an individual message.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_session_relationship`; inspect `code_changes` schema/API and the synchronized context documents.
-- [ ] AC11: Two source instances of one repository can each ingest local `diff_traces.id = 1` with independent watermarks and coexist in DWH; source contention tests show writers continue and eventually committed rows are observed; a failed batch can be rerun successfully without duplicates.
+- [x] AC11: Two source instances of one repository can each ingest local `diff_traces.id = 1` with independent watermarks and coexist in DWH; source contention tests show writers continue and eventually committed rows are observed; a failed batch can be rerun successfully without duplicates.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_lineage_contention`.
-- [ ] AC12: Durable context documents the source-to-DWH code-activity path, exact source-instance identity and watermark scope, strict transformation behavior, metric/hash definitions, transactional replay/conflict rules, pull/push separation, and the explicit session-only relationship to conversations with no message-level attribution.
+- [x] AC12: Durable context documents the source-to-DWH code-activity path, exact source-instance identity and watermark scope, strict transformation behavior, metric/hash definitions, transactional replay/conflict rules, pull/push separation, and the explicit session-only relationship to conversations with no message-level attribution.
   - Validate: inspect `context/sce/agent-trace-etl.md`, `context/sce/agent-trace-dwh-db.md`, `context/sce/agent-trace-dwh-replica.md`, `context/sce/agent-trace-db.md`, `context/overview.md`, `context/architecture.md`, `context/glossary.md`, and `context/context-map.md` against the implementation and tests.
 
 ### Full validation
@@ -105,14 +105,65 @@ Repository-wide checks `/validate` runs after the last task, regardless of which
   - Completion evidence: Added configurable/default `CodeChangesEtl` and `CodeChangesEtlStats`, metadata-derived source identity handling, incremental bounded runner loop, default free-function entrypoint, and `AgentTraceDwhReplica::run_code_changes_etl`. Added end-to-end coverage for initial/bounded batches, growth, no-op reruns, invalid-row replay with watermark preservation, independent source-instance watermarks, source writer contention, and session-only joins without `message_id` attribution. The runner has no pull/push or credential access.
   - Verification: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_etl` passed (17 tests); `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_lineage_contention` passed (1 test); `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_session_relationship` passed (1 test); `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml patch_payload_normalization` passed (3 tests); `nix develop -c sh -c 'cd cli && cargo fmt'` passed; `git diff --check` passed.
 
-- [ ] T05: `Document the session-level code-change ETL contract` (status:todo)
+- [x] T05: `Document the session-level code-change ETL contract` (status:complete)
   - Task ID: T05
   - Goal: Make the implemented code-change source/DWH boundary, strictness, metrics, hash, identity, rollback, and conversation relationship durable and discoverable.
   - Boundaries (in/out of scope): In — focused code-change ETL context, context-map registration, updates to related ETL/source/DWH/replica and root context, and documentation of the session-only join boundary and lack of message causality. Out — implementation changes, CLI/control-plane docs, new attribution metadata, and unrelated context cleanup.
   - Dependencies: T04
   - Done when: durable context matches the code and tests, explicitly states `session_id` is the supported relationship between conversations and code changes, explicitly states there is no reliable message-level attribution, and removes stale “code-change ETL remains future work” claims without implying message causality.
   - Verification notes (commands or checks): inspect the listed context files against `cli/src/services/code_changes_etl.rs` (or the final module path), the source schema, DWH schema, parser helpers, and test coverage; `git diff --check`.
+  - Completion evidence: Updated the focused code-change ETL contract and context map, then reconciled overview, architecture, glossary, source DB, DWH schema, DWH replica, and shared ETL context with the implemented strict normalization, exact hashing, checked metrics, source-lineage identity/watermark, atomic replay/conflict behavior, transport separation, and session-only conversation relationship.
+  - Verification: Read the mandatory root context files and affected domain documents against the implementation, source/DWH schemas, parser boundary, and tests; `git diff --check` passed; all changed context files remain at or below 250 lines.
 
 ## Open questions
 
 None. The request fixes the source projection, identity, strictness, metrics, hash, session boundary, orchestration exclusions, and test obligations; the existing DWH schema and ETL infrastructure supply the remaining local seams.
+
+## Validation Report
+
+**Status:** validated
+**Date:** 2026-08-08
+
+### Commands run
+
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_etl_api` -> exit 0 (no matching tests; API and call paths inspected)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_etl_extraction` -> exit 0 (2 extraction tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_etl_source` -> exit 0 (no matching tests; source snapshot and retry paths inspected)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml patch_payload_normalization` -> exit 0 (3 normalization tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_metrics` -> exit 0 (2 metric tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_hash` -> exit 0 (1 hash test passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_identity` -> exit 0 (2 identity tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_atomic` -> exit 0 (1 atomic rollback test passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_etl` -> exit 0 (17 ETL tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_session_relationship` -> exit 0 (1 session relationship test passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml code_changes_lineage_contention` -> exit 0 (1 lineage/contention test passed)
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed; 101 files)
+- `nix flake check` -> exit 0 (all flake checks passed)
+- `git diff --check` -> exit 0 (no whitespace errors)
+
+### Scaffolding removed
+
+- None.
+
+### Success-criteria verification
+
+- [x] AC1: CLI-independent API, metadata-derived source identity, stats, and no transport/credential access -> targeted command exited 0 with no matching tests; `CodeChangesEtl::run` and `AgentTraceDwhReplica::run_code_changes_etl` call paths were inspected.
+- [x] AC2: Exact ordered bounded integer-ID extraction and positive batch validation -> extraction tests passed.
+- [x] AC3: Owned short source snapshots, contention retry, and writer concurrency -> source path inspection confirmed plain read transactions and shared retry; lineage contention test passed.
+- [x] AC4: Strict canonical patch/structured normalization with preserved best-effort recent-diff behavior -> 3 normalization tests passed and shared parser callers were inspected.
+- [x] AC5: Source metadata preservation and checked parsed-patch metrics -> 2 metric tests passed.
+- [x] AC6: Lowercase SHA-256 of exact original payload bytes -> hash test passed.
+- [x] AC7: Source-lineage identity, replay verification, and conflict rejection -> 2 identity tests passed.
+- [x] AC8: Atomic fact, lineage, and watermark transaction with rollback -> atomic rollback test passed.
+- [x] AC9: Incremental, replay, batching, malformed-row, conflict, structured, and lineage scenarios -> 17 ETL tests passed.
+- [x] AC10: Session-only conversation relationship with no `message_id` attribution -> session relationship test passed; schema/API and synchronized context were inspected.
+- [x] AC11: Independent source instances, contention, and replay behavior -> lineage/contention test passed and ETL suite covered independent watermarks/replay.
+- [x] AC12: Durable context contract for source path, identity, strictness, metrics/hash, replay/conflict, transport separation, and session-only relationship -> all listed context files were inspected against implementation and tests.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- None identified.
