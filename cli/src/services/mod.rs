@@ -16,6 +16,8 @@ pub mod auth_db;
 pub mod bash_policy;
 pub mod capabilities;
 pub mod checkout;
+#[allow(dead_code)]
+pub mod code_changes_etl;
 pub mod command_registry;
 pub mod completion;
 pub mod config;
