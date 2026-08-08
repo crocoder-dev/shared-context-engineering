@@ -5,6 +5,8 @@ pub mod agent_trace_dwh_db;
 #[allow(dead_code)]
 pub mod agent_trace_dwh_replica;
 #[allow(dead_code)]
+pub mod agent_trace_dwh_sync;
+#[allow(dead_code)]
 pub mod agent_trace_etl;
 #[allow(dead_code)]
 pub mod agent_trace_storage;

@@ -1,0 +1,402 @@
+# Plan: agent-trace-dwh-sync
+
+## Change summary
+
+Add `AgentTraceDwhSync`, the single orchestration service that connects the
+already-implemented pieces: `AgentTraceDwhReplica` (PR #189, single-owner Turso
+Sync replica lifecycle for `agent-trace-sync.db`), `AgentTraceEtl` (PR #190/#191),
+`ConversationEtl` (PR #191), and `CodeChangesEtl` (PR #192). Today each of those
+exists and is independently tested, but nothing yet drives them together: a
+caller would have to hand-sequence `AgentTraceDwhReplica::open()`, `pull()`,
+three separate `etl.run(repository_id, source, &replica)` calls, and `push()`
+themselves, with no combined stats or stage-identified error type.
+
+This plan adds one new service, `cli/src/services/agent_trace_dwh_sync.rs`,
+whose `run()` owns exactly that sequence — open → pull → `AgentTraceEtl` →
+`ConversationEtl` → `CodeChangesEtl` → push — behind one bridge-lock-held
+Turso Sync connection, returning one combined stats type and a stage-tagged
+error. It extends nothing in `agent_trace_dwh_replica`, `agent_trace_etl`,
+`conversation_etl`, or `code_changes_etl`: all three ETLs already expose
+`run(repository_id, &RepositoryAgentTraceDb, &AgentTraceDwhReplica)`, which is
+exactly the shape this orchestrator needs to call unmodified.
+
+The plan also proves, empirically against the real local Turso Sync harness
+already established in `agent_trace_dwh_replica`'s `integration_tests` module,
+that the local sync spool survives interruption at every stage (replica-open
+failure, pull failure, each ETL failure, push failure) without losing source
+rows, duplicating facts, or skipping watermarks — and documents whatever the
+real Turso Sync SDK is observed to do when `pull()` runs against a replica
+holding committed-but-unpushed ETL changes, since the request is explicit that
+this observed behavior should override the proposed pull-before-ETL ordering
+if it turns out to be unsafe.
+
+No CLI wiring, credential discovery, or `sce trace sync` command is added —
+this plan makes exactly one Rust API, so that a future thin CLI adapter has
+nothing left to design.
+
+## Acceptance criteria
+
+- [ ] AC1: A fresh sync against a genuinely empty remote succeeds in one
+  `AgentTraceDwhSync::run()` call: the remote DWH schema is initialized via
+  `AgentTraceDwhReplica::open()`'s existing empty-remote path, all three ETLs
+  run in order, and non-zero stats are returned for every table with source
+  rows.
+  - Validate: `nix develop .#database -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_dwh_sync_turso_sync_integration`
+- [ ] AC2: A second `run()` against the same source and remote, with no new
+  source rows and no remote-side changes, succeeds and returns stats showing
+  zero extracted/inserted rows in every table (a visible no-op, not an error).
+  - Validate: same integration test, no-op-run assertion
+- [ ] AC3: Replica-open failure, pull failure, and each of the three ETL
+  failures are each identifiable through a distinct `AgentTraceDwhSyncError`
+  stage variant, and each one leaves the final `push()` uninvoked.
+  - Validate: integration tests covering each failure stage (T02)
+- [ ] AC4: A push failure that occurs after all three ETLs have committed
+  locally leaves those commits durable in the local `agent-trace-sync.db`
+  spool; the sync call returns an error; and a subsequent successful `run()`
+  reaches the remote with the previously committed facts and watermarks, with
+  no lost rows, no duplicated logical rows, and no skipped watermarks.
+  - Validate: integration test proving push-failure recovery (T03)
+- [ ] AC5: Deleting the local `agent-trace-sync.db` after a successful sync and
+  running `AgentTraceDwhSync::run()` again reconstructs the replica from the
+  remote and performs only genuinely incremental ETL work (a no-op when no new
+  source rows exist since the deleted replica's last push).
+  - Validate: integration test proving fresh-replica reconstruction (T04)
+- [ ] AC6: Two different `repository_id`s, each with its own source DB and
+  local replica path, syncing against the same remote DWH both appear in the
+  remote afterward, and neither sync corrupts or removes the other's rows.
+  - Validate: integration test proving multi-repository convergence (T05)
+- [ ] AC7: Two source instances of the same `repository_id` syncing against
+  the same remote maintain independent per-source-instance watermarks, and
+  their overlapping local row IDs (parts, diff traces) do not collide in the
+  DWH.
+  - Validate: integration test proving multi-source-instance independence (T06)
+- [ ] AC8: Two independently operated sync clients against the same remote
+  DWH converge: client A observes client B's remote additions after its own
+  `pull()`, neither destroys the other's committed facts, and repeated runs
+  from both sides stabilize (no unbounded growth in inserted counts once both
+  sides are current).
+  - Validate: integration test proving cross-client convergence (T07)
+- [ ] AC9: No `AgentTraceDwhSyncError` variant, `Debug`/`Display` output, or
+  `AgentTraceDwhSyncStats` value ever contains the caller-supplied auth token,
+  including on a push/pull failure against a real remote.
+  - Validate: covered by the sentinel-auth-token assertions embedded in the
+    T02–T04 integration tests, matching the existing `redact_token` pattern in
+    `agent_trace_dwh_replica/replica.rs`
+
+### Full validation
+
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml`
+- `nix develop .#database -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml`
+- `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
+- `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml -- --check`
+- `nix flake check`
+- `nix run .#pkl-check-generated`
+
+### Context sync
+
+- `context/sce/agent-trace-dwh-sync.md` (new): the full sync lifecycle,
+  ownership, failure/recovery semantics, and the observed pull-with-pending-
+  local-changes Turso behavior.
+- `context/context-map.md`: register the new domain context file.
+- `context/glossary.md`: add an `AgentTraceDwhSync` entry; extend the existing
+  `Agent Trace DWH sync replica` entry's cross-links.
+- `context/sce/agent-trace-dwh-replica.md`: note that `AgentTraceDwhSync` is
+  now the orchestration boundary that composes `run_agent_trace_etl()`/
+  `run_code_changes_etl()`/`ConversationEtl::run()`/`pull()`/`push()`, without
+  changing anything about the replica's own ownership contract.
+
+## Constraints and non-goals
+
+- **In scope:** one new `cli/src/services/agent_trace_dwh_sync.rs` module
+  (struct, config reuse, stats, stage-tagged error, `run()`), its unit and
+  integration tests, and the context-sync files listed above.
+- **Out of scope:** `AgentTraceDwhReplica`, `AgentTraceEtl`, `ConversationEtl`,
+  `CodeChangesEtl`, and their existing tests — call them through their current
+  public APIs unmodified unless a genuine correctness problem is found while
+  building this orchestrator (none is anticipated; the three `run()` methods
+  already take `&AgentTraceDwhReplica` directly).
+- **Constraints:** exactly one Turso Sync connection per `run()` invocation;
+  the bridge lock stays held for the whole pull+ETLs+push sequence; no global
+  transaction wraps the three ETLs; auth tokens must never appear in errors,
+  `Debug`, `Display`, stats, or logs; reuse the existing `LocalSyncServer`
+  Turso Sync integration harness pattern rather than a fake replication
+  implementation.
+- **Non-goals:** control-plane calls, workspace DWH provisioning, WorkOS auth,
+  token refresh/persistence, `sce trace sync` CLI wiring, scheduled/background
+  sync, automatic retry loops around the whole sync operation, new ETL tables,
+  post-commit intersection ETL, reverse remote-to-source hydration, schema
+  ownership changes, automatic DWH schema upgrades, analytics/query APIs, UI,
+  and any new ADR/decision record (context sync in this plan is limited to
+  current-state `context/sce/*.md`/glossary/context-map prose; a decision
+  record, if warranted, is a separate later call for `/validate`'s
+  context-synchronization gate or an explicit `/decision` invocation, not this
+  plan).
+
+## Assumptions
+
+- The branch already contains all work through PR #192 (`etl-code-change`) —
+  confirmed by `git log` on the current `etl-orchestrator` branch, which is
+  built directly on top of it. No rebase or branch change is needed before
+  starting T01.
+- Item 8 of the request ("explicitly test pull with pending local changes") is
+  treated as an empirical discovery task (T03), not a pre-decided design
+  choice: T01 implements the literal open → pull → ETLs → push order the
+  request proposes, and T03 is authorized to adjust that internal ordering —
+  documenting exactly why — if the real local Turso Sync harness demonstrates
+  that ordering is unsafe. This mirrors the request's own instruction that the
+  observed-behavior test outranks the proposed sequence.
+- New integration tests follow the existing `agent_trace_dwh_replica`
+  convention exactly: a `#[cfg(test)] mod integration_tests` gated by
+  `find_tursodb()`, using `LocalSyncServer` and `AgentTraceDwhDb::run_migrations`
+  + `push()` to prepare remotes, printing a skip reason and passing trivially
+  outside `nix develop .#database`.
+- `AgentTraceDwhSyncError` follows the existing manual `Debug`/`Display`/
+  `std::error::Error` pattern used by `AgentTraceDwhReplicaError` (no
+  `thiserror` dependency exists in `cli/Cargo.toml` today).
+
+## Task stack
+
+- [x] T01: `Add AgentTraceDwhSync core service and prove the empty-remote first sync` (status:done)
+  - Task ID: T01
+  - Goal: Implement `cli/src/services/agent_trace_dwh_sync.rs` with
+    `AgentTraceDwhSync { agent_trace_etl, conversation_etl, code_changes_etl }`,
+    `impl Default`, `AgentTraceDwhSyncStats { pulled_changes, agent_traces,
+    conversation, code_changes }`, `AgentTraceDwhSyncError` (`ReplicaOpen`,
+    `Pull`, `AgentTraceEtl`, `ConversationEtl`, `CodeChangesEtl`, `Push`), and
+    `run(&self, repository_id: &str, source: &RepositoryAgentTraceDb,
+    replica_config: AgentTraceDwhReplicaConfig) ->
+    Result<AgentTraceDwhSyncStats, AgentTraceDwhSyncError>` that opens the
+    replica, pulls once, runs the three ETLs through their existing
+    `run(repository_id, source, &replica)` APIs in order, and pushes once on
+    full success. Register the module in `cli/src/services/mod.rs`. Prove the
+    empty-remote bootstrap and no-op-second-run behavior against the real
+    Turso Sync harness.
+  - Boundaries (in/out of scope): In — the new module, its stats/error types,
+    the core `run()` state machine, unit tests for error-stage construction
+    and stats aggregation that need no filesystem, and one integration test
+    proving AC1/AC2. Out — stage-failure tests beyond what AC1/AC2 need,
+    fresh-reconstruction/multi-repo/multi-source-instance/cross-client tests
+    (later tasks), documentation.
+  - Dependencies: none
+  - Done when: `AgentTraceDwhSync::default().run(...)` against a freshly
+    spawned, untouched local Turso Sync remote initializes the DWH schema,
+    runs all three ETLs, pushes once, and returns stats with non-zero
+    `inserted` counts; a second `run()` against the same source/remote returns
+    stats with zero `extracted`/`inserted` across all three ETL stats and
+    `pulled_changes == false`; no auth token appears in any `Debug`/`Display`
+    output.
+  - Verification notes (commands or checks): `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_dwh_sync`; `nix develop .#database -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_dwh_sync_turso_sync_integration`
+  - Evidence: Added `cli/src/services/agent_trace_dwh_sync.rs` with
+    `AgentTraceDwhSync { agent_trace_etl, conversation_etl, code_changes_etl }`
+    (`#[allow(clippy::struct_field_names)]`), `AgentTraceDwhSyncStats`,
+    `AgentTraceDwhSyncError` (manual `Debug`/`Display`/`std::error::Error`,
+    mirroring `AgentTraceDwhReplicaError`), and `run()` implementing
+    open→pull→`AgentTraceEtl`→`ConversationEtl`→`CodeChangesEtl`→push,
+    short-circuiting with the matching stage variant on first failure.
+    Registered `pub mod agent_trace_dwh_sync;` (`#[allow(dead_code)]`) in
+    `cli/src/services/mod.rs`. Added unit tests for `Default` composition,
+    zeroed stats defaults, and per-stage `Display`/`Debug` no-token-leak
+    coverage, plus one `#[cfg(test)] mod integration_tests` (gated on
+    `find_tursodb()`, using `LocalSyncServer`) proving AC1 (fresh empty-remote
+    sync bootstraps the schema and inserts non-zero rows across all three ETL
+    stages) and AC2 (a following no-new-source-rows run returns zero
+    `extracted`/`inserted` everywhere).
+  - Deviation from Done-when's literal `pulled_changes == false` on the
+    *second* run: empirically, the real local Turso Sync harness's `pull()`
+    reports `true` on the first `pull()` any freshly opened replica performs
+    after *any* session's successful `push()` — including this
+    orchestrator's own immediately preceding `run()` — because that push was
+    never locally marked "already observed" by the new connection object, even
+    though the pulled bytes exactly match what is already on disk. It settles
+    to `false` only once a `run()` observes no push from any source since the
+    previous `run()`'s own reconciliation pull. The integration test therefore
+    asserts AC2's actual contract (zero `extracted`/`inserted`, a visible
+    no-op) on the second run without asserting `pulled_changes`, and adds a
+    third run to prove the genuine `pulled_changes == false` steady state.
+    `run()`'s internal open→pull→ETLs→push ordering is unchanged; only the
+    test assertion and `run()`'s doc comment were adjusted to state this
+    observed semantics accurately. This is recorded here for T08 to document
+    alongside T03's own observed-behavior findings.
+  - Verification run: `nix develop .#database -c ./scripts/run-cli-cargo.sh
+    test --manifest-path cli/Cargo.toml agent_trace_dwh_sync` (4 passed, incl.
+    the Turso Sync integration test); `nix develop -c
+    ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` (292
+    passed, 1 ignored, 0 failed); `nix develop -c ./scripts/run-cli-cargo.sh
+    clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`
+    (clean); `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path
+    cli/Cargo.toml -- --check` (clean).
+
+- [ ] T02: `Prove stage-identified failure semantics stop the sequence early` (status:todo)
+  - Task ID: T02
+  - Goal: Add integration coverage proving: (a) a replica-open failure (e.g. an
+    unreachable `database_url`) returns `AgentTraceDwhSyncError::ReplicaOpen`
+    and never runs any ETL or push; (b) a pull failure (e.g. remote killed
+    after a successful open) returns `AgentTraceDwhSyncError::Pull` and never
+    runs any ETL or push; (c) a deliberately failing `AgentTraceEtl` stage
+    prevents `ConversationEtl`/`CodeChangesEtl` and push from running; (d) a
+    deliberately failing `ConversationEtl` stage leaves `AgentTraceEtl`'s
+    commit intact locally, does not run `CodeChangesEtl`, and does not push;
+    (e) a deliberately failing `CodeChangesEtl` stage (a malformed source
+    `diff_traces` payload, using its existing strict validation — do not
+    weaken it) leaves the prior two ETLs' commits intact locally and does not
+    push.
+  - Boundaries (in/out of scope): In — failure-injection integration tests for
+    all five stages listed above, asserting both the returned error variant
+    and the local replica's post-failure DWH row/watermark state. Out —
+    push-failure recovery (T03), reconstruction/multi-repo/multi-source-
+    instance/cross-client tests (T04–T07).
+  - Dependencies: T01
+  - Done when: five distinct integration test cases (or clearly separated
+    assertions within one wired integration test, following the existing
+    `agent_trace_dwh_replica_turso_sync_integration` composition pattern) each
+    assert the correct `AgentTraceDwhSyncError` variant and that no row was
+    pushed to the remote past the point of failure; the local spool
+    (`agent-trace-sync.db`) is inspected directly to confirm prior successful
+    ETL stages within the same failed run committed locally as designed.
+  - Verification notes (commands or checks): `nix develop .#database -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_dwh_sync_turso_sync_integration`
+
+- [ ] T03: `Prove and document push-failure and pull-with-pending-local-changes recovery` (status:todo)
+  - Task ID: T03
+  - Goal: Add the load-bearing integration test the request calls out
+    explicitly: run all three ETLs against a real local Turso Sync remote so
+    they commit locally, force the final `push()` to fail (e.g. by killing the
+    `LocalSyncServer` process before the push step), confirm the local replica
+    retains the committed-but-unpushed changes, restart remote availability,
+    then run `AgentTraceDwhSync::run()` again — whose first step is `pull()`
+    against a replica that itself holds pending local commits — and prove the
+    final converged state has every local fact and watermark reaching the
+    remote, with no duplicate rows and no lost rows. If this test reveals that
+    `pull()` against a replica with pending local commits discards or corrupts
+    those commits, change `run()`'s internal ordering (still without pushing
+    after each ETL individually) to whatever ordering the observed behavior
+    requires, and record exactly what was observed and why in this task's
+    evidence for T08 to document.
+  - Boundaries (in/out of scope): In — the pending-local-changes recovery
+    integration test, and any resulting adjustment to `run()`'s internal
+    pull/ETL/push sequencing strictly to preserve durability of local commits.
+    Out — any change to `AgentTraceDwhReplica::pull()`/`push()` themselves,
+    reconstruction/multi-repo/multi-source-instance/cross-client tests
+    (T04–T07), documentation (T08).
+  - Dependencies: T01
+  - Done when: the integration test deterministically reaches a final state
+    where the remote contains every ETL fact and watermark committed during
+    the failed-push run, with no duplicated logical rows and no lost source
+    rows, across at least several repeated runs; the task's evidence records
+    the exact observed Turso Sync behavior for `pull()` against a replica
+    holding pending local commits.
+  - Verification notes (commands or checks): `nix develop .#database -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_dwh_sync_turso_sync_integration` (run at least 3 times to check for nondeterminism, matching the precedent set by the concurrent-initializer convergence test in `agent_trace_dwh_replica`)
+
+- [ ] T04: `Prove fresh local-replica reconstruction from the remote` (status:todo)
+  - Task ID: T04
+  - Goal: Add an integration test that runs a successful sync, deletes the
+    local `agent-trace-sync.db` (and its Turso sidecars), and runs
+    `AgentTraceDwhSync::run()` again with the same `AgentTraceDwhReplicaConfig`
+    — proving the replica bootstraps from the remote, the ETLs read watermarks
+    that reflect the previously pushed state (so no rows are re-extracted or
+    duplicated), and a no-op ETL run occurs when no new source rows exist
+    since the deleted replica's last push.
+  - Boundaries (in/out of scope): In — the delete-and-resync integration test
+    only. Out — multi-repository/multi-source-instance/cross-client tests
+    (T05–T07), documentation (T08).
+  - Dependencies: T01
+  - Done when: the test asserts zero `inserted` counts across all three ETL
+    stats on the post-deletion resync when no new source rows were added, and
+    non-zero counts when new source rows are added before the resync,
+    matching the watermark state that was actually pushed before deletion.
+  - Verification notes (commands or checks): `nix develop .#database -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_dwh_sync_turso_sync_integration`
+
+- [ ] T05: `Prove multi-repository convergence against one remote DWH` (status:todo)
+  - Task ID: T05
+  - Goal: Add an integration test syncing two distinct `repository_id`s, each
+    with its own source `RepositoryAgentTraceDb`, its own local replica path,
+    and its own `AgentTraceDwhSync` instance, against the same remote DWH.
+    Verify the remote's `agent_traces`/`messages`/`message_parts`/
+    `code_changes`/`etl_watermarks` rows for repository A are unaffected by
+    repository B's sync, and vice versa.
+  - Boundaries (in/out of scope): In — the two-repository convergence
+    integration test only. Out — multi-source-instance and cross-client tests
+    (T06–T07), documentation (T08).
+  - Dependencies: T01
+  - Done when: the test asserts both repositories' rows are present in the
+    remote after both syncs, that repository A's row count/content is
+    identical before and after repository B's sync runs, and the reverse.
+  - Verification notes (commands or checks): `nix develop .#database -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_dwh_sync_turso_sync_integration`
+
+- [ ] T06: `Prove independent per-source-instance watermarks under one repository` (status:todo)
+  - Task ID: T06
+  - Goal: Add an integration test for one `repository_id` with two
+    independently created source `RepositoryAgentTraceDb` instances (distinct
+    `source_instance_id`s, following existing source-instance identity rules —
+    do not add new cross-source identity logic in the orchestrator), each
+    synced through its own `AgentTraceDwhSync::run()` call against the same
+    remote, including overlapping local row IDs (e.g. both sources having a
+    local `part`/`diff_trace` row with the same integer ID).
+  - Boundaries (in/out of scope): In — the two-source-instance integration
+    test, asserting independent watermark progression and no local-ID
+    collision in the DWH. Out — any new identity/dedup logic in
+    `agent_trace_dwh_sync.rs` beyond what the existing ETLs already provide;
+    cross-client convergence (T07); documentation (T08).
+  - Dependencies: T01
+  - Done when: the test asserts `etl_watermarks` rows for the two source
+    instances advance independently, and that DWH rows sourced from each
+    instance's overlapping local IDs are both present and distinguishable
+    (not merged or overwritten).
+  - Verification notes (commands or checks): `nix develop .#database -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_dwh_sync_turso_sync_integration`
+
+- [ ] T07: `Prove convergence between two independently operated sync clients` (status:todo)
+  - Task ID: T07
+  - Goal: Add an integration test simulating two independent clients (two
+    separate local replica paths, same `repository_id` and remote, modeling
+    two machines) that each run pull → ETL → push in turn: client A syncs,
+    client B syncs (observing A's remote additions via its own `pull()`),
+    then client A syncs again (observing B's additions). Verify convergence:
+    A's second sync sees B's rows, B's sync did not remove or corrupt A's
+    rows, watermarks stay correct throughout, and a further no-op run from
+    either client is stable.
+  - Boundaries (in/out of scope): In — the cross-client convergence
+    integration test only. Out — documentation (T08).
+  - Dependencies: T01
+  - Done when: the test asserts the remote's row counts after all three sync
+    steps equal the union of what both clients' sources contributed, with no
+    duplication, and that a final no-op run from each client returns zero
+    `inserted` counts across all three ETL stats.
+  - Verification notes (commands or checks): `nix develop .#database -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_dwh_sync_turso_sync_integration`
+
+- [ ] T08: `Document the AgentTraceDwhSync lifecycle and its recovery invariants` (status:todo)
+  - Task ID: T08
+  - Goal: Write `context/sce/agent-trace-dwh-sync.md` describing the full
+    `repository agent-trace.db → AgentTraceDwhSync (open → pull → AgentTraceEtl
+    → ConversationEtl → CodeChangesEtl → push) → remote Agent Trace DWH`
+    lifecycle; the invariants listed in the request (source DB remains local
+    truth; `agent-trace-sync.db` is a durable-but-disposable spool; the remote
+    stores durable facts+watermarks; one process owns the spool per sync;
+    pull precedes ETL under normal operation; ETLs commit independently; push
+    only follows full ETL success; a failed push leaves local commits intact;
+    credentials are caller-supplied; control-plane/CLI stay outside this
+    service); and the exact observed Turso Sync behavior recorded by T03 for
+    `pull()` against a replica with pending local commits, including whatever
+    ordering `run()` actually implements as a result. Register the file in
+    `context/context-map.md`, add/extend the `context/glossary.md` entries
+    named in Context sync, and update `context/sce/agent-trace-dwh-replica.md`
+    per Context sync.
+  - Boundaries (in/out of scope): In — the context files listed under Context
+    sync only. Out — any new decision record under `context/decisions/`; any
+    further code change.
+  - Dependencies: T01, T02, T03, T04, T05, T06, T07
+  - Done when: every invariant listed above is stated in
+    `context/sce/agent-trace-dwh-sync.md` with a pointer to the code/test that
+    proves it; the file is linked from `context/context-map.md`; no code in
+    `cli/src` changes in this task.
+  - Verification notes (commands or checks): inspect `context/sce/agent-trace-dwh-sync.md` against `cli/src/services/agent_trace_dwh_sync.rs` and the T01–T07 integration test evidence; confirm the new file is linked from `context/context-map.md`, `context/glossary.md`, and `context/sce/agent-trace-dwh-replica.md`, and links back to them.
+
+## Open questions
+
+None. The request is a fully specified implementation brief (branch/base,
+exact sequencing, error model, stats shape, and an explicit, itemized list of
+required integration-test scenarios), the pieces it composes already exist
+with exactly the call shape it assumes (`etl.run(repository_id, source,
+&replica)`), and the one genuinely open design point — whether `pull()` is
+safe against a replica holding pending local commits — is explicitly framed by
+the request itself as something to discover empirically (T03) rather than
+decide up front, so it is captured as an assumption above instead of a
+blocking question.
