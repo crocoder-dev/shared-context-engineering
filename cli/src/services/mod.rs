@@ -20,6 +20,8 @@ pub mod command_registry;
 pub mod completion;
 pub mod config;
 #[allow(dead_code)]
+pub mod conversation_etl;
+#[allow(dead_code)]
 pub mod conversation_messages_etl;
 #[allow(dead_code)]
 pub mod conversation_parts_etl;

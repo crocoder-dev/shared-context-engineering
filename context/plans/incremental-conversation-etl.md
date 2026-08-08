@@ -88,13 +88,15 @@ Repository-wide checks `/validate` runs after the last task, regardless of which
   - Implementation evidence: Added `cli/src/services/conversation_parts_etl.rs` with bounded short-snapshot extraction, supported `PartType` validation, exact UTF-8 SHA-256 hashing, source-lineage identity replay/conflict handling, atomic `message_parts` loading, independent `parts` watermarks, configurable batching, and source-writer contention coverage. Registered the module in `cli/src/services/mod.rs`.
   - Verification evidence: `conversation_parts_etl` passed all 11 focused tests; `conversation_parts_identity` passed all 3 identity/rollback tests; `nix develop -c sh -c 'cd cli && cargo fmt'` passed; `git diff --check` passed.
 
-- [ ] T04: `Expose ConversationEtl and prove independent table progress` (status:todo)
+- [x] T04: `Expose ConversationEtl and prove independent table progress` (status:complete)
   - Task ID: T04
   - Goal: Provide the conversation-level API and end-to-end proof that message and part ETLs share mechanics but not progress state.
   - Boundaries (in/out of scope): In — `ConversationEtl`, `ConversationEtlStats`, table-runner composition, replica-owned execution, independent message/part watermark tests, initial/incremental/no-op orchestration tests, out-of-order reconstruction/order checks, source contention integration tests for both source tables, and batch rollback/replay coverage through the public table runners. Out — pull/push calls, credentials, CLI command wiring, background scheduling, code changes, and remote orchestration.
   - Dependencies: T02, T03
   - Done when: callers can run `conversation_etl.run(repository_id, source, replica)`, stats expose both table results, messages and parts can advance independently, parts-before-messages remains valid, equal timestamps reconstruct by `generated_at_unix_ms, source_part_id`, and the API contains no transport or control-plane behavior.
   - Verification notes (commands or checks): `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_etl`; inspect the runner for absence of `pull()`/`push()` and credential access; `nix develop -c sh -c 'cd cli && cargo fmt'`.
+  - Implementation evidence: Added `cli/src/services/conversation_etl.rs` with independently configurable/default-batched `ConversationEtl`, table-level `ConversationEtlStats`, replica-bound execution, and composition over the existing messages and parts runners. Registered the service module and exposed crate-internal destination composition seams so the runner remains the sole conversation-level transaction coordinator while table watermarks commit independently. Added end-to-end coverage for initial/incremental/no-op runs, independent progress, parts-before-messages ingestion, deterministic equal-timestamp ordering, and non-blocking source readers for both source tables. The runner contains no transport, credential, CLI, or control-plane behavior.
+  - Verification evidence: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_etl` passed all 7 focused tests; `nix develop -c sh -c 'cd cli && cargo fmt'` passed; `git diff --check` passed.
 
 - [ ] T05: `Record the conversation ETL and append-only architecture contract` (status:todo)
   - Task ID: T05

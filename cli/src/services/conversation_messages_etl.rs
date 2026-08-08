@@ -300,7 +300,7 @@ impl MessagesEtl {
     }
 }
 
-fn run_with_destination(
+pub(crate) fn run_with_destination(
     config: MessagesEtl,
     repository_id: &str,
     source_instance_id: &str,

@@ -340,7 +340,7 @@ impl PartsEtl {
     }
 }
 
-fn run_with_destination(
+pub(crate) fn run_with_destination(
     config: PartsEtl,
     repository_id: &str,
     source_instance_id: &str,
