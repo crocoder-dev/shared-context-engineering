@@ -19,6 +19,8 @@ pub mod checkout;
 pub mod command_registry;
 pub mod completion;
 pub mod config;
+#[allow(dead_code)]
+pub mod conversation_messages_etl;
 pub mod db;
 pub mod default_paths;
 pub mod doctor;

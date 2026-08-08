@@ -68,13 +68,15 @@ Repository-wide checks `/validate` runs after the last task, regardless of which
   - Implementation evidence: Added the internal `cli/src/services/etl.rs` helper module for bounded source-contention retry/classification, positive batch-size validation, table watermark reads/upserts, and shared batch accounting. Registered it as `pub(crate) mod etl`; `AgentTraceEtl` now uses these helpers while retaining table-specific extraction, transformation, and loading behavior.
   - Verification evidence: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_etl` passed all 15 focused tests; `nix develop -c sh -c 'cd cli && cargo fmt'` passed; `git diff --check` passed.
 
-- [ ] T02: `Implement independently watermarked messages ETL` (status:todo)
+- [x] T02: `Implement independently watermarked messages ETL` (status:complete)
   - Task ID: T02
   - Goal: Add incremental source extraction and transactional DWH loading for logical messages.
   - Boundaries (in/out of scope): In — `SourceMessage`, exact source projection/query, supported role validation, source metadata lookup, logical identity lookup/insert/verification, `messages` watermark handling, stats, and message-focused initial/incremental/replay/conflict/rollback tests. Out — parts, conversation orchestration, code-change ETL, pull/push, and source update tracking.
   - Dependencies: T01
   - Done when: message batches use `id > watermark ORDER BY id ASC LIMIT ?`, source reads are short and contention-safe, missing rows insert all required lineage/content fields, equal role/timestamp logical replays increment `already_present`, differing role or timestamp returns an integrity error containing repository/session/message identity, and every batch failure leaves rows and the `messages` watermark unchanged.
   - Verification notes (commands or checks): `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_messages_etl`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_messages_identity`; `nix develop -c sh -c 'cd cli && cargo fmt'`.
+  - Implementation evidence: Added `cli/src/services/conversation_messages_etl.rs` with `SourceMessage`, bounded short-snapshot extraction using the shared contention retry, validated `MessageRole` transformation, independently keyed messages watermark reads/upserts, logical identity replay/conflict handling, atomic lineage/fact/watermark loading, configurable batching, and replica-bound runner/stats. Registered the module in `cli/src/services/mod.rs`.
+  - Verification evidence: `conversation_messages_etl` passed 8 focused tests; `conversation_messages_identity` passed 3 focused identity/rollback tests; `nix develop -c sh -c 'cd cli && cargo fmt'` passed; `git diff --check` passed.
 
 - [ ] T03: `Implement source-lineage-scoped parts ETL` (status:todo)
   - Task ID: T03
