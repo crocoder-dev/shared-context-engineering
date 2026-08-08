@@ -6,12 +6,17 @@
 
 use std::fmt::Write;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 
 use crate::services::{
     agent_trace_db::{normalize_diff_trace_payload, repository::RepositoryAgentTraceDb},
-    etl::{run_with_source_contention_retry, validate_batch_size},
+    agent_trace_dwh_db::AgentTraceDwhDb,
+    db::TursoTransaction,
+    etl::{
+        read_watermark, run_with_source_contention_retry, upsert_watermark, validate_batch_size,
+        TableBatchStats,
+    },
     patch::{ParsedPatch, TouchedLineKind},
 };
 
@@ -60,6 +65,14 @@ pub struct TransformedCodeChange {
     pub lines_added: i64,
     pub lines_removed: i64,
     pub patch_sha256: String,
+}
+
+/// Counts returned by one atomically loaded code-change batch.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CodeChangesBatchStats {
+    pub inserted: u64,
+    pub already_present: u64,
+    pub watermark: i64,
 }
 
 const SELECT_DIFF_TRACES_BATCH_SQL: &str =
@@ -176,6 +189,186 @@ pub fn transform_code_change(source: &SourceDiffTrace) -> Result<TransformedCode
         lines_removed: metrics.lines_removed,
         patch_sha256: sha256_hex(source.patch.as_bytes()),
     })
+}
+
+/// Load one transformed source batch atomically into the DWH `code_changes`
+/// table. Transformation happens before the destination transaction starts.
+pub fn load_code_change_batch(
+    db: &AgentTraceDwhDb,
+    repository_id: &str,
+    source_instance_id: &str,
+    source_rows: &[SourceDiffTrace],
+) -> Result<CodeChangesBatchStats> {
+    let transformed = source_rows
+        .iter()
+        .map(transform_code_change)
+        .collect::<Result<Vec<_>>>()?;
+    load_transformed_code_change_batch(db, repository_id, source_instance_id, &transformed)
+}
+
+fn load_transformed_code_change_batch(
+    db: &AgentTraceDwhDb,
+    repository_id: &str,
+    source_instance_id: &str,
+    rows: &[TransformedCodeChange],
+) -> Result<CodeChangesBatchStats> {
+    load_transformed_code_change_batch_with_failure(
+        db,
+        repository_id,
+        source_instance_id,
+        rows,
+        None,
+    )
+}
+
+fn load_transformed_code_change_batch_with_failure(
+    db: &AgentTraceDwhDb,
+    repository_id: &str,
+    source_instance_id: &str,
+    rows: &[TransformedCodeChange],
+    fail_after_row: Option<usize>,
+) -> Result<CodeChangesBatchStats> {
+    let Some(last_row) = rows.last() else {
+        return Ok(CodeChangesBatchStats::default());
+    };
+    if rows.iter().any(|row| row.tool_name.is_none()) {
+        bail!("diff_traces.tool_name cannot be null for code-change loading");
+    }
+
+    db.transaction(|txn| {
+        ensure_lineage(txn, repository_id, source_instance_id)?;
+
+        let mut stats = TableBatchStats {
+            watermark: last_row.source_row_id,
+            ..Default::default()
+        };
+
+        for (index, row) in rows.iter().enumerate() {
+            let existing = txn.query_map(
+                "SELECT session_id, time_ms, model_id, tool_name, tool_version, payload_type,
+                        files_changed, lines_added, lines_removed, patch_sha256
+                 FROM code_changes
+                 WHERE repository_id = ?1 AND source_instance_id = ?2
+                   AND source_diff_trace_id = ?3",
+                (repository_id, source_instance_id, row.source_row_id),
+                |db_row| {
+                    Ok((
+                        db_row.get::<String>(0)?,
+                        db_row.get::<i64>(1)?,
+                        db_row.get::<Option<String>>(2)?,
+                        db_row.get::<String>(3)?,
+                        db_row.get::<Option<String>>(4)?,
+                        db_row.get::<String>(5)?,
+                        db_row.get::<i64>(6)?,
+                        db_row.get::<i64>(7)?,
+                        db_row.get::<i64>(8)?,
+                        db_row.get::<String>(9)?,
+                    ))
+                },
+            )?;
+
+            if let Some(existing) = existing.into_iter().next() {
+                let incoming = (
+                    row.session_id.clone(),
+                    row.time_ms,
+                    row.model_id.clone(),
+                    row.tool_name.clone().expect("tool_name validated before transaction"),
+                    row.tool_version.clone(),
+                    row.payload_type.clone(),
+                    row.files_changed,
+                    row.lines_added,
+                    row.lines_removed,
+                    row.patch_sha256.clone(),
+                );
+                if existing != incoming {
+                    bail!(
+                        "code change integrity conflict for repository {repository_id}, source instance {source_instance_id}, source diff trace {}",
+                        row.source_row_id
+                    );
+                }
+                stats.already_present += 1;
+            } else {
+                txn.execute(
+                    "INSERT INTO code_changes
+                     (repository_id, source_instance_id, source_diff_trace_id, session_id,
+                      time_ms, model_id, tool_name, tool_version, payload_type, files_changed,
+                      lines_added, lines_removed, patch_sha256)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    (
+                        repository_id,
+                        source_instance_id,
+                        row.source_row_id,
+                        row.session_id.as_str(),
+                        row.time_ms,
+                        row.model_id.as_deref(),
+                        row.tool_name
+                            .as_deref()
+                            .expect("tool_name validated before transaction"),
+                        row.tool_version.as_deref(),
+                        row.payload_type.as_str(),
+                        row.files_changed,
+                        row.lines_added,
+                        row.lines_removed,
+                        row.patch_sha256.as_str(),
+                    ),
+                )?;
+                stats.inserted += 1;
+            }
+
+            if fail_after_row == Some(index + 1) {
+                bail!(
+                    "injected code changes destination failure after row {}",
+                    index + 1
+                );
+            }
+        }
+
+        upsert_watermark(
+            txn,
+            repository_id,
+            source_instance_id,
+            CODE_CHANGES_SOURCE_TABLE,
+            last_row.source_row_id,
+        )?;
+
+        Ok(CodeChangesBatchStats {
+            inserted: stats.inserted,
+            already_present: stats.already_present,
+            watermark: stats.watermark,
+        })
+    })
+}
+
+fn ensure_lineage(
+    txn: &TursoTransaction<'_, crate::services::agent_trace_dwh_db::AgentTraceDwhDbSpec>,
+    repository_id: &str,
+    source_instance_id: &str,
+) -> Result<()> {
+    txn.execute(
+        "INSERT INTO repositories (repository_id) VALUES (?1)
+         ON CONFLICT (repository_id) DO NOTHING",
+        (repository_id,),
+    )?;
+    txn.execute(
+        "INSERT INTO source_instances (repository_id, source_instance_id) VALUES (?1, ?2)
+         ON CONFLICT (repository_id, source_instance_id) DO NOTHING",
+        (repository_id, source_instance_id),
+    )?;
+    Ok(())
+}
+
+/// Read the code-change watermark, treating an absent row as zero.
+pub fn read_code_changes_watermark(
+    db: &AgentTraceDwhDb,
+    repository_id: &str,
+    source_instance_id: &str,
+) -> Result<i64> {
+    read_watermark(
+        db,
+        repository_id,
+        source_instance_id,
+        CODE_CHANGES_SOURCE_TABLE,
+    )
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -376,5 +569,188 @@ mod tests {
         assert_eq!(transformed.model_id, Some("claude/model".to_string()));
         assert_eq!(transformed.files_changed, 1);
         assert!(transformed.lines_added > 0);
+    }
+
+    #[test]
+    fn code_changes_identity_inserts_full_content_and_matching_replay_is_already_present() {
+        let dwh_path = unique_path("identity");
+        let dwh = AgentTraceDwhDb::new_at(&dwh_path).expect("DWH DB should open");
+        let row = source_row(7, &valid_patch("identity.rs", "new", Some("old")));
+
+        let first =
+            load_code_change_batch(&dwh, "repo-a", "instance-a", std::slice::from_ref(&row))
+                .expect("first code-change load should insert");
+        assert_eq!(first.inserted, 1);
+        assert_eq!(first.already_present, 0);
+        assert_eq!(first.watermark, 7);
+        assert_eq!(
+            read_code_changes_watermark(&dwh, "repo-a", "instance-a").unwrap(),
+            7
+        );
+
+        let values = dwh
+            .query_map(
+                "SELECT source_instance_id, source_diff_trace_id, session_id, time_ms, model_id,
+                        tool_name, tool_version, payload_type, files_changed, lines_added,
+                        lines_removed, patch_sha256
+                 FROM code_changes",
+                (),
+                |db_row| {
+                    Ok((
+                        db_row.get::<String>(0)?,
+                        db_row.get::<i64>(1)?,
+                        db_row.get::<String>(2)?,
+                        db_row.get::<i64>(3)?,
+                        db_row.get::<Option<String>>(4)?,
+                        db_row.get::<String>(5)?,
+                        db_row.get::<Option<String>>(6)?,
+                        db_row.get::<String>(7)?,
+                        db_row.get::<i64>(8)?,
+                        db_row.get::<i64>(9)?,
+                        db_row.get::<i64>(10)?,
+                        db_row.get::<String>(11)?,
+                    ))
+                },
+            )
+            .expect("code-change content query should succeed");
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].0, "instance-a");
+        assert_eq!(values[0].1, 7);
+        assert_eq!(values[0].2, "session-7");
+        assert_eq!(values[0].4, Some("provider/model-7".to_string()));
+        assert_eq!(values[0].5, "opencode");
+        assert_eq!(values[0].7, PAYLOAD_TYPE_PATCH);
+        assert_eq!((values[0].8, values[0].9, values[0].10), (1, 1, 1));
+
+        let replay = load_code_change_batch(&dwh, "repo-a", "instance-a", &[row])
+            .expect("matching replay should succeed");
+        assert_eq!(replay.inserted, 0);
+        assert_eq!(replay.already_present, 1);
+        assert_eq!(
+            dwh.query_map("SELECT COUNT(*) FROM code_changes", (), |db_row| db_row
+                .get::<i64>(0)
+                .map_err(Into::into))
+                .unwrap(),
+            vec![1]
+        );
+
+        clean(&dwh_path);
+    }
+
+    #[test]
+    fn code_changes_identity_conflict_fails_without_overwrite_or_watermark_change() {
+        let dwh_path = unique_path("identity-conflict");
+        let dwh = AgentTraceDwhDb::new_at(&dwh_path).expect("DWH DB should open");
+        let original = source_row(1, &valid_patch("conflict.rs", "original", None));
+        load_code_change_batch(
+            &dwh,
+            "repo-a",
+            "instance-a",
+            std::slice::from_ref(&original),
+        )
+        .expect("original code change should insert");
+
+        let changed = source_row(1, &valid_patch("conflict.rs", "changed", None));
+        let error = load_code_change_batch(&dwh, "repo-a", "instance-a", &[changed])
+            .expect_err("changed synchronized content must fail");
+        assert!(error.to_string().contains("code change integrity conflict"));
+        assert_eq!(
+            read_code_changes_watermark(&dwh, "repo-a", "instance-a").unwrap(),
+            1
+        );
+        assert_eq!(
+            dwh.query_map(
+                "SELECT lines_added, patch_sha256 FROM code_changes",
+                (),
+                |db_row| { Ok((db_row.get::<i64>(0)?, db_row.get::<String>(1)?)) }
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+
+        clean(&dwh_path);
+    }
+
+    #[test]
+    fn code_changes_atomic_destination_failure_rolls_back_dimensions_facts_and_watermark() {
+        let dwh_path = unique_path("atomic");
+        let dwh = AgentTraceDwhDb::new_at(&dwh_path).expect("DWH DB should open");
+        let rows = vec![
+            transform_code_change(&source_row(1, &valid_patch("one.rs", "one", None))).unwrap(),
+            transform_code_change(&source_row(2, &valid_patch("two.rs", "two", None))).unwrap(),
+        ];
+
+        load_transformed_code_change_batch_with_failure(
+            &dwh,
+            "repo-a",
+            "instance-a",
+            &rows,
+            Some(1),
+        )
+        .expect_err("injected destination failure should roll back the batch");
+
+        for table in [
+            "repositories",
+            "source_instances",
+            "code_changes",
+            "etl_watermarks",
+        ] {
+            assert_eq!(
+                dwh.query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |db_row| {
+                    db_row.get::<i64>(0).map_err(Into::into)
+                })
+                .unwrap(),
+                vec![0],
+                "{table} should be rolled back"
+            );
+        }
+
+        let replay = load_code_change_batch(
+            &dwh,
+            "repo-a",
+            "instance-a",
+            &[
+                source_row(1, &valid_patch("one.rs", "one", None)),
+                source_row(2, &valid_patch("two.rs", "two", None)),
+            ],
+        )
+        .expect("the failed batch should be replayable");
+        assert_eq!(replay.inserted, 2);
+        assert_eq!(replay.watermark, 2);
+
+        clean(&dwh_path);
+    }
+
+    #[test]
+    fn code_changes_same_local_identity_coexists_across_source_instances() {
+        let dwh_path = unique_path("lineage");
+        let dwh = AgentTraceDwhDb::new_at(&dwh_path).expect("DWH DB should open");
+        let row = source_row(1, &valid_patch("lineage.rs", "same local id", None));
+
+        load_code_change_batch(&dwh, "repo-a", "instance-a", std::slice::from_ref(&row))
+            .expect("first source instance should load");
+        load_code_change_batch(&dwh, "repo-a", "instance-b", &[row])
+            .expect("second source instance should load independently");
+
+        assert_eq!(
+            dwh.query_map(
+                "SELECT COUNT(*) FROM code_changes WHERE repository_id = 'repo-a'",
+                (),
+                |db_row| db_row.get::<i64>(0).map_err(Into::into)
+            )
+            .unwrap(),
+            vec![2]
+        );
+        assert_eq!(
+            read_code_changes_watermark(&dwh, "repo-a", "instance-a").unwrap(),
+            1
+        );
+        assert_eq!(
+            read_code_changes_watermark(&dwh, "repo-a", "instance-b").unwrap(),
+            1
+        );
+
+        clean(&dwh_path);
     }
 }
