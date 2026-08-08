@@ -1,6 +1,6 @@
 //! Agent trace Turso database adapter.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use turso::Value as TursoValue;
 
 use crate::services::{
@@ -20,6 +20,37 @@ pub mod repository;
 /// `Claude` structured `PostToolUse` payloads use [`PAYLOAD_TYPE_STRUCTURED`].
 pub const PAYLOAD_TYPE_PATCH: &str = "patch";
 pub const PAYLOAD_TYPE_STRUCTURED: &str = "structured";
+
+/// Strictly normalize one stored diff-trace payload into the canonical patch model.
+///
+/// Unified patches and Claude structured payloads share this boundary so ETL callers
+/// receive an explicit error for malformed or unsupported source values. The recent
+/// diff-trace reader adapts those errors back into its existing best-effort skip
+/// accounting.
+pub fn normalize_diff_trace_payload(
+    payload_type: &str,
+    payload: &str,
+    session_id: &str,
+    time_ms: i64,
+    tool_version: Option<&str>,
+) -> Result<ParsedPatch> {
+    match payload_type {
+        PAYLOAD_TYPE_PATCH => parse_patch(payload, Some(session_id)).map_err(Into::into),
+        PAYLOAD_TYPE_STRUCTURED => {
+            let time = u64::try_from(time_ms)
+                .context("structured diff-trace time_ms must be non-negative")?;
+            let payload = serde_json::from_str::<Value>(payload)
+                .context("invalid structured payload JSON")?;
+            match derive_claude_structured_patch("PostToolUse", &payload, time, tool_version) {
+                ClaudeStructuredPatchDerivationResult::Derived(derived) => Ok(derived.patch),
+                ClaudeStructuredPatchDerivationResult::Skipped(reason) => {
+                    bail!("{reason}")
+                }
+            }
+        }
+        other => bail!("unsupported diff-trace payload_type: {other}"),
+    }
+}
 
 /// Parameterized SQL for inserting a captured diff trace payload.
 pub const INSERT_DIFF_TRACE_SQL: &str =
@@ -376,25 +407,23 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
     let mut skipped = Vec::new();
 
     for row in rows {
-        let parse_result = match row.payload_type.as_str() {
-            PAYLOAD_TYPE_PATCH => parse_patch(&row.patch, Some(row.session_id.as_str()))
-                .map_err(|error| skipped_diff_trace_patch_reason(&error)),
-            PAYLOAD_TYPE_STRUCTURED => match serde_json::from_str::<Value>(&row.patch) {
-                Ok(payload) => match derive_claude_structured_patch(
-                    "PostToolUse",
-                    &payload,
-                    u64::try_from(row.time_ms).expect("diff trace time_ms should be non-negative"),
-                    row.tool_version.as_deref(),
-                ) {
-                    ClaudeStructuredPatchDerivationResult::Derived(derived) => Ok(derived.patch),
-                    ClaudeStructuredPatchDerivationResult::Skipped(reason) => {
-                        Err(reason.to_string())
-                    }
-                },
-                Err(error) => Err(format!("invalid structured payload JSON: {error}")),
-            },
-            other => Err(format!("unsupported diff-trace payload_type: {other}")),
-        };
+        let parse_result = normalize_diff_trace_payload(
+            row.payload_type.as_str(),
+            &row.patch,
+            row.session_id.as_str(),
+            row.time_ms,
+            row.tool_version.as_deref(),
+        )
+        .map_err(|error| {
+            if row.payload_type == PAYLOAD_TYPE_PATCH {
+                error
+                    .downcast_ref::<ParseError>()
+                    .map(skipped_diff_trace_patch_reason)
+                    .unwrap_or_else(|| error.to_string())
+            } else {
+                error.to_string()
+            }
+        });
 
         match parse_result {
             Ok(mut patch) => {
@@ -458,6 +487,91 @@ mod tests {
         format!(
             "Index: {path}\n===================================================================\n--- {path}\n+++ {path}\n@@ -0,0 +1,1 @@\n+{content}\n"
         )
+    }
+
+    #[test]
+    fn patch_payload_normalization_strictly_dispatches_supported_payloads() {
+        let patch = valid_patch("notes/strict.md", "strict payload");
+        let parsed_patch =
+            normalize_diff_trace_payload(PAYLOAD_TYPE_PATCH, &patch, "oc_strict", 1_000, None)
+                .expect("unified patch should normalize");
+        assert_eq!(parsed_patch.files.len(), 1);
+        assert_eq!(parsed_patch.files[0].new_path, "notes/strict.md");
+
+        let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "src/services/structured_patch/fixtures/edit_single_hunk/claude-post-tool-use.json",
+        );
+        let structured_payload =
+            fs::read_to_string(fixture_path).expect("structured fixture should be readable");
+        let parsed_structured = normalize_diff_trace_payload(
+            PAYLOAD_TYPE_STRUCTURED,
+            &structured_payload,
+            "cc_strict",
+            1_000,
+            Some("claude-test"),
+        )
+        .expect("structured payload should normalize");
+        assert_eq!(parsed_structured.files.len(), 1);
+        assert_eq!(parsed_structured.files[0].new_path, "poem.md");
+    }
+
+    #[test]
+    fn patch_payload_normalization_rejects_malformed_and_unsupported_payloads() {
+        let malformed_patch = normalize_diff_trace_payload(
+            PAYLOAD_TYPE_PATCH,
+            "Index: notes/malformed.md\n===================================================================\n--- notes/malformed.md\n+++ notes/malformed.md\n@@ malformed @@\n+bad\n",
+            "oc_malformed",
+            1_000,
+            None,
+        )
+        .expect_err("malformed unified patch should fail");
+        assert!(malformed_patch.to_string().contains("patch parse error"));
+
+        let malformed_structured = normalize_diff_trace_payload(
+            PAYLOAD_TYPE_STRUCTURED,
+            "{not-json}",
+            "cc_malformed",
+            1_000,
+            None,
+        )
+        .expect_err("malformed structured payload should fail");
+        assert!(malformed_structured
+            .to_string()
+            .contains("invalid structured payload JSON"));
+
+        let unsupported_structured = normalize_diff_trace_payload(
+            PAYLOAD_TYPE_STRUCTURED,
+            r#"{"hook_event_name":"PostToolUse","session_id":"cc_unknown","tool_name":"Unknown"}"#,
+            "cc_unknown",
+            1_000,
+            None,
+        )
+        .expect_err("unsupported structured tool should fail");
+        assert!(unsupported_structured
+            .to_string()
+            .contains("unsupported Claude tool"));
+
+        let future_payload =
+            normalize_diff_trace_payload("future", "anything", "future-session", 1_000, None)
+                .expect_err("future payload type should fail");
+        assert!(future_payload
+            .to_string()
+            .contains("unsupported diff-trace payload_type: future"));
+    }
+
+    #[test]
+    fn patch_payload_normalization_rejects_negative_structured_time() {
+        let error = normalize_diff_trace_payload(
+            PAYLOAD_TYPE_STRUCTURED,
+            "{}",
+            "cc_negative-time",
+            -1,
+            None,
+        )
+        .expect_err("negative structured time should fail");
+        assert!(error
+            .to_string()
+            .contains("structured diff-trace time_ms must be non-negative"));
     }
 
     fn insert_test_diff_trace(
