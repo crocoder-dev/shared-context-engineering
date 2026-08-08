@@ -1,6 +1,6 @@
 # Agent Trace DWH Turso Sync Replica
 
-`AgentTraceDwhReplica` is the sole owner of a Turso Sync connection to a repository's `agent-trace-sync.db` — a disposable, single-owner local database distinct from both the multiprocess-WAL source `agent-trace.db` (see [agent-trace-db.md](agent-trace-db.md)) and the `Agent Trace DWH`'s own explicit-path adapter (see [agent-trace-dwh-db.md](agent-trace-dwh-db.md)). It is the boundary used by the CLI-independent `AgentTraceEtl` and `ConversationEtl` bridges for local fact/watermark loading; ETL never performs pull/push, credential discovery/persistence, or background sync.
+`AgentTraceDwhReplica` is the sole owner of a Turso Sync connection to a repository's `agent-trace-sync.db` — a disposable, single-owner local database distinct from both the multiprocess-WAL source `agent-trace.db` (see [agent-trace-db.md](agent-trace-db.md)) and the `Agent Trace DWH`'s own explicit-path adapter (see [agent-trace-dwh-db.md](agent-trace-dwh-db.md)). It is the boundary used by the CLI-independent `AgentTraceEtl`, `ConversationEtl`, and `CodeChangesEtl` bridges for local fact/watermark loading; ETL never performs pull/push, credential discovery/persistence, or background sync.
 
 ## Ownership and lock-before-open
 
@@ -45,7 +45,7 @@ Observed real-SDK behavior (recorded across repeated runs, including with tempor
 
 ## ETL separation
 
-`AgentTraceDwhReplica::run_agent_trace_etl()` accepts an already-open repository source and an `AgentTraceEtl` configuration, then delegates while retaining the replica's bridge-lock ownership. The ETL verifies source metadata, extracts short bounded read snapshots, and commits facts plus per-lineage watermarks locally. Pull/push remain explicit operations owned by the caller and are never invoked by ETL.
+`AgentTraceDwhReplica::run_agent_trace_etl()` accepts an already-open repository source and an `AgentTraceEtl` configuration, then delegates while retaining the replica's bridge-lock ownership. `run_code_changes_etl()` provides the same boundary for `CodeChangesEtl` and the source `diff_traces` to `code_changes` bridge. These ETLs verify source metadata, extract short bounded read snapshots, and commit facts plus per-lineage watermarks locally. Pull/push remain explicit operations owned by the caller and are never invoked by ETL. Code-change transformation preserves `session_id` for conversation queries but does not infer `message_id` attribution; see [code-changes-etl.md](code-changes-etl.md).
 
 Control-plane/provisioning calls, OAuth or credential discovery/persistence, token rotation, CLI/lifecycle/setup/doctor/hook wiring, automatic/background sync, archive/retention behavior, and partial sync remain out of scope for this boundary.
 

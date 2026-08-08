@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::services::{
     agent_trace_db::{normalize_diff_trace_payload, repository::RepositoryAgentTraceDb},
     agent_trace_dwh_db::AgentTraceDwhDb,
+    agent_trace_dwh_replica::AgentTraceDwhReplica,
     db::TursoTransaction,
     etl::{
         read_watermark, run_with_source_contention_retry, upsert_watermark, validate_batch_size,
@@ -73,6 +74,67 @@ pub struct CodeChangesBatchStats {
     pub inserted: u64,
     pub already_present: u64,
     pub watermark: i64,
+}
+
+/// Configuration for the incremental `diff_traces` to `code_changes` ETL.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CodeChangesEtl {
+    batch_size: u32,
+}
+
+impl Default for CodeChangesEtl {
+    fn default() -> Self {
+        Self {
+            batch_size: DEFAULT_CODE_CHANGES_ETL_BATCH_SIZE,
+        }
+    }
+}
+
+impl CodeChangesEtl {
+    /// Create a runner with the requested bounded source batch size.
+    pub fn with_batch_size(batch_size: u32) -> Result<Self> {
+        validate_batch_size(batch_size, "code changes ETL")?;
+        Ok(Self { batch_size })
+    }
+
+    /// Return the configured source batch size.
+    pub fn batch_size(self) -> u32 {
+        self.batch_size
+    }
+
+    /// Run the incremental code-change ETL through an open DWH replica.
+    ///
+    /// Source metadata is verified before extraction. The runner owns neither
+    /// replica transport nor credentials: callers explicitly decide when to
+    /// pull or push the lock-owning replica.
+    pub fn run(
+        self,
+        repository_id: &str,
+        source: &RepositoryAgentTraceDb,
+        replica: &AgentTraceDwhReplica,
+    ) -> Result<CodeChangesEtlStats> {
+        let metadata = source
+            .verify_or_initialize_repository_metadata(repository_id)
+            .context("failed to verify Agent Trace source metadata")?;
+        run_with_destination(
+            self,
+            repository_id,
+            &metadata.source_instance_id,
+            source,
+            replica.db(),
+        )
+    }
+}
+
+/// Summary of one complete incremental code-change ETL run.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CodeChangesEtlStats {
+    pub extracted: u64,
+    pub inserted: u64,
+    pub already_present: u64,
+    pub batches: u64,
+    pub before_watermark: i64,
+    pub after_watermark: i64,
 }
 
 const SELECT_DIFF_TRACES_BATCH_SQL: &str =
@@ -358,6 +420,50 @@ fn ensure_lineage(
 }
 
 /// Read the code-change watermark, treating an absent row as zero.
+fn run_with_destination(
+    config: CodeChangesEtl,
+    repository_id: &str,
+    source_instance_id: &str,
+    source: &RepositoryAgentTraceDb,
+    destination: &AgentTraceDwhDb,
+) -> Result<CodeChangesEtlStats> {
+    let before_watermark =
+        read_code_changes_watermark(destination, repository_id, source_instance_id)?;
+    let mut watermark = before_watermark;
+    let mut stats = CodeChangesEtlStats {
+        before_watermark,
+        after_watermark: before_watermark,
+        ..Default::default()
+    };
+
+    loop {
+        let rows = extract_diff_trace_batch(source, watermark, config.batch_size)?;
+        if rows.is_empty() {
+            break;
+        }
+
+        let batch = load_code_change_batch(destination, repository_id, source_instance_id, &rows)?;
+        watermark = batch.watermark;
+        stats.extracted += rows.len() as u64;
+        stats.inserted += batch.inserted;
+        stats.already_present += batch.already_present;
+        stats.batches += 1;
+        stats.after_watermark = watermark;
+    }
+
+    Ok(stats)
+}
+
+/// Run the default-sized incremental code-change ETL through an open replica.
+pub fn run_code_changes_etl(
+    repository_id: &str,
+    source: &RepositoryAgentTraceDb,
+    replica: &AgentTraceDwhReplica,
+) -> Result<CodeChangesEtlStats> {
+    CodeChangesEtl::default().run(repository_id, source, replica)
+}
+
+/// Read the persisted code-change watermark, treating an absent row as zero.
 pub fn read_code_changes_watermark(
     db: &AgentTraceDwhDb,
     repository_id: &str,
@@ -387,11 +493,19 @@ mod tests {
     use std::{
         fs,
         path::PathBuf,
+        sync::mpsc,
+        thread,
         time::{SystemTime, UNIX_EPOCH},
     };
 
     use super::*;
-    use crate::services::agent_trace_db::{DiffTraceInsert, PAYLOAD_TYPE_PATCH};
+    use crate::services::{
+        agent_trace_db::{
+            DiffTraceInsert, InsertMessageInsert, InsertPartInsert, MessageRole, PartType,
+            PAYLOAD_TYPE_PATCH,
+        },
+        conversation_etl::{self, ConversationEtl},
+    };
 
     fn unique_path(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -430,6 +544,371 @@ mod tests {
             tool_version: Some("1.2.3".to_string()),
             payload_type: PAYLOAD_TYPE_PATCH.to_string(),
         }
+    }
+
+    fn insert_source_diff_trace(db: &RepositoryAgentTraceDb, id: i64, session_id: &str) {
+        db.insert_diff_trace(DiffTraceInsert {
+            time_ms: id,
+            session_id,
+            patch: &valid_patch(&format!("file-{id}.rs"), "added", None),
+            model_id: Some("provider/model"),
+            tool_name: "opencode",
+            tool_version: Some("1.2.3"),
+            payload_type: PAYLOAD_TYPE_PATCH,
+        })
+        .expect("diff trace insert should succeed");
+    }
+
+    #[test]
+    fn code_changes_etl_defaults_and_validates_batch_size() {
+        assert_eq!(CodeChangesEtl::default().batch_size(), 500);
+        assert_eq!(CodeChangesEtl::with_batch_size(2).unwrap().batch_size(), 2);
+        assert!(CodeChangesEtl::with_batch_size(0).is_err());
+    }
+
+    #[test]
+    fn code_changes_etl_run_processes_incremental_growth_and_noop_reruns() {
+        let source_path = unique_path("run-source");
+        let dwh_path = unique_path("run-dwh");
+        let source = RepositoryAgentTraceDb::new_at(&source_path).expect("source DB should open");
+        let destination = AgentTraceDwhDb::new_at(&dwh_path).expect("DWH DB should open");
+        let metadata = source
+            .verify_or_initialize_repository_metadata("repo-a")
+            .expect("source metadata should initialize");
+
+        for id in 1..=3 {
+            insert_source_diff_trace(&source, id, "session-growth");
+        }
+
+        let config = CodeChangesEtl::with_batch_size(2).unwrap();
+        let first = run_with_destination(
+            config,
+            "repo-a",
+            &metadata.source_instance_id,
+            &source,
+            &destination,
+        )
+        .expect("initial code-change ETL should succeed");
+        assert_eq!(
+            first,
+            CodeChangesEtlStats {
+                extracted: 3,
+                inserted: 3,
+                already_present: 0,
+                batches: 2,
+                before_watermark: 0,
+                after_watermark: 3,
+            }
+        );
+
+        for id in 4..=5 {
+            insert_source_diff_trace(&source, id, "session-growth");
+        }
+        let growth = run_with_destination(
+            config,
+            "repo-a",
+            &metadata.source_instance_id,
+            &source,
+            &destination,
+        )
+        .expect("growth code-change ETL should succeed");
+        assert_eq!(growth.extracted, 2);
+        assert_eq!(growth.inserted, 2);
+        assert_eq!(growth.batches, 1);
+        assert_eq!(growth.before_watermark, 3);
+        assert_eq!(growth.after_watermark, 5);
+
+        let noop = run_with_destination(
+            config,
+            "repo-a",
+            &metadata.source_instance_id,
+            &source,
+            &destination,
+        )
+        .expect("a no-op code-change rerun should succeed");
+        assert_eq!(noop.extracted, 0);
+        assert_eq!(noop.inserted, 0);
+        assert_eq!(noop.already_present, 0);
+        assert_eq!(noop.batches, 0);
+        assert_eq!(noop.before_watermark, 5);
+        assert_eq!(noop.after_watermark, 5);
+
+        clean(&source_path);
+        clean(&dwh_path);
+    }
+
+    #[test]
+    fn code_changes_etl_replays_watermark_behind_failed_transformation() {
+        let source_path = unique_path("run-invalid");
+        let dwh_path = unique_path("run-invalid-dwh");
+        let source = RepositoryAgentTraceDb::new_at(&source_path).expect("source DB should open");
+        let destination = AgentTraceDwhDb::new_at(&dwh_path).expect("DWH DB should open");
+        let metadata = source
+            .verify_or_initialize_repository_metadata("repo-a")
+            .expect("source metadata should initialize");
+        insert_source_diff_trace(&source, 1, "session-invalid");
+        source
+            .insert_diff_trace(DiffTraceInsert {
+                time_ms: 2,
+                session_id: "session-invalid",
+                patch: "Index: notes/malformed.md\n===================================================================\n--- notes/malformed.md\n+++ notes/malformed.md\n@@ malformed @@\n+bad\n",
+                model_id: None,
+                tool_name: "opencode",
+                tool_version: None,
+                payload_type: PAYLOAD_TYPE_PATCH,
+            })
+            .expect("invalid diff trace insert should succeed");
+        insert_source_diff_trace(&source, 3, "session-invalid");
+
+        let error = run_with_destination(
+            CodeChangesEtl::with_batch_size(3).unwrap(),
+            "repo-a",
+            &metadata.source_instance_id,
+            &source,
+            &destination,
+        )
+        .expect_err("invalid transformation should fail the batch");
+        assert!(error.to_string().contains("patch"));
+        assert_eq!(
+            read_code_changes_watermark(&destination, "repo-a", &metadata.source_instance_id)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            destination
+                .query_map("SELECT COUNT(*) FROM code_changes", (), |row| {
+                    row.get::<i64>(0).map_err(Into::into)
+                })
+                .unwrap(),
+            vec![0]
+        );
+
+        source
+            .execute(
+                "UPDATE diff_traces SET patch = ?1 WHERE id = 2",
+                (valid_patch("fixed.rs", "fixed", None),),
+            )
+            .expect("invalid source row should be repairable for replay");
+        let replay = run_with_destination(
+            CodeChangesEtl::with_batch_size(3).unwrap(),
+            "repo-a",
+            &metadata.source_instance_id,
+            &source,
+            &destination,
+        )
+        .expect("repaired source rows should replay successfully");
+        assert_eq!(replay.extracted, 3);
+        assert_eq!(replay.inserted, 3);
+        assert_eq!(replay.after_watermark, 3);
+
+        clean(&source_path);
+        clean(&dwh_path);
+    }
+
+    #[test]
+    fn code_changes_etl_runner_keeps_source_instance_watermarks_independent() {
+        let first_source_path = unique_path("lineage-runner-a");
+        let second_source_path = unique_path("lineage-runner-b");
+        let dwh_path = unique_path("lineage-runner-dwh");
+        let first_source =
+            RepositoryAgentTraceDb::new_at(&first_source_path).expect("first source should open");
+        let second_source =
+            RepositoryAgentTraceDb::new_at(&second_source_path).expect("second source should open");
+        let destination = AgentTraceDwhDb::new_at(&dwh_path).expect("DWH DB should open");
+        let first_metadata = first_source
+            .verify_or_initialize_repository_metadata("repo-a")
+            .expect("first source metadata should initialize");
+        let second_metadata = second_source
+            .verify_or_initialize_repository_metadata("repo-a")
+            .expect("second source metadata should initialize");
+        assert_ne!(
+            first_metadata.source_instance_id, second_metadata.source_instance_id,
+            "independent source databases must have independent lineages"
+        );
+        insert_source_diff_trace(&first_source, 1, "session-first-source");
+        insert_source_diff_trace(&second_source, 1, "session-second-source");
+
+        let config = CodeChangesEtl::default();
+        let first = run_with_destination(
+            config,
+            "repo-a",
+            &first_metadata.source_instance_id,
+            &first_source,
+            &destination,
+        )
+        .expect("first source should load");
+        let second = run_with_destination(
+            config,
+            "repo-a",
+            &second_metadata.source_instance_id,
+            &second_source,
+            &destination,
+        )
+        .expect("second source should load independently");
+        assert_eq!(first.inserted, 1);
+        assert_eq!(second.inserted, 1);
+        assert_eq!(
+            destination
+                .query_map("SELECT COUNT(*) FROM code_changes", (), |row| {
+                    row.get::<i64>(0).map_err(Into::into)
+                })
+                .unwrap(),
+            vec![2]
+        );
+        assert_eq!(
+            read_code_changes_watermark(&destination, "repo-a", &first_metadata.source_instance_id)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            read_code_changes_watermark(
+                &destination,
+                "repo-a",
+                &second_metadata.source_instance_id
+            )
+            .unwrap(),
+            1
+        );
+
+        clean(&first_source_path);
+        clean(&second_source_path);
+        clean(&dwh_path);
+    }
+
+    #[test]
+    fn code_changes_session_relationship_preserves_session_only_conversation_relationship() {
+        let source_path = unique_path("session-relationship-source");
+        let dwh_path = unique_path("session-relationship-dwh");
+        let source = RepositoryAgentTraceDb::new_at(&source_path).expect("source DB should open");
+        let destination = AgentTraceDwhDb::new_at(&dwh_path).expect("DWH DB should open");
+        let metadata = source
+            .verify_or_initialize_repository_metadata("repo-a")
+            .expect("source metadata should initialize");
+        source
+            .insert_message(InsertMessageInsert {
+                session_id: "session-join".to_string(),
+                message_id: "message-1".to_string(),
+                role: MessageRole::User,
+                generated_at_unix_ms: 1_000,
+            })
+            .expect("source message insert should succeed");
+        source
+            .insert_part(InsertPartInsert {
+                part_type: PartType::Text,
+                text: "hello".to_string(),
+                session_id: "session-join".to_string(),
+                message_id: "message-1".to_string(),
+                generated_at_unix_ms: 1_001,
+            })
+            .expect("source part insert should succeed");
+        insert_source_diff_trace(&source, 1, "session-join");
+
+        conversation_etl::run_with_destination(
+            ConversationEtl::default(),
+            "repo-a",
+            &metadata.source_instance_id,
+            &source,
+            &destination,
+        )
+        .expect("conversation ETL should load the session context");
+        let code_changes = run_with_destination(
+            CodeChangesEtl::default(),
+            "repo-a",
+            &metadata.source_instance_id,
+            &source,
+            &destination,
+        )
+        .expect("code-change ETL should load the session context");
+        assert_eq!(code_changes.inserted, 1);
+
+        let joined = destination
+            .query_map(
+                "SELECT c.session_id, m.message_id, p.text
+                 FROM code_changes c
+                 JOIN messages m ON m.repository_id = c.repository_id
+                    AND m.session_id = c.session_id
+                 JOIN message_parts p ON p.repository_id = m.repository_id
+                    AND p.session_id = m.session_id AND p.message_id = m.message_id
+                 WHERE c.repository_id = ?1",
+                ("repo-a",),
+                |row| {
+                    Ok((
+                        row.get::<String>(0)?,
+                        row.get::<String>(1)?,
+                        row.get::<String>(2)?,
+                    ))
+                },
+            )
+            .expect("session-level code-change query should succeed");
+        assert_eq!(
+            joined,
+            vec![(
+                String::from("session-join"),
+                String::from("message-1"),
+                String::from("hello")
+            )]
+        );
+        let code_changes_schema = destination
+            .query_map(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'code_changes'",
+                (),
+                |row| row.get::<String>(0).map_err(Into::into),
+            )
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(!code_changes_schema.contains("message_id"));
+
+        clean(&source_path);
+        clean(&dwh_path);
+    }
+
+    #[test]
+    fn code_changes_lineage_contention_source_snapshot_does_not_block_concurrent_writers() {
+        let source_path = unique_path("source-contention");
+        let source = RepositoryAgentTraceDb::new_at(&source_path).expect("source DB should open");
+        insert_source_diff_trace(&source, 1, "session-contention");
+
+        let (reader_ready_tx, reader_ready_rx) = mpsc::channel();
+        let (release_reader_tx, release_reader_rx) = mpsc::channel();
+        let reader_path = source_path.clone();
+        let reader = thread::spawn(move || {
+            let reader_db = RepositoryAgentTraceDb::open_without_migrations_at(&reader_path)
+                .expect("reader source DB should reopen");
+            reader_db.read_transaction(|txn| {
+                let rows = txn.query_map(
+                    SELECT_DIFF_TRACES_BATCH_SQL,
+                    (0_i64, 10_i64),
+                    source_diff_trace_from_row,
+                )?;
+                reader_ready_tx
+                    .send(rows)
+                    .expect("reader should signal its snapshot");
+                release_reader_rx
+                    .recv()
+                    .expect("reader should wait while holding its snapshot");
+                Ok(())
+            })
+        });
+
+        let rows = reader_ready_rx
+            .recv()
+            .expect("test should observe the source snapshot");
+        let writer = RepositoryAgentTraceDb::open_without_migrations_at(&source_path)
+            .expect("writer source DB should reopen");
+        insert_source_diff_trace(&writer, 2, "session-contention");
+        release_reader_tx
+            .send(())
+            .expect("test should release the source snapshot");
+        reader
+            .join()
+            .expect("reader should not panic")
+            .expect("reader transaction should commit");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(extract_diff_trace_batch(&source, 0, 10).unwrap().len(), 2);
+
+        clean(&source_path);
     }
 
     #[test]

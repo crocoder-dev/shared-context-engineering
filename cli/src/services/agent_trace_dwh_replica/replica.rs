@@ -20,6 +20,7 @@ use crate::services::{
     agent_trace_dwh_db::{AgentTraceDwhDb, AgentTraceDwhSchemaState},
     agent_trace_dwh_replica::lock::{BridgeLock, BridgeLockError},
     agent_trace_etl::{AgentTraceEtl, AgentTraceEtlStats},
+    code_changes_etl::{CodeChangesEtl, CodeChangesEtlStats},
 };
 
 /// Explicit caller-supplied configuration for opening an
@@ -173,6 +174,17 @@ impl AgentTraceDwhReplica {
         source: &RepositoryAgentTraceDb,
         etl: AgentTraceEtl,
     ) -> anyhow::Result<AgentTraceEtlStats> {
+        etl.run(repository_id, source, self)
+    }
+
+    /// Run the incremental code-change ETL while this replica owns its bridge
+    /// lock. Pull/push and credential handling remain explicit caller work.
+    pub fn run_code_changes_etl(
+        &self,
+        repository_id: &str,
+        source: &RepositoryAgentTraceDb,
+        etl: CodeChangesEtl,
+    ) -> anyhow::Result<CodeChangesEtlStats> {
         etl.run(repository_id, source, self)
     }
 
