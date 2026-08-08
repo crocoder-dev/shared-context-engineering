@@ -598,6 +598,21 @@ impl<M: DbSpec> TursoDb<M> {
         self.core.run_migrations()
     }
 
+    /// Run only the first `count` embedded migrations, in order.
+    ///
+    /// Testing seam for building a fixture database that predates the
+    /// migrations after `count`, without exposing raw batch-SQL execution.
+    #[cfg(test)]
+    pub fn run_migrations_up_to(&self, count: usize) -> Result<()> {
+        let migrations = &M::migrations()[..count];
+        run_embedded_migrations(
+            &self.core.conn,
+            &self.core.runtime,
+            M::db_name(),
+            migrations,
+        )
+    }
+
     /// Check migration metadata for problems that would prevent safe hook
     /// runtime access.
     ///

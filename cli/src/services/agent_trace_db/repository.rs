@@ -436,6 +436,72 @@ mod tests {
     }
 
     #[test]
+    fn independently_created_databases_for_the_same_repository_receive_different_source_instance_ids(
+    ) {
+        let first_db_path = unique_test_db_path("independent-a");
+        let second_db_path = unique_test_db_path("independent-b");
+        let repository_id = "a".repeat(64);
+
+        let first_db = RepositoryAgentTraceDb::new_at(&first_db_path)
+            .expect("first repository DB should open");
+        let second_db = RepositoryAgentTraceDb::new_at(&second_db_path)
+            .expect("second repository DB should open");
+
+        let first = first_db
+            .verify_or_initialize_repository_metadata(&repository_id)
+            .expect("first metadata initialization should succeed");
+        let second = second_db
+            .verify_or_initialize_repository_metadata(&repository_id)
+            .expect("second metadata initialization should succeed");
+
+        assert_eq!(first.repository_id, second.repository_id);
+        assert_ne!(
+            first.source_instance_id, second.source_instance_id,
+            "independently created database files must not share a source-instance identity"
+        );
+
+        remove_test_db(&first_db_path);
+        remove_test_db(&second_db_path);
+    }
+
+    #[test]
+    fn baseline_only_fixture_gains_a_stable_source_instance_id_through_setup_migration() {
+        let db_path = unique_test_db_path("baseline-upgrade");
+        let repository_id = "a".repeat(64);
+
+        let db = RepositoryAgentTraceDb::open_without_migrations_at(&db_path)
+            .expect("repository DB should open without migrations");
+        db.run_migrations_up_to(1)
+            .expect("baseline migration should apply");
+        db.execute(INSERT_REPOSITORY_METADATA_SQL, (repository_id.as_str(),))
+            .expect("baseline metadata row should seed");
+
+        db.run_migrations()
+            .expect("setup should apply the remaining migration");
+        let first = db
+            .verify_or_initialize_repository_metadata(&repository_id)
+            .expect("setup initialization should succeed");
+        assert!(
+            is_valid_source_instance_id(&first.source_instance_id),
+            "an upgraded baseline database should receive a valid source-instance identity"
+        );
+        drop(db);
+
+        let reopened = RepositoryAgentTraceDb::open_without_migrations_at(&db_path)
+            .expect("repository DB should reopen");
+        let second = reopened
+            .verify_or_initialize_repository_metadata(&repository_id)
+            .expect("reopen validation should succeed");
+        assert_eq!(
+            first.source_instance_id, second.source_instance_id,
+            "an upgraded source-instance identity must remain stable across reopen"
+        );
+
+        remove_test_db(&db_path);
+    }
+
+
+    #[test]
     fn trace_tables_have_no_checkout_id_columns() {
         let db_path = unique_test_db_path("no-checkout-id");
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");

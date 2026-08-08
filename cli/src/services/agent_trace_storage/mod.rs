@@ -624,6 +624,61 @@ mod tests {
         std::fs::remove_dir_all(&repo).expect("clean up repo");
     }
 
+    fn build_baseline_only_fixture(db_path: &Path, repository_id: &str) {
+        let db = RepositoryAgentTraceDb::open_without_migrations_at(db_path)
+            .expect("fixture DB should open without migrations");
+        db.run_migrations_up_to(1)
+            .expect("baseline migration should apply");
+        db.execute(
+            "INSERT INTO repository_metadata (id, repository_id) VALUES (1, ?1)",
+            (repository_id,),
+        )
+        .expect("baseline metadata row should seed");
+    }
+
+    #[test]
+    fn hook_runtime_resolution_fails_with_setup_guidance_on_a_baseline_only_schema_without_mutating_it(
+    ) {
+        let state_root = unique_temp_dir("state-hook-baseline-only");
+        let repo =
+            init_git_repo_with_remote("hook-baseline-only", "git@github.com:acme/widgets.git");
+
+        let identity = resolve_repository_identity(&repo, None, "origin")
+            .expect("repository identity should resolve");
+        let db_path =
+            agent_trace_db_path_for_repository_at(&state_root, &identity.identity.repository_id)
+                .expect("db path should resolve");
+        build_baseline_only_fixture(&db_path, &identity.identity.repository_id);
+
+        let Err(error) = resolve_agent_trace_storage_for_hook_runtime_at_state_root(
+            &context_for(&repo),
+            &state_root,
+        ) else {
+            panic!("hook runtime resolution must not silently migrate an old-schema database")
+        };
+        assert!(
+            error.to_string().contains("sce setup"),
+            "unexpected error: {error}"
+        );
+
+        let applied_ids = RepositoryAgentTraceDb::open_without_migrations_at(&db_path)
+            .expect("fixture DB should reopen")
+            .query_map(
+                "SELECT id FROM __sce_migrations ORDER BY id ASC",
+                (),
+                |row| row.get::<String>(0).map_err(Into::into),
+            )
+            .expect("migration metadata query should succeed");
+        assert_eq!(
+            applied_ids,
+            vec![String::from("001_repository_schema")],
+            "hook runtime resolution must not apply the missing migration"
+        );
+
+        std::fs::remove_dir_all(&state_root).expect("clean up state root");
+        std::fs::remove_dir_all(&repo).expect("clean up repo");
+    }
+
     #[test]
     fn hook_runtime_resolution_succeeds_and_reuses_metadata_after_setup() {
         let state_root = unique_temp_dir("state-hook-after-setup");
