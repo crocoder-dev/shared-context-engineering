@@ -18,4 +18,17 @@ Each destination batch uses one `BEGIN IMMEDIATE` transaction for repository/sou
 
 `AgentTraceDwhReplica` remains the sole owner of the sync connection and bridge lock. Its `run_agent_trace_etl()` method delegates to `AgentTraceEtl` while preserving that ownership; ETL never pulls or pushes remote state. The local sync database is a durable transaction/replay boundary and is reconstructible from the remote DWH: crash or local-file loss is handled by reopening/replaying source rows and, when required, remote reconstruction. Future message, message-part, and code-change ETLs must preserve the same short-source-transaction, exact-cursor, and local fact-plus-watermark invariants.
 
+## Source contention retry
+
+A private `run_with_source_contention_retry` wraps each extraction attempt with a bounded backoff policy (5 attempts, 1s per-attempt timeout, 25ms..200ms backoff — deliberately smaller than the connection-open retry budget in `crate::services::db`, since contention on a non-blocking read is expected to be rare and self-clearing).
+
+`is_transient_source_contention` classifies only two textual forms as retryable:
+
+- Turso's typed `Busy` error, whose SDK-mapped message is exactly `"database is locked"`.
+- The narrow `"table is locked"` textual form used when the underlying `LimboError::TableLocked` case falls through to a generic error variant (its Display is `"Runtime error: database table is locked"`).
+
+Every other error — including genuine extraction/mapping failures such as a missing table or column — fails on the first attempt without retry. Because `TursoTransaction::execute`/`query_map` (used inside `read_transaction`) wrap the underlying `turso::Error` into a formatted `anyhow::Error` message rather than preserving it as a typed source, classification matches on the resulting message text; this is why the SDK's textual "database is locked" content, not a `downcast_ref::<turso::Error>()`, is the retry signal.
+
+Before every retried attempt (not the first), the retry loop calls `TursoDb::rollback_best_effort()` (`pub(crate)` in `cli/src/services/db/mod.rs`) to clear a stale failed transaction before issuing the next `BEGIN`.
+
 See also: [agent-trace-db.md](agent-trace-db.md), [agent-trace-dwh-db.md](agent-trace-dwh-db.md), [agent-trace-dwh-replica.md](agent-trace-dwh-replica.md), [shared-turso-db.md](shared-turso-db.md), [../overview.md](../overview.md), [../architecture.md](../architecture.md), [../glossary.md](../glossary.md)
