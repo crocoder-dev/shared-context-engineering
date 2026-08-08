@@ -2,6 +2,8 @@
 
 `cli/src/services/agent_trace_db/mod.rs` defines the shared Agent Trace insert payloads and helpers consumed by the repository-scoped adapter. `RepositoryAgentTraceDb` (see [Repository-scoped adapter seam](#repository-scoped-adapter-seam)) is the sole Agent Trace DB adapter; the former checkout-scoped `AgentTraceDb` / `AgentTraceDbSpec` type, its `open_at` / `open_for_hooks_without_migrations` constructors, and its 15-file migration chain were removed by the `retire-legacy-agent-trace-db` plan (see [context/decisions/2026-07-17-retire-legacy-agent-trace-db.md](../decisions/2026-07-17-retire-legacy-agent-trace-db.md)).
 
+This is the live-capture **source** schema written by hooks and `sce trace` — one row family per repository, mutated on every capture event. It is a distinct database boundary from the append-oriented Agent Trace **DWH destination** schema, which is never written by hooks or any live capture path and exists only for a future ETL consumer to ingest into. See [agent-trace-dwh-db.md](agent-trace-dwh-db.md).
+
 ## Shared insert/query payloads
 
 `mod.rs` owns the typed payloads and SQL constants that `RepositoryAgentTraceDb` delegates to:
@@ -227,4 +229,4 @@ Post-commit intersection rows are written by the active `post-commit` hook flow 
 - The commit-msg evidence gate invokes the preflight only when the attribution gate passes (`attribution_hooks_enabled && !sce_disabled`); both `NoOverlap` and `Error` map to `ai_contribution_present = false`, suppressing the trailer. There is no fail-open mode.
 - Fixture-backed unit coverage for `patches_have_overlap` lives in `cli/src/services/agent_trace/tests.rs`, covering overlap, no-overlap, empty/untouched patches, and Claude structured-patch-derived input.
 
-See also: [shared-turso-db.md](shared-turso-db.md), [local-db.md](local-db.md), [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md), [agent-trace-commit-msg-coauthor-policy.md](agent-trace-commit-msg-coauthor-policy.md), [context-map.md](../context-map.md)
+See also: [shared-turso-db.md](shared-turso-db.md), [local-db.md](local-db.md), [agent-trace-dwh-db.md](agent-trace-dwh-db.md), [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md), [agent-trace-commit-msg-coauthor-policy.md](agent-trace-commit-msg-coauthor-policy.md), [context-map.md](../context-map.md)

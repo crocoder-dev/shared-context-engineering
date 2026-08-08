@@ -8,17 +8,17 @@ Document the source-versus-DWH architecture and the composite identities that ma
 
 ## Acceptance criteria
 
-- [ ] AC1: A fresh Agent Trace DWH database initializes exactly the `repositories`, `source_instances`, `etl_watermarks`, `messages`, `message_parts`, `agent_traces`, and `code_changes` contract tables through a dedicated migration set, and DWH migration metadata reports the baseline migration as applied.
+- [x] AC1: A fresh Agent Trace DWH database initializes exactly the `repositories`, `source_instances`, `etl_watermarks`, `messages`, `message_parts`, `agent_traces`, and `code_changes` contract tables through a dedicated migration set, and DWH migration metadata reports the baseline migration as applied.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_dwh_db`
-- [ ] AC2: The DWH uniqueness contract admits overlapping local part and diff-trace integer IDs across source instances and repositories, while rejecting duplicate message logical identities and duplicate Agent Trace logical identities.
+- [x] AC2: The DWH uniqueness contract admits overlapping local part and diff-trace integer IDs across source instances and repositories, while rejecting duplicate message logical identities and duplicate Agent Trace logical identities.
   - Validate: targeted DWH schema tests insert the requested coexistence and duplicate cases and pass under `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_dwh_db`
-- [ ] AC3: Watermarks are independently keyed by repository, source instance, and extensible source-table text, and deterministic message-part reconstruction uses the declared repository/session/message/time/source-part ordering index.
+- [x] AC3: Watermarks are independently keyed by repository, source instance, and extensible source-table text, and deterministic message-part reconstruction uses the declared repository/session/message/time/source-part ordering index.
   - Validate: targeted DWH schema tests exercise independent watermark rows, inspect the required index, and assert deterministic query ordering under `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_dwh_db`
-- [ ] AC4: The DWH schema stores complete message-part text and Agent Trace JSON without truncation or normalization columns, stores the required hash fields, preserves source timestamps as integers, and adds only the requested access-pattern indexes without ingestion-order foreign keys.
+- [x] AC4: The DWH schema stores complete message-part text and Agent Trace JSON without truncation or normalization columns, stores the required hash fields, preserves source timestamps as integers, and adds only the requested access-pattern indexes without ingestion-order foreign keys.
   - Validate: inspect `cli/migrations/agent-trace-dwh/001_dwh_schema.sql` and run the fresh-schema assertions in the targeted DWH tests.
-- [ ] AC5: A dedicated DWH database adapter can initialize an explicitly selected database and verify migration readiness without owning a sync URL, credentials, ETL state transitions, bridge locking, or CLI lifecycle behavior.
+- [x] AC5: A dedicated DWH database adapter can initialize an explicitly selected database and verify migration readiness without owning a sync URL, credentials, ETL state transitions, bridge locking, or CLI lifecycle behavior.
   - Validate: targeted adapter tests initialize a fresh explicit-path DWH DB and pass its readiness check; inspect the adapter for the absence of sync/control-plane fields and command wiring.
-- [ ] AC6: Durable architecture documentation distinguishes repository `agent-trace.db` source storage from the append-oriented Agent Trace DWH and records every repository/source/message/part/trace/code-change identity rule plus the deterministic idempotent ETL intent.
+- [x] AC6: Durable architecture documentation distinguishes repository `agent-trace.db` source storage from the append-oriented Agent Trace DWH and records every repository/source/message/part/trace/code-change identity rule plus the deterministic idempotent ETL intent.
   - Validate: inspect the updated Agent Trace database, shared Turso, architecture, context-map, and glossary documentation for the DWH boundary and identity contract.
 
 ### Full validation
@@ -59,14 +59,48 @@ Document the source-versus-DWH architecture and the composite identities that ma
   - Identity design (recorded as approved assumptions): message logical identity is `(repository_id, session_id, message_id)` and Agent Trace logical identity is `(repository_id, agent_trace_id)` — both deliberately exclude `source_instance_id` so re-ingestion of the same deterministic logical event from an independently created source database stays idempotent. Message-part and code-change identity is `(repository_id, source_instance_id, source_part_id | source_diff_trace_id)` — these are raw local autoincrement source IDs, not stable across independently created source databases, so uniqueness is scoped per source instance, letting the same local integer ID coexist across sources/repositories. Hash columns (`text_sha256`, `trace_json_sha256`, `patch_sha256`) store integrity hashes without computing them.
   - Verification outcome: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_dwh_db` — 9 passed, 0 failed. `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` — clean. `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml` applied.
 
-- [ ] T02: `Document the DWH architecture and identity contract` (status:todo)
+- [x] T02: `Document the DWH architecture and identity contract` (status:done)
   - Task ID: T02
   - Goal: Make the DWH's destination role, append-oriented ETL design, identities, schema/index contract, and deferred integration boundaries durable and discoverable.
   - Boundaries (in/out of scope): In — focused DWH context, context-map registration, source-DWH distinction in Agent Trace DB context, shared Turso consumer documentation, architecture/glossary updates, and notes on SQLite/Turso constraints or ETL prerequisites discovered while implementing T01. Out — implementation changes, operator runbooks for unimplemented sync/ETL, and speculative tables or query contracts.
   - Dependencies: T01
   - Done when: Documentation names the final seven-table schema, all six identity/uniqueness rules, all required indexes, UTC metadata/source-integer timestamp split, no-FK out-of-order ingestion policy, verbatim JSON/full-part-text preservation, hash-column purpose, per-source/table watermark semantics, any discovered SQLite/Turso limitations, and anything the later ETL framework must account for.
   - Verification notes (commands or checks): inspect links from `context/context-map.md`; compare documented schema, identities, and indexes against `cli/migrations/agent-trace-dwh/001_dwh_schema.sql` and the DWH adapter tests.
+  - Implementation evidence: T01's commit (`7913798`) already added the focused `context/sce/agent-trace-dwh-db.md` context (seven-table schema, both identity/uniqueness scopes, required indexes including the deterministic message-part ordering index, UTC-metadata-vs-source-integer timestamp split, no-FK ingestion policy, verbatim text/JSON preservation, and hash-column purpose), registered it in `context/context-map.md`, and updated `context/architecture.md`, `context/glossary.md`, and `context/sce/shared-turso-db.md` (fourth concrete `TursoDb` consumer) — but left `context/sce/agent-trace-db.md` without any source-vs-DWH distinction or link, contradicting the plan's context-sync bullet. This task closed that gap: added an intro sentence to `context/sce/agent-trace-db.md` distinguishing the live-capture repository source schema from the append-oriented DWH destination schema, and added `agent-trace-dwh-db.md` to its `See also` list. No new SQLite/Turso limitations or ETL prerequisites were discovered beyond what T01's documentation already recorded (no-FK ingestion policy, provenance tuple `(repository_id, source_instance_id, source_table, source_row_id)` already documented in `agent-trace-db.md`'s source-instance section), so no additional notes were added for those.
+  - Verification outcome: Inspected `context/context-map.md` — both `agent-trace-db.md` and `agent-trace-dwh-db.md` entries present and accurate. Confirmed bidirectional links resolve: `agent-trace-db.md` → `agent-trace-dwh-db.md` and back. Compared documented schema/identities/indexes in `agent-trace-dwh-db.md` against `cli/migrations/agent-trace-dwh/001_dwh_schema.sql` and `cli/src/services/agent_trace_dwh_db/mod.rs` tests — all seven tables, both identity scopes, all eight indexes, and the hash/timestamp contract match.
 
 ## Open questions
 
 None. The request fixes the schema scope, identity rules, access patterns, non-goals, and verification cases; remaining adapter-path, retry-policy, timestamp-default, and test-placement choices follow current repository seams and are recorded as assumptions.
+
+## Validation Report
+
+**Status:** validated
+**Date:** 2026-08-08
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all checks passed: cli-tests, cli-clippy, cli-fmt)
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed: 101 files)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_dwh_db` -> exit 0 (9 passed, 0 failed, 0 ignored)
+
+### Scaffolding removed
+
+- None.
+
+### Success-criteria verification
+
+- [x] AC1: Fresh DWH DB initializes exactly the seven contract tables and records the baseline migration -> `fresh_dwh_database_initializes_exactly_the_contract_tables_and_records_the_baseline` test passed.
+- [x] AC2: Uniqueness contract admits overlapping local part/diff-trace IDs across sources while rejecting duplicate message/trace logical identities -> `message_part_and_code_change_local_ids_coexist_across_source_instances_and_repositories`, `duplicate_message_logical_identity_is_rejected_regardless_of_source_instance`, `duplicate_agent_trace_logical_identity_is_rejected_regardless_of_source_instance` tests passed.
+- [x] AC3: Watermarks independently keyed by repository/source/table; deterministic message-part ordering index -> `watermarks_are_independently_keyed_by_repository_source_instance_and_source_table`, `required_dwh_indexes_exist`, `equal_time_message_parts_query_deterministically_by_source_part_id` tests passed.
+- [x] AC4: Schema stores full text/JSON, required hash fields, integer source timestamps, requested indexes, no ingestion-order FKs -> inspected `cli/migrations/agent-trace-dwh/001_dwh_schema.sql`: `text`/`trace_json` columns unbounded, `text_sha256`/`trace_json_sha256`/`patch_sha256` present, `generated_at_unix_ms`/`commit_time_ms`/`time_ms` are `INTEGER`, no `FOREIGN KEY` clauses; `dwh_fact_tables_have_no_ingestion_order_foreign_keys` test passed.
+- [x] AC5: Dedicated adapter initializes an explicit-path DB and verifies readiness without sync/credentials/ETL/lock/CLI ownership -> `fresh_dwh_database_initializes_exactly_the_contract_tables_and_records_the_baseline` and `spec_path_constructor_is_rejected` tests passed; inspected `cli/src/services/agent_trace_dwh_db/mod.rs` module doc confirming no sync URL, credentials, ETL state transitions, bridge locking, or CLI lifecycle behavior.
+- [x] AC6: Durable docs distinguish source vs. DWH and record identity/index/timestamp/hash contract -> inspected `context/sce/agent-trace-db.md` (source-vs-DWH distinction and link), `context/sce/agent-trace-dwh-db.md`, `context/context-map.md`, `context/architecture.md`, `context/glossary.md`, and `context/sce/shared-turso-db.md`; all contain the DWH boundary, seven-table schema, both identity scopes, and required indexes.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- None identified.
