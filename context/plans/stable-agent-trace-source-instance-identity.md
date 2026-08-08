@@ -10,21 +10,21 @@ Add a repository Agent Trace migration after the existing baseline without rewri
 
 How this plan is proven complete. Each criterion is observable and names the check that proves it. `/validate` runs these checks; no task in the stack performs final validation.
 
-- [ ] AC1: A newly initialized repository Agent Trace database stores the expected `repository_id` and one valid, non-empty UUID-style `source_instance_id`; reopening it and repeating setup never changes either value.
+- [x] AC1: A newly initialized repository Agent Trace database stores the expected `repository_id` and one valid, non-empty UUID-style `source_instance_id`; reopening it and repeating setup never changes either value.
   - Validate: Repository adapter/storage tests create, reopen, and repeatedly initialize the same database and assert identical typed metadata values.
-- [ ] AC2: Two independently created database files for the same `repository_id` receive different source-instance identities, while clones/worktrees that resolve the same physical repository-scoped file observe the same identity.
+- [x] AC2: Two independently created database files for the same `repository_id` receive different source-instance identities, while clones/worktrees that resolve the same physical repository-scoped file observe the same identity.
   - Validate: Storage/adapter tests compare metadata from two explicit paths and from repeated resolution of one repository-scoped path.
-- [ ] AC3: Existing repository databases with the old baseline metadata receive one persisted source identity through the supported migration/setup path, and that identity remains stable after reopening.
+- [x] AC3: Existing repository databases with the old baseline metadata receive one persisted source identity through the supported migration/setup path, and that identity remains stable after reopening.
   - Validate: A fixture created with migration `001_repository_schema` is upgraded through setup initialization; the test asserts the new column/value and stable reopen result.
-- [ ] AC4: Concurrent initialization of one missing source identity has one persisted winner and every caller returns that same `source_instance_id`; no caller replaces an existing valid identity.
+- [x] AC4: Concurrent initialization of one missing source identity has one persisted winner and every caller returns that same `source_instance_id`; no caller replaces an existing valid identity.
   - Validate: Concurrent adapter/storage initialization tests assert all returned metadata values equal the value read from `repository_metadata` afterward.
-- [ ] AC5: Repository metadata validation still rejects a database whose stored `repository_id` differs from the expected repository, and valid existing metadata is returned rather than regenerated.
+- [x] AC5: Repository metadata validation still rejects a database whose stored `repository_id` differs from the expected repository, and valid existing metadata is returned rather than regenerated.
   - Validate: Existing mismatch coverage plus new typed metadata tests assert the stable mismatch diagnostic and preservation behavior.
-- [ ] AC6: Normal hook/readiness opens do not apply migrations or silently repair an old schema; a database missing the required migration fails readiness with actionable `sce setup` guidance, while source-instance initialization is available through the setup-safe path.
+- [x] AC6: Normal hook/readiness opens do not apply migrations or silently repair an old schema; a database missing the required migration fails readiness with actionable `sce setup` guidance, while source-instance initialization is available through the setup-safe path.
   - Validate: Hook/readiness tests open an old-schema fixture without migrations, assert no schema mutation and setup guidance, and separately exercise setup initialization/repair.
-- [ ] AC7: Downstream Rust callers can obtain `repository_id` and `source_instance_id` from `RepositoryAgentTraceDb` through the typed metadata API rather than ad hoc metadata SQL.
+- [x] AC7: Downstream Rust callers can obtain `repository_id` and `source_instance_id` from `RepositoryAgentTraceDb` through the typed metadata API rather than ad hoc metadata SQL.
   - Validate: Compile-time/use-site tests call the adapter metadata API and assert its `RepositoryMetadata` result.
-- [ ] AC8: Agent Trace documentation explains the distinction between logical repository identity, source database-lineage identity, and checkout identity, including shared physical DB behavior, independent DB behavior, and the future ETL lineage tuple.
+- [x] AC8: Agent Trace documentation explains the distinction between logical repository identity, source database-lineage identity, and checkout identity, including shared physical DB behavior, independent DB behavior, and the future ETL lineage tuple.
   - Validate: Documentation inspection of the updated Agent Trace DB/storage context and synchronized root context confirms all required distinctions and tuple terminology.
 
 ### Full validation
@@ -82,14 +82,52 @@ Repository-wide checks `/validate` runs after the last task, regardless of which
   - Verification notes (commands or checks): Narrow module/name-filtered tests through `scripts/run-cli-cargo.sh`; run the relevant Crane-backed test derivation when filesystem/database tests require the repository validation environment.
   - Evidence: Fresh DB/stable-reopen/repeated-setup and wrong-repository coverage already existed from T01/T02 and needed no changes. Added the remaining gaps: `repository.rs::independently_created_databases_for_the_same_repository_receive_different_source_instance_ids` (AC2 — two `new_at`-created DBs with the same `repository_id` get different, both-valid `source_instance_id`s); `repository.rs::baseline_only_fixture_gains_a_stable_source_instance_id_through_setup_migration` (AC3 — a fixture seeded with only `001_repository_schema` plus a baseline metadata row is upgraded via `run_migrations()` and gets a stable identity across reopen); `repository.rs::concurrent_missing_source_instance_id_initialization_converges_on_one_persisted_winner` (AC4 — 8 threads, each with its own connection to one fresh, unseeded DB file, call `verify_or_initialize_repository_metadata` behind a `Barrier`; every returned value equals the value read back afterward); `agent_trace_storage/mod.rs::hook_runtime_resolution_fails_with_setup_guidance_on_a_baseline_only_schema_without_mutating_it` (AC6 — a migration-`002`-missing fixture at the resolved hook DB path fails `resolve_agent_trace_storage_for_hook_runtime_at_state_root` with `sce setup` guidance and `__sce_migrations` still shows only `001_repository_schema` afterward, proving no migration ran). Testability seam: added `TursoDb::<M>::run_migrations_up_to(count)` (`cli/src/services/db/mod.rs`, `#[cfg(test)]`) so tests can build a fixture that predates later migrations without hand-rolling batch SQL execution; it reuses the existing private `run_embedded_migrations` helper against a `&M::migrations()[..count]` slice. Verification: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db::repository::` (15/15 passed) and `... agent_trace_storage::` (14/14 passed); full `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` (193/193 passed); `nix flake check` passed (one transient, reproducibility-confirmed flake in the sandboxed `cli-tests` derivation on the first run, passing cleanly on immediate rebuild — not caused by these changes, no code change made in response); `git diff --check` clean. No deviations from the reviewed task boundaries.
 
-- [ ] T04: `Document repository and source-instance lineage semantics` (status:todo)
+- [x] T04: `Document repository and source-instance lineage semantics` (status:done)
   - Task ID: T04
   - Goal: Update durable Agent Trace documentation to describe source-instance identity and the final migration/readiness contract.
   - Boundaries (in/out of scope): In — Agent Trace DB and storage context plus required root context summaries/map/glossary/architecture repairs, including `(repository_id, source_instance_id, source_table, source_row_id)` future ETL lineage wording and the explicit non-checkout identity distinction. Out — implementation behavior, ETL/DWH work, and unrelated context cleanup.
   - Dependencies: T03
   - Done when: Documentation states that same physical repository-scoped DB users share `source_instance_id`, independently created DB files differ, clones/worktrees share it only when they share the DB, and `source_instance_id` is not checkout identity; current migration and hot-path claims match code.
   - Verification notes (commands or checks): Review the changed context files against the adapter/storage code; run `git diff --check` and the generated-output check if any generated contract is touched.
+  - Evidence: `context/sce/agent-trace-db.md` and `context/cli/agent-trace-storage.md` already carried the two-migration chain, typed `RepositoryMetadata`, and hook-runtime no-migration contract from T01–T03's context sync; `context/glossary.md` already had an accurate `source-instance identity` entry distinguishing repository/checkout/source-instance identity — reviewed, no changes needed. Found and fixed three stale/incomplete root-context claims: `context/overview.md` said hook runtime "lazily creates or upgrades" the repository DB (now states it resolves through a separate no-migration path that never creates, migrates, or repairs, failing with `sce setup` guidance); `context/architecture.md`'s and `context/context-map.md`'s `agent_trace_db`/`agent-trace-db.md` descriptions only mentioned the `001_repository_schema.sql` baseline (now note the additive `002_repository_source_instance_id` migration and typed `RepositoryMetadata`). Added the missing AC8 future-ETL-lineage wording to `context/sce/agent-trace-db.md`: a new paragraph states `source_instance_id` identifies a database-lineage (shared by same-physical-DB clones/worktrees, distinct per independently created DB file), is distinct from diagnostic-only never-persisted `checkout_id`, and that a future ETL/DWH consumer is expected to key row provenance on `(repository_id, source_instance_id, source_table, source_row_id)`. Verification: reviewed each changed file's claims against `repository.rs` (`verify_or_initialize_repository_metadata`, migration `002`) and `agent_trace_storage/mod.rs` (hook-runtime-safe vs. setup-safe resolution) from T01–T03; `git diff --check` clean. No deviations from the reviewed task boundaries.
 
 ## Open questions
 
 None. The request specifies the identity representation, migration ordering, lifecycle boundary, required tests, and non-goals; the only SQLite detail is recorded as an implementation assumption rather than a scope decision.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-08-08
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all checks passed)
+- `nix run .#pkl-check-generated` -> exit 0 ("Ephemeral Pkl generation passed: 101 files")
+- `git diff --check` -> exit 0 (no whitespace errors)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_db::repository::` -> exit 0 (15/15 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_storage::` -> exit 0 (14/14 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::hooks::` -> exit 0 (8/8 passed)
+
+### Scaffolding removed
+
+- None.
+
+### Success-criteria verification
+
+- [x] AC1: Fresh DB stores valid `repository_id`/`source_instance_id`, stable across reopen/repeated setup -> `repository_metadata_is_seeded_once_and_validated_on_reopen`, `fresh_repository_database_receives_a_valid_source_instance_id_once` pass (15/15 repository suite).
+- [x] AC2: Independently created DB files differ; shared-path resolution stays identical -> `independently_created_databases_for_the_same_repository_receive_different_source_instance_ids` pass; storage suite's `repeated_resolution_is_idempotent`, `clones_of_the_same_repository_share_the_db_path_with_distinct_checkout_ids`, `linked_worktree_shares_the_db_path_with_a_distinct_checkout_id` pass (14/14 storage suite).
+- [x] AC3: Old baseline fixture gains a stable identity through setup migration -> `baseline_only_fixture_gains_a_stable_source_instance_id_through_setup_migration` pass.
+- [x] AC4: Concurrent missing-identity initialization converges on one persisted winner -> `concurrent_missing_source_instance_id_initialization_converges_on_one_persisted_winner` (8-thread barrier test) pass.
+- [x] AC5: Repository-ID mismatch still rejected; valid existing metadata preserved -> `mismatched_repository_metadata_errors_on_open` pass.
+- [x] AC6: Hook/readiness opens never migrate an old schema and fail with `sce setup` guidance; setup-safe path still repairs -> `hook_runtime_resolution_fails_with_setup_guidance_before_setup_ran`, `hook_runtime_resolution_fails_with_setup_guidance_on_a_baseline_only_schema_without_mutating_it`, `hook_runtime_resolution_succeeds_and_reuses_metadata_after_setup` pass; `services::hooks::` suite (8/8) unaffected.
+- [x] AC7: Downstream callers use the typed `RepositoryMetadata` API -> inspected `cli/src/services/agent_trace_storage/mod.rs`, which imports and threads `RepositoryMetadata` from `agent_trace_db::repository` through `ResolvedAgentTraceStorage.metadata` rather than ad hoc metadata SQL.
+- [x] AC8: Documentation distinguishes repository/database-lineage/checkout identity and states the future ETL lineage tuple -> inspected `context/sce/agent-trace-db.md` (new paragraph on `source_instance_id` vs. `checkout_id` and the `(repository_id, source_instance_id, source_table, source_row_id)` tuple) plus corroborating edits in `context/overview.md`, `context/architecture.md`, `context/context-map.md`, `context/patterns.md` reflecting the additive `002` migration and non-migrating hook-runtime contract.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- None identified.

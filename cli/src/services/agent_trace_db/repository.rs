@@ -500,7 +500,6 @@ mod tests {
         remove_test_db(&db_path);
     }
 
-
     #[test]
     fn trace_tables_have_no_checkout_id_columns() {
         let db_path = unique_test_db_path("no-checkout-id");
