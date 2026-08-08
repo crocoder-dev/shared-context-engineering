@@ -3411,6 +3411,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "dirs",
+ "fs4",
  "hmac 0.13.0",
  "inquire",
  "jsonschema",

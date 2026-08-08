@@ -32,6 +32,7 @@ clap = { version = "4", features = ["derive"] }
 turso = { version = "0.7.0" }
 clap_complete = "4"
 dirs = "6"
+fs4 = "0.13.1"
 hmac = "0.13"
 inquire = "0.9"
 jsonschema = "0.46"

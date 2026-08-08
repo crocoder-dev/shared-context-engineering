@@ -307,6 +307,91 @@ pub fn agent_trace_db_path_for_repository_at(
         .join("agent-trace.db"))
 }
 
+/// Returns the canonical repository-scoped Agent Trace DWH sync replica
+/// database file path.
+///
+/// The path is `<state_root>/sce/repos/<repository_id>/agent-trace-sync.db`,
+/// where `state_root` comes from the shared default-path catalog
+/// (`XDG_STATE_HOME` or platform equivalent) and `repository_id` is the
+/// stable repository identity hash from `services::repository_identity`.
+/// This path is distinct from the source-capture
+/// `agent_trace_db_path_for_repository` path: the replica is a disposable,
+/// single-owner Turso Sync database, never a multiprocess-WAL capture store.
+#[allow(dead_code)]
+pub fn agent_trace_dwh_replica_path_for_repository(repository_id: &str) -> anyhow::Result<PathBuf> {
+    let state_root = resolve_sce_default_locations()?
+        .roots()
+        .state_root()
+        .to_path_buf();
+    agent_trace_dwh_replica_path_for_repository_at(&state_root, repository_id)
+}
+
+/// Builds the repository-scoped Agent Trace DWH sync replica database path
+/// under an explicit state root:
+/// `<state_root>/sce/repos/<repository_id>/agent-trace-sync.db`.
+#[allow(dead_code)]
+pub fn agent_trace_dwh_replica_path_for_repository_at(
+    state_root: &std::path::Path,
+    repository_id: &str,
+) -> anyhow::Result<PathBuf> {
+    Ok(
+        agent_trace_dwh_replica_dir_for_repository_at(state_root, repository_id)?
+            .join("agent-trace-sync.db"),
+    )
+}
+
+/// Returns the canonical repository-scoped Agent Trace DWH sync replica
+/// bridge-lock file path: the replica path with a `.bridge-lock` suffix.
+///
+/// Exactly one process may hold this lock at a time; it is the sole
+/// synchronization mechanism proving single ownership of the replica.
+#[allow(dead_code)]
+pub fn agent_trace_dwh_bridge_lock_path_for_repository(
+    repository_id: &str,
+) -> anyhow::Result<PathBuf> {
+    let state_root = resolve_sce_default_locations()?
+        .roots()
+        .state_root()
+        .to_path_buf();
+    agent_trace_dwh_bridge_lock_path_for_repository_at(&state_root, repository_id)
+}
+
+/// Builds the repository-scoped Agent Trace DWH sync replica bridge-lock
+/// path under an explicit state root.
+#[allow(dead_code)]
+pub fn agent_trace_dwh_bridge_lock_path_for_repository_at(
+    state_root: &std::path::Path,
+    repository_id: &str,
+) -> anyhow::Result<PathBuf> {
+    let replica_path = agent_trace_dwh_replica_path_for_repository_at(state_root, repository_id)?;
+    let mut file_name = replica_path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("replica path must have a file name"))?
+        .to_os_string();
+    file_name.push(".bridge-lock");
+    Ok(replica_path.with_file_name(file_name))
+}
+
+#[allow(dead_code)]
+fn agent_trace_dwh_replica_dir_for_repository_at(
+    state_root: &std::path::Path,
+    repository_id: &str,
+) -> anyhow::Result<PathBuf> {
+    let repository_id = repository_id.trim();
+    if repository_id.is_empty() {
+        anyhow::bail!(
+            "repository ID must not be empty when resolving Agent Trace DWH replica path"
+        );
+    }
+    // The repository ID becomes a single path segment; reject anything that
+    // could escape the `repos/` directory.
+    if repository_id.contains(['/', '\\']) || repository_id == "." || repository_id == ".." {
+        anyhow::bail!("repository ID '{repository_id}' is not a valid path segment");
+    }
+
+    Ok(state_root.join("sce").join("repos").join(repository_id))
+}
+
 /// Returns the canonical default observability log directory.
 ///
 /// The path is `<state_root>/sce/logs`, where `state_root` comes from the
@@ -577,5 +662,85 @@ impl InstallTargetPaths {
             .join(repo_dir::GIT)
             .join(hook_dir::HOOKS)
             .join(hook_dir::POST_COMMIT)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn agent_trace_dwh_replica_path_resolves_under_repos_and_is_distinct_from_source_db() {
+        let state_root = Path::new("/tmp/state");
+
+        let replica_path = agent_trace_dwh_replica_path_for_repository_at(state_root, "repo-abc")
+            .expect("replica path should resolve");
+        let source_path = agent_trace_db_path_for_repository_at(state_root, "repo-abc")
+            .expect("source path should resolve");
+
+        assert_eq!(
+            replica_path,
+            state_root
+                .join("sce")
+                .join("repos")
+                .join("repo-abc")
+                .join("agent-trace-sync.db")
+        );
+        assert_ne!(
+            replica_path, source_path,
+            "replica path must be distinct from the source agent-trace.db path"
+        );
+        assert!(
+            !replica_path.starts_with(std::env::current_dir().unwrap_or_default()),
+            "replica path must live outside the checkout"
+        );
+    }
+
+    #[test]
+    fn agent_trace_dwh_replica_path_bridge_lock_path_is_the_replica_path_with_a_bridge_lock_suffix()
+    {
+        let state_root = Path::new("/tmp/state");
+
+        let replica_path = agent_trace_dwh_replica_path_for_repository_at(state_root, "repo-abc")
+            .expect("replica path should resolve");
+        let lock_path = agent_trace_dwh_bridge_lock_path_for_repository_at(state_root, "repo-abc")
+            .expect("lock path should resolve");
+
+        assert_eq!(
+            lock_path,
+            replica_path.with_file_name("agent-trace-sync.db.bridge-lock")
+        );
+        assert_ne!(lock_path, replica_path);
+    }
+
+    #[test]
+    fn agent_trace_dwh_replica_path_rejects_empty_repository_id() {
+        let error = agent_trace_dwh_replica_path_for_repository_at(Path::new("/tmp/state"), "  ")
+            .expect_err("empty repository ID should fail");
+        assert!(error.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn agent_trace_dwh_replica_path_rejects_escaping_repository_ids() {
+        for bad in ["../escape", "a/b", "a\\b", ".", ".."] {
+            let error =
+                agent_trace_dwh_replica_path_for_repository_at(Path::new("/tmp/state"), bad)
+                    .expect_err("escaping repository ID should fail");
+            assert!(error.to_string().contains("not a valid path segment"));
+        }
+    }
+
+    #[test]
+    fn agent_trace_dwh_replica_path_bridge_lock_path_rejects_the_same_invalid_repository_ids_as_the_replica_path(
+    ) {
+        for bad in ["", "  ", "../escape", "a/b", "a\\b", ".", ".."] {
+            let replica_result =
+                agent_trace_dwh_replica_path_for_repository_at(Path::new("/tmp/state"), bad);
+            let lock_result =
+                agent_trace_dwh_bridge_lock_path_for_repository_at(Path::new("/tmp/state"), bad);
+            assert_eq!(replica_result.is_err(), lock_result.is_err());
+        }
     }
 }
