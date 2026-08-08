@@ -10,21 +10,21 @@ Expose a `ConversationEtl` runner and table-level stats without coupling the ETL
 
 How this plan is proven complete. Each criterion is observable and names the check that proves it. `/validate` runs these checks; no task in the stack performs final validation.
 
-- [ ] AC1: Shared ETL mechanics used by `agent_traces`, `messages`, and `parts` include bounded source-contention retry, absent-watermark-as-zero reads, validated batch sizes, atomic watermark upserts, and common batch accounting without introducing a broad generic ETL trait hierarchy; existing Agent Trace ETL behavior remains unchanged.
+- [x] AC1: Shared ETL mechanics used by `agent_traces`, `messages`, and `parts` include bounded source-contention retry, absent-watermark-as-zero reads, validated batch sizes, atomic watermark upserts, and common batch accounting without introducing a broad generic ETL trait hierarchy; existing Agent Trace ETL behavior remains unchanged.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_etl`
-- [ ] AC2: The messages ETL extracts `id, session_id, message_id, role, generated_at_unix_ms` with `id > watermark ORDER BY id ASC LIMIT batch_size` in a short read transaction, obtains and validates `source_instance_id` through repository metadata, and atomically loads each batch with the `messages` watermark.
+- [x] AC2: The messages ETL extracts `id, session_id, message_id, role, generated_at_unix_ms` with `id > watermark ORDER BY id ASC LIMIT batch_size` in a short read transaction, obtains and validates `source_instance_id` through repository metadata, and atomically loads each batch with the `messages` watermark.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_messages_etl`
-- [ ] AC3: Message destination identity is `(repository_id, session_id, message_id)`; same role and timestamp replay is counted as `already_present`, while a differing role or `generated_at_unix_ms` fails with a deterministic integrity conflict and rolls back the complete batch and watermark.
+- [x] AC3: Message destination identity is `(repository_id, session_id, message_id)`; same role and timestamp replay is counted as `already_present`, while a differing role or `generated_at_unix_ms` fails with a deterministic integrity conflict and rolls back the complete batch and watermark.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_messages_identity`
-- [ ] AC4: The parts ETL extracts `id, type, text, message_id, session_id, generated_at_unix_ms` incrementally in a short source read transaction, accepts exactly `text`, `reasoning`, `patch`, and `question` through the existing `PartType` representation, rejects other values explicitly, preserves text verbatim, and stores lowercase hexadecimal SHA-256 of the exact UTF-8 bytes.
+- [x] AC4: The parts ETL extracts `id, type, text, message_id, session_id, generated_at_unix_ms` incrementally in a short source read transaction, accepts exactly `text`, `reasoning`, `patch`, and `question` through the existing `PartType` representation, rejects other values explicitly, preserves text verbatim, and stores lowercase hexadecimal SHA-256 of the exact UTF-8 bytes.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_parts_etl`
-- [ ] AC5: Part destination identity is `(repository_id, source_instance_id, source_part_id)`; matching `session_id`, `message_id`, `part_type`, `text_sha256`, and timestamp is an idempotent replay, any mismatch fails loudly and rolls back the batch, and parts can load without a parent message row.
+- [x] AC5: Part destination identity is `(repository_id, source_instance_id, source_part_id)`; matching `session_id`, `message_id`, `part_type`, `text_sha256`, and timestamp is an idempotent replay, any mismatch fails loudly and rolls back the batch, and parts can load without a parent message row.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_parts_identity`
-- [ ] AC6: A conversation-level API exposes independently configurable/default-batched message and part runs with stats matching existing ETL conventions; messages and parts have separate `(repository_id, source_instance_id, source_table)` watermarks, may progress independently, and no conversation-level transaction or shared watermark couples them.
+- [x] AC6: A conversation-level API exposes independently configurable/default-batched message and part runs with stats matching existing ETL conventions; messages and parts have separate `(repository_id, source_instance_id, source_table)` watermarks, may progress independently, and no conversation-level transaction or shared watermark couples them.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_etl`
-- [ ] AC7: End-to-end tests prove initial and incremental sync, no-op reruns, logical message replay/conflict, exact text/hash and supported part types, equal-timestamp ordering by `source_part_id`, source-lineage ID collisions across source instances, part-before-message ingestion, independent watermarks, source contention with concurrent writers, and injected mid-batch rollback followed by successful replay for both tables.
+- [x] AC7: End-to-end tests prove initial and incremental sync, no-op reruns, logical message replay/conflict, exact text/hash and supported part types, equal-timestamp ordering by `source_part_id`, source-lineage ID collisions across source instances, part-before-message ingestion, independent watermarks, source contention with concurrent writers, and injected mid-batch rollback followed by successful replay for both tables.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_etl`
-- [ ] AC8: Durable context documents the messages/parts DWH pipeline, separate watermarks, logical message identity, source-scoped part identity, verbatim text and hashing, deterministic ordering, absence of a message-to-part foreign-key requirement, append-only source assumption, and pull/push as orchestration concerns; source inspection confirms no existing production code intentionally updates synchronized message/part fields beyond schema-maintenance triggers.
+- [x] AC8: Durable context documents the messages/parts DWH pipeline, separate watermarks, logical message identity, source-scoped part identity, verbatim text and hashing, deterministic ordering, absence of a message-to-part foreign-key requirement, append-only source assumption, and pull/push as orchestration concerns; source inspection confirms no existing production code intentionally updates synchronized message/part fields beyond schema-maintenance triggers.
   - Validate: inspect the updated conversation ETL, DWH, replica, shared ETL, root architecture/context-map/glossary files and the source `messages`/`parts` writers against the implementation; confirm only `updated_at` triggers issue SQL `UPDATE` for these tables.
 
 ### Full validation
@@ -98,14 +98,56 @@ Repository-wide checks `/validate` runs after the last task, regardless of which
   - Implementation evidence: Added `cli/src/services/conversation_etl.rs` with independently configurable/default-batched `ConversationEtl`, table-level `ConversationEtlStats`, replica-bound execution, and composition over the existing messages and parts runners. Registered the service module and exposed crate-internal destination composition seams so the runner remains the sole conversation-level transaction coordinator while table watermarks commit independently. Added end-to-end coverage for initial/incremental/no-op runs, independent progress, parts-before-messages ingestion, deterministic equal-timestamp ordering, and non-blocking source readers for both source tables. The runner contains no transport, credential, CLI, or control-plane behavior.
   - Verification evidence: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_etl` passed all 7 focused tests; `nix develop -c sh -c 'cd cli && cargo fmt'` passed; `git diff --check` passed.
 
-- [ ] T05: `Record the conversation ETL and append-only architecture contract` (status:todo)
+- [x] T05: `Record the conversation ETL and append-only architecture contract` (status:complete)
   - Task ID: T05
   - Goal: Make the implemented conversation pipeline and its source immutability assumption durable in repository context.
   - Boundaries (in/out of scope): In — focused conversation ETL context, context-map index entry, updates to root architecture/overview/glossary and related Agent Trace ETL/DWH/replica/source documents, and an inspection of production message/part writers for append-only violations. Out — code changes, migration edits, source update CDC, CLI/control-plane docs, and unrelated context cleanup.
   - Dependencies: T04
   - Done when: durable context describes the two source-to-DWH flows, independent watermarks, exact identity/conflict rules, verbatim text/hash, deterministic ordering, no parent FK, pull/push separation, and append-only assumption; the source audit records that current production writes are inserts and only schema-maintenance `updated_at` triggers issue updates, or identifies a concrete architectural conflict if that is no longer true.
   - Verification notes (commands or checks): inspect the documented paths against `cli/src/services/agent_trace_etl/`, the source repository adapter, DWH schema, replica API, and `grep -RInE 'UPDATE[[:space:]]+(messages|parts)' cli/src cli/migrations` output; run `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_etl`.
+  - Implementation evidence: Updated root overview, architecture, and glossary contracts plus the shared ETL, DWH replica, and repository-source context to document ConversationEtl, independent message/part watermarks, identity/conflict and preservation rules, pull/push separation, and the append-only ETL assumption. The existing focused conversation context files and context-map entries were verified as canonical descriptions. The source audit found only `trg_messages_updated_at` and `trg_parts_updated_at` trigger bodies issuing `UPDATE` statements; active capture uses insert helpers.
+  - Verification evidence: `grep -RInE 'UPDATE[[:space:]]+(messages|parts)' cli/src cli/migrations` returned only the two schema-maintenance trigger bodies; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_etl` passed all 7 focused tests; `git diff --check` passed; changed context files remain at or below 250 lines.
 
 ## Open questions
 
 None. The request fixes the identity, transaction, ordering, source-safety, API, and non-goal boundaries, and the existing DWH baseline already supplies the required destination schema without a migration.
+
+## Validation Report
+
+**Status:** validated
+**Date:** 2026-08-08
+
+### Commands run
+
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_etl` -> exit 0 (15 tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_messages_etl` -> exit 0 (8 tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_messages_identity` -> exit 0 (3 tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_parts_etl` -> exit 0 (11 tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_parts_identity` -> exit 0 (3 tests passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_etl` -> exit 0 (7 tests passed)
+- `grep -RInE 'UPDATE[[:space:]]+(messages|parts)' cli/src cli/migrations` -> exit 0 (only the two schema-maintenance trigger bodies matched)
+- `nix run .#pkl-check-generated` -> exit 0 (101 generated files passed)
+- `nix flake check` -> exit 0 (all checks passed)
+
+### Scaffolding removed
+
+- None.
+
+### Success-criteria verification
+
+- [x] AC1: Shared ETL mechanics and unchanged Agent Trace behavior -> focused Agent Trace ETL tests passed.
+- [x] AC2: Incremental messages extraction and atomic loading -> focused messages ETL tests passed.
+- [x] AC3: Logical message identity and conflict rollback -> focused messages identity tests passed.
+- [x] AC4: Supported parts, verbatim text, and SHA-256 hashing -> focused parts ETL tests passed.
+- [x] AC5: Source-lineage part identity, conflict handling, and parentless loading -> focused parts identity tests passed.
+- [x] AC6: Conversation API and independent progress -> conversation ETL tests passed.
+- [x] AC7: End-to-end conversation behavior and rollback/contention coverage -> conversation ETL tests passed.
+- [x] AC8: Durable context and append-only source audit -> required context files were inspected; source audit matched only `trg_messages_updated_at` and `trg_parts_updated_at` trigger bodies.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- None identified.

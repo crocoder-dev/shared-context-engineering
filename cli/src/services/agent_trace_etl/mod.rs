@@ -17,8 +17,8 @@ use crate::services::agent_trace_dwh_replica::AgentTraceDwhReplica;
 use crate::services::{
     agent_trace_db::repository::RepositoryAgentTraceDb,
     etl::{
-        is_transient_source_contention, read_watermark, run_with_source_contention_retry,
-        upsert_watermark, validate_batch_size, TableBatchStats, SOURCE_CONTENTION_RETRY_POLICY,
+        read_watermark, run_with_source_contention_retry, upsert_watermark, validate_batch_size,
+        TableBatchStats,
     },
 };
 
@@ -365,7 +365,10 @@ mod agent_trace_etl_source_tests {
     use anyhow::anyhow;
 
     use super::*;
-    use crate::services::agent_trace_db::AgentTraceInsert;
+    use crate::services::{
+        agent_trace_db::AgentTraceInsert,
+        etl::{is_transient_source_contention, SOURCE_CONTENTION_RETRY_POLICY},
+    };
 
     fn unique_test_db_path(label: &str) -> PathBuf {
         let nonce = SystemTime::now()

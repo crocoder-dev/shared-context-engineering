@@ -17,7 +17,7 @@ use crate::services::{
 };
 
 /// Configuration for both conversation table runners.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ConversationEtl {
     messages: MessagesEtl,
     parts: PartsEtl,
@@ -28,15 +28,6 @@ pub struct ConversationEtl {
 pub struct ConversationEtlStats {
     pub messages: MessagesEtlStats,
     pub parts: PartsEtlStats,
-}
-
-impl Default for ConversationEtl {
-    fn default() -> Self {
-        Self {
-            messages: MessagesEtl::default(),
-            parts: PartsEtl::default(),
-        }
-    }
 }
 
 impl ConversationEtl {

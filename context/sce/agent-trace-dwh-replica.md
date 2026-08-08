@@ -1,6 +1,6 @@
 # Agent Trace DWH Turso Sync Replica
 
-`AgentTraceDwhReplica` is the sole owner of a Turso Sync connection to a repository's `agent-trace-sync.db` — a disposable, single-owner local database distinct from both the multiprocess-WAL source `agent-trace.db` (see [agent-trace-db.md](agent-trace-db.md)) and the `Agent Trace DWH`'s own explicit-path adapter (see [agent-trace-dwh-db.md](agent-trace-dwh-db.md)). It is the boundary used by the CLI-independent `AgentTraceEtl` bridge for local fact/watermark loading; ETL never performs pull/push, credential discovery/persistence, or background sync.
+`AgentTraceDwhReplica` is the sole owner of a Turso Sync connection to a repository's `agent-trace-sync.db` — a disposable, single-owner local database distinct from both the multiprocess-WAL source `agent-trace.db` (see [agent-trace-db.md](agent-trace-db.md)) and the `Agent Trace DWH`'s own explicit-path adapter (see [agent-trace-dwh-db.md](agent-trace-dwh-db.md)). It is the boundary used by the CLI-independent `AgentTraceEtl` and `ConversationEtl` bridges for local fact/watermark loading; ETL never performs pull/push, credential discovery/persistence, or background sync.
 
 ## Ownership and lock-before-open
 

@@ -206,6 +206,10 @@ Post-commit intersection rows are written by the active `post-commit` hook flow 
 - No `context/tmp` artifact is written for conversation traces.
 - The generated OpenCode agent-trace plugin sends mixed-batch envelopes for conversation traces: regular `message` and `message.part` events each carry one per-item `type`, while diff-backed `message` events send one envelope containing the synthetic parent message item plus patch part items.
 
+## Source writer audit and ETL immutability
+
+The messages/parts ETL uses integer-ID watermarks and deliberately does not provide update CDC. An audit of `cli/src` and `cli/migrations` found that the only matches for `UPDATE messages` and `UPDATE parts` are the baseline schema's `trg_messages_updated_at` and `trg_parts_updated_at` trigger bodies. Active conversation capture writes through `RepositoryAgentTraceDb::insert_messages()` and `insert_parts()`; those helpers append rows (message duplicates are ignored by natural identity, while parts remain append-only). Therefore ETL treats synchronized role/timestamp and part session/message/type/text/hash/timestamp fields as immutable after insertion. If a future production writer intentionally changes those fields, update CDC or an explicit architectural decision is required rather than silently advancing the existing watermark.
+
 `sce hooks session-model` is no longer a supported command route, generated Claude settings no longer produce `SessionStart` model-attribution events, and the Agent Trace DB adapter no longer exposes a `session_models` API or fresh-schema table. See [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md).
 
 ## Recent patch reads

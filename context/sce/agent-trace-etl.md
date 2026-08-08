@@ -16,7 +16,7 @@ Each destination batch uses one `BEGIN IMMEDIATE` transaction for repository/sou
 
 ## Replica and reconstruction boundary
 
-`AgentTraceDwhReplica` remains the sole owner of the sync connection and bridge lock. Its `run_agent_trace_etl()` method delegates to `AgentTraceEtl` while preserving that ownership; ETL never pulls or pushes remote state. The local sync database is a durable transaction/replay boundary and is reconstructible from the remote DWH: crash or local-file loss is handled by reopening/replaying source rows and, when required, remote reconstruction. Message-part ETL now preserves the same short-source-transaction, exact-cursor, and local fact-plus-watermark invariants through `PartsEtl`; code-change ETL remains future work.
+`AgentTraceDwhReplica` remains the sole owner of the sync connection and bridge lock. Its `run_agent_trace_etl()` method delegates to `AgentTraceEtl` while preserving that ownership; `ConversationEtl` composes the message and part runners through the same lock-owned destination without acquiring credentials or invoking transport. ETL never pulls or pushes remote state. The local sync database is a durable transaction/replay boundary and is reconstructible from the remote DWH: crash or local-file loss is handled by reopening/replaying source rows and, when required, remote reconstruction. The messages and parts runners preserve the same short-source-transaction, exact-cursor, and local fact-plus-watermark invariants; their synchronized source fields are append-only/immutable for ETL purposes. Source audit found no production `UPDATE` of those fields beyond the schema-maintenance `updated_at` triggers, so update CDC remains deliberately out of scope. Code-change ETL remains future work.
 
 ## Source contention retry
 
@@ -31,4 +31,4 @@ Every other error — including genuine extraction/mapping failures such as a mi
 
 Before every retried attempt (not the first), the retry loop calls `TursoDb::rollback_best_effort()` (`pub(crate)` in `cli/src/services/db/mod.rs`) to clear a stale failed transaction before issuing the next `BEGIN`.
 
-See also: [agent-trace-db.md](agent-trace-db.md), [agent-trace-dwh-db.md](agent-trace-dwh-db.md), [agent-trace-dwh-replica.md](agent-trace-dwh-replica.md), [shared-turso-db.md](shared-turso-db.md), [../overview.md](../overview.md), [../architecture.md](../architecture.md), [../glossary.md](../glossary.md)
+See also: [agent-trace-db.md](agent-trace-db.md), [agent-trace-dwh-db.md](agent-trace-dwh-db.md), [agent-trace-dwh-replica.md](agent-trace-dwh-replica.md), [shared-turso-db.md](shared-turso-db.md), [../overview.md](../overview.md), [../architecture.md](../architecture.md), [../glossary.md](../glossary.md), [conversation ETL append-only watermark decision](../decisions/2026-08-08-conversation-etl-append-only-watermarks.md)

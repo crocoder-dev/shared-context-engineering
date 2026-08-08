@@ -618,7 +618,7 @@ mod tests {
         let row = source_row(7, "text", "hello", "session-1", "message-1", 1_000);
 
         assert_eq!(
-            load_part_batch(&dwh, "repo-a", "instance-a", &[row.clone()])
+            load_part_batch(&dwh, "repo-a", "instance-a", std::slice::from_ref(&row))
                 .unwrap()
                 .inserted,
             1
