@@ -501,6 +501,53 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_missing_source_instance_id_initialization_converges_on_one_persisted_winner() {
+        let db_path = unique_test_db_path("concurrent-init");
+        let repository_id = "a".repeat(64);
+
+        // Create the schema once; leave the metadata row unseeded so every
+        // concurrent caller below races on both the initial insert and the
+        // missing source-instance identity.
+        drop(RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open"));
+
+        let thread_count = 8;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(thread_count));
+        let handles: Vec<_> = (0..thread_count)
+            .map(|_| {
+                let db_path = db_path.clone();
+                let repository_id = repository_id.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let db = RepositoryAgentTraceDb::open_without_migrations_at(&db_path)
+                        .expect("repository DB should reopen for concurrent access");
+                    barrier.wait();
+                    db.verify_or_initialize_repository_metadata(&repository_id)
+                        .expect("concurrent metadata initialization should succeed")
+                })
+            })
+            .collect();
+
+        let results: Vec<RepositoryMetadata> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("worker thread should not panic"))
+            .collect();
+
+        let verifier = RepositoryAgentTraceDb::open_without_migrations_at(&db_path)
+            .expect("repository DB should reopen for verification");
+        let stored = verifier
+            .verify_or_initialize_repository_metadata(&repository_id)
+            .expect("final read should succeed");
+
+        for result in &results {
+            assert_eq!(
+                result.source_instance_id, stored.source_instance_id,
+                "every concurrent caller must observe the same persisted source-instance identity"
+            );
+        }
+
+        remove_test_db(&db_path);
+    }
+    #[test]
     fn trace_tables_have_no_checkout_id_columns() {
         let db_path = unique_test_db_path("no-checkout-id");
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
