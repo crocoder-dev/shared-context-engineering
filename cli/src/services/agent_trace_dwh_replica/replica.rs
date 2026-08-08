@@ -604,6 +604,107 @@ mod integration_tests {
         remove_test_replica(&local_path);
     }
 
+    /// Publish only a subset of the DWH contract tables (no `__sce_migrations`
+    /// ledger) to `remote_url`, so a replica bootstrapped from it has a
+    /// non-empty, non-ready local file that is neither a fresh empty schema
+    /// nor a fully-applied one.
+    fn prepare_remote_with_partial_dwh_schema(remote_url: &str) {
+        let local_path = unique_test_replica_path("prep-partial-dwh-schema");
+        let runtime = build_test_runtime();
+        let local_path_str = local_path.to_str().unwrap().to_string();
+        let remote_url_owned = remote_url.to_string();
+
+        let (sync_db, _conn) = runtime
+            .block_on(async move {
+                let db = turso::sync::Builder::new_remote(&local_path_str)
+                    .with_remote_url(&remote_url_owned)
+                    .build()
+                    .await?;
+                let conn = db.connect().await?;
+                conn.execute(
+                    "CREATE TABLE repositories (repository_id TEXT PRIMARY KEY)",
+                    (),
+                )
+                .await?;
+                Ok::<_, turso::Error>((db, conn))
+            })
+            .expect("open the partial-schema preparation connection should succeed");
+
+        runtime
+            .block_on(sync_db.push())
+            .expect("publishing the partial schema should succeed");
+
+        remove_test_replica(&local_path);
+    }
+
+    /// Publish a fully-applied DWH schema to `remote_url`, then append an
+    /// unexpected/unknown migration ID to its `__sce_migrations` ledger, so a
+    /// replica bootstrapped from it has an otherwise-ready schema that still
+    /// fails readiness verification.
+    fn prepare_remote_with_unexpected_ledger_entry(remote_url: &str) {
+        let local_path = unique_test_replica_path("prep-unexpected-ledger");
+        let runtime = build_test_runtime();
+        let local_path_str = local_path.to_str().unwrap().to_string();
+        let remote_url_owned = remote_url.to_string();
+
+        let (sync_db, conn) = runtime
+            .block_on(async move {
+                let db = turso::sync::Builder::new_remote(&local_path_str)
+                    .with_remote_url(&remote_url_owned)
+                    .build()
+                    .await?;
+                let conn = db.connect().await?;
+                Ok::<_, turso::Error>((db, conn))
+            })
+            .expect("open the unexpected-ledger preparation connection should succeed");
+
+        let db = AgentTraceDwhDb::from_connection(conn, runtime);
+        db.run_migrations()
+            .expect("running the DWH migration baseline should succeed");
+        db.execute(
+            "INSERT INTO __sce_migrations (id) VALUES ('999_unknown_migration')",
+            (),
+        )
+        .expect("unexpected ledger entry insert should succeed");
+        db.block_on(sync_db.push())
+            .expect("publishing the unexpected-ledger schema should succeed");
+
+        remove_test_replica(&local_path);
+    }
+
+    /// The non-internal table set currently published on `remote_url`, used
+    /// to prove a rejected `open()` never adds, removes, or modifies any
+    /// remote table.
+    fn remote_table_set(remote_url: &str, label: &str) -> Vec<String> {
+        let local_path = unique_test_replica_path(label);
+        let runtime = build_test_runtime();
+        let local_path_str = local_path.to_str().unwrap().to_string();
+        let remote_url_owned = remote_url.to_string();
+
+        let conn = runtime
+            .block_on(async move {
+                let db = turso::sync::Builder::new_remote(&local_path_str)
+                    .with_remote_url(&remote_url_owned)
+                    .build()
+                    .await?;
+                db.connect().await
+            })
+            .expect("open the table-set inspection connection should succeed");
+        let db = AgentTraceDwhDb::from_connection(conn, runtime);
+
+        let mut tables = db
+            .query_map(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name ASC",
+                (),
+                |row| row.get::<String>(0).map_err(Into::into),
+            )
+            .expect("table-set query should succeed");
+        tables.sort();
+
+        remove_test_replica(&local_path);
+        tables
+    }
+
     fn source_instance_ids(db: &AgentTraceDwhDb, repository_id: &str) -> Vec<String> {
         let mut ids = db
             .query_map(
@@ -766,20 +867,25 @@ mod integration_tests {
         );
     }
 
-    /// Covers AC4's negative case: a remote whose bootstrapped schema is not
-    /// the DWH schema is reported as not ready, without locally provisioning
-    /// a competing schema, and the error never contains the auth token.
-    fn assert_incompatible_schema_is_rejected(tursodb_path: &Path, sentinel_token: &str) {
-        let incompatible_server = LocalSyncServer::spawn(tursodb_path);
-        prepare_remote_with_incompatible_schema(&incompatible_server.url);
+    /// Covers T06: opening `local_path` against `remote_url` fails with
+    /// `IncompatibleSchema`, never leaks `sentinel_token`, and never adds,
+    /// removes, or modifies any table on the remote (proven by comparing the
+    /// remote's non-internal table set before and after the rejected open).
+    fn assert_open_is_rejected_without_mutating_remote(
+        remote_url: &str,
+        sentinel_token: &str,
+        local_path_label: &str,
+        table_set_label: &str,
+    ) {
+        let tables_before = remote_table_set(remote_url, &format!("{table_set_label}-before"));
 
-        let path_incompatible = unique_test_replica_path("incompatible");
+        let local_path = unique_test_replica_path(local_path_label);
         let schema_error = AgentTraceDwhReplica::open(AgentTraceDwhReplicaConfig {
-            local_path: path_incompatible.clone(),
-            database_url: incompatible_server.url.clone(),
+            local_path: local_path.clone(),
+            database_url: remote_url.to_string(),
             auth_token: sentinel_token.to_string(),
         })
-        .expect_err("bootstrapping a non-DWH remote should fail schema readiness");
+        .expect_err("bootstrapping an incompatible remote should fail schema readiness");
         assert!(matches!(
             schema_error,
             AgentTraceDwhReplicaError::IncompatibleSchema { .. }
@@ -790,7 +896,177 @@ mod integration_tests {
             "incompatible-schema error must not contain the auth token: {schema_error_message}"
         );
 
-        remove_test_replica(&path_incompatible);
+        let tables_after = remote_table_set(remote_url, &format!("{table_set_label}-after"));
+        assert_eq!(
+            tables_before, tables_after,
+            "a rejected open must not add, remove, or modify any remote table"
+        );
+
+        remove_test_replica(&local_path);
+    }
+
+    /// Covers AC4's negative case and T06: a remote whose bootstrapped schema
+    /// is not the DWH schema is reported incompatible, without locally
+    /// provisioning a competing schema or mutating the remote, and the error
+    /// never contains the auth token.
+    fn assert_unrelated_schema_is_rejected(tursodb_path: &Path, sentinel_token: &str) {
+        let server = LocalSyncServer::spawn(tursodb_path);
+        prepare_remote_with_incompatible_schema(&server.url);
+
+        assert_open_is_rejected_without_mutating_remote(
+            &server.url,
+            sentinel_token,
+            "incompatible",
+            "unrelated-schema",
+        );
+
+        drop(server);
+    }
+
+    /// Covers T06: a remote carrying only some of the seven DWH contract
+    /// tables, with no valid `__sce_migrations` ledger, is rejected as
+    /// incompatible rather than being completed or repaired.
+    fn assert_partial_dwh_schema_is_rejected(tursodb_path: &Path, sentinel_token: &str) {
+        let server = LocalSyncServer::spawn(tursodb_path);
+        prepare_remote_with_partial_dwh_schema(&server.url);
+
+        assert_open_is_rejected_without_mutating_remote(
+            &server.url,
+            sentinel_token,
+            "partial-dwh",
+            "partial-dwh-schema",
+        );
+
+        drop(server);
+    }
+
+    /// Covers T06: a remote whose migration ledger contains an unexpected or
+    /// unknown migration ID is rejected as incompatible, even though every
+    /// DWH contract table is present.
+    fn assert_unexpected_ledger_entry_is_rejected(tursodb_path: &Path, sentinel_token: &str) {
+        let server = LocalSyncServer::spawn(tursodb_path);
+        prepare_remote_with_unexpected_ledger_entry(&server.url);
+
+        assert_open_is_rejected_without_mutating_remote(
+            &server.url,
+            sentinel_token,
+            "unexpected-ledger",
+            "unexpected-ledger",
+        );
+
+        drop(server);
+    }
+
+    /// Covers T07: two distinct local replicas racing to `open()` against the
+    /// same truly empty remote both converge safely — either both succeed
+    /// (the loser recovering through T05's one-`pull()`-and-re-verify path in
+    /// `initialize_empty_schema`) — and the remote ends up with exactly one
+    /// valid, non-duplicated DWH schema/ledger, which a third fresh replica
+    /// then observes as `Ready`.
+    fn assert_concurrent_first_initializers_converge(tursodb_path: &Path, sentinel_token: &str) {
+        // Racing more than two initializers, released simultaneously by a
+        // `Barrier`, raises the odds that at least one push actually
+        // collides with another on the shared remote (rather than the two
+        // threads happening to interleave without ever overlapping their
+        // network round trips), so this concretely exercises
+        // `initialize_empty_schema`'s one-`pull()`-and-re-verify recovery
+        // path against real observed Turso Sync behavior instead of relying
+        // on it remaining untested whenever no collision occurs.
+        const RACER_COUNT: usize = 6;
+
+        use std::sync::Barrier;
+
+        let server = LocalSyncServer::spawn(tursodb_path);
+        let expected_migration_count = AgentTraceDwhDbSpec::migrations().len();
+        let barrier = std::sync::Arc::new(Barrier::new(RACER_COUNT));
+        let paths: Vec<PathBuf> = (0..RACER_COUNT)
+            .map(|index| unique_test_replica_path(&format!("concurrent-{index}")))
+            .collect();
+
+        let handles: Vec<_> = paths
+            .iter()
+            .map(|path| {
+                let local_path = path.clone();
+                let database_url = server.url.clone();
+                let auth_token = sentinel_token.to_string();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    AgentTraceDwhReplica::open(AgentTraceDwhReplicaConfig {
+                        local_path,
+                        database_url,
+                        auth_token,
+                    })
+                })
+            })
+            .collect();
+
+        let replicas: Vec<AgentTraceDwhReplica> = handles
+            .into_iter()
+            .enumerate()
+            .map(|(index, handle)| {
+                handle
+                    .join()
+                    .unwrap_or_else(|_| {
+                        panic!("concurrent initializer thread {index} should not panic")
+                    })
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "concurrent initializer {index} should either win the race or \
+                             recover through the one-pull-and-re-verify path, got: {error}"
+                        )
+                    })
+            })
+            .collect();
+
+        for (index, replica) in replicas.iter().enumerate() {
+            assert_eq!(
+                replica
+                    .db()
+                    .classify_schema_state()
+                    .unwrap_or_else(|_| panic!(
+                        "schema classification should succeed for initializer {index}"
+                    )),
+                AgentTraceDwhSchemaState::Ready,
+                "concurrent initializer {index} should observe a Ready schema after converging"
+            );
+            assert_eq!(
+                applied_migration_count(replica.db()),
+                expected_migration_count,
+                "concurrent initializer {index}'s converged view must not duplicate any migration"
+            );
+        }
+
+        drop(replicas);
+        for path in &paths {
+            remove_test_replica(path);
+        }
+
+        // A third, fresh replica bootstraps `Ready` against the converged
+        // remote, with exactly one (not duplicated) applied-migration ledger.
+        let path_z = unique_test_replica_path("concurrent-z");
+        let replica_z = AgentTraceDwhReplica::open(AgentTraceDwhReplicaConfig {
+            local_path: path_z.clone(),
+            database_url: server.url.clone(),
+            auth_token: sentinel_token.to_string(),
+        })
+        .expect("a third fresh replica should bootstrap Ready against the converged remote");
+        assert_eq!(
+            replica_z
+                .db()
+                .classify_schema_state()
+                .expect("schema classification should succeed for the third replica"),
+            AgentTraceDwhSchemaState::Ready,
+        );
+        assert_eq!(
+            applied_migration_count(replica_z.db()),
+            expected_migration_count,
+            "the third replica must observe exactly one converged migration ledger"
+        );
+
+        drop(replica_z);
+        remove_test_replica(&path_z);
+        drop(server);
     }
 
     /// Covers T05's unchanged-on-open case: an already-`Ready` remote opens
@@ -872,6 +1148,9 @@ mod integration_tests {
 
         assert_bootstrap_lock_and_pull_push(&tursodb_path, repository_id, sentinel_token);
         assert_ready_remote_opens_unchanged(&tursodb_path, sentinel_token);
-        assert_incompatible_schema_is_rejected(&tursodb_path, sentinel_token);
+        assert_unrelated_schema_is_rejected(&tursodb_path, sentinel_token);
+        assert_partial_dwh_schema_is_rejected(&tursodb_path, sentinel_token);
+        assert_unexpected_ledger_entry_is_rejected(&tursodb_path, sentinel_token);
+        assert_concurrent_first_initializers_converge(&tursodb_path, sentinel_token);
     }
 }
