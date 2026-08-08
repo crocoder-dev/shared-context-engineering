@@ -1,15 +1,17 @@
 //! Repository-scoped Agent Trace database adapter.
 //!
 //! One logical Git repository maps to one database at
-//! `<state-root>/sce/repos/<repository-id>/agent-trace.db`. The schema
-//! baseline is one fresh schema SQL file (`agent-trace-repository`
-//! migrations), because repository-scoped databases are always created new;
-//! there is no incremental chain and no migration path from legacy
-//! checkout-scoped databases. Trace tables carry no `checkout_id` columns.
+//! `<state-root>/sce/repos/<repository-id>/agent-trace.db`. The schema starts
+//! from one fresh baseline SQL file (`agent-trace-repository` migrations,
+//! `001_repository_schema`) with later migrations layered on top of it, such
+//! as `002_repository_source_instance_id`; there is still no migration path
+//! from legacy checkout-scoped databases. Trace tables carry no `checkout_id`
+//! columns.
 
 use std::path::PathBuf;
 
 use anyhow::Result;
+use uuid::Uuid;
 
 use crate::{
     generated_migrations,
@@ -26,7 +28,9 @@ use super::{
 const REPOSITORY_AGENT_TRACE_SCHEMA_SETUP_GUIDANCE: &str = "Run 'sce setup'.";
 
 const SELECT_REPOSITORY_METADATA_SQL: &str =
-    "SELECT repository_id FROM repository_metadata WHERE id = 1";
+    "SELECT repository_id, source_instance_id FROM repository_metadata WHERE id = 1";
+const SELECT_SOURCE_INSTANCE_ID_SQL: &str =
+    "SELECT source_instance_id FROM repository_metadata WHERE id = 1";
 const SELECT_SQLITE_OBJECT_SQL: &str =
     "SELECT name FROM sqlite_master WHERE type = ?1 AND name = ?2 LIMIT 1";
 const RECORD_REPOSITORY_SCHEMA_MIGRATION_SQL: &str =
@@ -46,6 +50,49 @@ const REQUIRED_REPOSITORY_SCHEMA_TABLES: &[&str] = &[
 const INSERT_REPOSITORY_METADATA_SQL: &str =
     "INSERT INTO repository_metadata (id, repository_id) VALUES (1, ?1)
 ON CONFLICT (id) DO NOTHING";
+
+/// Atomically claims the missing source-instance identity: the conditional
+/// `WHERE` clause means only one concurrent caller's `UPDATE` actually
+/// changes a row, so every caller can safely re-read the stored value
+/// afterwards and observe the same winner.
+const UPDATE_MISSING_SOURCE_INSTANCE_ID_SQL: &str =
+    "UPDATE repository_metadata SET source_instance_id = ?1
+WHERE id = 1 AND source_instance_id = ''";
+
+/// Typed repository Agent Trace metadata.
+///
+/// `repository_id` is the logical Git repository identity shared by every
+/// database file resolved for that repository. `source_instance_id` is the
+/// stable identity of this particular database *lineage*: it is generated
+/// once per independently created database file and is preserved across
+/// reopen, setup, and migration, but it is never derived from
+/// `repository_id`, checkout identity, remote, hostname, or path. Two
+/// independently created database files for the same repository have
+/// different `source_instance_id` values; callers that resolve the same
+/// physical repository-scoped file always observe the same one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepositoryMetadata {
+    pub repository_id: String,
+    pub source_instance_id: String,
+}
+
+/// Generate a new UUIDv4-style source-instance identity.
+///
+/// Never derive a source-instance identity from repository ID, checkout ID,
+/// remote, hostname, or path; this is the only supported way to mint one.
+pub fn generate_source_instance_id() -> String {
+    Uuid::new_v4().to_string()
+}
+
+/// Validate that a value is a well-formed, non-empty UUID-style source
+/// instance identity.
+///
+/// The `002_repository_source_instance_id` migration seeds existing rows with
+/// an empty placeholder, which this rejects so callers can distinguish
+/// "not yet initialized" from a valid stored identity.
+pub fn is_valid_source_instance_id(value: &str) -> bool {
+    Uuid::parse_str(value).is_ok()
+}
 
 /// Repository-scoped Agent Trace database configuration.
 pub struct RepositoryAgentTraceDbSpec;
@@ -113,28 +160,76 @@ impl RepositoryAgentTraceDb {
         Ok(!rows.is_empty())
     }
 
-    /// Seed repository metadata on first initialization and validate it on
-    /// every open.
+    /// Seed repository metadata on first initialization, atomically fill in a
+    /// missing source-instance identity exactly once, and validate the result
+    /// on every open.
     ///
     /// The stored `repository_id` must match the resolved repository ID for
     /// this database path; a mismatch means the file does not belong to the
-    /// resolved repository and is an error rather than a write target.
-    pub fn verify_or_initialize_repository_metadata(&self, repository_id: &str) -> Result<()> {
+    /// resolved repository and is an error rather than a write target. An
+    /// existing valid `source_instance_id` is returned unchanged; concurrent
+    /// callers filling in a missing one always converge on the same stored
+    /// winner via a conditional `UPDATE`.
+    pub fn verify_or_initialize_repository_metadata(
+        &self,
+        repository_id: &str,
+    ) -> Result<RepositoryMetadata> {
         self.execute(INSERT_REPOSITORY_METADATA_SQL, (repository_id,))?;
 
         let stored = self.query_map(SELECT_REPOSITORY_METADATA_SQL, (), |row| {
+            let repository_id = row.get::<String>(0).map_err(anyhow::Error::from)?;
+            let source_instance_id = row.get::<String>(1).map_err(anyhow::Error::from)?;
+            Ok((repository_id, source_instance_id))
+        })?;
+
+        let Some((stored_repository_id, stored_source_instance_id)) = stored.into_iter().next()
+        else {
+            anyhow::bail!(
+                "repository Agent Trace DB metadata is missing its repository ID row. \
+                 {REPOSITORY_AGENT_TRACE_SCHEMA_SETUP_GUIDANCE}"
+            )
+        };
+
+        if stored_repository_id != repository_id {
+            anyhow::bail!(
+                "repository Agent Trace DB metadata mismatch: stored repository ID \
+                 {stored_repository_id} does not match resolved repository ID {repository_id}"
+            );
+        }
+
+        let source_instance_id = if is_valid_source_instance_id(&stored_source_instance_id) {
+            stored_source_instance_id
+        } else {
+            self.initialize_missing_source_instance_id()?
+        };
+
+        Ok(RepositoryMetadata {
+            repository_id: stored_repository_id,
+            source_instance_id,
+        })
+    }
+
+    /// Atomically claim the missing source-instance identity for this
+    /// database and return the stored winner.
+    ///
+    /// Never replaces an existing valid identity: the conditional `UPDATE`
+    /// only ever changes the placeholder row, so a racing caller that loses
+    /// the update simply re-reads the value the winner stored.
+    fn initialize_missing_source_instance_id(&self) -> Result<String> {
+        let candidate = generate_source_instance_id();
+        self.execute(UPDATE_MISSING_SOURCE_INSTANCE_ID_SQL, (candidate,))?;
+
+        let stored = self.query_map(SELECT_SOURCE_INSTANCE_ID_SQL, (), |row| {
             row.get::<String>(0).map_err(Into::into)
         })?;
 
-        match stored.first() {
-            Some(stored_repository_id) if stored_repository_id == repository_id => Ok(()),
-            Some(stored_repository_id) => anyhow::bail!(
-                "repository Agent Trace DB metadata mismatch: stored repository ID \
-                 {stored_repository_id} does not match resolved repository ID {repository_id}"
-            ),
-            None => anyhow::bail!(
-                "repository Agent Trace DB metadata is missing its repository ID row. \
-                 {REPOSITORY_AGENT_TRACE_SCHEMA_SETUP_GUIDANCE}"
+        match stored.into_iter().next() {
+            Some(source_instance_id) if is_valid_source_instance_id(&source_instance_id) => {
+                Ok(source_instance_id)
+            }
+            other => anyhow::bail!(
+                "repository Agent Trace DB source-instance identity initialization failed to \
+                 converge on a valid value: {other:?}"
             ),
         }
     }
@@ -256,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn open_at_initializes_the_full_schema_from_one_migration() {
+    fn open_at_initializes_the_full_schema_from_all_migrations() {
         let db_path = unique_test_db_path("baseline");
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
 
@@ -302,12 +397,40 @@ mod tests {
             .expect("migration metadata query should succeed");
         assert_eq!(
             applied_ids,
-            vec![String::from("001_repository_schema")],
-            "repository DBs should be initialized from exactly one schema file"
+            vec![
+                String::from("001_repository_schema"),
+                String::from("002_repository_source_instance_id"),
+            ],
+            "repository DBs should be initialized from every embedded migration in order"
         );
 
         db.ensure_schema_ready_for_hooks()
             .expect("fresh repository DB schema should be ready");
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn fresh_repository_database_receives_a_valid_source_instance_id_once() {
+        let db_path = unique_test_db_path("source-instance-init");
+        let repository_id = "a".repeat(64);
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("repository DB should open");
+
+        let first = db
+            .verify_or_initialize_repository_metadata(&repository_id)
+            .expect("repository metadata initialization should succeed");
+        assert!(
+            is_valid_source_instance_id(&first.source_instance_id),
+            "a fresh database should receive a valid source-instance identity"
+        );
+
+        let second = db
+            .verify_or_initialize_repository_metadata(&repository_id)
+            .expect("repeated initialization should succeed");
+        assert_eq!(
+            first.source_instance_id, second.source_instance_id,
+            "repeated setup must never replace an already-stored source-instance identity"
+        );
 
         remove_test_db(&db_path);
     }
@@ -590,6 +713,33 @@ mod tests {
 
         remove_test_db(&first_db_path);
         remove_test_db(&second_db_path);
+    }
+
+    #[test]
+    fn generated_source_instance_ids_are_valid_and_unique() {
+        let first = generate_source_instance_id();
+        let second = generate_source_instance_id();
+
+        assert!(is_valid_source_instance_id(&first));
+        assert!(is_valid_source_instance_id(&second));
+        assert_ne!(
+            first, second,
+            "independently generated source-instance identities must differ"
+        );
+    }
+
+    #[test]
+    fn empty_placeholder_source_instance_id_is_invalid() {
+        assert!(
+            !is_valid_source_instance_id(""),
+            "the migration's empty placeholder must not validate as a stored identity"
+        );
+    }
+
+    #[test]
+    fn non_uuid_source_instance_id_is_invalid() {
+        assert!(!is_valid_source_instance_id("not-a-uuid"));
+        assert!(!is_valid_source_instance_id("a".repeat(64).as_str()));
     }
 
     #[test]

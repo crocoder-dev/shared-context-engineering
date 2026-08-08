@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+use crate::services::agent_trace_db::repository::{RepositoryAgentTraceDb, RepositoryMetadata};
 use crate::services::checkout::{get_or_create_checkout_id, resolve_git_dir};
 use crate::services::default_paths::{
     agent_trace_db_path_for_repository, agent_trace_db_path_for_repository_at,
@@ -54,16 +54,28 @@ pub struct ResolvedAgentTraceStorage {
     pub db_path: PathBuf,
     /// Open repository-scoped Agent Trace database.
     pub db: RepositoryAgentTraceDb,
+    /// Typed repository metadata (`repository_id` and `source_instance_id`)
+    /// read or initialized while opening `db`.
+    pub metadata: RepositoryMetadata,
 }
 
 /// Resolves the repository-scoped Agent Trace storage for a checkout using
 /// the canonical state root from the default-path catalog.
+///
+/// May create the database and run migrations when it does not yet exist or
+/// predates a later migration; intended for setup/lifecycle and diagnostic
+/// callers, not high-frequency hook runtime callers.
 pub fn resolve_agent_trace_storage(
     context: &AgentTraceStorageContext<'_>,
 ) -> Result<ResolvedAgentTraceStorage> {
     let repository_identity = resolve_identity(context)?;
     let db_path = agent_trace_db_path_for_repository(&repository_identity.identity.repository_id)?;
-    open_storage(context, repository_identity, db_path)
+    open_storage(
+        context,
+        repository_identity,
+        db_path,
+        open_repository_db_concurrently_safe,
+    )
 }
 
 /// Resolution core against an explicit state root, so tests can exercise the
@@ -77,7 +89,53 @@ pub fn resolve_agent_trace_storage_at_state_root(
         state_root,
         &repository_identity.identity.repository_id,
     )?;
-    open_storage(context, repository_identity, db_path)
+    open_storage(
+        context,
+        repository_identity,
+        db_path,
+        open_repository_db_concurrently_safe,
+    )
+}
+
+/// Resolves the repository-scoped Agent Trace storage for a checkout without
+/// creating, migrating, or repairing the database schema.
+///
+/// Intended for high-frequency hook runtime callers: a missing or
+/// migration-incomplete database fails readiness with actionable `sce setup`
+/// guidance instead of silently creating or migrating one. Source-instance
+/// initialization is still applied when the schema is already ready, since
+/// it only fills in an existing column and never mutates schema/migrations.
+pub fn resolve_agent_trace_storage_for_hook_runtime(
+    context: &AgentTraceStorageContext<'_>,
+) -> Result<ResolvedAgentTraceStorage> {
+    let repository_identity = resolve_identity(context)?;
+    let db_path = agent_trace_db_path_for_repository(&repository_identity.identity.repository_id)?;
+    open_storage(
+        context,
+        repository_identity,
+        db_path,
+        open_repository_db_for_hook_runtime,
+    )
+}
+
+/// Resolution core of [`resolve_agent_trace_storage_for_hook_runtime`] against
+/// an explicit state root, so tests can exercise the no-migration hook path
+/// without touching the real user state directory.
+pub fn resolve_agent_trace_storage_for_hook_runtime_at_state_root(
+    context: &AgentTraceStorageContext<'_>,
+    state_root: &Path,
+) -> Result<ResolvedAgentTraceStorage> {
+    let repository_identity = resolve_identity(context)?;
+    let db_path = agent_trace_db_path_for_repository_at(
+        state_root,
+        &repository_identity.identity.repository_id,
+    )?;
+    open_storage(
+        context,
+        repository_identity,
+        db_path,
+        open_repository_db_for_hook_runtime,
+    )
 }
 
 fn resolve_identity(context: &AgentTraceStorageContext<'_>) -> Result<ResolvedRepositoryIdentity> {
@@ -93,6 +151,7 @@ fn open_storage(
     context: &AgentTraceStorageContext<'_>,
     repository_identity: ResolvedRepositoryIdentity,
     db_path: PathBuf,
+    open_db: impl FnOnce(&Path, &str) -> Result<(RepositoryAgentTraceDb, RepositoryMetadata)>,
 ) -> Result<ResolvedAgentTraceStorage> {
     let git_dir = resolve_git_dir(context.repository_root).with_context(|| {
         format!(
@@ -107,25 +166,30 @@ fn open_storage(
         )
     })?;
 
-    // Opening the database creates `repos/<repository-id>/` when missing;
-    // directory creation is idempotent and first-time schema initialization may
-    // briefly race on SQLite metadata locks, so retry the fast-path/migrate
-    // sequence a small bounded number of times.
     let repository_id = &repository_identity.identity.repository_id;
-    let db = open_repository_db_concurrently_safe(&db_path, repository_id)?;
+    let (db, metadata) = open_db(&db_path, repository_id)?;
 
     Ok(ResolvedAgentTraceStorage {
         repository_identity,
         checkout_id,
         db_path,
         db,
+        metadata,
     })
 }
 
+/// Open the repository-scoped Agent Trace database for setup/lifecycle and
+/// diagnostic callers, tolerating and repairing the narrow first-open races
+/// documented on [`RepositoryAgentTraceDb::repair_missing_repository_schema_migration_metadata`].
+///
+/// Opening the database creates `repos/<repository-id>/` when missing;
+/// directory creation is idempotent and first-time schema initialization may
+/// briefly race on `SQLite` metadata locks, so retry the fast-path/migrate
+/// sequence a small bounded number of times.
 fn open_repository_db_concurrently_safe(
     db_path: &Path,
     repository_id: &str,
-) -> Result<RepositoryAgentTraceDb> {
+) -> Result<(RepositoryAgentTraceDb, RepositoryMetadata)> {
     let mut last_error = None;
 
     for attempt in 1..=REPOSITORY_DB_INITIALIZATION_ATTEMPTS {
@@ -134,16 +198,16 @@ fn open_repository_db_concurrently_safe(
                 if db.ensure_schema_ready_for_hooks().is_err() {
                     db.repair_missing_repository_schema_migration_metadata()?;
                 }
-                db.verify_or_initialize_repository_metadata(repository_id)?;
-                Ok(db)
+                let metadata = db.verify_or_initialize_repository_metadata(repository_id)?;
+                Ok((db, metadata))
             });
 
         match fast_open {
-            Ok(db) => return Ok(db),
+            Ok(result) => return Ok(result),
             Err(fast_error) => match RepositoryAgentTraceDb::new_at(db_path) {
                 Ok(db) => {
-                    db.verify_or_initialize_repository_metadata(repository_id)?;
-                    return Ok(db);
+                    let metadata = db.verify_or_initialize_repository_metadata(repository_id)?;
+                    return Ok((db, metadata));
                 }
                 Err(init_error) => {
                     last_error = Some(anyhow::anyhow!(
@@ -161,6 +225,25 @@ fn open_repository_db_concurrently_safe(
     }
 
     Err(last_error.expect("repository DB initialization should record an error"))
+}
+
+/// Open the repository-scoped Agent Trace database for high-frequency hook
+/// runtime callers.
+///
+/// Never creates, migrates, or repairs schema/migration metadata: a missing
+/// or migration-incomplete database fails with the existing `sce setup`
+/// guidance from [`RepositoryAgentTraceDb::ensure_schema_ready_for_hooks`].
+/// Source-instance initialization still runs when the schema is ready, since
+/// it only fills in an existing column via an atomic, race-safe `UPDATE` and
+/// never applies a schema migration.
+fn open_repository_db_for_hook_runtime(
+    db_path: &Path,
+    repository_id: &str,
+) -> Result<(RepositoryAgentTraceDb, RepositoryMetadata)> {
+    let db = RepositoryAgentTraceDb::open_without_migrations_at(db_path)?;
+    db.ensure_schema_ready_for_hooks()?;
+    let metadata = db.verify_or_initialize_repository_metadata(repository_id)?;
+    Ok((db, metadata))
 }
 
 #[cfg(test)]
@@ -518,5 +601,46 @@ mod tests {
                 "unexpected error for '{bad}': {error}"
             );
         }
+    }
+
+    #[test]
+    fn hook_runtime_resolution_fails_with_setup_guidance_before_setup_ran() {
+        let state_root = unique_temp_dir("state-hook-before-setup");
+        let repo =
+            init_git_repo_with_remote("hook-before-setup", "git@github.com:acme/widgets.git");
+
+        let Err(error) = resolve_agent_trace_storage_for_hook_runtime_at_state_root(
+            &context_for(&repo),
+            &state_root,
+        ) else {
+            panic!("hook runtime resolution must not create or migrate a missing database")
+        };
+        assert!(
+            error.to_string().contains("sce setup"),
+            "unexpected error: {error}"
+        );
+
+        std::fs::remove_dir_all(&state_root).expect("clean up state root");
+        std::fs::remove_dir_all(&repo).expect("clean up repo");
+    }
+
+    #[test]
+    fn hook_runtime_resolution_succeeds_and_reuses_metadata_after_setup() {
+        let state_root = unique_temp_dir("state-hook-after-setup");
+        let repo = init_git_repo_with_remote("hook-after-setup", "git@github.com:acme/widgets.git");
+
+        let setup = resolve_agent_trace_storage_at_state_root(&context_for(&repo), &state_root)
+            .expect("setup-safe resolution should create the database");
+
+        let hook_storage = resolve_agent_trace_storage_for_hook_runtime_at_state_root(
+            &context_for(&repo),
+            &state_root,
+        )
+        .expect("hook runtime resolution should succeed once the database is set up");
+
+        assert_eq!(hook_storage.metadata, setup.metadata);
+
+        std::fs::remove_dir_all(&state_root).expect("clean up state root");
+        std::fs::remove_dir_all(&repo).expect("clean up repo");
     }
 }

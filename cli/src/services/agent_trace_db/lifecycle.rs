@@ -77,6 +77,7 @@ impl ServiceLifecycle for AgentTraceDbLifecycle {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RepositoryDatabaseSetup {
     repository_id: String,
+    source_instance_id: String,
     canonical_identity: String,
     identity_source: String,
     configured_remote: Option<String>,
@@ -103,6 +104,7 @@ fn initialize_repository_agent_trace_db(repo_root: &Path) -> Result<RepositoryDa
 
     Ok(RepositoryDatabaseSetup {
         repository_id: storage.repository_identity.identity.repository_id,
+        source_instance_id: storage.metadata.source_instance_id,
         canonical_identity: storage.repository_identity.identity.canonical_identity,
         identity_source,
         configured_remote,
@@ -118,8 +120,9 @@ fn format_repository_storage_setup_message(setup: &RepositoryDatabaseSetup) -> S
         .map(|remote| format!("\nAgent Trace configured remote: {remote}"))
         .unwrap_or_default();
     format!(
-        "Agent Trace repository ID: {}\nAgent Trace identity source: {}\nAgent Trace canonical identity: {}{}\nAgent Trace checkout identity: {}\nAgent Trace repository-scoped database initialized at '{}'.",
+        "Agent Trace repository ID: {}\nAgent Trace source-instance identity: {}\nAgent Trace identity source: {}\nAgent Trace canonical identity: {}{}\nAgent Trace checkout identity: {}\nAgent Trace repository-scoped database initialized at '{}'.",
         setup.repository_id,
+        setup.source_instance_id,
         setup.identity_source,
         setup.canonical_identity,
         remote_line,
