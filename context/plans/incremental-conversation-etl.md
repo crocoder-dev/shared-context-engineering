@@ -78,13 +78,15 @@ Repository-wide checks `/validate` runs after the last task, regardless of which
   - Implementation evidence: Added `cli/src/services/conversation_messages_etl.rs` with `SourceMessage`, bounded short-snapshot extraction using the shared contention retry, validated `MessageRole` transformation, independently keyed messages watermark reads/upserts, logical identity replay/conflict handling, atomic lineage/fact/watermark loading, configurable batching, and replica-bound runner/stats. Registered the module in `cli/src/services/mod.rs`.
   - Verification evidence: `conversation_messages_etl` passed 8 focused tests; `conversation_messages_identity` passed 3 focused identity/rollback tests; `nix develop -c sh -c 'cd cli && cargo fmt'` passed; `git diff --check` passed.
 
-- [ ] T03: `Implement source-lineage-scoped parts ETL` (status:todo)
+- [x] T03: `Implement source-lineage-scoped parts ETL` (status:complete)
   - Task ID: T03
   - Goal: Add incremental, verbatim-preserving message-part extraction and transactional loading.
   - Boundaries (in/out of scope): In — `SourceMessagePart`, exact source projection/query, `PartType` conversion, UTF-8 SHA-256 transform, source-part identity verification/insertion, no-parent requirement, `parts` watermark handling, ordering and part-focused tests, and source-writer contention coverage. Out — messages ETL changes except shared test fixtures, conversation runner, code-change ETL, pull/push, and CDC.
   - Dependencies: T01
   - Done when: parts use `id > watermark ORDER BY id ASC LIMIT ?`, valid types are preserved exactly, unknown types fail, text bytes round-trip exactly, hash values are lowercase SHA-256, identical source-lineage replays are counted without duplication, conflicts fail without overwrite, same local IDs from different source instances coexist, and a part batch succeeds before its parent message exists.
   - Verification notes (commands or checks): `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_parts_etl`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_parts_identity`; `nix develop -c sh -c 'cd cli && cargo fmt'`.
+  - Implementation evidence: Added `cli/src/services/conversation_parts_etl.rs` with bounded short-snapshot extraction, supported `PartType` validation, exact UTF-8 SHA-256 hashing, source-lineage identity replay/conflict handling, atomic `message_parts` loading, independent `parts` watermarks, configurable batching, and source-writer contention coverage. Registered the module in `cli/src/services/mod.rs`.
+  - Verification evidence: `conversation_parts_etl` passed all 11 focused tests; `conversation_parts_identity` passed all 3 identity/rollback tests; `nix develop -c sh -c 'cd cli && cargo fmt'` passed; `git diff --check` passed.
 
 - [ ] T04: `Expose ConversationEtl and prove independent table progress` (status:todo)
   - Task ID: T04

@@ -1,6 +1,6 @@
 # Agent Trace ETL
 
-`cli/src/services/agent_trace_etl/mod.rs` owns the shared mechanics and the first production ETL slice between the repository-scoped multiprocess-WAL `agent-trace.db` source and the lock-owned `agent-trace-sync.db` DWH replica. `AgentTraceEtl` accepts an open `RepositoryAgentTraceDb`, a repository ID, and an `AgentTraceDwhReplica`; it verifies source metadata, obtains the stored `source_instance_id`, and runs the `agent_traces` table. The sibling `conversation_messages_etl` module applies the same mechanics to logical `messages` rows with its own table watermark. Neither pipeline acquires credentials, invokes `pull()`/`push()`, or depends on CLI orchestration.
+`cli/src/services/agent_trace_etl/mod.rs` owns the shared mechanics and the table ETL slices between the repository-scoped multiprocess-WAL `agent-trace.db` source and the lock-owned `agent-trace-sync.db` DWH replica. `AgentTraceEtl` accepts an open `RepositoryAgentTraceDb`, a repository ID, and an `AgentTraceDwhReplica`; it verifies source metadata, obtains the stored `source_instance_id`, and runs the `agent_traces` table. The sibling `conversation_messages_etl` and `conversation_parts_etl` modules apply the same mechanics to logical `messages` and source-lineage-scoped `parts` rows, each with its own table watermark. None of these pipelines acquires credentials, invokes `pull()`/`push()`, or depends on CLI orchestration.
 
 ## Incremental run contract
 
@@ -16,7 +16,7 @@ Each destination batch uses one `BEGIN IMMEDIATE` transaction for repository/sou
 
 ## Replica and reconstruction boundary
 
-`AgentTraceDwhReplica` remains the sole owner of the sync connection and bridge lock. Its `run_agent_trace_etl()` method delegates to `AgentTraceEtl` while preserving that ownership; ETL never pulls or pushes remote state. The local sync database is a durable transaction/replay boundary and is reconstructible from the remote DWH: crash or local-file loss is handled by reopening/replaying source rows and, when required, remote reconstruction. Message-part and code-change ETLs must preserve the same short-source-transaction, exact-cursor, and local fact-plus-watermark invariants established by the existing table runners.
+`AgentTraceDwhReplica` remains the sole owner of the sync connection and bridge lock. Its `run_agent_trace_etl()` method delegates to `AgentTraceEtl` while preserving that ownership; ETL never pulls or pushes remote state. The local sync database is a durable transaction/replay boundary and is reconstructible from the remote DWH: crash or local-file loss is handled by reopening/replaying source rows and, when required, remote reconstruction. Message-part ETL now preserves the same short-source-transaction, exact-cursor, and local fact-plus-watermark invariants through `PartsEtl`; code-change ETL remains future work.
 
 ## Source contention retry
 
