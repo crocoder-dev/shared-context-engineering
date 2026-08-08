@@ -334,7 +334,131 @@ pub struct EncryptedTursoDb<M: DbSpec> {
     core: TursoConnectionCore<M>,
 }
 
+/// Transaction-scoped handle over an open `TursoDb` connection.
+///
+/// Exposes a synchronous execute/query surface for use inside a
+/// [`TursoDb::transaction`] closure without leaking the raw `turso::Connection`
+/// or `turso::Transaction` API. Statements run directly against the shared
+/// connection between the transaction's `BEGIN` and `COMMIT`/`ROLLBACK`, with
+/// no retry: transient contention is the caller's responsibility to handle
+/// before starting the transaction.
+pub struct TursoTransaction<'a, M: DbSpec> {
+    core: &'a TursoConnectionCore<M>,
+}
+
+impl<M: DbSpec> TursoTransaction<'_, M> {
+    /// Execute a SQL statement that does not return rows.
+    ///
+    /// # Returns
+    /// Number of rows affected.
+    pub fn execute(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<u64> {
+        let params = turso::params::IntoParams::into_params(params).map_err(|e| {
+            anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
+        })?;
+
+        self.core.runtime.block_on(async {
+            self.core
+                .conn
+                .execute(sql, params)
+                .await
+                .map_err(|e| anyhow::anyhow!("{} execute failed: {sql}: {e}", M::db_name()))
+        })
+    }
+
+    /// Execute a SQL query and synchronously map all returned rows.
+    pub fn query_map<T, F>(
+        &self,
+        sql: &str,
+        params: impl turso::params::IntoParams,
+        mut map_row: F,
+    ) -> Result<Vec<T>>
+    where
+        F: FnMut(&turso::Row) -> Result<T>,
+    {
+        let params = turso::params::IntoParams::into_params(params).map_err(|e| {
+            anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
+        })?;
+
+        let rows =
+            self.core.runtime.block_on(async {
+                let mut rows =
+                    self.core.conn.query(sql, params).await.map_err(|e| {
+                        anyhow::anyhow!("{} query failed: {sql}: {e}", M::db_name())
+                    })?;
+                let mut fetched_rows = Vec::new();
+
+                while let Some(row) = rows
+                    .next()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{} row fetch failed: {sql}: {e}", M::db_name()))?
+                {
+                    fetched_rows.push(row);
+                }
+
+                Ok::<_, anyhow::Error>(fetched_rows)
+            })?;
+
+        let mut results = Vec::new();
+
+        for row in rows {
+            results.push(
+                map_row(&row)
+                    .with_context(|| format!("{} row mapping failed: {sql}", M::db_name()))?,
+            );
+        }
+
+        Ok(results)
+    }
+}
+
 impl<M: DbSpec> TursoDb<M> {
+    /// Run one closure inside an explicit transaction on this connection.
+    ///
+    /// Issues `BEGIN IMMEDIATE`, runs `f` against a [`TursoTransaction`], and
+    /// commits only when `f` returns `Ok`. Any closure error, or a commit
+    /// failure, triggers a best-effort `ROLLBACK` before the original error is
+    /// returned. No `turso::Transaction` value is exposed to the caller.
+    pub fn transaction<T>(&self, f: impl FnOnce(&TursoTransaction<M>) -> Result<T>) -> Result<T> {
+        self.core
+            .runtime
+            .block_on(async { self.core.conn.execute("BEGIN IMMEDIATE", ()).await })
+            .map_err(|e| anyhow::anyhow!("{} failed to begin transaction: {e}", M::db_name()))?;
+
+        let txn = TursoTransaction { core: &self.core };
+
+        let outcome = f(&txn);
+
+        match outcome {
+            Ok(value) => {
+                self.core
+                    .runtime
+                    .block_on(async { self.core.conn.execute("COMMIT", ()).await })
+                    .map_err(|e| {
+                        self.rollback_best_effort();
+                        anyhow::anyhow!("{} failed to commit transaction: {e}", M::db_name())
+                    })?;
+
+                Ok(value)
+            }
+            Err(err) => {
+                self.rollback_best_effort();
+                Err(err)
+            }
+        }
+    }
+
+    /// Best-effort `ROLLBACK` used after a closure error or failed commit.
+    ///
+    /// Rollback failures are not surfaced: the transaction's own error already
+    /// explains the failure, and a database left without an open transaction
+    /// (the common rollback-failure case) is not itself a problem.
+    fn rollback_best_effort(&self) {
+        let _ = self
+            .core
+            .runtime
+            .block_on(async { self.core.conn.execute("ROLLBACK", ()).await });
+    }
+
     /// Open or create the database at the spec-provided canonical path.
     ///
     /// Parent directories are created automatically. Migrations are run after
@@ -945,5 +1069,172 @@ mod tests {
             budget_ms <= QUERY_RETRY_FAILURE_BUDGET_MS,
             "default query retry failure budget was {budget_ms}ms; expected <= {QUERY_RETRY_FAILURE_BUDGET_MS}ms"
         );
+    }
+}
+
+#[cfg(test)]
+mod turso_transaction_tests {
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::*;
+
+    struct TestDbSpec;
+
+    impl DbSpec for TestDbSpec {
+        fn db_name() -> &'static str {
+            "turso transaction test DB"
+        }
+
+        fn db_path() -> Result<PathBuf> {
+            anyhow::bail!("turso transaction test DB has no canonical spec path")
+        }
+
+        fn migrations() -> &'static [(&'static str, &'static str)] {
+            &[]
+        }
+
+        fn db_config_key() -> &'static str {
+            "local_db"
+        }
+    }
+
+    type TestDb = TursoDb<TestDbSpec>;
+
+    fn unique_test_db_path(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!(
+                "sce-turso-transaction-{label}-{}-{nonce}",
+                std::process::id()
+            ))
+            .join("turso-transaction-test.db")
+    }
+
+    fn remove_test_db(db_path: &Path) {
+        if let Some(parent) = db_path.parent() {
+            fs::remove_dir_all(parent).expect("test DB directory should be removed");
+        }
+    }
+
+    fn open_test_db(label: &str) -> (TestDb, PathBuf) {
+        let db_path = unique_test_db_path(label);
+        let db = TestDb::open_without_migrations_at(&db_path).expect("test DB should open");
+        db.execute(
+            "CREATE TABLE widgets (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+            (),
+        )
+        .expect("widgets table should be created");
+        (db, db_path)
+    }
+
+    fn widget_names(db: &TestDb) -> Vec<String> {
+        db.query_map("SELECT name FROM widgets ORDER BY id ASC", (), |row| {
+            row.get::<String>(0).map_err(Into::into)
+        })
+        .expect("widgets query should succeed")
+    }
+
+    #[test]
+    fn transaction_commits_all_writes_from_the_closure() {
+        let (db, db_path) = open_test_db("commit");
+
+        let inserted = db
+            .transaction(|txn| {
+                txn.execute("INSERT INTO widgets (name) VALUES (?1)", ("first",))?;
+                txn.execute("INSERT INTO widgets (name) VALUES (?1)", ("second",))?;
+                let rows =
+                    txn.query_map("SELECT name FROM widgets ORDER BY id ASC", (), |row| {
+                        row.get::<String>(0).map_err(Into::into)
+                    })?;
+                Ok(rows)
+            })
+            .expect("transaction should commit");
+
+        assert_eq!(
+            inserted,
+            vec![String::from("first"), String::from("second")]
+        );
+        assert_eq!(
+            widget_names(&db),
+            vec![String::from("first"), String::from("second")],
+            "writes should be visible after the transaction returns"
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn transaction_rolls_back_all_writes_when_the_closure_fails() {
+        let (db, db_path) = open_test_db("rollback");
+
+        let result: Result<()> = db.transaction(|txn| {
+            txn.execute("INSERT INTO widgets (name) VALUES (?1)", ("orphaned",))?;
+            anyhow::bail!("closure failure after write")
+        });
+
+        assert!(
+            result.is_err(),
+            "transaction should surface the closure error"
+        );
+        assert!(
+            widget_names(&db).is_empty(),
+            "the write before the failure should be rolled back"
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn transaction_error_message_retains_database_name_context() {
+        let (db, db_path) = open_test_db("context");
+
+        let result: Result<()> = db.transaction(|txn| {
+            txn.execute("INSERT INTO does_not_exist (name) VALUES (?1)", ("x",))?;
+            Ok(())
+        });
+
+        let error = result.expect_err("insert into a missing table should fail");
+        assert!(
+            error.to_string().contains(TestDbSpec::db_name()),
+            "transaction error should retain database context: {error}"
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn transaction_works_for_agent_trace_dwh_db() {
+        let db_path = unique_test_db_path("dwh");
+        let db = crate::services::agent_trace_dwh_db::AgentTraceDwhDb::new_at(&db_path)
+            .expect("DWH DB should open");
+
+        db.transaction(|txn| {
+            txn.execute(
+                "INSERT INTO repositories (repository_id) VALUES (?1)",
+                ("repo-a",),
+            )?;
+            txn.execute(
+                "INSERT INTO source_instances (repository_id, source_instance_id) VALUES (?1, ?2)",
+                ("repo-a", "instance-a"),
+            )?;
+            Ok(())
+        })
+        .expect("DWH transaction should commit");
+
+        let repository_ids = db
+            .query_map("SELECT repository_id FROM repositories", (), |row| {
+                row.get::<String>(0).map_err(Into::into)
+            })
+            .expect("repositories query should succeed");
+        assert_eq!(repository_ids, vec![String::from("repo-a")]);
+
+        remove_test_db(&db_path);
     }
 }
