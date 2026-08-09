@@ -226,7 +226,7 @@ nothing left to design.
     (clean); `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path
     cli/Cargo.toml -- --check` (clean).
 
-- [ ] T02: `Prove stage-identified failure semantics stop the sequence early` (status:todo)
+- [x] T02: `Prove stage-identified failure semantics stop the sequence early` (status:done)
   - Task ID: T02
   - Goal: Add integration coverage proving: (a) a replica-open failure (e.g. an
     unreachable `database_url`) returns `AgentTraceDwhSyncError::ReplicaOpen`
@@ -254,6 +254,78 @@ nothing left to design.
     (`agent-trace-sync.db`) is inspected directly to confirm prior successful
     ETL stages within the same failed run committed locally as designed.
   - Verification notes (commands or checks): `nix develop .#database -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_dwh_sync_turso_sync_integration`
+  - Evidence: Extended `cli/src/services/agent_trace_dwh_sync.rs`'s
+    `integration_tests` module with one new gated `#[test]`
+    `agent_trace_dwh_sync_stage_failure_turso_sync_integration`, composed of
+    five `assert_*` helpers (one per stage, each spawning its own
+    `LocalSyncServer`), matching the `agent_trace_dwh_replica_turso_sync_integration`
+    composition convention: (a) `assert_replica_open_failure_stops_before_any_stage`
+    — an unreachable `database_url` fails `open()` with `ReplicaOpen`, and the
+    live remote (never actually addressed) is confirmed to hold zero rows;
+    (b) `assert_pull_failure_stops_before_any_stage` — after a baseline
+    successful sync, a second `run()` against a *different*, unreachable
+    `database_url` fails at `pull()` with `Pull` (the already-`Ready` local
+    replica needs no network to open — confirmed empirically, see deviation
+    note below); the local spool shows the new source row was never
+    extracted, and the live remote (never touched by the failing call) is
+    unchanged from baseline; (c)
+    `assert_agent_trace_etl_failure_stops_before_conversation_code_changes_and_push`
+    — two independently created sources for one repository publish the same
+    `agent_trace_id` with different `trace_json`; the second sync's
+    `AgentTraceEtl` fails on the identity-hash conflict (`AgentTraceEtl`
+    variant), and because it is both the first stage and atomic per batch,
+    the local replica after the failed run holds exactly what `pull()` left
+    it (source A's row) with no partial facts from source B and no push; (d)
+    `assert_conversation_etl_failure_leaves_agent_trace_committed_and_stops_before_code_changes_and_push`
+    — a raw-SQL `parts` row with an invalid `type` (no source-side CHECK
+    constraint permits this) fails the parts half of `ConversationEtl`
+    (`ConversationEtl` variant) while the messages half and the preceding
+    `AgentTraceEtl` commit locally within the same run, `CodeChangesEtl`
+    never runs, and push never runs; (e)
+    `assert_code_changes_etl_failure_leaves_prior_etls_committed_and_stops_before_push`
+    — a malformed `diff_traces.patch` (reusing the existing malformed-patch
+    fixture from `code_changes_etl_replays_watermark_behind_failed_transformation`)
+    fails `CodeChangesEtl` (`CodeChangesEtl` variant) while both prior ETLs
+    commit locally and push never runs. Each helper asserts the exact error
+    variant, that the sentinel auth token never appears in `Display` output,
+    the local spool's row counts (via a `local_row_counts` helper that
+    reopens the same local replica path directly — no network required once
+    `Ready`), and the live remote's row counts (via a `remote_row_counts`
+    helper that opens a disposable peer replica and pulls) before and after
+    each failing run.
+  - Deviation: stage (b)'s literal "remote killed after a successful open"
+    framing from the Goal was implemented instead as "a second `run()` points
+    at a different, never-reachable `database_url`," because empirical
+    testing (a throwaway probe run under `nix develop .#database`, since
+    removed) showed that once a local replica's schema has classified
+    `Ready`, `AgentTraceDwhReplica::open()` performs no network round trip at
+    all — only the following `pull()` does. Killing the real server would
+    therefore not isolate a `Pull`-specific failure from a `ReplicaOpen`
+    failure on a later re-open attempt against the same dead URL, and would
+    also prevent inspecting the live remote afterward (the disposable
+    `LocalSyncServer` holds no data once its process exits). Pointing the
+    second `run()` at an unrelated unreachable URL instead reproduces the
+    same `Pull` failure deterministically, keeps the real remote's process
+    alive and inspectable throughout, and — because the real remote's URL is
+    never even passed to the failing call — makes "the live remote is
+    unaffected" a stronger, directly checkable assertion rather than an
+    inference from a killed process. This does not touch `run()`'s own
+    open→pull→ETLs→push ordering; it only changes how the test induces the
+    failure. Recorded here for T08 to fold into the pull-failure discussion
+    alongside T03's own findings.
+  - Verification run: `nix develop .#database -c
+    ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    agent_trace_dwh_sync` (5 passed, run 4 times back-to-back with no
+    flakiness, matching the repeated-run precedent used elsewhere in this
+    plan); `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml -- --test-threads=1` (293 passed, 1 ignored, 0 failed —
+    the default parallel run showed 3 unrelated failures from pre-existing
+    concurrent-database-lock contention in `agent_trace_db`/`agent_trace_dwh_db`
+    tests untouched by this task, confirmed spurious by the clean
+    single-threaded rerun); `nix develop -c ./scripts/run-cli-cargo.sh clippy
+    --manifest-path cli/Cargo.toml --all-targets -- -D warnings` (clean);
+    `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path
+    cli/Cargo.toml -- --check` (clean).
 
 - [ ] T03: `Prove and document push-failure and pull-with-pending-local-changes recovery` (status:todo)
   - Task ID: T03
