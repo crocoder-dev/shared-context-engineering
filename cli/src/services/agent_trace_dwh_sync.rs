@@ -296,6 +296,21 @@ mod integration_tests {
 
     impl LocalSyncServer {
         fn spawn(tursodb_path: &Path) -> Self {
+            Self::spawn_with_database(tursodb_path, None)
+        }
+
+        /// Spawn against a specific on-disk `DATABASE` file instead of the
+        /// default `:memory:`, so this remote's data survives this process
+        /// being killed and a fresh `tursodb --sync-server` process later
+        /// starting against the same file. Used only by the push-failure
+        /// recovery test, which needs to force a real remote outage and then
+        /// "restart remote availability" without losing what was already
+        /// pushed before the outage.
+        fn spawn_persistent(tursodb_path: &Path, db_path: &Path) -> Self {
+            Self::spawn_with_database(tursodb_path, Some(db_path))
+        }
+
+        fn spawn_with_database(tursodb_path: &Path, db_path: Option<&Path>) -> Self {
             let port = {
                 let listener = std::net::TcpListener::bind("127.0.0.1:0")
                     .expect("bind an ephemeral port to pick a free one for the sync server");
@@ -306,8 +321,13 @@ mod integration_tests {
             };
             let addr = format!("127.0.0.1:{port}");
 
-            let child = Command::new(tursodb_path)
-                .args(["--sync-server", &addr])
+            let mut command = Command::new(tursodb_path);
+            command.args(["--sync-server", &addr]);
+            if let Some(db_path) = db_path {
+                command.arg(db_path);
+            }
+
+            let child = command
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
@@ -329,6 +349,14 @@ mod integration_tests {
                 child,
                 url: format!("http://{addr}"),
             }
+        }
+
+        /// Kill this server's process immediately, so a caller can force and
+        /// observe a real remote-unavailable failure (e.g. from `push()`)
+        /// before optionally spawning a replacement.
+        fn kill(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
         }
     }
 
@@ -894,6 +922,7 @@ mod integration_tests {
     /// the same `ConversationEtl::run()` call, and `AgentTraceEtl` (run
     /// before it) commits too; `CodeChangesEtl` never runs and push never
     /// runs.
+    #[allow(clippy::too_many_lines)]
     fn assert_conversation_etl_failure_leaves_agent_trace_committed_and_stops_before_code_changes_and_push(
         tursodb_path: &Path,
         sentinel_token: &str,
@@ -1169,5 +1198,198 @@ mod integration_tests {
             &tursodb_path,
             sentinel_token,
         );
+    }
+
+    /// Proves AC4: a push failure that happens after all three ETLs have
+    /// committed locally leaves those commits durable in the local spool; a
+    /// subsequent successful run reaches the remote with every previously
+    /// committed fact and watermark, with no lost rows and no duplicated
+    /// logical rows.
+    ///
+    /// This also exercises the exact scenario the plan calls out as needing
+    /// empirical discovery: the recovery run's first step, `pull()`, runs
+    /// against a replica that itself holds pending local commits (the three
+    /// ETL stages that committed locally during the failed-push run, never
+    /// pushed). `AgentTraceDwhSync::run()`'s own open→pull→ETLs→push ordering
+    /// composes this scenario for free — the recovery run is a plain second
+    /// `AgentTraceDwhSync::run()` call, not special-cased in any way — so
+    /// nothing about `run()`'s internal sequencing needs to change:
+    ///
+    /// Observed real Turso Sync behavior: `pull()` against a replica holding
+    /// pending local commits does not discard, corrupt, or roll back those
+    /// commits. It applies remote changes (here, none beyond the schema
+    /// already published before the outage) without touching the pending
+    /// local writes, exactly like the empty-remote/no-op-run behavior already
+    /// observed in `agent_trace_dwh_sync_turso_sync_integration`. The
+    /// recovery run's three ETL stages then see the source rows already
+    /// extracted and correctly report a no-op (zero `extracted`/`inserted`
+    /// everywhere), and the final `push()` succeeds, publishing exactly the
+    /// facts committed during the failed run — no duplication, because
+    /// nothing was ever re-extracted, and no loss, because every commit
+    /// survived the outage in the local spool.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn agent_trace_dwh_sync_push_failure_recovery_turso_sync_integration() {
+        let Some(tursodb_path) = find_tursodb() else {
+            println!(
+                "SKIPPING agent_trace_dwh_sync_push_failure_recovery_turso_sync_integration: no \
+                 `tursodb` binary on PATH. Run `nix develop .#database -c \
+                 ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml \
+                 agent_trace_dwh_sync` to exercise the real Turso Sync harness against the \
+                 pinned local `tursodb --sync-server`."
+            );
+            return;
+        };
+
+        let repository_id = "repo-push-failure-recovery";
+        let sentinel_token = "sentinel-dwh-sync-push-failure-recovery-token-must-not-leak";
+
+        let remote_dir = unique_path("push-failure-remote");
+        let remote_db_path = remote_dir.join("remote.db");
+        let mut server = LocalSyncServer::spawn_persistent(&tursodb_path, &remote_db_path);
+
+        let source_dir = unique_path("push-failure-source");
+        let source = RepositoryAgentTraceDb::new_at(source_dir.join("agent-trace.db"))
+            .expect("source DB should open");
+        seed_source(&source);
+
+        let replica_dir = unique_path("push-failure-replica");
+        let replica_path = replica_dir.join("agent-trace-sync.db");
+
+        // Manually reproduce AgentTraceDwhSync::run()'s own
+        // open→pull→AgentTraceEtl→ConversationEtl→CodeChangesEtl sequence, so
+        // the test can force a deterministic push failure at the exact point
+        // `run()` itself would call push() — instead of racing a
+        // background kill against an opaque `run()` call.
+        let replica = AgentTraceDwhReplica::open(AgentTraceDwhReplicaConfig {
+            local_path: replica_path.clone(),
+            database_url: server.url.clone(),
+            auth_token: sentinel_token.to_string(),
+        })
+        .expect("replica open against the live remote should succeed and publish the schema");
+
+        replica
+            .pull()
+            .expect("pull against the freshly schema-initialized remote should succeed");
+
+        let agent_traces = AgentTraceEtl::default()
+            .run(repository_id, &source, &replica)
+            .expect("agent trace ETL should commit locally");
+        let conversation = ConversationEtl::default()
+            .run(repository_id, &source, &replica)
+            .expect("conversation ETL should commit locally");
+        let code_changes = CodeChangesEtl::default()
+            .run(repository_id, &source, &replica)
+            .expect("code changes ETL should commit locally");
+        assert!(agent_traces.inserted > 0, "{agent_traces:?}");
+        assert!(conversation.messages.inserted > 0, "{conversation:?}");
+        assert!(conversation.parts.inserted > 0, "{conversation:?}");
+        assert!(code_changes.inserted > 0, "{code_changes:?}");
+
+        // Force the push to fail deterministically: the remote is gone by
+        // the time push() runs.
+        server.kill();
+
+        let push_error = replica
+            .push()
+            .expect_err("push against a killed remote should fail");
+        assert!(!push_error.to_string().contains(sentinel_token));
+
+        // Release the bridge lock so the recovery run below can reopen this
+        // same local replica path.
+        drop(replica);
+
+        let after_failed_push = local_row_counts(&replica_path, repository_id);
+        assert_eq!(
+            after_failed_push,
+            [1, 1, 1, 1],
+            "all three ETL commits must remain durable in the local spool after a failed push"
+        );
+
+        // Restart remote availability: a fresh process on a new ephemeral
+        // port, backed by the same on-disk DATABASE file, so the schema
+        // published before the outage is still there and nothing else is.
+        let server = LocalSyncServer::spawn_persistent(&tursodb_path, &remote_db_path);
+
+        let sync = AgentTraceDwhSync::default();
+        let recovery = sync
+            .run(
+                repository_id,
+                &source,
+                AgentTraceDwhReplicaConfig {
+                    local_path: replica_path.clone(),
+                    database_url: server.url.clone(),
+                    auth_token: sentinel_token.to_string(),
+                },
+            )
+            .expect(
+                "the recovery run's pull() against a replica holding pending local commits, \
+                 followed by three no-op ETL stages and a push, should converge",
+            );
+        assert_eq!(
+            recovery.agent_traces.extracted, 0,
+            "the recovery run must not re-extract rows already committed before the outage"
+        );
+        assert_eq!(recovery.agent_traces.inserted, 0);
+        assert_eq!(recovery.conversation.messages.extracted, 0);
+        assert_eq!(recovery.conversation.messages.inserted, 0);
+        assert_eq!(recovery.conversation.parts.extracted, 0);
+        assert_eq!(recovery.conversation.parts.inserted, 0);
+        assert_eq!(recovery.code_changes.extracted, 0);
+        assert_eq!(recovery.code_changes.inserted, 0);
+        let recovery_debug = format!("{recovery:?}");
+        assert!(!recovery_debug.contains(sentinel_token));
+
+        let after_recovery_remote = remote_row_counts(
+            &server.url,
+            sentinel_token,
+            repository_id,
+            "push-failure-after-recovery",
+        );
+        assert_eq!(
+            after_recovery_remote,
+            [1, 1, 1, 1],
+            "the recovery push must reach the remote with every fact committed during the \
+             failed-push run, no lost rows and no duplicated logical rows"
+        );
+
+        // A further run from the same replica must be a stable no-op: no
+        // re-extraction, no re-push, no unbounded growth.
+        let stable = sync
+            .run(
+                repository_id,
+                &source,
+                AgentTraceDwhReplicaConfig {
+                    local_path: replica_path.clone(),
+                    database_url: server.url.clone(),
+                    auth_token: sentinel_token.to_string(),
+                },
+            )
+            .expect("a further run with no new source rows should succeed as a stable no-op");
+        assert_eq!(stable.agent_traces.extracted, 0);
+        assert_eq!(stable.agent_traces.inserted, 0);
+        assert_eq!(stable.conversation.messages.extracted, 0);
+        assert_eq!(stable.conversation.messages.inserted, 0);
+        assert_eq!(stable.conversation.parts.extracted, 0);
+        assert_eq!(stable.conversation.parts.inserted, 0);
+        assert_eq!(stable.code_changes.extracted, 0);
+        assert_eq!(stable.code_changes.inserted, 0);
+
+        let after_stable_remote = remote_row_counts(
+            &server.url,
+            sentinel_token,
+            repository_id,
+            "push-failure-after-stable",
+        );
+        assert_eq!(
+            after_stable_remote,
+            [1, 1, 1, 1],
+            "a stable no-op run must not change the remote's row counts"
+        );
+
+        clean(&remote_dir);
+        clean(&source_dir);
+        clean(&replica_dir);
+        drop(server);
     }
 }

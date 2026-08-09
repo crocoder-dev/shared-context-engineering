@@ -327,7 +327,7 @@ nothing left to design.
     `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path
     cli/Cargo.toml -- --check` (clean).
 
-- [ ] T03: `Prove and document push-failure and pull-with-pending-local-changes recovery` (status:todo)
+- [x] T03: `Prove and document push-failure and pull-with-pending-local-changes recovery` (status:done)
   - Task ID: T03
   - Goal: Add the load-bearing integration test the request calls out
     explicitly: run all three ETLs against a real local Turso Sync remote so
@@ -357,6 +357,76 @@ nothing left to design.
     the exact observed Turso Sync behavior for `pull()` against a replica
     holding pending local commits.
   - Verification notes (commands or checks): `nix develop .#database -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_dwh_sync_turso_sync_integration` (run at least 3 times to check for nondeterminism, matching the precedent set by the concurrent-initializer convergence test in `agent_trace_dwh_replica`)
+  - Evidence: Added a new `#[test]`
+    `agent_trace_dwh_sync_push_failure_recovery_turso_sync_integration` to
+    `cli/src/services/agent_trace_dwh_sync.rs`'s `integration_tests` module.
+    Rather than racing a background kill against an opaque
+    `AgentTraceDwhSync::run()` call, the test manually reproduces `run()`'s
+    own open→pull→`AgentTraceEtl`→`ConversationEtl`→`CodeChangesEtl` sequence
+    against a real local Turso Sync remote (`AgentTraceDwhReplica::open()` +
+    `pull()` + the three ETLs' existing `run(repository_id, source, &replica)`
+    calls, all already-public APIs), which lets it force a deterministic push
+    failure at exactly the point `run()` itself would call `push()`: the
+    remote process is killed first, then `replica.push()` is called directly
+    and asserted to fail. `local_row_counts` (reusing T02's helper) then
+    confirms all three ETL commits — `[1, 1, 1, 1]` — remain durable in the
+    local `agent-trace-sync.db` spool after the failed push. Remote
+    availability is then "restarted" via a new `LocalSyncServer::spawn_persistent`
+    process on a fresh ephemeral port but backed by the *same* on-disk
+    `DATABASE` file the killed process used, so the schema published before
+    the outage survives. A plain second `AgentTraceDwhSync::run()` call (the
+    "recovery run") is then made against the same local replica path — this
+    is the actual pull-with-pending-local-commits scenario, composed for
+    free because `run()`'s own first step is `pull()` against a replica that
+    still holds the three unpushed ETL commits from the failed run. The
+    recovery run succeeds, reports zero `extracted`/`inserted` across all
+    three ETL stages (proving no re-extraction/duplication), and its `push()`
+    reaches the remote with exactly `[1, 1, 1, 1]` rows — no lost rows, no
+    duplicated logical rows. A further third run from the same replica is
+    asserted to be a stable no-op with unchanged remote counts, ruling out
+    unbounded growth from a repeated push. Extended the existing
+    `LocalSyncServer` test helper (used unchanged by every other test in this
+    file) with `spawn_persistent(tursodb_path, db_path)` (spawns
+    `tursodb --sync-server <addr> <db_path>` instead of the default
+    `:memory:`, confirmed empirically to leave `<db_path>`/`<db_path>-wal` on
+    disk after the process is killed) and `kill()` (explicit early kill ahead
+    of `Drop`); `LocalSyncServer::spawn()` is unchanged and still used
+    in-memory by every pre-existing test.
+  - Observed Turso Sync behavior for `pull()` against a replica holding
+    pending local commits (the empirical discovery this task exists to make):
+    `pull()` does not discard, corrupt, or roll back pending local commits.
+    It applies whatever the remote holds (here, only the DWH schema published
+    before the outage; nothing else, since the failing push never reached the
+    remote) without touching the three ETL stages' already-committed local
+    writes. The following three ETL stages in the recovery run then correctly
+    observe their watermarks already advanced and report a true no-op, and
+    the final `push()` publishes exactly what was committed during the
+    failed run. This matches the request's proposed open→pull→ETLs→push
+    ordering exactly: **no change to `run()`'s internal sequencing was
+    required.** Recorded here for T08 to document alongside T01's and T02's
+    own observed-behavior findings.
+  - Verification run: `nix develop .#database -c ./scripts/run-cli-cargo.sh
+    test --manifest-path cli/Cargo.toml
+    agent_trace_dwh_sync_push_failure_recovery_turso_sync_integration` (5
+    separate invocations, all passed, no flakiness); `nix develop .#database
+    -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    agent_trace_dwh_sync` (6 passed, incl. all three integration tests in
+    this file); `nix develop -c ./scripts/run-cli-cargo.sh test
+    --manifest-path cli/Cargo.toml -- --test-threads=1` (293 passed, 1
+    failed, 1 ignored — the failure is
+    `agent_trace_db::repository::tests::concurrent_missing_source_instance_id_initialization_converges_on_one_persisted_winner`,
+    confirmed via `git stash` to fail identically on the pre-T03 tree, i.e.
+    pre-existing and untouched by this task); `nix develop -c
+    ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml
+    --all-targets -- -D warnings` (one pre-existing failure unrelated to this
+    task's changes — `assert_conversation_etl_failure_leaves_agent_trace_committed_and_stops_before_code_changes_and_push`
+    in this same file, added by T02, exceeds `clippy::too_many_lines` at
+    104/100; confirmed via `git stash` to fail identically on the pre-T03
+    tree; this task's own new code is clippy-clean, carrying an explicit
+    `#[allow(clippy::too_many_lines)]` on the one new function long enough to
+    need it, matching the existing convention used by T02's longer helpers);
+    `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path
+    cli/Cargo.toml -- --check` (clean).
 
 - [ ] T04: `Prove fresh local-replica reconstruction from the remote` (status:todo)
   - Task ID: T04
