@@ -81,6 +81,7 @@ struct RepositoryDatabaseSetup {
     identity_source: String,
     configured_remote: Option<String>,
     checkout_id: String,
+    source_instance_id: String,
     database_path: PathBuf,
 }
 
@@ -107,6 +108,7 @@ fn initialize_repository_agent_trace_db(repo_root: &Path) -> Result<RepositoryDa
         identity_source,
         configured_remote,
         checkout_id: storage.checkout_id,
+        source_instance_id: storage.metadata.source_instance_id,
         database_path: storage.db_path,
     })
 }
@@ -118,12 +120,13 @@ fn format_repository_storage_setup_message(setup: &RepositoryDatabaseSetup) -> S
         .map(|remote| format!("\nAgent Trace configured remote: {remote}"))
         .unwrap_or_default();
     format!(
-        "Agent Trace repository ID: {}\nAgent Trace identity source: {}\nAgent Trace canonical identity: {}{}\nAgent Trace checkout identity: {}\nAgent Trace repository-scoped database initialized at '{}'.",
+        "Agent Trace repository ID: {}\nAgent Trace identity source: {}\nAgent Trace canonical identity: {}{}\nAgent Trace checkout identity: {}\nAgent Trace source-instance ID: {}\nAgent Trace repository-scoped database initialized at '{}'.",
         setup.repository_id,
         setup.identity_source,
         setup.canonical_identity,
         remote_line,
         setup.checkout_id,
+        setup.source_instance_id,
         setup.database_path.display()
     )
 }
@@ -222,4 +225,49 @@ fn resolve_lifecycle_agent_trace_db_path(repo_root: Option<&Path>) -> Result<Pat
         "Agent Trace diagnostics require a Git repository; run 'sce doctor' inside a repository \
          or configure agent_trace.repository_id in .sce/config.json"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup(configured_remote: Option<&str>) -> RepositoryDatabaseSetup {
+        RepositoryDatabaseSetup {
+            repository_id: String::from("repo-123"),
+            canonical_identity: String::from("github.com/example/repo"),
+            identity_source: String::from("remote_url"),
+            configured_remote: configured_remote.map(String::from),
+            checkout_id: String::from("checkout-abc"),
+            source_instance_id: String::from("11111111-2222-3333-4444-555555555555"),
+            database_path: PathBuf::from("/tmp/agent-trace.db"),
+        }
+    }
+
+    #[test]
+    fn formatted_message_includes_source_instance_id_line() {
+        let message = format_repository_storage_setup_message(&setup(Some("origin")));
+
+        assert!(
+            message
+                .contains("Agent Trace source-instance ID: 11111111-2222-3333-4444-555555555555"),
+            "expected message to report the source-instance ID, got: {message}"
+        );
+        assert!(
+            message.contains("Agent Trace repository ID: repo-123"),
+            "expected message to still report the repository ID, got: {message}"
+        );
+        assert!(
+            message.contains("Agent Trace configured remote: origin"),
+            "expected message to still report the configured remote, got: {message}"
+        );
+    }
+
+    #[test]
+    fn formatted_message_omits_remote_line_but_keeps_source_instance_id() {
+        let message = format_repository_storage_setup_message(&setup(None));
+
+        assert!(!message.contains("Agent Trace configured remote:"));
+        assert!(message
+            .contains("Agent Trace source-instance ID: 11111111-2222-3333-4444-555555555555"));
+    }
 }
