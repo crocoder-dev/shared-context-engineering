@@ -1462,4 +1462,74 @@ mod tests {
 
         remove_test_db(&db_path);
     }
+
+    #[test]
+    fn source_instance_integration() {
+        use crate::services::agent_trace_storage::{
+            resolve_agent_trace_storage_at_state_root, AgentTraceStorageContext,
+        };
+
+        let state_root = unique_storage_temp_dir("state");
+        let repo_root =
+            init_git_repo_with_remote("repo", "git@github.com:acme/agent-trace-export-readers.git");
+
+        let context = AgentTraceStorageContext {
+            repository_root: &repo_root,
+            explicit_repository_id: None,
+            repository_remote: "origin",
+        };
+
+        let storage = resolve_agent_trace_storage_at_state_root(&context, &state_root)
+            .expect("repository-scoped Agent Trace storage should resolve");
+
+        assert!(!storage.metadata.repository_id.trim().is_empty());
+        assert!(!storage.metadata.source_instance_id.trim().is_empty());
+
+        insert_message_row_with_id(&storage.db, 1, "msg-1");
+
+        let reader = AgentTraceExportReader::new(&storage.db);
+        let rows = reader
+            .read_messages_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE)
+            .expect("read through storage-resolved db should succeed");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source_row_id, 1);
+        assert_eq!(rows[0].message_id, "msg-1");
+
+        fs::remove_dir_all(&state_root).expect("clean up state root");
+        fs::remove_dir_all(&repo_root).expect("clean up repo root");
+    }
+
+    fn unique_storage_temp_dir(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after Unix epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "sce-agent-trace-export-storage-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn init_git_repo_with_remote(label: &str, remote_url: &str) -> PathBuf {
+        let repo = unique_storage_temp_dir(label);
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["remote", "add", "origin", remote_url]);
+        repo
+    }
+
+    fn git(repo_root: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo_root)
+            .output()
+            .unwrap_or_else(|error| panic!("git {args:?} failed to spawn: {error}"));
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
