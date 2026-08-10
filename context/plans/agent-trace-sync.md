@@ -1,0 +1,126 @@
+# Plan: agent-trace-sync
+
+## Change summary
+
+Implement `sce trace sync`, the final composition step that synchronizes a repository's local Agent Trace capture database with the control-plane Agent Trace ingestion API. The intended flow is `sce auth login` → `cd <repository>` → `sce trace sync`: resolve the current repository's Agent Trace storage (`repository_id`, `source_instance_id`, `RepositoryAgentTraceDb`) through the existing `agent_trace_storage` resolver, load/refresh stored WorkOS credentials through the existing `auth`/`token_storage` primitives, fetch authoritative server cursors from `POST /agent-trace/ingestion/state`, then for each of the four independent streams (`messages`, `parts`, `diff_traces`, `agent_traces`) read local rows after the cursor via the existing `AgentTraceExportReader` (PR #198) and upload them through `POST /agent-trace/ingestion/batch`, advancing strictly from the validated server response.
+
+This plan composes already-shipped infrastructure — repository/source identity (`agent-trace-source-instance-id`), the read-only export readers (`agent-trace-export-readers`), and the existing WorkOS auth/token-storage stack — into one new command. It does not redesign the local database, source identity, export readers, or control-plane storage model, and it adds no local sync cursor or local DWH: every invocation starts from `/state`, which is why restarts, conflicts, and ambiguous network failures are all recoverable without any client-side persisted progress.
+
+## Acceptance criteria
+
+- [ ] AC1: `sce trace sync` and `sce trace sync --format json` parse and route to a dedicated sync command handler under the existing `trace` command group.
+  - Validate: `cargo test -p shared-context-engineering trace::` (CLI parsing/conversion unit tests) as part of `nix flake check`.
+- [ ] AC2: With no stored WorkOS credentials, `sce trace sync` fails before making any control-plane request, with guidance to run `sce auth login`.
+  - Validate: targeted unit test asserting zero HTTP calls reach the test server and the error message contains `sce auth login`.
+- [ ] AC3: With a valid non-expired stored token, sync reuses it as-is (sends `Authorization: Bearer <token>`) and does not rewrite/save the unchanged credential. With an expired stored token, sync refreshes via the existing WorkOS refresh flow, saves the new token, and uses it for control-plane requests.
+  - Validate: targeted unit tests against a local test HTTP server asserting exact `Authorization` header values and asserting `save_tokens` is/is not called.
+- [ ] AC4: An unexpected `401` from `/state` or `/batch` triggers exactly one WorkOS refresh, one saved token, and one retried request; a second `401` fails the command with `sce auth login` guidance and no further retries.
+  - Validate: targeted unit test driving a canned 401-then-200 (success case) and 401-then-401 (bounded-failure case) sequence against the test server.
+- [ ] AC5: `POST /agent-trace/ingestion/state` is called exactly once per `sce trace sync` invocation with `{repositoryId, sourceInstanceId}` taken from resolved storage metadata and no workspace/user/checkout/database fields.
+  - Validate: targeted unit test asserting the exact captured request body and call count.
+- [ ] AC6: For each of the four streams, sync uploads exactly the local rows after the stream's authoritative cursor, in batches bounded by `AGENT_TRACE_EXPORT_BATCH_SIZE`, advances the cursor only from the validated server response (`accepted == rows.len()` and `cursor == rows.last().sourceRowId`), and never infers the next cursor from `cursor + rows.len()`.
+  - Validate: targeted unit tests covering an empty database (no batch calls), one batch, >500 rows requiring multiple batches, and gapped source IDs.
+- [ ] AC7: A `409` response reconciles by refetching `/state`, replacing only the affected stream's cursor, and resuming from local rows after the refreshed cursor without resending already-accepted rows; a bounded reconciliation loop prevents unbounded spinning.
+  - Validate: targeted unit test reproducing the plan's 409 example (state=10, local rows 11-13, batch 409s, refreshed state=12, only row 13 resent with `expectedCursor=12`).
+- [ ] AC8: An ambiguous batch failure (5xx, transport failure, or missing/invalid response) reconciles via `/state` before any resend: if the refreshed cursor advanced, sync continues from it without resending; if unchanged, sync may resend once reread from the authoritative cursor, bounded by the same reconciliation limit.
+  - Validate: targeted unit tests for both the "committed" (refreshed cursor advanced) and "uncommitted" (refreshed cursor unchanged) cases.
+- [ ] AC9: A syntactically successful but semantically inconsistent batch response (`accepted`/`cursor` not matching the sent rows) fails the command with an invalid-response error rather than advancing state.
+  - Validate: targeted unit test asserting failure on a mismatched `{cursor, accepted}` response.
+- [ ] AC10: A `403` ownership rejection fails the command with a clear message, without generating a new `source_instance_id`, mutating local repository metadata, or attempting ownership transfer.
+  - Validate: targeted unit test asserting the failure message and that `repository_metadata.source_instance_id` on disk is unchanged after the run.
+- [ ] AC11: A full successful sync across all four streams renders the documented text layout by default and the documented JSON shape under `--format json`, and running sync twice in a row is naturally incremental (the second run's `/state` reflects the first run's uploads and re-reads only unsynced rows), with no local cursor file, database, or table created anywhere on disk.
+  - Validate: an end-to-end integration test using a temporary `RepositoryAgentTraceDb` seeded with rows in all four streams and a local test HTTP server, run twice in sequence; text/JSON rendering unit tests for exact output shape.
+
+### Full validation
+
+- `nix flake check`
+- `nix run .#pkl-check-generated`
+
+### Context sync
+
+- `context/cli/trace-command.md`
+- `context/sce/agent-trace-export-readers.md`
+- `context/cli/cli-command-surface.md`
+- `context/overview.md` (the `sync command deferral` note and its `0.4.0` framing)
+- `context/glossary.md` (`sync command deferral` entry)
+- `context/context-map.md`
+- A new `context/cli/agent-trace-sync-command.md` (or equivalent) documenting the composed local→control-plane flow and recovery semantics
+
+## Constraints and non-goals
+
+- **In scope:** a new `cli/src/services/agent_trace_sync/` module (control-plane DTOs, `AuthenticatedControlPlaneClient`, per-stream sync engine, `AgentTraceSyncReport`, text/JSON rendering); `TraceSubcommand::Sync`/`TraceSubcommandRequest::Sync` CLI wiring in `cli/src/cli_schema.rs`, `cli/src/services/parse/command_runtime.rs`, and `cli/src/services/trace/`; one new config setting for the control-plane base URL (CLI resolver plus its Pkl schema entry); durable context updates listed above.
+- **Out of scope:** the local database schema, source identity generation/claim logic, `AgentTraceExportReader` (PR #198), the WorkOS OAuth/device-authorization endpoints themselves, workspace selection, source-ownership transfer, `repositoryRemoteUrl` verification, any control-plane server implementation, and any change to `sce doctor`'s read-only diagnose surface.
+- **Constraints:** no local sync cursor, local cursor file, `agent-trace-sync.db`, or equivalent persisted progress; no process-wide or cross-HTTP lock; every state/batch request within one command execution uses the same `repositoryId`/`sourceInstanceId` taken once from resolved storage metadata; batch requests carry exactly one stream per request using the literal stream values `messages`/`parts`/`diff_traces`/`agent_traces` (never the response object's camelCase `diffTraces`/`agentTraces`); stored/refreshed tokens and Authorization headers are never logged or included in JSON output.
+- **Non-goal:** background/periodic/daemon sync, sync-on-hook, a multi-stream batch transaction, deriving `code_changes`, patch parsing/analytics, or reviving `agent-trace-sync.db` / local DWH / `BridgeLock` / Turso Sync / direct Turso credentials in SCE.
+
+## Assumptions
+
+- **Control-plane base URL config key** follows the existing `workos_client_id` pattern exactly (`cli/src/services/config/resolver.rs` `AuthConfigKeySpec`, flags > env > config file > baked default): a new config-file key plus env override plus a baked default value, added to `config/pkl/base/sce-config-schema.pkl` alongside the existing strict schema. This is the smallest addition matching the request's explicit instruction to reuse existing configuration precedence/baked-default conventions.
+- **Test HTTP server**: rather than adding a new dev-dependency (`wiremock`/`httptest`) for a CLI crate that currently declares none, tests use a small in-repo, test-only HTTP/1.1 server (`std::net::TcpListener` + minimal request parsing) that returns canned JSON responses per call, keeps assertions on captured request bodies/headers, and lets tests simulate 401/409/5xx/dropped-connection sequences deterministically. This keeps the dependency footprint unchanged, matching the "keep dependency additions explicit and minimal" convention, and is the smallest solution to the "local/mock HTTP server" requirement.
+- **Reconciliation bound**: the bounded 409/ambiguous-failure reconciliation loop uses a small fixed attempt cap (5), matching the order of magnitude of existing retry constants in `auth.rs`/`resilience.rs` (e.g. `TOKEN_REFRESH_MAX_ATTEMPTS = 3`); exhausting it fails the stream with a clear "stream did not converge" error rather than looping.
+- **State-request transient retries**: `/state` reuses the existing sync `run_with_retry_sync`/`RetryPolicy` convention from `cli/src/services/resilience.rs` for `500`/`503` responses and transport failures, with `400`/`401`-after-retry/`403` excluded as terminal. `/batch` failures never go through this generic retry wrapper; they always reconcile via `/state` first, per the plan's explicit prohibition on blind `/batch` retry middleware.
+- **Module boundary naming**: the new module lives at `cli/src/services/agent_trace_sync/` (`mod.rs` for the report/orchestration engine, `control_plane.rs` for DTOs/HTTP client), matching the repository's existing `agent_trace_{export,storage,db}` naming family rather than a generic `services/control_plane/`.
+
+## Task stack
+
+- [x] T01: `Add control-plane base URL config setting` (status:done)
+  - Task ID: T01
+  - Goal: Introduce the smallest new config setting for the control-plane API base URL, resolved with the same `flags > env > config file > baked default` precedence and `AuthConfigKeySpec` machinery already used for `workos_client_id`, injectable in tests without touching production config.
+  - Boundaries (in/out of scope): In — `cli/src/services/config/resolver.rs` (new `AuthConfigKeySpec` constant, env key, baked default, resolution wiring, `ResolvedAuthRuntimeConfig` field), `cli/src/services/config/` render/show plumbing so `sce config show` reports it with provenance, `config/pkl/base/sce-config-schema.pkl` (new strict-schema key). Out — any control-plane HTTP client code (T03), any CLI surface for `trace sync` (T05).
+  - Dependencies: none
+  - Done when: the new key resolves through env/config-file/baked-default precedence with unit test coverage mirroring the existing `workos_client_id` resolver tests; `sce config show` reports it; `nix run .#pkl-check-generated` passes with the updated schema.
+  - Verification notes (commands or checks): `cargo test -p shared-context-engineering config::` and `nix run .#pkl-check-generated`.
+  - Evidence: Added `CONTROL_PLANE_BASE_URL_KEY` (`AuthConfigKeySpec`, env `SCE_CONTROL_PLANE_BASE_URL`, baked default `https://sce.crocoder.dev`) in `cli/src/services/config/resolver.rs`, threaded through `RuntimeConfig`/`FileConfig`/`ParsedFileConfigDocument`/`ResolvedAuthRuntimeConfig`, the `control_plane_base_url` top-level config key/schema doc string in `schema.rs`, `sce config show` text/JSON rendering in `render.rs`, and the new `control_plane_base_url` string property in `config/pkl/base/sce-config-schema.pkl`. Added resolver unit tests for baked-default, config-file-over-default, and env-over-config-file-and-default precedence.
+  - Verification: `nix flake check` — all checks passed (includes `cargo test`/clippy/fmt/pkl-generated). `nix run .#pkl-check-generated` — passed (101 files, inventory hash unchanged in kind, regenerated with new schema key).
+
+- [ ] T02: `Add control-plane ingestion DTOs and stream identity` (status:todo)
+  - Task ID: T02
+  - Goal: Define typed serde request/response DTOs for the `/agent-trace/ingestion/state` and `/agent-trace/ingestion/batch` contracts, plus the `IngestionStream` enum with its exact wire values (`messages`, `parts`, `diff_traces`, `agent_traces`), reusing the PR #198 export row types directly as batch row payloads with no additional mapping layer.
+  - Boundaries (in/out of scope): In — new `cli/src/services/agent_trace_sync/control_plane.rs` (or `dto.rs` within the new module) with `AgentTraceIngestionStateRequest`, `AgentTraceIngestionStateResponse`/`AgentTraceCursors`, `AgentTraceIngestionBatchRequest<T>`, `AgentTraceIngestionBatchResponse`, `IngestionStream`; serde round-trip/shape unit tests. Out — any HTTP client behavior (T03), any sync algorithm (T04).
+  - Dependencies: none
+  - Done when: DTOs serialize to the exact camelCase field names and stream string values specified in the contract (verified by unit tests asserting rendered JSON), and `AgentTraceIngestionBatchRequest<T>` composes directly with the four PR #198 export row types without a new per-stream struct.
+  - Verification notes (commands or checks): `cargo test -p shared-context-engineering agent_trace_sync::control_plane::`.
+
+- [ ] T03: `Implement AuthenticatedControlPlaneClient` (status:todo)
+  - Task ID: T03
+  - Goal: Implement the authenticated control-plane HTTP client: load stored credentials (fail with `sce auth login` guidance when absent), reuse a still-valid token as-is (no resave), refresh-and-save an expired token, inject the Bearer header, retry exactly once on an unexpected `401` (refresh, save, retry), classify HTTP responses into a typed internal error distinguishing auth failure / transport failure / `400` / `403` / `409` / `5xx` / invalid response, and expose `ingestion_state(...)` plus typed `ingest_messages(...)`/`ingest_parts(...)`/`ingest_diff_traces(...)`/`ingest_agent_traces(...)` operations (thin wrappers over one generic batch-post method) with an injectable base URL.
+  - Boundaries (in/out of scope): In — `cli/src/services/agent_trace_sync/control_plane.rs` client struct/methods, its error enum, the bespoke in-repo test HTTP server helper, and unit tests for: missing-auth failure with zero HTTP calls, valid-token reuse without resave, expired-token refresh+save, unexpected-401 refresh-once-retry-once (success and bounded-failure cases), exact `/state` request shape with no workspace/user fields, and `400`/`403`/`409`/`5xx` classification. Out — the per-stream sync/reconciliation algorithm (T04); reusing existing `auth::ensure_valid_token_returning_token`/`renew_stored_token_from_refresh_token`/`is_stored_token_expired` and `token_storage::{load_tokens,save_tokens}` rather than reimplementing OAuth.
+  - Dependencies: T01, T02
+  - Done when: all listed unit tests pass against the in-repo test HTTP server; the client never logs a token or Authorization header value; `/state` uses the existing sync resilience retry policy for transient `500`/`503`/transport failures and never retries `400`/`403`/post-refresh `401` as transient.
+  - Verification notes (commands or checks): `cargo test -p shared-context-engineering agent_trace_sync::control_plane::`.
+
+- [ ] T04: `Implement per-stream sync engine with 409/ambiguous-failure reconciliation` (status:todo)
+  - Task ID: T04
+  - Goal: Implement the generic per-stream synchronization engine: given a cursor, a local-row reader closure, a batch-ingest closure, and a `/state`-refresh closure, loop reading local rows after the cursor and posting bounded batches, validating each response (`accepted == rows.len()`, `cursor == rows.last().sourceRowId`) before advancing, reconciling via `/state` on `409` (replace only the affected stream's cursor, re-read local rows, continue) and on ambiguous/`5xx` batch failures (continue if the refreshed cursor advanced, otherwise bounded resend from the refreshed cursor), and stopping cleanly when no unsynced local rows remain.
+  - Boundaries (in/out of scope): In — `cli/src/services/agent_trace_sync/mod.rs` engine function/types (`StreamSyncOutcome`/equivalent), a small `source_row_id` accessor over the four PR #198 export row types, the bounded reconciliation attempt cap, and unit tests (using fake/in-memory reader and ingest closures, no HTTP) for: empty database (no batch calls), one batch, >500 rows across multiple batches without loading all unsynced rows into memory at once, gapped source IDs (cursor from last actual ID, not row count), 409 recovery (resend only the unsent tail), lost-response reconciliation for both the committed and uncommitted cases, and invalid-response rejection (mismatched `accepted`/`cursor`). Out — the HTTP client itself (T03, already done); CLI wiring (T05).
+  - Dependencies: T03
+  - Done when: all listed unit tests pass; the engine never infers a cursor from `cursor + rows.len()`; the reconciliation loop is bounded and fails with a clear "did not converge" error past the cap rather than looping unboundedly.
+  - Verification notes (commands or checks): `cargo test -p shared-context-engineering agent_trace_sync::`.
+
+- [ ] T05: `Wire "sce trace sync" CLI surface and orchestration` (status:todo)
+  - Task ID: T05
+  - Goal: Add `sce trace sync [--format text|json]` to the `trace` command group (`TraceSubcommand::Sync`, `TraceSubcommandRequest::Sync`, clap-to-runtime conversion), resolve the current repository's Agent Trace storage using the same `ContextWithRepoRoot`/`AgentTraceStorageContext`/`resolve_agent_trace_storage` path already used by `sce trace status` (not the hook-runtime resolver), build the control-plane client from the resolved base URL, call `/state` once, then run the T04 engine for all four streams in the fixed `messages → parts → diff_traces → agent_traces` order using the T03 client and the existing `AgentTraceExportReader`, assembling an `AgentTraceSyncReport`, and mapping every failure mode (auth, transport, `400`, `403`, `409`-exhausted, `5xx`-exhausted, invalid response, local export/storage failure) to `ClassifiedError` per existing SCE conventions.
+  - Boundaries (in/out of scope): In — `cli/src/cli_schema.rs` (new `TraceSubcommand::Sync` variant), `cli/src/services/trace/mod.rs` (`TraceSubcommandRequest::Sync`), `cli/src/services/parse/command_runtime.rs` (conversion), `cli/src/services/trace/command.rs` (dispatch) or a new `cli/src/services/trace/sync.rs` orchestration module, `AgentTraceSyncReport`/`StreamSyncReport` types, CLI-parsing unit tests for `sce trace sync` and `sce trace sync --format json`. Out — text/JSON rendering (T06); the sync engine and client internals (T03/T04, consumed as-is).
+  - Dependencies: T04
+  - Done when: `sce trace sync` and `sce trace sync --format json` parse and dispatch correctly; an end-to-end integration test (temporary seeded `RepositoryAgentTraceDb` + in-repo test HTTP server) exercises all four independent streams end to end and asserts a second invocation is naturally incremental (its `/state` reflects the first run's uploads and only unsynced rows are re-read), with no new file/database/table created on disk and `repository_metadata.source_instance_id` unchanged; a `403` failure surfaces clear ownership guidance without mutating local metadata or generating a new `source_instance_id`.
+  - Verification notes (commands or checks): `cargo test -p shared-context-engineering trace::` and the new end-to-end integration test target.
+
+- [ ] T06: `Render "sce trace sync" text and JSON output` (status:todo)
+  - Task ID: T06
+  - Goal: Implement `render_sync` producing the documented concise text layout (`Agent Trace sync complete.` header, repository/source-instance lines, one row per stream showing rows uploaded and final cursor) and the documented JSON shape (`status`, `repositoryId`, `sourceInstanceId`, `streams.{messages,parts,diffTraces,agentTraces}` each with `uploaded`/`initialCursor`/`finalCursor`/`batches`), wired into the T05 command dispatch and following existing `services::output_format`/`--format` conventions.
+  - Boundaries (in/out of scope): In — `cli/src/services/trace/render_sync.rs` (or equivalent), its unit tests asserting exact text formatting and exact JSON field names/shape (including the `diffTraces`/`agentTraces` camelCase keys in output despite `diff_traces`/`agent_traces` internal naming), wiring into `TraceCommand::execute`. Out — the report data itself (T05, already produced).
+  - Dependencies: T05
+  - Done when: text output matches the documented concise per-stream layout without printing every batch or row; JSON output matches the documented shape byte-for-byte on field names; both are covered by unit tests.
+  - Verification notes (commands or checks): `cargo test -p shared-context-engineering trace::render_sync::`.
+
+- [ ] T07: `Document the completed Agent Trace sync architecture` (status:todo)
+  - Task ID: T07
+  - Goal: Document the now-complete local-to-control-plane Agent Trace sync architecture and retire the stale "`sce sync` deferred to `0.4.0`" framing left over from before this plan.
+  - Boundaries (in/out of scope): In — new `context/cli/agent-trace-sync-command.md` (or equivalent) covering the composed flow (`hooks/plugins → repository Agent Trace DB → AgentTraceExportReader → sce trace sync → HTTPS + WorkOS Bearer → control plane`), the exact user flow (`sce auth login` / `cd repo` / `sce trace sync`), the no-local-cursor/no-`agent-trace-sync.db`/no-Turso-Sync/no-`BridgeLock`/no-local-DWH invariants, and the `409`/ambiguous-batch/`401` recovery semantics; updates to `context/cli/trace-command.md`, `context/cli/cli-command-surface.md`, `context/overview.md`, `context/glossary.md` (`sync command deferral` entry), and `context/context-map.md` to reflect that `sce trace sync` is implemented rather than deferred.
+  - Dependencies: T06
+  - Done when: every listed context file accurately describes current-state `sce trace sync` behavior; no remaining context file states `sce sync` is deferred to `0.4.0` or describes a retired sync architecture (`agent-trace-sync.db`, local DWH, `BridgeLock`, Turso Sync, direct Turso credentials in SCE) as active or planned.
+  - Verification notes (commands or checks): manual review of the listed files; `nix run .#pkl-check-generated` and `nix flake check` (no code change expected in this task, but re-run as the standard post-task baseline).
+
+## Open questions
+
+None. The request is fully specified end to end, including exact wire contracts, recovery algorithms, and test matrices; the two implementation-detail choices this plan had to make (the control-plane base URL config mechanism and the test HTTP server approach) are reversible local decisions recorded under Assumptions rather than open questions.

@@ -4,7 +4,8 @@ use crate::services::style;
 
 use super::policy::{format_bash_policies_json, format_bash_policies_text};
 use super::resolver::{
-    AuthConfigKeySpec, RuntimeConfig, PRECEDENCE_DESCRIPTION, WORKOS_CLIENT_ID_KEY,
+    AuthConfigKeySpec, RuntimeConfig, CONTROL_PLANE_BASE_URL_KEY, PRECEDENCE_DESCRIPTION,
+    WORKOS_CLIENT_ID_KEY,
 };
 use super::types::DatabaseRetryConfig;
 use super::{ConfigPathSource, ReportFormat, ResolvedOptionalValue, ValueSource};
@@ -33,6 +34,10 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
                 format_optional_auth_resolved_value_text(
                     WORKOS_CLIENT_ID_KEY,
                     &runtime.workos_client_id,
+                ),
+                format_optional_auth_resolved_value_text(
+                    CONTROL_PLANE_BASE_URL_KEY,
+                    &runtime.control_plane_base_url,
                 ),
                 format_optional_resolved_value_text(
                     "agent_trace.repository_id",
@@ -77,6 +82,7 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
                             "config_source": runtime.timeout_ms.source.config_source().map(ConfigPathSource::as_str),
                         },
                         "workos_client_id": format_optional_auth_resolved_value_json(WORKOS_CLIENT_ID_KEY, &runtime.workos_client_id),
+                        "control_plane_base_url": format_optional_auth_resolved_value_json(CONTROL_PLANE_BASE_URL_KEY, &runtime.control_plane_base_url),
                         "agent_trace": {
                             "repository_id": format_optional_resolved_value_json(&runtime.agent_trace_repository_id),
                             "repository_remote": format_resolved_value_json(

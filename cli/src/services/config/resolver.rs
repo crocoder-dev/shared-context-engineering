@@ -34,6 +34,15 @@ pub(crate) const WORKOS_CLIENT_ID_KEY: AuthConfigKeySpec = AuthConfigKeySpec {
     baked_default: Some(WORKOS_CLIENT_ID_BAKED_DEFAULT),
 };
 
+const CONTROL_PLANE_BASE_URL_ENV: &str = "SCE_CONTROL_PLANE_BASE_URL";
+const CONTROL_PLANE_BASE_URL_BAKED_DEFAULT: &str = "https://sce.crocoder.dev";
+
+pub(crate) const CONTROL_PLANE_BASE_URL_KEY: AuthConfigKeySpec = AuthConfigKeySpec {
+    config_key: "control_plane_base_url",
+    env_key: CONTROL_PLANE_BASE_URL_ENV,
+    baked_default: Some(CONTROL_PLANE_BASE_URL_BAKED_DEFAULT),
+};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AuthConfigKeySpec {
     pub(crate) config_key: &'static str,
@@ -66,6 +75,7 @@ pub(super) struct RuntimeConfig {
     pub(super) timeout_ms: ResolvedValue<u64>,
     pub(super) attribution_hooks_enabled: ResolvedValue<bool>,
     pub(super) workos_client_id: ResolvedOptionalValue<String>,
+    pub(super) control_plane_base_url: ResolvedOptionalValue<String>,
     pub(super) agent_trace_repository_id: ResolvedOptionalValue<String>,
     pub(super) agent_trace_repository_remote: ResolvedValue<String>,
     pub(super) bash_policies: ResolvedOptionalValue<BashPolicyConfig>,
@@ -190,6 +200,7 @@ where
 
     Ok(ResolvedAuthRuntimeConfig {
         workos_client_id: runtime.workos_client_id,
+        control_plane_base_url: runtime.control_plane_base_url,
     })
 }
 
@@ -304,6 +315,7 @@ where
         timeout_ms: None,
         attribution_hooks_enabled: None,
         workos_client_id: None,
+        control_plane_base_url: None,
         agent_trace_repository_id: None,
         agent_trace_repository_remote: None,
         bash_policy_presets: None,
@@ -342,6 +354,9 @@ where
         }
         if let Some(workos_client_id) = layer.workos_client_id {
             file_config.workos_client_id = Some(workos_client_id);
+        }
+        if let Some(control_plane_base_url) = layer.control_plane_base_url {
+            file_config.control_plane_base_url = Some(control_plane_base_url);
         }
         if let Some(agent_trace_repository_id) = layer.agent_trace_repository_id {
             file_config.agent_trace_repository_id = Some(agent_trace_repository_id);
@@ -479,6 +494,11 @@ where
         file_config.workos_client_id,
         &env_lookup,
     );
+    let resolved_control_plane_base_url = resolve_optional_auth_config_value(
+        CONTROL_PLANE_BASE_URL_KEY,
+        file_config.control_plane_base_url,
+        &env_lookup,
+    );
 
     let resolved_agent_trace_repository_id = ResolvedOptionalValue {
         value: file_config
@@ -520,6 +540,7 @@ where
         timeout_ms: resolved_timeout_ms,
         attribution_hooks_enabled: resolved_attribution_hooks_enabled,
         workos_client_id: resolved_workos_client_id,
+        control_plane_base_url: resolved_control_plane_base_url,
         agent_trace_repository_id: resolved_agent_trace_repository_id,
         agent_trace_repository_remote: resolved_agent_trace_repository_remote,
         bash_policies: resolved_bash_policies,
@@ -748,6 +769,13 @@ mod tests {
     }
 
     fn resolve_runtime_with_config(config: Option<&'static str>) -> Result<RuntimeConfig> {
+        resolve_runtime_with_env_and_config(None, config)
+    }
+
+    fn resolve_runtime_with_env_and_config(
+        env: Option<(&'static str, &'static str)>,
+        config: Option<&'static str>,
+    ) -> Result<RuntimeConfig> {
         let request = if config.is_some() {
             explicit_config_request()
         } else {
@@ -762,7 +790,7 @@ mod tests {
         resolve_runtime_config_with(
             &request,
             Path::new("/tmp/repo"),
-            |_| None,
+            |key| env.and_then(|(env_key, value)| (key == env_key).then_some(value.to_string())),
             |_| Ok(config.unwrap_or("{}").to_string()),
             path_exists_fn,
             || Ok(PathBuf::from("/tmp/missing-global-sce-config.json")),
@@ -874,5 +902,54 @@ mod tests {
         .unwrap();
 
         assert!(!resolved.attribution_hooks_enabled);
+    }
+
+    #[test]
+    fn control_plane_base_url_resolves_to_baked_default() {
+        let runtime = resolve_runtime_with_config(None).unwrap();
+
+        assert_eq!(
+            runtime.control_plane_base_url.value.as_deref(),
+            Some(CONTROL_PLANE_BASE_URL_BAKED_DEFAULT)
+        );
+        assert_eq!(
+            runtime.control_plane_base_url.source,
+            Some(ValueSource::Default)
+        );
+    }
+
+    #[test]
+    fn control_plane_base_url_resolves_from_config_file_over_default() {
+        let runtime = resolve_runtime_with_config(Some(
+            r#"{"control_plane_base_url":"https://control-plane.example.test"}"#,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            runtime.control_plane_base_url.value.as_deref(),
+            Some("https://control-plane.example.test")
+        );
+        assert_eq!(
+            runtime.control_plane_base_url.source,
+            Some(ValueSource::ConfigFile(ConfigPathSource::Flag))
+        );
+    }
+
+    #[test]
+    fn control_plane_base_url_env_overrides_config_file_and_default() {
+        let runtime = resolve_runtime_with_env_and_config(
+            Some((CONTROL_PLANE_BASE_URL_ENV, "https://control-plane.env.test")),
+            Some(r#"{"control_plane_base_url":"https://control-plane.example.test"}"#),
+        )
+        .unwrap();
+
+        assert_eq!(
+            runtime.control_plane_base_url.value.as_deref(),
+            Some("https://control-plane.env.test")
+        );
+        assert_eq!(
+            runtime.control_plane_base_url.source,
+            Some(ValueSource::Env)
+        );
     }
 }
