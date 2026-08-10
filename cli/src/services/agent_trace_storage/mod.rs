@@ -84,6 +84,36 @@ pub fn resolve_agent_trace_storage_at_state_root(
     open_storage(context, repository_identity, db_path)
 }
 
+/// Resolves repository-scoped Agent Trace storage for high-frequency hook
+/// runtime callers using the canonical state root.
+///
+/// Never runs migrations, including migration `002`: the database must
+/// already have been brought up to date by `sce setup`. A missing or
+/// baseline-only (pre-`002`) database fails with the same `sce setup`
+/// guidance `ensure_schema_ready_for_hooks` already reports, rather than
+/// silently migrating it from a hook path.
+pub fn resolve_agent_trace_storage_for_hook_runtime(
+    context: &AgentTraceStorageContext<'_>,
+) -> Result<ResolvedAgentTraceStorage> {
+    let repository_identity = resolve_identity(context)?;
+    let db_path = agent_trace_db_path_for_repository(&repository_identity.identity.repository_id)?;
+    open_storage_for_hook_runtime(context, repository_identity, db_path)
+}
+
+/// Hook-runtime resolution core against an explicit state root, so tests can
+/// exercise the full path without touching the real user state directory.
+pub fn resolve_agent_trace_storage_for_hook_runtime_at_state_root(
+    context: &AgentTraceStorageContext<'_>,
+    state_root: &Path,
+) -> Result<ResolvedAgentTraceStorage> {
+    let repository_identity = resolve_identity(context)?;
+    let db_path = agent_trace_db_path_for_repository_at(
+        state_root,
+        &repository_identity.identity.repository_id,
+    )?;
+    open_storage_for_hook_runtime(context, repository_identity, db_path)
+}
+
 fn resolve_identity(context: &AgentTraceStorageContext<'_>) -> Result<ResolvedRepositoryIdentity> {
     resolve_repository_identity(
         context.repository_root,
@@ -98,6 +128,37 @@ fn open_storage(
     repository_identity: ResolvedRepositoryIdentity,
     db_path: PathBuf,
 ) -> Result<ResolvedAgentTraceStorage> {
+    // Opening the database creates `repos/<repository-id>/` when missing;
+    // directory creation is idempotent and first-time schema initialization may
+    // briefly race on SQLite metadata locks, so retry the fast-path/migrate
+    // sequence a small bounded number of times.
+    open_storage_with(
+        context,
+        repository_identity,
+        db_path,
+        open_repository_db_concurrently_safe,
+    )
+}
+
+fn open_storage_for_hook_runtime(
+    context: &AgentTraceStorageContext<'_>,
+    repository_identity: ResolvedRepositoryIdentity,
+    db_path: PathBuf,
+) -> Result<ResolvedAgentTraceStorage> {
+    open_storage_with(
+        context,
+        repository_identity,
+        db_path,
+        open_repository_db_for_hook_runtime,
+    )
+}
+
+fn open_storage_with(
+    context: &AgentTraceStorageContext<'_>,
+    repository_identity: ResolvedRepositoryIdentity,
+    db_path: PathBuf,
+    open_db: impl FnOnce(&Path, &str) -> Result<(RepositoryAgentTraceDb, RepositoryMetadata)>,
+) -> Result<ResolvedAgentTraceStorage> {
     let git_dir = resolve_git_dir(context.repository_root).with_context(|| {
         format!(
             "failed to resolve git directory for Agent Trace repository DB from '{}'",
@@ -111,12 +172,8 @@ fn open_storage(
         )
     })?;
 
-    // Opening the database creates `repos/<repository-id>/` when missing;
-    // directory creation is idempotent and first-time schema initialization may
-    // briefly race on SQLite metadata locks, so retry the fast-path/migrate
-    // sequence a small bounded number of times.
     let repository_id = &repository_identity.identity.repository_id;
-    let (db, metadata) = open_repository_db_concurrently_safe(&db_path, repository_id)?;
+    let (db, metadata) = open_db(&db_path, repository_id)?;
 
     Ok(ResolvedAgentTraceStorage {
         repository_identity,
@@ -166,6 +223,28 @@ fn open_repository_db_concurrently_safe(
     }
 
     Err(last_error.expect("repository DB initialization should record an error"))
+}
+
+/// No-migration open for high-frequency hook-runtime callers.
+///
+/// Verifies schema readiness and applies only the same narrow
+/// concurrent-first-open migration-metadata repair the setup/lifecycle fast
+/// path applies, then initializes `source_instance_id` once readiness is
+/// confirmed. Never falls back to running migrations: a missing or
+/// baseline-only (pre-`002`) database fails with the existing `sce setup`
+/// guidance instead.
+fn open_repository_db_for_hook_runtime(
+    db_path: &Path,
+    repository_id: &str,
+) -> Result<(RepositoryAgentTraceDb, RepositoryMetadata)> {
+    let db = RepositoryAgentTraceDb::open_for_hooks_without_migrations_at(db_path)?;
+
+    if db.ensure_schema_ready_for_hooks().is_err() {
+        db.repair_missing_repository_schema_migration_metadata()?;
+    }
+
+    let metadata = db.verify_or_initialize_repository_metadata(repository_id)?;
+    Ok((db, metadata))
 }
 
 #[cfg(test)]
@@ -514,6 +593,128 @@ mod tests {
             .identity
             .repository_id
             .contains("super-secret-token"));
+
+        std::fs::remove_dir_all(&state_root).expect("clean up state root");
+        std::fs::remove_dir_all(&repo).expect("clean up repo");
+    }
+
+    #[test]
+    fn hook_runtime_resolution_fails_before_setup_when_db_is_missing() {
+        let state_root = unique_temp_dir("state-hook-missing");
+        let repo = init_git_repo_with_remote("hook-missing", "git@github.com:acme/widgets.git");
+
+        let Err(error) = resolve_agent_trace_storage_for_hook_runtime_at_state_root(
+            &context_for(&repo),
+            &state_root,
+        ) else {
+            panic!("hook runtime resolution must fail before sce setup runs");
+        };
+        assert!(
+            error.to_string().contains("sce setup"),
+            "unexpected error: {error}"
+        );
+
+        std::fs::remove_dir_all(&state_root).expect("clean up state root");
+        std::fs::remove_dir_all(&repo).expect("clean up repo");
+    }
+
+    #[test]
+    fn hook_runtime_resolution_fails_before_setup_on_baseline_only_schema_without_recording_migration_002(
+    ) {
+        let state_root = unique_temp_dir("state-hook-baseline");
+        let repo = init_git_repo_with_remote("hook-baseline", "git@github.com:acme/widgets.git");
+        let identity = resolve_repository_identity(&repo, None, "origin")
+            .expect("identity should resolve for baseline fixture setup");
+        let repository_id = identity.identity.repository_id.clone();
+        let db_path = agent_trace_db_path_for_repository_at(&state_root, &repository_id)
+            .expect("db path should resolve for baseline fixture setup");
+
+        // Simulate a database created before migration 002 existed: build the
+        // pre-002 `repository_metadata` shape (no `source_instance_id`
+        // column) and record only migration 001 as applied, mirroring the
+        // fixture in `repository.rs`'s
+        // `baseline_only_fixture_migrates_and_gets_a_stable_source_instance_id`.
+        let baseline_only = RepositoryAgentTraceDb::open_without_migrations_at(&db_path)
+            .expect("baseline-only repository DB should open");
+        baseline_only
+            .execute(
+                "CREATE TABLE IF NOT EXISTS __sce_migrations (
+    id TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+)",
+                (),
+            )
+            .expect("migration metadata table should create");
+        baseline_only
+            .execute(
+                "CREATE TABLE IF NOT EXISTS repository_metadata (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    repository_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+)",
+                (),
+            )
+            .expect("baseline repository_metadata table should create");
+        baseline_only
+            .execute(
+                "INSERT INTO __sce_migrations (id) VALUES ('001_repository_schema')",
+                (),
+            )
+            .expect("baseline migration record should insert");
+        baseline_only
+            .execute(
+                "INSERT INTO repository_metadata (id, repository_id) VALUES (1, ?1)",
+                (repository_id.as_str(),),
+            )
+            .expect("baseline metadata row should seed");
+        drop(baseline_only);
+
+        let Err(error) = resolve_agent_trace_storage_for_hook_runtime_at_state_root(
+            &context_for(&repo),
+            &state_root,
+        ) else {
+            panic!("hook runtime resolution must fail on a baseline-only (pre-002) schema");
+        };
+        assert!(
+            error.to_string().contains("sce setup"),
+            "unexpected error: {error}"
+        );
+
+        let reopened = RepositoryAgentTraceDb::open_without_migrations_at(&db_path)
+            .expect("baseline DB should still be openable after the failed hook resolution");
+        let problems = reopened
+            .migration_metadata_problems()
+            .expect("migration metadata problems should be queryable");
+        assert!(
+            problems.iter().any(|problem| problem.contains("002")),
+            "migration 002 must remain unrecorded: {problems:?}"
+        );
+
+        std::fs::remove_dir_all(&state_root).expect("clean up state root");
+        std::fs::remove_dir_all(&repo).expect("clean up repo");
+    }
+
+    #[test]
+    fn hook_runtime_resolution_after_setup_matches_setup_path_metadata() {
+        let state_root = unique_temp_dir("state-hook-after-setup");
+        let repo = init_git_repo_with_remote("hook-after-setup", "git@github.com:acme/widgets.git");
+
+        let setup = resolve_agent_trace_storage_at_state_root(&context_for(&repo), &state_root)
+            .expect("setup/lifecycle resolution should succeed");
+
+        let hook_runtime = resolve_agent_trace_storage_for_hook_runtime_at_state_root(
+            &context_for(&repo),
+            &state_root,
+        )
+        .expect("hook runtime resolution should succeed once sce setup has run");
+
+        assert_eq!(hook_runtime.db_path, setup.db_path);
+        assert_eq!(hook_runtime.metadata, setup.metadata);
+        assert_eq!(
+            hook_runtime.metadata.repository_id,
+            setup.repository_identity.identity.repository_id
+        );
+        assert!(!hook_runtime.metadata.source_instance_id.trim().is_empty());
 
         std::fs::remove_dir_all(&state_root).expect("clean up state root");
         std::fs::remove_dir_all(&repo).expect("clean up repo");
