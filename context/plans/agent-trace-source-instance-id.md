@@ -8,19 +8,19 @@ The schema gains an additive migration (`002_repository_source_instance_id.sql`)
 
 ## Acceptance criteria
 
-- [ ] AC1: A fresh repository-scoped `agent-trace.db` receives a valid, non-empty `source_instance_id` on first initialization, and `repository_id` remains correct.
+- [x] AC1: A fresh repository-scoped `agent-trace.db` receives a valid, non-empty `source_instance_id` on first initialization, and `repository_id` remains correct.
   - Validate: `nix flake check` (runs the new repository-adapter unit tests covering fresh initialization).
-- [ ] AC2: `source_instance_id` is stable across database reopen, repeated `verify_or_initialize_repository_metadata` calls (repeated `sce setup`), and is never derived from `repository_id`, remote URL, checkout ID, filesystem path, hostname, or user/workspace identity.
+- [x] AC2: `source_instance_id` is stable across database reopen, repeated `verify_or_initialize_repository_metadata` calls (repeated `sce setup`), and is never derived from `repository_id`, remote URL, checkout ID, filesystem path, hostname, or user/workspace identity.
   - Validate: `nix flake check` (repository-adapter reopen/repeat/independent-DB unit tests).
-- [ ] AC3: Concurrent initialization of the same physical database converges on exactly one persisted `source_instance_id`; a losing racer's generated candidate is discarded in favor of the winner's stored value, and an already-valid `source_instance_id` is never overwritten.
+- [x] AC3: Concurrent initialization of the same physical database converges on exactly one persisted `source_instance_id`; a losing racer's generated candidate is discarded in favor of the winner's stored value, and an already-valid `source_instance_id` is never overwritten.
   - Validate: `nix flake check` (concurrent-initialization unit test in `cli/src/services/agent_trace_db/repository.rs`).
-- [ ] AC4: `resolve_agent_trace_storage` (setup/lifecycle path) returns the same typed `RepositoryMetadata` that database verification/initialization produced, alongside the existing `db`/`db_path`/`checkout_id` fields.
+- [x] AC4: `resolve_agent_trace_storage` (setup/lifecycle path) returns the same typed `RepositoryMetadata` that database verification/initialization produced, alongside the existing `db`/`db_path`/`checkout_id` fields.
   - Validate: `nix flake check` (`agent_trace_storage` unit tests asserting `ResolvedAgentTraceStorage.metadata`).
-- [ ] AC5: High-frequency hook runtime resolution never applies migration `002`: before `sce setup` (missing DB, or a baseline-only DB that has migration `001` but not `002`), hook resolution fails with the existing `sce setup` guidance and leaves the stored migration metadata unchanged; after `sce setup`, hook resolution succeeds and returns the same `RepositoryMetadata` setup produced.
+- [x] AC5: High-frequency hook runtime resolution never applies migration `002`: before `sce setup` (missing DB, or a baseline-only DB that has migration `001` but not `002`), hook resolution fails with the existing `sce setup` guidance and leaves the stored migration metadata unchanged; after `sce setup`, hook resolution succeeds and returns the same `RepositoryMetadata` setup produced.
   - Validate: `nix flake check` (`agent_trace_storage` hook-runtime resolution unit tests: before-setup missing DB, before-setup baseline-only schema, after-setup parity).
-- [ ] AC6: `sce setup` Agent Trace diagnostics report the source-instance ID alongside the existing repository ID line, without introducing workspace or remote-ingestion concepts.
+- [x] AC6: `sce setup` Agent Trace diagnostics report the source-instance ID alongside the existing repository ID line, without introducing workspace or remote-ingestion concepts.
   - Validate: Inspect `format_repository_storage_setup_message` output in `cli/src/services/agent_trace_db/lifecycle.rs` and its covering test.
-- [ ] AC7: A baseline-only fixture (only the original `001` repository schema, no `source_instance_id` column) migrates cleanly to `002`, gets a populated `source_instance_id`, and preserves that value across reopen.
+- [x] AC7: A baseline-only fixture (only the original `001` repository schema, no `source_instance_id` column) migrates cleanly to `002`, gets a populated `source_instance_id`, and preserves that value across reopen.
   - Validate: `nix flake check` (baseline-fixture migration unit test in `cli/src/services/agent_trace_db/repository.rs`).
 
 ### Full validation
@@ -88,14 +88,47 @@ The schema gains an additive migration (`002_repository_source_instance_id.sql`)
   - Evidence: Added `source_instance_id: String` to `RepositoryDatabaseSetup` in `cli/src/services/agent_trace_db/lifecycle.rs`, populated in `initialize_repository_agent_trace_db` from `storage.metadata.source_instance_id` (the `RepositoryMetadata` returned by storage resolution since T02). `format_repository_storage_setup_message` now emits an `Agent Trace source-instance ID: {value}` line between the checkout identity line and the "database initialized at" line, introducing no workspace/remote-ingestion wording. No covering test existed for this function before this task, so a new `#[cfg(test)] mod tests` was added with two unit tests: `formatted_message_includes_source_instance_id_line` (asserts the source-instance ID and repository ID lines both appear, with a configured remote present) and `formatted_message_omits_remote_line_but_keeps_source_instance_id` (asserts the remote line is correctly omitted while the source-instance ID line still appears when no remote is configured).
   - Verification run: `nix flake check` passed (`cli-fmt`, `cli-clippy` with `#![deny(clippy::pedantic)]`, and `cli-tests`, including the two new lifecycle setup-message tests).
 
-- [ ] T05: `Document the repository_id vs source_instance_id identity split` (status:todo)
+- [x] T05: `Document the repository_id vs source_instance_id identity split` (status:done)
   - Task ID: T05
   - Goal: Update `context/cli/agent-trace-storage.md` and `context/sce/agent-trace-db.md` to describe the additive `002` migration, the typed `RepositoryMetadata`, the atomic-claim concurrency contract, and the setup/lifecycle vs. hook-runtime resolution split now that both paths are distinct functions; touch `context/context-map.md` only if a linked summary line becomes materially inaccurate.
   - Boundaries (in/out of scope): In — the durable-context files named above. Out — designing or documenting any remote-ingestion consumer of `source_instance_id`; rewriting unrelated sections of those files.
   - Dependencies: T04
   - Done when: Both domain files accurately describe `repository_id` (logical Git repository identity) versus `source_instance_id` (physical database lineage identity), the migration, and the resolution split, matching the code shipped in T01–T04.
   - Verification notes (commands or checks): Review the updated files against the code from T01–T04 for accuracy; no generated output is touched, so `pkl-check-generated` is not required.
+  - Evidence: Reviewed `context/cli/agent-trace-storage.md`, `context/sce/agent-trace-db.md`, and `context/context-map.md` against the code shipped in T01–T04 (`cli/src/services/agent_trace_storage/mod.rs`, `cli/src/services/agent_trace_db/repository.rs`, `cli/src/services/agent_trace_db/lifecycle.rs`). Each preceding task's own context-synchronization step had already incrementally documented this identity split as it shipped: `agent-trace-storage.md` already describes the `metadata: RepositoryMetadata` field on `ResolvedAgentTraceStorage`, both `resolve_agent_trace_storage{,_at_state_root}` (setup/lifecycle, may run migration `002`) and `resolve_agent_trace_storage_for_hook_runtime{,_at_state_root}` (hook runtime, never runs migration `002`) entrypoints, and the fast-path-then-migrate vs. no-migration resolution split; `agent-trace-db.md` already describes migration `002_repository_source_instance_id.sql`, the typed `RepositoryMetadata { repository_id, source_instance_id }`, the atomic `UPDATE ... WHERE source_instance_id = ''` claim contract (losing racer's candidate discarded, already-valid value never overwritten), and the same setup/lifecycle-vs-hook-runtime split; `context-map.md`'s summary lines for both files already match. No content in any of the three files was found to be missing, stale, or contradicted by the T01–T04 code, so no edit was made — the task's "done when" condition was already satisfied by prior tasks' incremental synchronization.
+  - Verification run: Manual review only (no code or generated output touched); confirmed via `grep` that the documented function/type names (`resolve_agent_trace_storage_for_hook_runtime`, `ResolvedAgentTraceStorage`, `RepositoryMetadata`, `generate_source_instance_id`, `is_valid_source_instance_id`, `verify_or_initialize_repository_metadata`) exist in the source files referenced by the docs.
 
 ## Open questions
 
 None. The request fully specifies the schema change, identity semantics, concurrency pattern, resolution-boundary rules, diagnostics wording, and test coverage; nothing here changes scope, acceptance criteria, or task ordering.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-08-10
+
+### Commands run
+
+- `nix flake check` -> exit 0 (`all checks passed!`; builds and runs `cli-fmt`, `cli-clippy` (`#![deny(clippy::pedantic)]`), and `cli-tests` for the CLI crate, including all new/updated tests from T01–T04)
+
+### Scaffolding removed
+
+- None.
+
+### Success-criteria verification
+
+- [x] AC1: Fresh DB gets a valid, non-empty `source_instance_id`; `repository_id` stays correct -> `nix flake check` (`repository.rs` fresh-initialization tests); confirmed by code inspection of `verify_or_initialize_repository_metadata` in `cli/src/services/agent_trace_db/repository.rs:168-215`.
+- [x] AC2: Stable across reopen/repeat, never derived from other identities -> `nix flake check` (`repository_metadata_is_seeded_once_and_validated_on_reopen`, `source_instance_id_is_not_derived_from_repository_id_and_diverges_across_independent_dbs`); confirmed by code inspection.
+- [x] AC3: Concurrent initialization converges on one value; loser discarded, valid value never overwritten -> `nix flake check` (`concurrent_initialization_converges_on_one_source_instance_id`, 4-thread race); confirmed by the atomic `UPDATE ... WHERE source_instance_id = ''` claim plus always-re-read pattern in `repository.rs:197-215`.
+- [x] AC4: `resolve_agent_trace_storage` returns the same typed `RepositoryMetadata` alongside `db`/`db_path`/`checkout_id` -> `nix flake check` (`repeated_resolution_is_idempotent` asserting `ResolvedAgentTraceStorage.metadata`); confirmed by inspection of `cli/src/services/agent_trace_storage/mod.rs:45-183`.
+- [x] AC5: Hook runtime never applies migration `002`; fails pre-setup with `sce setup` guidance, succeeds post-setup with matching metadata -> `nix flake check` (`hook_runtime_resolution_fails_before_setup_when_db_is_missing`, `hook_runtime_resolution_fails_before_setup_on_baseline_only_schema_without_recording_migration_002`, `hook_runtime_resolution_after_setup_matches_setup_path_metadata`); confirmed by inspection of `resolve_agent_trace_storage_for_hook_runtime{,_at_state_root}` in `agent_trace_storage/mod.rs`.
+- [x] AC6: `sce setup` diagnostics report the source-instance ID alongside repository ID, no workspace/remote-ingestion wording -> Inspected `format_repository_storage_setup_message` in `cli/src/services/agent_trace_db/lifecycle.rs:116-131` (emits `Agent Trace source-instance ID: {value}`) and its two covering tests (`formatted_message_includes_source_instance_id_line`, `formatted_message_omits_remote_line_but_keeps_source_instance_id`), both passing under `nix flake check`.
+- [x] AC7: Baseline-only fixture migrates cleanly to `002`, gets a populated `source_instance_id`, stable across reopen -> `nix flake check` (`baseline_only_fixture_migrates_and_gets_a_stable_source_instance_id`).
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- None identified.
