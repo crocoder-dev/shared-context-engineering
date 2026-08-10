@@ -116,6 +116,20 @@ WHERE id > ?1
 ORDER BY id ASC
 LIMIT ?2";
 
+const SELECT_DIFF_TRACES_AFTER_SQL: &str =
+    "SELECT id, session_id, time_ms, patch, model_id, tool_name, tool_version, payload_type
+FROM diff_traces
+WHERE id > ?1
+ORDER BY id ASC
+LIMIT ?2";
+
+const SELECT_AGENT_TRACES_AFTER_SQL: &str =
+    "SELECT id, agent_trace_id, commit_id, commit_time_ms, trace_json, url, remote_url
+FROM agent_traces
+WHERE id > ?1
+ORDER BY id ASC
+LIMIT ?2";
+
 /// Read-only incremental export reader over one repository-scoped Agent Trace
 /// database. Holds no local cursor, performs no mutation, and makes no
 /// network calls; the caller supplies the last server-accepted `id` as
@@ -176,6 +190,56 @@ impl<'a> AgentTraceExportReader<'a> {
 
         Ok(rows)
     }
+
+    /// Read `diff_traces` rows with `id > cursor`, ordered by `id ASC`,
+    /// capped at `limit`. `patch` and `payload_type` are returned raw and
+    /// unmodified: no patch parsing or normalization is performed.
+    pub fn read_diff_traces_after(
+        &self,
+        cursor: i64,
+        limit: usize,
+    ) -> Result<Vec<AgentTraceDiffTraceExportRow>> {
+        validate_cursor(cursor)?;
+        validate_limit(limit)?;
+
+        let rows = self.db.query_map(
+            SELECT_DIFF_TRACES_AFTER_SQL,
+            (cursor, limit_as_i64(limit)),
+            diff_trace_export_row_from_turso,
+        )?;
+
+        for row in &rows {
+            validate_js_safe_integer(row.source_row_id)?;
+            validate_js_safe_integer(row.time_ms)?;
+        }
+
+        Ok(rows)
+    }
+
+    /// Read `agent_traces` rows with `id > cursor`, ordered by `id ASC`,
+    /// capped at `limit`. `trace_json` is returned as the exact raw string
+    /// from `SQLite`: no parse/reserialize is performed.
+    pub fn read_agent_traces_after(
+        &self,
+        cursor: i64,
+        limit: usize,
+    ) -> Result<Vec<AgentTraceAgentTraceExportRow>> {
+        validate_cursor(cursor)?;
+        validate_limit(limit)?;
+
+        let rows = self.db.query_map(
+            SELECT_AGENT_TRACES_AFTER_SQL,
+            (cursor, limit_as_i64(limit)),
+            agent_trace_export_row_from_turso,
+        )?;
+
+        for row in &rows {
+            validate_js_safe_integer(row.source_row_id)?;
+            validate_js_safe_integer(row.commit_time_ms)?;
+        }
+
+        Ok(rows)
+    }
 }
 
 fn message_export_row_from_turso(row: &turso::Row) -> Result<AgentTraceMessageExportRow> {
@@ -204,6 +268,47 @@ fn part_export_row_from_turso(row: &turso::Row) -> Result<AgentTracePartExportRo
         generated_at_unix_ms: row
             .get(5)
             .context("failed to read parts.generated_at_unix_ms")?,
+    })
+}
+
+fn diff_trace_export_row_from_turso(row: &turso::Row) -> Result<AgentTraceDiffTraceExportRow> {
+    Ok(AgentTraceDiffTraceExportRow {
+        source_row_id: row.get(0).context("failed to read diff_traces.id")?,
+        session_id: row
+            .get(1)
+            .context("failed to read diff_traces.session_id")?,
+        time_ms: row.get(2).context("failed to read diff_traces.time_ms")?,
+        patch: row.get(3).context("failed to read diff_traces.patch")?,
+        model_id: row.get(4).context("failed to read diff_traces.model_id")?,
+        tool_name: row.get(5).context("failed to read diff_traces.tool_name")?,
+        tool_version: row
+            .get(6)
+            .context("failed to read diff_traces.tool_version")?,
+        payload_type: row
+            .get(7)
+            .context("failed to read diff_traces.payload_type")?,
+    })
+}
+
+fn agent_trace_export_row_from_turso(row: &turso::Row) -> Result<AgentTraceAgentTraceExportRow> {
+    Ok(AgentTraceAgentTraceExportRow {
+        source_row_id: row.get(0).context("failed to read agent_traces.id")?,
+        agent_trace_id: row
+            .get(1)
+            .context("failed to read agent_traces.agent_trace_id")?,
+        commit_id: row
+            .get(2)
+            .context("failed to read agent_traces.commit_id")?,
+        commit_time_ms: row
+            .get(3)
+            .context("failed to read agent_traces.commit_time_ms")?,
+        trace_json: row
+            .get(4)
+            .context("failed to read agent_traces.trace_json")?,
+        url: row.get(5).context("failed to read agent_traces.url")?,
+        remote_url: row
+            .get(6)
+            .context("failed to read agent_traces.remote_url")?,
     })
 }
 
@@ -451,7 +556,10 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use crate::services::agent_trace_db::{InsertMessageInsert, InsertPartInsert, PartType};
+    use crate::services::agent_trace_db::{
+        AgentTraceInsert, DiffTraceInsert, InsertMessageInsert, InsertPartInsert, PartType,
+        PAYLOAD_TYPE_PATCH, PAYLOAD_TYPE_STRUCTURED,
+    };
 
     fn unique_test_db_path(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -496,6 +604,39 @@ mod tests {
             (id, "text", "hello", message_id, "sess-1", 1_000 + id),
         )
         .expect("direct part insert should succeed");
+    }
+
+    fn insert_diff_trace_row_with_id(db: &RepositoryAgentTraceDb, id: i64, session_id: &str) {
+        db.execute(
+            "INSERT INTO diff_traces (id, time_ms, session_id, patch, model_id, tool_name, tool_version, payload_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            (
+                id,
+                1_000 + id,
+                session_id,
+                "Index: a\n",
+                Option::<&str>::None,
+                Option::<&str>::None,
+                Option::<&str>::None,
+                PAYLOAD_TYPE_PATCH,
+            ),
+        )
+        .expect("direct diff_trace insert should succeed");
+    }
+
+    fn insert_agent_trace_row_with_id(db: &RepositoryAgentTraceDb, id: i64, agent_trace_id: &str) {
+        db.execute(
+            "INSERT INTO agent_traces (id, commit_id, commit_time_ms, trace_json, agent_trace_id, url, remote_url) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (
+                id,
+                "abc123",
+                1_000 + id,
+                "{\"steps\":[]}",
+                agent_trace_id,
+                "https://example.com/trace",
+                Option::<&str>::None,
+            ),
+        )
+        .expect("direct agent_trace insert should succeed");
     }
 
     #[test]
@@ -868,6 +1009,455 @@ mod tests {
             .expect("read should succeed");
 
         assert_eq!(row_count(&db, "parts"), parts_before);
+        assert_eq!(row_count(&db, "repository_metadata"), metadata_before);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_diff_traces_after_returns_rows_after_cursor_in_order() {
+        let db_path = unique_test_db_path("diff-traces-basic");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        db.insert_diff_trace(DiffTraceInsert {
+            time_ms: 1_001,
+            session_id: "sess-1",
+            patch: "Index: a\n",
+            model_id: Some("test-provider/test-model"),
+            tool_name: "opencode",
+            tool_version: Some("1.2.3"),
+            payload_type: PAYLOAD_TYPE_PATCH,
+        })
+        .expect("seed diff_trace should insert");
+        db.insert_diff_trace(DiffTraceInsert {
+            time_ms: 1_002,
+            session_id: "sess-1",
+            patch: "{\"tool\":\"Edit\"}",
+            model_id: None,
+            tool_name: "claude",
+            tool_version: None,
+            payload_type: PAYLOAD_TYPE_STRUCTURED,
+        })
+        .expect("seed diff_trace should insert");
+
+        let reader = AgentTraceExportReader::new(&db);
+        let rows = reader
+            .read_diff_traces_after(1, 500)
+            .expect("read after cursor should succeed");
+
+        assert_eq!(
+            rows.iter().map(|row| row.source_row_id).collect::<Vec<_>>(),
+            vec![2]
+        );
+        assert_eq!(rows[0].patch, "{\"tool\":\"Edit\"}");
+        assert_eq!(rows[0].payload_type, "structured");
+        assert_eq!(rows[0].model_id, None);
+        assert_eq!(rows[0].tool_name, Some("claude".to_string()));
+        assert_eq!(rows[0].tool_version, None);
+        assert_eq!(rows[0].time_ms, 1_002);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_diff_traces_after_preserves_populated_nullable_fields() {
+        let db_path = unique_test_db_path("diff-traces-nullable-populated");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        db.insert_diff_trace(DiffTraceInsert {
+            time_ms: 1_001,
+            session_id: "sess-1",
+            patch: "Index: a\n",
+            model_id: Some("test-provider/test-model"),
+            tool_name: "opencode",
+            tool_version: Some("1.2.3"),
+            payload_type: PAYLOAD_TYPE_PATCH,
+        })
+        .expect("seed diff_trace should insert");
+
+        let reader = AgentTraceExportReader::new(&db);
+        let rows = reader
+            .read_diff_traces_after(0, 500)
+            .expect("read after cursor should succeed");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].model_id,
+            Some("test-provider/test-model".to_string())
+        );
+        assert_eq!(rows[0].tool_name, Some("opencode".to_string()));
+        assert_eq!(rows[0].tool_version, Some("1.2.3".to_string()));
+        assert_eq!(rows[0].patch, "Index: a\n");
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_diff_traces_after_returns_non_contiguous_ids() {
+        let db_path = unique_test_db_path("diff-traces-gap");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        for (id, session_id) in [
+            (11, "sess-11"),
+            (15, "sess-15"),
+            (19, "sess-19"),
+            (30, "sess-30"),
+        ] {
+            insert_diff_trace_row_with_id(&db, id, session_id);
+        }
+
+        let reader = AgentTraceExportReader::new(&db);
+        let rows = reader
+            .read_diff_traces_after(10, 500)
+            .expect("read after cursor should succeed");
+
+        assert_eq!(
+            rows.iter().map(|row| row.source_row_id).collect::<Vec<_>>(),
+            vec![11, 15, 19, 30]
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_diff_traces_after_limit_truncates_and_follow_up_continues() {
+        let db_path = unique_test_db_path("diff-traces-limit");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        for id in 1..=10 {
+            insert_diff_trace_row_with_id(&db, id, &format!("sess-{id}"));
+        }
+
+        let reader = AgentTraceExportReader::new(&db);
+        let first_batch = reader
+            .read_diff_traces_after(0, 3)
+            .expect("first limited read should succeed");
+        assert_eq!(
+            first_batch
+                .iter()
+                .map(|row| row.source_row_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+
+        let next_cursor = first_batch
+            .last()
+            .expect("first batch non-empty")
+            .source_row_id;
+        let second_batch = reader
+            .read_diff_traces_after(next_cursor, 3)
+            .expect("follow-up read should succeed");
+        assert_eq!(
+            second_batch
+                .iter()
+                .map(|row| row.source_row_id)
+                .collect::<Vec<_>>(),
+            vec![4, 5, 6]
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_diff_traces_after_returns_empty_at_or_beyond_max_id() {
+        let db_path = unique_test_db_path("diff-traces-empty-tail");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        insert_diff_trace_row_with_id(&db, 1, "sess-1");
+
+        let reader = AgentTraceExportReader::new(&db);
+        assert!(reader
+            .read_diff_traces_after(1, 500)
+            .expect("read at max id should succeed")
+            .is_empty());
+        assert!(reader
+            .read_diff_traces_after(100, 500)
+            .expect("read beyond max id should succeed")
+            .is_empty());
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_diff_traces_after_rejects_invalid_cursor_and_limit() {
+        let db_path = unique_test_db_path("diff-traces-invalid");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let reader = AgentTraceExportReader::new(&db);
+
+        let cursor_error = reader
+            .read_diff_traces_after(-1, 500)
+            .expect_err("negative cursor should error");
+        assert!(cursor_error.to_string().contains("cursor"));
+
+        let zero_limit_error = reader
+            .read_diff_traces_after(0, 0)
+            .expect_err("zero limit should error");
+        assert!(zero_limit_error.to_string().contains("limit"));
+
+        let excess_limit_error = reader
+            .read_diff_traces_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE + 1)
+            .expect_err("excess limit should error");
+        assert!(excess_limit_error.to_string().contains("limit"));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_diff_traces_after_rejects_row_above_safe_integer_bound() {
+        let db_path = unique_test_db_path("diff-traces-unsafe-integer");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        db.execute(
+            "INSERT INTO diff_traces (id, time_ms, session_id, patch, model_id, tool_name, tool_version, payload_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            (
+                1_i64,
+                JS_MAX_SAFE_INTEGER + 1,
+                "sess-1",
+                "Index: a\n",
+                Option::<&str>::None,
+                Option::<&str>::None,
+                Option::<&str>::None,
+                PAYLOAD_TYPE_PATCH,
+            ),
+        )
+        .expect("direct diff_trace insert should succeed");
+
+        let reader = AgentTraceExportReader::new(&db);
+        let error = reader
+            .read_diff_traces_after(0, 500)
+            .expect_err("row above safe-integer bound should error");
+        assert!(error.to_string().contains("JS-safe-integer"));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_diff_traces_after_performs_no_mutation() {
+        let db_path = unique_test_db_path("diff-traces-no-mutation");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        insert_diff_trace_row_with_id(&db, 1, "sess-1");
+        insert_diff_trace_row_with_id(&db, 2, "sess-2");
+
+        let diff_traces_before = row_count(&db, "diff_traces");
+        let metadata_before = row_count(&db, "repository_metadata");
+
+        let reader = AgentTraceExportReader::new(&db);
+        reader
+            .read_diff_traces_after(0, 500)
+            .expect("read should succeed");
+
+        assert_eq!(row_count(&db, "diff_traces"), diff_traces_before);
+        assert_eq!(row_count(&db, "repository_metadata"), metadata_before);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_agent_traces_after_returns_rows_after_cursor_in_order() {
+        let db_path = unique_test_db_path("agent-traces-basic");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        db.insert_agent_trace(AgentTraceInsert {
+            commit_id: "abc123",
+            commit_time_ms: 1_001,
+            trace_json: "{\"steps\":[]}",
+            agent_trace_id: "trace-1",
+            url: "https://example.com/trace/1",
+            remote_url: "",
+        })
+        .expect("seed agent_trace should insert");
+        db.insert_agent_trace(AgentTraceInsert {
+            commit_id: "def456",
+            commit_time_ms: 1_002,
+            trace_json: "{\"steps\":[1]}",
+            agent_trace_id: "trace-2",
+            url: "https://example.com/trace/2",
+            remote_url: "https://github.com/org/repo/commit/def456",
+        })
+        .expect("seed agent_trace should insert");
+
+        let reader = AgentTraceExportReader::new(&db);
+        let rows = reader
+            .read_agent_traces_after(1, 500)
+            .expect("read after cursor should succeed");
+
+        assert_eq!(
+            rows.iter().map(|row| row.source_row_id).collect::<Vec<_>>(),
+            vec![2]
+        );
+        assert_eq!(rows[0].agent_trace_id, "trace-2");
+        assert_eq!(rows[0].commit_id, "def456");
+        assert_eq!(rows[0].commit_time_ms, 1_002);
+        assert_eq!(rows[0].trace_json, "{\"steps\":[1]}");
+        assert_eq!(rows[0].url, "https://example.com/trace/2");
+        assert_eq!(
+            rows[0].remote_url,
+            Some("https://github.com/org/repo/commit/def456".to_string())
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_agent_traces_after_preserves_null_remote_url() {
+        let db_path = unique_test_db_path("agent-traces-remote-url-null");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        insert_agent_trace_row_with_id(&db, 1, "trace-null");
+
+        let reader = AgentTraceExportReader::new(&db);
+        let rows = reader
+            .read_agent_traces_after(0, 500)
+            .expect("read after cursor should succeed");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].remote_url, None);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_agent_traces_after_returns_non_contiguous_ids() {
+        let db_path = unique_test_db_path("agent-traces-gap");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        for (id, agent_trace_id) in [
+            (11, "trace-11"),
+            (15, "trace-15"),
+            (19, "trace-19"),
+            (30, "trace-30"),
+        ] {
+            insert_agent_trace_row_with_id(&db, id, agent_trace_id);
+        }
+
+        let reader = AgentTraceExportReader::new(&db);
+        let rows = reader
+            .read_agent_traces_after(10, 500)
+            .expect("read after cursor should succeed");
+
+        assert_eq!(
+            rows.iter().map(|row| row.source_row_id).collect::<Vec<_>>(),
+            vec![11, 15, 19, 30]
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_agent_traces_after_limit_truncates_and_follow_up_continues() {
+        let db_path = unique_test_db_path("agent-traces-limit");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        for id in 1..=10 {
+            insert_agent_trace_row_with_id(&db, id, &format!("trace-{id}"));
+        }
+
+        let reader = AgentTraceExportReader::new(&db);
+        let first_batch = reader
+            .read_agent_traces_after(0, 3)
+            .expect("first limited read should succeed");
+        assert_eq!(
+            first_batch
+                .iter()
+                .map(|row| row.source_row_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+
+        let next_cursor = first_batch
+            .last()
+            .expect("first batch non-empty")
+            .source_row_id;
+        let second_batch = reader
+            .read_agent_traces_after(next_cursor, 3)
+            .expect("follow-up read should succeed");
+        assert_eq!(
+            second_batch
+                .iter()
+                .map(|row| row.source_row_id)
+                .collect::<Vec<_>>(),
+            vec![4, 5, 6]
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_agent_traces_after_returns_empty_at_or_beyond_max_id() {
+        let db_path = unique_test_db_path("agent-traces-empty-tail");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        insert_agent_trace_row_with_id(&db, 1, "trace-1");
+
+        let reader = AgentTraceExportReader::new(&db);
+        assert!(reader
+            .read_agent_traces_after(1, 500)
+            .expect("read at max id should succeed")
+            .is_empty());
+        assert!(reader
+            .read_agent_traces_after(100, 500)
+            .expect("read beyond max id should succeed")
+            .is_empty());
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_agent_traces_after_rejects_invalid_cursor_and_limit() {
+        let db_path = unique_test_db_path("agent-traces-invalid");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let reader = AgentTraceExportReader::new(&db);
+
+        let cursor_error = reader
+            .read_agent_traces_after(-1, 500)
+            .expect_err("negative cursor should error");
+        assert!(cursor_error.to_string().contains("cursor"));
+
+        let zero_limit_error = reader
+            .read_agent_traces_after(0, 0)
+            .expect_err("zero limit should error");
+        assert!(zero_limit_error.to_string().contains("limit"));
+
+        let excess_limit_error = reader
+            .read_agent_traces_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE + 1)
+            .expect_err("excess limit should error");
+        assert!(excess_limit_error.to_string().contains("limit"));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_agent_traces_after_rejects_row_above_safe_integer_bound() {
+        let db_path = unique_test_db_path("agent-traces-unsafe-integer");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        db.execute(
+            "INSERT INTO agent_traces (id, commit_id, commit_time_ms, trace_json, agent_trace_id, url, remote_url) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (
+                1_i64,
+                "abc123",
+                JS_MAX_SAFE_INTEGER + 1,
+                "{\"steps\":[]}",
+                "trace-unsafe",
+                "https://example.com/trace",
+                Option::<&str>::None,
+            ),
+        )
+        .expect("direct agent_trace insert should succeed");
+
+        let reader = AgentTraceExportReader::new(&db);
+        let error = reader
+            .read_agent_traces_after(0, 500)
+            .expect_err("row above safe-integer bound should error");
+        assert!(error.to_string().contains("JS-safe-integer"));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_agent_traces_after_performs_no_mutation() {
+        let db_path = unique_test_db_path("agent-traces-no-mutation");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        insert_agent_trace_row_with_id(&db, 1, "trace-1");
+        insert_agent_trace_row_with_id(&db, 2, "trace-2");
+
+        let agent_traces_before = row_count(&db, "agent_traces");
+        let metadata_before = row_count(&db, "repository_metadata");
+
+        let reader = AgentTraceExportReader::new(&db);
+        reader
+            .read_agent_traces_after(0, 500)
+            .expect("read should succeed");
+
+        assert_eq!(row_count(&db, "agent_traces"), agent_traces_before);
         assert_eq!(row_count(&db, "repository_metadata"), metadata_before);
 
         remove_test_db(&db_path);
