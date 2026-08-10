@@ -93,6 +93,11 @@ local sceConfigSchema = new JsonSchema {
     ["workos_client_id"] = new JsonSchema {
       type = "string"
     }
+    ["control_plane_base_url"] = new JsonSchema {
+      type = "string"
+      description = "Base URL of the control-plane Agent Trace ingestion API used by `sce trace sync`. Defaults to the canonical SCE control plane."
+      minLength = 1
+    }
     ["agent_trace"] = new JsonSchema {
       type = "object"
       description = "Agent Trace repository identity configuration. Selects the repository-scoped Agent Trace database."

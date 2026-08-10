@@ -38,13 +38,14 @@ pub(crate) const TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "log_file_retention_limit",
     "timeout_ms",
     super::resolver::WORKOS_CLIENT_ID_KEY.config_key,
+    super::resolver::CONTROL_PLANE_BASE_URL_KEY.config_key,
     "agent_trace",
     "policies",
     "integrations",
 ];
 
 pub(crate) const TOP_LEVEL_CONFIG_KEYS_DESCRIPTION: &str =
-    "$schema, log_level, log_format, timeout_ms, workos_client_id, agent_trace, policies, integrations, log_dir, log_file_retention_limit";
+    "$schema, log_level, log_format, timeout_ms, workos_client_id, control_plane_base_url, agent_trace, policies, integrations, log_dir, log_file_retention_limit";
 
 static CONFIG_SCHEMA_VALIDATOR: OnceLock<Validator> = OnceLock::new();
 
@@ -74,6 +75,7 @@ pub(crate) struct ParsedFileConfigDocument {
     pub(crate) log_file_retention_limit: Option<usize>,
     pub(crate) timeout_ms: Option<u64>,
     pub(crate) workos_client_id: Option<String>,
+    pub(crate) control_plane_base_url: Option<String>,
     pub(crate) agent_trace: Option<ParsedAgentTraceConfigDocument>,
     pub(crate) policies: Option<ParsedPoliciesConfigDocument>,
     pub(crate) integrations: Option<ParsedIntegrationsConfigDocument>,
@@ -160,6 +162,7 @@ pub(crate) struct FileConfig {
     pub(crate) timeout_ms: Option<FileConfigValue<u64>>,
     pub(crate) attribution_hooks_enabled: Option<FileConfigValue<bool>>,
     pub(crate) workos_client_id: Option<FileConfigValue<String>>,
+    pub(crate) control_plane_base_url: Option<FileConfigValue<String>>,
     pub(crate) agent_trace_repository_id: Option<FileConfigValue<String>>,
     pub(crate) agent_trace_repository_remote: Option<FileConfigValue<String>>,
     pub(crate) bash_policy_presets: Option<FileConfigValue<Vec<String>>>,
@@ -307,6 +310,9 @@ pub(crate) fn parse_file_config(
     let workos_client_id = typed
         .workos_client_id
         .map(|value| FileConfigValue { value, source });
+    let control_plane_base_url = typed
+        .control_plane_base_url
+        .map(|value| FileConfigValue { value, source });
     let (agent_trace_repository_id, agent_trace_repository_remote) =
         map_agent_trace_config(typed.agent_trace.as_ref(), object, path, source)?;
     let (attribution_hooks_enabled, bash_policy_presets, bash_policy_custom, database_retry) =
@@ -321,6 +327,7 @@ pub(crate) fn parse_file_config(
         timeout_ms,
         attribution_hooks_enabled,
         workos_client_id,
+        control_plane_base_url,
         agent_trace_repository_id,
         agent_trace_repository_remote,
         bash_policy_presets,

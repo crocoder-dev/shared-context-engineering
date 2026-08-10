@@ -41,11 +41,16 @@ Resolved observability values that currently have no CLI flag layer follow the s
 1. config file value (`log_file_retention_limit`)
 2. default (`10`)
 
-Supported auth-adjacent runtime keys can participate in one shared key-declared precedence path without defining CLI flags. Each key declares its config-file name, environment variable name, and whether a baked default is allowed. The shared resolver supports keys that allow a baked default and keys that intentionally omit one. The first implemented migrated key is `workos_client_id`, which resolves as:
+Supported auth-adjacent runtime keys can participate in one shared key-declared precedence path without defining CLI flags. Each key declares its config-file name, environment variable name, and whether a baked default is allowed. The shared resolver supports keys that allow a baked default and keys that intentionally omit one. Two keys are migrated onto this shared path:
 
-1. environment value (`WORKOS_CLIENT_ID`)
-2. config file value (`workos_client_id`)
-3. baked default (`client_sce_default`)
+- `workos_client_id`, which resolves as:
+  1. environment value (`WORKOS_CLIENT_ID`)
+  2. config file value (`workos_client_id`)
+  3. baked default (`client_sce_default`)
+- `control_plane_base_url`, the base URL of the control-plane Agent Trace ingestion API, which resolves as:
+  1. environment value (`SCE_CONTROL_PLANE_BASE_URL`)
+  2. config file value (`control_plane_base_url`)
+  3. baked default (`https://sce.crocoder.dev`)
 
 When a supported auth-adjacent key omits a baked default, the same resolver still reports `value: null` / `(unset)` with no resolved source when both env and config inputs are absent.
 
@@ -72,7 +77,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - Startup/runtime config resolution now degrades gracefully only for default-discovered files: invalid discovered files are skipped and reported via collected `validation_errors`, while explicit `--config` / `SCE_CONFIG_FILE` targets still fail immediately on the same parse or validation errors.
 
 - Config file content must be valid JSON with a top-level object.
-- Allowed keys: `$schema`, `log_level`, `log_format`, `log_dir`, `log_file_retention_limit`, `timeout_ms`, `workos_client_id`, `agent_trace`, `policies`, `integrations`.
+- Allowed keys: `$schema`, `log_level`, `log_format`, `log_dir`, `log_file_retention_limit`, `timeout_ms`, `workos_client_id`, `control_plane_base_url`, `agent_trace`, `policies`, `integrations`.
 - Unknown keys fail validation.
 - `log_level` must be one of `error|warn|info|debug`.
 - `log_format` must be `text` or `json` when present.
@@ -80,6 +85,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `log_file_retention_limit` must be an integer with minimum `1`; zero, negative, fractional, string, and object values fail schema validation.
 - `timeout_ms` must be an unsigned integer.
 - `workos_client_id` must be a string when present.
+- `control_plane_base_url` must be a non-empty string when present.
 
 - `agent_trace` must be an object when present and currently allows only `repository_id` and `repository_remote`.
 - `agent_trace.repository_id` must be a non-empty string when present.
@@ -127,13 +133,14 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - Runtime config resolution also carries `validation_errors` for skipped invalid discovered config files; `show` maps them into user-facing warnings, while `validate` maps them into validation issues.
 - Auth-key JSON output in `show` includes `value`, text-oriented `display_value`, `source`, optional `config_source`, and a key-specific `precedence` string describing the allowed resolution chain.
 - Auth-key text output in `show` includes `auth_precedence` and abbreviates full values when they look credential-like; fully secret-bearing key classes remain redacted.
-- For the currently migrated key `workos_client_id`, `show` reports the baked default with `source: default` when env/config inputs are absent.
+- For the migrated keys `workos_client_id` and `control_plane_base_url`, `show` reports the baked default with `source: default` when env/config inputs are absent.
 
 ## Auth diagnostics contract
 
 - Auth failure guidance for migrated auth keys no longer assumes env-only configuration.
 - Missing-client-id guidance for `workos_client_id` describes the full allowed chain for this key: `WORKOS_CLIENT_ID`, config-file key `workos_client_id`, or fallback to the baked default when no higher-precedence invalid override blocks it.
 - Auth login runtime guidance refers to the resolved source chain generically (`WORKOS_CLIENT_ID`, config file, or baked default for `workos_client_id`) instead of env-only wording.
+- `control_plane_base_url` resolves through the same shared auth-adjacent key path but has no dedicated auth failure guidance of its own; it is consumed by the Agent Trace control-plane client (`sce trace sync`).
 
 ## Related files
 

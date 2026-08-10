@@ -191,6 +191,7 @@ pub(crate) struct LoadedConfigPath {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResolvedAuthRuntimeConfig {
     pub(crate) workos_client_id: ResolvedOptionalValue<String>,
+    pub(crate) control_plane_base_url: ResolvedOptionalValue<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
