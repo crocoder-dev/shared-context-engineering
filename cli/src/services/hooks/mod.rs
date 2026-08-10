@@ -19,7 +19,9 @@ use crate::services::agent_trace_db::{
     PartType, PostCommitPatchIntersectionInsert, RecentDiffTracePatches, PAYLOAD_TYPE_PATCH,
     PAYLOAD_TYPE_STRUCTURED,
 };
-use crate::services::agent_trace_storage::{resolve_agent_trace_storage, AgentTraceStorageContext};
+use crate::services::agent_trace_storage::{
+    resolve_agent_trace_storage_for_hook_runtime, AgentTraceStorageContext,
+};
 use crate::services::config;
 use crate::services::observability::traits::Logger;
 use crate::services::patch::{
@@ -337,7 +339,7 @@ fn open_agent_trace_db_for_hook_runtime(
         repository_remote: &storage_config.repository_remote,
     };
 
-    resolve_agent_trace_storage(&storage_context)
+    resolve_agent_trace_storage_for_hook_runtime(&storage_context)
         .map(|storage| storage.db)
         .context(context_message)
 }
