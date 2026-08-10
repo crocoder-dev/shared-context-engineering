@@ -4,10 +4,10 @@
 //! wire-compatible rows out. It performs no database mutation, holds no local
 //! sync cursor, and makes no network calls.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
-use crate::services::agent_trace_db::MessageRole;
+use crate::services::agent_trace_db::{repository::RepositoryAgentTraceDb, MessageRole};
 
 /// Maximum number of rows a single export reader call may return.
 pub const AGENT_TRACE_EXPORT_BATCH_SIZE: usize = 500;
@@ -100,6 +100,126 @@ pub struct AgentTraceAgentTraceExportRow {
     pub trace_json: String,
     pub url: String,
     pub remote_url: Option<String>,
+}
+
+const SELECT_MESSAGES_AFTER_SQL: &str =
+    "SELECT id, session_id, message_id, role, generated_at_unix_ms
+FROM messages
+WHERE id > ?1
+ORDER BY id ASC
+LIMIT ?2";
+
+const SELECT_PARTS_AFTER_SQL: &str =
+    "SELECT id, session_id, message_id, type, text, generated_at_unix_ms
+FROM parts
+WHERE id > ?1
+ORDER BY id ASC
+LIMIT ?2";
+
+/// Read-only incremental export reader over one repository-scoped Agent Trace
+/// database. Holds no local cursor, performs no mutation, and makes no
+/// network calls; the caller supplies the last server-accepted `id` as
+/// `cursor` on every call.
+pub struct AgentTraceExportReader<'a> {
+    db: &'a RepositoryAgentTraceDb,
+}
+
+impl<'a> AgentTraceExportReader<'a> {
+    pub fn new(db: &'a RepositoryAgentTraceDb) -> Self {
+        Self { db }
+    }
+
+    /// Read `messages` rows with `id > cursor`, ordered by `id ASC`, capped
+    /// at `limit`.
+    pub fn read_messages_after(
+        &self,
+        cursor: i64,
+        limit: usize,
+    ) -> Result<Vec<AgentTraceMessageExportRow>> {
+        validate_cursor(cursor)?;
+        validate_limit(limit)?;
+
+        let rows = self.db.query_map(
+            SELECT_MESSAGES_AFTER_SQL,
+            (cursor, limit_as_i64(limit)),
+            message_export_row_from_turso,
+        )?;
+
+        for row in &rows {
+            validate_js_safe_integer(row.source_row_id)?;
+            validate_js_safe_integer(row.generated_at_unix_ms)?;
+        }
+
+        Ok(rows)
+    }
+
+    /// Read `parts` rows with `id > cursor`, ordered by `id ASC`, capped at
+    /// `limit`.
+    pub fn read_parts_after(
+        &self,
+        cursor: i64,
+        limit: usize,
+    ) -> Result<Vec<AgentTracePartExportRow>> {
+        validate_cursor(cursor)?;
+        validate_limit(limit)?;
+
+        let rows = self.db.query_map(
+            SELECT_PARTS_AFTER_SQL,
+            (cursor, limit_as_i64(limit)),
+            part_export_row_from_turso,
+        )?;
+
+        for row in &rows {
+            validate_js_safe_integer(row.source_row_id)?;
+            validate_js_safe_integer(row.generated_at_unix_ms)?;
+        }
+
+        Ok(rows)
+    }
+}
+
+fn message_export_row_from_turso(row: &turso::Row) -> Result<AgentTraceMessageExportRow> {
+    Ok(AgentTraceMessageExportRow {
+        source_row_id: row.get(0).context("failed to read messages.id")?,
+        session_id: row.get(1).context("failed to read messages.session_id")?,
+        message_id: row.get(2).context("failed to read messages.message_id")?,
+        role: message_role_from_column(
+            row.get::<String>(3)
+                .context("failed to read messages.role")?
+                .as_str(),
+        )?,
+        generated_at_unix_ms: row
+            .get(4)
+            .context("failed to read messages.generated_at_unix_ms")?,
+    })
+}
+
+fn part_export_row_from_turso(row: &turso::Row) -> Result<AgentTracePartExportRow> {
+    Ok(AgentTracePartExportRow {
+        source_row_id: row.get(0).context("failed to read parts.id")?,
+        session_id: row.get(1).context("failed to read parts.session_id")?,
+        message_id: row.get(2).context("failed to read parts.message_id")?,
+        part_type: row.get(3).context("failed to read parts.type")?,
+        text: row.get(4).context("failed to read parts.text")?,
+        generated_at_unix_ms: row
+            .get(5)
+            .context("failed to read parts.generated_at_unix_ms")?,
+    })
+}
+
+fn message_role_from_column(value: &str) -> Result<MessageRole> {
+    match value {
+        "user" => Ok(MessageRole::User),
+        "assistant" => Ok(MessageRole::Assistant),
+        other => bail!("agent trace export encountered unknown messages.role value: {other}"),
+    }
+}
+
+/// Converts a validated `limit` (already bounded by [`validate_limit`] to
+/// `1..=AGENT_TRACE_EXPORT_BATCH_SIZE`) into the `i64` the SQL `LIMIT`
+/// parameter requires.
+fn limit_as_i64(limit: usize) -> i64 {
+    i64::try_from(limit).expect("validated limit should fit in i64")
 }
 
 #[cfg(test)]
@@ -323,5 +443,433 @@ mod tests {
     fn validate_js_safe_integer_rejects_negative() {
         let error = validate_js_safe_integer(-1).expect_err("negative value should error");
         assert!(error.to_string().contains("JS-safe-integer"));
+    }
+
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use crate::services::agent_trace_db::{InsertMessageInsert, InsertPartInsert, PartType};
+
+    fn unique_test_db_path(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!(
+                "sce-agent-trace-export-{label}-{}-{nonce}",
+                std::process::id()
+            ))
+            .join("agent-trace.db")
+    }
+
+    fn remove_test_db(db_path: &std::path::Path) {
+        if let Some(parent) = db_path.parent() {
+            fs::remove_dir_all(parent).expect("test DB directory should be removed");
+        }
+    }
+
+    fn row_count(db: &RepositoryAgentTraceDb, table: &str) -> i64 {
+        db.query_map(&format!("SELECT COUNT(*) FROM {table}"), (), |row| {
+            row.get::<i64>(0).map_err(Into::into)
+        })
+        .expect("count query should succeed")
+        .into_iter()
+        .next()
+        .expect("count row should exist")
+    }
+
+    fn insert_message_row_with_id(db: &RepositoryAgentTraceDb, id: i64, message_id: &str) {
+        db.execute(
+            "INSERT INTO messages (id, session_id, message_id, role, generated_at_unix_ms) VALUES (?1, ?2, ?3, ?4, ?5)",
+            (id, "sess-1", message_id, "assistant", 1_000 + id),
+        )
+        .expect("direct message insert should succeed");
+    }
+
+    fn insert_part_row_with_id(db: &RepositoryAgentTraceDb, id: i64, message_id: &str) {
+        db.execute(
+            "INSERT INTO parts (id, type, text, message_id, session_id, generated_at_unix_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            (id, "text", "hello", message_id, "sess-1", 1_000 + id),
+        )
+        .expect("direct part insert should succeed");
+    }
+
+    #[test]
+    fn read_messages_after_returns_rows_after_cursor_in_order() {
+        let db_path = unique_test_db_path("messages-basic");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        db.insert_messages(vec![
+            InsertMessageInsert {
+                session_id: "sess-1".to_string(),
+                message_id: "msg-1".to_string(),
+                role: MessageRole::User,
+                generated_at_unix_ms: 1_001,
+            },
+            InsertMessageInsert {
+                session_id: "sess-1".to_string(),
+                message_id: "msg-2".to_string(),
+                role: MessageRole::Assistant,
+                generated_at_unix_ms: 1_002,
+            },
+            InsertMessageInsert {
+                session_id: "sess-1".to_string(),
+                message_id: "msg-3".to_string(),
+                role: MessageRole::Assistant,
+                generated_at_unix_ms: 1_003,
+            },
+        ])
+        .expect("seed messages should insert");
+
+        let reader = AgentTraceExportReader::new(&db);
+        let rows = reader
+            .read_messages_after(1, 500)
+            .expect("read after cursor should succeed");
+
+        assert_eq!(
+            rows.iter().map(|row| row.source_row_id).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert_eq!(rows[0].message_id, "msg-2");
+        assert_eq!(rows[0].role, MessageRole::Assistant);
+        assert_eq!(rows[0].generated_at_unix_ms, 1_002);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_messages_after_returns_non_contiguous_ids() {
+        let db_path = unique_test_db_path("messages-gap");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        for (id, message_id) in [
+            (11, "msg-11"),
+            (15, "msg-15"),
+            (19, "msg-19"),
+            (30, "msg-30"),
+        ] {
+            insert_message_row_with_id(&db, id, message_id);
+        }
+
+        let reader = AgentTraceExportReader::new(&db);
+        let rows = reader
+            .read_messages_after(10, 500)
+            .expect("read after cursor should succeed");
+
+        assert_eq!(
+            rows.iter().map(|row| row.source_row_id).collect::<Vec<_>>(),
+            vec![11, 15, 19, 30]
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_messages_after_limit_truncates_and_follow_up_continues() {
+        let db_path = unique_test_db_path("messages-limit");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        for id in 1..=10 {
+            insert_message_row_with_id(&db, id, &format!("msg-{id}"));
+        }
+
+        let reader = AgentTraceExportReader::new(&db);
+        let first_batch = reader
+            .read_messages_after(0, 3)
+            .expect("first limited read should succeed");
+        assert_eq!(
+            first_batch
+                .iter()
+                .map(|row| row.source_row_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+
+        let next_cursor = first_batch
+            .last()
+            .expect("first batch non-empty")
+            .source_row_id;
+        let second_batch = reader
+            .read_messages_after(next_cursor, 3)
+            .expect("follow-up read should succeed");
+        assert_eq!(
+            second_batch
+                .iter()
+                .map(|row| row.source_row_id)
+                .collect::<Vec<_>>(),
+            vec![4, 5, 6]
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_messages_after_returns_empty_at_or_beyond_max_id() {
+        let db_path = unique_test_db_path("messages-empty-tail");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        insert_message_row_with_id(&db, 1, "msg-1");
+
+        let reader = AgentTraceExportReader::new(&db);
+        assert!(reader
+            .read_messages_after(1, 500)
+            .expect("read at max id should succeed")
+            .is_empty());
+        assert!(reader
+            .read_messages_after(100, 500)
+            .expect("read beyond max id should succeed")
+            .is_empty());
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_messages_after_rejects_invalid_cursor_and_limit() {
+        let db_path = unique_test_db_path("messages-invalid");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let reader = AgentTraceExportReader::new(&db);
+
+        let cursor_error = reader
+            .read_messages_after(-1, 500)
+            .expect_err("negative cursor should error");
+        assert!(cursor_error.to_string().contains("cursor"));
+
+        let zero_limit_error = reader
+            .read_messages_after(0, 0)
+            .expect_err("zero limit should error");
+        assert!(zero_limit_error.to_string().contains("limit"));
+
+        let excess_limit_error = reader
+            .read_messages_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE + 1)
+            .expect_err("excess limit should error");
+        assert!(excess_limit_error.to_string().contains("limit"));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_messages_after_rejects_row_above_safe_integer_bound() {
+        let db_path = unique_test_db_path("messages-unsafe-integer");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        db.execute(
+            "INSERT INTO messages (id, session_id, message_id, role, generated_at_unix_ms) VALUES (?1, ?2, ?3, ?4, ?5)",
+            (1_i64, "sess-1", "msg-1", "assistant", JS_MAX_SAFE_INTEGER + 1),
+        )
+        .expect("direct message insert should succeed");
+
+        let reader = AgentTraceExportReader::new(&db);
+        let error = reader
+            .read_messages_after(0, 500)
+            .expect_err("row above safe-integer bound should error");
+        assert!(error.to_string().contains("JS-safe-integer"));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_messages_after_performs_no_mutation() {
+        let db_path = unique_test_db_path("messages-no-mutation");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        insert_message_row_with_id(&db, 1, "msg-1");
+        insert_message_row_with_id(&db, 2, "msg-2");
+
+        let messages_before = row_count(&db, "messages");
+        let metadata_before = row_count(&db, "repository_metadata");
+
+        let reader = AgentTraceExportReader::new(&db);
+        reader
+            .read_messages_after(0, 500)
+            .expect("read should succeed");
+
+        assert_eq!(row_count(&db, "messages"), messages_before);
+        assert_eq!(row_count(&db, "repository_metadata"), metadata_before);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_parts_after_returns_rows_after_cursor_in_order() {
+        let db_path = unique_test_db_path("parts-basic");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        db.insert_parts(vec![
+            InsertPartInsert {
+                part_type: PartType::Text,
+                text: "first".to_string(),
+                session_id: "sess-1".to_string(),
+                message_id: "msg-1".to_string(),
+                generated_at_unix_ms: 1_001,
+            },
+            InsertPartInsert {
+                part_type: PartType::Patch,
+                text: "second".to_string(),
+                session_id: "sess-1".to_string(),
+                message_id: "msg-2".to_string(),
+                generated_at_unix_ms: 1_002,
+            },
+        ])
+        .expect("seed parts should insert");
+
+        let reader = AgentTraceExportReader::new(&db);
+        let rows = reader
+            .read_parts_after(0, 500)
+            .expect("read after cursor should succeed");
+
+        assert_eq!(
+            rows.iter().map(|row| row.source_row_id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(rows[1].part_type, "patch");
+        assert_eq!(rows[1].text, "second");
+        assert_eq!(rows[1].message_id, "msg-2");
+        assert_eq!(rows[1].generated_at_unix_ms, 1_002);
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_parts_after_returns_non_contiguous_ids() {
+        let db_path = unique_test_db_path("parts-gap");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        for (id, message_id) in [
+            (11, "msg-11"),
+            (15, "msg-15"),
+            (19, "msg-19"),
+            (30, "msg-30"),
+        ] {
+            insert_part_row_with_id(&db, id, message_id);
+        }
+
+        let reader = AgentTraceExportReader::new(&db);
+        let rows = reader
+            .read_parts_after(10, 500)
+            .expect("read after cursor should succeed");
+
+        assert_eq!(
+            rows.iter().map(|row| row.source_row_id).collect::<Vec<_>>(),
+            vec![11, 15, 19, 30]
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_parts_after_limit_truncates_and_follow_up_continues() {
+        let db_path = unique_test_db_path("parts-limit");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        for id in 1..=10 {
+            insert_part_row_with_id(&db, id, &format!("msg-{id}"));
+        }
+
+        let reader = AgentTraceExportReader::new(&db);
+        let first_batch = reader
+            .read_parts_after(0, 3)
+            .expect("first limited read should succeed");
+        assert_eq!(
+            first_batch
+                .iter()
+                .map(|row| row.source_row_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+
+        let next_cursor = first_batch
+            .last()
+            .expect("first batch non-empty")
+            .source_row_id;
+        let second_batch = reader
+            .read_parts_after(next_cursor, 3)
+            .expect("follow-up read should succeed");
+        assert_eq!(
+            second_batch
+                .iter()
+                .map(|row| row.source_row_id)
+                .collect::<Vec<_>>(),
+            vec![4, 5, 6]
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_parts_after_returns_empty_at_or_beyond_max_id() {
+        let db_path = unique_test_db_path("parts-empty-tail");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        insert_part_row_with_id(&db, 1, "msg-1");
+
+        let reader = AgentTraceExportReader::new(&db);
+        assert!(reader
+            .read_parts_after(1, 500)
+            .expect("read at max id should succeed")
+            .is_empty());
+        assert!(reader
+            .read_parts_after(100, 500)
+            .expect("read beyond max id should succeed")
+            .is_empty());
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_parts_after_rejects_invalid_cursor_and_limit() {
+        let db_path = unique_test_db_path("parts-invalid");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let reader = AgentTraceExportReader::new(&db);
+
+        let cursor_error = reader
+            .read_parts_after(-1, 500)
+            .expect_err("negative cursor should error");
+        assert!(cursor_error.to_string().contains("cursor"));
+
+        let zero_limit_error = reader
+            .read_parts_after(0, 0)
+            .expect_err("zero limit should error");
+        assert!(zero_limit_error.to_string().contains("limit"));
+
+        let excess_limit_error = reader
+            .read_parts_after(0, AGENT_TRACE_EXPORT_BATCH_SIZE + 1)
+            .expect_err("excess limit should error");
+        assert!(excess_limit_error.to_string().contains("limit"));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_parts_after_rejects_row_above_safe_integer_bound() {
+        let db_path = unique_test_db_path("parts-unsafe-integer");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        db.execute(
+            "INSERT INTO parts (id, type, text, message_id, session_id, generated_at_unix_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            (1_i64, "text", "hello", "msg-1", "sess-1", JS_MAX_SAFE_INTEGER + 1),
+        )
+        .expect("direct part insert should succeed");
+
+        let reader = AgentTraceExportReader::new(&db);
+        let error = reader
+            .read_parts_after(0, 500)
+            .expect_err("row above safe-integer bound should error");
+        assert!(error.to_string().contains("JS-safe-integer"));
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn read_parts_after_performs_no_mutation() {
+        let db_path = unique_test_db_path("parts-no-mutation");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        insert_part_row_with_id(&db, 1, "msg-1");
+        insert_part_row_with_id(&db, 2, "msg-2");
+
+        let parts_before = row_count(&db, "parts");
+        let metadata_before = row_count(&db, "repository_metadata");
+
+        let reader = AgentTraceExportReader::new(&db);
+        reader
+            .read_parts_after(0, 500)
+            .expect("read should succeed");
+
+        assert_eq!(row_count(&db, "parts"), parts_before);
+        assert_eq!(row_count(&db, "repository_metadata"), metadata_before);
+
+        remove_test_db(&db_path);
     }
 }
