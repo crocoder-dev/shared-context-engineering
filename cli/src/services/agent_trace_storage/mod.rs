@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+use crate::services::agent_trace_db::repository::{RepositoryAgentTraceDb, RepositoryMetadata};
 use crate::services::checkout::{get_or_create_checkout_id, resolve_git_dir};
 use crate::services::default_paths::{
     agent_trace_db_path_for_repository, agent_trace_db_path_for_repository_at,
@@ -54,6 +54,10 @@ pub struct ResolvedAgentTraceStorage {
     pub db_path: PathBuf,
     /// Open repository-scoped Agent Trace database.
     pub db: RepositoryAgentTraceDb,
+    /// Physical database identity (`repository_id`/`source_instance_id`)
+    /// produced by the same verification/initialization call that opened
+    /// `db`.
+    pub metadata: RepositoryMetadata,
 }
 
 /// Resolves the repository-scoped Agent Trace storage for a checkout using
@@ -112,20 +116,21 @@ fn open_storage(
     // briefly race on SQLite metadata locks, so retry the fast-path/migrate
     // sequence a small bounded number of times.
     let repository_id = &repository_identity.identity.repository_id;
-    let db = open_repository_db_concurrently_safe(&db_path, repository_id)?;
+    let (db, metadata) = open_repository_db_concurrently_safe(&db_path, repository_id)?;
 
     Ok(ResolvedAgentTraceStorage {
         repository_identity,
         checkout_id,
         db_path,
         db,
+        metadata,
     })
 }
 
 fn open_repository_db_concurrently_safe(
     db_path: &Path,
     repository_id: &str,
-) -> Result<RepositoryAgentTraceDb> {
+) -> Result<(RepositoryAgentTraceDb, RepositoryMetadata)> {
     let mut last_error = None;
 
     for attempt in 1..=REPOSITORY_DB_INITIALIZATION_ATTEMPTS {
@@ -134,16 +139,16 @@ fn open_repository_db_concurrently_safe(
                 if db.ensure_schema_ready_for_hooks().is_err() {
                     db.repair_missing_repository_schema_migration_metadata()?;
                 }
-                db.verify_or_initialize_repository_metadata(repository_id)?;
-                Ok(db)
+                let metadata = db.verify_or_initialize_repository_metadata(repository_id)?;
+                Ok((db, metadata))
             });
 
         match fast_open {
-            Ok(db) => return Ok(db),
+            Ok(result) => return Ok(result),
             Err(fast_error) => match RepositoryAgentTraceDb::new_at(db_path) {
                 Ok(db) => {
-                    db.verify_or_initialize_repository_metadata(repository_id)?;
-                    return Ok(db);
+                    let metadata = db.verify_or_initialize_repository_metadata(repository_id)?;
+                    return Ok((db, metadata));
                 }
                 Err(init_error) => {
                     last_error = Some(anyhow::anyhow!(
@@ -366,6 +371,12 @@ mod tests {
             first.repository_identity.identity.repository_id,
             second.repository_identity.identity.repository_id
         );
+        assert_eq!(
+            first.metadata.repository_id,
+            first.repository_identity.identity.repository_id
+        );
+        assert_eq!(first.metadata, second.metadata);
+        assert!(!first.metadata.source_instance_id.trim().is_empty());
 
         std::fs::remove_dir_all(&state_root).expect("clean up state root");
         std::fs::remove_dir_all(&repo).expect("clean up repo");
