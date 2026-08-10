@@ -5,7 +5,7 @@ Module at `cli/src/services/agent_trace_storage/` (T04 of the `repository-scoped
 ## Public API
 
 - `AgentTraceStorageContext { repository_root, explicit_repository_id, repository_remote }` — borrowed inputs mirroring the `agent_trace.repository_id` / `agent_trace.repository_remote` config keys; callers pass already-resolved configuration values. Active hook runtime and Agent Trace lifecycle setup/health resolve these values through the config service before constructing the storage context.
-- `ResolvedAgentTraceStorage { repository_identity, checkout_id, db_path, db }` — resolved repository identity (`ResolvedRepositoryIdentity` including source provenance), the checkout ID for diagnostics (never persisted on Agent Trace rows), the repository-scoped DB path, and the open `RepositoryAgentTraceDb`.
+- `ResolvedAgentTraceStorage { repository_identity, checkout_id, db_path, db, metadata }` — resolved repository identity (`ResolvedRepositoryIdentity` including source provenance), the checkout ID for diagnostics (never persisted on Agent Trace rows), the repository-scoped DB path, the open `RepositoryAgentTraceDb`, and the typed `RepositoryMetadata { repository_id, source_instance_id }` produced by the same verification/initialization call that opened `db` (see [../sce/agent-trace-db.md](../sce/agent-trace-db.md) for the `source_instance_id` identity contract).
 - `resolve_agent_trace_storage(context)` — production entrypoint using the canonical state root from the default-path catalog.
 - `resolve_agent_trace_storage_at_state_root(context, state_root)` — resolution core against an explicit state root; used by tests to exercise the full path without touching the real user state directory.
 
