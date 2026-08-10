@@ -4,6 +4,8 @@ pub mod agent_trace_db;
 pub mod agent_trace_export;
 #[allow(dead_code)]
 pub mod agent_trace_storage;
+#[allow(dead_code)]
+pub mod agent_trace_sync;
 pub mod app_support;
 pub mod auth;
 pub mod auth_command;
