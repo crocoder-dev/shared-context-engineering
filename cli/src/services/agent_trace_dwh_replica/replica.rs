@@ -28,7 +28,7 @@ use crate::services::{
 ///
 /// The replica never discovers or persists these values itself: callers
 /// resolve `local_path` from the canonical
-/// `agent_trace_dwh_replica_path_for_repository` helper and are responsible
+/// `agent_trace_dwh_replica_path_for_dwh` helper and are responsible
 /// for acquiring `database_url`/`auth_token` themselves.
 pub struct AgentTraceDwhReplicaConfig {
     pub local_path: PathBuf,
@@ -249,8 +249,9 @@ fn initialize_empty_schema(
 }
 
 /// Derive the bridge-lock path for an explicit replica path: the replica
-/// path's file name with `.bridge-lock` appended, mirroring
-/// `default_paths::agent_trace_dwh_bridge_lock_path_for_repository`.
+/// path's file name with `.bridge-lock` appended. This is the sole source of
+/// the replica's bridge-lock identity; `default_paths` derives no lock path
+/// of its own.
 fn bridge_lock_path_for_replica(local_path: &Path) -> PathBuf {
     let mut file_name = local_path
         .file_name()
