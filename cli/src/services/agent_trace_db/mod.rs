@@ -147,7 +147,8 @@ pub struct AgentTraceInsert<'a> {
 }
 
 /// Message role constraint for the `messages` table.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum MessageRole {
     User,
     Assistant,
