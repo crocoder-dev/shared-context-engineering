@@ -22,17 +22,17 @@ This is purely additive: no existing writer, schema, or hook behavior changes.
 
 ## Acceptance criteria
 
-- [ ] AC1: `AgentTraceExportReader::read_messages_after(cursor, limit)` returns owned `AgentTraceMessageExportRow` values for `messages.id > cursor`, ordered by `id ASC`, capped at `limit`, with `sourceRowId` equal to the local `id` unmodified.
+- [x] AC1: `AgentTraceExportReader::read_messages_after(cursor, limit)` returns owned `AgentTraceMessageExportRow` values for `messages.id > cursor`, ordered by `id ASC`, capped at `limit`, with `sourceRowId` equal to the local `id` unmodified.
   - Validate: `cargo test -p shared-context-engineering --lib services::agent_trace_export`
-- [ ] AC2: The same contract holds for `read_parts_after`, `read_diff_traces_after`, and `read_agent_traces_after`, including exact column mapping, nullable-field preservation as `Option<T>` → JSON `null`, and no gap/contiguity assumption.
+- [x] AC2: The same contract holds for `read_parts_after`, `read_diff_traces_after`, and `read_agent_traces_after`, including exact column mapping, nullable-field preservation as `Option<T>` → JSON `null`, and no gap/contiguity assumption.
   - Validate: `cargo test -p shared-context-engineering --lib services::agent_trace_export`
-- [ ] AC3: Every export row type serializes via `serde_json` to the exact camelCase shape already shipped by the control-plane ingestion contract (field names and value shapes as specified in this plan's DTO sections).
+- [x] AC3: Every export row type serializes via `serde_json` to the exact camelCase shape already shipped by the control-plane ingestion contract (field names and value shapes as specified in this plan's DTO sections).
   - Validate: `cargo test -p shared-context-engineering --lib services::agent_trace_export::tests` (serialization contract tests)
-- [ ] AC4: Readers reject `cursor < 0`, `limit == 0`, and `limit > AGENT_TRACE_EXPORT_BATCH_SIZE` (500) with a clear error and no query execution; readers reject rows whose exportable numeric fields fall outside `0..=9_007_199_254_740_991` with a clear export error instead of truncating/casting.
+- [x] AC4: Readers reject `cursor < 0`, `limit == 0`, and `limit > AGENT_TRACE_EXPORT_BATCH_SIZE` (500) with a clear error and no query execution; readers reject rows whose exportable numeric fields fall outside `0..=9_007_199_254_740_991` with a clear export error instead of truncating/casting.
   - Validate: `cargo test -p shared-context-engineering --lib services::agent_trace_export::tests` (validation tests)
-- [ ] AC5: Invoking any reader method performs no database mutation (no inserts, no cursor table, no metadata writes).
+- [x] AC5: Invoking any reader method performs no database mutation (no inserts, no cursor table, no metadata writes).
   - Validate: inspection of `AgentTraceExportReader` (read-only `SELECT` methods only, no `INSERT`/`UPDATE`/`DDL`) plus a test asserting row counts/`repository_metadata` are unchanged after a read.
-- [ ] AC6: A `RepositoryAgentTraceDb` opened through the existing repository storage resolver (from PR #197) can be passed directly into `AgentTraceExportReader::new(&storage.db)` and read at least one stream, proving the composition point without the reader owning or generating `source_instance_id`.
+- [x] AC6: A `RepositoryAgentTraceDb` opened through the existing repository storage resolver (from PR #197) can be passed directly into `AgentTraceExportReader::new(&storage.db)` and read at least one stream, proving the composition point without the reader owning or generating `source_instance_id`.
   - Validate: `cargo test -p shared-context-engineering --lib services::agent_trace_export::tests::source_instance_integration` (or equivalently named integration test)
 
 ### Full validation
@@ -98,14 +98,48 @@ This is purely additive: no existing writer, schema, or hook behavior changes.
   - Verification run: `nix flake check` (repository policy blocks direct `cargo test`; the `cli-tests` flake check runs the full workspace suite including the new reader tests) — all 3 checks (`cli-tests`, `cli-clippy`, `cli-fmt`) passed.
   - Deviations: none.
 
-- [ ] T05: `Add source-instance storage-resolver integration test and document the export reader boundary` (status:todo)
+- [x] T05: `Add source-instance storage-resolver integration test and document the export reader boundary` (status:done)
   - Task ID: T05
   - Goal: Add one integration-style test that resolves `ResolvedAgentTraceStorage` through the existing PR #197 storage resolver (`resolve_agent_trace_storage_at_state_root` or equivalent test entrypoint), asserts `storage.metadata.repository_id` and `storage.metadata.source_instance_id` remain available, constructs `AgentTraceExportReader::new(&storage.db)`, and successfully reads at least one stream — proving the `ResolvedAgentTraceStorage → metadata + db → AgentTraceExportReader` composition point without the reader generating or owning `source_instance_id`. Then document the new boundary: create or extend Agent Trace context documentation describing the layering (`SCE local source DB → incremental export reader → future control-plane client`), the fact that `repository_id`/`source_instance_id` identify the source while `table.id` is the per-stream progress marker, the exact `WHERE id > cursor ORDER BY id ASC LIMIT batch_size` query shape for all four streams, and an explicit statement that there is no local sync cursor, no `agent-trace-sync.db`, no Turso Sync, no ETL, and no DWH. Update `context/context-map.md` if a new domain file is added.
   - Boundaries (in/out of scope): In — the one integration test, and durable-context documentation edits/additions. Out — any further reader behavior changes; any control-plane client code.
   - Dependencies: T04
   - Done when: the integration test passes, durable context documents the export-reader boundary and the four exact stream queries, and `nix run .#pkl-check-generated` plus `nix flake check` both pass.
   - Verification notes (commands or checks): `cargo test -p shared-context-engineering --lib services::agent_trace_export`; `nix run .#pkl-check-generated`; `nix flake check`
+  - Evidence: Added `source_instance_integration` to `cli/src/services/agent_trace_export/mod.rs`'s test module (plus local `unique_storage_temp_dir`/`init_git_repo_with_remote`/`git` helpers mirroring `agent_trace_storage`'s test pattern): resolves `ResolvedAgentTraceStorage` via `resolve_agent_trace_storage_at_state_root`, asserts `storage.metadata.repository_id` and `storage.metadata.source_instance_id` are non-empty, builds `AgentTraceExportReader::new(&storage.db)`, seeds one `messages` row via direct SQL, and reads it back through `read_messages_after`. Documented the export-reader boundary in a new `context/sce/agent-trace-export-readers.md` (layering diagram, storage-resolver composition point, identity-vs-progress-marker distinction, the four query shapes/validation rules, and the explicit no-local-cursor/no-`agent-trace-sync.db`/no-Turso-Sync/no-ETL/no-DWH statement), trimmed `context/sce/agent-trace-db.md`'s "Export reader" section to a pointer to keep it under the file-hygiene line budget, and added a `context/context-map.md` entry for the new domain file.
+  - Verification run: `nix flake check` — all 3 checks (`cli-tests`, `cli-clippy`, `cli-fmt`) passed (including the new `source_instance_integration` test); `nix run .#pkl-check-generated` — passed (101 files, ephemeral generation matched inventory).
+  - Deviations: none.
 
 ## Open questions
 
 None. The change request is fully specified end-to-end (module boundary, DTO shapes, query semantics, validation rules, and test coverage), and it does not duplicate or extend PR #197's identity work — it consumes `RepositoryMetadata` as-is and adds a strictly read-only, additive seam.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-08-10
+
+### Commands run
+
+- `nix run .#pkl-check-generated` -> exit 0 (Ephemeral Pkl generation passed: 101 files, inventory sha256 766f5111af2434d6c345d07ae0aeb8b276aeeb94e7ecb7d39688c3f1267c8971)
+- `nix flake check` -> exit 0 (all checks passed, including `cli-tests`, `cli-clippy`, `cli-fmt`; `cli-tests` derivation built and its store output verified present)
+
+### Scaffolding removed
+
+- None.
+
+### Success-criteria verification
+
+- [x] AC1: `read_messages_after` cursor/order/limit/`sourceRowId` contract -> `services::agent_trace_export::tests::read_messages_after_returns_rows_after_cursor_in_order`, `..._returns_non_contiguous_ids`, `..._limit_truncates_and_follow_up_continues`, `..._returns_empty_at_or_beyond_max_id` all `ok` in `cli-tests`
+- [x] AC2: same contract for `read_parts_after`/`read_diff_traces_after`/`read_agent_traces_after`, nullable-as-null, no contiguity assumption -> corresponding `read_parts_after_*`, `read_diff_traces_after_*`, `read_agent_traces_after_*` tests (incl. `..._preserves_populated_nullable_fields`, `..._preserves_null_remote_url`) all `ok`
+- [x] AC3: exact camelCase serialization contract -> `message_export_row_serializes_to_camel_case_contract`, `message_export_row_serializes_user_role_lowercase`, `part_export_row_serializes_to_camel_case_contract`, `diff_trace_export_row_serializes_with_all_fields_populated`, `diff_trace_export_row_serializes_nullable_fields_as_null`, `agent_trace_export_row_serializes_with_remote_url_populated`, `agent_trace_export_row_serializes_with_remote_url_null` all `ok`
+- [x] AC4: cursor/limit/safe-integer rejection -> `validate_cursor_rejects_negative`, `validate_limit_rejects_zero`, `validate_limit_rejects_above_batch_size`, `validate_js_safe_integer_rejects_negative`, `validate_js_safe_integer_rejects_above_max_safe_integer`, plus per-stream `read_*_after_rejects_row_above_safe_integer_bound` / `read_*_after_rejects_invalid_cursor_and_limit` all `ok`
+- [x] AC5: no database mutation -> inspection of `cli/src/services/agent_trace_export/mod.rs`: all four reader methods issue only `SELECT_MESSAGES_AFTER_SQL` / `SELECT_PARTS_AFTER_SQL` / `SELECT_DIFF_TRACES_AFTER_SQL` / `SELECT_AGENT_TRACES_AFTER_SQL` constants (no `INSERT`/`UPDATE`/DDL outside `#[cfg(test)]` seeding helpers); confirmed by `read_messages_after_performs_no_mutation`, `read_parts_after_performs_no_mutation`, `read_diff_traces_after_performs_no_mutation`, `read_agent_traces_after_performs_no_mutation` all `ok`
+- [x] AC6: storage-resolver composition point -> `services::agent_trace_export::tests::source_instance_integration` `ok`
+
+### Failed checks and follow-ups
+
+None.
+
+### Residual risks
+
+- None identified.
