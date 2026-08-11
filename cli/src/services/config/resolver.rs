@@ -26,7 +26,7 @@ const DEFAULT_TIMEOUT_MS: u64 = 30000;
 pub(crate) const DEFAULT_AGENT_TRACE_REPOSITORY_REMOTE: &str = "origin";
 pub(crate) const PRECEDENCE_DESCRIPTION: &str = "flags > env > config file > defaults";
 const WORKOS_CLIENT_ID_ENV: &str = "WORKOS_CLIENT_ID";
-const WORKOS_CLIENT_ID_BAKED_DEFAULT: &str = "client_sce_default";
+const WORKOS_CLIENT_ID_BAKED_DEFAULT: &str = "client_01KZE4DDA8HM1JHZGF2QCF49RP";
 
 pub(crate) const WORKOS_CLIENT_ID_KEY: AuthConfigKeySpec = AuthConfigKeySpec {
     config_key: "workos_client_id",

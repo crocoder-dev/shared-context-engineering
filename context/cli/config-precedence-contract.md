@@ -46,7 +46,7 @@ Supported auth-adjacent runtime keys can participate in one shared key-declared 
 - `workos_client_id`, which resolves as:
   1. environment value (`WORKOS_CLIENT_ID`)
   2. config file value (`workos_client_id`)
-  3. baked default (`client_sce_default`)
+  3. baked default (`client_01KZE4DDA8HM1JHZGF2QCF49RP`)
 - `control_plane_base_url`, the base URL of the control-plane Agent Trace ingestion API, which resolves as:
   1. environment value (`SCE_CONTROL_PLANE_BASE_URL`)
   2. config file value (`control_plane_base_url`)
