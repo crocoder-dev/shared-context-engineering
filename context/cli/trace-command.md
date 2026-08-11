@@ -78,14 +78,15 @@ Text output includes `Repository: <repository-id>`, then checkout ID, database p
 
 Text rendering shows discovery summary, totals, and a `By database` table with `Alias`, `Scope`, `ID`, `Status`, and count columns. JSON entries use `scope` (`repository`) and `identifier`.
 
-### Sync — `services::trace::sync`
+### Sync — `services::trace::sync`, `render_sync`
 
 `run_current_sync(repo_root)` resolves the current repository's Agent Trace storage through the same `agent_trace_storage` path `sce trace status` uses (not the hook-runtime resolver), builds an `AuthenticatedControlPlaneClient` from the resolved `control_plane_base_url`/`workos_client_id` config, calls the control-plane `/agent-trace/ingestion/state` endpoint once, then synchronizes the four independent capture streams (`messages`, `parts`, `diff_traces`, `agent_traces`, in that fixed order) via the local `AgentTraceExportReader` and the shared per-stream reconciliation engine, producing an `AgentTraceSyncReport`. A genuinely ambiguous batch outcome (`5xx`, transport failure, invalid response) reconciles by refetching `/state`; a terminal control-plane failure (missing/invalid credentials, `400`, `403`) fails the stream immediately without an extra network call, so a `403` never mutates local repository metadata or retries. No local sync cursor, cursor file, or database is created — every invocation starts from the authoritative `/state` cursors, so repeated runs are naturally incremental.
 
-Command-surface wiring (`TraceSubcommand::Sync`, dispatch in `TraceCommand::execute`) is complete; the documented concise text/JSON output layout is not yet implemented; `TraceCommand::execute` currently emits a provisional `AgentTraceSyncReport` debug dump for `sce trace sync`.
+`render_sync::render(report, format)` renders the converged `AgentTraceSyncReport`. Text output is a `style::heading("Agent Trace sync complete.")` line, `Repository ID:`/`Source instance ID:` lines, then a padded table with one row per stream (`Stream`, `Uploaded`, `Final cursor`) in the fixed `messages → parts → diff_traces → agent_traces` order — no per-batch or per-row detail is printed. JSON output carries `status`, `command`, `subcommand`, `repositoryId`, `sourceInstanceId`, and `streams.{messages,parts,diffTraces,agentTraces}`, each with `uploaded`/`initialCursor`/`finalCursor`/`batches`; the JSON stream keys are camelCase (`diffTraces`/`agentTraces`) even though the internal `StreamSyncReports` struct fields are `diff_traces`/`agent_traces`. `TraceCommand::execute` dispatches `TraceSubcommandRequest::Sync { format }` to `render_sync::render`, completing the command surface end to end.
 
 ## Related context
 
+- [agent-trace-sync-command.md](agent-trace-sync-command.md) — composed local-to-control-plane sync architecture, user flow, no-local-persistence invariants, and recovery semantics.
 - [agent-trace-storage.md](agent-trace-storage.md) — repository-scoped storage resolver and active DB path contract.
 - [checkout-identity.md](checkout-identity.md) — checkout identity diagnostics and never-touch on-disk handling of pre-migration DB files.
 - [default-path-catalog.md](default-path-catalog.md) — Agent Trace DB path ownership.

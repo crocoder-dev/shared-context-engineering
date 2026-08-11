@@ -5,6 +5,7 @@ pub mod discovery;
 pub mod render_list;
 pub mod render_status;
 pub mod render_status_all;
+pub mod render_sync;
 pub mod shell;
 pub mod stats;
 pub mod status;

@@ -4,6 +4,7 @@ use crate::services::trace::discovery::discover_agent_trace_dbs;
 use crate::services::trace::render_list;
 use crate::services::trace::render_status;
 use crate::services::trace::render_status_all;
+use crate::services::trace::render_sync;
 use crate::services::trace::shell::{run_agent_trace_db_shell, ShellTarget};
 use crate::services::trace::status::{resolve_current_status, StatusErrorOrRuntime};
 use crate::services::trace::status_all::aggregate_current_status_all;
@@ -100,14 +101,13 @@ impl TraceCommand {
                 render_status::render(&report, *format)
                     .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))
             }
-            TraceSubcommandRequest::Sync { format: _format } => {
+            TraceSubcommandRequest::Sync { format } => {
                 let repo_root = current_repo_root(context)?;
 
                 let report = run_current_sync(&repo_root).map_err(classify_sync_error)?;
 
-                // Provisional rendering: the documented text/JSON layout is T06's
-                // responsibility and will replace this once implemented.
-                Ok(format!("{report:#?}"))
+                render_sync::render(&report, *format)
+                    .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))
             }
         }
     }
