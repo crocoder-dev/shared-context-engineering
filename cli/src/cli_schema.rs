@@ -253,6 +253,14 @@ pub enum TraceSubcommand {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
+
+    #[command(
+        about = "Synchronize the current repository's Agent Trace database with the control plane"
+    )]
+    Sync {
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]

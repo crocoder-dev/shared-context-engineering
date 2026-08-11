@@ -7,6 +7,7 @@ use crate::services::trace::render_status_all;
 use crate::services::trace::shell::{run_agent_trace_db_shell, ShellTarget};
 use crate::services::trace::status::{resolve_current_status, StatusErrorOrRuntime};
 use crate::services::trace::status_all::aggregate_current_status_all;
+use crate::services::trace::sync::{run_current_sync, TraceSyncError};
 use crate::services::trace::{
     resolve_agent_trace_db_identifier, TraceRequest, TraceSubcommandRequest,
 };
@@ -34,6 +35,11 @@ fn classify_status_error(err: StatusErrorOrRuntime) -> ClassifiedError {
             ClassifiedError::runtime(format!("{runtime_err:#}"))
         }
     }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn classify_sync_error(err: TraceSyncError) -> ClassifiedError {
+    ClassifiedError::runtime(format!("{err}"))
 }
 
 impl TraceCommand {
@@ -93,6 +99,15 @@ impl TraceCommand {
 
                 render_status::render(&report, *format)
                     .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))
+            }
+            TraceSubcommandRequest::Sync { format: _format } => {
+                let repo_root = current_repo_root(context)?;
+
+                let report = run_current_sync(&repo_root).map_err(classify_sync_error)?;
+
+                // Provisional rendering: the documented text/JSON layout is T06's
+                // responsibility and will replace this once implemented.
+                Ok(format!("{report:#?}"))
             }
         }
     }

@@ -8,6 +8,7 @@ Lives under `cli/src/services/trace/` with these subcommands:
 - `sce trace db shell [repository-id-or-alias]` — open an embedded in-process SQL shell for the current repository DB by default, or a discovered repository DB by alias/repository ID.
 - `sce trace status` — render counts and last-activity for the current repository-scoped DB.
 - `sce trace status --all` — aggregate counts across every discovered repository DB.
+- `sce trace sync [--format text|json]` — synchronize the current repository's Agent Trace DB with the control-plane ingestion API (see [Sync — `services::trace::sync`](#sync--servicestracesync) below).
 
 `sce trace` operates only on repository-scoped DBs; there is no `--legacy` flag. The `retire-legacy-agent-trace-db` plan removed checkout-scoped discovery/status/shell access. Any pre-migration `<state_root>/sce/agent-trace-*.db` files left on disk are never touched by SCE and are no longer inspectable through the CLI.
 
@@ -76,6 +77,12 @@ Text output includes `Repository: <repository-id>`, then checkout ID, database p
 `aggregate_current_status_all()` resolves `<state_root>/sce/` and delegates to repository discovery. It runs `collect_agent_trace_db_stats` on each ready DB and accumulates totals for `diff_traces`, `messages`, `parts`, `agent_traces`, `post_commit_patch_intersections`, and max `last_activity`. Skipped DBs are excluded from totals but included in discovery summary and breakdown rows.
 
 Text rendering shows discovery summary, totals, and a `By database` table with `Alias`, `Scope`, `ID`, `Status`, and count columns. JSON entries use `scope` (`repository`) and `identifier`.
+
+### Sync — `services::trace::sync`
+
+`run_current_sync(repo_root)` resolves the current repository's Agent Trace storage through the same `agent_trace_storage` path `sce trace status` uses (not the hook-runtime resolver), builds an `AuthenticatedControlPlaneClient` from the resolved `control_plane_base_url`/`workos_client_id` config, calls the control-plane `/agent-trace/ingestion/state` endpoint once, then synchronizes the four independent capture streams (`messages`, `parts`, `diff_traces`, `agent_traces`, in that fixed order) via the local `AgentTraceExportReader` and the shared per-stream reconciliation engine, producing an `AgentTraceSyncReport`. A genuinely ambiguous batch outcome (`5xx`, transport failure, invalid response) reconciles by refetching `/state`; a terminal control-plane failure (missing/invalid credentials, `400`, `403`) fails the stream immediately without an extra network call, so a `403` never mutates local repository metadata or retries. No local sync cursor, cursor file, or database is created — every invocation starts from the authoritative `/state` cursors, so repeated runs are naturally incremental.
+
+Command-surface wiring (`TraceSubcommand::Sync`, dispatch in `TraceCommand::execute`) is complete; the documented concise text/JSON output layout is not yet implemented; `TraceCommand::execute` currently emits a provisional `AgentTraceSyncReport` debug dump for `sce trace sync`.
 
 ## Related context
 

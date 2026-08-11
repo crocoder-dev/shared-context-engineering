@@ -9,6 +9,7 @@ pub mod shell;
 pub mod stats;
 pub mod status;
 pub mod status_all;
+pub mod sync;
 
 pub const NAME: &str = "trace";
 
@@ -25,6 +26,7 @@ pub enum TraceSubcommandRequest {
     DbList { format: OutputFormat },
     DbShell { identifier: Option<String> },
     Status { all: bool, format: OutputFormat },
+    Sync { format: OutputFormat },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
