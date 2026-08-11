@@ -35,7 +35,7 @@ pub(crate) const WORKOS_CLIENT_ID_KEY: AuthConfigKeySpec = AuthConfigKeySpec {
 };
 
 const CONTROL_PLANE_BASE_URL_ENV: &str = "SCE_CONTROL_PLANE_BASE_URL";
-const CONTROL_PLANE_BASE_URL_BAKED_DEFAULT: &str = "https://sce.crocoder.dev";
+const CONTROL_PLANE_BASE_URL_BAKED_DEFAULT: &str = "https://sce.crocoderlab.dev";
 
 pub(crate) const CONTROL_PLANE_BASE_URL_KEY: AuthConfigKeySpec = AuthConfigKeySpec {
     config_key: "control_plane_base_url",

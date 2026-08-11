@@ -50,7 +50,9 @@ Supported auth-adjacent runtime keys can participate in one shared key-declared 
 - `control_plane_base_url`, the base URL of the control-plane Agent Trace ingestion API, which resolves as:
   1. environment value (`SCE_CONTROL_PLANE_BASE_URL`)
   2. config file value (`control_plane_base_url`)
-  3. baked default (`https://sce.crocoder.dev`)
+  3. baked default (`https://sce.crocoderlab.dev`)
+
+The control-plane default is separate from the config schema declaration (`https://sce.crocoder.dev/config.json`) and from the SCE web URL owner used for Agent Trace links.
 
 When a supported auth-adjacent key omits a baked default, the same resolver still reports `value: null` / `(unset)` with no resolved source when both env and config inputs are absent.
 
