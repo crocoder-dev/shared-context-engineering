@@ -712,7 +712,13 @@ mod tests {
         let db_path = unique_test_db_path("messages-limit");
         let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
         for id in 1..=10 {
-            insert_message_row_with_id(&db, id, &format!("msg-{id}"));
+            db.insert_message(InsertMessageInsert {
+                session_id: "sess-1".to_string(),
+                message_id: format!("msg-{id}"),
+                role: MessageRole::Assistant,
+                generated_at_unix_ms: 1_000 + id,
+            })
+            .expect("seed message should insert");
         }
 
         let reader = AgentTraceExportReader::new(&db);

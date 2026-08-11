@@ -273,9 +273,11 @@ where
 }
 
 /// A control-plane failure that cannot be resolved by reconciling with
-/// `/state`: missing/invalid credentials, an unrecoverable `401`, a `400`, or
-/// a `403` ownership rejection. `5xx`, transport failures, and invalid batch
-/// responses are genuinely ambiguous and reconcile via a real `/state` call.
+/// `/state`: missing/invalid credentials, an unrecoverable `401`, a `400`, a
+/// `403` ownership rejection, or a terminal protocol/API mismatch
+/// (`404`/`405`/`415`/`422`, `ControlPlaneError::Protocol`). `5xx`, transport
+/// failures, and invalid batch responses are genuinely ambiguous and
+/// reconcile via a real `/state` call.
 fn is_stream_terminal(error: &ControlPlaneError) -> bool {
     matches!(
         error,
@@ -284,6 +286,7 @@ fn is_stream_terminal(error: &ControlPlaneError) -> bool {
             | ControlPlaneError::BadRequest(_)
             | ControlPlaneError::Forbidden(_)
             | ControlPlaneError::Storage(_)
+            | ControlPlaneError::Protocol { .. }
     )
 }
 
@@ -529,6 +532,136 @@ mod tests {
                 }),
             "sync must not create any local cursor file/database/table on disk"
         );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn invalid_state_cursor_fails_before_any_batch_request() {
+        let db_path = unique_test_db_path("invalid-cursor");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let metadata = db
+            .verify_or_initialize_repository_metadata("repo-invalid-cursor")
+            .expect("metadata should initialize");
+        seed_one_row_per_stream(&db);
+
+        let server = TestHttpServer::start();
+        // `agentTraces` is one past JS_MAX_SAFE_INTEGER, outside the wire
+        // contract's representable cursor range.
+        server.queue_response(CannedResponse::json(
+            200,
+            &state_response(0, 0, 0, 9_007_199_254_740_992),
+        ));
+        let client = test_client(&server);
+
+        let error = run_sync_against(
+            &metadata.repository_id,
+            &metadata.source_instance_id,
+            &db,
+            &client,
+        )
+        .expect_err("out-of-range /state cursor should fail sync");
+
+        assert!(matches!(
+            error,
+            TraceSyncError::ControlPlane(ControlPlaneError::InvalidResponse(_))
+        ));
+        assert_eq!(
+            server.call_count(),
+            1,
+            "an invalid /state cursor must fail before any /batch request is sent"
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn terminal_batch_status_fails_without_state_reconciliation() {
+        let db_path = unique_test_db_path("terminal-batch");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let metadata = db
+            .verify_or_initialize_repository_metadata("repo-terminal-batch")
+            .expect("metadata should initialize");
+        seed_one_row_per_stream(&db);
+
+        let server = TestHttpServer::start();
+        server.queue_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
+        server.queue_response(CannedResponse::json(
+            404,
+            &json!({"message": "unknown ingestion route"}),
+        ));
+        let client = test_client(&server);
+
+        let error = run_sync_against(
+            &metadata.repository_id,
+            &metadata.source_instance_id,
+            &db,
+            &client,
+        )
+        .expect_err("a terminal 404 /batch response should fail the sync");
+
+        assert!(
+            matches!(
+                error,
+                TraceSyncError::Stream {
+                    stream: "messages",
+                    ..
+                }
+            ),
+            "unexpected error: {error:?}"
+        );
+        assert_eq!(
+            server.call_count(),
+            2,
+            "a terminal /batch status must fail immediately with no /state refetch and no resend"
+        );
+
+        remove_test_db(&db_path);
+    }
+
+    #[test]
+    fn malformed_2xx_batch_response_still_reconciles_via_state() {
+        let db_path = unique_test_db_path("malformed-batch");
+        let db = RepositoryAgentTraceDb::new_at(&db_path).expect("test DB should open");
+        let metadata = db
+            .verify_or_initialize_repository_metadata("repo-malformed-batch")
+            .expect("metadata should initialize");
+        seed_one_row_per_stream(&db);
+
+        let server = TestHttpServer::start();
+        server.queue_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
+        // Syntactically successful but undecodable as `AgentTraceIngestionBatchResponse`.
+        server.queue_response(CannedResponse::json(200, &json!({"unexpected": "shape"})));
+        // Reconciliation refetch: cursor unchanged, so the batch is resent.
+        server.queue_response(CannedResponse::json(200, &state_response(0, 0, 0, 0)));
+        server.queue_response(CannedResponse::json(200, &batch_response(1)));
+        server.queue_response(CannedResponse::json(200, &batch_response(1)));
+        server.queue_response(CannedResponse::json(200, &batch_response(1)));
+        server.queue_response(CannedResponse::json(200, &batch_response(1)));
+        let client = test_client(&server);
+
+        let report = run_sync_against(
+            &metadata.repository_id,
+            &metadata.source_instance_id,
+            &db,
+            &client,
+        )
+        .expect("an undecodable 2xx /batch body should still reconcile via /state and succeed");
+
+        assert_eq!(
+            server.call_count(),
+            7,
+            "an undecodable 2xx /batch body must reconcile via /state before resending, not fail immediately"
+        );
+        for stream in [
+            report.streams.messages,
+            report.streams.parts,
+            report.streams.diff_traces,
+            report.streams.agent_traces,
+        ] {
+            assert_eq!(stream.uploaded, 1);
+            assert_eq!(stream.final_cursor, 1);
+        }
 
         remove_test_db(&db_path);
     }

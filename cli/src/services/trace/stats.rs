@@ -221,18 +221,16 @@ mod tests {
             generated_at_unix_ms: 1_100,
         })
         .expect("message 2");
-        let parts = ["p1", "p2", "p3"]
-            .iter()
-            .enumerate()
-            .map(|(i, part_id)| InsertPartInsert {
+        for (i, part_id) in ["p1", "p2", "p3"].iter().enumerate() {
+            db.insert_part(InsertPartInsert {
                 part_type: PartType::Text,
                 text: format!("part {part_id}"),
                 session_id: "s1".into(),
                 message_id: if i < 2 { "m1".into() } else { "m2".into() },
                 generated_at_unix_ms: 1_000 + i64::try_from(i).expect("part index fits in i64"),
             })
-            .collect();
-        db.insert_parts(parts).expect("parts");
+            .expect("part");
+        }
 
         latest_diff_ms
     }
