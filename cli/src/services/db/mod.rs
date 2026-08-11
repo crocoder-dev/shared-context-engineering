@@ -179,6 +179,29 @@ fn build_current_thread_runtime(db_name: &str) -> Result<tokio::runtime::Runtime
         })
 }
 
+/// Drives `fut` to completion on `runtime`, isolating it on a dedicated
+/// thread when the calling thread already has an active Tokio runtime
+/// context.
+///
+/// `Runtime::block_on` panics ("Cannot start a runtime from within a
+/// runtime") if invoked directly from a thread that is already driving
+/// another runtime, which happens when async callers (for example, Agent
+/// Trace sync's control-plane client) reach into a `TursoDb`/`EncryptedTursoDb`
+/// synchronously. Tokio's "already in a runtime" check is thread-local, so
+/// running `block_on` on a fresh scoped thread sidesteps it safely.
+fn block_on_isolated<T, F>(runtime: &tokio::runtime::Runtime, fut: F) -> T
+where
+    F: std::future::Future<Output = T> + Send,
+    T: Send,
+{
+    if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::scope(|scope| scope.spawn(|| runtime.block_on(fut)).join())
+            .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+    } else {
+        runtime.block_on(fut)
+    }
+}
+
 fn run_embedded_migrations(
     conn: &turso::Connection,
     runtime: &tokio::runtime::Runtime,
@@ -203,7 +226,7 @@ fn ensure_migrations_table(
     runtime: &tokio::runtime::Runtime,
     db_name: &str,
 ) -> Result<()> {
-    runtime.block_on(async {
+    block_on_isolated(runtime, async {
         conn.execute(MIGRATIONS_TABLE_SQL, ())
             .await
             .map_err(|e| anyhow::anyhow!("{db_name} migration metadata setup failed: {e}"))
@@ -218,7 +241,7 @@ fn is_migration_applied(
     db_name: &str,
     id: &str,
 ) -> Result<bool> {
-    runtime.block_on(async {
+    block_on_isolated(runtime, async {
         let mut rows = conn.query(SELECT_MIGRATION_SQL, (id,)).await.map_err(|e| {
             anyhow::anyhow!("{db_name} migration metadata query failed for {id}: {e}")
         })?;
@@ -236,7 +259,7 @@ fn apply_migration(
     id: &str,
     sql: &str,
 ) -> Result<()> {
-    runtime.block_on(async {
+    block_on_isolated(runtime, async {
         // Migration files may contain multiple statements (the repository
         // Agent Trace baseline is one multi-statement schema file), so batch
         // execution is required; `execute` would stop after the first
@@ -396,7 +419,7 @@ impl<M: DbSpec> TursoDb<M> {
             &operation_name,
             CONNECTION_OPEN_RETRY_HINT,
             |_| {
-                runtime.block_on(async {
+                block_on_isolated(&runtime, async {
                     let path_str = db_path.to_str().ok_or_else(|| {
                         anyhow::anyhow!("invalid UTF-8 in database path: {}", db_path.display())
                     })?;
@@ -441,7 +464,7 @@ impl<M: DbSpec> TursoDb<M> {
             &operation_name,
             QUERY_RETRY_HINT,
             |_| {
-                self.core.runtime.block_on(async {
+                block_on_isolated(&self.core.runtime, async {
                     self.core
                         .conn
                         .execute(sql, params.clone())
@@ -472,7 +495,7 @@ impl<M: DbSpec> TursoDb<M> {
             &operation_name,
             QUERY_RETRY_HINT,
             |_| {
-                self.core.runtime.block_on(async {
+                block_on_isolated(&self.core.runtime, async {
                     self.core
                         .conn
                         .query(sql, params.clone())
@@ -500,7 +523,7 @@ impl<M: DbSpec> TursoDb<M> {
             &operation_name,
             QUERY_RETRY_HINT,
             |_| {
-                self.core.runtime.block_on(async {
+                block_on_isolated(&self.core.runtime, async {
                     let mut rows =
                         self.core
                             .conn
@@ -554,7 +577,7 @@ impl<M: DbSpec> TursoDb<M> {
             &operation_name,
             QUERY_RETRY_HINT,
             |_| {
-                self.core.runtime.block_on(async {
+                block_on_isolated(&self.core.runtime, async {
                     let mut rows =
                         self.core
                             .conn
@@ -701,7 +724,7 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
             &operation_name,
             CONNECTION_OPEN_RETRY_HINT,
             |_| {
-                runtime.block_on(async {
+                block_on_isolated(&runtime, async {
                     let path_str = db_path.to_str().ok_or_else(|| {
                         anyhow::anyhow!("invalid UTF-8 in database path: {}", db_path.display())
                     })?;
@@ -759,7 +782,7 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
             &operation_name,
             QUERY_RETRY_HINT,
             |_| {
-                self.core.runtime.block_on(async {
+                block_on_isolated(&self.core.runtime, async {
                     self.core
                         .conn
                         .execute(sql, params.clone())
@@ -790,7 +813,7 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
             &operation_name,
             QUERY_RETRY_HINT,
             |_| {
-                self.core.runtime.block_on(async {
+                block_on_isolated(&self.core.runtime, async {
                     self.core
                         .conn
                         .query(sql, params.clone())
@@ -821,7 +844,7 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
             &operation_name,
             QUERY_RETRY_HINT,
             |_| {
-                self.core.runtime.block_on(async {
+                block_on_isolated(&self.core.runtime, async {
                     let mut rows =
                         self.core
                             .conn
