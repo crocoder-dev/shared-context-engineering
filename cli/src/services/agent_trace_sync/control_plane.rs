@@ -5,6 +5,7 @@
 //! They perform no HTTP I/O and hold no cursor state themselves.
 
 use std::fmt;
+use std::sync::Arc;
 
 use anyhow::anyhow;
 use reqwest::StatusCode;
@@ -229,7 +230,7 @@ pub struct AuthenticatedControlPlaneClient {
     base_url: String,
     workos_api_base_url: String,
     workos_client_id: String,
-    credential_store: Box<dyn CredentialStore>,
+    credential_store: Arc<dyn CredentialStore>,
 }
 
 impl AuthenticatedControlPlaneClient {
@@ -260,7 +261,7 @@ impl AuthenticatedControlPlaneClient {
             base_url: base_url.into(),
             workos_api_base_url: workos_api_base_url.into(),
             workos_client_id: workos_client_id.into(),
-            credential_store,
+            credential_store: Arc::from(credential_store),
         }
     }
 
@@ -399,8 +400,8 @@ impl AuthenticatedControlPlaneClient {
     /// persisted.
     async fn resolve_access_token(&self) -> Result<String, ControlPlaneError> {
         let stored = self
-            .credential_store
-            .load()?
+            .load_credentials()
+            .await?
             .ok_or(ControlPlaneError::MissingCredentials)?;
 
         if !auth::is_stored_token_expired(&stored)? {
@@ -414,7 +415,7 @@ impl AuthenticatedControlPlaneClient {
             &stored.refresh_token,
         )
         .await?;
-        self.credential_store.save(&token)?;
+        self.save_credentials(&token).await?;
 
         Ok(token.access_token)
     }
@@ -423,8 +424,8 @@ impl AuthenticatedControlPlaneClient {
     /// saves the result, used for the unexpected-`401` retry path.
     async fn force_refresh_access_token(&self) -> Result<String, ControlPlaneError> {
         let stored = self
-            .credential_store
-            .load()?
+            .load_credentials()
+            .await?
             .ok_or(ControlPlaneError::MissingCredentials)?;
         let token = auth::renew_stored_token_from_refresh_token(
             &self.http,
@@ -433,8 +434,34 @@ impl AuthenticatedControlPlaneClient {
             &stored.refresh_token,
         )
         .await?;
-        self.credential_store.save(&token)?;
+        self.save_credentials(&token).await?;
         Ok(token.access_token)
+    }
+
+    async fn load_credentials(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
+        let credential_store = Arc::clone(&self.credential_store);
+        tokio::task::spawn_blocking(move || credential_store.load())
+            .await
+            .map_err(|error| {
+                ControlPlaneError::Storage(format!(
+                    "credential store worker failed while loading credentials: {error}"
+                ))
+            })?
+    }
+
+    async fn save_credentials(
+        &self,
+        token: &TokenResponse,
+    ) -> Result<StoredTokens, ControlPlaneError> {
+        let credential_store = Arc::clone(&self.credential_store);
+        let token = token.clone();
+        tokio::task::spawn_blocking(move || credential_store.save(&token))
+            .await
+            .map_err(|error| {
+                ControlPlaneError::Storage(format!(
+                    "credential store worker failed while saving credentials: {error}"
+                ))
+            })?
     }
 
     fn endpoint(&self, path: &str) -> String {
@@ -883,6 +910,39 @@ mod tests {
             *self.tokens.lock().unwrap() = Some(stored.clone());
             Ok(stored)
         }
+    }
+
+    struct RuntimeCheckingCredentialStore;
+
+    impl CredentialStore for RuntimeCheckingCredentialStore {
+        fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
+            // This would panic if the blocking credential operation ran on a
+            // Tokio runtime thread.
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("build nested test runtime");
+            runtime.block_on(async {});
+            Ok(Some(valid_stored_tokens("valid-access-token")))
+        }
+
+        fn save(&self, _token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
+            panic!("no token refresh expected in this test");
+        }
+    }
+
+    #[test]
+    fn credential_store_operations_run_outside_the_async_runtime() {
+        let client = AuthenticatedControlPlaneClient::with_credential_store(
+            test_http_client(),
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:1",
+            "test-client-id",
+            Box::new(RuntimeCheckingCredentialStore),
+        );
+
+        let access_token = block_on(client.resolve_access_token()).expect("token should load");
+
+        assert_eq!(access_token, "valid-access-token");
     }
 
     /// A plain-`http://` loopback test double never needs TLS root

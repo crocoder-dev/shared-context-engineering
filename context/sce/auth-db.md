@@ -45,6 +45,7 @@ Current migration baseline:
 ## Token storage integration
 
 - `cli/src/services/token_storage.rs` now uses `AuthDb` for all persistence operations (`save_tokens`, `load_tokens`, `delete_tokens`) via a `OnceLock<Result<AuthDb, String>>` lazy singleton.
+- Token-storage operations are synchronous because they wrap the encrypted local DB and OS credential store. Async consumers such as the Agent Trace control-plane client must call them through a blocking-task boundary; the sync command's rule is documented in [agent-trace-sync-command.md](../cli/agent-trace-sync-command.md).
 - `token_file_path()` returns the auth DB path from `auth_db_path()` instead of a JSON file path.
 - `TokenStorageError` exposes `PathResolution` and `Database` variants; former `Io`, `Serialization`, `CorruptedTokenFile`, and `Permission` variants have been removed.
 - No JSON file I/O remains in `token_storage.rs`.
