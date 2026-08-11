@@ -268,6 +268,9 @@ fn convert_trace_subcommand(subcommand: cli_schema::TraceSubcommand) -> RuntimeC
         cli_schema::TraceSubcommand::Status { all, format } => services::trace::TraceRequest {
             subcommand: services::trace::TraceSubcommandRequest::Status { all, format },
         },
+        cli_schema::TraceSubcommand::Sync { format } => services::trace::TraceRequest {
+            subcommand: services::trace::TraceSubcommandRequest::Sync { format },
+        },
     };
 
     RuntimeCommand::Trace(services::trace::command::TraceCommand { request })
@@ -507,6 +510,38 @@ mod tests {
             command.request.subcommand,
             services::trace::TraceSubcommandRequest::DbShell {
                 identifier: Some(String::from("agent_trace_0")),
+            }
+        );
+    }
+
+    #[test]
+    fn trace_sync_parses_to_trace_sync_request_with_default_text_format() {
+        let command = parse(&["sce", "trace", "sync"]);
+
+        let RuntimeCommand::Trace(command) = command else {
+            panic!("expected trace command");
+        };
+
+        assert_eq!(
+            command.request.subcommand,
+            services::trace::TraceSubcommandRequest::Sync {
+                format: services::output_format::OutputFormat::Text,
+            }
+        );
+    }
+
+    #[test]
+    fn trace_sync_json_format_parses_to_trace_sync_request() {
+        let command = parse(&["sce", "trace", "sync", "--format", "json"]);
+
+        let RuntimeCommand::Trace(command) = command else {
+            panic!("expected trace command");
+        };
+
+        assert_eq!(
+            command.request.subcommand,
+            services::trace::TraceSubcommandRequest::Sync {
+                format: services::output_format::OutputFormat::Json,
             }
         );
     }
