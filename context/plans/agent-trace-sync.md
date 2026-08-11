@@ -8,27 +8,27 @@ This plan composes already-shipped infrastructure — repository/source identity
 
 ## Acceptance criteria
 
-- [ ] AC1: `sce trace sync` and `sce trace sync --format json` parse and route to a dedicated sync command handler under the existing `trace` command group.
+- [x] AC1: `sce trace sync` and `sce trace sync --format json` parse and route to a dedicated sync command handler under the existing `trace` command group.
   - Validate: `cargo test -p shared-context-engineering trace::` (CLI parsing/conversion unit tests) as part of `nix flake check`.
-- [ ] AC2: With no stored WorkOS credentials, `sce trace sync` fails before making any control-plane request, with guidance to run `sce auth login`.
+- [x] AC2: With no stored WorkOS credentials, `sce trace sync` fails before making any control-plane request, with guidance to run `sce auth login`.
   - Validate: targeted unit test asserting zero HTTP calls reach the test server and the error message contains `sce auth login`.
-- [ ] AC3: With a valid non-expired stored token, sync reuses it as-is (sends `Authorization: Bearer <token>`) and does not rewrite/save the unchanged credential. With an expired stored token, sync refreshes via the existing WorkOS refresh flow, saves the new token, and uses it for control-plane requests.
+- [x] AC3: With a valid non-expired stored token, sync reuses it as-is (sends `Authorization: Bearer <token>`) and does not rewrite/save the unchanged credential. With an expired stored token, sync refreshes via the existing WorkOS refresh flow, saves the new token, and uses it for control-plane requests.
   - Validate: targeted unit tests against a local test HTTP server asserting exact `Authorization` header values and asserting `save_tokens` is/is not called.
-- [ ] AC4: An unexpected `401` from `/state` or `/batch` triggers exactly one WorkOS refresh, one saved token, and one retried request; a second `401` fails the command with `sce auth login` guidance and no further retries.
+- [x] AC4: An unexpected `401` from `/state` or `/batch` triggers exactly one WorkOS refresh, one saved token, and one retried request; a second `401` fails the command with `sce auth login` guidance and no further retries.
   - Validate: targeted unit test driving a canned 401-then-200 (success case) and 401-then-401 (bounded-failure case) sequence against the test server.
-- [ ] AC5: `POST /agent-trace/ingestion/state` is called exactly once per `sce trace sync` invocation with `{repositoryId, sourceInstanceId}` taken from resolved storage metadata and no workspace/user/checkout/database fields.
+- [x] AC5: `POST /agent-trace/ingestion/state` is called exactly once per `sce trace sync` invocation with `{repositoryId, sourceInstanceId}` taken from resolved storage metadata and no workspace/user/checkout/database fields.
   - Validate: targeted unit test asserting the exact captured request body and call count.
-- [ ] AC6: For each of the four streams, sync uploads exactly the local rows after the stream's authoritative cursor, in batches bounded by `AGENT_TRACE_EXPORT_BATCH_SIZE`, advances the cursor only from the validated server response (`accepted == rows.len()` and `cursor == rows.last().sourceRowId`), and never infers the next cursor from `cursor + rows.len()`.
+- [x] AC6: For each of the four streams, sync uploads exactly the local rows after the stream's authoritative cursor, in batches bounded by `AGENT_TRACE_EXPORT_BATCH_SIZE`, advances the cursor only from the validated server response (`accepted == rows.len()` and `cursor == rows.last().sourceRowId`), and never infers the next cursor from `cursor + rows.len()`.
   - Validate: targeted unit tests covering an empty database (no batch calls), one batch, >500 rows requiring multiple batches, and gapped source IDs.
-- [ ] AC7: A `409` response reconciles by refetching `/state`, replacing only the affected stream's cursor, and resuming from local rows after the refreshed cursor without resending already-accepted rows; a bounded reconciliation loop prevents unbounded spinning.
+- [x] AC7: A `409` response reconciles by refetching `/state`, replacing only the affected stream's cursor, and resuming from local rows after the refreshed cursor without resending already-accepted rows; a bounded reconciliation loop prevents unbounded spinning.
   - Validate: targeted unit test reproducing the plan's 409 example (state=10, local rows 11-13, batch 409s, refreshed state=12, only row 13 resent with `expectedCursor=12`).
-- [ ] AC8: An ambiguous batch failure (5xx, transport failure, or missing/invalid response) reconciles via `/state` before any resend: if the refreshed cursor advanced, sync continues from it without resending; if unchanged, sync may resend once reread from the authoritative cursor, bounded by the same reconciliation limit.
+- [x] AC8: An ambiguous batch failure (5xx, transport failure, or missing/invalid response) reconciles via `/state` before any resend: if the refreshed cursor advanced, sync continues from it without resending; if unchanged, sync may resend once reread from the authoritative cursor, bounded by the same reconciliation limit.
   - Validate: targeted unit tests for both the "committed" (refreshed cursor advanced) and "uncommitted" (refreshed cursor unchanged) cases.
-- [ ] AC9: A syntactically successful but semantically inconsistent batch response (`accepted`/`cursor` not matching the sent rows) fails the command with an invalid-response error rather than advancing state.
+- [x] AC9: A syntactically successful but semantically inconsistent batch response (`accepted`/`cursor` not matching the sent rows) fails the command with an invalid-response error rather than advancing state.
   - Validate: targeted unit test asserting failure on a mismatched `{cursor, accepted}` response.
-- [ ] AC10: A `403` ownership rejection fails the command with a clear message, without generating a new `source_instance_id`, mutating local repository metadata, or attempting ownership transfer.
+- [x] AC10: A `403` ownership rejection fails the command with a clear message, without generating a new `source_instance_id`, mutating local repository metadata, or attempting ownership transfer.
   - Validate: targeted unit test asserting the failure message and that `repository_metadata.source_instance_id` on disk is unchanged after the run.
-- [ ] AC11: A full successful sync across all four streams renders the documented text layout by default and the documented JSON shape under `--format json`, and running sync twice in a row is naturally incremental (the second run's `/state` reflects the first run's uploads and re-reads only unsynced rows), with no local cursor file, database, or table created anywhere on disk.
+- [x] AC11: A full successful sync across all four streams renders the documented text layout by default and the documented JSON shape under `--format json`, and running sync twice in a row is naturally incremental (the second run's `/state` reflects the first run's uploads and re-reads only unsynced rows), with no local cursor file, database, or table created anywhere on disk.
   - Validate: an end-to-end integration test using a temporary `RepositoryAgentTraceDb` seeded with rows in all four streams and a local test HTTP server, run twice in sequence; text/JSON rendering unit tests for exact output shape.
 
 ### Full validation
@@ -113,22 +113,63 @@ This plan composes already-shipped infrastructure — repository/source identity
   - Evidence: Added `TraceSubcommand::Sync { format }` in `cli/src/cli_schema.rs`, `TraceSubcommandRequest::Sync { format }` in `cli/src/services/trace/mod.rs`, and clap-to-runtime conversion in `cli/src/services/parse/command_runtime.rs`. Added `cli/src/services/trace/sync.rs`: `run_current_sync(repo_root)` resolves storage via the same `resolve_agent_trace_storage`/`AgentTraceStorageContext` path as `sce trace status`, resolves the control-plane base URL/WorkOS client ID via `config::resolve_auth_runtime_config`, builds an `AuthenticatedControlPlaneClient`, and delegates to the testable `run_sync_against(repository_id, source_instance_id, db, client)`, which calls `/state` once then runs the T04 `sync_stream` engine for `messages → parts → diff_traces → agent_traces` in order via `AgentTraceExportReader`, assembling `AgentTraceSyncReport`/`StreamSyncReports`/`StreamSyncReport`. A per-stream `terminal: RefCell<Option<ControlPlaneError>>` distinguishes genuinely ambiguous batch failures (`5xx`/transport/invalid-response — real `/state` reconciliation) from terminal ones (missing/invalid credentials, `400`, `403`, `409`→`Conflict` handled separately) — terminal failures short-circuit the reconciliation closure with the original error instead of issuing another network call, so `403` never mutates local state or retries. All `TraceSyncError` variants map to `ClassifiedError::runtime` in `cli/src/services/trace/command.rs`, which also emits a provisional `{report:#?}` text body pending T06's `render_sync`. Added CLI-parsing unit tests (`trace_sync_parses_to_trace_sync_request_with_default_text_format`, `trace_sync_json_format_parses_to_trace_sync_request`) in `command_runtime.rs`, and two tests in `sync.rs`: an end-to-end test seeding one row per stream in a temp `RepositoryAgentTraceDb`, driving a full sync against the in-repo `TestHttpServer` (asserting all four streams upload/advance correctly and exactly 5 HTTP calls), then a second `run_sync_against` call against the same DB with an advanced `/state` response asserting zero uploads/batches and exactly one additional HTTP call (naturally incremental) and that no sync-created sidecar file/DB appears on disk; and a `403` test asserting the sync fails with `ControlPlaneError::Forbidden`, only 1 HTTP call is made (no reconciliation), and `repository_metadata.source_instance_id` is unchanged.
   - Verification: `nix build .#checks.x86_64-linux.cli-tests` — 274 tests passed (includes the new CLI-parsing and `trace::sync` tests). `nix build .#checks.x86_64-linux.cli-clippy` and `.#checks.x86_64-linux.cli-fmt` — passed. `nix run .#pkl-check-generated` — passed (101 files, inventory hash unchanged; no schema change in this task).
 
-- [ ] T06: `Render "sce trace sync" text and JSON output` (status:todo)
+- [x] T06: `Render "sce trace sync" text and JSON output` (status:done)
   - Task ID: T06
   - Goal: Implement `render_sync` producing the documented concise text layout (`Agent Trace sync complete.` header, repository/source-instance lines, one row per stream showing rows uploaded and final cursor) and the documented JSON shape (`status`, `repositoryId`, `sourceInstanceId`, `streams.{messages,parts,diffTraces,agentTraces}` each with `uploaded`/`initialCursor`/`finalCursor`/`batches`), wired into the T05 command dispatch and following existing `services::output_format`/`--format` conventions.
   - Boundaries (in/out of scope): In — `cli/src/services/trace/render_sync.rs` (or equivalent), its unit tests asserting exact text formatting and exact JSON field names/shape (including the `diffTraces`/`agentTraces` camelCase keys in output despite `diff_traces`/`agent_traces` internal naming), wiring into `TraceCommand::execute`. Out — the report data itself (T05, already produced).
   - Dependencies: T05
   - Done when: text output matches the documented concise per-stream layout without printing every batch or row; JSON output matches the documented shape byte-for-byte on field names; both are covered by unit tests.
   - Verification notes (commands or checks): `cargo test -p shared-context-engineering trace::render_sync::`.
+  - Evidence: Added `cli/src/services/trace/render_sync.rs` with `render(report, format)` matching `services::output_format::OutputFormat`. Text rendering (`render_text`) follows the `render_status_all.rs` padded-table convention: `style::heading("Agent Trace sync complete.")`, `Repository ID:`/`Source instance ID:` lines, then a `Stream | Uploaded | Final cursor` table with one row per stream in the fixed `messages → parts → diff_traces → agent_traces` order — no per-batch or per-row detail is printed. JSON rendering (`render_json`) emits `status`/`command`/`subcommand`/`repositoryId`/`sourceInstanceId`/`streams.{messages,parts,diffTraces,agentTraces}`, each stream object carrying `uploaded`/`initialCursor`/`finalCursor`/`batches`; the JSON keys use the documented camelCase (`diffTraces`/`agentTraces`) despite the `StreamSyncReports` struct's `diff_traces`/`agent_traces` field names. Wired into `TraceCommand::execute`'s `Sync` arm (`cli/src/services/trace/command.rs`), replacing the provisional `{report:#?}` debug dump; `mod render_sync;` added to `cli/src/services/trace/mod.rs`. Added unit tests asserting the text layout contains the heading/ID lines/all four stream rows with correct uploaded/final-cursor values and omits per-batch detail, and a JSON-shape test asserting exact field names including the camelCase stream keys and that no snake_case duplicate keys leak through.
+  - Verification: `nix flake check` — all checks passed (cargo test/clippy/fmt, includes new `trace::render_sync::` unit tests). `nix run .#pkl-check-generated` — passed (101 files, inventory hash unchanged; no schema change in this task).
 
-- [ ] T07: `Document the completed Agent Trace sync architecture` (status:todo)
+- [x] T07: `Document the completed Agent Trace sync architecture` (status:done)
   - Task ID: T07
   - Goal: Document the now-complete local-to-control-plane Agent Trace sync architecture and retire the stale "`sce sync` deferred to `0.4.0`" framing left over from before this plan.
   - Boundaries (in/out of scope): In — new `context/cli/agent-trace-sync-command.md` (or equivalent) covering the composed flow (`hooks/plugins → repository Agent Trace DB → AgentTraceExportReader → sce trace sync → HTTPS + WorkOS Bearer → control plane`), the exact user flow (`sce auth login` / `cd repo` / `sce trace sync`), the no-local-cursor/no-`agent-trace-sync.db`/no-Turso-Sync/no-`BridgeLock`/no-local-DWH invariants, and the `409`/ambiguous-batch/`401` recovery semantics; updates to `context/cli/trace-command.md`, `context/cli/cli-command-surface.md`, `context/overview.md`, `context/glossary.md` (`sync command deferral` entry), and `context/context-map.md` to reflect that `sce trace sync` is implemented rather than deferred.
   - Dependencies: T06
   - Done when: every listed context file accurately describes current-state `sce trace sync` behavior; no remaining context file states `sce sync` is deferred to `0.4.0` or describes a retired sync architecture (`agent-trace-sync.db`, local DWH, `BridgeLock`, Turso Sync, direct Turso credentials in SCE) as active or planned.
   - Verification notes (commands or checks): manual review of the listed files; `nix run .#pkl-check-generated` and `nix flake check` (no code change expected in this task, but re-run as the standard post-task baseline).
+  - Evidence: `context/cli/trace-command.md`, `context/overview.md`, and the glossary's `sync command deferral` entry were already accurate from T05/T06 (no edit needed there). Found and fixed 3 stale statements in `context/cli/cli-command-surface.md` (lines describing "`sync` command is not wired"/"is deferred to `0.4.0`"/"`sce sync` command wiring and broader cloud behavior remain intentionally deferred") to describe implemented `sce trace sync`, and fixed `context/context-map.md`'s `cli-command-surface.md` catalog blurb, which still repeated the stale "`sce sync` command wiring is deferred to `0.4.0`" framing. Added new `context/cli/agent-trace-sync-command.md` documenting the composed flow diagram (Mermaid), the exact `sce auth login` / `cd <repository>` / `sce trace sync` user flow, the no-local-cursor/no-`agent-trace-sync.db`/no-Turso-Sync/no-`BridgeLock`/no-local-DWH invariants, and `401`/`409`/ambiguous-batch-failure/`403` recovery semantics, linked from `context/context-map.md` and from `context/cli/trace-command.md`'s Related context section. Verified no remaining context file (outside historical/immutable `context/decisions/` records and the already-historical glossary entry) describes the retired sync architecture as active or planned.
+  - Verification: `nix run .#pkl-check-generated` — passed (101 files, inventory hash unchanged; no schema change in this task). `nix flake check` — all checks passed.
 
 ## Open questions
 
 None. The request is fully specified end to end, including exact wire contracts, recovery algorithms, and test matrices; the two implementation-detail choices this plan had to make (the control-plane base URL config mechanism and the test HTTP server approach) are reversible local decisions recorded under Assumptions rather than open questions.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-08-11
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all checks passed: cli-tests, cli-clippy, cli-fmt, cli-generated-input, pkl-generated, npm/config-lib bun tests and biome checks, workflow-actionlint, native-portability-audit, flatpak-static-validation, cargo-sources-parity, flatpak-manifest-parity)
+- `nix run .#pkl-check-generated` -> exit 0 (Ephemeral Pkl generation passed: 101 files, inventory hash unchanged)
+- `nix build .#checks.x86_64-linux.cli-tests --rebuild -L` -> exit 0 for the test run itself (277 passed; 0 failed), but the derivation was flagged non-deterministic on rebuild-comparison (`may not be deterministic: output ... differs`) — an artifact-packaging/timestamp reproducibility property of the Nix build, not a test failure; `nix flake check` (the plan's authored `Full validation` command) already builds and runs this same derivation once and passed cleanly.
+
+### Scaffolding removed
+
+- None. No debug-only patches, temporary files, or throwaway artifacts were found; the in-repo `TestHttpServer` test helper is durable test infrastructure documented as an Assumption, not scaffolding.
+
+### Success-criteria verification
+
+- [x] AC1: CLI parsing/routing -> `command_runtime.rs` tests `trace_sync_parses_to_trace_sync_request_with_default_text_format`, `trace_sync_json_format_parses_to_trace_sync_request` pass.
+- [x] AC2: No-credentials failure -> `control_plane.rs::missing_credentials_fail_before_any_http_call` passes.
+- [x] AC3: Token reuse/refresh -> `control_plane.rs::valid_token_is_reused_without_resave`, `expired_token_is_refreshed_and_saved` pass.
+- [x] AC4: Bounded 401 retry -> `control_plane.rs::unexpected_401_refreshes_once_and_retries_once_on_success`, `unexpected_401_twice_fails_without_a_third_attempt` pass.
+- [x] AC5: Exact `/state` request shape/count -> `control_plane.rs::state_request_body_has_exact_shape_and_call_count`, `state_request_serializes_to_camel_case_fields` pass.
+- [x] AC6: Batched, cursor-validated uploads -> `mod.rs::empty_database_makes_no_batch_calls`, `one_batch_uploads_all_rows_and_advances_cursor`, `more_than_five_hundred_rows_span_multiple_bounded_batches`, `gapped_source_ids_advance_cursor_from_last_id_not_row_count` pass.
+- [x] AC7: 409 reconciliation -> `mod.rs::conflict_resends_only_the_unsent_tail` reproduces the plan's exact worked example and passes.
+- [x] AC8: Ambiguous-failure reconciliation -> `mod.rs::ambiguous_failure_with_advanced_refresh_does_not_resend`, `ambiguous_failure_with_unchanged_refresh_resends_once` pass; bound enforced by `reconciliation_bound_fails_with_did_not_converge`.
+- [x] AC9: Invalid-response rejection -> `mod.rs::invalid_response_rejects_mismatched_accepted_and_cursor` passes; also `control_plane.rs::batch_classifies_403_as_forbidden`/`batch_classifies_409_as_conflict` cover response classification.
+- [x] AC10: 403 ownership rejection -> `trace/sync.rs::forbidden_state_response_fails_without_mutating_local_metadata` passes (asserts message, single HTTP call, unchanged `source_instance_id` on disk).
+- [x] AC11: End-to-end + rendering -> `trace/sync.rs::full_sync_uploads_all_four_streams_and_second_run_is_naturally_incremental` passes (two sequential runs, second is incremental, no sidecar file/DB created); `render_sync.rs::text_renders_concise_per_stream_layout_without_batches`, `text_row_values_match_uploaded_and_final_cursor`, `json_shape_matches_contract` pass.
+
+### Failed checks and follow-ups
+
+None.
+
+### Residual risks
+
+- The `cli-tests` Nix derivation was observed non-deterministic under `--rebuild` (output hash differs between two builds of the same derivation with identical Cargo.lock/source), unrelated to this plan's code; worth a separate look if CI ever compares build hashes across runs, but it does not affect `nix flake check`, which is this plan's authored `Full validation` gate and passed cleanly.

@@ -1,18 +1,18 @@
 # Agent Trace export readers (read-only)
 
-`cli/src/services/agent_trace_export/mod.rs` defines `AgentTraceExportReader<'a>`, the local read/export boundary between one repository-scoped Agent Trace source database and any future outbound sync. It is purely additive over the existing schema: it adds no table, no migration, and no writer.
+`cli/src/services/agent_trace_export/mod.rs` defines `AgentTraceExportReader<'a>`, the local read/export boundary between one repository-scoped Agent Trace source database and outbound sync. It is purely additive over the existing schema: it adds no table, no migration, and no writer.
 
 ## Layering
 
 ```mermaid
 flowchart LR
     A["SCE local source DB\n(RepositoryAgentTraceDb)"] --> B["Incremental export reader\n(AgentTraceExportReader)"]
-    B --> C["Future control-plane client\n(not built by this plan)"]
+    B --> C["Control-plane client\n(sce trace sync)"]
 ```
 
-- **SCE local source DB** — the existing repository-scoped `RepositoryAgentTraceDb` (see [agent-trace-db.md](agent-trace-db.md)), written by the hook/lifecycle paths already documented there. This plan does not change its writer, schema, or migrations.
+- **SCE local source DB** — the existing repository-scoped `RepositoryAgentTraceDb` (see [agent-trace-db.md](agent-trace-db.md)), written by the hook/lifecycle paths already documented there. This reader does not change its writer, schema, or migrations.
 - **Incremental export reader** — `AgentTraceExportReader<'a>`, described below. Read-only, stateless across calls, no network.
-- **Future control-plane client** — out of scope for this plan. A later plan composes this reader with an HTTP client and `sce trace sync` orchestration; nothing in this reader assumes or depends on that client existing.
+- **Control-plane client** — `sce trace sync` (see [agent-trace-sync-command.md](../cli/agent-trace-sync-command.md)) composes this reader with the authenticated control-plane HTTP client; the reader itself remains unaware of that caller.
 
 ## Composition point
 
@@ -56,9 +56,9 @@ Each stream has an owned `serde::Serialize` export-row DTO (`AgentTraceMessageEx
 
 This reader introduces no local sync state and no outbound transport:
 
-- No local sync cursor is stored anywhere; the caller (a future `sce trace sync`) owns cursor persistence entirely outside this module.
+- No local sync cursor is stored anywhere; the caller (`sce trace sync`) derives cursors from the control plane's `/state` response on every invocation, entirely outside this module.
 - No `agent-trace-sync.db` or any other new database or table exists.
 - No Turso Sync, no ETL pipeline, and no data-warehouse (DWH) integration exists.
 - No network call, no HTTP client, and no auth/WorkOS code exists in this module.
 
-See also: [agent-trace-db.md](agent-trace-db.md), [context-map.md](../context-map.md)
+See also: [agent-trace-db.md](agent-trace-db.md), [agent-trace-sync-command.md](../cli/agent-trace-sync-command.md), [context-map.md](../context-map.md)
