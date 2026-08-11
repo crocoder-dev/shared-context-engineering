@@ -11,7 +11,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::services::agent_trace_export::{
-    AgentTraceAgentTraceExportRow, AgentTraceDiffTraceExportRow, AgentTraceMessageExportRow,
+    self, AgentTraceAgentTraceExportRow, AgentTraceDiffTraceExportRow, AgentTraceMessageExportRow,
     AgentTracePartExportRow,
 };
 use crate::services::auth::{self, AuthError, TokenResponse};
@@ -50,6 +50,29 @@ pub struct AgentTraceCursors {
     pub parts: i64,
     pub diff_traces: i64,
     pub agent_traces: i64,
+}
+
+impl AgentTraceCursors {
+    /// Rejects any field outside `0..=JS_MAX_SAFE_INTEGER`, the range an
+    /// exportable cursor must stay within to survive JSON round-trip without
+    /// truncation or casting. The control plane is the authoritative source
+    /// of cursor progress, but a syntactically valid `/state` response can
+    /// still carry a value the wire contract cannot represent; this rejects
+    /// it before it reaches any export reader or the sync engine.
+    fn validate(&self) -> Result<(), ControlPlaneError> {
+        for (name, value) in [
+            ("messages", self.messages),
+            ("parts", self.parts),
+            ("diffTraces", self.diff_traces),
+            ("agentTraces", self.agent_traces),
+        ] {
+            agent_trace_export::validate_js_safe_integer(value).map_err(|error| {
+                ControlPlaneError::InvalidResponse(format!("cursors.{name} is invalid: {error}"))
+            })?;
+        }
+
+        Ok(())
+    }
 }
 
 /// Response body for `POST /agent-trace/ingestion/state`.
@@ -101,6 +124,13 @@ pub enum ControlPlaneError {
     ServerError(String),
     InvalidResponse(String),
     Storage(String),
+    /// A terminal protocol/API mismatch during a control-plane request (e.g.
+    /// `404`/`405`/`415`/`422`), distinct from `InvalidResponse` which is
+    /// reserved for a syntactically successful (`2xx`) but undecodable body.
+    Protocol {
+        status: StatusCode,
+        message: String,
+    },
 }
 
 impl fmt::Display for ControlPlaneError {
@@ -129,6 +159,10 @@ impl fmt::Display for ControlPlaneError {
                 write!(f, "Control-plane returned an unexpected response: {reason}")
             }
             Self::Storage(reason) => write!(f, "Local credential storage error: {reason}"),
+            Self::Protocol { status, message } => write!(
+                f,
+                "Control-plane rejected the request ({status}): {message}"
+            ),
         }
     }
 }
@@ -319,7 +353,9 @@ impl AuthenticatedControlPlaneClient {
         let response = self
             .execute_authenticated(|token| self.http.post(url).bearer_auth(token).json(request))
             .await?;
-        classify_response(response).await
+        let state: AgentTraceIngestionStateResponse = classify_response(response).await?;
+        state.cursors.validate()?;
+        Ok(state)
     }
 
     /// Sends one authenticated request, retrying exactly once on an
@@ -358,24 +394,27 @@ impl AuthenticatedControlPlaneClient {
     }
 
     /// Loads the stored token, reusing it as-is when still valid and
-    /// refreshing (and saving) it only when expired.
+    /// refreshing (and saving) it only when expired. Makes exactly one
+    /// expiry decision, so a token cannot be refreshed without also being
+    /// persisted.
     async fn resolve_access_token(&self) -> Result<String, ControlPlaneError> {
         let stored = self
             .credential_store
             .load()?
             .ok_or(ControlPlaneError::MissingCredentials)?;
-        let was_expired = auth::is_stored_token_expired(&stored)?;
-        let token = auth::ensure_valid_token_returning_token(
+
+        if !auth::is_stored_token_expired(&stored)? {
+            return Ok(stored.access_token);
+        }
+
+        let token = auth::renew_stored_token_from_refresh_token(
             &self.http,
             &self.workos_api_base_url,
             &self.workos_client_id,
-            &stored,
+            &stored.refresh_token,
         )
         .await?;
-
-        if was_expired {
-            self.credential_store.save(&token)?;
-        }
+        self.credential_store.save(&token)?;
 
         Ok(token.access_token)
     }
@@ -403,6 +442,39 @@ impl AuthenticatedControlPlaneClient {
     }
 }
 
+/// Maximum accepted length, in bytes, of a `message`/`error` field extracted
+/// from a control-plane error body. Anything longer is treated as
+/// untrustworthy and discarded in favor of a generic fallback.
+const MAX_SAFE_ERROR_MESSAGE_LEN: usize = 500;
+
+/// Extracts a narrow, safe error message from a raw HTTP error response body.
+///
+/// Accepts only a top-level JSON object with a `message` or `error` string
+/// field (checked in that order) no longer than
+/// [`MAX_SAFE_ERROR_MESSAGE_LEN`]. Returns `None` for malformed JSON, HTML,
+/// non-object top-level values, a missing/non-string field, or a field that
+/// exceeds the length bound — so an arbitrary server-side implementation
+/// detail (a SQL error, a stack trace, an HTML error page) can never reach
+/// the CLI's user-visible error text.
+fn extract_safe_error_message(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let object = value.as_object()?;
+    let field = object
+        .get("message")
+        .or_else(|| object.get("error"))?
+        .as_str()?;
+
+    if field.is_empty() || field.len() > MAX_SAFE_ERROR_MESSAGE_LEN {
+        return None;
+    }
+
+    Some(field.to_string())
+}
+
+fn safe_error_message(body: &str, generic: &str) -> String {
+    extract_safe_error_message(body).unwrap_or_else(|| generic.to_string())
+}
+
 async fn classify_response<T>(response: reqwest::Response) -> Result<T, ControlPlaneError>
 where
     T: serde::de::DeserializeOwned,
@@ -421,12 +493,34 @@ where
         .unwrap_or_else(|error| format!("<failed to read response body: {error}>"));
 
     match status {
-        StatusCode::BAD_REQUEST => Err(ControlPlaneError::BadRequest(body)),
-        StatusCode::FORBIDDEN => Err(ControlPlaneError::Forbidden(body)),
-        StatusCode::CONFLICT => Err(ControlPlaneError::Conflict(body)),
-        status if status.is_server_error() => Err(ControlPlaneError::ServerError(body)),
+        StatusCode::BAD_REQUEST => Err(ControlPlaneError::BadRequest(safe_error_message(
+            &body,
+            "control plane rejected the Agent Trace request",
+        ))),
+        StatusCode::FORBIDDEN => Err(ControlPlaneError::Forbidden(safe_error_message(
+            &body,
+            "Agent Trace source cannot be synchronized by the current authenticated user",
+        ))),
+        StatusCode::CONFLICT => Err(ControlPlaneError::Conflict(safe_error_message(
+            &body,
+            "Agent Trace cursor conflict",
+        ))),
+        StatusCode::SERVICE_UNAVAILABLE => Err(ControlPlaneError::ServerError(safe_error_message(
+            &body,
+            "control-plane Agent Trace storage is unavailable",
+        ))),
+        status if status.is_server_error() => Err(ControlPlaneError::ServerError(
+            safe_error_message(&body, "control plane encountered an internal error"),
+        )),
+        status if status.is_client_error() => Err(ControlPlaneError::Protocol {
+            status,
+            message: safe_error_message(
+                &body,
+                "control plane rejected the Agent Trace request as unsupported",
+            ),
+        }),
         status => Err(ControlPlaneError::InvalidResponse(format!(
-            "unexpected status {status}: {body}"
+            "unexpected status {status}"
         ))),
     }
 }
@@ -502,6 +596,60 @@ mod tests {
                 agent_traces: 40,
             }
         );
+    }
+
+    #[test]
+    fn agent_trace_cursors_accept_boundary_values() {
+        for boundary in [0_i64, 1_i64, agent_trace_export::JS_MAX_SAFE_INTEGER] {
+            let cursors = AgentTraceCursors {
+                messages: boundary,
+                parts: boundary,
+                diff_traces: boundary,
+                agent_traces: boundary,
+            };
+            assert!(
+                cursors.validate().is_ok(),
+                "boundary {boundary} should be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_trace_cursors_reject_out_of_range_value_in_each_field() {
+        let base = AgentTraceCursors {
+            messages: 0,
+            parts: 0,
+            diff_traces: 0,
+            agent_traces: 0,
+        };
+
+        for invalid in [-1_i64, agent_trace_export::JS_MAX_SAFE_INTEGER + 1] {
+            let cases = [
+                AgentTraceCursors {
+                    messages: invalid,
+                    ..base
+                },
+                AgentTraceCursors {
+                    parts: invalid,
+                    ..base
+                },
+                AgentTraceCursors {
+                    diff_traces: invalid,
+                    ..base
+                },
+                AgentTraceCursors {
+                    agent_traces: invalid,
+                    ..base
+                },
+            ];
+
+            for cursors in cases {
+                let error = cursors
+                    .validate()
+                    .expect_err(&format!("{invalid} should be rejected in {cursors:?}"));
+                assert!(matches!(error, ControlPlaneError::InvalidResponse(_)));
+            }
+        }
     }
 
     #[test]
@@ -938,5 +1086,80 @@ mod tests {
         let error = block_on(client.ingest_messages(&sample_batch_request())).unwrap_err();
 
         assert!(matches!(error, ControlPlaneError::ServerError(_)));
+    }
+
+    #[test]
+    fn server_error_body_is_not_leaked() {
+        let server = TestHttpServer::start();
+        server.queue_response(CannedResponse::text(
+            500,
+            "SQLITE_ERROR: no such table: agent_trace_messages at /var/lib/sce/db.sqlite3",
+        ));
+        let store = FakeCredentialStore::with_tokens(valid_stored_tokens("valid-access-token"));
+        let client = client_with(&server, store);
+
+        let error = block_on(client.ingest_messages(&sample_batch_request())).unwrap_err();
+
+        let rendered = error.to_string();
+        assert!(matches!(error, ControlPlaneError::ServerError(_)));
+        assert!(!rendered.contains("SQLITE_ERROR"));
+        assert!(!rendered.contains("agent_trace_messages"));
+        assert!(!rendered.contains("/var/lib/sce"));
+        assert!(rendered.contains("control plane encountered an internal error"));
+    }
+
+    #[test]
+    fn known_safe_error_payload_is_surfaced() {
+        let server = TestHttpServer::start();
+        server.queue_response(CannedResponse::json(
+            400,
+            &json!({"message": "repositoryId is required"}),
+        ));
+        let store = FakeCredentialStore::with_tokens(valid_stored_tokens("valid-access-token"));
+        let client = client_with(&server, store);
+
+        let error = block_on(client.ingest_messages(&sample_batch_request())).unwrap_err();
+
+        match error {
+            ControlPlaneError::BadRequest(message) => {
+                assert_eq!(message, "repositoryId is required");
+            }
+            other => panic!("expected BadRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn html_error_body_falls_back_to_generic_message() {
+        let server = TestHttpServer::start();
+        server.queue_response(CannedResponse::text(
+            500,
+            "<html><body><h1>500 Internal Server Error</h1></body></html>",
+        ));
+        let store = FakeCredentialStore::with_tokens(valid_stored_tokens("valid-access-token"));
+        let client = client_with(&server, store);
+
+        let error = block_on(client.ingest_messages(&sample_batch_request())).unwrap_err();
+
+        let rendered = error.to_string();
+        assert!(!rendered.contains("<html>"));
+        assert!(rendered.contains("control plane encountered an internal error"));
+    }
+
+    #[test]
+    fn batch_classifies_404_as_protocol_error() {
+        let server = TestHttpServer::start();
+        server.queue_response(CannedResponse::json(404, &json!({"error": "not found"})));
+        let store = FakeCredentialStore::with_tokens(valid_stored_tokens("valid-access-token"));
+        let client = client_with(&server, store);
+
+        let error = block_on(client.ingest_messages(&sample_batch_request())).unwrap_err();
+
+        match error {
+            ControlPlaneError::Protocol { status, message } => {
+                assert_eq!(status, StatusCode::NOT_FOUND);
+                assert_eq!(message, "not found");
+            }
+            other => panic!("expected Protocol, got {other:?}"),
+        }
     }
 }

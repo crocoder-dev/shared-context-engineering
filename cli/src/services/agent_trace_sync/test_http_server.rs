@@ -31,6 +31,13 @@ impl CannedResponse {
             body: body.to_string(),
         }
     }
+
+    pub fn text(status: u16, body: impl Into<String>) -> Self {
+        Self {
+            status,
+            body: body.into(),
+        }
+    }
 }
 
 /// A single-threaded, sequential test HTTP server: each accepted connection
