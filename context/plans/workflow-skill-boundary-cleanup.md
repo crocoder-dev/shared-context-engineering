@@ -380,13 +380,18 @@ rather than already-fixed ones:
   - Evidence: Nonqualifying and deliberately skipped decision gates now return non-blocking `not_qualified`/`skipped` states; genuine missing, contradictory, or unsafe decision input remains `blocked`. Existing ADRs are immutable regardless of status, only equivalent `Proposed` or `Accepted` ADRs are reusable, changed decisions always create new dated ADRs, and `Deprecated`/`Superseded` remain distinct creation-time-only statuses.
   - Verification performed: Generated `sce-decision/SKILL.md` for Pi, Claude, and OpenCode was inspected; generated next-task and validate context-sync references continue to block only on a blocked decision handoff; `nix run .#pkl-check-generated` passed (107 files).
 
-- [ ] T11: `Remove misleading generic composite boilerplate` (status:todo)
+- [x] T11: `Remove misleading generic composite boilerplate` (status:done)
   - Task ID: T11
   - Goal: In `config/pkl/renderers/workflow-composite.pkl` (the shared `renderSkill` preamble) and any generated command boilerplate that copies its overclaiming, replace wording implying every workflow supports clarification, validation repair, and bootstrap waits with wording equivalent to "Any workflow-defined user wait resumes this same skill in the same session," while workflow-specific wait/resume semantics stay stated in the workflow that actually owns them.
   - Boundaries (in/out of scope): In — the shared preamble text in `workflow-composite.pkl` and matching command-boilerplate text. Out — rewriting each workflow's own wait semantics; this task only removes the generic overclaim.
   - Dependencies: T10
   - Done when: no generated workflow `SKILL.md` preamble claims universal support for clarification, validation repair, or bootstrap waits; every generated `SKILL.md` preamble instead carries the generic "any workflow-defined user wait resumes this same skill in the same session" wording (or an equivalent); each workflow's own wait semantics remain stated where they already were.
   - Verification notes (commands or checks): grep every generated workflow `SKILL.md` for the old and new wording; `nix run .#pkl-check-generated`.
+  - Context synchronization: synced
+  - Completed: 2026-08-12
+  - Files changed: `config/pkl/base/workflow-change-to-plan.pkl`, `config/pkl/base/workflow-commit.pkl`, `config/pkl/base/workflow-content.pkl`, `config/pkl/renderers/workflow-composite.pkl`
+  - Evidence: Replaced the misleading universal clarification, validation-repair, and bootstrap wait list with generic workflow-defined same-session wait wording in the shared composite preamble and matching canonical composite workflow bodies. Workflow-specific wait semantics remain unchanged.
+  - Verification performed: Ephemeral generation for Pi, Claude, and OpenCode confirmed every generated workflow `SKILL.md` has zero instances of the stale universal wording and at least one instance of the new generic wording. `nix run .#pkl-check-generated` passed (107 files).
 
 - [ ] T12: `Add semantic generation checks` (status:todo)
   - Task ID: T12
