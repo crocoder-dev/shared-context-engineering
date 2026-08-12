@@ -328,13 +328,18 @@ rather than already-fixed ones:
   - Evidence: Made the complete execution handoff fields explicit; added pre-edit Git baseline capture and post-edit baseline-relative `files_changed` attribution that excludes unchanged unrelated work; defined deterministic stale, invalid, and contradictory handoff blocking under auto-approval; and stated that the mandatory five-root-file context pass remains required for every task. Task context sync now consumes the authoritative baseline-relative file list.
   - Verification performed: `nix run .#pkl-check-generated` passed; ephemeral generation produced 110 files and the generated `sce-next-task/references/task-execution.md` contains the required handoff fields, baseline capture, attribution rule, auto-approval stale-handoff behavior, and mandatory root-pass rationale.
 
-- [ ] T07: `Harden handover` (status:todo)
+- [x] T07: `Harden handover` (status:done)
   - Task ID: T07
   - Goal: In `workflow-handover.pkl`, read both `git diff` and `git diff --cached` in writer mode; validate loaded handover sections for real content (not just heading presence) in loader mode and reject placeholder-only handovers; if it reduces control-plane size, extract the persisted handover template into `references/handover-template.md`, keeping `SKILL.md` focused on workflow/control flow, with writer success staying concise (path + continuation instruction) and loader success still exposing full loaded content.
   - Boundaries (in/out of scope): In — `workflow-handover.pkl`'s writer/loader steps and persisted-format body. Out — any other workflow package.
   - Dependencies: T06
   - Done when: generated `sce-handover/SKILL.md` writer-mode step reads both `git diff` and `git diff --cached`; loader-mode step rejects a section present only as an empty/placeholder heading; if extracted, `references/handover-template.md` exists per target and `SKILL.md` reads it before composing; writer success output stays concise; loader success output still surfaces full loaded content.
   - Verification notes (commands or checks): read generated `sce-handover/SKILL.md` (and `references/handover-template.md` if extracted); `nix run .#pkl-check-generated`.
+  - Context synchronization: synced
+  - Completed: 2026-08-12
+  - Files changed: `config/pkl/base/workflow-handover.pkl`, `config/pkl/renderers/metadata-coverage-check.pkl`, `config/pkl/renderers/generation-contract-check.pkl`
+  - Evidence: Writer mode now inspects both unstaged and staged diffs; loader mode validates each required section's substantive content and rejects empty or unreplaced placeholder sections; the persisted template is a package-local reference, and writer success reports only the path and continuation command while loader success still exposes the full loaded content.
+  - Verification performed: `nix run .#pkl-generate -- "$(mktemp -d)"` passed for Pi, Claude, and OpenCode with `references/handover-template.md` and `references/output.md`; generated references were target-identical and the generated skill contained the staged-diff, template-read, and placeholder-validation rules. `nix run .#pkl-check-generated` passed (113 files).
 
 - [ ] T08: `Consolidate commit references` (status:todo)
   - Task ID: T08

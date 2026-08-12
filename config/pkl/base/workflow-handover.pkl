@@ -92,11 +92,6 @@ local renderPersistedFormatBody = """
       one.
     """
 
-local persistedFormatInline = model.semanticReference.apply(
-  "## Internal persisted-document format: Handover document\n\n" + renderPersistedFormatBody,
-  ""
-)
-
 local renderSkillBody = (mode: model.WorkflowRenderMode) -> """
     \(titleAndPurpose.render.apply(mode))## Input
 
@@ -125,7 +120,8 @@ local renderSkillBody = (mode: model.WorkflowRenderMode) -> """
 
     Ground those facts against repository state:
 
-    - `git status` and `git diff` for uncommitted work.
+    - `git status`, `git diff`, and `git diff --cached` for uncommitted work,
+      including both unstaged and staged changes.
     - `context/plans/*.md` for the active plan and task, when one is being worked.
     - Recent commits, when they clarify what just landed.
 
@@ -148,8 +144,9 @@ local renderSkillBody = (mode: model.WorkflowRenderMode) -> """
 
     #### 3. Compose the handover document
 
-    Use the **Persisted-document format: Handover document** section embedded in
-    this file. Populate all four required sections:
+    Read `references/handover-template.md` before composing. It defines the
+    persisted-document format and is the only template authority. Populate all
+    four required sections:
 
     - `Current Task State`
     - `Decisions Made`
@@ -199,10 +196,15 @@ local renderSkillBody = (mode: model.WorkflowRenderMode) -> """
 
     Read the file and confirm it contains all four required sections:
     `Current Task State`, `Decisions Made`, `Open Questions / Blockers`, and
-    `Next Recommended Step`.
+    `Next Recommended Step`. For each section, inspect the content up to the
+    next required heading (or the end of the file): it must contain non-whitespace
+    content, and it must not consist only of an empty list marker, a template
+    placeholder such as `{What is being worked on...}`, or other unreplaced
+    `{...}` scaffolding. Explicit statements such as `None identified.` are real
+    content and are valid.
 
-    When any required section is missing, render the **Loader blocked** layout
-    (invalid handover) and stop.
+    When any required section is missing, empty, or placeholder-only, render the
+    **Loader blocked** layout (invalid handover) and stop.
 
     #### 3. Present for continuation
 
@@ -226,7 +228,7 @@ local renderSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Never treat a file outside `context/handovers/`, or a non-Markdown file, as a
       loadable handover.
     - Never create the `context/` root; `sce setup --bootstrap-context` owns that.
-    - Do not begin, plan, or automate the loaded handover's recommended next step.\(persistedFormatInline.render.apply(mode))
+    - Do not begin, plan, or automate the loaded handover's recommended next step.
     """
 
 local structuredCommand = new model.StructuredWorkflowDocument {
@@ -279,28 +281,6 @@ local OUTPUT_MD = """
     # Handover written
 
     **Path:** `{written path}`
-
-    ## Current Task State
-
-    {same content written to the file}
-
-    ## Decisions Made
-
-    - {as written}
-
-    ## Open Questions / Blockers
-
-    - {as written}
-
-    ## Next Recommended Step
-
-    {as written}
-
-    ## Assumptions
-
-    - {as written, or `None.`}
-
-    ---
 
     To continue from this handover in another session:
 
@@ -371,16 +351,19 @@ local handoverPackage = new model.SkillPackage {
   title = "SCE Handover"
   documents = model.packageDocuments.apply(new Listing {
     model.makeDocument.apply("SKILL.md", SKILL)
+    model.makeDocument.apply("references/handover-template.md", renderPersistedFormatBody)
     model.makeDocument.apply("references/output.md", OUTPUT_MD)
   })
 }
 
 structuredComposite = new model.StructuredCompositeSource {
   command = structuredCommand
-  phases = new Listing {}
-  internalDocuments = new Listing {
-    model.makeDocument.apply("Handover document", renderPersistedFormatBody)
+  referenceDocuments = new Listing {
+    model.makeDocument.apply("references/handover-template.md", renderPersistedFormatBody)
+    model.makeDocument.apply("references/output.md", OUTPUT_MD)
   }
+  phases = new Listing {}
+  internalDocuments = new Listing {}
   outputDocuments = new Listing {
     model.makeDocument.apply("Handover output layouts", OUTPUT_MD)
   }

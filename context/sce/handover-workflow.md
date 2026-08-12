@@ -24,11 +24,12 @@ Purpose / User-visible-output / Composite-control-flow preamble from
 `workflow-composite.pkl`, distinct from the skill's own package-mode-only
 Purpose text.
 
-The package contains only `SKILL.md`, which owns mode routing, writer and
-loader behavior, and internal statuses, plus `references/output.md`, which
-owns every human-visible layout. No SCE sibling skill, package, or workflow
-command is invoked as a workflow handoff; relevant non-SCE helpers may assist
-inside the active step and return control to it.
+The package contains `SKILL.md`, which owns mode routing, writer and loader
+behavior, `references/handover-template.md`, which owns the persisted document
+format, and `references/output.md`, which owns every human-visible layout. No
+SCE sibling skill, package, or workflow command is invoked as a workflow
+handoff; relevant non-SCE helpers may assist inside the active step and return
+control to it.
 
 ## Modes
 
@@ -54,15 +55,15 @@ flowchart TD
     D1 -- no --> D2([Loader blocked — stop])
     D1 -- yes --> D3{All four sections present?}
     D3 -- no --> D2
-    D3 -- yes --> D4([Present read-only for continuation])
+    D3 -- yes, substantive --> D4([Present read-only for continuation])
 ```
 
 ## Writer mode
 
 Gathers task-relevant facts from the current conversation and grounds them
-against repository state (`git status`/`git diff`, the active
-`context/plans/*.md` task, recent commits). Any detail not directly evidenced
-is labeled as an assumption rather than presented as fact.
+against repository state (`git status`, `git diff`, and `git diff --cached`, the
+active `context/plans/*.md` task, and recent commits). Any detail not directly
+evidenced is labeled as an assumption rather than presented as fact.
 
 The written file name is `context/handovers/{plan_name}-{task_id}.md` when
 exactly one plan task is unambiguously active, otherwise the collision-safe
@@ -71,8 +72,12 @@ Writer mode never overwrites an existing handover file.
 
 The persisted document always has four required sections, in order:
 `Current Task State`, `Decisions Made`, `Open Questions / Blockers`, and
-`Next Recommended Step`, plus a trailing `Assumptions` section. A section with
-nothing to report still appears, stating `None identified.` or an equivalent.
+`Next Recommended Step`, plus a trailing `Assumptions` section. Writer mode
+uses the package-local template and keeps every required section substantive,
+while allowing explicit `None identified.` statements. Loader mode rejects
+missing, empty, or unreplaced-placeholder-only required sections. Writer
+success reports only the path and continuation command; loader success still
+surfaces the full loaded content.
 
 ## Loader mode
 
