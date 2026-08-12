@@ -159,8 +159,6 @@ fn write_stdout_payload<W: Write>(writer: &mut W, payload: &str) -> Result<(), C
 fn write_error_diagnostic<W: Write>(writer: &mut W, error: &ClassifiedError) {
     let rendered = if let Some(hint) = error.hint() {
         format!("{} Try: {}", error.message(), hint)
-    } else if error.message().contains("Try:") {
-        error.message().to_string()
     } else {
         format!(
             "{} Try: {}",
@@ -212,16 +210,6 @@ mod tests {
                 "Error [SCE-ERR-PARSE]: x Try: {}\n",
                 error.class().default_try_guidance()
             )
-        );
-    }
-
-    #[test]
-    fn message_already_containing_try_is_left_unchanged_without_a_hint() {
-        let error = ClassifiedError::parse("x Try: existing guidance.");
-
-        assert_eq!(
-            rendered(&error),
-            "Error [SCE-ERR-PARSE]: x Try: existing guidance.\n"
         );
     }
 

@@ -331,13 +331,26 @@ still preserving exact current output.
     unmigrated as out of this task's named scope; this creates no double-`Try:` risk
     today since none of their source text ever embeds `Try:` guidance.
 
-- [ ] T06: `Remove the renderer's legacy message-text remediation detection` (status:todo)
+- [x] T06: `Remove the renderer's legacy message-text remediation detection` (status:done)
   - Task ID: T06
   - Goal: With every `ClassifiedError`-reaching construction site now attaching remediation through an explicit hint (T02-T05) or never embedding `Try:` text at all, remove the `message().contains("Try:")` fallback branch from the renderer in `cli/src/services/app_support.rs` added in T01, leaving only: explicit hint present -> use it; otherwise -> `FailureClass::default_try_guidance()`.
   - Boundaries (in/out of scope): In — the renderer function in `cli/src/services/app_support.rs` only. Out — any call site change (already complete by T05).
   - Dependencies: T02, T03, T04, T05
   - Done when: `cli/src/services/app_support.rs` contains no `contains("Try:")`; the full existing plus newly-added test suite for every previously-Try:-bearing diagnostic (parser, bash-policy, setup, and the anyhow-boundary cases) still renders byte-identical stderr text.
   - Verification notes (commands or checks): `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml`; `grep -rn 'contains("Try:")' cli/src/services/app_support.rs` returns nothing.
+  - Implementation evidence: `write_error_diagnostic` in `cli/src/services/app_support.rs`
+    now branches only on `error.hint()`: `Some(hint)` renders the explicit hint,
+    `None` falls back directly to `error.class().default_try_guidance()`. The
+    `else if error.message().contains("Try:")` branch (and its
+    `message_already_containing_try_is_left_unchanged_without_a_hint` test, which
+    asserted the now-deleted fallback behavior) were removed. No call site changed.
+  - Verification outcome: `./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml` (356 passed, full suite, no regressions — one prior test removed
+    since it exercised the deleted fallback branch). `grep -n 'contains("Try:")'
+    cli/src/services/app_support.rs` returns nothing. `./scripts/run-cli-cargo.sh
+    clippy --manifest-path cli/Cargo.toml --bins --tests -- -D warnings` clean.
+    `cargo fmt --manifest-path cli/Cargo.toml -- --check` clean.
+  - Deviations/assumptions: None beyond the reviewed task scope.
 
 - [ ] T07: `Document the hint-owned remediation model in the error-code taxonomy` (status:todo)
   - Task ID: T07
