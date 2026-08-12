@@ -1,0 +1,13 @@
+import "../generation-contract-check.pkl" as contract
+
+local skillPath = "config/.opencode/skills/sce-next-task/SKILL.md"
+local documents = new Mapping {
+  for (path, text in contract.workflowDocuments) {
+    [path] = if (path == skillPath) "\(text)\nRead `references/missing.md`." else text
+  }
+}
+
+result = if (
+  contract.assertPackageLocalReferences.apply(documents)
+) "negative fixture unexpectedly accepted a missing package-local reference"
+else throw("generated package-local reference points to a missing document")

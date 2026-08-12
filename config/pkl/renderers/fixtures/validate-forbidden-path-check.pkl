@@ -1,0 +1,13 @@
+import "../generation-contract-check.pkl" as contract
+
+local artifacts = new Mapping {
+  for (path, text in contract.generatedArtifacts) {
+    [path] = text
+  }
+  ["config/.opencode/skills/sce-validate/references/sync-report.md"] = "forbidden"
+}
+
+result = if (
+  contract.assertValidateForbiddenPaths.apply(artifacts)
+) "negative fixture unexpectedly accepted a forbidden validate reference"
+else throw("sce-validate must not generate sync-report.md or validation-result.md")

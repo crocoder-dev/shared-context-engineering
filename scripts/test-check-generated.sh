@@ -27,7 +27,16 @@ touch \
   "${test_repo}/config/pkl/renderers/generation-contract-check.pkl" \
   "${test_repo}/config/pkl/renderers/fixtures/extra-artifact-check.pkl" \
   "${test_repo}/config/pkl/renderers/fixtures/missing-artifact-check.pkl" \
-  "${test_repo}/config/pkl/renderers/fixtures/forbidden-workflow-reference-check.pkl"
+  "${test_repo}/config/pkl/renderers/fixtures/forbidden-workflow-reference-check.pkl" \
+  "${test_repo}/config/pkl/renderers/fixtures/layout-reference-check.pkl" \
+  "${test_repo}/config/pkl/renderers/fixtures/package-local-reference-check.pkl" \
+  "${test_repo}/config/pkl/renderers/fixtures/validate-forbidden-path-check.pkl" \
+  "${test_repo}/config/pkl/renderers/fixtures/commit-forbidden-path-check.pkl" \
+  "${test_repo}/config/pkl/renderers/fixtures/atomic-commit-content-check.pkl" \
+  "${test_repo}/config/pkl/renderers/fixtures/next-task-report-ownership-check.pkl" \
+  "${test_repo}/config/pkl/renderers/fixtures/target-neutral-reference-check.pkl" \
+  "${test_repo}/config/pkl/renderers/fixtures/stale-sync-debt-check.pkl" \
+  "${test_repo}/config/pkl/renderers/fixtures/validation-repair-check.pkl"
 
 cat > "${fake_bin}/pkl" <<'EOF'
 #!/usr/bin/env bash
@@ -58,6 +67,42 @@ case "${module}" in
   *forbidden-workflow-reference-check.pkl)
     printf '%s\n' \
       'generated workflow document contains a forbidden sibling-package reference or unresolved internalization token' >&2
+    exit 1
+    ;;
+  *layout-reference-check.pkl)
+    printf '%s\n' 'generated workflow layout citation does not match a heading in its references/output.md' >&2
+    exit 1
+    ;;
+  *package-local-reference-check.pkl)
+    printf '%s\n' 'generated package-local reference points to a missing document' >&2
+    exit 1
+    ;;
+  *validate-forbidden-path-check.pkl)
+    printf '%s\n' 'sce-validate must not generate sync-report.md or validation-result.md' >&2
+    exit 1
+    ;;
+  *commit-forbidden-path-check.pkl)
+    printf '%s\n' 'sce-commit must not generate a legacy commit reference file' >&2
+    exit 1
+    ;;
+  *atomic-commit-content-check.pkl)
+    printf '%s\n' 'atomic-commit.md must contain both commit-message rules and the atomic-commit result contract' >&2
+    exit 1
+    ;;
+  *next-task-report-ownership-check.pkl)
+    printf '%s\n' 'sce-next-task output.md must not duplicate the context-sync report contract' >&2
+    exit 1
+    ;;
+  *target-neutral-reference-check.pkl)
+    printf '%s\n' 'target-neutral package references differ between Pi, Claude, and OpenCode' >&2
+    exit 1
+    ;;
+  *stale-sync-debt-check.pkl)
+    printf '%s\n' 'generated file contains the stale synchronization-loss wording' >&2
+    exit 1
+    ;;
+  *validation-repair-check.pkl)
+    printf '%s\n' 'final validation must not instruct the agent to repair implementation' >&2
     exit 1
     ;;
 esac

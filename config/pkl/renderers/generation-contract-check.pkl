@@ -455,6 +455,139 @@ local assertOptionalWorkflowManifest = (artifacts: Mapping) ->
     ) "generated optional-workflow manifest: matches the catalog's optional workflows"
     else throw("generated optional-workflow manifest does not match the catalog's optional workflows")
 
+hidden layoutReferencesIn = (text: String) ->
+  Regex(#"""
+Render the \*\*([^*]+)\*\* layout from `([^`]+)`
+"""#).findMatchesIn(text)
+
+hidden packageReferencesIn = (text: String) ->
+  Regex(#"""
+(references/[A-Za-z0-9._/-]+\.(?:md|yaml))
+"""#).findMatchesIn(text)
+
+hidden assertLayoutReferences = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      !path.endsWith("/SKILL.md")
+      || path.contains("/skills/sce-decision/")
+      || (
+        let (outputPath = path.dropLast("SKILL.md".length) + "references/output.md")
+          documents.containsKey(outputPath)
+          && layoutReferencesIn.apply(text).every((match) ->
+            documents[outputPath].contains("## \(match.groups[1].value)")
+          )
+      )
+    )
+  ) "generated output layouts: every citation resolves to a heading"
+  else throw("generated workflow layout citation does not match a heading in its references/output.md")
+
+hidden assertPackageLocalReferences = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      let (packageRoot = if (path.contains("/references/"))
+        path.substring(0, path.lastIndexOf("/references/") + 1)
+      else
+        path.dropLast("SKILL.md".length))
+        packageReferencesIn.apply(text).every((match) ->
+          documents.containsKey(packageRoot + match.groups[1].value)
+        )
+    )
+  ) "generated package-local references: every path exists"
+  else throw("generated package-local reference points to a missing document")
+
+hidden assertValidateForbiddenPaths = (artifacts: Mapping) ->
+  if (
+    !artifacts.containsKey("config/.opencode/skills/sce-validate/references/sync-report.md")
+    && !artifacts.containsKey("config/.claude/skills/sce-validate/references/sync-report.md")
+    && !artifacts.containsKey("config/.pi/skills/sce-validate/references/sync-report.md")
+    && !artifacts.containsKey("config/.opencode/skills/sce-validate/references/validation-result.md")
+    && !artifacts.containsKey("config/.claude/skills/sce-validate/references/validation-result.md")
+    && !artifacts.containsKey("config/.pi/skills/sce-validate/references/validation-result.md")
+  ) "sce-validate package: forbidden reference files absent"
+  else throw("sce-validate must not generate sync-report.md or validation-result.md")
+
+hidden assertCommitForbiddenPaths = (artifacts: Mapping) ->
+  let (forbidden = new Listing {
+    "commit-contract.yaml"
+    "commit-contract.md"
+    "commit-message-style.md"
+  })
+    if (
+      artifacts.every((path, _) ->
+        !path.contains("/skills/sce-commit/references/")
+        || forbidden.every((filename) -> !path.endsWith("/" + filename))
+      )
+    ) "sce-commit package: forbidden reference files absent"
+    else throw("sce-commit must not generate a legacy commit reference file")
+
+hidden assertAtomicCommitContent = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      !path.endsWith("/skills/sce-commit/references/atomic-commit.md")
+      || (
+        text.contains("## Commit message rules")
+        && text.contains("## Atomic commit result contract")
+      )
+    )
+  ) "sce-commit atomic reference: message rules and result contract present"
+  else throw("atomic-commit.md must contain both commit-message rules and the atomic-commit result contract")
+
+hidden assertNextTaskReportOwnership = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      !path.endsWith("/skills/sce-next-task/references/sync-report.md")
+      || (
+        let (outputPath = path.dropLast("sync-report.md".length) + "output.md")
+          documents.containsKey(outputPath)
+          && !documents[outputPath].contains("# Context Sync Report")
+          && !documents[outputPath].contains("## Synced")
+          && !documents[outputPath].contains("## No context change")
+          && !documents[outputPath].contains("## Blocked")
+      )
+    )
+  ) "sce-next-task report ownership: sync report is not duplicated in output.md"
+  else throw("sce-next-task output.md must not duplicate the context-sync report contract")
+
+hidden assertTargetNeutralReferences = (documents: Mapping) ->
+  let (opencodeReferences = new Mapping {
+    for (path, text in documents) {
+      when (path.startsWith("config/.opencode/") && path.contains("/skills/") && path.contains("/references/")) {
+        [path.substring(path.lastIndexOf("/skills/") + "/skills/".length, path.length)] = text
+      }
+    }
+  })
+    if (
+      opencodeReferences.every((relativePath, text) ->
+        documents["config/.claude/skills/" + relativePath] == text
+        && documents["config/.pi/skills/" + relativePath] == text
+      )
+    ) "target-neutral references: Pi, Claude, and OpenCode bodies match"
+    else throw("target-neutral package references differ between Pi, Claude, and OpenCode")
+
+hidden assertNoStaleSyncDebtText = (artifacts: Mapping) ->
+  if (
+    artifacts.every((_, text) ->
+      !text.contains("Nothing records the skipped synchronization, so it is lost once this session ends")
+    )
+  ) "generated files: no stale synchronization-loss wording"
+  else throw("generated file contains the stale synchronization-loss wording")
+
+hidden assertValidationIsObservational = (documents: Mapping) ->
+  let (forbidden = new Listing {
+    "Repair application code during final validation"
+    "Modify application code during final validation"
+    "Modify tests during final validation"
+    "Delete scaffolding during final validation"
+    "Repair configuration during final validation"
+  })
+    if (
+      documents.every((path, text) ->
+        !path.contains("/skills/sce-validate/")
+        || forbidden.every((token) -> !text.contains(token))
+      )
+    ) "sce-validate validation: observational and non-repairing"
+    else throw("final validation must not instruct the agent to repair implementation")
+
 contractChecks {
   ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
   ["optional-workflow-manifest"] = assertOptionalWorkflowManifest.apply(generatedArtifacts)
@@ -471,4 +604,13 @@ contractChecks {
   ["brownfield-package-content"] = assertBrownfieldContent.apply(brownfieldSkillDocuments)
   ["no-blank-line-runs"] = assertNoBlankLineRuns.apply(workflowDocuments)
   ["output-dedup"] = assertOutputNotDuplicated.apply(workflowDocuments)
+  ["layout-references"] = assertLayoutReferences.apply(workflowDocuments)
+  ["package-local-references"] = assertPackageLocalReferences.apply(workflowDocuments)
+  ["validate-forbidden-paths"] = assertValidateForbiddenPaths.apply(generatedArtifacts)
+  ["commit-forbidden-paths"] = assertCommitForbiddenPaths.apply(generatedArtifacts)
+  ["atomic-commit-content"] = assertAtomicCommitContent.apply(workflowDocuments)
+  ["next-task-report-ownership"] = assertNextTaskReportOwnership.apply(workflowDocuments)
+  ["target-neutral-references"] = assertTargetNeutralReferences.apply(workflowDocuments)
+  ["no-stale-sync-debt-text"] = assertNoStaleSyncDebtText.apply(generatedArtifacts)
+  ["validation-observational"] = assertValidationIsObservational.apply(workflowDocuments)
 }

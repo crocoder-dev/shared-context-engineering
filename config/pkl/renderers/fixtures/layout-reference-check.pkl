@@ -1,0 +1,13 @@
+import "../generation-contract-check.pkl" as contract
+
+local skillPath = "config/.opencode/skills/sce-next-task/SKILL.md"
+local documents = new Mapping {
+  for (path, text in contract.workflowDocuments) {
+    [path] = if (path == skillPath) "\(text)\nRender the **Missing layout** layout from `references/output.md`." else text
+  }
+}
+
+result = if (
+  contract.assertLayoutReferences.apply(documents)
+) "negative fixture unexpectedly accepted a missing layout heading"
+else throw("generated workflow layout citation does not match a heading in its references/output.md")

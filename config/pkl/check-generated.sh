@@ -108,6 +108,33 @@ expect_pkl_fixture_failure \
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/opencode-skill-permission-order-check.pkl" \
   "OpenCode skill permissions must preserve the wildcard, deny, and explicit-allow order"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/layout-reference-check.pkl" \
+  "generated workflow layout citation does not match a heading in its references/output.md"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/package-local-reference-check.pkl" \
+  "generated package-local reference points to a missing document"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/validate-forbidden-path-check.pkl" \
+  "sce-validate must not generate sync-report.md or validation-result.md"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/commit-forbidden-path-check.pkl" \
+  "sce-commit must not generate a legacy commit reference file"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/atomic-commit-content-check.pkl" \
+  "atomic-commit.md must contain both commit-message rules and the atomic-commit result contract"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/next-task-report-ownership-check.pkl" \
+  "sce-next-task output.md must not duplicate the context-sync report contract"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/target-neutral-reference-check.pkl" \
+  "target-neutral package references differ between Pi, Claude, and OpenCode"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/stale-sync-debt-check.pkl" \
+  "generated file contains the stale synchronization-loss wording"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/validation-repair-check.pkl" \
+  "final validation must not instruct the agent to repair implementation"
 
 "$producer" "$repo_root" "$generated_input_root"
 generated_root="$generated_input_root/pkl-generated"

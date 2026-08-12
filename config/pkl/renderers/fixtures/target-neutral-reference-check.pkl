@@ -1,0 +1,12 @@
+import "../generation-contract-check.pkl" as contract
+
+local documents = new Mapping {
+  ["config/.opencode/skills/sce-next-task/references/task-execution.md"] = "opencode"
+  ["config/.claude/skills/sce-next-task/references/task-execution.md"] = "claude"
+  ["config/.pi/skills/sce-next-task/references/task-execution.md"] = "pi"
+}
+
+result = if (
+  contract.assertTargetNeutralReferences.apply(documents)
+) "negative fixture unexpectedly accepted target-specific reference drift"
+else throw("target-neutral package references differ between Pi, Claude, and OpenCode")
