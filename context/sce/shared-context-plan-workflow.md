@@ -44,6 +44,20 @@ context-load phase and continues with the original request in the same session.
 - Durable repository context is read, not synchronized, during planning.
 - A ready plan ends with an exact `/next-task {plan-path} {task-id}` handoff; the workflow does not request implementation approval itself.
 
+## Continuation contract
+
+Same-session waits preserve one of two explicit continuation shapes inside the
+single `sce-change-to-plan` skill:
+
+- Initial clarification keeps `original_request`, `clarification_answers`, and
+  `loaded_context_brief`. The original request is unchanged and is never
+  re-requested after the clarification wait.
+- Existing-plan revision keeps `plan_path`, `correction`, and
+  `loaded_context_brief`.
+
+The plan-authoring phase receives the applicable continuation fields as written;
+it does not reload durable context or require a sibling skill handoff.
+
 ## Flow
 
 ```mermaid

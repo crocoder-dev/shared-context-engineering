@@ -289,13 +289,18 @@ rather than already-fixed ones:
   - Evidence: `nix run .#pkl-check-generated` passed; ephemeral generation produced 110 files; generated next-task, validate, context-sync, and plan-template references contain the lifecycle fields, transition rules, and unresolved-debt gates.
   - Notes: Existing T01/T02 records predate the lifecycle fields; missing lifecycle records are intentionally treated as unresolved synchronization debt rather than inferred as synced.
 
-- [ ] T04: `Fix change-to-plan clarification continuation` (status:todo)
+- [x] T04: `Fix change-to-plan clarification continuation` (status:done)
   - Task ID: T04
   - Goal: In `config/pkl/base/workflow-change-to-plan.pkl`, name the initial-clarification continuation explicitly (`original_request`, `clarification_answers`, `loaded_context_brief`) distinct from existing-plan revision (`plan_path`, `correction`, `loaded_context_brief`), so the generated skill never needs to re-request the original change request from the user.
   - Boundaries (in/out of scope): In — step 3/4 prose and any shared continuation description in `workflow-change-to-plan.pkl`. Out — the plan-authoring phase's actual authoring logic, the plan template (T03 territory), the clarification-gate question format.
   - Dependencies: T03
   - Done when: generated `sce-change-to-plan/SKILL.md` names both continuation shapes explicitly and distinctly; it states plainly that the original request is preserved and never re-asked for across a clarification wait.
   - Verification notes (commands or checks): read generated `sce-change-to-plan/SKILL.md` steps 3 and 4; `nix run .#pkl-check-generated`.
+  - Context synchronization: synced
+  - Completed: 2026-08-12
+  - Files changed: `config/pkl/base/workflow-change-to-plan.pkl`
+  - Evidence: Ephemeral generation produced the updated `sce-change-to-plan/SKILL.md` for Pi, Claude, and OpenCode; the generated steps 3 and 4 contain both named continuation shapes and the no-reask rule. `nix run .#pkl-check-generated` passed (110 files).
+  - Notes: The continuation shapes are explicit Markdown fields in the generated instructions, not runtime Pkl types, as assumed by the plan.
 
 - [ ] T05: `Make validation observational` (status:todo)
   - Task ID: T05
