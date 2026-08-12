@@ -26,10 +26,19 @@ Phase names below identify canonical modules in `config/pkl/base/workflow-next-t
    - Receives the complete `ready` result.
    - Always presents the implementation gate before editing.
    - Waits for confirmation unless the user supplied `approved` to the command.
+   - Captures a pre-edit Git baseline, then reports `changes.files_changed` by comparing
+     post-edit state with that baseline, excluding unchanged unrelated staged, unstaged,
+     and untracked work.
+   - Returns an explicit complete handoff containing the resolved plan, task identity,
+     changed files, implementation summary, verification evidence, done-check evidence,
+     plan update, and context impact; stale, invalid, or contradictory handoffs block
+     deterministically even under auto-approval.
    - Implements and verifies exactly one task, then records status and evidence in the plan.
    - Returns `declined`, `blocked`, `incomplete`, or `complete`.
 3. `sce-task-context-sync`
    - Runs only from the complete successful execution handoff.
+   - Consumes the handoff's baseline-relative `changes.files_changed` list as authoritative;
+     it does not replace it with a whole-working-tree scan or a fresh diff against `HEAD`.
    - Reconciles one task with durable context and performs the mandatory root-file pass.
    - Applies the system-wide decision gate before current-state context edits. Routine,
      local, temporary, and easily reversible choices skip decision writing; each
