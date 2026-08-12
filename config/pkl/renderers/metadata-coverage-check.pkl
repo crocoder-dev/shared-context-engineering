@@ -45,8 +45,6 @@ local phaseReferencePathsByWorkflow = new Mapping {
   }
   ["commit"] = new Listing {
     "references/atomic-commit.md"
-    "references/commit-contract.yaml"
-    "references/commit-message-style.md"
     "references/output.md"
   }
   ["handover"] = new Listing {
