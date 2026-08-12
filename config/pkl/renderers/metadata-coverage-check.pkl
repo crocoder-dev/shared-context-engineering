@@ -49,7 +49,10 @@ local phaseReferencePathsByWorkflow = new Mapping {
     "references/commit-message-style.md"
     "references/output.md"
   }
-  ["handover"] = new Listing { "references/output.md" }
+  ["handover"] = new Listing {
+    "references/handover-template.md"
+    "references/output.md"
+  }
   ["brownfield"] = new Listing { "references/output.md" }
 }
 

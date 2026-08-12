@@ -266,7 +266,7 @@ local forbiddenWorkflowReferenceTokens = new Listing {
 /// package and retained non-workflow assets. Stating the total as a literal makes
 /// an unintended inventory change fail here instead of silently becoming the new
 /// expectation.
-local expectedArtifactPathCount = 110
+local expectedArtifactPathCount = 113
 
 local assertExactArtifactPaths = (actual: Mapping) ->
   if (
