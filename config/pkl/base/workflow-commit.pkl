@@ -229,12 +229,20 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
 
     #### 3. Execute exactly one commit
 
-    Run `git commit` once with the returned message.
+    Follow the **Bypass execution handoff** in the Atomic commit reference:
+
+    1. Write the returned `message` verbatim to a temporary message file using a
+       file-writing operation. Do not interpolate the multiline message into shell
+       source or a shell command.
+    2. Run `git commit -F <message-file>` exactly once.
+    3. Only after that command succeeds, retrieve the commit hash explicitly with
+       `git rev-parse --verify HEAD^{commit}`. Do not parse Git's human-readable
+       output.
 
     \(bypassResultLayouts.render.apply(mode))
 
-    Do not retry, do not amend, do not stage additional files, and do not invent a
-    fallback commit.
+    On failure, report Git's failure unchanged and do not retry, amend, stage more
+    files, or fabricate a commit hash.
 
     ## Rules
 
@@ -380,6 +388,24 @@ local renderAtomicCommitSkillBody = (mode: model.WorkflowRenderMode) -> """
     - `blocked` when messages cannot be written faithfully.
 
     \(returnOnlyYamlDocument.render.apply(mode)). Do not add explanatory prose before or after it.
+
+    \(atomicCommitHeadings.section.apply(mode, "Bypass execution handoff"))
+
+    This phase returns the message; the invoking `/commit` workflow performs the
+    bypass commit. When the mode is `bypass`, the invoking workflow must:
+
+    1. Write the returned `message` verbatim to a temporary message file using a
+       file-writing operation. Never interpolate a multiline message into shell
+       source or a shell command.
+    2. Run `git commit -F <message-file>` exactly once.
+    3. After and only after a successful commit, run
+       `git rev-parse --verify HEAD^{commit}` and use that explicit `HEAD` value as
+       the reported hash. Never parse Git's human-readable commit output.
+    4. On any commit failure, report Git's failure and stop. Never retry, amend,
+       stage more files, or fabricate a hash.
+
+    `oneshot` and `skip` select this same bypass behavior; they differ only in the
+    trigger token.
 
     \(atomicCommitHeadings.section.apply(mode, "Atomic commit boundaries"))
 
@@ -817,15 +843,23 @@ a contract violation: report it and stop without committing.
 
 #### 3. Execute exactly one commit
 
-Run `git commit` once with the returned message.
+Follow the **Bypass execution handoff** in `references/atomic-commit.md`:
+
+1. Write the returned `message` verbatim to a temporary message file using a
+   file-writing operation. Do not interpolate the multiline message into shell
+   source or a shell command.
+2. Run `git commit -F <message-file>` exactly once.
+3. Only after that command succeeds, retrieve the commit hash explicitly with
+   `git rev-parse --verify HEAD^{commit}`. Do not parse Git's human-readable
+   output.
 
 On success, render the **Bypass success** layout from `references/output.md` and
 stop.
 
 On failure, render the **Bypass Git failure** layout from the same file and stop.
 
-Do not retry, do not amend, do not stage additional files, and do not invent a
-fallback commit.
+Do not retry, do not amend, do not stage additional files, and do not fabricate a
+commit hash.
 
 ## Rules
 
