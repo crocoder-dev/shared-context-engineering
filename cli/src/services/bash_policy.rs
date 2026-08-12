@@ -481,12 +481,20 @@ fn read_stdin_payload() -> Result<String, ClassifiedError> {
     let mut payload = String::new();
     io::stdin().read_to_string(&mut payload).map_err(|error| {
         ClassifiedError::validation(format!(
-            "Failed to read bash policy request from STDIN: {error}. Try: pipe a JSON payload to 'sce policy bash'."
+            "Failed to read bash policy request from STDIN: {error}."
         ))
+        .with_hint("pipe a JSON payload to 'sce policy bash'.")
     })?;
+    require_non_empty_stdin_payload(payload)
+}
+
+fn require_non_empty_stdin_payload(payload: String) -> Result<String, ClassifiedError> {
     if payload.trim().is_empty() {
         return Err(ClassifiedError::validation(
-            "Missing bash policy request on STDIN. Try: pipe Claude PreToolUse JSON or normalized {\"command\":...} JSON to 'sce policy bash'.",
+            "Missing bash policy request on STDIN.",
+        )
+        .with_hint(
+            "pipe Claude PreToolUse JSON or normalized {\"command\":...} JSON to 'sce policy bash'.",
         ));
     }
     Ok(payload)
@@ -525,9 +533,8 @@ where
     T: for<'de> Deserialize<'de>,
 {
     serde_json::from_str(stdin_payload).map_err(|error| {
-        ClassifiedError::validation(format!(
-            "Invalid {label} JSON from STDIN: {error}. Try: pipe a valid JSON object to 'sce policy bash'."
-        ))
+        ClassifiedError::validation(format!("Invalid {label} JSON from STDIN: {error}."))
+            .with_hint("pipe a valid JSON object to 'sce policy bash'.")
     })
 }
 
@@ -881,6 +888,42 @@ mod tests {
         .expect("payload should parse");
 
         assert_eq!(command, "nix develop -c git commit");
+    }
+
+    #[test]
+    fn empty_stdin_payload_renders_exact_message_and_hint() {
+        let error = require_non_empty_stdin_payload(String::new()).expect_err("payload is empty");
+
+        assert_eq!(error.message(), "Missing bash policy request on STDIN.");
+        assert_eq!(
+            error.hint(),
+            Some(
+                "pipe Claude PreToolUse JSON or normalized {\"command\":...} JSON to 'sce policy bash'."
+            )
+        );
+    }
+
+    #[test]
+    fn whitespace_only_stdin_payload_is_treated_as_empty() {
+        let error =
+            require_non_empty_stdin_payload("   \n".to_string()).expect_err("payload is blank");
+
+        assert_eq!(error.message(), "Missing bash policy request on STDIN.");
+    }
+
+    #[test]
+    fn invalid_json_stdin_payload_renders_exact_message_and_hint() {
+        let error =
+            parse_json_payload::<NormalizedBashPolicyRequest>("not json", "normalized bash policy")
+                .expect_err("payload is invalid JSON");
+
+        assert!(error
+            .message()
+            .starts_with("Invalid normalized bash policy JSON from STDIN: "));
+        assert_eq!(
+            error.hint(),
+            Some("pipe a valid JSON object to 'sce policy bash'.")
+        );
     }
 
     #[test]

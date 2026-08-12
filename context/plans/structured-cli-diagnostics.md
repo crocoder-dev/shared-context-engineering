@@ -192,13 +192,36 @@ still preserving exact current output.
     enum; its exact-text preservation was verified by code inspection of the
     branch's `message`/`hint` split instead of a runtime assertion.
 
-- [ ] T03: `Structure bash-policy STDIN validation diagnostics with explicit hints` (status:todo)
+- [x] T03: `Structure bash-policy STDIN validation diagnostics with explicit hints` (status:done)
   - Task ID: T03
   - Goal: `read_stdin_payload` and `parse_json_payload` in `cli/src/services/bash_policy.rs` stop concatenating `Try:` text into their `ClassifiedError::validation(...)` messages and attach it via `.with_hint(...)` instead.
   - Boundaries (in/out of scope): In — the two named functions in `cli/src/services/bash_policy.rs`. Out — any other `bash_policy.rs` error path that does not already embed `Try:` text.
   - Dependencies: T01
   - Done when: a failed STDIN read and an invalid-JSON STDIN payload each render exactly the same final stderr text as before this task.
   - Verification notes (commands or checks): `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml bash_policy::` covering STDIN-read failure and invalid-JSON cases with exact-text assertions.
+  - Implementation evidence: `read_stdin_payload`'s IO-failure and empty-payload messages,
+    and `parse_json_payload`'s invalid-JSON message, in `cli/src/services/bash_policy.rs`
+    no longer concatenate `. Try: ...` text into the message string; each now calls
+    `.with_hint(...)` with the same guidance text instead, so the renderer's
+    `"{message} Try: {hint}"` format reproduces byte-identical prior output. The
+    empty-payload check was extracted from `read_stdin_payload` into a private
+    `require_non_empty_stdin_payload(payload: String)` helper so its message/hint pair
+    is directly unit-testable without mocking real process STDIN.
+  - Verification outcome: `./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml bash_policy::` (39 passed) — added exact message/hint assertions for
+    the empty-STDIN case (via the new `require_non_empty_stdin_payload` helper), a
+    whitespace-only-STDIN case, and the invalid-JSON case (via `parse_json_payload`
+    called directly). `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml`
+    (351 passed, full suite, no regressions). `./scripts/run-cli-cargo.sh clippy
+    --manifest-path cli/Cargo.toml --bins --tests -- -D warnings` clean. `cargo fmt
+    --manifest-path cli/Cargo.toml -- --check` clean.
+  - Deviations/assumptions: The STDIN IO-read-failure branch (`io::stdin().read_to_string`
+    returning `Err`) is not reachable through a deterministic unit test without mocking
+    real process STDIN, consistent with T02's precedent for an untestable clap branch;
+    its exact message/hint split was verified by code inspection instead of a runtime
+    assertion. Extracting `require_non_empty_stdin_payload` as a private helper is a
+    reversible, local testability change with identical external behavior, not a scope
+    expansion beyond the two named functions.
 
 - [ ] T04: `Structure setup invocation-validation diagnostics with explicit hints` (status:todo)
   - Task ID: T04
