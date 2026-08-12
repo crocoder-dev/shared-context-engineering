@@ -96,6 +96,7 @@ Supporting repo docs:
 
 Recent decision records:
 
+- `context/decisions/2026-08-12-decision-gate-semantics.md` (nonqualifying/skipped decision gates are non-blocking; ADRs are immutable, active-only reuse is allowed, changed decisions create new dated records, and `Deprecated`/`Superseded` are creation-time-only statuses)
 - `context/decisions/2026-08-12-observational-final-validation.md`
 - `context/decisions/2026-08-12-persist-workflow-sync-lifecycle-in-plans.md`
 - `context/decisions/2026-02-28-pkl-generation-architecture.md`
@@ -107,7 +108,7 @@ Recent decision records:
 - `context/decisions/2026-07-29-claude-workflow-skill-packages.md` (the four command-to-workflow-skill routes, two-file package rule, and internal phase state, first established for Claude; its Claude-only scoping and Pi/OpenCode preservation clauses are superseded)
 - `context/decisions/2026-07-29-cross-target-workflow-skill-packages.md` (accepted history for the cross-target four-workflow single-skill model; its exact two-file phase-based package inventory is superseded, while single-skill control flow and internal phase state remain in force)
 - `context/decisions/2026-08-03-package-local-phase-reference-workflow-packages.md` (supersedes the two-file clause for phase-based workflow packages: `SKILL.md` retains control flow while package-local references own phase instructions and persisted-document formats on all three targets)
-- `context/decisions/2026-07-30-synchronization-scoped-decision-writing.md` (accepted standalone `sce-decision` package, synchronization-only sibling invocation, decision threshold, default status, and immutable accepted-ADR policy)
+- `context/decisions/2026-07-30-synchronization-scoped-decision-writing.md` (accepted standalone `sce-decision` package, synchronization-only sibling invocation, decision threshold, default status, and immutable accepted-ADR policy; superseded on ADR history semantics by `2026-08-12-decision-gate-semantics.md`)
 - `context/decisions/2026-08-07-sce-workflow-helper-composition.md` (accepted SCE workflow ownership boundary: non-SCE in-step helpers return control to the active step, while arbitrary SCE workflow chaining remains prohibited)
 - `context/decisions/2026-07-27-ephemeral-pkl-build-generation.md` (removes committed generated targets; establishes pre-Cargo generation, validated copying into Cargo `OUT_DIR`, and crates.io/Flatpak packaging fallbacks)
 - `context/decisions/2026-03-09-migrate-lexopt-to-clap.md` (CLI argument parsing migration from lexopt to clap derive macros)
