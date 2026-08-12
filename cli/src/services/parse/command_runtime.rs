@@ -449,8 +449,7 @@ fn convert_config_subcommand(
 fn convert_setup_command(
     options: services::setup::SetupCliOptions,
 ) -> Result<RuntimeCommand, ClassifiedError> {
-    let request = services::setup::resolve_setup_request(options)
-        .map_err(|error| ClassifiedError::validation(error.to_string()))?;
+    let request = services::setup::resolve_setup_request(options)?;
 
     Ok(RuntimeCommand::Setup(
         services::setup::command::SetupCommand { request },

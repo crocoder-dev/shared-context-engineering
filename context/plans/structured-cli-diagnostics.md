@@ -223,13 +223,56 @@ still preserving exact current output.
     reversible, local testability change with identical external behavior, not a scope
     expansion beyond the two named functions.
 
-- [ ] T04: `Structure setup invocation-validation diagnostics with explicit hints` (status:todo)
+- [x] T04: `Structure setup invocation-validation diagnostics with explicit hints` (status:done)
   - Task ID: T04
   - Goal: Every setup invocation-validation error in `cli/src/services/setup/mod.rs` that concatenates `Try:` text (`--repo` without `--hooks`, `--workflow` conflicting with `--bootstrap-context`, `--bootstrap-context` not used alone, mutually exclusive target flags, `--non-interactive` requiring a target, `--workflow` requiring a target, unknown `--workflow` value, empty/unresolvable/non-directory/non-git `--repo`) attaches its remediation via `.with_hint(...)` instead.
   - Boundaries (in/out of scope): In — the invocation-validation error sites in `cli/src/services/setup/mod.rs` listed above. Out — setup's other runtime-failure error paths that do not embed `Try:` text; the asset-destination-is-a-directory message at line ~1378 stays as-is unless it also embeds `Try:` (verify and migrate consistently if so).
   - Dependencies: T01
   - Done when: `sce setup --hooks --repo` misuse, mutually-exclusive target flags, and an unknown `--workflow` value each render exactly the same final stderr text as before this task.
   - Verification notes (commands or checks): `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup::` covering the `--repo`-without-`--hooks` case, the mutually-exclusive-target-flags case, and the unknown-`--workflow` case with exact-text assertions.
+  - Implementation evidence: `resolve_setup_request` and `validate_optional_workflow_slugs` in
+    `cli/src/services/setup/mod.rs` now return `Result<_, ClassifiedError>` instead of
+    `anyhow::Result`; each of the seven `bail!` sites they own (`--repo` without `--hooks`,
+    `--workflow` with `--bootstrap-context`, `--bootstrap-context` not alone, mutually
+    exclusive target flags, `--non-interactive` without a target, `--workflow` without a
+    target, unknown `--workflow` slug) now returns
+    `ClassifiedError::validation(message).with_hint(hint)` with the same text split at the
+    former `. Try: ` boundary, so the rendered `"{message} Try: {hint}"` output is
+    byte-identical to the prior concatenated string. `convert_setup_command` in
+    `cli/src/services/parse/command_runtime.rs` no longer converts the anyhow error via
+    `.map_err(|error| ClassifiedError::validation(error.to_string()))` (which would have
+    discarded the hint); it now propagates the already-typed `ClassifiedError` directly
+    with `?`.
+  - Verification outcome: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml
+    setup::` (58 passed) — added exact-text assertions (via a `rendered_text` helper
+    matching the renderer's `"{message} Try: {hint}"` format, mirroring T02's precedent) for
+    the `--repo`-without-`--hooks` case, the mutually-exclusive-target-flags case, and the
+    unknown-`--workflow` case, plus updated the three pre-existing `resolve_setup_request`
+    rejection tests to assert on `.message()`/`.hint()` instead of `.to_string()`.
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` (354 passed, full
+    suite, no regressions). `./scripts/run-cli-cargo.sh clippy --manifest-path
+    cli/Cargo.toml --bins --tests -- -D warnings` clean. `cargo fmt --manifest-path
+    cli/Cargo.toml -- --check` clean.
+  - Deviations/assumptions: The Goal's parenthetical also names the empty/unresolvable/
+    non-directory/non-git `--repo` validation (`normalize_user_repository_path` and
+    `map_setup_non_git_repository_error`, both inside the private `install` submodule of
+    this same file). Those checks run during actual repository installation, not CLI
+    invocation parsing: they're reached only through `prepare_setup_hooks_repository` /
+    `ensure_git_repository`, whose errors already flow through
+    `setup/command.rs`'s generic anyhow-boundary `.map_err(|error|
+    ClassifiedError::runtime(format!("{error:#}")))` — one of T05's seven listed boundary
+    sites. T05's shared helper splits any trailing `" Try: ..."` suffix into a hint
+    generically at that boundary, so migrating these deep, still-anyhow-typed runtime
+    functions here would duplicate T05's work and pull "other runtime-failure error paths"
+    (explicitly out of scope for this task) into scope. Left them unconverted for T05 to
+    cover, consistent with this task's own Done-when checks and Verification notes, which
+    name only the three `resolve_setup_request`/`validate_optional_workflow_slugs` cases.
+    Confirmed by inspection that `resolve_setup_request` and `validate_optional_workflow_slugs`
+    are the only invocation-validation call sites reached through
+    `command_runtime.rs::convert_setup_command`, a boundary T05's site list does not cover
+    (T05 lists `setup/command.rs`, not `command_runtime.rs::convert_setup_command`) —
+    leaving these two functions unmigrated would have caused a real double-`Try:` regression
+    once T06 removes the renderer's `contains("Try:")` fallback.
 
 - [ ] T05: `Add a shared anyhow-boundary hint-extraction helper` (status:todo)
   - Task ID: T05

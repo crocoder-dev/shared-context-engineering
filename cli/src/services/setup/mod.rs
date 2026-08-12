@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::services::error::ClassifiedError;
 use crate::services::style::{label, success, value};
 use crate::services::{default_paths, default_paths::RepoPaths};
 
@@ -207,10 +208,11 @@ pub struct SetupRequest {
     pub optional_workflows: Option<Vec<String>>,
 }
 
-pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
+pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest, ClassifiedError> {
     if options.repo_path.is_some() && !options.hooks {
-        bail!(
-            "Option '--repo' requires '--hooks'. Try: run 'sce setup --hooks --repo <path>' or remove '--repo'."
+        return Err(
+            ClassifiedError::validation("Option '--repo' requires '--hooks'.")
+                .with_hint("run 'sce setup --hooks --repo <path>' or remove '--repo'."),
         );
     }
 
@@ -222,9 +224,12 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
 
     if options.bootstrap_context {
         if optional_workflows.is_some() {
-            bail!(
-                "Option '--workflow' cannot be used with '--bootstrap-context'. Try: run 'sce setup --bootstrap-context' alone, then install optional workflows with a target run such as 'sce setup --claude --non-interactive --workflow <slug>'."
-            );
+            return Err(ClassifiedError::validation(
+                "Option '--workflow' cannot be used with '--bootstrap-context'.",
+            )
+            .with_hint(
+                "run 'sce setup --bootstrap-context' alone, then install optional workflows with a target run such as 'sce setup --claude --non-interactive --workflow <slug>'.",
+            ));
         }
 
         let has_other_setup_options = options.non_interactive
@@ -235,9 +240,12 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
             || options.hooks
             || options.repo_path.is_some();
         if has_other_setup_options {
-            bail!(
-                "Option '--bootstrap-context' must be used alone. Try: run 'sce setup --bootstrap-context', or omit it because normal setup paths ensure the context baseline automatically."
-            );
+            return Err(ClassifiedError::validation(
+                "Option '--bootstrap-context' must be used alone.",
+            )
+            .with_hint(
+                "run 'sce setup --bootstrap-context', or omit it because normal setup paths ensure the context baseline automatically.",
+            ));
         }
 
         return Ok(SetupRequest {
@@ -265,15 +273,21 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
     }
 
     if selected_targets.len() > 1 {
-        bail!(
-            "Options '--opencode', '--claude', '--pi', and '--all' are mutually exclusive. Try: choose exactly one target flag (for example 'sce setup --opencode --non-interactive') or omit all target flags for interactive mode."
-        );
+        return Err(ClassifiedError::validation(
+            "Options '--opencode', '--claude', '--pi', and '--all' are mutually exclusive.",
+        )
+        .with_hint(
+            "choose exactly one target flag (for example 'sce setup --opencode --non-interactive') or omit all target flags for interactive mode.",
+        ));
     }
 
     if options.non_interactive && selected_targets.is_empty() && !options.hooks {
-        bail!(
-            "Option '--non-interactive' requires a target flag. Try: 'sce setup --opencode --non-interactive', 'sce setup --claude --non-interactive', 'sce setup --pi --non-interactive', or 'sce setup --all --non-interactive'."
-        );
+        return Err(ClassifiedError::validation(
+            "Option '--non-interactive' requires a target flag.",
+        )
+        .with_hint(
+            "'sce setup --opencode --non-interactive', 'sce setup --claude --non-interactive', 'sce setup --pi --non-interactive', or 'sce setup --all --non-interactive'.",
+        ));
     }
 
     let config_mode = match selected_targets.as_slice() {
@@ -284,9 +298,10 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
     };
 
     if config_mode.is_none() && optional_workflows.is_some() {
-        bail!(
-            "Option '--workflow' requires a target flag because a hooks-only run installs no target assets. Try: 'sce setup --claude --non-interactive --workflow <slug>', or drop '--workflow'."
-        );
+        return Err(ClassifiedError::validation(
+            "Option '--workflow' requires a target flag because a hooks-only run installs no target assets.",
+        )
+        .with_hint("'sce setup --claude --non-interactive --workflow <slug>', or drop '--workflow'."));
     }
 
     let install_hooks = options.hooks || (config_mode == Some(SetupMode::Interactive));
@@ -303,7 +318,7 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
 /// Validate repeated `--workflow` slugs against the build-generated catalog,
 /// deduping while preserving order. The error lists every available slug so a
 /// new optional workflow needs no Rust change here.
-fn validate_optional_workflow_slugs(raw_slugs: &[String]) -> Result<Vec<String>> {
+fn validate_optional_workflow_slugs(raw_slugs: &[String]) -> Result<Vec<String>, ClassifiedError> {
     let mut selected: Vec<String> = Vec::new();
 
     for raw in raw_slugs {
@@ -312,10 +327,13 @@ fn validate_optional_workflow_slugs(raw_slugs: &[String]) -> Result<Vec<String>>
             .iter()
             .find(|workflow| workflow.id == slug)
         else {
-            bail!(
-                "Unknown optional workflow '{raw}' for '--workflow'. Available workflows: {}. Try: rerun with one of those slugs, or omit '--workflow' to install no optional workflow.",
+            return Err(ClassifiedError::validation(format!(
+                "Unknown optional workflow '{raw}' for '--workflow'. Available workflows: {}.",
                 available_optional_workflow_slugs()
-            );
+            ))
+            .with_hint(
+                "rerun with one of those slugs, or omit '--workflow' to install no optional workflow.",
+            ));
         };
 
         if !selected.iter().any(|id| id == workflow.id) {
@@ -1784,6 +1802,13 @@ mod tests {
         options
     }
 
+    fn rendered_text(error: &ClassifiedError) -> String {
+        match error.hint() {
+            Some(hint) => format!("{} Try: {}", error.message(), hint),
+            None => error.message().to_string(),
+        }
+    }
+
     fn unique_temp_dir(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1881,8 +1906,11 @@ mod tests {
         }))
         .expect_err("bootstrap-context with target must be rejected");
 
-        assert!(error.to_string().contains("--bootstrap-context"));
-        assert!(error.to_string().contains("alone"));
+        assert!(error.message().contains("--bootstrap-context"));
+        assert!(error.message().contains("alone"));
+        assert!(error
+            .hint()
+            .is_some_and(|hint| hint.contains("--bootstrap-context")));
     }
 
     #[test]
@@ -1893,7 +1921,7 @@ mod tests {
         }))
         .expect_err("combined target flags must be rejected");
 
-        assert!(error.to_string().contains("mutually exclusive"));
+        assert!(error.message().contains("mutually exclusive"));
     }
 
     #[test]
@@ -1903,9 +1931,50 @@ mod tests {
         }))
         .expect_err("non-interactive without target must be rejected");
 
-        let message = error.to_string();
-        assert!(message.contains("--pi"));
-        assert!(message.contains("--all"));
+        let hint = error.hint().expect("hint should be set");
+        assert!(hint.contains("--pi"));
+        assert!(hint.contains("--all"));
+    }
+
+    #[test]
+    fn resolve_setup_request_repo_without_hooks_renders_previous_exact_text() {
+        let error = resolve_setup_request(options_with(|options| {
+            options.repo_path = Some(PathBuf::from("/tmp/some-repo"));
+        }))
+        .expect_err("--repo without --hooks must be rejected");
+
+        assert_eq!(
+            rendered_text(&error),
+            "Option '--repo' requires '--hooks'. Try: run 'sce setup --hooks --repo <path>' or remove '--repo'."
+        );
+    }
+
+    #[test]
+    fn resolve_setup_request_combined_target_flags_render_previous_exact_text() {
+        let error = resolve_setup_request(options_with(|options| {
+            options.pi = true;
+            options.all = true;
+        }))
+        .expect_err("combined target flags must be rejected");
+
+        assert_eq!(
+            rendered_text(&error),
+            "Options '--opencode', '--claude', '--pi', and '--all' are mutually exclusive. Try: choose exactly one target flag (for example 'sce setup --opencode --non-interactive') or omit all target flags for interactive mode."
+        );
+    }
+
+    #[test]
+    fn validate_optional_workflow_slugs_unknown_slug_renders_previous_exact_text() {
+        let error = validate_optional_workflow_slugs(&["not-a-real-workflow".to_string()])
+            .expect_err("unknown workflow slug must be rejected");
+
+        assert_eq!(
+            rendered_text(&error),
+            format!(
+                "Unknown optional workflow 'not-a-real-workflow' for '--workflow'. Available workflows: {}. Try: rerun with one of those slugs, or omit '--workflow' to install no optional workflow.",
+                available_optional_workflow_slugs()
+            )
+        );
     }
 
     #[test]
