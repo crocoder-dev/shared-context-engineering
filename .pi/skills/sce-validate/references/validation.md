@@ -19,7 +19,7 @@ This phase owns:
 
 Return a result matching:
 
-`references/output.md`
+`references/validation-result.md`
 
 Write plan-file evidence matching:
 
@@ -138,7 +138,7 @@ Return exactly one Markdown result:
   passed, and the Validation Report was written.
 - `failed` when evidence was captured but required checks or criteria remain
   unsatisfied. Shape it as a session handoff per
-  `references/output.md`, ending recommended work with
+  `references/validation-result.md`, ending recommended work with
   `/validate {plan path}`.
 - `blocked` when validation cannot proceed safely.
 
@@ -169,7 +169,7 @@ The phase is complete after:
 - One plan was resolved, or resolution failed and was reported.
 - Implementation completeness was checked.
 - Validation ran to a terminal state, or a blocker prevented it.
-- One valid Markdown result matching `references/output.md` was
+- One valid Markdown result matching `references/validation-result.md` was
   returned.
 
 
