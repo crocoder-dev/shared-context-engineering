@@ -1101,6 +1101,10 @@ The execution result must have:
 status: complete
 ```
 
+Use the report format in:
+
+`references/sync-report.md`
+
 Treat the execution result as the authoritative handoff for:
 
 - The resolved plan and completed task.

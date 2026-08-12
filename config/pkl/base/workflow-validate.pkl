@@ -5,7 +5,7 @@ local validation = model.semanticReference.apply("`sce-validation`", "the **Vali
 local validationUpper = model.semanticReference.apply("`sce-validation`", "The **Validation phase**")
 local validationName = model.semanticReference.apply("sce-validation", "Validation phase")
 local planContextSync = model.semanticReference.apply("`sce-plan-context-sync`", "the **Plan context synchronization phase**")
-local validationResult = model.semanticReference.apply("`references/validation-result.md`", "`references/output.md`")
+local validationResult = model.semanticReference.apply("`references/output.md`", "`references/output.md`")
 local validationReport = model.semanticReference.apply("`references/validation-report.md`", "the **Plan-file validation report** section embedded in this file")
 /// The paragraph that separates the plan-file report from the returned result.
 /// Both spellings wrap at the same width as the surrounding body text.
@@ -22,11 +22,11 @@ local reportVersusResult = model.semanticReference.apply(
   """
 )
 /// The validation handoff sentence. A package owns
-/// `references/validation-result.md`, so naming that contract resolves there. A
-/// composite workflow has no such file, so only the branch instruction survives.
+/// `references/output.md`, so naming that contract resolves there. A composite
+/// workflow uses the same emitted document, so the reference remains unchanged.
 local validationResultHandoff = model.semanticReference.apply(
   """
-  The skill must return a Markdown result matching its validation-result contract.
+  The skill must return a Markdown result matching its validation result contract.
   Branch on the report's `Status:`.
   """,
   "Branch on the report's `Status:`."
@@ -106,7 +106,7 @@ local validationPackage = new model.SkillPackage {
   documents = model.packageDocuments.apply(new Listing {
     model.makeDocument.apply("SKILL.md", VALIDATION_SKILL)
     model.makeDocument.apply("references/validation-report.md", VALIDATION_REPORT)
-    model.makeDocument.apply("references/validation-result.md", VALIDATION_RESULT)
+    model.makeDocument.apply("references/output.md", VALIDATION_RESULT)
   })
 }
 
@@ -726,6 +726,7 @@ structuredComposite = new model.StructuredCompositeSource {
   referenceDocuments = new Listing {
     model.makeDocument.apply("references/validation.md", renderValidationSkillBody.apply("package"))
     model.makeDocument.apply("references/context-sync.md", contextSync.planSkillBody.render.apply("package"))
+    model.makeDocument.apply("references/sync-report.md", contextSync.planOutputReport)
     model.makeDocument.apply("references/validation-report.md", VALIDATION_REPORT)
     model.makeDocument.apply("references/output.md", VALIDATION_RESULT)
   }

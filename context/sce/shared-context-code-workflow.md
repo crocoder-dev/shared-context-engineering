@@ -81,8 +81,8 @@ flowchart TD
 ## Target ownership
 
 - OpenCode, Claude, and Pi: thin commands (Pi: prompts) invoking `sce-next-task` or `sce-validate`.
-- `sce-next-task` packages contain `SKILL.md`, `references/{plan-review,task-execution,context-sync,output}.md`.
-- `sce-validate` packages contain `SKILL.md`, `references/{validation,context-sync,validation-report,output}.md`.
+- `sce-next-task` packages contain `SKILL.md`, `references/{plan-review,task-execution,context-sync,sync-report,output}.md`.
+- `sce-validate` packages contain `SKILL.md`, `references/{validation,context-sync,sync-report,validation-report,output}.md`.
 - OpenCode adds `entry-skill` and a one-entry `skills` list naming that skill. Its Plan and Code routing agents allow ordinary non-SCE skills by default, deny arbitrary `sce-*` skills, and then allow only catalog-owned workflows: Plan allows `sce-change-to-plan`; Code allows `sce-next-task`, `sce-validate`, `sce-commit`, `sce-handover`, and `sce-brownfield`, plus the synchronization-only `sce-decision` exception.
 
 ## Canonical sources

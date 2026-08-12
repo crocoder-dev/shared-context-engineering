@@ -2029,6 +2029,7 @@ structuredComposite = new model.StructuredCompositeSource {
     model.makeDocument.apply("references/plan-review.md", nextTaskPlanReviewReference)
     model.makeDocument.apply("references/task-execution.md", nextTaskTaskExecutionReference)
     model.makeDocument.apply("references/context-sync.md", contextSync.taskReference)
+    model.makeDocument.apply("references/sync-report.md", contextSync.taskOutputReport)
     model.makeDocument.apply("references/output.md", nextTaskOutputReference)
   }
   phases = new Listing {}
