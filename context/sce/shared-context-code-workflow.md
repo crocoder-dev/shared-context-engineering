@@ -98,6 +98,10 @@ flowchart TD
 - `sce-validate` packages contain `SKILL.md`, `references/{validation,context-sync,validation-report,output}.md`. `validation.md` carries the phase steps plus the validation result contract; `context-sync.md` carries the phase steps plus the plan context-sync report contract (no separate `sync-report.md`); `output.md` holds only the `Context synchronization blocked` and `Completion` composite layouts.
 - OpenCode adds `entry-skill` and a one-entry `skills` list naming that skill. Its Plan and Code routing agents allow ordinary non-SCE skills by default, deny arbitrary `sce-*` skills, and then allow only catalog-owned workflows: Plan allows `sce-change-to-plan`; Code allows `sce-next-task`, `sce-validate`, `sce-commit`, `sce-handover`, and `sce-brownfield`, plus the synchronization-only `sce-decision` exception.
 
+## Generated contract checks
+
+The generated-output contract independently verifies semantic workflow integrity in addition to inventory checks: every cited output layout has a matching heading, every package-local reference exists, removed validate/commit reference files stay absent, `atomic-commit.md` retains both message rules and its result contract, next-task owns the sync report without duplicating it in `output.md`, target-neutral reference bodies remain identical, stale synchronization-loss wording stays absent, and final validation remains observational. One checked-in negative fixture covers each semantic assertion.
+
 ## Canonical sources
 
 - `config/pkl/base/workflow-next-task.pkl`

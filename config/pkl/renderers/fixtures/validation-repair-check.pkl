@@ -1,0 +1,10 @@
+import "../generation-contract-check.pkl" as contract
+
+local documents = new Mapping {
+  ["config/.opencode/skills/sce-validate/SKILL.md"] = "Repair application code during final validation."
+}
+
+result = if (
+  contract.assertValidationIsObservational.apply(documents)
+) "negative fixture unexpectedly accepted validation repair instructions"
+else throw("final validation must not instruct the agent to repair implementation")

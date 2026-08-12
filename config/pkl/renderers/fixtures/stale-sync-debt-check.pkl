@@ -1,0 +1,14 @@
+import "../generation-contract-check.pkl" as contract
+
+local artifacts = new Mapping {
+  for (path, text in contract.generatedArtifacts) {
+    [path] = if (path == "config/.opencode/opencode.json")
+      "Nothing records the skipped synchronization, so it is lost once this session ends"
+    else text
+  }
+}
+
+result = if (
+  contract.assertNoStaleSyncDebtText.apply(artifacts)
+) "negative fixture unexpectedly accepted stale synchronization-loss wording"
+else throw("generated file contains the stale synchronization-loss wording")

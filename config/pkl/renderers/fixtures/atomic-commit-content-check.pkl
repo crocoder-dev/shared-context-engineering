@@ -1,0 +1,14 @@
+import "../generation-contract-check.pkl" as contract
+
+local documents = new Mapping {
+  for (path, text in contract.workflowDocuments) {
+    [path] = if (path.endsWith("/skills/sce-commit/references/atomic-commit.md"))
+      text.replaceFirst("## Atomic commit result contract", "## Removed result contract")
+    else text
+  }
+}
+
+result = if (
+  contract.assertAtomicCommitContent.apply(documents)
+) "negative fixture unexpectedly accepted incomplete atomic-commit.md"
+else throw("atomic-commit.md must contain both commit-message rules and the atomic-commit result contract")

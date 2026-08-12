@@ -1,0 +1,11 @@
+import "../generation-contract-check.pkl" as contract
+
+local documents = new Mapping {
+  ["config/.opencode/skills/sce-next-task/references/sync-report.md"] = "report"
+  ["config/.opencode/skills/sce-next-task/references/output.md"] = "# Context Sync Report\n## Synced"
+}
+
+result = if (
+  contract.assertNextTaskReportOwnership.apply(documents)
+) "negative fixture unexpectedly accepted duplicated context-sync output"
+else throw("sce-next-task output.md must not duplicate the context-sync report contract")

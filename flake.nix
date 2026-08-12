@@ -211,6 +211,15 @@
           root = workspaceRoot;
           fileset = pkgs.lib.fileset.unions [
             ./config/pkl
+            ./config/pkl/renderers/fixtures/atomic-commit-content-check.pkl
+            ./config/pkl/renderers/fixtures/commit-forbidden-path-check.pkl
+            ./config/pkl/renderers/fixtures/layout-reference-check.pkl
+            ./config/pkl/renderers/fixtures/next-task-report-ownership-check.pkl
+            ./config/pkl/renderers/fixtures/package-local-reference-check.pkl
+            ./config/pkl/renderers/fixtures/stale-sync-debt-check.pkl
+            ./config/pkl/renderers/fixtures/target-neutral-reference-check.pkl
+            ./config/pkl/renderers/fixtures/validate-forbidden-path-check.pkl
+            ./config/pkl/renderers/fixtures/validation-repair-check.pkl
             ./config/lib/pi-plugin/sce-pi-extension.ts
             ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
             ./config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts
