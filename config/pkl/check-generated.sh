@@ -109,6 +109,9 @@ expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/opencode-skill-permission-order-check.pkl" \
   "OpenCode skill permissions must preserve the wildcard, deny, and explicit-allow order"
 expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/opencode-missing-skill-artifact-check.pkl" \
+  "OpenCode skill permission names a missing generated workflow artifact"
+expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/layout-reference-check.pkl" \
   "generated workflow layout citation does not match a heading in its references/output.md"
 expect_pkl_fixture_failure \

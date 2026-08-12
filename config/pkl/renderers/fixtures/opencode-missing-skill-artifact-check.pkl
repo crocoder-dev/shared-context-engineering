@@ -1,0 +1,22 @@
+import "../generation-contract-check.pkl" as contract
+
+local renderedWithDanglingPermission = """
+skill:
+    "*": allow
+    "sce-*": deny
+    "sce-next-task": allow
+    "sce-misspelled": allow
+---
+"""
+
+local emittedArtifacts = new Mapping {
+  ["config/.opencode/skills/sce-next-task/SKILL.md"] = true
+}
+
+result = if (
+  contract.assertOpenCodeSkillPermissionArtifacts.apply(
+    renderedWithDanglingPermission,
+    emittedArtifacts
+  )
+) "negative fixture unexpectedly accepted a missing OpenCode skill artifact"
+else throw("OpenCode skill permission names a missing generated workflow artifact")

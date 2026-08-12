@@ -100,7 +100,7 @@ flowchart TD
 
 ## Generated contract checks
 
-The generated-output contract independently verifies semantic workflow integrity in addition to inventory checks: every cited output layout has a matching heading, every package-local reference exists, removed validate/commit reference files stay absent, `atomic-commit.md` retains both message rules and its result contract, next-task owns the sync report without duplicating it in `output.md`, target-neutral reference bodies remain identical, stale synchronization-loss wording stays absent, and final validation remains observational. One checked-in negative fixture covers each semantic assertion.
+The generated-output contract independently verifies semantic workflow integrity in addition to inventory checks: every cited output layout has a matching heading, every package-local reference exists, removed validate/commit reference files stay absent, `atomic-commit.md` retains both message rules and its result contract, next-task owns the sync report without duplicating it in `output.md`, target-neutral reference bodies remain identical, stale synchronization-loss wording stays absent, final validation remains observational, and every explicit OpenCode `sce-*` permission names an emitted skill artifact. One checked-in negative fixture covers each semantic assertion.
 
 ## Canonical sources
 

@@ -322,6 +322,23 @@ local assertOpenCodeSkillPermissions = (agents) ->
   ) "OpenCode skill permissions: ordered and catalog-derived"
   else throw("OpenCode skill permissions must allow non-SCE skills, deny arbitrary SCE skills, and list only ordered catalog-owned workflows")
 
+hidden openCodeExplicitSkillPermissions = (rendered: String) ->
+  new Listing {
+    for (line in rendered.split("\n")) {
+      when (line.contains("\"sce-") && line.endsWith("\": allow")) {
+        line.split("\"")[1]
+      }
+    }
+  }
+
+hidden assertOpenCodeSkillPermissionArtifacts = (rendered: String, artifacts: Mapping) ->
+  if (
+    openCodeExplicitSkillPermissions.apply(rendered).every((permissionSlug) ->
+      artifacts.containsKey("config/.opencode/skills/\(permissionSlug)/SKILL.md")
+    )
+  ) "OpenCode skill permissions: every explicit SCE allow names an emitted artifact"
+  else throw("OpenCode skill permission names a missing generated workflow artifact")
+
 local assertOpenCodeDecisionPermission = (agents) ->
   let (codeAgent = agents["shared-context-code"].rendered)
     let (planAgent = agents["shared-context-plan"].rendered)
@@ -597,6 +614,16 @@ contractChecks {
   ["phase-reference-contract"] = assertPhaseReferenceContract.apply(workflowDocuments)
   ["decision-invocation"] = assertDecisionWorkflowReferences.apply(compositeWorkflowDocuments)
   ["opencode-skill-permissions"] = assertOpenCodeSkillPermissions.apply(opencode.agents)
+  ["opencode-skill-permission-artifacts"] =
+    assertOpenCodeSkillPermissionArtifacts.apply(
+      opencode.agents["shared-context-plan"].rendered,
+      generatedArtifacts
+    )
+    + "; "
+    + assertOpenCodeSkillPermissionArtifacts.apply(
+      opencode.agents["shared-context-code"].rendered,
+      generatedArtifacts
+    )
   ["opencode-decision-permission"] = assertOpenCodeDecisionPermission.apply(opencode.agents)
   ["decision-package-paths"] = assertDecisionDocumentPaths.apply(decisionSkillDocuments)
   ["decision-package-content"] = assertDecisionContent.apply(decisionSkillDocuments)
