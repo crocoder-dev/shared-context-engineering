@@ -44,6 +44,7 @@ pub struct ClassifiedError {
     class: FailureClass,
     code: &'static str,
     message: String,
+    hint: Option<String>,
 }
 
 impl ClassifiedError {
@@ -52,6 +53,7 @@ impl ClassifiedError {
             class: FailureClass::Parse,
             code: "SCE-ERR-PARSE",
             message: message.into(),
+            hint: None,
         }
     }
 
@@ -60,6 +62,7 @@ impl ClassifiedError {
             class: FailureClass::Validation,
             code: "SCE-ERR-VALIDATION",
             message: message.into(),
+            hint: None,
         }
     }
 
@@ -68,6 +71,7 @@ impl ClassifiedError {
             class: FailureClass::Runtime,
             code: "SCE-ERR-RUNTIME",
             message: message.into(),
+            hint: None,
         }
     }
 
@@ -76,7 +80,14 @@ impl ClassifiedError {
             class: FailureClass::Dependency,
             code: "SCE-ERR-DEPENDENCY",
             message: message.into(),
+            hint: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
     }
 
     pub fn class(&self) -> FailureClass {
@@ -90,6 +101,10 @@ impl ClassifiedError {
     pub fn message(&self) -> &str {
         &self.message
     }
+
+    pub fn hint(&self) -> Option<&str> {
+        self.hint.as_deref()
+    }
 }
 
 impl std::fmt::Display for ClassifiedError {
@@ -99,3 +114,34 @@ impl std::fmt::Display for ClassifiedError {
 }
 
 impl std::error::Error for ClassifiedError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constructors_default_hint_to_none() {
+        assert_eq!(ClassifiedError::parse("x").hint(), None);
+        assert_eq!(ClassifiedError::validation("x").hint(), None);
+        assert_eq!(ClassifiedError::runtime("x").hint(), None);
+        assert_eq!(ClassifiedError::dependency("x").hint(), None);
+    }
+
+    #[test]
+    fn with_hint_sets_an_explicit_hint() {
+        let error = ClassifiedError::parse("x").with_hint("y");
+
+        assert_eq!(error.hint(), Some("y"));
+        assert_eq!(error.message(), "x");
+    }
+
+    #[test]
+    fn with_hint_does_not_change_class_code_or_exit_code() {
+        let error = ClassifiedError::parse("x");
+        let hinted = ClassifiedError::parse("x").with_hint("y");
+
+        assert_eq!(error.class(), hinted.class());
+        assert_eq!(error.code(), hinted.code());
+        assert_eq!(error.class().exit_code(), hinted.class().exit_code());
+    }
+}

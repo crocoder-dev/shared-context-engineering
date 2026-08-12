@@ -157,7 +157,9 @@ fn write_stdout_payload<W: Write>(writer: &mut W, payload: &str) -> Result<(), C
 }
 
 fn write_error_diagnostic<W: Write>(writer: &mut W, error: &ClassifiedError) {
-    let rendered = if error.message().contains("Try:") {
+    let rendered = if let Some(hint) = error.hint() {
+        format!("{} Try: {}", error.message(), hint)
+    } else if error.message().contains("Try:") {
         error.message().to_string()
     } else {
         format!(
@@ -181,4 +183,62 @@ fn write_error_diagnostic<W: Write>(writer: &mut W, error: &ClassifiedError) {
 fn write_startup_diagnostic<W: Write>(writer: &mut W, diagnostic: &str) {
     writeln!(writer, "{}", services::style::error_code(diagnostic))
         .expect("writing startup diagnostic to writer should not fail");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rendered(error: &ClassifiedError) -> String {
+        let mut buffer = Vec::new();
+        write_error_diagnostic(&mut buffer, error);
+        String::from_utf8(buffer).expect("diagnostic output should be valid utf-8")
+    }
+
+    #[test]
+    fn explicit_hint_is_rendered() {
+        let error = ClassifiedError::parse("x").with_hint("y");
+
+        assert_eq!(rendered(&error), "Error [SCE-ERR-PARSE]: x Try: y\n");
+    }
+
+    #[test]
+    fn absent_hint_falls_back_to_class_default_guidance() {
+        let error = ClassifiedError::parse("x");
+
+        assert_eq!(
+            rendered(&error),
+            format!(
+                "Error [SCE-ERR-PARSE]: x Try: {}\n",
+                error.class().default_try_guidance()
+            )
+        );
+    }
+
+    #[test]
+    fn message_already_containing_try_is_left_unchanged_without_a_hint() {
+        let error = ClassifiedError::parse("x Try: existing guidance.");
+
+        assert_eq!(
+            rendered(&error),
+            "Error [SCE-ERR-PARSE]: x Try: existing guidance.\n"
+        );
+    }
+
+    #[test]
+    fn explicit_hint_is_not_doubled_with_class_default_guidance() {
+        let error = ClassifiedError::parse("x").with_hint("y");
+
+        let output = rendered(&error);
+        assert_eq!(output.matches("Try:").count(), 1);
+    }
+
+    #[test]
+    fn hinted_message_is_still_redacted() {
+        let error = ClassifiedError::parse("token: Bearer abcdef123456")
+            .with_hint("retry with a new token");
+
+        let output = rendered(&error);
+        assert!(!output.contains("abcdef123456"));
+    }
 }
