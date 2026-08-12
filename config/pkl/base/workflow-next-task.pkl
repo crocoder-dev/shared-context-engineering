@@ -172,10 +172,10 @@ local syncBlockedBranch = model.semanticReference.apply(
   - The action required to resolve the problem.
   - The retry condition stated by the report.
 
-  State that durable context is now out of date, and that synchronization must be resolved before continuing the plan. Nothing records the skipped synchronization, so it is lost once this session ends.
+  State that durable context is now out of date, and that synchronization must be resolved before continuing the plan. The task lifecycle record in the plan preserves the blocker and retry condition.
   """,
   """
-  `blocked` -> The task itself succeeded and is already marked complete in the plan. Render the **Context synchronization blocked** layout from `references/output.md`. Nothing records the skipped synchronization, so it is lost once this session ends.
+  `blocked` -> The task itself succeeded and is already marked complete in the plan. Render the **Context synchronization blocked** layout from `references/output.md`. The task lifecycle record in the plan preserves the blocker, required action, and retry condition.
   """
 )
 local continuationLayouts = model.semanticReference.apply(
@@ -403,7 +403,15 @@ local renderReviewSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     \(planReviewHeadings.stepHeading.apply(mode, 2, "Resolve one task"))
     
-    When a task ID is supplied, select that task.
+    Before selecting or starting a task, inspect every earlier completed task's
+    `Context synchronization` field in the plan. A missing field, or any value other
+    than `synced`, is unresolved synchronization debt: do not start a new task, and
+    set `blocked` with the blocker, required action, and retry condition needed to
+    record or complete that lifecycle transition. Never infer `synced` from chat
+    history.
+
+    When a task ID is supplied, select that task only after the same synchronization-
+    debt check passes.
     
     Otherwise, select the first incomplete task in plan order whose declared
     dependencies are complete.
@@ -937,6 +945,9 @@ local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     Only after successful implementation and task-level verification:
     
     - Mark only the selected task complete.
+    - Set that task's `Context synchronization` field to `pending` in the plan file
+      before returning `complete`; this write must happen before the synchronization
+      phase is invoked.
     - Record concise implementation evidence.
     - Record verification commands and outcomes.
     - Record material deviations or approved assumptions.
@@ -1430,7 +1441,15 @@ Read the selected plan before exploring the repository.
 
 ## 1.2 Resolve one task
 
-When a task ID is supplied, select that task.
+Before selecting or starting a task, inspect every earlier completed task's
+`Context synchronization` field in the plan. A missing field, or any value other
+than `synced`, is unresolved synchronization debt: do not start a new task, and
+set `blocked` with the blocker, required action, and retry condition needed to
+record or complete that lifecycle transition. Never infer `synced` from chat
+history.
+
+When a task ID is supplied, select that task only after the same synchronization-
+debt check passes.
 
 Otherwise, select the first incomplete task in plan order whose declared
 dependencies are complete.
@@ -1679,6 +1698,9 @@ Never report a check as passed unless it ran successfully.
 Only after successful implementation and task-level verification:
 
 - Mark only the selected task complete.
+- Set that task's `Context synchronization` field to `pending` in the plan file
+  before returning `complete`; this write must happen before the synchronization
+  phase is invoked.
 - Record concise implementation evidence.
 - Record verification commands and outcomes.
 - Record material deviations or approved assumptions.
@@ -1878,148 +1900,6 @@ When the `approve` flag is supplied, omit the question and end after
   wait.
 - If the handoff is stale or incomplete, show the known task information and
   identify the problem under **Risks or trade-offs**.
-
-# Context Sync Report
-
-Return only one completed Markdown report using the applicable variant below.
-Do not include unused sections, placeholders, YAML, or a fenced code block.
-
-The `Status` value must be exactly one of:
-
-- `synced`
-- `no_context_change`
-- `blocked`
-
-The input execution status is always `complete` and does not need to be repeated
-as a separate workflow state.
-
-## Synced variant
-
-# Context Sync Report
-
-**Status:** synced\("  ")
-**Plan:** `{plan path}`\("  ")
-**Task:** `{task id} — {task title}`
-
-## Updated files
-
-- {List each changed file from the execution handoff except paths under
-  `context/`; state `None.` when no files remain.}
-
-## Updated context
-
-- `{context file}` — {concise description of the durable truth updated}
-
-## Architecture decisions
-
-- `{written or reused ADR path}` — {decision and status}
-- None qualified.
-
-## Feature existence
-
-- `{feature}` — `{context file that canonically describes it}`
-
-## Verification
-
-- {How the edited context was checked against implementation and execution evidence.}
-- {File hygiene: line counts, relative links, diagrams where structure is complex.}
-- {Documentation, link, or formatting checks that were run, when applicable.}
-
-## Notes
-
-{Include only non-blocking information worth retaining.
-Omit this section when unnecessary.}
-
----
-
-## No-context-change variant
-
-# Context Sync Report
-
-**Status:** no_context_change\("  ")
-**Plan:** `{plan path}`\("  ")
-**Task:** `{task id} — {task title}`
-
-## Updated files
-
-- {List each changed file from the execution handoff except paths under
-  `context/`; state `None.` when no files remain.}
-
-## Synchronization result
-
-{Explain why the completed implementation did not introduce durable,
-non-obvious repository knowledge requiring an update.}
-
-## Context reviewed
-
-- `{context file or area}` — {what was checked and why it remains accurate}
-
-## Architecture decisions
-
-- `{reused ADR path}` — {decision and status}
-- None qualified.
-
-## Feature existence
-
-- `{feature}` — `{context file that canonically describes it}`, already present.
-
-## Verification
-
-- {How existing context was compared with implementation and execution evidence.}
-
----
-
-## Blocked variant
-
-# Context Sync Report
-
-**Status:** blocked\("  ")
-**Plan:** `{plan path}`\("  ")
-**Task:** `{task id} — {task title}`
-
-## Updated files
-
-- {List each changed file from the execution handoff except paths under
-  `context/`; state `None.` when no files remain.}
-
-## Blocker
-
-**Problem:** {specific synchronization blocker}\("  ")
-**Impact:** {why context cannot be made authoritative safely}\("  ")
-**Required action:** {decision or correction required}
-
-## Context changes
-
-- {List safe context edits preserved, or state `No context files were changed.`}
-
-## Architecture decisions
-
-- `{ADR path written or reused before the blocker}` — {decision and status}
-- None written or reused before the blocker.
-
-## Retry condition
-
-{State the concrete condition under which context synchronization should run
-again.}
-
-## Report rules
-
-- Name exact context files when they were changed or reviewed.
-- Under **Architecture decisions**, list every ADR path written or reused during
-  the decision gate. In a successful report, state `None qualified.` when the
-  gate skipped invocation. In a blocked report, state
-  `None written or reused before the blocker.` when applicable.
-- Under **Updated files**, list every changed file from the execution handoff
-  except paths under `context/`.
-- Report the missing context root as `blocked`, with `sce setup
-  --bootstrap-context` as the required action and the existence of `context/` as
-  the retry condition.
-- Omit **Feature existence** only when the task implemented no feature.
-- Describe durable truth, not implementation-session chronology.
-- Keep evidence concise and factual.
-- Do not claim final validation passed.
-- Do not determine whether the plan is complete.
-- Do not recommend a next implementation task.
 """
 
 structuredComposite = new model.StructuredCompositeSource {

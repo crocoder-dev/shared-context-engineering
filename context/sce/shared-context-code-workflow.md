@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The implementation lifecycle executes at most one reviewed task per `/next-task` invocation, synchronizes durable context only after successful task execution, and runs final plan validation separately through `/validate`. The generated OpenCode Code agent only routes to these commands. Every target keeps each complete lifecycle in `sce-next-task` or `sce-validate`; each `SKILL.md` owns control flow and reads a package-local reference before running the applicable phase. The phases below are internal to those skills, not separate generated packages.
+The implementation lifecycle executes at most one reviewed task per `/next-task` invocation, synchronizes durable context only after successful task execution, and runs final plan validation separately through `/validate`. Task- and plan-level context synchronization lifecycle state is persisted in each plan as `pending`, `synced`, or `blocked` with blocker, required-action, and retry-condition details for blocked transitions. The generated OpenCode Code agent only routes to these commands. Every target keeps each complete lifecycle in `sce-next-task` or `sce-validate`; each `SKILL.md` owns control flow and reads a package-local reference before running the applicable phase. The phases below are internal to those skills, not separate generated packages.
 
 ## `/next-task` entrypoint
 
@@ -19,6 +19,7 @@ Phase names below identify canonical modules in `config/pkl/base/workflow-next-t
 
 1. `sce-plan-review`
    - Resolves exactly one plan and at most one task.
+   - Refuses to start a new task when an earlier completed task has missing or non-`synced` context lifecycle state.
    - Selects the requested task or the first incomplete task whose declared dependencies are complete.
    - Returns `ready`, `blocked`, or `plan_complete`.
 2. `sce-task-execution`
@@ -41,6 +42,7 @@ Phase names below identify canonical modules in `config/pkl/base/workflow-next-t
      without changing synchronization behavior.
 4. Command continuation
    - Emits exactly one next-task command for the first unchecked task in plan order, or a `/validate` command when all implementation tasks are complete.
+   - A completed task's lifecycle is persisted as `pending` before task synchronization and as `synced` or `blocked` afterward; `/validate` refuses plan finish while completed-task lifecycle debt remains.
    - Never executes the continuation in the same invocation.
 
 A context-sync blocker does not undo successful implementation: the task remains complete in the plan, but the workflow stops because durable context is stale. On every target, review, approval, execution, evidence recording, synchronization, and continuation are internal phases of one `sce-next-task` invocation. Relevant non-SCE skills may assist inside an active step only as helpers that return control to that step; the sole SCE sibling-skill exception is the synchronization decision gate's bounded invocation of `sce-decision`.
