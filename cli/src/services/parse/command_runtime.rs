@@ -63,9 +63,8 @@ fn handle_clap_error(
             return Ok(help_text);
         }
 
-        return Err(ClassifiedError::parse(
-            "Missing required subcommand. Try: run 'sce --help' to see valid commands.",
-        ));
+        return Err(ClassifiedError::parse("Missing required subcommand.")
+            .with_hint("run 'sce --help' to see valid commands."));
     }
 
     if error.kind() == clap::error::ErrorKind::DisplayVersion {
@@ -80,15 +79,15 @@ fn registry_command(
     name: &str,
 ) -> Result<RuntimeCommand, ClassifiedError> {
     if !registry.contains(name) {
-        return Err(ClassifiedError::runtime(format!(
-            "Command '{name}' is not registered. Try: run 'sce --help' to see available commands."
-        )));
+        return Err(
+            ClassifiedError::runtime(format!("Command '{name}' is not registered."))
+                .with_hint("run 'sce --help' to see available commands."),
+        );
     }
 
     services::command_registry::default_runtime_command(name).ok_or_else(|| {
-        ClassifiedError::runtime(format!(
-            "Command '{name}' is not registered. Try: run 'sce --help' to see available commands."
-        ))
+        ClassifiedError::runtime(format!("Command '{name}' is not registered."))
+            .with_hint("run 'sce --help' to see available commands.")
     })
 }
 
@@ -102,11 +101,16 @@ fn classify_clap_error(error: &clap::Error) -> ClassifiedError {
         }
         _ => FailureClass::Parse,
     };
-    let cleaned_message = clean_clap_error_message(&message, error.kind());
+    let cleaned = clean_clap_error_message(&message, error.kind());
 
-    match class {
-        FailureClass::Validation => ClassifiedError::validation(cleaned_message),
-        _ => ClassifiedError::parse(cleaned_message),
+    let classified = match class {
+        FailureClass::Validation => ClassifiedError::validation(cleaned.message),
+        _ => ClassifiedError::parse(cleaned.message),
+    };
+
+    match cleaned.hint {
+        Some(hint) => classified.with_hint(hint),
+        None => classified,
     }
 }
 
@@ -149,7 +153,14 @@ fn render_missing_subcommand_help(args: &[String]) -> Option<RuntimeCommand> {
     }
 }
 
-fn clean_clap_error_message(message: &str, kind: clap::error::ErrorKind) -> String {
+struct CleanedClapError {
+    message: String,
+    hint: Option<String>,
+}
+
+const DEFAULT_USAGE_HINT: &str = "run 'sce --help' to see valid usage.";
+
+fn clean_clap_error_message(message: &str, kind: clap::error::ErrorKind) -> CleanedClapError {
     use clap::error::ErrorKind;
 
     let message = message.strip_prefix("error: ").unwrap_or(message);
@@ -158,48 +169,76 @@ fn clean_clap_error_message(message: &str, kind: clap::error::ErrorKind) -> Stri
         ErrorKind::InvalidSubcommand => {
             if let Some(subcommand) = extract_quoted_value(message) {
                 if command_surface::is_known_command(&subcommand) {
-                    format!(
-                        "Command '{subcommand}' is currently unavailable in this build. Try: run 'sce --help' to see available commands in this build."
-                    )
+                    CleanedClapError {
+                        message: format!(
+                            "Command '{subcommand}' is currently unavailable in this build."
+                        ),
+                        hint: Some(
+                            "run 'sce --help' to see available commands in this build.".to_string(),
+                        ),
+                    }
                 } else {
-                    format!(
-                        "Unknown command '{subcommand}'. Try: run 'sce --help' to list valid commands, then rerun with a valid command such as 'sce version' or 'sce setup --help'."
-                    )
+                    CleanedClapError {
+                        message: format!("Unknown command '{subcommand}'."),
+                        hint: Some(
+                            "run 'sce --help' to list valid commands, then rerun with a valid command such as 'sce version' or 'sce setup --help'."
+                                .to_string(),
+                        ),
+                    }
                 }
             } else {
-                format!("{message}. Try: run 'sce --help' to see valid usage.")
+                CleanedClapError {
+                    message: format!("{message}."),
+                    hint: Some(DEFAULT_USAGE_HINT.to_string()),
+                }
             }
         }
         ErrorKind::UnknownArgument => {
             if let Some(arg) = extract_quoted_value(message) {
-                format!(
-                    "Unknown option '{arg}'. Try: run 'sce --help' to see top-level usage, or use 'sce <command> --help' for command-specific options."
-                )
+                CleanedClapError {
+                    message: format!("Unknown option '{arg}'."),
+                    hint: Some(
+                        "run 'sce --help' to see top-level usage, or use 'sce <command> --help' for command-specific options."
+                            .to_string(),
+                    ),
+                }
             } else {
-                format!("{message}. Try: run 'sce --help' to see valid usage.")
+                CleanedClapError {
+                    message: format!("{message}."),
+                    hint: Some(DEFAULT_USAGE_HINT.to_string()),
+                }
             }
         }
         ErrorKind::MissingRequiredArgument => {
             if message.contains("required") {
-                format!("{message}. Try: run 'sce --help' to see required arguments.")
+                CleanedClapError {
+                    message: format!("{message}."),
+                    hint: Some("run 'sce --help' to see required arguments.".to_string()),
+                }
             } else {
-                format!("{message}. Try: run 'sce --help' to see valid usage.")
+                CleanedClapError {
+                    message: format!("{message}."),
+                    hint: Some(DEFAULT_USAGE_HINT.to_string()),
+                }
             }
         }
         ErrorKind::ArgumentConflict => {
             if message.contains("cannot be used with") || message.contains("conflicts with") {
-                format!("{message}. Try: use only one of the conflicting options.")
+                CleanedClapError {
+                    message: format!("{message}."),
+                    hint: Some("use only one of the conflicting options.".to_string()),
+                }
             } else {
-                format!("{message}. Try: run 'sce --help' to see valid usage.")
+                CleanedClapError {
+                    message: format!("{message}."),
+                    hint: Some(DEFAULT_USAGE_HINT.to_string()),
+                }
             }
         }
-        _ => {
-            if message.contains("Try:") {
-                message.to_string()
-            } else {
-                format!("{message}. Try: run 'sce --help' to see valid usage.")
-            }
-        }
+        _ => CleanedClapError {
+            message: format!("{message}."),
+            hint: Some(DEFAULT_USAGE_HINT.to_string()),
+        },
     }
 }
 
@@ -496,6 +535,97 @@ mod tests {
             None,
         )
         .expect("command should parse")
+    }
+
+    fn parse_error(args: &[&str]) -> ClassifiedError {
+        let Err(error) = parse_runtime_command(
+            args.iter().map(|arg| (*arg).to_string()),
+            &CommandRegistry::default(),
+            None,
+        ) else {
+            panic!("command should fail to parse")
+        };
+
+        error
+    }
+
+    fn rendered_text(error: &ClassifiedError) -> String {
+        match error.hint() {
+            Some(hint) => format!("{} Try: {}", error.message(), hint),
+            None => error.message().to_string(),
+        }
+    }
+
+    #[test]
+    fn missing_subcommand_renders_previous_exact_text() {
+        let error = parse_error(&["sce", "hooks"]);
+
+        assert_eq!(
+            rendered_text(&error),
+            "Missing required subcommand. Try: run 'sce --help' to see valid commands."
+        );
+    }
+
+    #[test]
+    fn unknown_command_renders_previous_exact_text() {
+        let error = parse_error(&["sce", "frobnicate"]);
+
+        assert_eq!(
+            rendered_text(&error),
+            "Unknown command 'frobnicate'. Try: run 'sce --help' to list valid commands, then rerun with a valid command such as 'sce version' or 'sce setup --help'."
+        );
+    }
+
+    #[test]
+    fn unknown_option_renders_previous_exact_text() {
+        let error = parse_error(&["sce", "--frobnicate"]);
+
+        assert_eq!(
+            rendered_text(&error),
+            "Unknown option '--frobnicate'. Try: run 'sce --help' to see top-level usage, or use 'sce <command> --help' for command-specific options."
+        );
+    }
+
+    #[test]
+    fn missing_required_argument_renders_previous_exact_text() {
+        let error = parse_error(&["sce", "completion"]);
+
+        assert_eq!(
+            error.hint(),
+            Some("run 'sce --help' to see required arguments.")
+        );
+        assert!(error.message().ends_with('.'));
+        assert!(!error.message().contains("Try:"));
+    }
+
+    #[test]
+    fn conflicting_arguments_render_previous_exact_text() {
+        let error = parse_error(&["sce", "setup", "--opencode", "--claude"]);
+
+        assert_eq!(
+            rendered_text(&error),
+            format!(
+                "{} Try: use only one of the conflicting options.",
+                error.message()
+            )
+        );
+        assert!(
+            error.message().contains("cannot be used with")
+                || error.message().contains("conflicts with")
+        );
+    }
+
+    #[test]
+    fn unregistered_command_renders_previous_exact_text() {
+        let registry = CommandRegistry::default();
+        let Err(error) = registry_command(&registry, "totally-unregistered-command") else {
+            panic!("command should be unregistered")
+        };
+
+        assert_eq!(
+            rendered_text(&error),
+            "Command 'totally-unregistered-command' is not registered. Try: run 'sce --help' to see available commands."
+        );
     }
 
     #[test]

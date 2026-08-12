@@ -157,13 +157,40 @@ still preserving exact current output.
     message all verified. `cargo fmt --manifest-path cli/Cargo.toml` applied.
   - Deviations/assumptions: None beyond the reviewed task scope.
 
-- [ ] T02: `Structure clap-derived parser diagnostics with explicit hints` (status:todo)
+- [x] T02: `Structure clap-derived parser diagnostics with explicit hints` (status:done)
   - Task ID: T02
   - Goal: Replace `clean_clap_error_message`'s string-concatenated `Try:` output in `cli/src/services/parse/command_runtime.rs` with a small `CleanedClapError { message, hint }` value; `classify_clap_error` attaches the hint via `.with_hint()`. `handle_clap_error`'s literal `"Missing required subcommand. Try: run 'sce --help'..."` and `registry_command`'s two `"...is not registered. Try: run 'sce --help'..."` messages are split into `.with_hint(...)` calls the same way. `ClassifiedError` must not gain a dependency on `clap` types.
   - Boundaries (in/out of scope): In — `cli/src/services/parse/command_runtime.rs` only. Out — the anyhow-boundary helper (T05); non-clap invocation errors (T03, T04).
   - Dependencies: T01
   - Done when: `sce`, `sce frobnicate`, `sce --frobnicate`, a missing-required-argument invocation, and a conflicting-argument invocation each render exactly the same final stderr text as before this task; `clean_clap_error_message` no longer contains `message.contains("Try:")` or string-concatenates `Try:`.
   - Verification notes (commands or checks): `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml command_runtime::` covering missing-subcommand, unknown-command, unavailable-command, unknown-option, missing-required-argument, and conflicting-argument cases with exact-text assertions.
+  - Implementation evidence: Introduced a private `CleanedClapError { message, hint }`
+    struct in `cli/src/services/parse/command_runtime.rs`. `clean_clap_error_message`
+    now returns it, splitting every branch's former `. Try: ...` suffix into the
+    `hint` field instead of concatenating it into `message`; the previously dead
+    `message.contains("Try:")` guard in the fallback arm was removed since it never
+    matched a real clap-produced message. `classify_clap_error` builds the
+    `ClassifiedError` from `cleaned.message` and appends `.with_hint(hint)` when
+    present. `handle_clap_error`'s missing-subcommand literal and both
+    `registry_command` "not registered" literals were split the same way. No `clap`
+    type was added to `ClassifiedError` or `error.rs`.
+  - Verification outcome: `./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml command_runtime::` (10 passed) — added exact-text tests for
+    missing-subcommand (`sce hooks`), unknown-command (`sce frobnicate`),
+    unknown-option (`sce --frobnicate`), missing-required-argument
+    (`sce completion`), argument-conflict (`sce setup --opencode --claude`), and
+    unregistered-command cases, each asserting the combined message+hint renders
+    byte-identical text to the prior concatenated string.
+    `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` (348 passed,
+    full suite, no regressions). `./scripts/run-cli-cargo.sh clippy --manifest-path
+    cli/Cargo.toml --bins --tests -- -D warnings` clean. `cargo fmt --manifest-path
+    cli/Cargo.toml -- --check` clean.
+  - Deviations/assumptions: The "unavailable in this build" `InvalidSubcommand`
+    branch (a known command name that clap itself failed to parse) is not
+    reachable through direct integration testing in the current build, since
+    every name in `TOP_LEVEL_COMMANDS` is always present in the derived `Commands`
+    enum; its exact-text preservation was verified by code inspection of the
+    branch's `message`/`hint` split instead of a runtime assertion.
 
 - [ ] T03: `Structure bash-policy STDIN validation diagnostics with explicit hints` (status:todo)
   - Task ID: T03
