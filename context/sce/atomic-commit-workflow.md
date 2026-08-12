@@ -45,8 +45,9 @@ flowchart TD
     D --> D1{git diff --cached<br/>non-empty?}
     D1 -- no --> D2([Stop: No staged changes.<br/>Stage changes before commit.])
     D1 -- yes --> D3[Phase: atomic commit, mode: bypass]
-    D3 --> D4[Exactly one git commit]
-    D4 --> D5([Report hash, or report failure<br/>with no retry or amend])
+    D3 --> D4[Write message file<br/>then exactly one git commit -F]
+    D4 --> D5[Read hash from HEAD after success]
+    D5 --> D6([Report hash, or report failure<br/>with no retry or amend])
 ```
 
 ## Regular mode
@@ -68,10 +69,14 @@ user runs the commits they accept.
 Single-message, command-committed. The command first checks that staged content
 exists and stops with `No staged changes. Stage changes before commit.` when
 nothing is staged. It then requests exactly one message covering all staged
-files and runs `git commit` once.
+files, writes that message verbatim to a temporary message file, and runs
+`git commit -F <message-file>` exactly once. The multiline message is never
+interpolated into shell source or a shell command.
 
-On success it reports the commit hash. On failure it reports the failure and
-stops — no retry, no amend, no fallback commit.
+Only after the commit succeeds does the command retrieve the hash explicitly
+from `git rev-parse --verify HEAD^{commit}`; it never parses Git's human-readable
+output. On failure it reports the failure and stops — no retry, amend, additional
+staging, fallback commit, or fabricated hash.
 
 Bypass mode relaxes three regular-mode rules: no split proposals, no
 context-file guidance gating, and plan citations are best-effort rather than

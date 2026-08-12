@@ -354,13 +354,18 @@ rather than already-fixed ones:
   - Evidence: Consolidated the commit-message rules and atomic-commit result contract into `references/atomic-commit.md`, removed the two obsolete reference documents from package and composite inventories, and removed result fields not consumed by the composite workflow. The generated package now retains only `atomic-commit.md` and `output.md`.
   - Verification performed: `nix run .#pkl-generate -- "$(mktemp -d)"` passed; generated Pi, Claude, and OpenCode `sce-commit/references/` directories each contain exactly `atomic-commit.md` and `output.md`; `atomic-commit.md` contains the message rules and result-contract sections; forbidden filenames are absent. `nix run .#pkl-check-generated` passed (107 files).
 
-- [ ] T09: `Make bypass commit execution deterministic` (status:todo)
+- [x] T09: `Make bypass commit execution deterministic` (status:done)
   - Task ID: T09
   - Goal: In the bypass-mode instructions now living in `atomic-commit.md`, replace multiline-message shell interpolation with a message-file/stdin mechanism (`git commit -F <file>` or equivalent), run `git commit` exactly once, retrieve the resulting hash explicitly from `HEAD` after success (never parsed from human-readable Git output), and state that failure never retries, amends, stages more files, or fabricates a hash; confirm `oneshot` and `skip` stay behaviorally identical.
   - Boundaries (in/out of scope): In — `atomic-commit.md`'s bypass-mode section. Out — regular (proposal-only) commit mode.
   - Dependencies: T08
   - Done when: generated `atomic-commit.md` bypass instructions use a message-file/stdin mechanism, state exactly one `git commit` invocation, state explicit post-success `HEAD` hash retrieval, and state the no-retry/no-amend/no-stage-more/no-fabricated-hash failure rule; `oneshot` and `skip` remain described identically apart from the trigger token.
   - Verification notes (commands or checks): read generated `atomic-commit.md` bypass section; `nix run .#pkl-check-generated`.
+  - Context synchronization: synced
+  - Completed: 2026-08-12
+  - Files changed: `config/pkl/base/workflow-commit.pkl`
+  - Evidence: Added a package-local bypass execution handoff requiring verbatim message-file transport, exactly one `git commit -F <message-file>`, explicit post-success `git rev-parse --verify HEAD^{commit}` retrieval, and no retry/amend/additional staging/fabricated-hash behavior; `oneshot` and `skip` remain identical apart from the trigger token.
+  - Verification performed: `nix run .#pkl-generate -- "$(mktemp -d)"` passed; generated Pi, Claude, and OpenCode atomic-commit references contain the deterministic bypass handoff and generated workflow commands follow it. `nix run .#pkl-check-generated` passed (107 files).
 
 - [ ] T10: `Clean up decision semantics` (status:todo)
   - Task ID: T10
