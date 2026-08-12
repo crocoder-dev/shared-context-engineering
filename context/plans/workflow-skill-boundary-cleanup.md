@@ -315,13 +315,18 @@ rather than already-fixed ones:
   - Evidence: Removed validation's temporary-scaffolding deletion step and successful-path `Scaffolding removed` fields; leftover debug flags, temporary artifacts, and local scaffolding are recorded under failed checks without deletion or repair; removed the stale scaffolding field from the validation handoff consumed by plan context synchronization. Existing validation boundaries continue to prohibit modifying tests, application code, or configuration to make checks pass.
   - Verification performed: `nix run .#pkl-check-generated` passed; ephemeral generation produced 110 files for all targets, with four `sce-validate/references/` files per target and no scaffolding-removal instructions or successful-validation cleanup field. Generated validation references explicitly classify leftover debug/temp artifacts as failure evidence.
 
-- [ ] T06: `Harden next-task execution handoff` (status:todo)
+- [x] T06: `Harden next-task execution handoff` (status:done)
   - Task ID: T06
   - Goal: In `workflow-next-task.pkl`'s execution phase, make the required handoff fields explicit (resolved plan, task identity, changed files, implementation summary, verification evidence, done-check evidence, plan update, context impact), add a pre-edit Git baseline capture step, compute `files_changed` relative to that baseline (excluding unrelated pre-existing staged/unstaged changes), state deterministic behavior for a stale/invalid/contradictory handoff (including under auto-approval), and explicitly state whether the mandatory five-root-file context pass stays mandatory for every task.
   - Boundaries (in/out of scope): In — the execution phase reference and its handoff contract, the task-context-sync phase's consumption of `files_changed`. Out — creating a new standalone reference file for the contract (keep it with the execution phase, per the change request); the plan template (already extended by T03).
   - Dependencies: T02, T03
   - Done when: the generated execution reference states the pre-edit baseline step, computes `files_changed` from that baseline, states the auto-approval stale-handoff rule, and explicitly states the five-root-file pass's mandatory status with a one-sentence rationale; no new standalone `references/execution-*.md` file is introduced.
   - Verification notes (commands or checks): read the generated execution reference for the new steps; `nix run .#pkl-check-generated`.
+  - Context synchronization: synced
+  - Completed: 2026-08-12
+  - Files changed: `config/pkl/base/workflow-next-task.pkl`, `config/pkl/base/workflow-context-sync.pkl`
+  - Evidence: Made the complete execution handoff fields explicit; added pre-edit Git baseline capture and post-edit baseline-relative `files_changed` attribution that excludes unchanged unrelated work; defined deterministic stale, invalid, and contradictory handoff blocking under auto-approval; and stated that the mandatory five-root-file context pass remains required for every task. Task context sync now consumes the authoritative baseline-relative file list.
+  - Verification performed: `nix run .#pkl-check-generated` passed; ephemeral generation produced 110 files and the generated `sce-next-task/references/task-execution.md` contains the required handoff fields, baseline capture, attribution rule, auto-approval stale-handoff behavior, and mandatory root-pass rationale.
 
 - [ ] T07: `Harden handover` (status:todo)
   - Task ID: T07

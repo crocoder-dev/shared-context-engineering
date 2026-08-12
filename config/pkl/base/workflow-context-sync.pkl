@@ -165,6 +165,13 @@ local taskRoleData = new SyncRole {
     - Done-check evidence.
     - Reported context impact.
 
+    Treat `changes.files_changed` as the execution phase's authoritative,
+    pre-edit-baseline-relative attribution. Use that list when reconciling the
+    implementation; do not replace it with a whole-working-tree scan or a fresh
+    diff against `HEAD`. If it is absent, not baseline-relative, or contradictory
+    with the rest of the handoff, return a `blocked` Markdown report without
+    modifying context.
+
     This phase must not be \(invokedFor.render.apply(mode)) `declined`, `blocked`, or `incomplete`
     execution results.
 
@@ -178,6 +185,8 @@ local taskRoleData = new SyncRole {
     - `status` is exactly `complete`.
     - A `plan` object with a `path` is present.
     - Exactly one completed task is identified.
+    - `changes.files_changed` is present as the execution phase's
+      pre-edit-baseline-relative changed-file list.
     - Changed files and an implementation summary are present.
     - Verification evidence is present.
     - Done-check evidence is present.
@@ -1107,6 +1116,7 @@ Use the report format in:
 Treat the execution result as the authoritative handoff for:
 
 - The resolved plan and completed task.
+- `changes.files_changed`, already attributed relative to the pre-edit Git baseline.
 - Files changed by implementation.
 - Implementation summary.
 - Verification evidence.

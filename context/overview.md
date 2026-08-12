@@ -4,7 +4,7 @@ This repository maintains shared assistant configuration for OpenCode, Claude, a
 
 It also includes a Rust CLI (`sce`) for Shared Context Engineering workflows: auth, config inspection, setup, doctor, agent-trace hooks, bash-policy evaluation, and trace database inspection. See `context/architecture.md` for module-level boundaries and `context/context-map.md` for the full domain file index.
 
-The generated `/next-task` and `/validate` workflows persist task- and plan-level context-synchronization lifecycle state in each plan (`pending`, `synced`, or `blocked`) so unresolved synchronization debt survives a session boundary and gates new implementation or plan completion.
+The generated `/next-task` and `/validate` workflows persist task- and plan-level context-synchronization lifecycle state in each plan (`pending`, `synced`, or `blocked`) so unresolved synchronization debt survives a session boundary and gates new implementation or plan completion. Successful `/next-task` execution hands context synchronization an explicit, pre-edit-Git-baseline-relative changed-file list plus implementation, verification, done-check, plan-update, and context-impact evidence; the five-file root context pass remains mandatory for every task.
 
 ## Key cross-cutting contracts
 
