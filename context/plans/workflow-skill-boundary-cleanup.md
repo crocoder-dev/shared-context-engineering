@@ -341,13 +341,18 @@ rather than already-fixed ones:
   - Evidence: Writer mode now inspects both unstaged and staged diffs; loader mode validates each required section's substantive content and rejects empty or unreplaced placeholder sections; the persisted template is a package-local reference, and writer success reports only the path and continuation command while loader success still exposes the full loaded content.
   - Verification performed: `nix run .#pkl-generate -- "$(mktemp -d)"` passed for Pi, Claude, and OpenCode with `references/handover-template.md` and `references/output.md`; generated references were target-identical and the generated skill contained the staged-diff, template-read, and placeholder-validation rules. `nix run .#pkl-check-generated` passed (113 files).
 
-- [ ] T08: `Consolidate commit references` (status:todo)
+- [x] T08: `Consolidate commit references` (status:done)
   - Task ID: T08
   - Goal: In `workflow-commit.pkl`, stop generating `references/commit-contract.yaml` and `references/commit-message-style.md` (and do not introduce `references/commit-contract.md`); merge their procedure, subject/body/issue-reference/plan-citation rules, anti-patterns, result variants, and required/optional result fields into `references/atomic-commit.md`; simplify the internal result contract, dropping fields such as `scope_classification`, `notes`, and `cites_plan` unless the composite commit workflow actually consumes them.
   - Boundaries (in/out of scope): In — `workflow-commit.pkl`'s reference listing and `atomic-commit.md` content. Out — bypass-mode execution mechanics (T09).
   - Dependencies: T07
   - Done when: generated `sce-commit/references/` contains exactly `atomic-commit.md` and `output.md` per target; `atomic-commit.md` contains both commit-message rules and the atomic-commit result contract; no generated file is named `commit-contract.yaml`, `commit-message-style.md`, or `commit-contract.md`.
   - Verification notes (commands or checks): directory listing of generated `sce-commit/references/`; grep `atomic-commit.md` for message-style and result-contract content; `nix run .#pkl-check-generated`.
+  - Context synchronization: synced
+  - Completed: 2026-08-12
+  - Files changed: `config/pkl/base/workflow-commit.pkl`, `config/pkl/renderers/metadata-coverage-check.pkl`, `config/pkl/renderers/generation-contract-check.pkl`
+  - Evidence: Consolidated the commit-message rules and atomic-commit result contract into `references/atomic-commit.md`, removed the two obsolete reference documents from package and composite inventories, and removed result fields not consumed by the composite workflow. The generated package now retains only `atomic-commit.md` and `output.md`.
+  - Verification performed: `nix run .#pkl-generate -- "$(mktemp -d)"` passed; generated Pi, Claude, and OpenCode `sce-commit/references/` directories each contain exactly `atomic-commit.md` and `output.md`; `atomic-commit.md` contains the message rules and result-contract sections; forbidden filenames are absent. `nix run .#pkl-check-generated` passed (107 files).
 
 - [ ] T09: `Make bypass commit execution deterministic` (status:todo)
   - Task ID: T09

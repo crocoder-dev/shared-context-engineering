@@ -12,7 +12,10 @@ local bypassPhaseReferenceQualifier = model.semanticReference.apply(
   "",
   " (described at the Regular path's step 2 above)"
 )
-local commitMessageStyle = model.semanticReference.apply("`references/commit-message-style.md`", "`references/output.md`")
+local commitMessageStyle = model.semanticReference.apply(
+  "the **Commit message rules** section in this reference",
+  "`references/output.md`"
+)
 local invoke = model.semanticReference.apply("Invoke", "Run")
 local invokeLower = model.semanticReference.apply("invoke", "run")
 local yaml = model.semanticReference.apply("YAML", "internal state")
@@ -23,11 +26,9 @@ local returnExactlyOneYamlDocument = model.semanticReference.apply("Return exact
 local returnOnlyYamlDocument = model.semanticReference.apply("Return only the YAML document", "Record only the internal state")
 local returnYaml = model.semanticReference.apply("Return YAML", "Return internal state")
 
-/// Contract references. A package owns `references/commit-contract.yaml`, so
-/// these sentences resolve there. A composite workflow has no such file and
-/// describes its internal states inline, so the reference would resolve to
-/// nothing and is dropped. The block-shaped reference owns its surrounding blank
-/// lines.
+/// The package keeps the result contract beside the phase procedure in
+/// `references/atomic-commit.md`; composite mode describes its internal states
+/// inline, so the package-only contract citation is omitted.
 local commitContractHandoff = model.semanticReference.apply(
   """
   The skill must return a result matching its commit contract. Branch on
@@ -38,17 +39,19 @@ local commitContractHandoff = model.semanticReference.apply(
 local commitContractBlock = model.semanticReference.apply(
   """
 
-  Return a result matching:
-
-  `references/commit-contract.yaml`
+  Return a result matching the **Atomic commit result contract** section in this
+  reference.
 
   """,
   ""
 )
-local commitContractClause = model.semanticReference.apply(" matching `references/commit-contract.yaml`", "")
+local commitContractClause = model.semanticReference.apply(
+  " matching the **Atomic commit result contract** section in this reference",
+  ""
+)
 local commitCompletionBullet = model.semanticReference.apply(
   """
-  - One valid terminal YAML result matching `references/commit-contract.yaml` was
+  - One valid terminal YAML result matching the atomic-commit result contract was
     returned.
   """,
   "- One valid terminal internal state was returned."
@@ -126,8 +129,8 @@ local atomicCommitPackage = new model.SkillPackage {
   title = "SCE Atomic Commit"
   documents = model.packageDocuments.apply(new Listing {
     model.makeDocument.apply("SKILL.md", ATOMIC_COMMIT_SKILL)
-    model.makeDocument.apply("references/commit-contract.yaml", COMMIT_CONTRACT)
-    model.makeDocument.apply("references/commit-message-style.md", COMMIT_MESSAGE_STYLE)
+    model.makeDocument.apply("references/atomic-commit.md", renderAtomicCommitSkillBody.apply("package"))
+    model.makeDocument.apply("references/output.md", renderCommitOutput.apply("package"))
   })
 }
 
@@ -392,7 +395,18 @@ local renderAtomicCommitSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Invent plan slugs, task IDs, or issue references.
     - Mention `context/` synchronization activity in a commit message.
     - Claim a message was committed.
-    - Run plan, task, or validation workflows.\(model.packageOnlyBlock.apply("""
+    - Run plan, task, or validation workflows.
+
+    \(model.packageOnlyBlock.apply(COMMIT_MESSAGE_STYLE).render.apply(mode))\(model.packageOnlyBlock.apply("""
+
+    ## Atomic commit result contract
+
+    The complete result contract is serialized below:
+
+    ```yaml
+    \(COMMIT_CONTRACT)
+    ```
+    """).render.apply(mode))\(model.packageOnlyBlock.apply("""
 
     ## Completion
 
@@ -464,13 +478,9 @@ local COMMIT_CONTRACT = """
 
         optional_fields:
           - split_rationale
-          - scope_classification
-          - notes
 
         field_rules:
           - Include split_rationale only when commits holds more than one entry.
-          - scope_classification reports the context-file guidance gate as
-            context_only or mixed.
 
         shape:
           status: proposal
@@ -481,13 +491,8 @@ local COMMIT_CONTRACT = """
               message: string
               files:
                 - string
-              cites_plan: boolean
 
           split_rationale: string
-          scope_classification: context_only | mixed
-
-          notes:
-            - string
 
         example:
           status: proposal
@@ -507,8 +512,6 @@ local COMMIT_CONTRACT = """
                 - src/auth/refresh.ts
                 - tests/auth/refresh.test.ts
 
-              cites_plan: false
-
             - id: C02
 
               message: |
@@ -520,14 +523,10 @@ local COMMIT_CONTRACT = """
               files:
                 - flake.nix
 
-              cites_plan: false
-
           split_rationale: >
             The refresh endpoint and the formatter pin pursue unrelated goals and
             share no files. Committing them together would hide the build change
             behind a feature subject.
-
-          scope_classification: mixed
 
       bypass_message:
         meaning: >
@@ -541,13 +540,9 @@ local COMMIT_CONTRACT = """
           - message
           - files
 
-        optional_fields:
-          - cites_plan
-          - notes
-
         field_rules:
           - files lists every staged file, because one message covers all of them.
-          - Never include commits, split_rationale, or scope_classification.
+          - Never include commits or split_rationale.
 
         shape:
           status: bypass_message
@@ -556,11 +551,6 @@ local COMMIT_CONTRACT = """
           message: string
 
           files:
-            - string
-
-          cites_plan: boolean
-
-          notes:
             - string
 
         example:
@@ -576,8 +566,6 @@ local COMMIT_CONTRACT = """
           files:
             - src/auth/refresh.ts
             - tests/auth/refresh.test.ts
-
-          cites_plan: false
 
       blocked:
         meaning: >
@@ -634,7 +622,7 @@ local COMMIT_CONTRACT = """
                 State the completed task ID, or stage only that task's plan edit.
     """
 local renderCommitMessageStyle = (mode: model.WorkflowRenderMode) -> """
-    # Commit message style
+    ## Commit message rules
 
     The wording rules for every message \(atomicCommit.render.apply(mode)) returns, in either
     mode. This file is the only authority for message content and shape.
@@ -901,8 +889,6 @@ structuredComposite = new model.StructuredCompositeSource {
   compositeSkillBody = commitSkillBody
   referenceDocuments = new Listing {
     model.makeDocument.apply("references/atomic-commit.md", renderAtomicCommitSkillBody.apply("package"))
-    model.makeDocument.apply("references/commit-contract.yaml", COMMIT_CONTRACT)
-    model.makeDocument.apply("references/commit-message-style.md", COMMIT_MESSAGE_STYLE)
     model.makeDocument.apply("references/output.md", renderCommitOutput.apply("package"))
   }
   phases = new Listing {}
