@@ -36,7 +36,7 @@ still preserving exact current output.
       otherwise, with no `message().contains("Try:")` inspection remaining in
       the renderer.
   - Validate: `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml error:: app_support::`; `grep -n 'contains("Try:")' cli/src/services/app_support.rs` returns nothing.
-- [ ] AC2: Every parser/invocation diagnostic named in the PR's priority list
+- [x] AC2: Every parser/invocation diagnostic named in the PR's priority list
       (missing subcommand, unknown command, unavailable command, unknown
       option, missing required argument, conflicting arguments, unregistered
       command, setup invocation validation, bash-policy STDIN validation) now
@@ -44,7 +44,7 @@ still preserving exact current output.
       concatenation, and renders byte-identical final stderr text to current
       behavior.
   - Validate: targeted tests reproducing each case's exact prior stderr text (e.g. `sce`, `sce frobnicate`, `sce --frobnicate`, `sce setup --repo x`, `sce policy bash` with empty STDIN).
-- [ ] AC3: Every anyhow-originated error reaching `ClassifiedError::runtime`
+- [x] AC3: Every anyhow-originated error reaching `ClassifiedError::runtime`
       through the shared conversion boundary (`auth_command/command.rs`,
       `config/command.rs`, `version/command.rs`, `hooks/command.rs`,
       `setup/command.rs`, `trace/command.rs`, `doctor/command.rs`, and
@@ -53,14 +53,14 @@ still preserving exact current output.
       construction time, so it is never doubled with the class-default
       guidance.
   - Validate: helper unit tests (message with/without a trailing `Try:` suffix); an app-boundary test reproducing one deep call site's previous exact output unchanged (e.g. `sce auth renew` with no stored credentials).
-- [ ] AC4: `context/sce/cli-error-code-taxonomy.md` documents the new
+- [x] AC4: `context/sce/cli-error-code-taxonomy.md` documents the new
       ownership split (`ClassifiedError` owns optional hint data, `FailureClass`
       owns default remediation, the renderer owns `Try:` presentation) and
       names the anyhow-boundary helper as the one intentional,
       construction-time exception to "remediation presence is no longer
       decided by inspecting message text."
   - Validate: manual review of the updated doc against the implemented renderer and helper.
-- [ ] AC5: A repository-wide search for `contains("Try:")` and literal `"Try:"`
+- [x] AC5: A repository-wide search for `contains("Try:")` and literal `"Try:"`
       string concatenation outside test code finds no unexplained occurrence;
       the ones that remain (the anyhow-boundary helper itself, and
       `auth_command/mod.rs`'s `with_try_guidance`, which operates on plain
@@ -352,14 +352,89 @@ still preserving exact current output.
     `cargo fmt --manifest-path cli/Cargo.toml -- --check` clean.
   - Deviations/assumptions: None beyond the reviewed task scope.
 
-- [ ] T07: `Document the hint-owned remediation model in the error-code taxonomy` (status:todo)
+- [x] T07: `Document the hint-owned remediation model in the error-code taxonomy` (status:done)
   - Task ID: T07
   - Goal: Update `context/sce/cli-error-code-taxonomy.md` to describe `ClassifiedError` owning optional hint data, `FailureClass` owning default remediation, the renderer owning `Try:` presentation, and remediation presence no longer being decided by inspecting rendered message text at the render layer — naming the anyhow-boundary helper (T05) as the one intentional, construction-time exception, and `auth_command/mod.rs`'s `with_try_guidance` as an out-of-scope pre-boundary de-dup left unchanged.
   - Boundaries (in/out of scope): In — `context/sce/cli-error-code-taxonomy.md` only. Out — auditing or correcting other stale `app.rs`-ownership references in `context/overview.md` or `context/context-map.md` (pre-existing, unrelated drift).
   - Dependencies: T06
   - Done when: the taxonomy doc's rendering and ownership sections describe the implemented model accurately, with no remaining reference to message-text `contains("Try:")` detection except the documented boundary-helper exception.
   - Verification notes (commands or checks): manual review of the updated doc against `cli/src/services/error.rs` and `cli/src/services/app_support.rs`.
+  - Implementation evidence: Rewrote `context/sce/cli-error-code-taxonomy.md`'s
+    **Scope**, **Rendering contract**, **Actionable parser/invocation guidance
+    contract**, **Ownership**, and **Determinism and testing** sections to
+    reflect the implemented model: `ClassifiedError` (`cli/src/services/error.rs`)
+    owns code/class/message/optional hint; `FailureClass` owns
+    `default_try_guidance()`; `write_error_diagnostic` in
+    `cli/src/services/app_support.rs` owns final `Try:` presentation, selecting
+    an explicit hint when set or the class default otherwise, with no
+    message-text inspection. Corrected stale ownership references from
+    `cli/src/app.rs` to `cli/src/services/error.rs` /
+    `cli/src/services/app_support.rs` (`app.rs` now only invokes
+    `app_support::render_run_outcome`). Added a new **The anyhow-boundary
+    exception** subsection under **Ownership** documenting
+    `ClassifiedError::from_anyhow_text` (T05) as the one intentional,
+    construction-time exception, and `auth_command/mod.rs`'s `with_try_guidance`
+    as a separate, out-of-scope, pre-boundary de-dup helper operating on plain
+    `anyhow::Error`/`String` text upstream of any `ClassifiedError`. Updated the
+    actionable-guidance ownership line to name
+    `cli/src/services/parse/command_runtime.rs`, `cli/src/services/bash_policy.rs`,
+    and `cli/src/services/setup/mod.rs` instead of the stale `app.rs`/`hooks/mod.rs`
+    references.
+  - Verification outcome: Manual review of the updated doc against
+    `cli/src/services/error.rs` (`FailureClass`, `ClassifiedError`,
+    `with_hint`/`hint`, `from_anyhow_text`) and
+    `cli/src/services/app_support.rs` (`write_error_diagnostic`,
+    `exit_with_error`, `render_run_outcome`) confirms the described ownership
+    and rendering behavior matches the implemented code exactly.
+    `grep -n 'contains("Try:")' context/sce/cli-error-code-taxonomy.md` finds
+    nothing; the doc's only remaining `Try:`-detection mention is
+    `auth_command/mod.rs`'s pre-boundary `with_try_guidance`, explicitly named
+    as the documented out-of-scope exception.
+  - Deviations/assumptions: None beyond the reviewed task scope.
 
 ## Open questions
 
 None. The one material scope ambiguity (how to handle the anyhow-routed messages that already embed `Try:` text) was resolved via the 2026-08-12 clarification gate; the chosen shared-helper approach is recorded above and reflected in the task stack.
+
+## Validation Report
+
+**Status:** failed
+**Date:** 2026-08-12
+
+### Commands run
+
+- `nix flake check` -> exit 1 (fails on `checks.x86_64-linux.cli-tests`: 6 test failures — 2 in `services::app_support::tests` and 4 in `services::agent_trace_db`/`services::agent_trace_export` unrelated to this plan)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` -> exit 0 (356 passed, 0 failed, outside the nix sandbox)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::error::` -> exit 0 (6 passed)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::app_support::` -> exit 0 (4 passed, non-tty stderr)
+- `script -qec "./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::app_support::" /dev/null` -> exit 101 (2 of 4 failed: `explicit_hint_is_rendered`, `absent_hint_falls_back_to_class_default_guidance` — reproduces the nix failure under a real tty)
+- `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::trace::` -> exit 0 (29 passed)
+- `grep -n 'contains("Try:")' cli/src/services/app_support.rs` -> exit 1, no output (AC1's second check passes)
+- `grep -rn 'Try:' cli/src --include=*.rs` -> reviewed by hand; every remaining occurrence outside `error.rs`'s `from_anyhow_text` and `auth_command/mod.rs`'s `with_try_guidance` is a construction-time message/hint literal or test assertion, consistent with the taxonomy doc and prior task evidence (AC5)
+
+### Scaffolding removed
+
+- None.
+
+### Success-criteria verification
+
+- [ ] AC1: `ClassifiedError` exposes an explicit `hint`, and the renderer prefers it over class-default guidance with no message-text inspection -> the structural change and its own direct-shell test run pass, but the two `app_support::tests` added for this criterion (`explicit_hint_is_rendered`, `absent_hint_falls_back_to_class_default_guidance`) assert an exact plain-text stderr string while `write_error_diagnostic` styles output via `services::style::error_text`/`heading`/`error_code`, whose color decision reads the real process `io::stderr().is_terminal()` rather than any test-controlled policy. When the test binary's stderr is a real tty (reproduced locally via `script`) or under `nix flake check`'s sandboxed build, styling activates and the assertions fail with ANSI-wrapped output. This is a genuine, environment-dependent test defect introduced by this criterion's own tests, not a flake in an unrelated area.
+- [x] AC2: parser/invocation diagnostics attach remediation via `.with_hint()` and render byte-identical stderr -> `command_runtime::`, `bash_policy::`, and `setup::` targeted exact-text tests pass in the full 356-test run; these tests build expected text directly from `.message()`/`.hint()` without going through the styled renderer, so they are unaffected by the AC1 tty issue.
+- [x] AC3: anyhow-boundary conversions split a trailing `Try:` suffix via one shared helper -> `services::error::` helper unit tests pass (6/6, including `from_anyhow_text` split/no-split/last-occurrence cases); the `sce auth renew` deep call-site case has no automated test (`auth_command` has no test module) and remains verified by code inspection only, per T05's recorded evidence.
+- [x] AC4: taxonomy doc documents the ownership split and the anyhow-boundary exception -> manual review of `context/sce/cli-error-code-taxonomy.md` against `cli/src/services/error.rs` and `cli/src/services/app_support.rs` confirms accuracy (done in T07).
+- [x] AC5: no unexplained `Try:`/`contains("Try:")` occurrence remains -> `grep -rn 'Try:' cli/src --include=*.rs` reviewed; all remaining sites are either the documented `from_anyhow_text`/`with_try_guidance` exceptions or plain anyhow-message-construction files named out-of-scope in this plan's Change summary/Constraints (e.g. `auth.rs`, `token_storage.rs`, `db/mod.rs`, `resilience.rs`, `security.rs`, `observability.rs`, `agent_trace_sync/control_plane.rs`).
+
+### Failed checks and follow-ups
+
+- `nix flake check` / `checks.x86_64-linux.cli-tests`: fails deterministically under a real tty or the nix sandbox on `services::app_support::tests::explicit_hint_is_rendered` and `absent_hint_falls_back_to_class_default_guidance`; evidence: ANSI-wrapped left-hand values in both nix's build log and a local `script`-wrapped rerun, e.g. `"\u{1b}[1m\u{1b}[36mError\u{1b}[39m\u{1b}[0m [...]: \u{1b}[33mx Try: y\u{1b}[39m\n"` vs expected `"Error [SCE-ERR-PARSE]: x Try: y\n"`; required: make these two tests deterministic regardless of the real process's terminal state — e.g. inject/override the color policy for the test's writer instead of `write_error_diagnostic` reading real `io::stderr()`, or assert on hint/message content only, ignoring styling, the way `command_runtime::`/`setup::`'s `rendered_text` test helpers already do.
+- `nix flake check` / `checks.x86_64-linux.cli-tests`: 4 additional failures in `services::agent_trace_db::tests::recent_diff_trace_patches_applies_bounded_window_ordering_and_parse_accounting` and three `services::agent_trace_export::tests::*` cases, all `UNIQUE constraint failed: agent_traces.id` / DB-lock-retry errors; evidence: nix build log for `sce-cli-tests-test-0.4.0-pre-alpha-v2.drv`; not reproduced locally with `--test-threads=16` (356/356 passed) and not touched by this plan's in-scope files (`agent_trace_db`, `agent_trace_export` are out of this plan's scope entirely); required: a decision on whether this is pre-existing nix-sandbox test-isolation flakiness (needs its own investigation/fix outside this plan) or whether it blocks this plan's validation — recommend re-running `nix flake check` once to confirm reproducibility before treating it as this plan's blocker.
+
+### Residual risks
+
+- The AC1 test defect could mask a real production behavior gap only if `write_error_diagnostic`'s styling were itself incorrect; code inspection shows the styling logic is unchanged, correct production behavior — the defect is confined to test assertions, not the shipped renderer.
+
+### Retry
+
+After repairs, rerun:
+
+`/validate context/plans/structured-cli-diagnostics.md`
