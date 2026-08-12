@@ -256,19 +256,17 @@ local forbiddenWorkflowReferenceTokens = new Listing {
   "references/authoring-contract.yaml"
   "references/readiness-contract.yaml"
   "references/execution-contract.yaml"
-  "references/commit-contract.yaml"
   "references/implementation-gate.md"
   "references/plan-summary.md"
   "references/validation-result.md"
-  "references/sync-report.md"
-  "references/commit-message-style.md"
 }
 
-/// Six cross-target workflow packages, with package-local phase references on
-/// the four phase-based workflows, plus the decision package and retained
-/// non-workflow assets. Stating the total as a literal makes an unintended
-/// inventory change fail here instead of silently becoming the new expectation.
-local expectedArtifactPathCount = 101
+/// Six cross-target workflow packages, with package-local phase references and
+/// supporting documents on the four phase-based workflows, plus the decision
+/// package and retained non-workflow assets. Stating the total as a literal makes
+/// an unintended inventory change fail here instead of silently becoming the new
+/// expectation.
+local expectedArtifactPathCount = 113
 
 local assertExactArtifactPaths = (actual: Mapping) ->
   if (

@@ -5,7 +5,7 @@ The Markdown section `sce-validation` appends to the plan file when returning
 under exactly one `## Validation Report` heading.
 
 This is plan-file content. The result returned to the workflow is defined
-separately in `references/validation-result.md`.
+separately in `references/output.md`.
 
 Do not author this section while planning. Only `/validate` through `sce-validation`
 writes it.

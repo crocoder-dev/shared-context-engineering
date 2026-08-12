@@ -901,6 +901,8 @@ structuredComposite = new model.StructuredCompositeSource {
   compositeSkillBody = commitSkillBody
   referenceDocuments = new Listing {
     model.makeDocument.apply("references/atomic-commit.md", renderAtomicCommitSkillBody.apply("package"))
+    model.makeDocument.apply("references/commit-contract.yaml", COMMIT_CONTRACT)
+    model.makeDocument.apply("references/commit-message-style.md", COMMIT_MESSAGE_STYLE)
     model.makeDocument.apply("references/output.md", renderCommitOutput.apply("package"))
   }
   phases = new Listing {}

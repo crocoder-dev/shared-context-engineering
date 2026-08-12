@@ -34,16 +34,20 @@ local phaseReferencePathsByWorkflow = new Mapping {
     "references/plan-review.md"
     "references/task-execution.md"
     "references/context-sync.md"
+    "references/sync-report.md"
     "references/output.md"
   }
   ["validate"] = new Listing {
     "references/validation.md"
     "references/context-sync.md"
+    "references/sync-report.md"
     "references/validation-report.md"
     "references/output.md"
   }
   ["commit"] = new Listing {
     "references/atomic-commit.md"
+    "references/commit-contract.yaml"
+    "references/commit-message-style.md"
     "references/output.md"
   }
   ["handover"] = new Listing { "references/output.md" }
