@@ -22,7 +22,8 @@ permission:
   lsp: allow
   doom_loop: ask
   skill:
-    "*": ask
+    "*": allow
+    "sce-*": deny
     "sce-next-task": allow
     "sce-validate": allow
     "sce-commit": allow
