@@ -74,14 +74,14 @@ local syncBlockedBranch = model.semanticReference.apply(
 
   State that durable context is now out of date relative to the validated
   implementation, and that plan context synchronization must be resolved before
-  treating the plan as fully closed. Nothing records the skipped synchronization,
-  so it is lost once this session ends.
+  treating the plan as fully closed. The plan-level lifecycle record preserves the
+  blocker and retry condition.
   """,
   """
   `blocked` -> Validation itself succeeded and is already recorded in the plan.
   Render the **Context synchronization blocked** layout from
-  `references/output.md`. Nothing records the skipped synchronization, so it is
-  lost once this session ends.
+  `references/output.md`. The plan-level lifecycle record preserves the blocker,
+  required action, and retry condition.
   """
 )
 local completionLayout = model.semanticReference.apply(
@@ -149,7 +149,8 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     \(validationUpper.render.apply(mode)) exclusively owns:
     
     - Resolving one plan.
-    - Confirming every implementation task is complete.
+    - Confirming every implementation task is complete and every completed task's
+      `Context synchronization` field is `synced`.
     - Running full validation and acceptance-criteria checks.
     - Removing temporary scaffolding.
     - Writing the Validation Report into the plan.
@@ -276,6 +277,12 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
 
     \(validationResultSelfRef.render.apply(mode))
 
+    A plan is not finishable while any completed task's `Context synchronization`
+    field is missing or not `synced`. Before returning `validated`, write the
+    plan-level context synchronization field as `pending` in the plan file; this
+    must happen before plan context synchronization is invoked. If either durable
+    check or write cannot be completed, return `blocked`.
+
     Write plan-file evidence matching:
     
     \(validationReport.render.apply(mode))
@@ -301,7 +308,8 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     \(validationHeadings.stepHeading.apply(mode, 2, "Confirm implementation is finished"))
     
     \(returnUpper.render.apply(mode)) `blocked` with incomplete tasks listed when any implementation task
-    remains incomplete.
+    remains incomplete, or when any completed task's `Context synchronization` field
+    is missing or not `synced`.
     
     Final validation measures finished work. Do not run the full suite against a
     partial stack, and do not complete remaining tasks here.
