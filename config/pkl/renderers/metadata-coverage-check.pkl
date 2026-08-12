@@ -40,7 +40,6 @@ local phaseReferencePathsByWorkflow = new Mapping {
   ["validate"] = new Listing {
     "references/validation.md"
     "references/context-sync.md"
-    "references/sync-report.md"
     "references/validation-report.md"
     "references/output.md"
   }

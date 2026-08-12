@@ -5,7 +5,15 @@ local validation = model.semanticReference.apply("`sce-validation`", "the **Vali
 local validationUpper = model.semanticReference.apply("`sce-validation`", "The **Validation phase**")
 local validationName = model.semanticReference.apply("sce-validation", "Validation phase")
 local planContextSync = model.semanticReference.apply("`sce-plan-context-sync`", "the **Plan context synchronization phase**")
-local validationResult = model.semanticReference.apply("`references/output.md`", "`references/output.md`")
+/// Cited from inside `references/validation.md` itself, where the Validation
+/// Result contract is now appended below the phase steps.
+local validationResultSelfRef = model.semanticReference.apply(
+  "the **Validation Result** section below in this file",
+  "the **Validation Result** section below in this file"
+)
+/// Cited from `references/validation-report.md`, a sibling file, so it must
+/// name `references/validation.md` explicitly rather than say "below".
+local validationResultFileRef = model.semanticReference.apply("`references/validation.md`", "`references/validation.md`")
 local validationReport = model.semanticReference.apply("`references/validation-report.md`", "the **Plan-file validation report** section embedded in this file")
 /// The paragraph that separates the plan-file report from the returned result.
 /// Both spellings wrap at the same width as the surrounding body text.
@@ -265,9 +273,9 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     - \(returningValidationResult.render.apply(mode)).
     
     Return a result matching:
-    
-    \(validationResult.render.apply(mode))
-    
+
+    \(validationResultSelfRef.render.apply(mode))
+
     Write plan-file evidence matching:
     
     \(validationReport.render.apply(mode))
@@ -382,7 +390,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
       passed, and the Validation Report was written.
     - `failed` when evidence was captured but required checks or criteria remain
       unsatisfied. Shape it as a session handoff per
-      \(validationResult.render.apply(mode)), ending recommended work with
+      \(validationResultSelfRef.render.apply(mode)), ending recommended work with
       `/validate {plan path}`.
     - `blocked` when validation cannot proceed safely.
     
@@ -414,7 +422,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     - One plan was resolved, or resolution failed and was reported.
     - Implementation completeness was checked.
     - Validation ran to a terminal state, or a blocker prevented it.
-    - One valid \(markdownResult.render.apply(mode)) matching \(validationResult.render.apply(mode)) was
+    - One valid \(markdownResult.render.apply(mode)) matching \(validationResultSelfRef.render.apply(mode)) was
       returned.
     """).render.apply(mode))
     """
@@ -450,7 +458,7 @@ local renderValidationReport = (mode: model.WorkflowRenderMode) -> """
     under exactly one `## Validation Report` heading.
     
     This is plan-file content. The result returned to the workflow is defined
-    separately in \(validationResult.render.apply(mode)).
+    separately in \(validationResultFileRef.render.apply(mode)).
     
     Do not author this section while planning. Only `/validate` through \(validation.render.apply(mode))
     writes it.
@@ -720,15 +728,63 @@ local renderValidationResult = (mode: model.WorkflowRenderMode) -> """
 
 local VALIDATION_RESULT = renderValidationResult.apply("package")
 
+/// `references/validation.md` carries both the phase steps and the result
+/// contract, so the phase's own citation of the result contract must point
+/// within this same file rather than at a separate `references/output.md`.
+local VALIDATION_REFERENCE = renderValidationSkillBody.apply("package") + "\n\n" + VALIDATION_RESULT
+
+/// The plan-role phase body cites its report format by the shared
+/// `references/sync-report.md` marker (see `workflow-context-sync.pkl`). That
+/// file is no longer generated for `sce-validate`: the report contract is
+/// appended below the phase steps in this same `references/context-sync.md`
+/// instead, so every occurrence of the marker is redirected in place.
+local syncReportMarker = "`references/sync-report.md`"
+local contextSyncSelfRef = "the **Plan Context Sync Report** below in this file"
+local CONTEXT_SYNC_REFERENCE =
+  contextSync.planSkillBody.render.apply("package").replaceAll(syncReportMarker, contextSyncSelfRef)
+  + "\n\n" + contextSync.planOutputReport
+
+/// Composite-only user-visible layouts. The validation and context-sync
+/// result contracts moved onto their owning phase references above, so this
+/// file carries only the two layouts the composite `SKILL.md` cites by name.
+local VALIDATE_OUTPUT_LAYOUTS = """
+    # Validate output layouts
+
+    Use only the applicable layout. Values come from internal workflow state.
+
+    ## Context synchronization blocked
+
+    State that plan `{plan-path}` passed final validation and its Validation
+    Report is written; report the context contradiction or synchronization
+    failure, any context edits the report says were preserved, the action
+    required to resolve the problem, and the retry condition. State that
+    durable context is now out of date relative to the validated
+    implementation and must be synchronized before treating the plan as fully
+    closed.
+
+    ## Completion
+
+    ```markdown
+    -------------------------------------
+
+    # Plan {plan-name} validated.
+
+    All implementation tasks were already complete.
+    Final validation passed.
+    Durable context is synchronized.
+
+    Validation report: {plan-path}
+    ```
+    """
+
 structuredComposite = new model.StructuredCompositeSource {
   command = structuredCommand
   compositeSkillBody = model.validateSkillBody
   referenceDocuments = new Listing {
-    model.makeDocument.apply("references/validation.md", renderValidationSkillBody.apply("package"))
-    model.makeDocument.apply("references/context-sync.md", contextSync.planSkillBody.render.apply("package"))
-    model.makeDocument.apply("references/sync-report.md", contextSync.planOutputReport)
+    model.makeDocument.apply("references/validation.md", VALIDATION_REFERENCE)
+    model.makeDocument.apply("references/context-sync.md", CONTEXT_SYNC_REFERENCE)
     model.makeDocument.apply("references/validation-report.md", VALIDATION_REPORT)
-    model.makeDocument.apply("references/output.md", VALIDATION_RESULT)
+    model.makeDocument.apply("references/output.md", VALIDATE_OUTPUT_LAYOUTS)
   }
   phases = new Listing {}
   internalDocuments = new Listing {
