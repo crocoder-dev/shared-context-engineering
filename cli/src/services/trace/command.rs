@@ -51,14 +51,14 @@ impl TraceCommand {
         match &self.request.subcommand {
             TraceSubcommandRequest::DbList { format } => {
                 let databases = discover_agent_trace_dbs()
-                    .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
+                    .map_err(|error| ClassifiedError::from_anyhow_text(format!("{error:#}")))?;
                 render_list::render(&databases, *format)
-                    .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))
+                    .map_err(|error| ClassifiedError::from_anyhow_text(format!("{error:#}")))
             }
             TraceSubcommandRequest::DbShell { identifier } => {
                 let target = if let Some(identifier) = identifier {
                     let databases = discover_agent_trace_dbs()
-                        .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
+                        .map_err(|error| ClassifiedError::from_anyhow_text(format!("{error:#}")))?;
                     let database = resolve_agent_trace_db_identifier(&databases, identifier)
                         .map_err(|error| ClassifiedError::validation(error.user_message()))?;
                     ShellTarget {
@@ -84,14 +84,14 @@ impl TraceCommand {
                 let stdin = std::io::stdin();
                 let stdout = std::io::stdout();
                 run_agent_trace_db_shell(&target, stdin.lock(), stdout.lock())
-                    .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
+                    .map_err(|error| ClassifiedError::from_anyhow_text(format!("{error:#}")))?;
                 Ok(String::new())
             }
             TraceSubcommandRequest::Status { all: true, format } => {
                 let report = aggregate_current_status_all()
-                    .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))?;
+                    .map_err(|error| ClassifiedError::from_anyhow_text(format!("{error:#}")))?;
                 render_status_all::render(&report, *format)
-                    .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))
+                    .map_err(|error| ClassifiedError::from_anyhow_text(format!("{error:#}")))
             }
             TraceSubcommandRequest::Status { all: false, format } => {
                 let repo_root = current_repo_root(context)?;
@@ -99,7 +99,7 @@ impl TraceCommand {
                 let report = resolve_current_status(&repo_root).map_err(classify_status_error)?;
 
                 render_status::render(&report, *format)
-                    .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))
+                    .map_err(|error| ClassifiedError::from_anyhow_text(format!("{error:#}")))
             }
             TraceSubcommandRequest::Sync { format } => {
                 let repo_root = current_repo_root(context)?;
@@ -107,7 +107,7 @@ impl TraceCommand {
                 let report = run_current_sync(&repo_root).map_err(classify_sync_error)?;
 
                 render_sync::render(&report, *format)
-                    .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))
+                    .map_err(|error| ClassifiedError::from_anyhow_text(format!("{error:#}")))
             }
         }
     }

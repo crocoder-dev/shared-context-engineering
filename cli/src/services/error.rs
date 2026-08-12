@@ -105,6 +105,22 @@ impl ClassifiedError {
     pub fn hint(&self) -> Option<&str> {
         self.hint.as_deref()
     }
+
+    /// Builds a `runtime` error from converted `anyhow::Error` text, splitting
+    /// a trailing `" Try: ..."` suffix into an explicit hint when present.
+    ///
+    /// This is the one intentional, construction-time exception to deciding
+    /// remediation by inspecting message text: it exists at the anyhow/
+    /// `ClassifiedError` conversion boundary specifically to avoid doubling
+    /// `Try:` guidance for the dozen or so call sites that already bake
+    /// remediation into their `anyhow::Error`/`String` text upstream.
+    pub fn from_anyhow_text(message: impl Into<String>) -> Self {
+        let message = message.into();
+        match message.rsplit_once(" Try: ") {
+            Some((body, hint)) => Self::runtime(body.to_string()).with_hint(hint.to_string()),
+            None => Self::runtime(message),
+        }
+    }
 }
 
 impl std::fmt::Display for ClassifiedError {
@@ -143,5 +159,35 @@ mod tests {
         assert_eq!(error.class(), hinted.class());
         assert_eq!(error.code(), hinted.code());
         assert_eq!(error.class().exit_code(), hinted.class().exit_code());
+    }
+
+    #[test]
+    fn from_anyhow_text_splits_a_trailing_try_suffix_into_a_hint() {
+        let error = ClassifiedError::from_anyhow_text("something failed. Try: rerun the command.");
+
+        assert_eq!(error.message(), "something failed.");
+        assert_eq!(error.hint(), Some("rerun the command."));
+        assert_eq!(error.class(), FailureClass::Runtime);
+    }
+
+    #[test]
+    fn from_anyhow_text_leaves_a_message_without_a_try_suffix_unhinted() {
+        let error = ClassifiedError::from_anyhow_text("something failed with no guidance.");
+
+        assert_eq!(error.message(), "something failed with no guidance.");
+        assert_eq!(error.hint(), None);
+    }
+
+    #[test]
+    fn from_anyhow_text_splits_on_the_last_try_occurrence() {
+        let error = ClassifiedError::from_anyhow_text(
+            "outer context: inner failed. Try: retry inner. Try: then retry outer.",
+        );
+
+        assert_eq!(
+            error.message(),
+            "outer context: inner failed. Try: retry inner."
+        );
+        assert_eq!(error.hint(), Some("then retry outer."));
     }
 }

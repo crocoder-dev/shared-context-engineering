@@ -8,6 +8,6 @@ pub struct ConfigCommand {
 impl ConfigCommand {
     pub fn execute<C>(&self, _context: &C) -> Result<String, ClassifiedError> {
         config::run_config_subcommand(self.subcommand.clone())
-            .map_err(|error| ClassifiedError::runtime(format!("{error:#}")))
+            .map_err(|error| ClassifiedError::from_anyhow_text(format!("{error:#}")))
     }
 }

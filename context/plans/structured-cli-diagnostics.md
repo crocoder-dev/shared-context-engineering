@@ -274,13 +274,62 @@ still preserving exact current output.
     leaving these two functions unmigrated would have caused a real double-`Try:` regression
     once T06 removes the renderer's `contains("Try:")` fallback.
 
-- [ ] T05: `Add a shared anyhow-boundary hint-extraction helper` (status:todo)
+- [x] T05: `Add a shared anyhow-boundary hint-extraction helper` (status:done)
   - Task ID: T05
   - Goal: Add one small helper in `cli/src/services/error.rs` (e.g. `ClassifiedError::from_anyhow` or a free function) that takes the converted `anyhow::Error` text, splits a trailing `" Try: ..."` suffix into an explicit hint when present, and constructs `ClassifiedError::runtime(...)` with that hint attached. Replace the seven duplicated `.map_err(|error| ClassifiedError::runtime(format!("{error:#}")))` closures in `auth_command/command.rs`, `config/command.rs`, `version/command.rs`, `hooks/command.rs`, `setup/command.rs` (all its `map_err` sites), `trace/command.rs` (all its sites), and `doctor/command.rs` with calls to the shared helper. Apply the same helper (or its splitting logic) to `command_runtime.rs::registry_command`'s two direct `ClassifiedError::runtime(...)` constructions.
   - Boundaries (in/out of scope): In — the new helper in `cli/src/services/error.rs`; the seven `command.rs` conversion sites; `command_runtime.rs::registry_command`. Out — any change to the anyhow/String message construction inside `auth.rs`, `token_storage.rs`, `db/mod.rs`, `resilience.rs`, `encryption_key.rs`, `security.rs`, `observability.rs`, `agent_trace_sync/control_plane.rs`, or `auth_command/mod.rs`.
   - Dependencies: T01
   - Done when: a helper unit test confirms a message with a trailing `Try: ...` suffix is split into `(message, Some(hint))` and a message without one is left as `(message, None)`; `sce auth renew` with no stored credentials renders exactly the same final stderr text as before this task; every listed conversion site uses the shared helper instead of a duplicated inline closure.
   - Verification notes (commands or checks): `./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml error:: auth_command:: trace::` covering the helper's split behavior and at least one deep call site's exact-text output.
+  - Implementation evidence: Added `ClassifiedError::from_anyhow_text(message)` in
+    `cli/src/services/error.rs`, which `rsplit_once(" Try: ")`s the converted anyhow
+    text and either builds `runtime(body).with_hint(hint)` when a trailing `Try:`
+    suffix is present or plain `runtime(message)` when it is not, splitting on the
+    *last* occurrence so text with an inner `Try:` clause (e.g. `auth_command/mod.rs`'s
+    already-de-duped pre-boundary text) still yields the correct outer hint. Replaced
+    all seven originally-listed `.map_err(|error| ClassifiedError::runtime(format!("{error:#}")))`
+    closures — `auth_command/command.rs:11`, `config/command.rs:11`,
+    `version/command.rs:11`, `hooks/command.rs:12`, `doctor/command.rs:12`, all six
+    `map_err` sites in `setup/command.rs`, and all eight matching sites in
+    `trace/command.rs` — with `ClassifiedError::from_anyhow_text(format!("{error:#}"))`.
+    `command_runtime.rs::registry_command`'s two direct constructions needed no change:
+    they already build `ClassifiedError::runtime(...).with_hint(...)` directly (done in
+    T02, since that code path never routes through anyhow text), so there was nothing
+    left for a text-splitting helper to do there. `trace/command.rs`'s three other
+    direct `ClassifiedError::runtime(...)` constructions (`current_repo_root`,
+    `classify_status_error`, `classify_sync_error`) were left unchanged: they are not
+    among the originally-listed `.map_err` closures, none of their source error types
+    currently embed `Try:` text (confirmed by inspection — no `Try:` string exists
+    anywhere in `cli/src/services/trace/`), and converting them was out of this task's
+    named scope.
+  - Verification outcome: `./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml error::` (6 passed, including three new `from_anyhow_text` unit
+    tests: split-on-trailing-`Try:`, no-split-when-absent, split-on-the-last-of-two
+    `Try:` occurrences). `./scripts/run-cli-cargo.sh test --manifest-path
+    cli/Cargo.toml` (357 passed, full suite, no regressions).
+    `./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --bins --tests
+    -- -D warnings` clean. `cargo fmt --manifest-path cli/Cargo.toml -- --check`
+    clean. `sce auth renew` with no stored credentials was verified by code
+    inspection rather than a runtime assertion: `auth_command/mod.rs:106` still
+    returns the exact literal `"No stored WorkOS credentials were found. Try: run
+    'sce auth login' before running 'sce auth renew'."`, and `from_anyhow_text`
+    splits that unchanged string into
+    `(message: "No stored WorkOS credentials were found.", hint: Some("run 'sce auth
+    login' before running 'sce auth renew'."))`, which the renderer's `"{message} Try:
+    {hint}"` format reproduces byte-identical to the prior concatenated string.
+    `token_storage::load_tokens` resolves its DB path from the shared XDG-style
+    state-root catalog with no per-test override, so it is not reachable through a
+    deterministic unit test without mutating real process-wide state, consistent
+    with T02/T03's precedent for untestable branches.
+  - Deviations/assumptions: `command_runtime.rs::registry_command` required no
+    change (already migrated in T02, as noted above) — a narrowing of this task's
+    literal wording, not a scope expansion, since the two sites the plan named
+    already satisfy the Done-when check ("every listed conversion site uses the
+    shared helper instead of a duplicated inline closure": these sites use
+    `.with_hint(...)` directly and have no duplicated inline closure to replace).
+    `trace/command.rs`'s three non-`map_err` direct constructions were left
+    unmigrated as out of this task's named scope; this creates no double-`Try:` risk
+    today since none of their source text ever embeds `Try:` guidance.
 
 - [ ] T06: `Remove the renderer's legacy message-text remediation detection` (status:todo)
   - Task ID: T06
