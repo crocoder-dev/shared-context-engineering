@@ -152,7 +152,6 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     - Confirming every implementation task is complete and every completed task's
       `Context synchronization` field is `synced`.
     - Running full validation and acceptance-criteria checks.
-    - Removing temporary scaffolding.
     - Writing the Validation Report into the plan.
     - Returning one Markdown validation result.
     
@@ -268,7 +267,6 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Confirming every implementation task is complete.
     - Running the plan's full validation commands and each acceptance criterion
       check.
-    - Removing temporary scaffolding introduced by the change.
     - Writing the Validation Report into the plan.
     - Marking acceptance criteria against the evidence.
     - \(returningValidationResult.render.apply(mode)).
@@ -329,20 +327,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     and format commands only when `Full validation` is absent, and record that
     fallback under notes on a `validated` or `failed` result.
     
-    \(validationHeadings.stepHeading.apply(mode, 4, "Remove temporary scaffolding"))
-    
-    Before or while running checks, remove temporary scaffolding introduced during
-    the change when it is clearly throwaway:
-    
-    - Debug-only patches or flags left enabled.
-    - Temporary files or intermediate artifacts not part of the delivered design.
-    - Local scaffolding the plan or task notes mark as temporary.
-    
-    Do not delete durable product code, tests, configuration, or context files.
-    
-    Record every removed path. When nothing temporary remains, report `None.`
-    
-    \(validationHeadings.stepHeading.apply(mode, 5, "Run full validation and acceptance checks"))
+    \(validationHeadings.stepHeading.apply(mode, 4, "Run full validation and acceptance checks"))
     
     Run the plan's `Full validation` commands.
     
@@ -350,6 +335,11 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     runnable command. Use a named inspection only when the criterion authorizes it,
     and say exactly what was inspected.
     
+    Treat leftover debug-only flags, temporary files, intermediate artifacts, or
+    local scaffolding as a failed validation check. Record the path and evidence
+    under **Failed checks and follow-ups**; never delete or repair it during
+    validation.
+
     When a check fails, record the failure and continue gathering evidence. Do not
     modify tests, application code, or configuration to make a check pass. Final
     validation measures the finished work; repair belongs to a later work session,
@@ -361,7 +351,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     Do not run task-by-task implementation work for incomplete tasks. That belongs
     to `/next-task`.
     
-    \(validationHeadings.stepHeading.apply(mode, 6, "Update the plan"))
+    \(validationHeadings.stepHeading.apply(mode, 5, "Update the plan"))
     
     For `validated` and `failed` outcomes:
     
@@ -375,7 +365,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     For `blocked`, leave the plan file unchanged.
     
-    \(validationHeadings.stepHeading.apply(mode, 7, "Determine context impact for the handoff"))
+    \(validationHeadings.stepHeading.apply(mode, 6, "Determine context impact for the handoff"))
     
     On `validated` only, classify the durable context impact of the finished plan
     so \(planContextSync.render.apply(mode)) can start from the plan's own requirements:
@@ -390,7 +380,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     On `failed` or `blocked`, omit context impact; context sync will not run.
     
-    \(validationHeadings.stepHeading.apply(mode, 8, "Return the \(markdownResult.render.apply(mode))"))
+    \(validationHeadings.stepHeading.apply(mode, 7, "Return the \(markdownResult.render.apply(mode))"))
     
     \(returnExactlyOneMarkdownResult.render.apply(mode)):
     
@@ -447,8 +437,8 @@ local structuredValidationSkill = new model.StructuredWorkflowDocument {
       "description: >"
       "  Internal SCE workflow skill that runs final plan validation after all"
       "  implementation tasks are complete: full validation commands, acceptance"
-      "  criteria checks, temporary scaffolding cleanup, a Validation Report written"
-      "  into the plan, and one \(markdownResult.render.apply(mode)) (validated, failed, or blocked)."
+      "  criteria checks, a Validation Report written into the plan, and one"
+      "  \(markdownResult.render.apply(mode)) (validated, failed, or blocked)."
       "  Failing checks are reported only; do not modify tests or product code to make"
       "  validation pass. A failed result is a session handoff that ends by retrying"
       "  /validate. Use from /validate. Do not synchronize durable context, implement"
@@ -483,11 +473,6 @@ local renderValidationReport = (mode: model.WorkflowRenderMode) -> """
     
     - `{command}` -> exit {code} ({concise outcome summary})
     - `{command}` -> exit {code} ({concise outcome summary})
-    
-    ### Scaffolding removed
-    
-    - `{path}` — {why it was temporary}
-    - None.
     
     ### Success-criteria verification
     
@@ -527,11 +512,9 @@ local renderValidationReport = (mode: model.WorkflowRenderMode) -> """
     - Mark each acceptance criterion checkbox in the plan's `## Acceptance criteria`
       section to match the evidence. Do not mark a criterion met unless the check
       ran successfully or the inspection named by `Validate:` confirms it.
-    - Under **Scaffolding removed**, list only temporary debug code, intermediate
-      artifacts, or throwaway files introduced during the change. Write `None.` when
-      nothing temporary remained.
-    - Under **Failed checks and follow-ups**, record the failing check and its
-      evidence only. Do not describe code or test edits made during validation;
+    - Under **Failed checks and follow-ups**, record every failing check and its
+      evidence, including leftover debug-only flags, temporary artifacts, or local
+      scaffolding. Do not describe code or test edits made during validation;
       validation does not modify tests or product code to clear failures. Write
       `None.` when status is `validated`.
     - When status is `failed`, always include **Retry** with the exact
@@ -579,11 +562,6 @@ local renderValidationResult = (mode: model.WorkflowRenderMode) -> """
     
     - [x] AC1: {criterion statement} — {evidence}
     - [x] AC2: {criterion statement} — {evidence}
-    
-    ## Scaffolding removed
-    
-    - `{path}` — {why it was temporary}
-    - None.
     
     ## Residual risks
     

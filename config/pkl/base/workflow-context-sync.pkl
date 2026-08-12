@@ -502,7 +502,6 @@ local planRoleData = new SyncRole {
     - The resolved plan path.
     - Validation commands and outcomes.
     - Acceptance-criteria evidence.
-    - Scaffolding removals.
     - Reported context impact, required context paths, and affected areas.
 
     This phase must not be \(invokedFor.render.apply(mode)) `failed` or `blocked` validation results.

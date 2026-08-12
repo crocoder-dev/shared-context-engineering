@@ -51,8 +51,8 @@ A context-sync blocker does not undo successful implementation: the task remains
 
 `/validate {plan-name-or-path}`
 
-1. `sce-validation` verifies that implementation tasks are complete, runs the plan's full validation commands and acceptance checks, cleans temporary scaffolding, and writes the Validation Report.
-2. Failed or blocked validation ends the session without repair edits; retry uses `/validate {plan-path}`.
+1. `sce-validation` verifies that implementation tasks are complete, runs the plan's full validation commands and acceptance checks, records leftover debug/temp artifacts as failure evidence without deleting or repairing them, and writes the Validation Report.
+2. Failed or blocked validation ends the session without repair edits; repair occurs in a later implementation session and retry uses `/validate {plan-path}`.
 3. `sce-plan-context-sync` runs only from a successful `Status: validated` handoff, applies the same decision gate before current-state edits, and reconciles the completed plan with durable repository context. ADR paths already written during task synchronization are reused for the same decision.
 
 On every target, `sce-validate/SKILL.md` dispatches workflow steps 1 and 2 through `references/validation.md` and `references/context-sync.md`, while `references/validation-report.md` owns the plan-file Validation Report format. Failed and blocked statuses stop before synchronization exactly as in the canonical flow. Final validation never runs from an individual implementation task. Non-SCE helper skills, when relevant, return control to the active validation or synchronization step without changing its workflow invariants.

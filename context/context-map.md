@@ -96,6 +96,8 @@ Supporting repo docs:
 
 Recent decision records:
 
+- `context/decisions/2026-08-12-observational-final-validation.md`
+- `context/decisions/2026-08-12-persist-workflow-sync-lifecycle-in-plans.md`
 - `context/decisions/2026-02-28-pkl-generation-architecture.md`
 - `context/decisions/2026-03-03-plan-code-agent-separation.md`
 - `context/decisions/2026-07-27-workflow-oriented-pkl-generation.md` (canonical workflow-oriented ownership, the `.pi/` behavioral baseline, the shared sync skeleton, and routing-only agents; its per-target phase-package inventory and phase-result transport claims are superseded, and its removal of the generated `/handover` surface is superseded by the 2026-07-30 restoration)
