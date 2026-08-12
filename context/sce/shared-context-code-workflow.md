@@ -43,8 +43,10 @@ Phase names below identify canonical modules in `config/pkl/base/workflow-next-t
    - Applies the system-wide decision gate before current-state context edits. Routine,
      local, temporary, and easily reversible choices skip decision writing; each
      qualifying decision reuses an existing ADR or invokes `sce-decision` once.
-   - A blocked decision handoff blocks synchronization; written or reused ADR paths
-     become synchronization evidence and are available for current-state links.
+   - A `not_qualified` or `skipped` decision handoff is non-blocking and synchronization
+     continues normally; a `blocked` decision handoff blocks synchronization. Written
+     or reused ADR paths become synchronization evidence and are available for
+     current-state links.
    - Returns a Markdown report with `synced`, `no_context_change`, or `blocked`.
    - Every report variant lists changed files outside `context/` under `Updated files`;
      task reports omit the impact classification and rendered root-pass checklist

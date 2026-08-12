@@ -367,13 +367,18 @@ rather than already-fixed ones:
   - Evidence: Added a package-local bypass execution handoff requiring verbatim message-file transport, exactly one `git commit -F <message-file>`, explicit post-success `git rev-parse --verify HEAD^{commit}` retrieval, and no retry/amend/additional staging/fabricated-hash behavior; `oneshot` and `skip` remain identical apart from the trigger token.
   - Verification performed: `nix run .#pkl-generate -- "$(mktemp -d)"` passed; generated Pi, Claude, and OpenCode atomic-commit references contain the deterministic bypass handoff and generated workflow commands follow it. `nix run .#pkl-check-generated` passed (107 files).
 
-- [ ] T10: `Clean up decision semantics` (status:todo)
+- [x] T10: `Clean up decision semantics` (status:done)
   - Task ID: T10
   - Goal: In `decision-skill.pkl`, make a nonqualifying invocation return `not_qualified`/`skipped` (never `blocked`) with synchronization continuing normally afterward; state existing ADRs stay immutable regardless of status; state a changed decision always creates a new dated ADR; state only an equivalent *active* ADR may be reused (never a rejected/deprecated one); review whether `Deprecated`/`Superseded` should be creation-time-only statuses and simplify without losing needed information.
   - Boundaries (in/out of scope): In — `decision-skill.pkl` and any status-vocabulary reference it owns. Out — the synchronization phases that invoke it (`workflow-context-sync.pkl`) beyond confirming they already treat a nonqualifying/skip result as non-blocking.
   - Dependencies: T09
   - Done when: generated `sce-decision/SKILL.md` states the nonqualifying result is `not_qualified`/`skipped` and non-blocking; states ADR immutability and active-only reuse explicitly; the status vocabulary is coherent (either both `Deprecated`/`Superseded` kept as creation-time-only, or intentionally simplified, stated plainly either way).
   - Verification notes (commands or checks): read generated `sce-decision/SKILL.md`; confirm `sce-next-task`/`sce-validate` context-sync steps that consume the decision-gate result do not describe a nonqualifying result as blocking; `nix run .#pkl-check-generated`.
+  - Context synchronization: synced
+  - Completed: 2026-08-12
+  - Files changed: `config/pkl/base/decision-skill.pkl`
+  - Evidence: Nonqualifying and deliberately skipped decision gates now return non-blocking `not_qualified`/`skipped` states; genuine missing, contradictory, or unsafe decision input remains `blocked`. Existing ADRs are immutable regardless of status, only equivalent `Proposed` or `Accepted` ADRs are reusable, changed decisions always create new dated ADRs, and `Deprecated`/`Superseded` remain distinct creation-time-only statuses.
+  - Verification performed: Generated `sce-decision/SKILL.md` for Pi, Claude, and OpenCode was inspected; generated next-task and validate context-sync references continue to block only on a blocked decision handoff; `nix run .#pkl-check-generated` passed (107 files).
 
 - [ ] T11: `Remove misleading generic composite boilerplate` (status:todo)
   - Task ID: T11
