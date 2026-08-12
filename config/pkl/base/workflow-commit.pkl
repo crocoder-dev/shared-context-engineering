@@ -748,8 +748,8 @@ wrap one in an added preamble, commentary, summary, or extra section.
 
 Keep phase results as internal state and continue immediately whenever the
 canonical workflow says to continue. Stop only at a user wait or terminal branch.
-Approval, clarification, revision, failed-validation repair, and bootstrap waits
-resume this same skill in the same session. Never expose an internal phase result
+Any workflow-defined user wait resumes this same skill in the same session.
+Never expose an internal phase result
 as the workflow's final response.
 
 \(model.helperSkillCompositionRule)
