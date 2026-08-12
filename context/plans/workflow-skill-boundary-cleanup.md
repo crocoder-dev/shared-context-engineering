@@ -302,13 +302,18 @@ rather than already-fixed ones:
   - Evidence: Ephemeral generation produced the updated `sce-change-to-plan/SKILL.md` for Pi, Claude, and OpenCode; the generated steps 3 and 4 contain both named continuation shapes and the no-reask rule. `nix run .#pkl-check-generated` passed (110 files).
   - Notes: The continuation shapes are explicit Markdown fields in the generated instructions, not runtime Pkl types, as assumed by the plan.
 
-- [ ] T05: `Make validation observational` (status:todo)
+- [x] T05: `Make validation observational` (status:done)
   - Task ID: T05
   - Goal: Remove the scaffolding-deletion step and the `Scaffolding removed` report field from `workflow-validate.pkl`'s successful-path content; require leftover debug flags/temp artifacts to be recorded as failure evidence instead; confirm the existing "validation never repairs application/test/config code" language stays intact and unambiguous.
   - Boundaries (in/out of scope): In — the validation phase reference content placed in `references/validation.md` by T01, the plan-file Validation Report layout, the validation result contract. Out — restructuring the reference tree itself (already done by T01); this task edits content, not file layout.
   - Dependencies: T01
   - Done when: no generated `sce-validate` document instructs deleting/removing scaffolding, debug flags, or temporary artifacts; no successful-validation report field is titled `Scaffolding removed`; a failing check for leftover debug/temp artifacts is recorded as validation failure evidence, not repaired.
   - Verification notes (commands or checks): `grep -i scaffold <target>/sce-validate/references/*.md` for the new wording; `nix run .#pkl-check-generated`.
+  - Context synchronization: synced
+  - Completed: 2026-08-12
+  - Files changed: `config/pkl/base/workflow-validate.pkl`, `config/pkl/base/workflow-context-sync.pkl`
+  - Evidence: Removed validation's temporary-scaffolding deletion step and successful-path `Scaffolding removed` fields; leftover debug flags, temporary artifacts, and local scaffolding are recorded under failed checks without deletion or repair; removed the stale scaffolding field from the validation handoff consumed by plan context synchronization. Existing validation boundaries continue to prohibit modifying tests, application code, or configuration to make checks pass.
+  - Verification performed: `nix run .#pkl-check-generated` passed; ephemeral generation produced 110 files for all targets, with four `sce-validate/references/` files per target and no scaffolding-removal instructions or successful-validation cleanup field. Generated validation references explicitly classify leftover debug/temp artifacts as failure evidence.
 
 - [ ] T06: `Harden next-task execution handoff` (status:todo)
   - Task ID: T06
