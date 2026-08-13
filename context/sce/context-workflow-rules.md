@@ -97,14 +97,14 @@ continues with the original request.
 
 ## Synchronization lifecycle
 
-Ongoing context maintenance is owned by the two synchronization phases below.
-`/brownfield` writes durable context outside this lifecycle, but only as a
-cold-start and gap-fill reconstruction; it is not a drift-repair or maintenance
-path and never substitutes for synchronization.
+Ongoing context maintenance is owned by task context synchronization after
+successful `/next-task` execution. `/brownfield` writes durable context outside
+this lifecycle, but only as a cold-start and gap-fill reconstruction; it is not a
+drift-repair or maintenance path and never substitutes for synchronization.
 
-Synchronization is split by lifecycle boundary. Both phases share the canonical
-rules in `config/pkl/base/workflow-context-sync.pkl`, but receive different
-authoritative handoffs.
+Task synchronization shares the canonical rules in
+`config/pkl/base/workflow-context-sync.pkl` with the retained plan-sync source,
+but `/validate` no longer invokes the plan-level synchronization role.
 
 ### Task synchronization
 
@@ -113,22 +113,14 @@ authoritative handoffs.
 verified task with durable context. Declined, blocked, and incomplete executions
 do not enter synchronization.
 
-### Plan synchronization
-
-`sce-plan-context-sync` runs from `/validate` only after `sce-validation`
-returns `Status: validated`. It performs the final plan-level pass using the
-plan's Context sync requirements and validation evidence. Failed or blocked
-validation does not enter synchronization.
-
-A synchronization blocker does not undo the successful prior phase. The task or
-validation evidence remains recorded, but the workflow stops because durable
-context is out of date and must be reconciled before continuing or closing the
-plan.
+`/validate` performs final validation only. It writes the Validation Report and
+returns `validated`, `failed`, or `blocked`; it does not invoke plan-level context
+synchronization or persist a plan-sync lifecycle handoff.
 
 ### Architecture-decision gate
 
-After impact discovery and before current-state context edits, both successful
-synchronization roles test whether the change establishes or changes a system-wide
+After impact discovery and before current-state context edits, the successful task
+synchronization role tests whether the change establishes or changes a system-wide
 constraint involving boundaries or ownership, public or cross-domain interfaces,
 data or persistence, compatibility, security, deployment/distribution, a major
 dependency, or another durable and costly-to-reverse constraint. Routine local
@@ -151,7 +143,7 @@ it.
 
 ### Mandatory synchronization pass
 
-Every task and plan synchronization verifies these files against code truth,
+Every task synchronization verifies these files against code truth,
 whether or not an edit is warranted:
 
 - `context/overview.md`
@@ -177,10 +169,8 @@ preserve paths produced before the blocker. Task reports list
 the execution handoff's changed files outside `context/` under `Updated files`;
 they do not render impact classification or the root-pass checklist, although
 task synchronization still uses the classification and performs the mandatory
-pass. Plan reports continue to render impact classification, plan context
-requirements, and each root file as verified, edited, or absent. Task
-synchronization does not run full-plan validation, and plan synchronization does
-not rerun final validation.
+pass. Task synchronization does not run full-plan validation or alter the
+plan's validation evidence.
 
 ## Canonical sources
 

@@ -123,13 +123,13 @@ expect_pkl_fixture_failure \
   "generated package-local reference points to a missing document"
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/validate-forbidden-path-check.pkl" \
-  "sce-validate must not generate sync-report.md or validation-result.md"
+  "sce-validate must not generate context-sync.md, sync-report.md, or validation-result.md"
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/commit-forbidden-path-check.pkl" \
-  "sce-commit must not generate a legacy commit reference file"
+  "sce-commit must not generate a commit-contract reference file"
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/atomic-commit-content-check.pkl" \
-  "atomic-commit.md must contain both commit-message rules and the atomic-commit result contract"
+  "atomic-commit.md must delegate message rules to commit-message-style.md and omit the removed result contract"
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/next-task-report-ownership-check.pkl" \
   "sce-next-task output.md must not duplicate the context-sync report contract"

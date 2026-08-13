@@ -150,7 +150,6 @@ local requiredDecisionWorkflowTokens = new Listing {
   "Reuse a written ADR path"
   "returned `adr_path`"
   "On `blocked`"
-  "successful context synchronization"
 }
 
 local requiredHandoverSkillTokens = new Listing {
@@ -221,7 +220,6 @@ local requiredPhaseReferencesBySkill = new Mapping {
   }
   ["sce-validate"] = new Listing {
     "references/validation.md"
-    "references/context-sync.md"
     "references/validation-report.md"
     "references/output.md"
   }
@@ -292,8 +290,8 @@ local assertDecisionWorkflowReferences = (documents: Mapping) ->
     )
     && requiredDecisionWorkflowTokens.every((token) ->
       decisionWorkflowText.apply(documents, "sce-next-task").contains(token)
-      && decisionWorkflowText.apply(documents, "sce-validate").contains(token)
     )
+    && decisionWorkflowText.apply(documents, "sce-next-task").contains("successful context synchronization")
   ) "generated decision invocation: synchronization-only"
   else throw("generated workflow document violates the synchronization-only sce-decision exception")
 
@@ -517,21 +515,23 @@ hidden assertPackageLocalReferences = (documents: Mapping) ->
   else throw("generated package-local reference points to a missing document")
 
 hidden assertValidateForbiddenPaths = (artifacts: Mapping) ->
-  if (
-    !artifacts.containsKey("config/.opencode/skills/sce-validate/references/sync-report.md")
-    && !artifacts.containsKey("config/.claude/skills/sce-validate/references/sync-report.md")
-    && !artifacts.containsKey("config/.pi/skills/sce-validate/references/sync-report.md")
-    && !artifacts.containsKey("config/.opencode/skills/sce-validate/references/validation-result.md")
-    && !artifacts.containsKey("config/.claude/skills/sce-validate/references/validation-result.md")
-    && !artifacts.containsKey("config/.pi/skills/sce-validate/references/validation-result.md")
-  ) "sce-validate package: forbidden reference files absent"
-  else throw("sce-validate must not generate sync-report.md or validation-result.md")
+  let (forbidden = new Listing {
+    "context-sync.md"
+    "sync-report.md"
+    "validation-result.md"
+  })
+    if (
+      artifacts.every((path, _) ->
+        !path.contains("/skills/sce-validate/references/")
+        || forbidden.every((filename) -> !path.endsWith("/" + filename))
+      )
+    ) "sce-validate package: forbidden reference files absent"
+    else throw("sce-validate must not generate context-sync.md, sync-report.md, or validation-result.md")
 
 hidden assertCommitForbiddenPaths = (artifacts: Mapping) ->
   let (forbidden = new Listing {
     "commit-contract.yaml"
     "commit-contract.md"
-    "commit-message-style.md"
   })
     if (
       artifacts.every((path, _) ->
@@ -539,19 +539,21 @@ hidden assertCommitForbiddenPaths = (artifacts: Mapping) ->
         || forbidden.every((filename) -> !path.endsWith("/" + filename))
       )
     ) "sce-commit package: forbidden reference files absent"
-    else throw("sce-commit must not generate a legacy commit reference file")
+    else throw("sce-commit must not generate a commit-contract reference file")
 
 hidden assertAtomicCommitContent = (documents: Mapping) ->
   if (
     documents.every((path, text) ->
       !path.endsWith("/skills/sce-commit/references/atomic-commit.md")
       || (
-        text.contains("## Commit message rules")
-        && text.contains("## Atomic commit result contract")
+        text.contains("`references/commit-message-style.md`")
+        && !text.contains("## Commit message rules")
+        && !text.contains("## Atomic commit result contract")
+        && !text.contains("commit-contract.yaml")
       )
     )
-  ) "sce-commit atomic reference: message rules and result contract present"
-  else throw("atomic-commit.md must contain both commit-message rules and the atomic-commit result contract")
+  ) "sce-commit atomic reference: delegates message style and omits the result contract"
+  else throw("atomic-commit.md must delegate message rules to commit-message-style.md and omit the removed result contract")
 
 hidden assertNextTaskReportOwnership = (documents: Mapping) ->
   if (

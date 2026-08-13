@@ -98,6 +98,9 @@ non-obvious repository knowledge requiring an update.}
 
 ## Context synchronization handoff
 
+- Plan path: {plan path}
+- Task ID: {task id}
+- Task title: {task title}
 - Changed files: {list each changed file from the handoff except paths
   under `context/`; state `None.` when no files remain}
 - Implementation summary: {summary}

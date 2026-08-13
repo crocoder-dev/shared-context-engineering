@@ -41,6 +41,20 @@ which criterion they map to.
 
 - {Durable context files that must describe the change once implemented.}
 
+## Context synchronization lifecycle
+
+Persist these fields in every plan; this is durable plan state, not chat state:
+
+- **Plan context synchronization:** `pending | synced | blocked`. New plans start at
+  `pending`; `/validate` keeps it `pending` until plan-level context sync begins,
+  then records `synced` or `blocked` in the plan file.
+- **Task context synchronization:** every task carries `pending | synced | blocked`.
+  A completed task must be `synced` before another task can start or the plan can
+  finish.
+- For `blocked`, record **Blocker**, **Required action**, and **Retry condition**
+  beside the status. Never infer `synced` from conversation history; write every
+  lifecycle transition to the plan file.
+
 ## Constraints and non-goals
 
 - **In scope:** {files, modules, and surfaces this plan may touch}
@@ -64,6 +78,7 @@ recorded. Remove the section otherwise.}
   - Dependencies: {task IDs, or none}
   - Done when: {clear acceptance for one coherent change}
   - Verification notes (commands or checks): {targeted checks for this change}
+  - Context synchronization: pending
 
 - [ ] T02: `{single intent title}` (status:todo)
   - Task ID: T02
@@ -72,6 +87,7 @@ recorded. Remove the section otherwise.}
   - Dependencies: T01
   - Done when: {clear acceptance for one coherent change}
   - Verification notes (commands or checks): {targeted checks for this change}
+  - Context synchronization: pending
 
 ## Open questions
 
@@ -97,6 +113,7 @@ invent one: `None.` is the expected answer for a well-specified change.}
   - Dependencies: T01
   - Done when: `POST /auth/refresh` returns a signed JWT on valid input and 401 on expired or invalid token; targeted tests pass; OpenAPI spec updated.
   - Verification notes (commands or checks): `pnpm test src/auth/refresh.test.ts`; `curl -X POST localhost:3000/auth/refresh -d '{"token":"..."}' -w "%{http_code}"`.
+  - Context synchronization: pending
 ```
 
 ## Acceptance criteria rules
@@ -150,6 +167,9 @@ checkbox and status:
 ```markdown
 - [x] T01: `{title}` (status:done)
   - {authored fields, unchanged}
+  - Context synchronization: pending | synced | blocked
+  - Context synchronization handoff: Plan path: {path}; Task ID: {id}; Task title: {title}; Changed files: {paths}; Implementation summary: {summary}; Verification: {commands and outcomes}; Done checks: {status of each done check}; Context impact: {durable context this change affects, or none}
+  - Context synchronization blocker: {present only when status is blocked} Blocker: {problem}; Required action: {action}; Retry condition: {condition}
   - Completed: {YYYY-MM-DD}
   - Files changed: {paths}
   - Evidence: {commands run and their outcomes}

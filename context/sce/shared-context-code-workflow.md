@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The implementation lifecycle executes at most one reviewed task per `/next-task` invocation, synchronizes durable context only after successful task execution, and runs final plan validation separately through `/validate`. Task- and plan-level context synchronization lifecycle state is persisted in each plan as `pending`, `synced`, or `blocked` with blocker, required-action, and retry-condition details for blocked transitions. A completed task also carries a durable "Context synchronization handoff" (changed files, implementation summary, verification, done checks, context impact), so a later session can retry or repair synchronization for that task from the plan alone, without reconstructing it from conversation history. The generated OpenCode Code agent only routes to these commands. Every target keeps each complete lifecycle in `sce-next-task` or `sce-validate`; each `SKILL.md` owns control flow and reads a package-local reference before running the applicable phase. The phases below are internal to those skills, not separate generated packages.
+The implementation lifecycle executes at most one reviewed task per `/next-task` invocation, synchronizes durable context only after successful task execution, and runs final plan validation separately through `/validate`. Task-level context synchronization lifecycle state is persisted in each plan as `pending`, `synced`, or `blocked` with blocker, required-action, and retry-condition details for blocked transitions. A completed task also carries a durable "Context synchronization handoff" (changed files, implementation summary, verification, done checks, context impact), so a later session can retry or repair synchronization for that task from the plan alone, without reconstructing it from conversation history. `/validate` is validation-only: it writes the Validation Report and returns its validation status without invoking plan-level context synchronization. The generated OpenCode Code agent only routes to these commands. Every target keeps the complete task lifecycle in `sce-next-task` and the validation lifecycle in `sce-validate`; each `SKILL.md` owns control flow and reads a package-local reference before running the applicable phase. The phases below are internal to those skills, not separate generated packages.
 
 ## `/next-task` entrypoint
 
@@ -56,7 +56,7 @@ Phase names below identify canonical modules in `config/pkl/base/workflow-next-t
      without changing synchronization behavior.
 4. Command continuation
    - Emits exactly one next-task command for the first unchecked task in plan order, or a `/validate` command when all implementation tasks are complete.
-   - A completed task's lifecycle is persisted as `pending` before task synchronization and as `synced` or `blocked` afterward; `/validate` refuses plan finish while completed-task lifecycle debt remains.
+   - A completed task's lifecycle is persisted as `pending` before task synchronization and as `synced` or `blocked` afterward; `/next-task` refuses new implementation while completed-task lifecycle debt remains.
    - Never executes the continuation in the same invocation.
 
 A context-sync blocker does not undo successful implementation: the task remains complete in the plan, but the workflow stops because durable context is stale. On every target, review, approval, execution, evidence recording, synchronization, and continuation are internal phases of one `sce-next-task` invocation. Relevant non-SCE skills may assist inside an active step only as helpers that return control to that step; the sole SCE sibling-skill exception is the synchronization decision gate's bounded invocation of `sce-decision`.
@@ -67,9 +67,9 @@ A context-sync blocker does not undo successful implementation: the task remains
 
 1. `sce-validation` verifies that implementation tasks are complete, runs the plan's full validation commands and acceptance checks, records leftover debug/temp artifacts as failure evidence without deleting or repairing them, and writes the Validation Report.
 2. Failed or blocked validation ends the session without repair edits; repair occurs in a later implementation session and retry uses `/validate {plan-path}`.
-3. `sce-plan-context-sync` runs only from a successful `Status: validated` handoff, applies the same decision gate before current-state edits, and reconciles the completed plan with durable repository context. ADR paths already written during task synchronization are reused for the same decision.
+3. A validated result is reported directly with the Validation Report path; `/validate` does not invoke plan-level context synchronization or persist a plan-sync lifecycle handoff.
 
-On every target, `sce-validate/SKILL.md` dispatches workflow steps 1 and 2 through `references/validation.md` and `references/context-sync.md`, while `references/validation-report.md` owns the plan-file Validation Report format. Failed and blocked statuses stop before synchronization exactly as in the canonical flow. Final validation never runs from an individual implementation task. Non-SCE helper skills, when relevant, return control to the active validation or synchronization step without changing its workflow invariants.
+On every target, `sce-validate/SKILL.md` dispatches its validation phase through `references/validation.md` and keeps `references/validation-report.md` as the plan-file Validation Report format. Failed, blocked, and validated statuses remain validation-owned terminal outcomes. Final validation never runs from an individual implementation task. Non-SCE helper skills, when relevant, return control to the active validation step without changing its workflow invariants.
 
 ## Flow
 
@@ -90,7 +90,7 @@ flowchart TD
     I -- "No" --> K["Emit /validate command"]
     K --> L["Phase: validation"]
     L --> M{"validated?"}
-    M -- "Yes" --> N["Phase: plan context sync"]
+    M -- "Yes" --> N["Report validation and Validation Report path"]
     M -- "No" --> O["Stop and retry /validate later"]
 ```
 
@@ -98,12 +98,12 @@ flowchart TD
 
 - OpenCode, Claude, and Pi: thin commands (Pi: prompts) invoking `sce-next-task` or `sce-validate`.
 - `sce-next-task` packages contain `SKILL.md`, `references/{plan-review,task-execution,context-sync,sync-report,output}.md`.
-- `sce-validate` packages contain `SKILL.md`, `references/{validation,context-sync,validation-report,output}.md`. `validation.md` carries the phase steps plus the validation result contract; `context-sync.md` carries the phase steps plus the plan context-sync report contract (no separate `sync-report.md`); `output.md` holds only the `Context synchronization blocked` and `Completion` composite layouts.
+- `sce-validate` packages contain `SKILL.md`, `references/{validation,validation-report,output}.md`. `validation.md` carries the validation steps plus the validation result contract; `output.md` holds the `Completion` layout.
 - OpenCode adds `entry-skill` and a one-entry `skills` list naming that skill. Its Plan and Code routing agents allow ordinary non-SCE skills by default, deny arbitrary `sce-*` skills, and then allow only catalog-owned workflows: Plan allows `sce-change-to-plan`; Code allows `sce-next-task`, `sce-validate`, `sce-commit`, `sce-handover`, and `sce-brownfield`, plus the synchronization-only `sce-decision` exception.
 
 ## Generated contract checks
 
-The generated-output contract independently verifies semantic workflow integrity in addition to inventory checks: every cited output layout has a matching heading, every package-local reference exists, removed validate/commit reference files stay absent, `atomic-commit.md` retains both message rules and its result contract, next-task owns the sync report without duplicating it in `output.md`, target-neutral reference bodies remain identical, stale synchronization-loss wording stays absent, final validation remains observational, and every explicit OpenCode `sce-*` permission names an emitted skill artifact. One checked-in negative fixture covers each semantic assertion.
+The generated-output contract independently verifies semantic workflow integrity in addition to inventory checks: every cited output layout has a matching heading, every package-local reference exists, removed validate/commit reference files stay absent, the commit package emits its split style reference and rejects the obsolete atomic-commit contract section, next-task owns the sync report without duplicating it in `output.md`, target-neutral reference bodies remain identical, stale synchronization-loss wording stays absent, final validation remains observational, and every explicit OpenCode `sce-*` permission names an emitted skill artifact. One checked-in negative fixture covers each semantic assertion.
 
 ## Canonical sources
 
