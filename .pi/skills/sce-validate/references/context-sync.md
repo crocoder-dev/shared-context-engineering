@@ -12,11 +12,6 @@ This phase owns:
 - Discovering the context required by the finished plan.
 - Deciding whether durable context changed.
 - Editing and verifying the affected context files.
-- Returning one Markdown synchronization report.
-
-Use the report format in:
-
-`references/sync-report.md`
 
 Task-level context sync may already have run after individual tasks. This phase
 is the plan-level final pass: it starts from the plan's `Context sync`
@@ -345,6 +340,4 @@ The phase is complete after:
   decision, or returned a synchronization blocker.
 - Applicable durable context was synchronized and verified, no context change
   was warranted, or a synchronization blocker was reported.
-- One Markdown report matching `references/sync-report.md` was returned.
-
 

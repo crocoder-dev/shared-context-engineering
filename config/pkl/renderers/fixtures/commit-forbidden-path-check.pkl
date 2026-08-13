@@ -1,10 +1,10 @@
 import "../generation-contract-check.pkl" as contract
 
 local artifacts = new Mapping {
-  ["config/.opencode/skills/sce-commit/references/commit-contract.md"] = "forbidden"
+  ["config/.opencode/skills/sce-commit/references/commit-contract.yaml"] = "forbidden"
 }
 
 result = if (
   contract.assertCommitForbiddenPaths.apply(artifacts)
 ) "negative fixture unexpectedly accepted a forbidden commit reference"
-else throw("sce-commit must not generate a legacy commit reference file")
+else throw("sce-commit must not generate a commit-contract reference file")

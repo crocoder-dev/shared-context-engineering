@@ -4,10 +4,10 @@ local artifacts = new Mapping {
   for (path, text in contract.generatedArtifacts) {
     [path] = text
   }
-  ["config/.opencode/skills/sce-validate/references/sync-report.md"] = "forbidden"
+  ["config/.opencode/skills/sce-validate/references/context-sync.md"] = "forbidden"
 }
 
 result = if (
   contract.assertValidateForbiddenPaths.apply(artifacts)
 ) "negative fixture unexpectedly accepted a forbidden validate reference"
-else throw("sce-validate must not generate sync-report.md or validation-result.md")
+else throw("sce-validate must not generate context-sync.md, sync-report.md, or validation-result.md")

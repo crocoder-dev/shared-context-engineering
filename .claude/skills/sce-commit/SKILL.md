@@ -37,8 +37,8 @@ wrap one in an added preamble, commentary, summary, or extra section.
 
 Keep phase results as internal state and continue immediately whenever the
 canonical workflow says to continue. Stop only at a user wait or terminal branch.
-Approval, clarification, revision, failed-validation repair, and bootstrap waits
-resume this same skill in the same session. Never expose an internal phase result
+Any workflow-defined user wait resumes this same skill in the same session.
+Never expose an internal phase result
 as the workflow's final response.
 
 Relevant non-SCE skills may be used as helper capabilities during the active step.
@@ -135,15 +135,25 @@ a contract violation: report it and stop without committing.
 
 #### 3. Execute exactly one commit
 
-Run `git commit` once with the returned message.
+Follow the **Bypass execution handoff** in `references/atomic-commit.md`:
+
+1. Create the commit-message temp file outside the repository working tree, and
+   write the returned `message` verbatim to it using a file-writing operation. Do
+   not interpolate the multiline message into shell source or a shell command.
+2. Run `git commit -F <message-file>` exactly once.
+3. Only after that command succeeds, retrieve the commit hash explicitly with
+   `git rev-parse --verify HEAD^{commit}`. Do not parse Git's human-readable
+   output.
+4. Delete the temp file after the commit attempt, including on failure, where
+   practical.
 
 On success, render the **Bypass success** layout from `references/output.md` and
 stop.
 
 On failure, render the **Bypass Git failure** layout from the same file and stop.
 
-Do not retry, do not amend, do not stage additional files, and do not invent a
-fallback commit.
+Do not retry, do not amend, do not stage additional files, and do not fabricate a
+commit hash.
 
 ## Rules
 
@@ -153,7 +163,9 @@ fallback commit.
   They are behaviorally identical.
 - Read `references/atomic-commit.md` before running the phase.
 - Do not duplicate the internal instructions of the **Atomic commit phase**.
-- Do not stage, unstage, restore, or otherwise modify files.
+- Do not stage, unstage, restore, or otherwise modify repository or worktree
+  files. The bypass commit-message temp file is the sole exception: it must live
+  outside the working tree, so it is not a repository or worktree file.
 - Do not amend, reset, revert, rebase, or push.
 - Do not read unstaged or untracked changes as commit input.
 - Do not infer success when the **Atomic commit phase** returns a non-success status.

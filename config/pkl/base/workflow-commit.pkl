@@ -13,48 +13,20 @@ local bypassPhaseReferenceQualifier = model.semanticReference.apply(
   " (described at the Regular path's step 2 above)"
 )
 local commitMessageStyle = model.semanticReference.apply(
-  "the **Commit message rules** section in this reference",
-  "`references/output.md`"
+  "`references/commit-message-style.md`",
+  "`references/commit-message-style.md`"
 )
 local invoke = model.semanticReference.apply("Invoke", "Run")
 local invokeLower = model.semanticReference.apply("invoke", "run")
 local yaml = model.semanticReference.apply("YAML", "internal state")
 local returnUpper = model.semanticReference.apply("Return", "Set internal status")
 local returnLower = model.semanticReference.apply("return", "set internal status")
-local returningTerminalYamlResult = model.semanticReference.apply("Returning one terminal YAML result", "Recording one terminal internal state")
-local returnExactlyOneYamlDocument = model.semanticReference.apply("Return exactly one YAML document", "Set exactly one internal state")
-local returnOnlyYamlDocument = model.semanticReference.apply("Return only the YAML document", "Record only the internal state")
-local returnYaml = model.semanticReference.apply("Return YAML", "Return internal state")
-
-/// The package keeps the result contract beside the phase procedure in
-/// `references/atomic-commit.md`; composite mode describes its internal states
-/// inline, so the package-only contract citation is omitted.
 local commitContractHandoff = model.semanticReference.apply(
   """
-  The skill must return a result matching its commit contract. Branch on
+  The skill must return one result. Branch on
   `status`:
   """,
   "Branch on `status`:"
-)
-local commitContractBlock = model.semanticReference.apply(
-  """
-
-  Return a result matching the **Atomic commit result contract** section in this
-  reference.
-
-  """,
-  ""
-)
-local commitContractClause = model.semanticReference.apply(
-  " matching the **Atomic commit result contract** section in this reference",
-  ""
-)
-local commitCompletionBullet = model.semanticReference.apply(
-  """
-  - One valid terminal YAML result matching the atomic-commit result contract was
-    returned.
-  """,
-  "- One valid terminal internal state was returned."
 )
 
 /// User-visible layouts. Package mode states each layout at its branch, because a
@@ -130,6 +102,7 @@ local atomicCommitPackage = new model.SkillPackage {
   documents = model.packageDocuments.apply(new Listing {
     model.makeDocument.apply("SKILL.md", ATOMIC_COMMIT_SKILL)
     model.makeDocument.apply("references/atomic-commit.md", renderAtomicCommitSkillBody.apply("package"))
+    model.makeDocument.apply("references/commit-message-style.md", renderCommitMessageStyle.apply("package"))
     model.makeDocument.apply("references/output.md", renderCommitOutput.apply("package"))
   })
 }
@@ -290,7 +263,7 @@ local renderAtomicCommitSkillBody = (mode: model.WorkflowRenderMode) -> """
     Write messages matching:
 
     \(commitMessageStyle.render.apply(mode))
-    \(commitContractBlock.render.apply(mode))
+
     Committing is not this skill's job. The invoking `/commit` workflow decides
     whether a returned message is committed, and it is the only thing that runs
     `git commit`.
@@ -384,16 +357,6 @@ local renderAtomicCommitSkillBody = (mode: model.WorkflowRenderMode) -> """
     - No plan slug or task ID appears that the staged diff does not support.
     - The mode's own constraints hold.
 
-    \(atomicCommitHeadings.stepHeading.apply(mode, 9, returnYaml.render.apply(mode)))
-
-    \(returnExactlyOneYamlDocument.render.apply(mode))\(commitContractClause.render.apply(mode)):
-
-    - `proposal` in `regular` mode, with one or more messages.
-    - `bypass_message` in `bypass` mode, with exactly one message.
-    - `blocked` when messages cannot be written faithfully.
-
-    \(returnOnlyYamlDocument.render.apply(mode)). Do not add explanatory prose before or after it.
-
     \(atomicCommitHeadings.section.apply(mode, "Bypass execution handoff"))
 
     This phase returns the message; the invoking `/commit` workflow performs the
@@ -433,16 +396,7 @@ local renderAtomicCommitSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Claim a message was committed.
     - Run plan, task, or validation workflows.
 
-    \(model.packageOnlyBlock.apply(COMMIT_MESSAGE_STYLE).render.apply(mode))\(model.packageOnlyBlock.apply("""
-
-    ## Atomic commit result contract
-
-    The complete result contract is serialized below:
-
-    ```yaml
-    \(COMMIT_CONTRACT)
-    ```
-    """).render.apply(mode))\(model.packageOnlyBlock.apply("""
+    \(model.packageOnlyBlock.apply("""
 
     ## Completion
 
@@ -450,7 +404,6 @@ local renderAtomicCommitSkillBody = (mode: model.WorkflowRenderMode) -> """
 
     - The staged diff was read, or reading it failed and was reported.
     - Messages were written for every staged file, or a blocker prevented it.
-    \(commitCompletionBullet.render.apply(mode))
     """).render.apply(mode))
     """
 
@@ -476,254 +429,52 @@ local structuredAtomicCommitSkill = new model.StructuredWorkflowDocument {
 
 local ATOMIC_COMMIT_SKILL = structuredAtomicCommitSkill.render.apply("package", "").text
 
-local COMMIT_CONTRACT = """
-    version: 1
-    name: sce-atomic-commit-result
-
-    description: >
-      Output contract for sce-atomic-commit. The skill returns exactly one YAML
-      document representing proposal, bypass_message, or blocked.
-
-    output_rules:
-      - Return exactly one result variant.
-      - The top-level status must be proposal, bypass_message, or blocked.
-      - Return YAML only, without a Markdown code fence or explanatory prose.
-      - Include only fields belonging to the selected variant.
-      - Omit optional fields that do not apply rather than sending them empty.
-      - Do not return empty strings or null placeholders.
-      - Return proposal only in regular mode, and bypass_message only in bypass
-        mode. blocked is valid in both.
-      - Every staged file must appear under exactly one commit's files.
-      - Report file paths exactly as `git diff --cached --name-only` reports them.
-      - Carry the message body inside message, separated from the subject by one
-        blank line. Do not split it into a separate field.
-      - Do not include a commit hash. This skill never commits.
-      - Do not report guidance the mode forbids.
-
-    variants:
-
-      proposal:
-        meaning: >
-          The staged changes were analyzed in regular mode and one or more atomic
-          commit messages were written. Proposal-only: nothing was committed.
-
-        required_fields:
-          - status
-          - mode
-          - commits
-
-        optional_fields:
-          - split_rationale
-
-        field_rules:
-          - Include split_rationale only when commits holds more than one entry.
-
-        shape:
-          status: proposal
-          mode: regular
-
-          commits:
-            - id: string
-              message: string
-              files:
-                - string
-
-          split_rationale: string
-
-        example:
-          status: proposal
-          mode: regular
-
-          commits:
-            - id: C01
-
-              message: |
-                auth: Add token refresh endpoint
-
-                Sessions expired without a way to renew them, forcing a full
-                re-login. Adds the refresh handler and reuses the existing token
-                issuer.
-
-              files:
-                - src/auth/refresh.ts
-                - tests/auth/refresh.test.ts
-
-            - id: C02
-
-              message: |
-                build: Pin the formatter to the toolchain version
-
-                The formatter floated across environments and produced diff noise
-                unrelated to any change.
-
-              files:
-                - flake.nix
-
-          split_rationale: >
-            The refresh endpoint and the formatter pin pursue unrelated goals and
-            share no files. Committing them together would hide the build change
-            behind a feature subject.
-
-      bypass_message:
-        meaning: >
-          The staged changes were analyzed in bypass mode and exactly one commit
-          message covering all staged files was written. The invoking workflow
-          executes the commit.
-
-        required_fields:
-          - status
-          - mode
-          - message
-          - files
-
-        field_rules:
-          - files lists every staged file, because one message covers all of them.
-          - Never include commits or split_rationale.
-
-        shape:
-          status: bypass_message
-          mode: bypass
-
-          message: string
-
-          files:
-            - string
-
-        example:
-          status: bypass_message
-          mode: bypass
-
-          message: |
-            auth: Add token refresh endpoint
-
-            Sessions expired without a way to renew them, forcing a full re-login.
-            Adds the refresh handler and reuses the existing token issuer.
-
-          files:
-            - src/auth/refresh.ts
-            - tests/auth/refresh.test.ts
-
-      blocked:
-        meaning: >
-          Faithful commit messages cannot be written from the staged changes.
-
-        required_fields:
-          - status
-          - issues
-
-        optional_fields:
-          - mode
-          - files
-
-        field_rules:
-          - Include mode whenever the workflow supplied one.
-          - Include files when staged files were read before blocking.
-          - Plan-citation ambiguity blocks in regular mode only. In bypass mode the
-            citation is omitted instead.
-
-        shape:
-          status: blocked
-          mode: regular | bypass
-
-          files:
-            - string
-
-          issues:
-            - id: string
-              category: no_staged_changes | plan_citation_ambiguity | unreadable_diff | contradictory_context
-              problem: string
-              impact: string
-              decision_required: string
-
-        example:
-          status: blocked
-          mode: regular
-
-          files:
-            - context/plans/authentication.md
-
-          issues:
-            - id: B01
-              category: plan_citation_ambiguity
-
-              problem: >
-                The staged plan diff changes two task checkboxes and does not
-                expose which task this commit completes.
-
-              impact: >
-                The commit body would cite a task ID the staged diff does not
-                support.
-
-              decision_required: >
-                State the completed task ID, or stage only that task's plan edit.
-    """
 local renderCommitMessageStyle = (mode: model.WorkflowRenderMode) -> """
-    ## Commit message rules
+    # Commit Message Guide
 
-    The wording rules for every message \(atomicCommit.render.apply(mode)) returns, in either
-    mode. This file is the only authority for message content and shape.
+    Use this repository style when writing new commits.
 
-    Messages are carried in the result's `message` field, subject first, then one
-    blank line, then the body.
+    ## Core rules
 
-    ## Subject
+    - Start with `scope: Subject` for most code changes.
+      - Common scopes: `runtime`, `language`, `objects`, `tests`, `CI`, `README`.
+      - Combined scopes are fine when needed (for example `language+runtime`).
+    - Use an imperative verb in the subject: `Fix`, `Add`, `Refactor`, `Remove`, `Implement`, `Update`, `Rewrite`, `Use`, `Allow`.
+    - Keep the subject specific and technical (name the subsystem and actual change).
+    - Keep the subject to one line and do not end it with a period.
+    - Add a body when the change is non-trivial.
+      - Explain why the change is needed.
+      - Explain how it works at a high level.
+      - Include impact/tradeoffs/follow-ups when relevant.
+    - For performance-related commits, include concrete measurements and benchmark context.
+      - Include regressions as well as improvements.
+    - Add issue references when relevant on their own lines.
+      - Example: `Fixes #123`
+      - Example: `Ref: https://...`
 
-    Pattern:
+    ## Practical template
 
-    `<scope>: <Imperative verb> <specific technical summary>`
+    ```text
+    <scope>: <Imperative summary>
 
-    - Scope is the smallest stable subsystem or module name recognizable in the
-      repository. When no such name applies, use the primary directory or package
-      of the change.
-    - Start the summary with an imperative verb: Fix, Add, Remove, Implement,
-      Refactor, Simplify, Rename, Update, Ensure, Allow.
-    - Capitalize the verb. Do not end the subject with a period.
-    - Keep it concrete and technical. Name what changed, not how it felt.
+    <Why this change is needed.>
+    <How it works at a high level.>
+    <Impact: perf/correctness/risk/follow-ups.>
+    Fixes #<id>   (optional)
+    ```
 
-    ## Body
+    ## Size-based defaults
 
-    Include a body whenever the subject alone leaves the change unexplained. Omit
-    it for changes whose subject is self-evident.
+    1. Small fix: subject + 1 short reason line.
+    2. Medium refactor: subject + short why + short what changed.
+    3. Large architectural change: subject + context + bullets for major changes + impact/tradeoffs.
 
-    A body says what was wrong or missing, why it mattered, what changed
-    conceptually, and the impact. It does not restate the subject in longer words,
-    and it does not narrate the editing process.
+    ## Anti-patterns to avoid
 
-    Wrap the body at a readable width and separate paragraphs with a blank line.
-
-    ## Issue references
-
-    Put each issue reference on its own line at the end of the body, for example
-    `Fixes #123`.
-
-    Reference only issues the staged diff or the supplied commit context names. Do
-    not infer an issue number from a branch name.
-
-    ## Plan citations
-
-    When a commit's staged files include `context/plans/*.md`, the body must also
-    cite:
-
-    - The affected plan slug.
-    - Every updated task ID (`T0X`).
-
-    Cite only what the staged plan diff shows. When the diff does not expose the
-    slug or task IDs clearly enough to cite faithfully, the skill's mode decides
-    what happens — the ambiguity is not resolved here by guessing.
-
-    ## Anti-patterns
-
-    - Vague subjects: "cleanup", "updates", "various fixes".
-    - A body that repeats the subject without adding why or impact.
-    - Playful tone in a fix, security change, or architectural change.
-    - Mentioning `context/` synchronization activity.
-    - Inventing plan slugs, task IDs, or issue references.
-    - Splitting changes that already form one coherent unit.
-    - Forcing unrelated goals into a single commit.
-    - Describing intent the staged diff does not support.
+    - Vague subjects like "misc updates" or "cleanup".
+    - Bodies that only repeat the subject without explaining why or impact.
+    - Overly playful tone in serious bug-fix or architectural change.
     """
-
-local COMMIT_MESSAGE_STYLE = renderCommitMessageStyle.apply("package")
 
 local commitSkillBody = """
 # SCE Commit
@@ -937,13 +688,12 @@ structuredComposite = new model.StructuredCompositeSource {
   compositeSkillBody = commitSkillBody
   referenceDocuments = new Listing {
     model.makeDocument.apply("references/atomic-commit.md", renderAtomicCommitSkillBody.apply("package"))
+    model.makeDocument.apply("references/commit-message-style.md", renderCommitMessageStyle.apply("package"))
     model.makeDocument.apply("references/output.md", renderCommitOutput.apply("package"))
   }
   phases = new Listing {}
   internalDocuments = new Listing {}
-  outputDocuments = new Listing {
-    model.makeDocument.apply("Commit message style", renderCommitMessageStyle.apply("composite"))
-  }
+  outputDocuments = new Listing {}
 }
 
 workflow = new model.WorkflowPackage {

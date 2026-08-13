@@ -10,10 +10,10 @@ project-root `.pi/` baseline and generated for OpenCode, Claude, and Pi.
 Every target emits one thin command (Pi: prompt) invoking `sce-commit`. The
 package contains `SKILL.md`, which owns mode routing, proposal/commit control
 flow, and internal statuses; `references/atomic-commit.md`, which owns staged-diff
-analysis, message construction, commit-message rules, and the atomic-commit result
-contract; and `references/output.md`, which owns all human-visible prompts and
-result layouts. The phase reference is read only after the selected path clears
-its pre-phase gate.
+analysis, result branching, and commit boundaries; `references/commit-message-style.md`,
+which owns message wording; and `references/output.md`, which owns all human-visible
+prompts and result layouts. The phase reference is read only after the selected
+path clears its pre-phase gate.
 
 No target emits an `sce-atomic-commit` package or invokes it as a sibling skill;
 each `sce-commit` package embeds the canonical phase behavior directly.
@@ -121,10 +121,11 @@ staged explicitly; bypass mode omits the citation instead of stopping.
 
 ## Result contract
 
-The canonical analysis phase reaches exactly one of three results. The full
-field-level contract is consolidated into `references/atomic-commit.md`; the
-removed `commit-contract.yaml` and `commit-message-style.md` documents are not
-generated, and no replacement `commit-contract.md` is used.
+The canonical analysis phase reaches exactly one of three internal results. The
+message wording rules live in `references/commit-message-style.md`; the phase
+reference describes the procedure and result branches, while the workflow keeps
+the statuses internal rather than serializing them between packages. No
+`commit-contract.yaml` artifact or YAML result-contract section is generated.
 
 - `proposal` — regular mode, one or more messages and an optional split rationale.
 - `bypass_message` — bypass mode, exactly one message plus the full staged file
@@ -133,10 +134,9 @@ generated, and no replacement `commit-contract.md` is used.
   `no_staged_changes`, `plan_citation_ambiguity`, `unreadable_diff`, and
   `contradictory_context`.
 
-Every target keeps that status as internal `sce-commit` state and renders only
-the applicable layout from `references/output.md`; no result is serialized
-between packages. Every staged file still belongs to exactly one commit message. The analysis phase never reports a hash;
-only successful bypass-mode `git commit` produces one.
+Every target renders only the applicable layout from `references/output.md`.
+Every staged file still belongs to exactly one commit message. The analysis phase
+never reports a hash; only successful bypass-mode `git commit` produces one.
 
 ## Related context
 

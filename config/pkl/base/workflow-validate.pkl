@@ -1,10 +1,8 @@
 import "workflow-content.pkl" as model
-import "workflow-context-sync.pkl" as contextSync
 
 local validation = model.semanticReference.apply("`sce-validation`", "the **Validation phase**")
 local validationUpper = model.semanticReference.apply("`sce-validation`", "The **Validation phase**")
 local validationName = model.semanticReference.apply("sce-validation", "Validation phase")
-local planContextSync = model.semanticReference.apply("`sce-plan-context-sync`", "the **Plan context synchronization phase**")
 /// Cited from inside `references/validation.md` itself, where the Validation
 /// Result contract is now appended below the phase steps.
 local validationResultSelfRef = model.semanticReference.apply(
@@ -40,10 +38,8 @@ local validationResultHandoff = model.semanticReference.apply(
   "Branch on the report's `Status:`."
 )
 local invoke = model.semanticReference.apply("Invoke", "Run")
-local invokeLower = model.semanticReference.apply("invoke", "run")
 local invokedSkills = model.semanticReference.apply("invoked skills", "embedded phases")
 local invokedSkill = model.semanticReference.apply("invoked skill", "embedded phase")
-local invokedFor = model.semanticReference.apply("invoked for", "run for")
 local markdownResult = model.semanticReference.apply("Markdown result", "internal state")
 local returningValidationResult = model.semanticReference.apply("Returning one Markdown validation result", "Recording one Markdown validation result")
 local returnExactlyOneMarkdownResult = model.semanticReference.apply("Return exactly one Markdown result", "Set exactly one internal state")
@@ -52,38 +48,12 @@ local returnLower = model.semanticReference.apply("return", "set internal status
 local returnUpper = model.semanticReference.apply("Return", "Set internal status")
 local returnYamlResult = model.semanticReference.apply("Return a YAML result", "Return a internal state")
 local yaml = model.semanticReference.apply("YAML", "internal state")
-local invokePlanContextSync = model.semanticReference.apply("Invoke plan context sync", "Run plan context synchronization")
 local validationHeadings = new model.PhaseHeadings { step = 1 }
 local validationReportHeadings = new model.PhaseHeadings { step = 0 }
 
 /// User-visible layouts. Package mode states each layout at its branch, because a
 /// command file has no sibling `references/output.md`. Composite mode cites the
-/// `output.md` section that owns the layout, and keeps only the field mapping,
-/// branch conditions, and prohibitions that travelled with it.
-local syncBlockedBranch = model.semanticReference.apply(
-  """
-  `blocked` -> Validation itself succeeded and is already recorded in the plan.
-  Present:
-
-  - That plan `{plan-path}` passed final validation and its Validation Report is
-    written.
-  - The context contradiction or synchronization failure.
-  - Any context edits the report says were preserved.
-  - The action required to resolve the problem.
-  - The retry condition stated by the report.
-
-  State that durable context is now out of date relative to the validated
-  implementation, and that plan context synchronization must be resolved before
-  treating the plan as fully closed. The plan-level lifecycle record preserves the
-  blocker and retry condition.
-  """,
-  """
-  `blocked` -> Validation itself succeeded and is already recorded in the plan.
-  Render the **Context synchronization blocked** layout from
-  `references/output.md`. The plan-level lifecycle record preserves the blocker,
-  required action, and retry condition.
-  """
-)
+/// `output.md` section that owns the layout.
 local completionLayout = model.semanticReference.apply(
   """
   ```
@@ -94,7 +64,6 @@ local completionLayout = model.semanticReference.apply(
 
   All implementation tasks were already complete.
   Final validation passed.
-  Durable context is synchronized.
 
   Validation report: {plan-path}
   ```
@@ -149,8 +118,7 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     \(validationUpper.render.apply(mode)) exclusively owns:
     
     - Resolving one plan.
-    - Confirming every implementation task is complete and every completed task's
-      `Context synchronization` field is `synced`.
+    - Confirming every implementation task is complete.
     - Running full validation and acceptance-criteria checks.
     - Writing the Validation Report into the plan.
     - Returning one Markdown validation result.
@@ -159,57 +127,24 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     
     \(model.inlinePhaseBody.apply(validationSkillBody).render.apply(mode))\(validationResultHandoff.render.apply(mode))
     
-    `blocked` -> Do not \(invokeLower.render.apply(mode)) context synchronization. Print the blocked Markdown
-    report as returned. Do not rephrase it into a different layout. Stop.
+    `blocked` -> Print the blocked Markdown report as returned. Do not rephrase it
+    into a different layout. Stop.
     
-    `failed` -> Do not \(invokeLower.render.apply(mode)) context synchronization. Print the failed Markdown
-    report as returned. It is already a session handoff: self-contained, actionable,
-    and ending with `/validate {plan-path}` after repairs.
+    `failed` -> Print the failed Markdown report as returned. It is already a
+    session handoff: self-contained, actionable, and ending with
+    `/validate {plan-path}` after repairs.
     
     Do not rewrite it into a shorter summary. Do not drop the retry command. Do not
-    add an alternate continuation that replaces `/validate`.
+    add an alternate continuation that replaces `/validate`. Stop.
     
-    Stop. Do not mark the plan finished. Do not continue to context synchronization.
-    Do not start the repair work in this workflow unless the user explicitly asks
-    to continue here; the default is that the handoff can leave this session.
-    
-    `validated` -> Pass the complete validated Markdown result to \(planContextSync.render.apply(mode)).
-    
-    Do not reconstruct, summarize, or reinterpret the validation result before
-    passing it.
-    
-    ### 2. Synchronize plan context
-    
-    \(invoke.render.apply(mode)) \(planContextSync.render.apply(mode)) only with a `Status: validated` Markdown result
-    from \(validation.render.apply(mode)).
-    
-    Do not \(invokeLower.render.apply(mode)) \(planContextSync.render.apply(mode)) for `failed` or `blocked`. Those are not
-    success states.
-    
-    Pass the validated result verbatim. It is the authoritative handoff, and \(planContextSync.render.apply(mode))
-    owns reading the plan path, required context paths, validation evidence, and
-    reported context impact out of it.
-    
-    Do not restate, summarize, or reconstruct any part of the validation result.
-    
-    \(model.inlinePhaseBody.apply(contextSync.planSkillBody).render.apply(mode))Branch on the synchronization result.
-    
-    \(syncBlockedBranch.render.apply(mode))
-    
-    Stop.
-    
-    `synced` | `no_context_change` -> Print out the report returned by \(planContextSync.render.apply(mode)).
+    `validated` -> Print the complete validated Markdown result as returned.
     Continue to the next step.
     
-    ### 3. Report completion
+    ### 2. Report completion
     
     Return exactly one completion block. Do not start another workflow.
 
     \(completionLayout.render.apply(mode))
-
-    When the synchronization status was `no_context_change`, keep the same
-    completion block. "Synchronized" here means the final context pass finished
-    successfully, including the case where no edit was warranted.
     
     Stop.
     
@@ -217,14 +152,10 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     
     - Validate at most one plan per invocation.
     - Do not duplicate the internal instructions of \(invokedSkills.render.apply(mode)).
-    - The only permitted sibling-skill invocation is `sce-decision`, and only the
-      successful context-synchronization decision gate may invoke it.
     - Do not run final validation when implementation tasks remain; \(validation.render.apply(mode))
       returns `blocked`, and this workflow stops.
-    - \(invoke.render.apply(mode)) \(planContextSync.render.apply(mode)) only when \(validation.render.apply(mode)) returned
-      `Status: validated`. Do not \(invokeLower.render.apply(mode)) it for `failed` or `blocked`.
     - On `failed`, print the handoff Markdown as returned and stop. Preserve the
-      retry `/validate {plan-path}` instruction. Do not synchronize context.
+      retry `/validate {plan-path}` instruction.
     - Do not implement remaining plan tasks from this workflow unless the user
       explicitly continues in-session after a failed handoff.
     - Do not create a Git commit or push changes.
@@ -232,15 +163,13 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     - Do not execute a follow-up `/next-task`, `/change-to-plan`, or `/validate`
       yourself.
     - Do not infer success when an \(invokedSkill.render.apply(mode)) returns a non-success status.
-    - Preserve validation evidence already written to the plan when context
-      synchronization fails.
     """
 
 local structuredCommand = new model.StructuredWorkflowDocument {
   path = "validate.md"
   frontmatter = new model.WorkflowFrontmatter {
     lines = (mode: model.WorkflowRenderMode) -> new Listing {
-      "description: \"Run \(validation.render.apply(mode)) -> \(planContextSync.render.apply(mode)) to finish an SCE plan\""
+      "description: \"Run \(validation.render.apply(mode)) to finish an SCE plan\""
       "argument-hint: \"<plan-name>\""
     }
   }
@@ -275,18 +204,9 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
 
     \(validationResultSelfRef.render.apply(mode))
 
-    A plan is not finishable while any completed task's `Context synchronization`
-    field is missing or not `synced`. Before returning `validated`, write the
-    plan-level context synchronization field as `pending` in the plan file; this
-    must happen before plan context synchronization is invoked. If either durable
-    check or write cannot be completed, return `blocked`.
-
     Write plan-file evidence matching:
     
     \(validationReport.render.apply(mode))
-    
-    Context synchronization is not this phase's job. The invoking `/validate`
-    workflow runs \(planContextSync.render.apply(mode)) only after a `validated` result.
     
     ## Input
     
@@ -306,8 +226,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     \(validationHeadings.stepHeading.apply(mode, 2, "Confirm implementation is finished"))
     
     \(returnUpper.render.apply(mode)) `blocked` with incomplete tasks listed when any implementation task
-    remains incomplete, or when any completed task's `Context synchronization` field
-    is missing or not `synced`.
+    remains incomplete.
     
     Final validation measures finished work. Do not run the full suite against a
     partial stack, and do not complete remaining tasks here.
@@ -318,7 +237,6 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     - Every acceptance criterion and its `Validate:` check.
     - The `Full validation` command list.
-    - The `Context sync` requirements, for the context-impact handoff only.
     
     \(returnUpper.render.apply(mode)) `blocked` when the plan has no usable acceptance criteria, or when no
     validation commands can be determined from the plan or repository conventions.
@@ -365,22 +283,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     For `blocked`, leave the plan file unchanged.
     
-    \(validationHeadings.stepHeading.apply(mode, 6, "Determine context impact for the handoff"))
-    
-    On `validated` only, classify the durable context impact of the finished plan
-    so \(planContextSync.render.apply(mode)) can start from the plan's own requirements:
-    
-    - Start from the plan's `Context sync` section.
-    - Inspect what the completed implementation actually changed when needed.
-    - Report required context paths and affected areas.
-    - Use `none`, `local`, `domain`, or `root` with the same meanings as task-level
-      context sync.
-    
-    Do not edit context files here.
-    
-    On `failed` or `blocked`, omit context impact; context sync will not run.
-    
-    \(validationHeadings.stepHeading.apply(mode, 7, "Return the \(markdownResult.render.apply(mode))"))
+    \(validationHeadings.stepHeading.apply(mode, 6, "Return the \(markdownResult.render.apply(mode))"))
     
     \(returnExactlyOneMarkdownResult.render.apply(mode)):
     
@@ -404,14 +307,14 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Modify tests, application code, or configuration to make a failing check pass.
     - Apply lint or format auto-fixes that change product or test files as part of
       making validation green.
-    - Synchronize durable context under `context/` outside the plan file.
+    - Synchronize durable context under `context/`.
     - Create the context root.
     - Mark the plan archived or delete the plan.
     - Create a Git commit or push changes.
     - Invent acceptance criteria the plan does not state.
     - Claim verification that was not performed.
     - \(returnYamlResult.render.apply(mode)).
-    - \(invokePlanContextSync.render.apply(mode)). The workflow owns that step.\(model.packageOnlyBlock.apply("""
+    \(model.packageOnlyBlock.apply("""
 
     ## Completion
     
@@ -521,8 +424,7 @@ local renderValidationReport = (mode: model.WorkflowRenderMode) -> """
       `/validate {plan path}` command. Omit **Retry** when status is `validated`.
     - Keep evidence concise and factual. Do not narrate the whole implementation
       history.
-    - Do not claim context synchronization completed. Plan context sync is a later
-      workflow step and runs only after `validated`.
+    - Do not claim durable context synchronization as part of validation.
     - Do not rewrite task evidence or reopen completed tasks.
     - When a previous `## Validation Report` already exists, replace it with the new
       one rather than stacking duplicates.
@@ -567,16 +469,6 @@ local renderValidationResult = (mode: model.WorkflowRenderMode) -> """
     
     - {risk}
     - None identified.
-    
-    ## Context impact
-    
-    **Classification:** `{none | local | domain | root}`  
-    **Affected areas:** `{comma-separated areas}`  
-    **Required context:**
-    
-    - `{path or statement from the plan Context sync section}`
-    
-    {One or two sentences on why this classification fits the finished plan.}
     
     ## Notes
     
@@ -627,8 +519,7 @@ local renderValidationResult = (mode: model.WorkflowRenderMode) -> """
     - All implementation tasks were already complete when validation ran.
     - Validation did not modify tests, application code, or configuration to clear
       failures.
-    - Durable context was not synchronized; plan context sync runs only after
-      validation succeeds.
+    - Validation does not synchronize durable context.
     - Prefer the plan at `{plan path}` and its Validation Report as the source of
       recorded evidence.
     
@@ -646,7 +537,7 @@ local renderValidationResult = (mode: model.WorkflowRenderMode) -> """
     `/validate {plan path}`
     
     Do not stop after the repair. The plan is not finished until `/validate`
-    returns `validated` and plan context sync completes.
+    returns `validated`.
     
     ---
     
@@ -703,10 +594,7 @@ local renderValidationResult = (mode: model.WorkflowRenderMode) -> """
       `/validate {plan path}` as the final step after repairs.
     - The failed variant must be self-contained enough to hand to another session
       without the original chat.
-    - Include **Context impact** only on `validated`. Omit it on `failed` and
-      `blocked`; plan context sync is not \(invokedFor.render.apply(mode)) non-success states.
-    - Do not include context synchronization results in this report. The invoking
-      workflow runs \(planContextSync.render.apply(mode)) only after `validated`.
+    - Do not include durable context synchronization results in this report.
     - Do not select or describe an unrelated next implementation task when status is
       `validated`.
     - Omit empty optional sections rather than writing placeholders.
@@ -719,34 +607,13 @@ local VALIDATION_RESULT = renderValidationResult.apply("package")
 /// within this same file rather than at a separate `references/output.md`.
 local VALIDATION_REFERENCE = renderValidationSkillBody.apply("package") + "\n\n" + VALIDATION_RESULT
 
-/// The plan-role phase body cites its report format by the shared
-/// `references/sync-report.md` marker (see `workflow-context-sync.pkl`). That
-/// file is no longer generated for `sce-validate`: the report contract is
-/// appended below the phase steps in this same `references/context-sync.md`
-/// instead, so every occurrence of the marker is redirected in place.
-local syncReportMarker = "`references/sync-report.md`"
-local contextSyncSelfRef = "the **Plan Context Sync Report** below in this file"
-local CONTEXT_SYNC_REFERENCE =
-  contextSync.planSkillBody.render.apply("package").replaceAll(syncReportMarker, contextSyncSelfRef)
-  + "\n\n" + contextSync.planOutputReport
-
-/// Composite-only user-visible layouts. The validation and context-sync
-/// result contracts moved onto their owning phase references above, so this
-/// file carries only the two layouts the composite `SKILL.md` cites by name.
+/// Composite-only user-visible layouts. The validation result contract lives
+/// in the validation reference, while this file carries the completion layout
+/// cited by the composite `SKILL.md`.
 local VALIDATE_OUTPUT_LAYOUTS = """
     # Validate output layouts
 
     Use only the applicable layout. Values come from internal workflow state.
-
-    ## Context synchronization blocked
-
-    State that plan `{plan-path}` passed final validation and its Validation
-    Report is written; report the context contradiction or synchronization
-    failure, any context edits the report says were preserved, the action
-    required to resolve the problem, and the retry condition. State that
-    durable context is now out of date relative to the validated
-    implementation and must be synchronized before treating the plan as fully
-    closed.
 
     ## Completion
 
@@ -757,7 +624,6 @@ local VALIDATE_OUTPUT_LAYOUTS = """
 
     All implementation tasks were already complete.
     Final validation passed.
-    Durable context is synchronized.
 
     Validation report: {plan-path}
     ```
@@ -768,7 +634,6 @@ structuredComposite = new model.StructuredCompositeSource {
   compositeSkillBody = model.validateSkillBody
   referenceDocuments = new Listing {
     model.makeDocument.apply("references/validation.md", VALIDATION_REFERENCE)
-    model.makeDocument.apply("references/context-sync.md", CONTEXT_SYNC_REFERENCE)
     model.makeDocument.apply("references/validation-report.md", VALIDATION_REPORT)
     model.makeDocument.apply("references/output.md", VALIDATE_OUTPUT_LAYOUTS)
   }
@@ -778,7 +643,6 @@ structuredComposite = new model.StructuredCompositeSource {
   }
   outputDocuments = new Listing {
     model.makeDocument.apply("Validation result", renderValidationResult.apply("composite"))
-    model.makeDocument.apply("Plan context sync report", contextSync.planOutputReport)
   }
 }
 
@@ -791,6 +655,5 @@ workflow = new model.WorkflowPackage {
   }
   skills = new Mapping {
     [validationPackage.slug] = validationPackage
-    ["sce-plan-context-sync"] = contextSync.skills["sce-plan-context-sync"]
   }
 }

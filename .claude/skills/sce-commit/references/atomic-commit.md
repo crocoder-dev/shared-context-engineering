@@ -8,10 +8,6 @@ Write messages matching:
 
 `references/commit-message-style.md`
 
-Return a result matching:
-
-`references/commit-contract.yaml`
-
 Committing is not this skill's job. The invoking `/commit` workflow decides
 whether a returned message is committed, and it is the only thing that runs
 `git commit`.
@@ -108,22 +104,35 @@ Confirm before returning that:
 - No plan slug or task ID appears that the staged diff does not support.
 - The mode's own constraints hold.
 
-### 9. Return YAML
+## Bypass execution handoff
 
-Return exactly one YAML document matching `references/commit-contract.yaml`:
+This phase returns the message; the invoking `/commit` workflow performs the
+bypass commit. When the mode is `bypass`, the invoking workflow must:
 
-- `proposal` in `regular` mode, with one or more messages.
-- `bypass_message` in `bypass` mode, with exactly one message.
-- `blocked` when messages cannot be written faithfully.
+1. Create the commit-message temp file outside the repository working tree,
+   and write the returned `message` verbatim to it using a file-writing
+   operation. Never interpolate a multiline message into shell source or a
+   shell command.
+2. Run `git commit -F <message-file>` exactly once.
+3. After and only after a successful commit, run
+   `git rev-parse --verify HEAD^{commit}` and use that explicit `HEAD` value as
+   the reported hash. Never parse Git's human-readable commit output.
+4. On any commit failure, report Git's failure and stop. Never retry, amend,
+   stage more files, or fabricate a hash.
+5. Delete the temp file after the commit attempt, including on failure, where
+   practical.
 
-Return only the YAML document. Do not add explanatory prose before or after it.
+`oneshot` and `skip` select this same bypass behavior; they differ only in the
+trigger token.
 
 ## Atomic commit boundaries
 
 Do not:
 
 - Run `git commit`, or any command that writes to the repository or its index.
-- Stage, unstage, or modify files.
+- Stage, unstage, restore, or otherwise modify repository or worktree files.
+  The bypass commit-message temp file is the sole exception: it must live
+  outside the working tree, so it is not a repository or worktree file.
 - Ask the user to stage or confirm staging.
 - Analyze unstaged or untracked changes.
 - Return more than one message in `bypass` mode.
@@ -133,13 +142,13 @@ Do not:
 - Mention `context/` synchronization activity in a commit message.
 - Claim a message was committed.
 - Run plan, task, or validation workflows.
+
+
 ## Completion
 
 The skill is complete after:
 
 - The staged diff was read, or reading it failed and was reported.
 - Messages were written for every staged file, or a blocker prevented it.
-- One valid terminal YAML result matching `references/commit-contract.yaml` was
-  returned.
 
 

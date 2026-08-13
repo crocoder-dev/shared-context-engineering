@@ -20,9 +20,8 @@ local expectedWorkflowSkillByCommand = new Mapping {
   }
 }
 
-/// Phase-based workflows render package-local phase references. Phase-free
-/// workflows retain only output.md, and the standalone decision package retains
-/// only its ADR template. Exact coverage rejects stale or missing references.
+/// Workflow packages render the package-local references owned by each
+/// canonical workflow. Exact coverage rejects stale or missing references.
 local phaseReferencePathsByWorkflow = new Mapping {
   ["change-to-plan"] = new Listing {
     "references/context-load.md"
@@ -39,12 +38,12 @@ local phaseReferencePathsByWorkflow = new Mapping {
   }
   ["validate"] = new Listing {
     "references/validation.md"
-    "references/context-sync.md"
     "references/validation-report.md"
     "references/output.md"
   }
   ["commit"] = new Listing {
     "references/atomic-commit.md"
+    "references/commit-message-style.md"
     "references/output.md"
   }
   ["handover"] = new Listing {
