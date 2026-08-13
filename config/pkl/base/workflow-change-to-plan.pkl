@@ -568,13 +568,10 @@ which criterion they map to.
 
 - {Durable context files that must describe the change once implemented.}
 
-## Context synchronization lifecycle
+## Task context synchronization lifecycle
 
-Persist these fields in every plan; this is durable plan state, not chat state:
+Persist this field in every plan; this is durable plan state, not chat state:
 
-- **Plan context synchronization:** `pending | synced | blocked`. New plans start at
-  `pending`; `/validate` keeps it `pending` until plan-level context sync begins,
-  then records `synced` or `blocked` in the plan file.
 - **Task context synchronization:** every task carries `pending | synced | blocked`.
   A completed task must be `synced` before another task can start or the plan can
   finish.
@@ -2090,13 +2087,10 @@ local renderPlanTemplate = (mode: model.WorkflowRenderMode) -> """
 
     - {Durable context files that must describe the change once implemented.}
 
-    ## Context synchronization lifecycle
+    ## Task context synchronization lifecycle
 
-    Persist these fields in every plan; this is durable plan state, not chat state:
+    Persist this field in every plan; this is durable plan state, not chat state:
 
-    - **Plan context synchronization:** `pending | synced | blocked`. New plans start at
-      `pending`; `/validate` keeps it `pending` until plan-level context sync begins,
-      then records `synced` or `blocked` in the plan file.
     - **Task context synchronization:** every task carries `pending | synced | blocked`.
       A completed task must be `synced` before another task can start or the plan can
       finish.

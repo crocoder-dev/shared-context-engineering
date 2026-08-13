@@ -157,6 +157,9 @@ expect_pkl_fixture_failure \
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/validation-repair-check.pkl" \
   "final validation must not instruct the agent to repair implementation"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/validate-decision-sync-boundary-check.pkl" \
+  "generated sce-validate document must not contain a sce-decision reference or plan-context-sync wording"
 
 "$producer" "$repo_root" "$generated_input_root"
 generated_root="$generated_input_root/pkl-generated"
