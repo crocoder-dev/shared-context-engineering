@@ -19,9 +19,12 @@ Phase names below identify canonical modules in `config/pkl/base/workflow-next-t
 
 1. `sce-plan-review`
    - Resolves exactly one plan and at most one task.
-   - When an earlier completed task's context lifecycle is `pending` or `blocked`, loads that task's durable "Context synchronization handoff" (and, if blocked, "Context synchronization blocker") from the plan and retries synchronization for it before selecting or starting any new task; on success it persists `synced` and clears blocker fields before continuing, on a renewed block it persists the refreshed blocker and stops, and a legacy plan with debt but no durable handoff structure fails explicitly with migration guidance rather than a reconstructed retry.
-   - Selects the requested task or the first incomplete task whose declared dependencies are complete.
-   - Returns `ready`, `blocked`, or `plan_complete`.
+   - Read-only debt detector: inspects every completed task's context lifecycle in plan order, regardless of its position relative to the task being selected or resumed, before allowing any new task to start. A missing field, or any value other than `synced`, is unresolved debt. It never retries or invokes task context synchronization itself.
+   - When the first debt-carrying task has no durable "Context synchronization handoff" subsection (a legacy plan predating that structure), it returns `blocked` directly with migration guidance rather than a reconstructed retry.
+   - Otherwise it returns `sync_debt`, naming the debt task's ID and title, its persisted "Context synchronization handoff", and — when its lifecycle is `blocked` — its persisted "Context synchronization blocker".
+   - Once every completed task is `synced`, selects the requested task or the first incomplete task whose declared dependencies are complete.
+   - Returns `ready`, `sync_debt`, `blocked`, or `plan_complete`.
+   - Sync-debt recovery: an explicit top-level `/next-task` branch — not plan-review behavior — reached on `sync_debt` before normal task selection resumes. It reads `references/context-sync.md`, then runs task context synchronization using the debt task's persisted handoff (and persisted blocker, when present). On `synced`/`no_context_change` it writes `synced` to the plan, clearing blocker fields, and re-invokes plan review to resume normal task selection. On a renewed `blocked` it writes the refreshed blocker, required action, and retry condition to the plan and stops, rendering the **Context synchronization blocked** layout — distinct from plan review's own **Review blocked** layout.
 2. `sce-task-execution`
    - Receives the complete `ready` result.
    - Always presents the implementation gate before editing.

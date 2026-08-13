@@ -1,0 +1,15 @@
+import "../generation-contract-check.pkl" as contract
+
+local skillPath = "config/.opencode/skills/sce-next-task/SKILL.md"
+
+local documents = new Mapping {
+  [skillPath] =
+    "`sync_debt` -> Run the **Task context synchronization phase** using the "
+    + "debt task's persisted handoff, then read `references/context-sync.md`.\n\n"
+    + "Write the debt task's lifecycle to the plan."
+}
+
+result = if (
+  contract.assertSyncDebtRecoveryBranch.apply(documents)
+) "negative fixture unexpectedly accepted a sync-debt branch that invokes the phase before citing its reference"
+else throw("sce-next-task SKILL.md sync-debt recovery branch must cite references/context-sync.md before invoking the Task context synchronization phase")

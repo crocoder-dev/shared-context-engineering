@@ -1,0 +1,17 @@
+import "../generation-contract-check.pkl" as contract
+
+local skillPath = "config/.opencode/skills/sce-next-task/SKILL.md"
+
+local documents = new Mapping {
+  [skillPath] =
+    "`sync_debt` -> Read `references/context-sync.md`, then run the **Task "
+    + "context synchronization phase**.\n\n"
+    + "Branch on the outcome:\n\n"
+    + "`blocked` -> Render the **Review blocked** layout from `references/output.md`.\n\n"
+    + "`synced` -> Resume plan review."
+}
+
+result = if (
+  contract.assertSyncDebtBlockedRouting.apply(documents)
+) "negative fixture unexpectedly accepted a sync-debt blocked outcome routed to the Review blocked layout"
+else throw("sce-next-task SKILL.md sync-debt recovery blocked outcome must route to the Context synchronization blocked layout, not Review blocked")

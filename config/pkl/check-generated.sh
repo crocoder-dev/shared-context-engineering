@@ -143,6 +143,18 @@ expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/next-task-sync-debt-recovery-check.pkl" \
   "plan-review reference must state sync-debt recovery and legacy-migration-failure behavior"
 expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/handoff-identity-fields-check.pkl" \
+  "persisted handoff must carry Plan path, Task ID, and Task title, and context-sync validation must require them from the handoff itself"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/sync-debt-recovery-branch-check.pkl" \
+  "sce-next-task SKILL.md sync-debt recovery branch must cite references/context-sync.md before invoking the Task context synchronization phase"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/plan-review-all-tasks-scope-check.pkl" \
+  "sce-next-task plan-review reference must state the synchronization-debt scan covers every completed task, with no earlier-completed-task position-relative wording remaining"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/sync-debt-blocked-routing-check.pkl" \
+  "sce-next-task SKILL.md sync-debt recovery blocked outcome must route to the Context synchronization blocked layout, not Review blocked"
+expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/validation-repair-check.pkl" \
   "final validation must not instruct the agent to repair implementation"
 
