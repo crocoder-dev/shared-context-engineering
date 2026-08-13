@@ -94,7 +94,7 @@ local brownfieldSkillDocuments = new Mapping {
 }
 
 local isDecisionInvokingWorkflowDocument = (path: String) ->
-  path.contains("/skills/sce-next-task/") || path.contains("/skills/sce-validate/")
+  path.contains("/skills/sce-next-task/")
 
 local decisionWorkflowText = (documents: Mapping, workflowSlug: String) ->
   new Listing {
@@ -691,6 +691,21 @@ hidden assertValidationIsObservational = (documents: Mapping) ->
     ) "sce-validate validation: observational and non-repairing"
     else throw("final validation must not instruct the agent to repair implementation")
 
+hidden assertValidateExcludesDecisionAndPlanSync = (documents: Mapping) ->
+  let (forbidden = new Listing {
+    "sce-decision"
+    "plan-context-sync"
+    "plan context sync"
+    "Plan context synchronization"
+  })
+    if (
+      documents.every((path, text) ->
+        !path.contains("/skills/sce-validate/")
+        || forbidden.every((token) -> !text.contains(token))
+      )
+    ) "sce-validate package: no sce-decision reference or plan-context-sync wording"
+    else throw("generated sce-validate document must not contain a sce-decision reference or plan-context-sync wording")
+
 contractChecks {
   ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
   ["optional-workflow-manifest"] = assertOptionalWorkflowManifest.apply(generatedArtifacts)
@@ -731,4 +746,5 @@ contractChecks {
   ["plan-review-all-tasks-scope"] = assertPlanReviewAllTasksScope.apply(workflowDocuments)
   ["sync-debt-blocked-routing"] = assertSyncDebtBlockedRouting.apply(workflowDocuments)
   ["validation-observational"] = assertValidationIsObservational.apply(workflowDocuments)
+  ["validate-decision-sync-boundary"] = assertValidateExcludesDecisionAndPlanSync.apply(workflowDocuments)
 }

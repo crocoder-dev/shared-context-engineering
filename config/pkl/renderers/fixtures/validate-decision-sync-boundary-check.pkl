@@ -1,0 +1,10 @@
+import "../generation-contract-check.pkl" as contract
+
+local documents = new Mapping {
+  ["config/.opencode/skills/sce-validate/references/output.md"] = "Invoke `sce-decision` to record plan-context-sync."
+}
+
+result = if (
+  contract.assertValidateExcludesDecisionAndPlanSync.apply(documents)
+) "negative fixture unexpectedly accepted a sce-decision reference or plan-context-sync wording in sce-validate"
+else throw("generated sce-validate document must not contain a sce-decision reference or plan-context-sync wording")
